@@ -370,6 +370,14 @@ export interface BrowserExecutionPin {
    */
   expectedOrigin?: string;
   /**
+   * `batch` only: the origin the gate approved for each embedded region the
+   * batch's steps target, keyed by frame handle. The run re-checks each
+   * frame-targeted step against its own entry — the page-level
+   * `expectedOrigin` cannot stand in, because a third-party region navigating
+   * away does not change the tab's address at all.
+   */
+  expectedFrameOrigins?: Record<string, string>;
+  /**
    * U6 / F2.4 — the gate saw `authState: 'login_required'` for this action's
    * tab. Set only when true, and consumed SHELL-SIDE (an unattended run never
    * gets here — it was already refused), so an attended result can carry the
@@ -434,6 +442,13 @@ export interface ToolApprovalDecision {
  * not been visited yet, and the flag is about where a tab IS.
  */
 interface BrowserActionTarget {
+  /**
+   * The origin the action will actually RUN at — the FRAME's origin when the
+   * call names an embedded region, the tab's otherwise. This is the key every
+   * site verdict is looked up under and the origin the execution pin carries,
+   * so a frame-targeted action is authorized against the site whose document
+   * it will touch, not against the page that embeds it.
+   */
   origin: string | null;
   url: string | null;
   /**
@@ -445,6 +460,58 @@ interface BrowserActionTarget {
    * this value into an allow.
    */
   authState: 'login_required' | null;
+  /**
+   * The TAB's own origin, when the action targets a region inside it.
+   *
+   * Both have to pass: a region is authorized on its own account, and a page
+   * the user blocked must not become operable through an iframe it embeds.
+   * Absent when the action targets the main document, where the two are the
+   * same thing.
+   */
+  topOrigin?: string | null;
+  /** The tab's top-level URL, for the high-risk check when a frame is named. */
+  topUrl?: string | null;
+  /**
+   * Distinct origins of the page's addressable embedded regions.
+   *
+   * Only regions the browser could confirm (`accessible`) are listed: the
+   * shared type is explicit that an inaccessible region's origin is a hint the
+   * embedding page could author, and this list is what a merged grant would be
+   * written against. The user is asked about the page and its regions ONCE,
+   * rather than region by region, which is how per-origin authorization stays
+   * correct without becoming a wall of prompts.
+   */
+  embeddedOrigins?: string[];
+  /** For a `batch`: the origin each region its steps target is showing now. */
+  frameOrigins?: Record<string, string>;
+  /**
+   * A region was named but the browser could not confirm what it is showing —
+   * it is gone, unreachable on this channel, or not an ordinary web page.
+   * `origin` is null in that case, which is what makes the call ask (attended)
+   * or refuse (unattended) instead of falling back to the embedding page's
+   * authorization.
+   */
+  frameUnverified?: true;
+}
+
+/**
+ * The stricter of two stored site verdicts.
+ *
+ * `denied` beats everything, and anything short of `allowed` beats `allowed`:
+ * two sites are involved when a call targets an embedded region, and a
+ * decision that took the more permissive of them would let a region ride the
+ * page's grant (or a page ride a region's), which is exactly what authorizing
+ * per origin exists to prevent. `null` means "there is no second site" and
+ * leaves the first answer alone.
+ */
+function strictestVerdict(
+  a: 'allowed' | 'denied' | 'default',
+  b: 'allowed' | 'denied' | 'default' | null,
+): 'allowed' | 'denied' | 'default' {
+  if (b === null) return a;
+  if (a === 'denied' || b === 'denied') return 'denied';
+  if (a === 'allowed' && b === 'allowed') return 'allowed';
+  return 'default';
 }
 
 /** Only the one value the gate acts on; anything else is treated as absent. */
@@ -484,6 +551,10 @@ async function resolveBrowserActionTarget(
 
   const tabId = Number(input.tabId);
   if (!Number.isFinite(tabId)) return { origin: null, url: null, authState: null };
+  // Which embedded regions this call names — one for a single action, possibly
+  // several for a batch. Read here and not later because it decides whether
+  // the listing has to carry the tab's frame tree at all.
+  const namedFrames = framesNamedBy(toolName, input);
   try {
     // Approval must never hang on a wedged browser server: the MCP browser
     // timeout is 120s, so race a short deadline and fall back to "unknown
@@ -511,21 +582,75 @@ async function resolveBrowserActionTarget(
         // that threading the conversation id closed.
         agentRunId,
         createBrowserTabIfEmpty: false,
+        // The gate's ONLY probe. A frame-targeted action is authorized against
+        // the frame's own origin, and the merged ask needs to know which
+        // regions the page embeds, so the tree has to ride this listing rather
+        // than cost a second round trip.
+        framesForTabId: tabId,
       }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
     if (result === null || typeof result !== 'string') return { origin: null, url: null, authState: null };
     const parsed = JSON.parse(result) as {
-      windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string; authState?: unknown }> }>;
+      windows?: Array<{
+        tabs?: Array<{
+          tabId?: number;
+          url?: string;
+          authState?: unknown;
+          frames?: unknown;
+        }>;
+      }>;
     };
     for (const win of parsed.windows ?? []) {
       for (const tab of win.tabs ?? []) {
         if (tab.tabId !== tabId) continue;
-        const origin = normalizeBrowserOrigin(tab.url);
+        const topOrigin = normalizeBrowserOrigin(tab.url);
+        const topUrl = topOrigin !== null ? (tab.url ?? null) : null;
+        const authState = parseTabAuthState(tab.authState);
+        const regions = readFrameNodes(tab.frames);
+        const embeddedOrigins = embeddedOriginsOf(regions, topOrigin);
+        if (namedFrames.length === 0) {
+          return {
+            origin: topOrigin,
+            url: topUrl,
+            authState,
+            ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
+          };
+        }
+        // Every named region has to resolve to an origin the BROWSER confirmed.
+        // One that does not leaves `origin` null, which asks (attended) or
+        // refuses (unattended) — never falls back to the embedding page's
+        // authorization, which is the whole point of authorizing per region.
+        const frameOrigins: Record<string, string> = {};
+        let unverified = false;
+        for (const frameId of namedFrames) {
+          const node = regions.find((region) => region.frameId === frameId);
+          if (!node || node.accessible !== true || !node.origin) {
+            unverified = true;
+            continue;
+          }
+          frameOrigins[frameId] = node.origin;
+        }
+        // A single action names one region; a batch may name several, and the
+        // one the gate judges is the STRICTEST of them — see `strictestVerdict`
+        // at the gate. The per-region map goes to the run so each step is
+        // re-checked against its own.
+        const primary = namedFrames.length === 1 ? frameOrigins[namedFrames[0]] : undefined;
+        const frameUrl = namedFrames.length === 1
+          ? regions.find((region) => region.frameId === namedFrames[0])?.url ?? null
+          : null;
         return {
-          origin,
-          url: origin !== null ? (tab.url ?? null) : null,
-          authState: parseTabAuthState(tab.authState),
+          // ANY named region the browser could not confirm makes the whole call
+          // origin-unknown, batch included: a run that fell back to the page's
+          // origin would be judged against a site none of its steps touch.
+          origin: unverified ? null : (primary ?? topOrigin),
+          url: primary ? (frameUrl ?? null) : topUrl,
+          authState,
+          topOrigin,
+          topUrl,
+          ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
+          ...(Object.keys(frameOrigins).length > 0 ? { frameOrigins } : {}),
+          ...(unverified ? { frameUnverified: true as const } : {}),
         };
       }
     }
@@ -533,6 +658,92 @@ async function resolveBrowserActionTarget(
   } catch {
     return { origin: null, url: null, authState: null };
   }
+}
+
+/** The shape of one frame row in a `get_tabs` listing, as far as the gate reads it. */
+interface GateFrameNode {
+  frameId: string;
+  origin: string | null;
+  url?: string;
+  sameOriginAsTop?: boolean;
+  accessible?: boolean;
+}
+
+/** A frame handle, and nothing else. Mirrors `isFrameRef` in the shared types. */
+function isFrameHandle(value: unknown): value is string {
+  return typeof value === 'string' && /^f\d+$/.test(value);
+}
+
+/**
+ * Which embedded regions a call names — `input.frameId` for a single action,
+ * and every step's `frameId` for a `batch`.
+ *
+ * Reads the batch's steps as the model wrote them (a JSON string), the same
+ * way `summarizeBrowserBatch` and `classifyBrowserTool` do: a step list this
+ * function cannot parse yields no frames, which leaves the call judged against
+ * the page — and the bridge refuses an unparseable step list outright, so
+ * nothing reaches a region on the strength of a list the gate could not read.
+ */
+function framesNamedBy(toolName: string, input: Record<string, unknown>): string[] {
+  const named = new Set<string>();
+  if (isFrameHandle(input.frameId)) named.add(input.frameId);
+  if (toolName === 'batch') {
+    const raw = input.steps;
+    let steps: unknown = raw;
+    if (typeof raw === 'string') {
+      try {
+        steps = JSON.parse(raw);
+      } catch {
+        steps = null;
+      }
+    }
+    if (Array.isArray(steps)) {
+      for (const step of steps) {
+        const frameId = (step as { frameId?: unknown } | null)?.frameId;
+        if (isFrameHandle(frameId)) named.add(frameId);
+      }
+    }
+  }
+  return [...named];
+}
+
+/** The frame rows of a tab listing, ignoring anything that is not one. */
+function readFrameNodes(value: unknown): GateFrameNode[] {
+  if (!Array.isArray(value)) return [];
+  const out: GateFrameNode[] = [];
+  for (const row of value) {
+    if (typeof row !== 'object' || row === null) continue;
+    const node = row as Record<string, unknown>;
+    if (!isFrameHandle(node.frameId)) continue;
+    out.push({
+      frameId: node.frameId,
+      // Re-normalized here rather than trusted as sent: this is the key a site
+      // verdict is looked up under, and one spelling has to win everywhere.
+      origin: typeof node.origin === 'string' ? normalizeBrowserOrigin(node.origin) : null,
+      ...(typeof node.url === 'string' ? { url: node.url } : {}),
+      ...(typeof node.sameOriginAsTop === 'boolean' ? { sameOriginAsTop: node.sameOriginAsTop } : {}),
+      ...(typeof node.accessible === 'boolean' ? { accessible: node.accessible } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * The distinct third-party origins this page embeds — what a merged ask lists
+ * and a merged grant is written against.
+ *
+ * Confirmed regions only, and never the page's own origin: a same-origin
+ * region is already covered by the page's grant, and listing it would make the
+ * prompt say "this page also contains content from itself".
+ */
+function embeddedOriginsOf(regions: GateFrameNode[], topOrigin: string | null): string[] {
+  const out: string[] = [];
+  for (const region of regions) {
+    if (region.accessible !== true || !region.origin) continue;
+    if (region.origin === topOrigin) continue;
+    if (!out.includes(region.origin)) out.push(region.origin);
+  }
+  return out;
 }
 
 /**
@@ -1156,8 +1367,21 @@ export async function checkToolApproval(
        * a note; there is no branch anywhere that turns it into an allow.
        */
       const loginRequired = target.authState === 'login_required';
+      /**
+       * When a call names an embedded region, TWO sites are involved and both
+       * have to pass: the region, on its own account, and the page embedding
+       * it — a site the user blocked must not become operable through an
+       * iframe it happens to embed, and a region the user has not authorized
+       * must not ride the page's grant. The strictest of the two is what the
+       * decision is made on.
+       */
       const storedVerdict = consequence === 'state-changing' || runMode === 'unattended'
-        ? getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {})
+        ? strictestVerdict(
+          getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {}),
+          target.topOrigin !== undefined
+            ? getSiteVerdict(target.topOrigin, settingsSnapshot.browserSitePermissions ?? {})
+            : null,
+        )
         : 'default';
       /**
        * Money movement / government, decided from the target URL and NOTHING
@@ -1169,7 +1393,11 @@ export async function checkToolApproval(
        * 'denied' — a site the user blocked stays blocked, and letting the
        * high-risk verdict replace it could only ever loosen things.
        */
-      const highRisk = storedVerdict !== 'denied' && isHighRiskUrl(target.url);
+      // Both URLs, for the same reason both verdicts count: a payment page
+      // embedded in an ordinary one, and an ordinary region on a payment page,
+      // are both "this call touches money".
+      const highRisk = storedVerdict !== 'denied'
+        && (isHighRiskUrl(target.url) || isHighRiskUrl(target.topUrl ?? null));
       const siteVerdict: DecideBrowserOperationSiteVerdict = highRisk
         ? 'high-risk'
         : storedVerdict;
@@ -1765,6 +1993,11 @@ export async function checkToolApproval(
             kind: 'browser',
             browserOperationClass: opClass,
             browserOrigin: origin ?? undefined,
+            // Named in the SAME ask, and granted in the same click, so
+            // per-origin authorization does not cost one prompt per region.
+            ...(target.embeddedOrigins && target.embeddedOrigins.length > 0
+              ? { browserEmbeddedOrigins: target.embeddedOrigins }
+              : {}),
             // No "always allow this site" for a bank or a checkout page — the
             // standing grant is the artifact this control exists to prevent.
             // Nor under 「每次询问」 (F8): the grant it would mint is one this
@@ -1843,6 +2076,11 @@ export async function checkToolApproval(
       browserExecutionPin = {
         runMode,
         ...(origin !== null ? { expectedOrigin: origin } : {}),
+        // A batch's steps may each target a different region, and the page's
+        // own pin says nothing about what a third-party region is showing —
+        // so each region's approved origin goes to the run to be re-checked
+        // before the step that targets it.
+        ...(target.frameOrigins ? { expectedFrameOrigins: target.frameOrigins } : {}),
         ...(loginRequired ? { loginRequired: true as const } : {}),
       };
     }
@@ -2205,6 +2443,9 @@ export async function executeAnyTool(
           // the model can neither read nor forge it. See `BrowserExecutionPin`.
           ...(approval.browserExecution?.expectedOrigin !== undefined
             ? { expectedOrigin: approval.browserExecution.expectedOrigin }
+            : {}),
+          ...(approval.browserExecution?.expectedFrameOrigins !== undefined
+            ? { expectedFrameOrigins: approval.browserExecution.expectedFrameOrigins }
             : {}),
           ...(approval.browserExecution?.runMode === 'unattended'
             ? { unattended: true }

@@ -2435,6 +2435,8 @@ const zhCN: TranslationDict = {
     browserAllowOnce: '仅本次对话',
     browserAlwaysAllowSite: '此网站以后都允许',
     browserAlwaysAllowSiteWithScripts: '此网站以后都允许（含运行脚本）',
+    browserEmbeddedOrigins: '这个页面还包含来自 {origins} 的内嵌区域，阿布同样能操作。',
+    browserAlwaysAllowSiteWithEmbedded: '此网站及 {count} 个内嵌区域以后都允许',
     browserBlockSite: '禁止此网站',
     selfExtensionTitle: '新增能力确认',
     selfExtensionDescription: '阿布要新增或改写长期的代理或自动化状态：',

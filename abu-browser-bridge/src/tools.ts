@@ -98,6 +98,9 @@ export const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
  * One sentence, everywhere, because the model has to learn the concept once:
  * a page is several documents, and a search covers one of them.
  */
+/** A frame handle and nothing else. Shared by every tool's schema. */
+const FRAME_HANDLE = /^f\d+$/;
+
 const FrameIdDescription =
   'Which embedded region (iframe) to act in — a handle like "f3" from a snapshot\'s `frames` list '
   + 'or get_tabs. Omit it for the page\'s main document. An OA/ERP form is usually inside one of '
@@ -316,7 +319,9 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('Optional CSS selector to scope the snapshot to a specific area of the page (e.g. the form you are filling). Use this first when a snapshot comes back truncated.'),
       maxChars: z.coerce.number().optional().describe('Maximum serialized size of the element list (default 30000). Raise it if the snapshot is truncated and you cannot scope it with a selector.'),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, selector, maxChars, frameId }, extra) => {
       await ensureConnected(transport);
@@ -347,7 +352,9 @@ export function registerTools(server: McpServer, transport: BrowserTransport = c
 Name/label/placeholder matching takes the strictest tier that matches: exact, then case/whitespace-insensitive, then substring.`,
       ),
       limit: z.coerce.number().optional().describe('Maximum matches to return (default 20, max 50).'),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, query, limit, frameId }, extra) => {
       await ensureConnected(transport);
@@ -366,7 +373,9 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, locator, frameId }, extra) => {
       await ensureConnected(transport);
@@ -386,7 +395,9 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
       value: z.string().describe('The text value to fill into the field'),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, locator, value, frameId }, extra) => {
       await ensureConnected(transport);
@@ -406,7 +417,9 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       locator: z.string().describe(`JSON string of element locator. ${LocatorDescription}`),
       value: z.string().describe('The option value or visible text to select'),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, locator, value, frameId }, extra) => {
       await ensureConnected(transport);
@@ -529,7 +542,9 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
 - { "type": "urlContains", "pattern": "/success" } — wait for URL change`
       ),
       timeout: z.coerce.number().optional().default(30000).describe('Maximum wait time in ms (default: 30000)'),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, condition, timeout, frameId }, extra) => {
       await ensureConnected(transport);
@@ -554,7 +569,9 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('CSS selector to extract text from. If omitted, extracts the full page text (may be large).'),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, selector, frameId }, extra) => {
       await ensureConnected(transport);
@@ -572,7 +589,9 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
       selector: z.string().optional().describe('CSS selector for the target table. If omitted, extracts the largest table on the page.'),
-      frameId: z.string().optional().describe(FrameIdDescription),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
     },
     async ({ tabId, selector, frameId }, extra) => {
       await ensureConnected(transport);

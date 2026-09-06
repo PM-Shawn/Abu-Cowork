@@ -68,6 +68,72 @@ describe('CommandConfirmDialog', () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
+  describe('a page that embeds other sites', () => {
+    // Per-origin authorization is only honest if the user SEES the other
+    // origins before the click that authorizes them, and only bearable if the
+    // click covers them all — region-by-region prompting is what turns one
+    // form into a wall of dialogs.
+    it('names the embedded sites in the ask itself', () => {
+      renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net'],
+        allowPersistentGrant: true,
+      });
+
+      expect(screen.getByText(/vendor\.example\.net/)).toBeInTheDocument();
+    });
+
+    it('says on the button that the click covers them too', () => {
+      renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net', 'https://cdn.example.org'],
+        allowPersistentGrant: true,
+      });
+
+      expect(screen.getByRole('button', { name: '此网站及 2 个内嵌区域以后都允许' })).toBeInTheDocument();
+    });
+
+    it('writes a separate grant per origin — never one that covers sites not listed', async () => {
+      const user = userEvent.setup();
+      const { onConfirm } = renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net', 'https://cdn.example.org'],
+        allowPersistentGrant: true,
+      });
+
+      await user.click(screen.getByRole('button', { name: '此网站及 2 个内嵌区域以后都允许' }));
+
+      const verdicts = useSettingsStore.getState().browserSitePermissions;
+      expect(verdicts).toEqual({
+        'https://oa.example.com': 'allowed',
+        'https://vendor.example.net': 'allowed',
+        'https://cdn.example.org': 'allowed',
+      });
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('grants nothing beyond this conversation when the user takes the narrow choice', async () => {
+      const user = userEvent.setup();
+      const { onConfirm } = renderDialog({
+        browserOrigin: 'https://oa.example.com',
+        browserEmbeddedOrigins: ['https://vendor.example.net'],
+        allowPersistentGrant: true,
+      });
+
+      await user.click(screen.getByRole('button', { name: '仅本次对话' }));
+
+      expect(useSettingsStore.getState().browserSitePermissions).toEqual({});
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('is silent about regions on a page that has none', () => {
+      renderDialog({ browserOrigin: 'https://oa.example.com', allowPersistentGrant: true });
+
+      expect(screen.getByRole('button', { name: '此网站以后都允许' })).toBeInTheDocument();
+      expect(screen.queryByText(/内嵌区域/)).not.toBeInTheDocument();
+    });
+  });
+
   it('"just this once" resolves without persisting anything', async () => {
     const user = userEvent.setup();
     const { onConfirm } = renderDialog({

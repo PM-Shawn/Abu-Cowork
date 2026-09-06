@@ -527,8 +527,11 @@ export async function runBatch(
   const framedSteps = steps.some((step) => step.frameId !== undefined);
   const opening = await readTab(deps, tabId, framedSteps);
   const observed = opening.origin;
-  // The gate's map wins, exactly as `approvedOrigin` does for the page.
-  const pinnedFrames: Record<string, string> = { ...opening.frameOrigins, ...(approvedFrameOrigins ?? {}) };
+  // The gate's map REPLACES the observed one rather than extending it: a step
+  // naming a region the gate never judged must have no pin to check against
+  // (and so stop the run), not quietly inherit whatever that region happened
+  // to be showing when the batch started.
+  const pinnedFrames: Record<string, string> = approvedFrameOrigins ?? opening.frameOrigins;
   // The gate's origin wins as the pin — never the observed one — so a run that
   // drifted before it began stops rather than re-pinning onto where it landed.
   const pinned = approvedOrigin ?? observed;
@@ -575,8 +578,11 @@ export async function runBatch(
     // approved for one origin, and a step that would run somewhere else must
     // not run at all. A same-origin navigation (a form posting to its own
     // results page) is not a drift and does not stop the run.
+    // Step 0 reuses the listing taken a moment ago rather than paying for a
+    // second one; every later step re-reads, because anything could have
+    // happened while the previous step ran.
     const reading: { origin: string | null; frameOrigins: Record<string, string> } =
-      index === 0 && !framedSteps
+      index === 0
         ? { origin: pinned, frameOrigins: opening.frameOrigins }
         : await readTab(deps, tabId, framedSteps);
     const here: string | null = reading.origin;

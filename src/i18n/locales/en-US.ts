@@ -2433,6 +2433,8 @@ const enUS: TranslationDict = {
     browserAllowOnce: 'This conversation only',
     browserAlwaysAllowSite: 'Always allow this site',
     browserAlwaysAllowSiteWithScripts: 'Always allow this site (including scripts)',
+    browserEmbeddedOrigins: 'This page also contains embedded regions from {origins}, which Abu can operate too.',
+    browserAlwaysAllowSiteWithEmbedded: 'Always allow this site and its {count} embedded regions',
     browserBlockSite: 'Block this site',
     selfExtensionTitle: 'Confirm new capability',
     selfExtensionDescription: 'Abu wants to add or rewrite long-lived agent or automation state:',

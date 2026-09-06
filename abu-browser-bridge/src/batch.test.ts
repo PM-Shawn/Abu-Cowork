@@ -505,3 +505,163 @@ describe('batchOrigin', () => {
     }
   });
 });
+
+describe('runBatch — region identity between steps', () => {
+  /**
+   * A batch whose steps act inside an embedded region.
+   *
+   * The tab's own address is deliberately held CONSTANT in every case here: a
+   * third-party region can navigate on its own without the page moving at all,
+   * so a run that only watched the tab would carry the approval straight into
+   * whatever replaced the region. `frames` is served the way `get_tabs` really
+   * serves it, and only `accessible` rows count — an unreachable region's
+   * origin is a hint the embedding page could have authored.
+   */
+  function framedHarness(frameUrls: Array<string | null>, options: { accessible?: boolean } = {}) {
+    const sent: string[] = [];
+    const framesAsked: boolean[] = [];
+    let probe = 0;
+    let clock = 0;
+    const deps: BatchDeps = {
+      now: () => { clock += 1; return clock; },
+      send: async (action, payload) => {
+        sent.push(action);
+        if (action === 'get_tabs') {
+          framesAsked.push((payload as { framesForTabId?: number }).framesForTabId === TAB);
+          const url = frameUrls[Math.min(probe, frameUrls.length - 1)];
+          probe += 1;
+          return {
+            success: true,
+            data: {
+              windows: [{
+                tabs: [{
+                  tabId: TAB,
+                  url: 'https://oa.example.com/apply',
+                  frames: [
+                    {
+                      frameId: 'f0',
+                      origin: 'https://oa.example.com',
+                      sameOriginAsTop: true,
+                      accessible: true,
+                    },
+                    ...(url === null ? [] : [{
+                      frameId: 'f4',
+                      origin: new URL(url).origin,
+                      url,
+                      sameOriginAsTop: false,
+                      accessible: options.accessible ?? true,
+                    }]),
+                  ],
+                }],
+              }],
+            },
+          };
+        }
+        return { success: true, data: { success: true, message: 'ok' } };
+      },
+    };
+    return { deps, sent, framesAsked };
+  }
+
+  const framedSteps: BatchStep[] = [
+    { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+    { action: 'click', frameId: 'f4', locator: { text: '提交' } },
+  ];
+
+  it('asks for the frame tree only when a step targets a region', async () => {
+    const plain = harness();
+    await runBatch(plain.deps, TAB, steps('fill', 'click'), 'https://erp.example.com');
+    const framed = framedHarness(['https://vendor.example.net/form']);
+    await runBatch(framed.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(framed.framesAsked.every(Boolean)).toBe(true);
+  });
+
+  it('runs every step while the region keeps showing the site it was approved for', async () => {
+    const h = framedHarness(['https://vendor.example.net/form']);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.completedSteps).toHaveLength(2);
+    expect(result.frameOrigins).toEqual({ f4: 'https://vendor.example.net' });
+  });
+
+  it('stops when the region navigates to another site, even though the tab never moved', async () => {
+    const h = framedHarness([
+      'https://vendor.example.net/form',
+      'https://evil.example.com/collect',
+    ]);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    expect(result.completedSteps).toHaveLength(1);
+    expect(result.remainingSteps).toBe(1);
+    // And the page really was left alone after the stop.
+    expect(h.sent.filter((a) => a === 'click')).toHaveLength(0);
+  });
+
+  it('stops before step 0 when the region is already showing something else', async () => {
+    const h = framedHarness(['https://evil.example.com/collect']);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    expect(result.completedSteps).toHaveLength(0);
+    expect(h.sent.filter((a) => a !== 'get_tabs')).toEqual([]);
+  });
+
+  it('stops when the region is gone rather than falling back to the page', async () => {
+    const h = framedHarness([null]);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(h.sent.filter((a) => a !== 'get_tabs')).toEqual([]);
+  });
+
+  it('stops when the region\'s origin is one the browser could not confirm', async () => {
+    // `accessible: false` ⇒ the reported origin came from the embedding page's
+    // markup, and nothing may be checked (or authorized) against it.
+    const h = framedHarness(['https://vendor.example.net/form'], { accessible: false });
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(h.sent.filter((a) => a !== 'get_tabs')).toEqual([]);
+  });
+
+  it('takes the GATE\'s origin for a region, not the one observed at the start', async () => {
+    // Same shape as `approvedOrigin` for the page: the run must not re-pin onto
+    // wherever the region had drifted to by the time it began.
+    const h = framedHarness(['https://evil.example.com/collect']);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('frame-origin-changed');
+  });
+
+  it('leaves a frameless batch pinning only the page, exactly as before', async () => {
+    const h = harness({ urls: ['https://erp.example.com/form'] });
+
+    const result = await runBatch(h.deps, TAB, steps('fill', 'click'), 'https://erp.example.com');
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.frameOrigins).toBeUndefined();
+  });
+});

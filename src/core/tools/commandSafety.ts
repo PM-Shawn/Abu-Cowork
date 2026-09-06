@@ -36,6 +36,21 @@ export interface ConfirmationInfo {
    */
   browserOrigin?: string;
   /**
+   * Browser confirmations only: the OTHER sites this page embeds as regions
+   * the automation can address (iframes), when there are any.
+   *
+   * A cross-origin region is authorized on its own account — a grant for the
+   * page does not cover it — but asking region by region turns one form into a
+   * wall of prompts. So the ask names them together and "always allow" writes
+   * a grant for each named origin SEPARATELY (never a wildcard), which is what
+   * keeps per-origin authorization honest and the prompt count at one.
+   *
+   * Only origins the browser confirmed appear here: a region this channel
+   * cannot see into reports an origin the embedding page could have authored,
+   * and nothing may be granted on the strength of that.
+   */
+  browserEmbeddedOrigins?: string[];
+  /**
    * Browser confirmations only: whether the dialog may offer a persistent
    * per-site grant. False for scripting tools (execute_js) and for actions
    * whose origin could not be resolved — those are approved one use at a

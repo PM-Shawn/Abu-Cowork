@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import { AlertTriangle, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
 import type { DangerLevel } from '@/core/tools/commandSafety';
@@ -14,6 +14,12 @@ export interface CommandConfirmRequest {
   kind?: 'command' | 'browser' | 'self-extension';
   /** Browser confirmations: exact origin of the action, when resolved. */
   browserOrigin?: string;
+  /**
+   * Browser confirmations: the OTHER sites this page embeds as regions the
+   * automation can address — see `ConfirmationInfo.browserEmbeddedOrigins`.
+   * Named in the ask, and granted individually by "always allow".
+   */
+  browserEmbeddedOrigins?: string[];
   /** Browser confirmations: whether "always allow this site" may be offered. */
   allowPersistentGrant?: boolean;
 }
@@ -76,12 +82,29 @@ export default function CommandConfirmDialog({
   // agree before a "forever" button appears.
   const offerSiteGrant =
     request.kind === 'browser' && !!request.browserOrigin && mayOfferPersistentGrant(request);
+  /**
+   * The other sites this page embeds as regions the automation can address.
+   *
+   * They are authorized on their OWN account — a grant for the page does not
+   * cover them — so the user has to see them before approving, and "always
+   * allow" writes a separate grant for each. Asking region by region would
+   * turn one form into a wall of prompts; a wildcard would make the grant mean
+   * something the user never agreed to. Naming them here is what keeps both
+   * from happening.
+   */
+  const embeddedOrigins = request.kind === 'browser' ? (request.browserEmbeddedOrigins ?? []) : [];
   const handleAlwaysAllowSite = useCallback(() => {
+    const store = useSettingsStore.getState();
     if (request.browserOrigin) {
-      useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'allowed');
+      store.setBrowserSitePermission(request.browserOrigin, 'allowed');
+    }
+    // One click, one grant per origin — written individually, never as a
+    // pattern, so what is stored is exactly the list the user just read.
+    for (const embedded of request.browserEmbeddedOrigins ?? []) {
+      if (embedded !== request.browserOrigin) store.setBrowserSitePermission(embedded, 'allowed');
     }
     onConfirm();
-  }, [request.browserOrigin, onConfirm]);
+  }, [request.browserOrigin, request.browserEmbeddedOrigins, onConfirm]);
   // ...and say what the verdict opens. A scripting dialog may never mint this
   // verdict (Ruling-I: one click must not open both the attended no-dialog door
   // and the automatic-task scripting door), but the click/fill dialog mints the
@@ -91,9 +114,11 @@ export default function CommandConfirmDialog({
   // grant is unchanged; only the label stops understating it, and only in the
   // configuration where the second door actually exists.
   const scriptingPolicy = useSettingsStore((s) => s.browserOperationPolicy.scripting);
-  const alwaysAllowSiteLabel = scriptingPolicy === 'allow'
-    ? t.commandConfirm.browserAlwaysAllowSiteWithScripts
-    : t.commandConfirm.browserAlwaysAllowSite;
+  const alwaysAllowSiteLabel = embeddedOrigins.length > 0
+    ? format(t.commandConfirm.browserAlwaysAllowSiteWithEmbedded, { count: embeddedOrigins.length })
+    : scriptingPolicy === 'allow'
+      ? t.commandConfirm.browserAlwaysAllowSiteWithScripts
+      : t.commandConfirm.browserAlwaysAllowSite;
 
   // "Block this site" is the mirror of "always allow", and it is offered
   // wherever an origin is known — including the cases that may NOT be granted
@@ -165,6 +190,14 @@ export default function CommandConfirmDialog({
               {request.command}
             </code>
           </div>
+
+          {/* The page's embedded regions — named before, not after, the click
+              that would authorize them. */}
+          {embeddedOrigins.length > 0 && (
+            <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
+              {format(t.commandConfirm.browserEmbeddedOrigins, { origins: embeddedOrigins.join('、') })}
+            </p>
+          )}
 
           {/* Reason */}
           {request.reason && (

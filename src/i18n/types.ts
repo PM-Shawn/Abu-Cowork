@@ -2867,6 +2867,17 @@ export interface TranslationDict {
      *  a dialog (and for an automatic run to script there at all), so the
      *  label has to name that second door. */
     browserAlwaysAllowSiteWithScripts: string;
+    /** Named above the buttons when the page embeds regions (iframes) from
+     *  other sites the automation can address. Those are authorized on their
+     *  own account, so the user has to see them before approving — and
+     *  "always allow" then writes a grant for each one separately, never a
+     *  wildcard. `{origins}` is the comma-separated list. */
+    browserEmbeddedOrigins: string;
+    /** The "always allow" button while embedded regions are listed: the click
+     *  grants the page AND those regions, and the label has to say so rather
+     *  than let the user discover it afterwards. `{count}` is how many
+     *  regions. */
+    browserAlwaysAllowSiteWithEmbedded: string;
     /** "Block this site" button — writes a persistent 'denied' verdict and
      *  refuses the pending action. Offered whenever the origin is known,
      *  including for requests that may not be granted permanently. */

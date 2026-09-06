@@ -49,6 +49,29 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
+/**
+ * Ceiling for the undrained composer-append buffer (UTF-8 bytes). Matches the
+ * per-message cap an MCP App interface is held to (`MAX_APP_MESSAGE_BYTES`),
+ * so a sender that queues messages faster than `ChatInput` drains them cannot
+ * grow the draft without bound.
+ */
+const MAX_PENDING_INPUT_APPEND_BYTES = 4 * 1024;
+
+/** Cut `text` to `maxBytes` of UTF-8 without splitting a code point. */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).length <= maxBytes) return text;
+  let used = 0;
+  let out = '';
+  for (const char of text) {
+    const size = encoder.encode(char).length;
+    if (used + size > maxBytes) break;
+    used += size;
+    out += char;
+  }
+  return out;
+}
+
 const ACTIVE_RUN_STATES = new Set<Message['runState']>(['pending', 'accepted', 'running', 'recovering']);
 const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'completed',
@@ -2095,7 +2118,19 @@ export const useChatStore = create<ChatStore>()(
 
       appendPendingInput: (text) => {
         set((state) => {
-          state.pendingInputAppend = text;
+          if (text === null) {
+            state.pendingInputAppend = null;
+            return;
+          }
+          // APPEND, not overwrite. `ChatInput` drains this buffer in an effect,
+          // so two writes can land before the first is consumed — an MCP App
+          // interface sending two `ui/message` calls in a row, or a widget and
+          // an app writing at once. Clobbering there would silently swallow the
+          // first message. Capped so a busy sender cannot grow the buffer
+          // without bound before the composer gets a chance to drain it.
+          const previous = state.pendingInputAppend;
+          const merged = previous ? `${previous}\n${text}` : text;
+          state.pendingInputAppend = truncateUtf8(merged, MAX_PENDING_INPUT_APPEND_BYTES);
         });
       },
 

@@ -9,7 +9,11 @@ import { useChatStore } from '@/stores/chatStore';
 import { mergeComposerAppend } from './ChatInput';
 import type { McpAppResource } from '@/core/mcp/appResources';
 import type { AppBridgeSession } from '@/core/mcp/appBridgeSession';
-import type { AppBridgeHandlers } from '@/core/mcp/appBridgeHandlers';
+import {
+  MAX_AUDIT_ROWS,
+  MODEL_CONTEXT_PERSIST_INTERVAL_MS,
+  type AppBridgeHandlers,
+} from '@/core/mcp/appBridgeHandlers';
 import McpAppBlock, { resetMcpAppSlots, toCallToolResult, type McpAppBlockProps } from './McpAppBlock';
 
 const APP_HTML = '<html><head><title>App</title></head><body><h1>hi</h1></body></html>';
@@ -420,6 +424,24 @@ describe('McpAppBlock', () => {
       expect(sink.sessions).toHaveLength(1);
     });
 
+    it('closes on a backdrop click — the backdrop is reachable, not buried', async () => {
+      const sink: SessionSink = {};
+      renderBlock({}, sink);
+      await settle();
+      await act(async () => {
+        await sink.handlers?.onrequestdisplaymode?.({ mode: 'fullscreen' } as never);
+      });
+
+      // The frame container covers the viewport in fullscreen; it must be
+      // click-through so the backdrop under it can receive the click.
+      expect(screen.getByTestId('mcp-app-block').className).toContain('pointer-events-none');
+
+      await act(async () => { fireEvent.click(screen.getByTestId('mcp-app-fullscreen-backdrop')); });
+      expect(screen.getByTestId('mcp-app-block')).toHaveAttribute('data-display-mode', 'inline');
+      expect(screen.queryByTestId('mcp-app-fullscreen-backdrop')).toBeNull();
+      expect(sink.sessions).toHaveLength(1);
+    });
+
     it('refuses pip and stays inline', async () => {
       const sink: SessionSink = {};
       renderBlock({}, sink);
@@ -585,22 +607,33 @@ describe('McpAppBlock', () => {
   });
 
   describe('ui/update-model-context', () => {
-    it('persists the text and shows it in a collapsed expander', async () => {
-      const sink: SessionSink = {};
-      const persistModelContext = vi.fn();
-      renderBlock({ deps: { persistModelContext } }, sink);
-      await settle();
-      expect(screen.queryByTestId('mcp-app-context')).toBeNull();
+    it('shows the value immediately but persists it only after the throttle window', async () => {
+      vi.useFakeTimers();
+      try {
+        const sink: SessionSink = {};
+        const persistModelContext = vi.fn();
+        renderBlock({ deps: { persistModelContext } }, sink);
+        await settle();
+        expect(screen.queryByTestId('mcp-app-context')).toBeNull();
 
-      await act(async () => {
-        await sink.handlers?.onupdatemodelcontext?.({ content: [{ type: 'text', text: '用户选了第 4 行' }] } as never);
-      });
+        await act(async () => {
+          await sink.handlers?.onupdatemodelcontext?.({ content: [{ type: 'text', text: '第一版' }] } as never);
+          await sink.handlers?.onupdatemodelcontext?.({ content: [{ type: 'text', text: '用户选了第 4 行' }] } as never);
+        });
 
-      expect(persistModelContext).toHaveBeenCalledWith('用户选了第 4 行');
-      const expander = screen.getByTestId('mcp-app-context');
-      expect(expander).not.toHaveTextContent('第 4 行');
-      await act(async () => { fireEvent.click(expander.querySelector('button')!); });
-      expect(expander).toHaveTextContent('用户选了第 4 行');
+        // Live expander is current; the write-through has not fired yet.
+        expect(persistModelContext).not.toHaveBeenCalled();
+        const expander = screen.getByTestId('mcp-app-context');
+        expect(expander).not.toHaveTextContent('第 4 行');
+        await act(async () => { fireEvent.click(expander.querySelector('button')!); });
+        expect(expander).toHaveTextContent('用户选了第 4 行');
+
+        await act(async () => { vi.advanceTimersByTime(MODEL_CONTEXT_PERSIST_INTERVAL_MS); });
+        expect(persistModelContext).toHaveBeenCalledTimes(1);
+        expect(persistModelContext).toHaveBeenCalledWith('用户选了第 4 行');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('renders the persisted value on replay without any app traffic', async () => {
@@ -613,24 +646,139 @@ describe('McpAppBlock', () => {
   });
 
   describe('ui/open-link', () => {
-    it('opens http(s) through the shared widget link path', async () => {
+    /**
+     * Start the call and let the consent dialog mount, without settling it.
+     * Wrapped in an object on purpose: returning the bare promise from an async
+     * helper would make `await askToOpen(...)` wait for the call to finish,
+     * which is exactly what this helper exists NOT to do.
+     */
+    async function askToOpen(sink: SessionSink, url: string): Promise<{ promise: Promise<unknown> }> {
+      let promise!: Promise<unknown>;
+      await act(async () => {
+        promise = sink.handlers!.onopenlink!({ url } as never);
+        await Promise.resolve();
+      });
+      // Swallow the rejection until the test awaits it, so a declined prompt
+      // does not surface as an unhandled rejection.
+      promise.catch(() => {});
+      return { promise };
+    }
+
+    it('asks first and does NOT touch the widget link path before the user confirms', async () => {
       const sink: SessionSink = {};
       const openLink = vi.fn();
       renderBlock({ deps: { openLink } }, sink);
       await settle();
+
+      const { promise } = await askToOpen(sink, 'https://example.com/a?b=1');
+      // The whole point: nothing has been opened yet.
+      expect(openLink).not.toHaveBeenCalled();
+      expect(screen.getByTestId('mcp-app-open-link-url')).toHaveTextContent('https://example.com/a?b=1');
+
       await act(async () => {
-        await sink.handlers?.onopenlink?.({ url: 'https://example.com' } as never);
+        fireEvent.click(screen.getByText('打开'));
+        await promise;
       });
-      expect(openLink).toHaveBeenCalledWith('https://example.com');
+      expect(openLink).toHaveBeenCalledWith('https://example.com/a?b=1');
+      expect(screen.getByTestId('mcp-app-audit-row')).toBeInTheDocument();
     });
 
-    it('refuses a file: url', async () => {
+    it('answers -32000 "user declined" when the user cancels, and never opens', async () => {
+      const sink: SessionSink = {};
+      const openLink = vi.fn();
+      renderBlock({ deps: { openLink } }, sink);
+      await settle();
+
+      const { promise } = await askToOpen(sink, 'https://example.com');
+      await act(async () => { fireEvent.click(screen.getByText('取消')); });
+      await expect(promise).rejects.toThrow('user declined');
+      expect(openLink).not.toHaveBeenCalled();
+      await act(async () => {});
+      const row = screen.getByTestId('mcp-app-audit-row');
+      await act(async () => { fireEvent.click(row.querySelector('button')!); });
+      expect(row).toHaveTextContent('已拒绝打开');
+    });
+
+    it('keeps the full URL in a title attribute when it is too long to print', async () => {
+      const sink: SessionSink = {};
+      const url = `https://example.com/?q=${'x'.repeat(700)}`;
+      renderBlock({}, sink);
+      await settle();
+      const { promise } = await askToOpen(sink, url);
+      const shown = screen.getByTestId('mcp-app-open-link-url');
+      expect(shown).toHaveAttribute('title', url);
+      expect(shown.textContent!.length).toBeLessThan(url.length);
+      await act(async () => { fireEvent.click(screen.getByText('取消')); });
+      await expect(promise).rejects.toThrow();
+    });
+
+    it('refuses a file: url without ever prompting', async () => {
       const sink: SessionSink = {};
       const openLink = vi.fn();
       renderBlock({ deps: { openLink } }, sink);
       await settle();
       await expect(sink.handlers!.onopenlink!({ url: 'file:///etc/passwd' } as never)).rejects.toThrow();
       expect(openLink).not.toHaveBeenCalled();
+      expect(screen.queryByTestId('mcp-app-open-link-url')).toBeNull();
+      await act(async () => {});
+      const row = screen.getByTestId('mcp-app-audit-row');
+      await act(async () => { fireEvent.click(row.querySelector('button')!); });
+      expect(row).toHaveTextContent('已被拦截');
+    });
+  });
+
+  describe('audit trail limits', () => {
+    it('keeps only the newest rows once the cap is reached', async () => {
+      const sink: SessionSink = {};
+      const tool = {
+        name: 'weather__ping',
+        description: 'ping',
+        inputSchema: { type: 'object' as const, properties: {} },
+        execute: async () => 'unused',
+      };
+      renderBlock({
+        deps: {
+          findTool: () => tool,
+          checkApproval: async () => ({ decision: 'allow' as const }),
+          callTool: async () => 'ok',
+        },
+      }, sink);
+      await settle();
+
+      // The per-minute budget is smaller than the row cap, so the overflow rows
+      // are rate-limit refusals — still attempts, still audited.
+      await act(async () => {
+        for (let i = 0; i < MAX_AUDIT_ROWS + 5; i++) {
+          await sink.handlers!.oncalltool!({ name: 'ping', arguments: { i } } as never).catch(() => {});
+        }
+      });
+      expect(screen.getAllByTestId('mcp-app-audit-row')).toHaveLength(MAX_AUDIT_ROWS);
+    });
+
+    it('caps the rendered arguments the way it caps the result summary', async () => {
+      const sink: SessionSink = {};
+      const tool = {
+        name: 'weather__ping',
+        description: 'ping',
+        inputSchema: { type: 'object' as const, properties: { q: { type: 'string', description: 'q' } } },
+        execute: async () => 'unused',
+      };
+      renderBlock({
+        deps: {
+          findTool: () => tool,
+          checkApproval: async () => ({ decision: 'allow' as const }),
+          callTool: async () => 'ok',
+        },
+      }, sink);
+      await settle();
+      await act(async () => {
+        await sink.handlers!.oncalltool!({ name: 'ping', arguments: { q: 'z'.repeat(5000) } } as never);
+      });
+      const row = screen.getByTestId('mcp-app-audit-row');
+      await act(async () => { fireEvent.click(row.querySelector('button')!); });
+      const argsBlock = row.querySelectorAll('pre')[0];
+      expect(argsBlock.textContent!.length).toBeLessThan(600);
+      expect(argsBlock.textContent).toContain('…');
     });
   });
 });

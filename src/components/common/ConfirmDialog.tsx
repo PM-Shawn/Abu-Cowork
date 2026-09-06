@@ -1,11 +1,14 @@
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '@/lib/utils';
 
 interface ConfirmDialogProps {
   open: boolean;
   title: string;
-  message: string;
+  /** Plain text in almost every caller. Widened to ReactNode so a caller that
+   *  must show a verbatim value (an app-supplied URL, monospace and wrapped)
+   *  can render it without a second dialog component. */
+  message: ReactNode;
   confirmText: string;
   cancelText: string;
   onConfirm: () => void;
@@ -57,9 +60,9 @@ export default function ConfirmDialog({
         <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)] mb-2">
           {title}
         </h3>
-        <p className="text-body text-[var(--abu-text-tertiary)] leading-relaxed mb-6">
+        <div className="text-body text-[var(--abu-text-tertiary)] leading-relaxed mb-6">
           {message}
-        </p>
+        </div>
         <div className="flex items-center justify-end gap-3">
           <button
             onClick={onCancel}

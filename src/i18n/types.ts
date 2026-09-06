@@ -347,6 +347,18 @@ export interface TranslationDict {
     mcpAppModelContext: string;
     /** Accessible label / tooltip for the button that leaves fullscreen. */
     mcpAppExitFullscreen: string;
+    /** Title of the consent dialog an app-initiated `ui/open-link` must pass. */
+    mcpAppOpenLinkTitle: string;
+    /** Confirm button of that dialog. */
+    mcpAppOpenLinkConfirm: string;
+    /** Audit-row label for an `ui/open-link` attempt (whatever the outcome). */
+    mcpAppAuditOpenLink: string;
+    /** Audit outcome: the user agreed and the link went to the browser. */
+    mcpAppOutcomeOpened: string;
+    /** Audit outcome: the user said no. */
+    mcpAppOutcomeDeclined: string;
+    /** Audit outcome: the host refused it (bad scheme, or too long). */
+    mcpAppOutcomeRejected: string;
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;

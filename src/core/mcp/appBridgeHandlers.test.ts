@@ -4,8 +4,12 @@ import type { ToolDefinition } from '@/types';
 import {
   AppBridgeRpcError,
   MAX_APP_MESSAGE_BYTES,
+  APP_TOOL_FAILURE_MESSAGE,
+  MAX_APP_LINK_URL_CHARS,
   MAX_APP_MODEL_CONTEXT_BYTES,
+  MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE,
   MAX_APP_TOOL_CALLS_PER_MINUTE,
+  MODEL_CONTEXT_PERSIST_INTERVAL_MS,
   createAppBridgeHandlers,
   createRateLimiter,
   textFromContentBlocks,
@@ -39,12 +43,15 @@ interface Harness {
   deps: { [K in keyof AppBridgeHandlerDeps]: AppBridgeHandlerDeps[K] };
   audit: McpAppAuditEntry[];
   clock: { value: number };
+  scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }>;
+  runScheduled: () => void;
   spies: {
     checkApproval: ReturnType<typeof vi.fn>;
     callTool: ReturnType<typeof vi.fn>;
-    openLink: ReturnType<typeof vi.fn>;
+    requestOpenLink: ReturnType<typeof vi.fn>;
     appendComposerDraft: ReturnType<typeof vi.fn>;
     setModelContext: ReturnType<typeof vi.fn>;
+    persistModelContext: ReturnType<typeof vi.fn>;
     setDisplayMode: ReturnType<typeof vi.fn>;
     onRateLimited: ReturnType<typeof vi.fn>;
     readAppResource: ReturnType<typeof vi.fn>;
@@ -59,25 +66,39 @@ function harness(overrides: Partial<AppBridgeHandlerDeps> = {}): Harness {
   const spies = {
     checkApproval: vi.fn(async () => ({ decision: 'allow' as const })),
     callTool: vi.fn(async () => OK),
-    openLink: vi.fn(),
+    requestOpenLink: vi.fn(async () => true),
     appendComposerDraft: vi.fn(),
     setModelContext: vi.fn(),
+    persistModelContext: vi.fn(),
     setDisplayMode: vi.fn(),
     onRateLimited: vi.fn(),
     readAppResource: vi.fn(async () => ({ mimeType: 'text/html;profile=mcp-app', text: '<p>x</p>' })),
     readServerResource: vi.fn(async () => ({ contents: [{ uri: 'file://a', text: 'a' }] })),
     listResources: vi.fn(async () => ({ resources: [{ uri: 'ui://a/b', name: 'b' }] })),
   };
+  // Hand-driven timer: `runScheduled()` is the fake clock's tick. Real timers
+  // are banned in this repo's tests and a scheduler seam is more explicit than
+  // `vi.useFakeTimers()` for a single trailing-edge window.
+  const scheduled: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
   const deps: AppBridgeHandlerDeps = {
     server: 'weather',
     findTool: (name: string) => (name === 'search' ? toolDef() : undefined),
     onAudit: (entry) => audit.push(entry),
     now: () => clock.value,
     nextAuditId: (() => { let n = 0; return () => `a${++n}`; })(),
+    schedule: (fn, ms) => {
+      const entry = { fn, ms, cancelled: false };
+      scheduled.push(entry);
+      return () => { entry.cancelled = true; };
+    },
     ...spies,
     ...overrides,
   };
-  return { handlers: createAppBridgeHandlers(deps), deps, audit, clock, spies };
+  const runScheduled = () => {
+    const due = scheduled.splice(0, scheduled.length);
+    for (const entry of due) if (!entry.cancelled) entry.fn();
+  };
+  return { handlers: createAppBridgeHandlers(deps), deps, audit, clock, spies, scheduled, runScheduled };
 }
 
 async function rpcError(fn: () => Promise<unknown>): Promise<AppBridgeRpcError> {
@@ -190,14 +211,16 @@ describe('oncalltool', () => {
   it('records an audit row for every executed call', async () => {
     await h.handlers.oncalltool({ name: 'search', arguments: { query: 'abu' } });
     expect(h.audit).toEqual([
-      { id: 'a1', tool: 'search', args: { query: 'abu' }, summary: 'two rows', isError: false },
+      { id: 'a1', kind: 'tool-call', tool: 'search', args: { query: 'abu' }, summary: 'two rows', isError: false },
     ]);
   });
 
   it('records a failing call as an errored audit row', async () => {
     h = harness({ callTool: vi.fn(async () => { throw new Error('server exploded'); }) });
     const error = await rpcError(() => h.handlers.oncalltool({ name: 'search', arguments: { query: 'a' } }));
-    expect(error.message).toContain('server exploded');
+    // The app is told nothing but "it failed"; the user keeps the real text.
+    expect(error.message).toBe(APP_TOOL_FAILURE_MESSAGE);
+    expect(error.message).not.toContain('server exploded');
     expect(h.audit[0]).toMatchObject({ isError: true, summary: 'server exploded' });
   });
 
@@ -249,7 +272,7 @@ describe('ui/open-link', () => {
   it('opens http(s) through the shared widget link path', async () => {
     const h = harness();
     await h.handlers.onopenlink({ url: 'https://example.com/a?b=1' });
-    expect(h.spies.openLink).toHaveBeenCalledWith('https://example.com/a?b=1');
+    expect(h.spies.requestOpenLink).toHaveBeenCalledWith('https://example.com/a?b=1');
   });
 
   it.each([
@@ -261,14 +284,63 @@ describe('ui/open-link', () => {
     const h = harness();
     const error = await rpcError(() => h.handlers.onopenlink({ url }));
     expect(error.code).toBe(-32000);
-    expect(h.spies.openLink).not.toHaveBeenCalled();
+    expect(h.spies.requestOpenLink).not.toHaveBeenCalled();
   });
 
   it('refuses a string that is not a URL at all', async () => {
     const h = harness();
     const error = await rpcError(() => h.handlers.onopenlink({ url: 'not a url' }));
     expect(error.code).toBe(-32602);
-    expect(h.spies.openLink).not.toHaveBeenCalled();
+    expect(h.spies.requestOpenLink).not.toHaveBeenCalled();
+  });
+
+  it('leaves an "opened" audit row when the user agrees', async () => {
+    const h = harness();
+    await h.handlers.onopenlink({ url: 'https://example.com/a?b=1' });
+    expect(h.audit).toEqual([{
+      id: 'a1',
+      kind: 'open-link',
+      tool: 'ui/open-link',
+      args: { url: 'https://example.com/a?b=1' },
+      summary: 'https://example.com/a?b=1',
+      isError: false,
+      outcome: 'opened',
+    }]);
+  });
+
+  it('turns a declined prompt into -32000 "user declined" plus an audit row', async () => {
+    const h = harness({ requestOpenLink: vi.fn(async () => false) });
+    const error = await rpcError(() => h.handlers.onopenlink({ url: 'https://example.com' }));
+    expect(error.code).toBe(-32000);
+    expect(error.message).toBe('user declined');
+    expect(h.audit[0]).toMatchObject({ kind: 'open-link', outcome: 'declined', isError: true });
+  });
+
+  it('audits a rejected scheme instead of failing silently', async () => {
+    const h = harness();
+    await rpcError(() => h.handlers.onopenlink({ url: 'file:///etc/passwd' }));
+    expect(h.audit[0]).toMatchObject({ kind: 'open-link', outcome: 'rejected-scheme', isError: true });
+  });
+
+  it('refuses a URL longer than the cap, before ever prompting', async () => {
+    const h = harness();
+    const url = `https://example.com/?q=${'x'.repeat(MAX_APP_LINK_URL_CHARS)}`;
+    const error = await rpcError(() => h.handlers.onopenlink({ url }));
+    expect(error.code).toBe(-32602);
+    expect(h.spies.requestOpenLink).not.toHaveBeenCalled();
+    expect(h.audit[0]).toMatchObject({ outcome: 'too-long', isError: true });
+  });
+
+  it('shares the per-minute budget with tools/call', async () => {
+    const h = harness();
+    for (let i = 0; i < MAX_APP_TOOL_CALLS_PER_MINUTE; i++) {
+      await h.handlers.oncalltool({ name: 'search', arguments: { query: `q${i}` } });
+    }
+    const error = await rpcError(() => h.handlers.onopenlink({ url: 'https://example.com' }));
+    expect(error.code).toBe(-32001);
+    expect(h.spies.requestOpenLink).not.toHaveBeenCalled();
+    expect(h.spies.onRateLimited).toHaveBeenCalled();
+    expect(h.audit.at(-1)).toMatchObject({ kind: 'open-link', outcome: 'rate-limited' });
   });
 });
 
@@ -311,6 +383,61 @@ describe('ui/update-model-context', () => {
     const h = harness();
     await h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: 'y'.repeat(20000) }] });
     expect((h.spies.setModelContext.mock.calls[0][0] as string).length).toBe(MAX_APP_MODEL_CONTEXT_BYTES);
+  });
+
+  it('coalesces 50 rapid updates into ONE persisted write, last value winning', async () => {
+    const h = harness();
+    for (let i = 0; i < 50; i++) {
+      // Spaced past the per-minute acceptance cap (a different limit, tested
+      // below) so this case measures coalescing alone. The persistence timer is
+      // hand-driven, so none of these 50 ever flushes on its own.
+      h.clock.value += 4_000;
+      await h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: `v${i}` }] });
+    }
+    // Live value tracked every call; storage untouched until the window closes.
+    expect(h.spies.setModelContext).toHaveBeenCalledTimes(50);
+    expect(h.spies.persistModelContext).not.toHaveBeenCalled();
+    expect(h.scheduled).toHaveLength(1);
+    expect(h.scheduled[0].ms).toBe(MODEL_CONTEXT_PERSIST_INTERVAL_MS);
+
+    h.runScheduled();
+    expect(h.spies.persistModelContext).toHaveBeenCalledTimes(1);
+    expect(h.spies.persistModelContext).toHaveBeenCalledWith('v49');
+  });
+
+  it('opens a new window after the previous one closed (one write per second)', async () => {
+    const h = harness();
+    await h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: 'a' }] });
+    h.runScheduled();
+    await h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: 'b' }] });
+    h.runScheduled();
+    expect(h.spies.persistModelContext.mock.calls.map((c) => c[0])).toEqual(['a', 'b']);
+  });
+
+  it('refuses the 21st update in a minute, then accepts again after the window rolls', async () => {
+    const h = harness();
+    for (let i = 0; i < MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE; i++) {
+      await h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: `v${i}` }] });
+    }
+    const error = await rpcError(
+      () => h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: 'over' }] }),
+    );
+    expect(error.code).toBe(-32001);
+    expect(h.spies.setModelContext).toHaveBeenCalledTimes(MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE);
+
+    h.clock.value += 60_001;
+    await h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: 'later' }] });
+    expect(h.spies.setModelContext).toHaveBeenLastCalledWith('later');
+  });
+
+  it('flushes the last pending write on dispose instead of dropping it', async () => {
+    const h = harness();
+    await h.handlers.onupdatemodelcontext({ content: [{ type: 'text', text: 'final' }] });
+    h.handlers.dispose();
+    expect(h.spies.persistModelContext).toHaveBeenCalledWith('final');
+    // The cancelled timer must not write a second time.
+    h.runScheduled();
+    expect(h.spies.persistModelContext).toHaveBeenCalledTimes(1);
   });
 });
 

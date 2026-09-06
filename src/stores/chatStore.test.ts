@@ -2468,6 +2468,24 @@ describe('chatStore', () => {
     it('sets and clears the append buffer independently of pendingInput', () => {
       useChatStore.getState().appendPendingInput('widget follow-up');
       expect(useChatStore.getState().pendingInputAppend).toBe('widget follow-up');
+    });
+
+    it('APPENDS a second write instead of clobbering an undrained first', () => {
+      // ChatInput drains this buffer in an effect, so two senders (or one app
+      // sending twice) can write before it is consumed. Overwriting there would
+      // silently swallow the first message.
+      useChatStore.setState({ pendingInputAppend: null });
+      useChatStore.getState().appendPendingInput('first');
+      useChatStore.getState().appendPendingInput('second');
+      expect(useChatStore.getState().pendingInputAppend).toBe('first\nsecond');
+    });
+
+    it('caps the undrained buffer at 4 KB without splitting a code point', () => {
+      useChatStore.setState({ pendingInputAppend: null });
+      for (let i = 0; i < 10; i++) useChatStore.getState().appendPendingInput('中'.repeat(1000));
+      const buffer = useChatStore.getState().pendingInputAppend!;
+      expect(new TextEncoder().encode(buffer).length).toBeLessThanOrEqual(4096);
+      expect(buffer).not.toContain('\ufffd');
       // Does not touch the replace-semantics pendingInput buffer.
       expect(useChatStore.getState().pendingInput).toBeNull();
       useChatStore.getState().appendPendingInput(null);

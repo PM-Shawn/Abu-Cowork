@@ -43,6 +43,29 @@ export const MAX_APP_MESSAGE_BYTES = 4 * 1024;
 export const MAX_APP_MODEL_CONTEXT_BYTES = 8 * 1024;
 /** How much of a tool result the audit row keeps as its summary. */
 export const MAX_AUDIT_SUMMARY_CHARS = 500;
+/** How many audit rows one block keeps; older ones are dropped. */
+export const MAX_AUDIT_ROWS = 50;
+/**
+ * Longest `ui/open-link` URL the host will even offer to open. A URL is the
+ * ONLY channel an app has to move bytes out (`connect-src 'none'` blocks the
+ * rest), so an unbounded query string is an unbounded exfiltration pipe, and a
+ * URL nobody can read in the confirmation dialog is not really consented to.
+ */
+export const MAX_APP_LINK_URL_CHARS = 2048;
+/** Accepted `ui/update-model-context` calls per block, per rolling minute. */
+export const MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE = 20;
+/**
+ * Trailing-edge coalescing window for the PERSISTED copy of the model context.
+ * The in-memory value still updates on every accepted call (the expander is
+ * live); only the write-through to conversation storage is throttled, so an app
+ * animating a selection cannot turn one step into a write storm.
+ */
+export const MODEL_CONTEXT_PERSIST_INTERVAL_MS = 1_000;
+
+/** Generic text handed back to the app when a tool execution throws. The real
+ *  message can name paths, hosts or credentials from the server's error; the
+ *  user still sees it in the audit row, the sandboxed app never does. */
+export const APP_TOOL_FAILURE_MESSAGE = 'tool call failed';
 
 // JSON-RPC codes. -32000..-32099 is the implementation-defined range.
 const INVALID_PARAMS = -32602;
@@ -179,14 +202,31 @@ export function createRateLimiter(
 // Handler wiring
 // ---------------------------------------------------------------------------
 
-/** One row under the tool card: what the interface asked its server to do. */
+/**
+ * How an audited attempt ended. Present on every `open-link` row and on rows
+ * the host refused without ever reaching the server; a plain executed tool call
+ * leaves it undefined and is described by `summary` alone. The label is
+ * rendered from this field (not from `summary`) so the policy layer stays free
+ * of user-facing strings.
+ */
+export type McpAppAuditOutcome =
+  | 'opened'
+  | 'declined'
+  | 'rate-limited'
+  | 'rejected-scheme'
+  | 'too-long';
+
+/** One row under the tool card: what the interface asked to do on the user's
+ *  behalf, whether or not it was allowed to. */
 export interface McpAppAuditEntry {
   id: string;
+  kind: 'tool-call' | 'open-link';
   tool: string;
   args: Record<string, unknown>;
   /** Text summary of the result, or the denial reason. */
   summary: string;
   isError: boolean;
+  outcome?: McpAppAuditOutcome;
 }
 
 export interface AppApprovalDecision {
@@ -213,18 +253,34 @@ export interface AppBridgeHandlerDeps {
   /** Any other resource of the same server — read-only, uncached, size-capped. */
   readServerResource(uri: string): Promise<ReadResourceResult>;
   listResources(cursor?: string): Promise<ListResourcesResult>;
-  /** Reuses the widget external-link path; must refuse non-http(s) itself too. */
-  openLink(url: string): void;
+  /**
+   * Ask the user, then (only on a yes) hand the URL to the shared widget
+   * external-link path. Resolves `true` when the link was actually opened.
+   *
+   * 🔴 An app calls `ui/open-link` on its own initiative — no click needed —
+   * and with `connect-src 'none'` the URL is the only way bytes leave the
+   * sandbox. So this is a consent gate, not a formality: it MUST show the full
+   * URL and MUST NOT open anything before the user agrees. That is a stricter
+   * contract than the widget path (where a human clicked an anchor) on purpose.
+   */
+  requestOpenLink(url: string): Promise<boolean>;
   /** Writes into the composer draft — MUST NOT send. */
   appendComposerDraft(text: string): void;
-  /** Persists the step's model-visible appendix (overwrite). */
+  /** Updates the in-memory model-visible appendix (overwrite, immediate). */
   setModelContext(text: string): void;
+  /** Write-through to storage. Called at most once per
+   *  {@link MODEL_CONTEXT_PERSIST_INTERVAL_MS}; last value wins. */
+  persistModelContext(text: string): void;
   setDisplayMode(mode: 'inline' | 'fullscreen'): void;
   onAudit(entry: McpAppAuditEntry): void;
   onRateLimited(): void;
   now?(): number;
   /** Injected so audit-row ids are deterministic in tests. */
   nextAuditId?(): string;
+  /** Timer seam for the persistence throttle. Returns a cancel function.
+   *  Injected so a test can drive it with `vi.useFakeTimers()` (or by hand)
+   *  instead of waiting on a real clock. */
+  schedule?(fn: () => void, ms: number): () => void;
 }
 
 export interface AppBridgeHandlers {
@@ -245,16 +301,61 @@ function summarize(result: CallToolResult): string {
     : body;
 }
 
-export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): AppBridgeHandlers {
-  const limiter = createRateLimiter(
-    MAX_APP_TOOL_CALLS_PER_MINUTE,
+/** Handlers plus the teardown hook the host must call — see `dispose`. */
+export type DisposableAppBridgeHandlers = AppBridgeHandlers & {
+  /** Cancel the pending persistence timer, flushing the last value first so a
+   *  teardown never silently drops what the app last told the model. */
+  dispose(): void;
+};
+
+export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): DisposableAppBridgeHandlers {
+  const now = deps.now ?? (() => Date.now());
+  // ONE budget for every server-visible action the app can start on its own:
+  // `tools/call` and `ui/open-link` share it, because both are "the interface
+  // acted without the user asking" and letting each have its own 20 would just
+  // double the ceiling.
+  const limiter = createRateLimiter(MAX_APP_TOOL_CALLS_PER_MINUTE, APP_RATE_LIMIT_WINDOW_MS, now);
+  const contextLimiter = createRateLimiter(
+    MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE,
     APP_RATE_LIMIT_WINDOW_MS,
-    deps.now ?? (() => Date.now()),
+    now,
   );
+  const schedule = deps.schedule ?? ((fn: () => void, ms: number) => {
+    const handle = setTimeout(fn, ms);
+    return () => clearTimeout(handle);
+  });
   let auditSeq = 0;
   const nextAuditId = deps.nextAuditId ?? (() => `audit-${++auditSeq}`);
 
+  // Trailing-edge throttle for the persisted copy (see the constant's doc).
+  let pendingPersist: string | undefined;
+  let cancelPersist: (() => void) | undefined;
+  const flushPersist = (): void => {
+    cancelPersist = undefined;
+    if (pendingPersist === undefined) return;
+    const text = pendingPersist;
+    pendingPersist = undefined;
+    deps.persistModelContext(text);
+  };
+  const schedulePersist = (text: string): void => {
+    pendingPersist = text;
+    if (cancelPersist) return; // a write is already due; last value wins
+    cancelPersist = schedule(flushPersist, MODEL_CONTEXT_PERSIST_INTERVAL_MS);
+  };
+
+  const audit = (entry: Omit<McpAppAuditEntry, 'id'>): void => {
+    deps.onAudit({ id: nextAuditId(), ...entry });
+  };
+
   return {
+    dispose() {
+      if (cancelPersist) {
+        cancelPersist();
+        cancelPersist = undefined;
+      }
+      flushPersist();
+    },
+
     async oncalltool(params) {
       const toolName = params?.name;
       if (typeof toolName !== 'string' || toolName.length === 0) {
@@ -276,6 +377,9 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): AppBridgeHa
 
       if (!limiter.tryConsume()) {
         deps.onRateLimited();
+        // A throttled call is still something the interface tried to do on the
+        // user's behalf — it gets a row like every other attempt.
+        audit({ kind: 'tool-call', tool: toolName, args, summary: '', isError: true, outcome: 'rate-limited' });
         throw new AppBridgeRpcError(
           RATE_LIMITED,
           `The app exceeded ${MAX_APP_TOOL_CALLS_PER_MINUTE} tool calls per minute`,
@@ -286,14 +390,14 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): AppBridgeHa
       const approval = await deps.checkApproval(namespaced, args);
       if (approval.decision !== 'allow') {
         const reason = approval.reason ?? `Tool ${toolName} was denied`;
-        deps.onAudit({ id: nextAuditId(), tool: toolName, args, summary: reason, isError: true });
+        audit({ kind: 'tool-call', tool: toolName, args, summary: reason, isError: true });
         throw new AppBridgeRpcError(DENIED, reason);
       }
 
       try {
         const result = await deps.callTool(toolName, args);
-        deps.onAudit({
-          id: nextAuditId(),
+        audit({
+          kind: 'tool-call',
           tool: toolName,
           args,
           summary: summarize(result),
@@ -301,9 +405,13 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): AppBridgeHa
         });
         return result;
       } catch (error) {
+        // The user sees the real failure in the audit row; the app gets a
+        // generic string. A server's error text routinely carries absolute
+        // paths, internal hostnames or token fragments, and handing that to a
+        // sandboxed page would leak exactly what the sandbox exists to contain.
         const message = error instanceof Error ? error.message : String(error);
-        deps.onAudit({ id: nextAuditId(), tool: toolName, args, summary: message, isError: true });
-        throw new AppBridgeRpcError(DENIED, message);
+        audit({ kind: 'tool-call', tool: toolName, args, summary: message, isError: true });
+        throw new AppBridgeRpcError(DENIED, APP_TOOL_FAILURE_MESSAGE);
       }
     },
 
@@ -323,24 +431,61 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): AppBridgeHa
       return deps.listResources(params?.cursor);
     },
 
+    /**
+     * 🔴 The one outbound channel. A widget link needs a human click; an app can
+     * call this from a timer with a URL it built out of anything it has read, so
+     * the host asks EVERY time, shares the per-minute budget with `tools/call`,
+     * bounds the URL, and leaves an audit row whatever the answer was.
+     */
     async onopenlink(params) {
       const url = params?.url;
+      const args = { url } as Record<string, unknown>;
+      const refuse = (
+        outcome: McpAppAuditOutcome,
+        code: number,
+        message: string,
+      ): never => {
+        audit({ kind: 'open-link', tool: 'ui/open-link', args, summary: message, isError: true, outcome });
+        throw new AppBridgeRpcError(code, message);
+      };
+
       if (typeof url !== 'string') {
         throw new AppBridgeRpcError(INVALID_PARAMS, 'ui/open-link requires a url');
+      }
+      if (url.length > MAX_APP_LINK_URL_CHARS) {
+        return refuse(
+          'too-long',
+          INVALID_PARAMS,
+          `URL exceeds ${MAX_APP_LINK_URL_CHARS} characters`,
+        );
       }
       let parsed: URL;
       try {
         parsed = new URL(url);
       } catch {
-        throw new AppBridgeRpcError(INVALID_PARAMS, `Not a valid URL: ${url}`);
+        return refuse('rejected-scheme', INVALID_PARAMS, `Not a valid URL: ${url}`);
       }
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-        throw new AppBridgeRpcError(
+        return refuse(
+          'rejected-scheme',
           DENIED,
           `Only http and https links can be opened (got ${parsed.protocol})`,
         );
       }
-      deps.openLink(url);
+      if (!limiter.tryConsume()) {
+        deps.onRateLimited();
+        return refuse(
+          'rate-limited',
+          RATE_LIMITED,
+          `The app exceeded ${MAX_APP_TOOL_CALLS_PER_MINUTE} tool calls per minute`,
+        );
+      }
+
+      const opened = await deps.requestOpenLink(url);
+      if (!opened) {
+        return refuse('declined', DENIED, 'user declined');
+      }
+      audit({ kind: 'open-link', tool: 'ui/open-link', args, summary: url, isError: false, outcome: 'opened' });
       return {};
     },
 
@@ -355,9 +500,19 @@ export function createAppBridgeHandlers(deps: AppBridgeHandlerDeps): AppBridgeHa
     },
 
     async onupdatemodelcontext(params) {
+      if (!contextLimiter.tryConsume()) {
+        throw new AppBridgeRpcError(
+          RATE_LIMITED,
+          `The app exceeded ${MAX_APP_MODEL_CONTEXT_UPDATES_PER_MINUTE} model-context updates per minute`,
+        );
+      }
       const text = textFromContentBlocks(params?.content);
       // Overwrite, never append: the spec says each update replaces the last.
-      deps.setModelContext(truncateToBytes(text, MAX_APP_MODEL_CONTEXT_BYTES));
+      const clamped = truncateToBytes(text, MAX_APP_MODEL_CONTEXT_BYTES);
+      // Live value is immediate (the expander must not lag); the write-through
+      // is coalesced so a busy app cannot storm conversation storage.
+      deps.setModelContext(clamped);
+      schedulePersist(clamped);
       return {};
     },
 

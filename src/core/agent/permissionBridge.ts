@@ -190,11 +190,28 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
 export async function requestCommandConfirmationForConversation(
   info: ConfirmationInfo,
   conversationId: string,
+  /** Caller-owned id so the request can be cancelled again by
+   *  {@link cancelCommandConfirmation} if the requester goes away. */
+  requestId?: string,
 ): Promise<boolean> {
   return approvalBridge.request('command', {
+    ...(requestId ? { id: requestId } : {}),
     conversationId,
     payload: { info },
   });
+}
+
+/**
+ * Withdraw one confirmation request the caller no longer wants an answer to,
+ * resolving it as "not confirmed".
+ *
+ * Needed because the command queue is single-active + FIFO: a request nobody
+ * can answer any more (the MCP App iframe that asked was torn down, evicted or
+ * disconnected) would otherwise occupy the active slot forever and every later
+ * confirmation — in any conversation — would queue behind it, invisible.
+ */
+export function cancelCommandConfirmation(requestId: string): void {
+  approvalBridge.cancelById('command', requestId);
 }
 
 // ── File Permission Request Infrastructure ──

@@ -7,16 +7,17 @@
  * middle link in a chain that is already fail-closed at both ends:
  *
  *  1. the caller filters the scheme (a widget only forwards `<a href>` clicks;
- *     `appBridgeHandlers.onopenlink` refuses anything but http/https),
+ *     `appBridgeHandlers.onopenlink` refuses anything but http/https, bounds the
+ *     URL and asks the user first),
  *  2. this call hands the URL to the shell as a popup request,
  *  3. `electron/securityBoundary.cjs`'s `setWindowOpenHandler` DENIES the popup
  *     and re-routes it to `shell.openExternal`, but only for `http:` / `https:`
  *     / `mailto:` — every other scheme is dropped there.
  *
- * ⚠️ There is no confirmation dialog on this path today (a widget link opens
- * straight in the system browser). Reusing it keeps MCP Apps exactly as
- * permissive as the widgets that already ship, and no more; adding a prompt is
- * a product decision that should change BOTH callers at once.
+ * ⚠️ This function itself never prompts. A WIDGET link still opens straight in
+ * the system browser, because a human clicked the anchor. An MCP App can call
+ * `ui/open-link` on its own initiative, so `McpAppBlock` puts a consent dialog
+ * in front of this call; the asymmetry is deliberate, not an oversight.
  */
 export function openWidgetLink(url: string): void {
   window.open(url, '_blank', 'noopener');

@@ -21,9 +21,13 @@ import {
 import { createAppBridgeSession, type AppBridgeSession } from '@/core/mcp/appBridgeSession';
 import {
   createAppBridgeHandlers,
+  MAX_AUDIT_ROWS,
+  MAX_AUDIT_SUMMARY_CHARS,
   type AppApprovalDecision,
   type McpAppAuditEntry,
 } from '@/core/mcp/appBridgeHandlers';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
+import type { ConfirmationInfo } from '@/core/tools/registry';
 import type { RawCallToolResult } from '@/core/mcp/client';
 import { useChatStore } from '@/stores/chatStore';
 import { openWidgetLink } from './widgetLink';
@@ -37,6 +41,11 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 /** How many rejected domains the disclosure line names before it says "and
  *  more" — the note is one line under a tool card, not a report. */
 const MAX_LISTED_REJECTED_DOMAINS = 3;
+
+/** How much of an app-supplied URL the consent dialog prints. The rest is
+ *  reachable through the element's `title`, so a long URL neither truncates
+ *  away the part that matters nor turns the dialog into a wall of text. */
+const MAX_SHOWN_LINK_CHARS = 512;
 
 type BlockStatus = 'loading' | 'ready' | 'failed' | 'disconnected';
 
@@ -198,21 +207,46 @@ export interface McpAppBlockProps {
  * Imported lazily so the chat bundle does not pull registry.ts's whole graph in
  * at module-evaluation time.
  */
+let approvalSeq = 0;
+
 async function defaultCheckApproval(
   namespacedTool: string,
   args: Record<string, unknown>,
   conversationId: string | undefined,
+  /** This block's outstanding confirmations, as cancel thunks. The bridge
+   *  effect's cleanup runs every one of them. */
+  pendingCancels: Set<() => void>,
 ): Promise<AppApprovalDecision> {
-  const [{ checkToolApproval }, { requestCommandConfirmationForConversation }] = await Promise.all([
+  const [{ checkToolApproval }, permissionBridge] = await Promise.all([
     import('@/core/tools/registry'),
     import('@/core/agent/permissionBridge'),
   ]);
-  return checkToolApproval(
-    namespacedTool,
-    args,
-    { conversationId },
-    (info) => requestCommandConfirmationForConversation(info, conversationId ?? ''),
-  );
+
+  // 🔴 Fail closed without a conversation. The dialog is addressed BY
+  // conversation (ChatView renders only `conversationId === activeConvId`), so
+  // a block with no conversation could enqueue a confirmation nobody can ever
+  // see — and because the command queue is single-active + FIFO, that one
+  // unanswerable entry would then block every later confirmation in every
+  // conversation. Passing no callback at all reuses `checkToolApproval`'s own
+  // "confirmation is unavailable for this run" denial instead of enqueueing.
+  const onRequireConfirmation = conversationId
+    ? async (info: ConfirmationInfo): Promise<boolean> => {
+        const requestId = `mcp-app-approval-${++approvalSeq}`;
+        const cancel = () => permissionBridge.cancelCommandConfirmation(requestId);
+        pendingCancels.add(cancel);
+        try {
+          return await permissionBridge.requestCommandConfirmationForConversation(
+            info,
+            conversationId,
+            requestId,
+          );
+        } finally {
+          pendingCancels.delete(cancel);
+        }
+      }
+    : undefined;
+
+  return checkToolApproval(namespacedTool, args, { conversationId }, onRequireConfirmation);
 }
 
 /** Strip the `<server>__` prefix a step name carries; app calls use bare names. */
@@ -222,12 +256,27 @@ function bareToolName(server: string, toolName: string | undefined): string | un
   return toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
 }
 
+/** Arguments are app-supplied and unbounded; the row is a disclosure, not a
+ *  log viewer, so it gets the same ceiling as the result summary. */
+function formatAuditArgs(args: Record<string, unknown>): string {
+  let text: string;
+  try {
+    text = JSON.stringify(args, null, 2) ?? '';
+  } catch {
+    text = String(args);
+  }
+  return text.length > MAX_AUDIT_SUMMARY_CHARS
+    ? `${text.slice(0, MAX_AUDIT_SUMMARY_CHARS)}…`
+    : text;
+}
+
 /** One collapsed audit row: what the interface asked its server to do. */
-function AuditRow({ entry, label, argsLabel, resultLabel }: {
+function AuditRow({ entry, label, argsLabel, resultLabel, resultText }: {
   entry: McpAppAuditEntry;
   label: string;
   argsLabel: string;
   resultLabel: string;
+  resultText: string;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -244,11 +293,11 @@ function AuditRow({ entry, label, argsLabel, resultLabel }: {
         <div className="mt-1 space-y-1 pl-4 text-caption text-[var(--abu-text-muted)]">
           <div>
             <div className="font-medium">{argsLabel}</div>
-            <pre className="whitespace-pre-wrap break-all">{JSON.stringify(entry.args, null, 2)}</pre>
+            <pre className="whitespace-pre-wrap break-all">{formatAuditArgs(entry.args)}</pre>
           </div>
           <div>
             <div className="font-medium">{resultLabel}</div>
-            <pre className="whitespace-pre-wrap break-all">{entry.summary}</pre>
+            <pre className="whitespace-pre-wrap break-all">{resultText}</pre>
           </div>
         </div>
       )}
@@ -296,8 +345,12 @@ export default function McpAppBlock({
   const findTool = deps?.findTool ?? ((s: string, tool: string) =>
     mcpManager.getServerTools(s).find((d) => d.name === `${s}__${tool}`)
     ?? mcpManager.getAppTool(s, tool));
+  // Cancel thunks for confirmations this block is still waiting on. Cleared by
+  // the bridge effect's cleanup so an approval never outlives its iframe.
+  const pendingApprovalCancelsRef = useRef(new Set<() => void>());
   const checkApproval = deps?.checkApproval
-    ?? ((name: string, args: Record<string, unknown>) => defaultCheckApproval(name, args, conversationId));
+    ?? ((name: string, args: Record<string, unknown>) =>
+      defaultCheckApproval(name, args, conversationId, pendingApprovalCancelsRef.current));
   const callToolDep = deps?.callTool
     ?? ((s: string, tool: string, args: Record<string, unknown>) =>
       mcpManager.callTool(s, tool, args, { viaAppBridge: true }));
@@ -337,6 +390,9 @@ export default function McpAppBlock({
   const [audit, setAudit] = useState<McpAppAuditEntry[]>([]);
   const [rateLimited, setRateLimited] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
+  /** URL awaiting the user's answer in the `ui/open-link` consent dialog. */
+  const [pendingLink, setPendingLink] = useState<string | null>(null);
+  const pendingLinkResolveRef = useRef<((allowed: boolean) => void) | null>(null);
   // Local echo of `ui/update-model-context` so the expander updates even when
   // the block has no message to persist against (replay-only mounts).
   const [liveModelContext, setLiveModelContext] = useState<string | undefined>(undefined);
@@ -375,6 +431,32 @@ export default function McpAppBlock({
       appendComposerDraft, persistModelContext, readResource,
     };
   });
+
+  /**
+   * The consent gate for `ui/open-link`. Resolves `true` only after the user
+   * says yes; the URL reaches `openWidgetLink` (and therefore the system
+   * browser) at that point and not one moment earlier.
+   *
+   * One prompt at a time: a second request while one is open is declined
+   * outright rather than queued, so an app cannot stack dialogs to wear the
+   * user down or to hide which URL it is actually asking about.
+   */
+  const requestOpenLink = useCallback((url: string) => new Promise<boolean>((resolve) => {
+    if (pendingLinkResolveRef.current) {
+      resolve(false);
+      return;
+    }
+    pendingLinkResolveRef.current = resolve;
+    setPendingLink(url);
+  }), []);
+
+  const settleOpenLink = useCallback((allowed: boolean, url: string | null) => {
+    const resolve = pendingLinkResolveRef.current;
+    pendingLinkResolveRef.current = null;
+    setPendingLink(null);
+    if (allowed && url) handlerDepsRef.current.openLink(url);
+    resolve?.(allowed);
+  }, []);
 
   // ---- 1. Fetch the interface resource -------------------------------------
   useEffect(() => {
@@ -475,14 +557,14 @@ export default function McpAppBlock({
         const res = await handlerDepsRef.current.listServerResources(server, cursor);
         return res as unknown as Awaited<ReturnType<typeof handlers.onlistresources>>;
       },
-      openLink: (url) => handlerDepsRef.current.openLink(url),
+      requestOpenLink,
       appendComposerDraft: (text) => handlerDepsRef.current.appendComposerDraft(text),
-      setModelContext: (text) => {
-        setLiveModelContext(text);
-        handlerDepsRef.current.persistModelContext(text);
-      },
+      // Live value first (the expander must not lag the app), persistence
+      // second — coalesced inside the handler factory.
+      setModelContext: (text) => setLiveModelContext(text),
+      persistModelContext: (text) => handlerDepsRef.current.persistModelContext(text),
       setDisplayMode: (mode) => setDisplayMode(mode),
-      onAudit: (entry) => setAudit((prev) => [...prev, entry]),
+      onAudit: (entry) => setAudit((prev) => [...prev, entry].slice(-MAX_AUDIT_ROWS)),
       onRateLimited: () => setRateLimited(true),
     });
 
@@ -518,6 +600,22 @@ export default function McpAppBlock({
       disposed = true;
       if (timer) clearTimeout(timer);
       sessionRef.current = null;
+      // 🔴 Nothing this block asked for may outlive it. A confirmation left in
+      // the single-active command queue would block every later confirmation in
+      // every conversation behind a dialog for an iframe that is gone; an
+      // unanswered link prompt would leave the app's promise pending forever.
+      // Both settle as "denied", which the handler turns into a JSON-RPC error.
+      const cancels = pendingApprovalCancelsRef.current;
+      pendingApprovalCancelsRef.current = new Set();
+      cancels.forEach((cancel) => cancel());
+      if (pendingLinkResolveRef.current) {
+        const resolve = pendingLinkResolveRef.current;
+        pendingLinkResolveRef.current = null;
+        setPendingLink(null);
+        resolve(false);
+      }
+      // Flush the last model-context write instead of dropping it on the floor.
+      handlers.dispose();
       void session.teardown();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -569,6 +667,12 @@ export default function McpAppBlock({
 
   // Esc leaves fullscreen: the iframe is sandboxed and cannot offer a host
   // control of its own, so the host must always provide a way out.
+  //
+  // ⚠️ SPEC LIMITATION: this listener is on the HOST window, and a keydown that
+  // happens while focus is inside the sandboxed iframe never crosses the
+  // document boundary — so Escape does nothing once the user has clicked into
+  // the app. The visible close button (and the backdrop) are the guaranteed
+  // exits; Escape is a convenience for when focus is still on the host side.
   useEffect(() => {
     if (displayMode !== 'fullscreen') return;
     const onKey = (event: KeyboardEvent) => {
@@ -654,6 +758,19 @@ export default function McpAppBlock({
 
   const fullscreen = displayMode === 'fullscreen';
 
+  /** Localized text for a refused/consented attempt; `undefined` for a plain
+   *  executed tool call, whose row shows the result summary instead. */
+  const outcomeLabel = (entry: McpAppAuditEntry): string | undefined => {
+    switch (entry.outcome) {
+      case 'opened': return t.chat.mcpAppOutcomeOpened;
+      case 'declined': return t.chat.mcpAppOutcomeDeclined;
+      case 'rate-limited': return t.chat.mcpAppRateLimited;
+      case 'rejected-scheme':
+      case 'too-long': return t.chat.mcpAppOutcomeRejected;
+      default: return undefined;
+    }
+  };
+
   // Fullscreen is a CSS promotion of the very same element tree — the iframe
   // keeps its position in the JSX children array, so React never unmounts it
   // and the bridge (and the app's own state) survive. Reparenting the iframe
@@ -664,13 +781,27 @@ export default function McpAppBlock({
       {fullscreen && createPortal(
         <div
           data-testid="mcp-app-fullscreen-backdrop"
+          // Fullscreen paints over the window chrome; without this the top 72px
+          // band is an OS drag lane on Windows and swallows the click that is
+          // supposed to close the overlay.
+          data-electron-no-drag
           className="fixed inset-0 z-40 bg-black/60"
           onClick={exitFullscreen}
         />,
         document.body,
       )}
+      {/* In fullscreen the frame container covers the viewport, so it would sit
+          ON TOP of the backdrop and swallow every click meant for it. It is
+          therefore click-through (`pointer-events-none`) and each real control
+          — the close button and the iframe itself — opts back in. That leaves
+          the padding around the app as backdrop, which is what makes
+          click-outside-to-close work at all. */}
       <div
-        className={cn('my-2', fullscreen && 'fixed inset-0 z-50 my-0 flex flex-col gap-2 p-6')}
+        className={cn(
+          'my-2',
+          fullscreen && 'pointer-events-none fixed inset-0 z-50 my-0 flex flex-col gap-2 p-6 [&>*]:pointer-events-auto',
+        )}
+        data-electron-no-drag
         data-testid="mcp-app-block"
         data-display-mode={displayMode}
         ref={containerRef}
@@ -729,9 +860,12 @@ export default function McpAppBlock({
           <AuditRow
             key={entry.id}
             entry={entry}
-            label={format(t.chat.mcpAppAuditRow, { tool: entry.tool })}
+            label={entry.kind === 'open-link'
+              ? t.chat.mcpAppAuditOpenLink
+              : format(t.chat.mcpAppAuditRow, { tool: entry.tool })}
             argsLabel={t.chat.mcpAppAuditArgs}
             resultLabel={t.chat.mcpAppAuditResult}
+            resultText={outcomeLabel(entry) ?? entry.summary}
           />
         ))}
         {/* What the interface told the model behind the user's back
@@ -754,6 +888,29 @@ export default function McpAppBlock({
           </div>
         )}
       </div>
+      {/* Consent for an app-initiated `ui/open-link`. The URL is shown verbatim
+          (monospace, wrapped) because it is the thing being consented to — a
+          prettified or shortened URL would hide exactly the query string an
+          exfiltration attempt lives in. */}
+      <ConfirmDialog
+        open={pendingLink !== null}
+        title={t.chat.mcpAppOpenLinkTitle}
+        message={(
+          <span
+            data-testid="mcp-app-open-link-url"
+            title={pendingLink ?? undefined}
+            className="block break-all font-mono"
+          >
+            {pendingLink && pendingLink.length > MAX_SHOWN_LINK_CHARS
+              ? `${pendingLink.slice(0, MAX_SHOWN_LINK_CHARS)}…`
+              : pendingLink}
+          </span>
+        )}
+        confirmText={t.chat.mcpAppOpenLinkConfirm}
+        cancelText={t.common.cancel}
+        onConfirm={() => settleOpenLink(true, pendingLink)}
+        onCancel={() => settleOpenLink(false, pendingLink)}
+      />
     </>
   );
 }

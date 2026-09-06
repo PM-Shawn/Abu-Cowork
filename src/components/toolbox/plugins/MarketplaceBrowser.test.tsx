@@ -31,10 +31,12 @@ vi.mock('@/core/plugin/installer', async (importOriginal) => ({
 }));
 vi.mock('@/core/plugin/installedStore', () => ({
   readInstalled: vi.fn().mockResolvedValue([]),
+  // The store reads through the result variant so a failed read cannot pass
+  // for an empty one (pluginStore module doc).
+  readInstalledResult: vi.fn().mockResolvedValue({ ok: true, plugins: [] }),
   upsertInstalled: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('@/core/plugin/uninstaller', () => ({ uninstallPlugin: vi.fn() }));
-vi.mock('@/core/plugin/skillRoots', () => ({ pluginMcpServerNames: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
 // happy-dom gives Virtuoso a zero-size viewport and its ResizeObserver never
 // fires, so the real component mounts no rows at all. Mock it as a plain list

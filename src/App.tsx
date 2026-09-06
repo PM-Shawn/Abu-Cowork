@@ -436,7 +436,9 @@ function App() {
     provisionFirstPartyMCPServers();
     // Hydrate installed plugins and score every added market once, so the
     // sidebar 「扩展」 badge is right before the user opens anything. Failure
-    // costs the badge and nothing else.
+    // costs the badge and nothing else. It skips its own discovery scan
+    // because `refreshDiscovery()` above already covers this tick — keep that
+    // call if this one stays.
     bootstrapPluginUpdates().catch((err) => {
       console.warn('[App] Plugin update scan failed:', err);
     });

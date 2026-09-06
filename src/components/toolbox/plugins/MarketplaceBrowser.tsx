@@ -213,12 +213,13 @@ export default function MarketplaceBrowser({
   // rows below read their 「更新」 state from the same store keys, so the badge
   // and the buttons cannot disagree.
   //
-  // `installed` is in the deps because it arrives asynchronously (PluginsTab's
-  // hydrate): a scan that ran before it landed would have nothing to compare
-  // against.
+  // `installed` is deliberately NOT a dep. The store recomputes after every
+  // install/uninstall itself, so re-running here on each new `installed`
+  // identity only duplicates that scan — and the boot-time hydrate has already
+  // landed by the time this panel can be opened.
   useEffect(() => {
     void recomputeUpdates(home);
-  }, [recomputeUpdates, home, marketplaces, installed]);
+  }, [recomputeUpdates, home, marketplaces]);
 
   /** Store keys are `pluginKey(entryName, marketName)` — see `updateCheck`. */
   const updateKeySet = useMemo(() => new Set(updateAvailableKeys), [updateAvailableKeys]);

@@ -9,7 +9,7 @@
  */
 
 import { joinPath } from '../../utils/pathUtils';
-import { readInstalled } from './installedStore';
+import { readInstalled, type InstalledPlugin } from './installedStore';
 import { pluginInstallDir } from './paths';
 import { isEnterpriseModuleActive } from '../enterprise/entitlement';
 import { isEnterpriseInstall } from './enterpriseMarket';
@@ -32,12 +32,24 @@ export async function pluginSkillDirs(home: string): Promise<string[]> {
     .map((p) => joinPath(pluginInstallDir(home, p.marketplace, p.name, p.version), 'skills'));
 }
 
-/** Every MCP server name contributed by an installed plugin, de-duplicated. */
-export async function pluginMcpServerNames(home: string): Promise<string[]> {
-  const installed = await readInstalled(home);
+/**
+ * Every MCP server name contributed by these install records, de-duplicated.
+ *
+ * Pure, and separate from the disk read on purpose: the approval gate is armed
+ * from records the caller has ALREADY read successfully (see
+ * `pluginStore.refreshInstalled`). Re-reading the file to answer the same
+ * question would open a second failure window in which the read fails, yields
+ * `[]`, and quietly empties the gate.
+ */
+export function mcpServerNamesOf(installed: readonly InstalledPlugin[]): string[] {
   const names = new Set<string>();
   for (const plugin of installed) {
     for (const server of plugin.contributed.mcpServers) names.add(server);
   }
   return [...names];
+}
+
+/** Every MCP server name contributed by an installed plugin, de-duplicated. */
+export async function pluginMcpServerNames(home: string): Promise<string[]> {
+  return mcpServerNamesOf(await readInstalled(home));
 }

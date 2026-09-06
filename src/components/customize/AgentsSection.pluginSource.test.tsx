@@ -22,10 +22,16 @@ vi.mock('@/core/agent/registry', () => ({
 
 // Only the disk read is faked; `pluginDisplayName` stays real — the point of
 // the hydration test is that the real key→name lookup has something to look at.
-vi.mock('@/core/plugin/installedStore', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@/core/plugin/installedStore')>()),
-  readInstalled: vi.fn(async () => []),
-}));
+vi.mock('@/core/plugin/installedStore', async (importOriginal) => {
+  const readInstalled = vi.fn(async (_home: string) => [] as import('@/core/plugin/installedStore').InstalledPlugin[]);
+  return {
+    ...(await importOriginal<typeof import('@/core/plugin/installedStore')>()),
+    readInstalled,
+    // The store reads through the result variant; keep both fed by the same
+    // fake so a test only has to drive `readInstalled`.
+    readInstalledResult: vi.fn(async (home: string) => ({ ok: true, plugins: await readInstalled(home) })),
+  };
+});
 
 import { remove as fsRemove } from '@tauri-apps/plugin-fs';
 import { agentRegistry } from '@/core/agent/registry';

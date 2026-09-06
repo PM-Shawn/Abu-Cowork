@@ -15,7 +15,8 @@
  * ## The security-critical part
  *
  * Every path that changes the installed set MUST end with
- * `setPluginServerNames(await pluginMcpServerNames(home))`.
+ * `setPluginServerNames(mcpServerNamesOf(installed))`, where `installed` came
+ * from a read that is KNOWN to have succeeded.
  *
  * `pluginToolPolicy` keeps that name set in a module-level variable because
  * `registry.ts` classifies tools on a synchronous hot path. Nothing re-reads
@@ -29,6 +30,13 @@
  * That refresh is centralised in `refreshInstalled`, which install/uninstall
  * both delegate to, so a future action cannot forget it by adding a new code
  * path — and it is pinned by tests in pluginStore.test.ts.
+ *
+ * The same reasoning runs the other way for FAILED reads: `installed.json`
+ * being unreadable looks identical to "nothing is installed" if you only have
+ * a list, and acting on that would empty the gate — for the session and, since
+ * the names are persisted, for the next launch too. So `refreshInstalled`
+ * takes the discriminated `readInstalledResult` and writes nothing at all when
+ * the read failed. The gate only ever moves on evidence.
  */
 
 import { homeDir } from '@tauri-apps/api/path';
@@ -36,14 +44,14 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { installPlugin } from '@/core/plugin/installer';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
-import { readInstalled, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
+import { readInstalledResult, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
 import { BUILTIN_MARKET_NAME } from '@/core/plugin/builtinMarket';
 import { registerPluginServers, deregisterPluginServers, type McpStoreOps } from '@/core/plugin/pluginMcpBridge';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
-import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
+import { mcpServerNamesOf } from '@/core/plugin/skillRoots';
 import { expandHome, loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import { installedByEntryName, updateAvailableKeysFor } from '@/core/plugin/updateCheck';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
@@ -125,8 +133,14 @@ interface PluginActions {
   removeMarketplace: (name: string) => void;
   /** Inject/refresh the always-present built-in market at a resolved dir. */
   ensureBuiltinMarketplace: (dir: string) => void;
-  /** Re-read installed.json and re-arm the MCP approval gate. */
-  refreshInstalled: (home: string) => Promise<void>;
+  /**
+   * Re-read installed.json and re-arm the MCP approval gate.
+   *
+   * A read failure is a no-op, not an empty result — see the module doc.
+   * `skipDiscovery` is for the one caller that has just triggered a discovery
+   * scan of its own (app start); every other caller wants the default.
+   */
+  refreshInstalled: (home: string, options?: { skipDiscovery?: boolean }) => Promise<void>;
   install: (req: InstallRequest) => Promise<InstalledPlugin>;
   uninstall: (home: string, key: string) => Promise<void>;
   /**
@@ -245,8 +259,20 @@ export const usePluginStore = create<PluginStore>()(
         }));
       },
 
-      refreshInstalled: async (home) => {
-        const installed = await readInstalled(home);
+      refreshInstalled: async (home, options) => {
+        const result = await readInstalledResult(home);
+        if (!result.ok) {
+          // Fail closed. An unreadable manifest (half-written file, EACCES, a
+          // `homeDir()` pointing somewhere odd) is NOT evidence that nothing
+          // is installed, and treating it as such would narrow the approval
+          // gate — the one direction of drift that is unsafe (module doc) —
+          // then persist that narrowed gate for the next launch. Keep the
+          // previous `installed` and leave the gate exactly as it is; the next
+          // successful refresh reconciles.
+          console.warn('[pluginStore] installed.json unreadable — keeping the previous plugin state:', result.error);
+          return;
+        }
+        const installed = result.plugins;
         // Drop update flags whose install is gone (uninstall goes through
         // here) — the badge must not keep counting a plugin that no longer
         // exists on disk.
@@ -258,15 +284,21 @@ export const usePluginStore = create<PluginStore>()(
         }));
         // Security-critical, not bookkeeping — see the module doc. Kept here
         // (rather than duplicated in install/uninstall) so every mutation path
-        // that ends in a refresh re-arms the approval gate for free.
-        const serverNames = await pluginMcpServerNames(home);
+        // that ends in a refresh re-arms the approval gate for free. Derived
+        // from the records just read rather than from a second disk read, so
+        // there is exactly one read that can fail, and it is the one guarded
+        // above.
+        const serverNames = mcpServerNamesOf(installed);
         set({ knownMcpServerNames: serverNames });
         setPluginServerNames(serverNames);
         // Re-scan skills so a plugin's skills appear immediately, without an
         // app restart. Plugin skills live under ~/.abu/plugin-packages, which
         // the registry fs-watcher does NOT observe (it watches ~/.abu/skills
-        // and ~/.abu/agents only), so nothing else triggers this discovery.
-        await useDiscoveryStore.getState().refresh().catch(() => undefined);
+        // and ~/.abu/agents only), so nothing else triggers this discovery —
+        // unless the caller says it is already scanning (app start).
+        if (!options?.skipDiscovery) {
+          await useDiscoveryStore.getState().refresh().catch(() => undefined);
+        }
       },
 
       install: async (req) => {
@@ -469,10 +501,16 @@ export const usePluginStore = create<PluginStore>()(
  *
  * Best-effort by design: every failure here degrades to "no badge", never to a
  * broken launch. The MCP approval gate does NOT depend on this running — it is
- * armed synchronously from persisted `knownMcpServerNames` on rehydrate.
+ * armed synchronously from persisted `knownMcpServerNames` on rehydrate, and a
+ * failed manifest read here leaves it untouched rather than empty.
+ *
+ * `skipDiscovery` because App's boot effect already calls `refreshDiscovery()`
+ * on the same tick: without it, launch pays for two identical skill/agent
+ * scans. Only this caller may skip — every other `refreshInstalled` runs
+ * because something changed on disk and nobody else is scanning.
  */
 export async function bootstrapPluginUpdates(): Promise<void> {
   const home = await homeDir();
-  await usePluginStore.getState().refreshInstalled(home);
+  await usePluginStore.getState().refreshInstalled(home, { skipDiscovery: true });
   await usePluginStore.getState().recomputeUpdates(home);
 }

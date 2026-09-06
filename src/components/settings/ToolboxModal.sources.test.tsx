@@ -40,6 +40,7 @@ vi.mock('@/i18n', () => ({
         sourceMarket: '市场', sourceMine: '我的',
         searchPlaceholder: '搜索...', importEntry: '导入',
         pluginsUpdatesAvailable: '{count} 个插件可更新',
+        pluginsUpdatesAvailableOne: '1 个插件可更新',
         aiCreateSkillPrompt: '',
       },
     },

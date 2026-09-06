@@ -15,9 +15,11 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 vi.mock('@/core/plugin/uninstaller', () => ({ uninstallPlugin: vi.fn() }));
 vi.mock('@/core/plugin/installedStore', () => ({
   readInstalled: vi.fn().mockResolvedValue([]),
+  // The store reads through the result variant so a failed read cannot pass
+  // for an empty one (pluginStore module doc).
+  readInstalledResult: vi.fn().mockResolvedValue({ ok: true, plugins: [] }),
   upsertInstalled: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('@/core/plugin/skillRoots', () => ({ pluginMcpServerNames: vi.fn().mockResolvedValue([]) }));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
 
 import { uninstallPlugin } from '@/core/plugin/uninstaller';

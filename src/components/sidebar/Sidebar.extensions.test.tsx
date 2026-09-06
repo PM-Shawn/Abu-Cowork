@@ -102,6 +102,24 @@ describe('Sidebar — Extensions entry', () => {
     expect(badge).toHaveAttribute('aria-label', '3 个插件可更新');
   });
 
+  it('names itself for a screen reader, pluralised, on an element that can hold a name', () => {
+    initLanguage('en-US');
+    usePluginStore.setState({ updateAvailableCount: 1 });
+    render(<Sidebar />);
+    const one = within(mainNav()).getByTestId('extensions-update-badge');
+    // A bare <span> is a generic element: an `aria-label` on it is not
+    // guaranteed to be exposed at all. `role="status"` both allows the name
+    // and makes the badge the polite live region it actually is.
+    expect(one).toHaveAttribute('role', 'status');
+    expect(one).toHaveAttribute('aria-label', '1 plugin update available');
+
+    cleanup();
+    usePluginStore.setState({ updateAvailableCount: 2 });
+    render(<Sidebar />);
+    expect(within(mainNav()).getByTestId('extensions-update-badge'))
+      .toHaveAttribute('aria-label', '2 plugin updates available');
+  });
+
   it('caps the count at 9+', () => {
     usePluginStore.setState({ updateAvailableCount: 12 });
     render(<Sidebar />);

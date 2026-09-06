@@ -35,37 +35,76 @@ export interface InstalledPlugin {
 }
 
 /**
- * Read the installed-plugins manifest for `home`.
+ * Outcome of reading the manifest, for callers that must tell "nothing is
+ * installed" from "the manifest could not be read".
  *
- * Degrades to `[]` (never throws) both when the file is missing and when its
- * contents are not valid JSON — a single corrupted manifest must not lock up
- * the whole plugin system.
+ * {@link readInstalled} collapses both to `[]`, which is right for consumers
+ * that only ever *grant* something from a record (skills, display names): a
+ * record we cannot read contributes nothing. It is exactly wrong for a caller
+ * that *narrows* a security boundary from this list — the MCP approval gate is
+ * shrunk by an empty list, so a failed read would silently un-gate every
+ * plugin tool. Those callers take this result and do nothing on `ok: false`.
+ *
+ * A missing file is a success (`plugins: []`) — that is the honest state of a
+ * profile with nothing installed, and of one where everything was uninstalled.
  */
-export async function readInstalled(home: string): Promise<InstalledPlugin[]> {
+export type ReadInstalledResult =
+  | { ok: true; plugins: InstalledPlugin[] }
+  | { ok: false; error: unknown };
+
+/**
+ * Read the installed-plugins manifest for `home`, reporting read failures.
+ *
+ * Never throws: an unreadable or malformed manifest comes back as
+ * `{ ok: false }` rather than as an exception, so the plugin system degrades
+ * instead of locking up. Individual records that fail validation are still
+ * dropped from an otherwise-successful read (see {@link isInstalledPlugin}) —
+ * one bad record is not a bad file.
+ */
+export async function readInstalledResult(home: string): Promise<ReadInstalledResult> {
   const path = installedManifestPath(home);
 
   let fileExists: boolean;
   try {
     fileExists = await exists(path);
-  } catch {
-    return [];
+  } catch (error) {
+    return { ok: false, error };
   }
-  if (!fileExists) return [];
+  if (!fileExists) return { ok: true, plugins: [] };
 
   let raw: string;
   try {
     raw = await readTextFile(path);
-  } catch {
-    return [];
+  } catch (error) {
+    return { ok: false, error };
   }
 
   try {
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isInstalledPlugin).map(withValidSourceKind).map(withContributedAgents);
-  } catch {
-    return [];
+    // Valid JSON that is not an array is a corrupted manifest (hand-edited, or
+    // a half-written file caught mid-flight), not an empty one.
+    if (!Array.isArray(parsed)) return { ok: false, error: new Error('installed.json is not an array') };
+    return {
+      ok: true,
+      plugins: parsed.filter(isInstalledPlugin).map(withValidSourceKind).map(withContributedAgents),
+    };
+  } catch (error) {
+    return { ok: false, error };
   }
+}
+
+/**
+ * Read the installed-plugins manifest for `home`.
+ *
+ * Degrades to `[]` (never throws) both when the file is missing and when its
+ * contents are not valid JSON — a single corrupted manifest must not lock up
+ * the whole plugin system. A caller that would *remove* a permission from this
+ * list must use {@link readInstalledResult} instead, so a failed read cannot
+ * read as "nothing is installed".
+ */
+export async function readInstalled(home: string): Promise<InstalledPlugin[]> {
+  const result = await readInstalledResult(home);
+  return result.ok ? result.plugins : [];
 }
 
 function isNonEmptyString(value: unknown): value is string {

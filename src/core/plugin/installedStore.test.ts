@@ -10,6 +10,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 
 import {
   readInstalled,
+  readInstalledResult,
   upsertInstalled,
   removeInstalled,
   findInstalled,
@@ -40,6 +41,43 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockExists.mockResolvedValue(false);
   mockWriteTextFile.mockResolvedValue(undefined);
+});
+
+describe('readInstalledResult', () => {
+  // `readInstalled` answers `[]` to both "nothing installed" and "could not
+  // read", which is fine for a caller that only grants things from a record
+  // and fatal for one that revokes: `pluginStore` narrows the MCP approval
+  // gate from this list, so it needs the two told apart.
+
+  it('reports a missing file as a successful empty read', async () => {
+    mockExists.mockResolvedValue(false);
+    expect(await readInstalledResult(HOME)).toEqual({ ok: true, plugins: [] });
+  });
+
+  it('reports an unreadable file as a failure', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockRejectedValue(new Error('EACCES'));
+    expect(await readInstalledResult(HOME)).toMatchObject({ ok: false });
+  });
+
+  it('reports malformed json as a failure, not as an empty install set', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue('[{"key": "half-writ');
+    expect(await readInstalledResult(HOME)).toMatchObject({ ok: false });
+  });
+
+  it('reports valid json that is not an array as a failure', async () => {
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue('{"key":"value"}');
+    expect(await readInstalledResult(HOME)).toMatchObject({ ok: false });
+  });
+
+  it('still succeeds when only SOME records are invalid — one bad record is not a bad file', async () => {
+    const plugin = makePlugin();
+    mockExists.mockResolvedValue(true);
+    mockReadTextFile.mockResolvedValue(JSON.stringify([plugin, { key: 'no-name' }]));
+    expect(await readInstalledResult(HOME)).toEqual({ ok: true, plugins: [plugin] });
+  });
 });
 
 describe('readInstalled', () => {

@@ -16,10 +16,14 @@ vi.mock('@/core/plugin/installer', () => ({ installPlugin: vi.fn() }));
 vi.mock('@/core/plugin/uninstaller', () => ({ uninstallPlugin: vi.fn() }));
 vi.mock('@/core/plugin/installedStore', () => ({
   readInstalled: vi.fn(),
+  readInstalledResult: vi.fn(),
   upsertInstalled: vi.fn(),
 }));
+// `skillRoots` is deliberately NOT mocked: the store derives the approval-gate
+// names from the records it just read, through the real (pure)
+// `mcpServerNamesOf`. Faking that would fake the assertions this file exists
+// for — so the records in `readInstalled` are what arm the gate.
 vi.mock('@/core/plugin/fsOps', () => ({ copyPluginDir: vi.fn(), removePluginDir: vi.fn() }));
-vi.mock('@/core/plugin/skillRoots', () => ({ pluginMcpServerNames: vi.fn() }));
 // Only the disk read is faked; `expandHome` and the real update scoring stay.
 vi.mock('@/core/plugin/loadMarketplace', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/plugin/loadMarketplace')>()),
@@ -30,16 +34,15 @@ vi.mock('@/stores/discoveryStore', () => ({ useDiscoveryStore: { getState: () =>
 
 import { installPlugin } from '@/core/plugin/installer';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
-import { readInstalled, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
+import { readInstalled, readInstalledResult, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
-import { pluginMcpServerNames } from '@/core/plugin/skillRoots';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import { updateAvailableKeysFor } from '@/core/plugin/updateCheck';
 import type { Marketplace, MarketplaceEntry } from '@/core/plugin/marketplace';
 import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 type MarketplaceRefLike = { name: string; dir: string; builtin?: boolean };
 import { useMCPStore } from './mcpStore';
-import { usePluginStore } from './pluginStore';
+import { usePluginStore, bootstrapPluginUpdates } from './pluginStore';
 
 const mockDiscoveryRefresh = vi.fn(async () => {});
 const HOME = '/Users/tester';
@@ -67,8 +70,15 @@ function resetStore() {
 beforeEach(() => {
   vi.clearAllMocks();
   resetStore();
+  usePluginStore.setState({ knownMcpServerNames: [] });
   vi.mocked(readInstalled).mockResolvedValue([]);
-  vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
+  // The store reads through the result variant; keep one knob for the tests by
+  // deriving the success case from whatever `readInstalled` is mocked to. A
+  // test that wants a FAILED read overrides `readInstalledResult` directly.
+  vi.mocked(readInstalledResult).mockImplementation(async (home) => ({
+    ok: true,
+    plugins: await readInstalled(home),
+  }));
 });
 
 describe('marketplaces', () => {
@@ -107,7 +117,6 @@ describe('install', () => {
   it('re-arms the MCP approval gate with the newly installed server name', async () => {
     vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }] });
     vi.mocked(readInstalled).mockResolvedValue([weather]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);
 
     await usePluginStore.getState().install({
       home: HOME,
@@ -170,7 +179,6 @@ describe('uninstall', () => {
       withdrawn: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
     });
     vi.mocked(readInstalled).mockResolvedValue([]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
 
     await usePluginStore.getState().uninstall(HOME, weather.key);
 
@@ -193,7 +201,6 @@ describe('uninstall', () => {
       withdrawn: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
     });
     vi.mocked(readInstalled).mockResolvedValue([]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
     mockDiscoveryRefresh.mockClear();
 
     await usePluginStore.getState().uninstall(HOME, weather.key);
@@ -217,7 +224,6 @@ describe('refreshInstalled', () => {
 
   it('re-scans skills so a newly installed plugin skill appears without restart', async () => {
     vi.mocked(readInstalled).mockResolvedValue([]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
     mockDiscoveryRefresh.mockClear();
     await usePluginStore.getState().refreshInstalled(HOME);
     // Plugin skills live under ~/.abu/plugin-packages, which the registry
@@ -228,12 +234,74 @@ describe('refreshInstalled', () => {
 
   it('hydrates from disk and arms the gate for plugins installed in a past session', async () => {
     vi.mocked(readInstalled).mockResolvedValue([weather]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);
 
     await usePluginStore.getState().refreshInstalled(HOME);
 
     expect(usePluginStore.getState().installed).toEqual([weather]);
     expect([...vi.mocked(setPluginServerNames).mock.calls[0][0]]).toEqual(['weather-mcp']);
+  });
+
+  it('replaces the whole gate list on a successful read', async () => {
+    // Whatever the previous session persisted is superseded by disk — the read
+    // succeeded, so its answer is the truth, names removed included.
+    usePluginStore.setState({ knownMcpServerNames: ['stale-mcp'] });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+
+    await usePluginStore.getState().refreshInstalled(HOME);
+
+    expect(usePluginStore.getState().knownMcpServerNames).toEqual(['weather-mcp']);
+    expect(setPluginServerNames).toHaveBeenCalledWith(['weather-mcp']);
+  });
+
+  it('clears the gate when the manifest is absent — that is a real "nothing installed"', async () => {
+    usePluginStore.setState({ installed: [weather], knownMcpServerNames: ['weather-mcp'] });
+    // A missing file is a SUCCESSFUL read of an empty set (fresh profile, or
+    // everything uninstalled), so shrinking the gate here is correct.
+    vi.mocked(readInstalledResult).mockResolvedValue({ ok: true, plugins: [] });
+
+    await usePluginStore.getState().refreshInstalled(HOME);
+
+    expect(usePluginStore.getState().installed).toEqual([]);
+    expect(usePluginStore.getState().knownMcpServerNames).toEqual([]);
+    expect(setPluginServerNames).toHaveBeenCalledWith([]);
+  });
+
+  it('never widens the approval gate when the manifest cannot be read', async () => {
+    // The security case. An unreadable manifest (EACCES, a half-written file,
+    // an odd homeDir) used to arrive as `[]`, indistinguishable from "nothing
+    // is installed" — which EMPTIES the gate: every plugin MCP tool then skips
+    // the state-changing approval prompt for the session, and because the name
+    // list is persisted, for the next launch too.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    usePluginStore.setState({ installed: [weather], knownMcpServerNames: ['weather-mcp'] });
+    vi.mocked(readInstalledResult).mockResolvedValue({ ok: false, error: new Error('EACCES') });
+
+    await usePluginStore.getState().refreshInstalled(HOME);
+
+    expect(usePluginStore.getState().installed).toEqual([weather]);
+    expect(usePluginStore.getState().knownMcpServerNames).toEqual(['weather-mcp']);
+    expect(setPluginServerNames).not.toHaveBeenCalled();
+
+    // And the armed list still survives into the next launch.
+    const partialize = usePluginStore.persist.getOptions().partialize as
+      (s: unknown) => Record<string, unknown>;
+    expect(partialize(usePluginStore.getState()).knownMcpServerNames).toEqual(['weather-mcp']);
+    warn.mockRestore();
+  });
+});
+
+describe('bootstrapPluginUpdates', () => {
+  it('hydrates and arms the gate without a second discovery scan', async () => {
+    // App's boot effect calls `refreshDiscovery()` on the same tick; a second
+    // identical skills/agents scan here is pure launch cost.
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    mockDiscoveryRefresh.mockClear();
+
+    await bootstrapPluginUpdates();
+
+    expect(usePluginStore.getState().installed).toEqual([weather]);
+    expect(setPluginServerNames).toHaveBeenCalledWith(['weather-mcp']);
+    expect(mockDiscoveryRefresh).not.toHaveBeenCalled();
   });
 });
 
@@ -332,7 +400,6 @@ describe('plugin MCP server wiring', () => {
     useMCPStore.setState({ servers: {} });
     vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }] });
     vi.mocked(readInstalled).mockResolvedValue([weather]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);
 
     await usePluginStore.getState().install({
       home: HOME,
@@ -360,7 +427,6 @@ describe('plugin MCP server wiring', () => {
       withdrawn: { skills: ['forecast'], mcpServers: ['weather-mcp'] },
     });
     vi.mocked(readInstalled).mockResolvedValue([]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
 
     await usePluginStore.getState().uninstall(HOME, 'weather@official');
 
@@ -377,7 +443,6 @@ describe('plugin MCP server wiring', () => {
     });
     vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }] });
     vi.mocked(readInstalled).mockResolvedValue([weather]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue(['weather-mcp']);
 
     await usePluginStore.getState().install({
       home: HOME,
@@ -405,7 +470,6 @@ describe('update', () => {
       return { record: { ...weather, version: '2.0.0' }, mcpServers: [] };
     });
     vi.mocked(readInstalled).mockResolvedValue([{ ...weather, version: '2.0.0' }]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
 
     await usePluginStore.getState().update({
       home: HOME,
@@ -440,7 +504,6 @@ describe('update', () => {
     });
     vi.mocked(installPlugin).mockResolvedValue({ record: { ...weather, version: '2.0.0' }, mcpServers: [] });
     vi.mocked(readInstalled).mockResolvedValue([{ ...weather, version: '2.0.0' }]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
 
     await usePluginStore.getState().update({
       home: HOME,
@@ -473,7 +536,6 @@ describe('MCP server conflict safety (security review blocker #1)', () => {
     let persisted: InstalledPlugin | undefined;
     vi.mocked(upsertInstalled).mockImplementation(async (_home, rec) => { persisted = rec; });
     vi.mocked(readInstalled).mockResolvedValue([weather]);
-    vi.mocked(pluginMcpServerNames).mockResolvedValue([]);
 
     await usePluginStore.getState().install({
       home: HOME, marketplaceName: 'official', marketplaceDir: '/m/official',
@@ -613,6 +675,44 @@ describe('recomputeUpdates', () => {
 
     expect(vi.mocked(loadMarketplaceFromDir).mock.calls.map((c) => c[0])).toEqual(['/m/official']);
     expect(usePluginStore.getState().updateAvailableKeys).toEqual(['acme@enterprise', 'weather@official']);
+  });
+
+  it('drops a slow scan whose newer successor already landed', async () => {
+    // Two scans overlap in production (the market panel mounting while an
+    // install's scan is still reading disk). The one that STARTED last holds
+    // the fresher `installed`, so it must win — even though it finished first.
+    // No timers: the two market reads are resolved by hand, in order.
+    const deferred = () => {
+      let resolve!: (m: Marketplace) => void;
+      const promise = new Promise<Marketplace>((r) => { resolve = r; });
+      return { promise, resolve };
+    };
+    const slow = deferred();
+    const fast = deferred();
+    const official = market('official', [entry('weather', '1.0.0')]);
+    usePluginStore.setState({
+      marketplaces: [{ name: 'official', dir: '/m/official' }] as MarketplaceRefLike[],
+      installed: [install('weather', 'official', '0.9.0')], // stale: 1.0.0 is an update
+    });
+    vi.mocked(loadMarketplaceFromDir)
+      .mockReturnValueOnce(slow.promise)
+      .mockReturnValueOnce(fast.promise);
+
+    // A reads the stale installed set…
+    const scanA = usePluginStore.getState().recomputeUpdates(HOME);
+    // …then the update lands on disk and B scans the current one.
+    usePluginStore.setState({ installed: [install('weather', 'official', '1.0.0')] });
+    const scanB = usePluginStore.getState().recomputeUpdates(HOME);
+
+    fast.resolve(official);
+    await scanB;
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual([]);
+
+    slow.resolve(official);
+    await scanA;
+    // A would flag `weather@official` from the version it read before the
+    // update — landing it would resurrect a badge for an up-to-date plugin.
+    expect(usePluginStore.getState().updateAvailableKeys).toEqual([]);
   });
 
   it('lets an unreadable market contribute nothing without losing the others', async () => {

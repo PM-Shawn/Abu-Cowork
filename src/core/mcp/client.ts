@@ -329,6 +329,88 @@ function coerceNumericArgs(
   return changed ? result : args;
 }
 
+// ---------------------------------------------------------------------------
+// Raw `CallToolResult` stash for MCP App interfaces
+// ---------------------------------------------------------------------------
+
+/** Entries kept at once. Small on purpose: this is a hand-off buffer, not a cache. */
+const MAX_RAW_APP_RESULTS = 32;
+/** Per-entry JSON size ceiling. A bigger result is simply not stashed. */
+const MAX_RAW_APP_RESULT_BYTES = 256 * 1024;
+
+/** Raw MCP tool result, before Abu converts it for display/persistence. */
+export interface RawCallToolResult {
+  content?: unknown;
+  structuredContent?: unknown;
+  isError?: boolean;
+  _meta?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Deterministic key for a tool call's arguments: object keys sorted at every
+ * depth, so `{a:1,b:2}` and `{b:2,a:1}` hash the same. `JSON.stringify`'s own
+ * key order is insertion order, which the model and the app can disagree on.
+ */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`);
+  return `{${entries.join(',')}}`;
+}
+
+function rawResultKey(server: string, tool: string, args: Record<string, unknown>): string {
+  return `${server}\u0000${tool}\u0000${stableStringify(args ?? {})}`;
+}
+
+/**
+ * Renderer-side LRU holding the SERVER'S OWN `CallToolResult` for tools that
+ * declare an MCP App interface.
+ *
+ * Why it exists: Abu persists the *converted* tool output (a display string
+ * plus optional content blocks), so `structuredContent` and `_meta` — which
+ * real MCP Apps read — are gone by the time `McpAppBlock` replays the result to
+ * the interface. Stashing the raw object here lets the block hand the app what
+ * the server actually said, on the call that just happened.
+ *
+ * Deliberately NOT persisted: it is per-process and empty after a reload, and
+ * the block falls back to the converted content then (documented at its use
+ * site). Keeping raw results on disk would duplicate every tool payload.
+ */
+const rawAppResults = new Map<string, RawCallToolResult>();
+
+function stashRawAppResult(
+  server: string,
+  tool: string,
+  args: Record<string, unknown>,
+  result: RawCallToolResult,
+): void {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(result);
+  } catch {
+    return; // circular / non-serializable — not worth carrying
+  }
+  if (serialized === undefined || utf8ByteLength(serialized) > MAX_RAW_APP_RESULT_BYTES) return;
+  const key = rawResultKey(server, tool, args);
+  // Re-insert so the newest entry is always last (Map preserves insertion order).
+  rawAppResults.delete(key);
+  rawAppResults.set(key, result);
+  while (rawAppResults.size > MAX_RAW_APP_RESULTS) {
+    const oldest = rawAppResults.keys().next();
+    if (oldest.done) break;
+    rawAppResults.delete(oldest.value);
+  }
+}
+
+/** Test-only: drop every stashed raw result. */
+export function resetRawAppResults(): void {
+  rawAppResults.clear();
+}
+
 export class MCPClientManager {
   private servers: Map<string, ConnectedServer> = new Map();
   private listeners: Set<() => void> = new Set();
@@ -976,6 +1058,14 @@ export class MCPClientManager {
       ]);
       clearTimeout(timerId!);
 
+      // Tools with an interface get their RAW result stashed for the app (see
+      // `rawAppResults`). Keyed on the arguments as the CALLER passed them —
+      // `McpAppBlock` replays the persisted step input, which is exactly that,
+      // not the numeric-coerced copy sent on the wire.
+      if (toolDef?.ui) {
+        stashRawAppResult(serverName, toolName, args, result as RawCallToolResult);
+      }
+
       if (result.content && Array.isArray(result.content)) {
         const hasImages = result.content.some((c) => c.type === 'image' && c.data);
         if (hasImages) {
@@ -1014,6 +1104,109 @@ export class MCPClientManager {
       console.error(`[MCP] Tool call failed: ${serverName}:${toolName}`, err);
       throw new Error(`Tool call failed: ${errorMsg}`, { cause: err });
     }
+  }
+
+  /**
+   * Hand the MCP App interface the raw `CallToolResult` for a call Abu already
+   * made, and forget it (one hand-off per stash).
+   *
+   * Returns `undefined` after a reload, a cache eviction, an oversized result,
+   * or when the arguments differ — every caller must fall back to the converted
+   * content.
+   */
+  takeRawAppResult(
+    serverName: string,
+    toolName: string,
+    args: Record<string, unknown>,
+  ): RawCallToolResult | undefined {
+    const key = rawResultKey(serverName, toolName, args ?? {});
+    const hit = rawAppResults.get(key);
+    if (hit) rawAppResults.delete(key);
+    return hit;
+  }
+
+  /**
+   * Read a NON-`ui://` resource of a connected server for its app interface
+   * (spec §4.3 `resources/read`).
+   *
+   * Separate from `readResource` on purpose: that one is the interface loader
+   * and its `ui://`-only check is a security boundary, not a convenience. This
+   * one is read-only, UNCACHED (server data can change between reads, and a
+   * stale cache would be worse than a round-trip) and capped at the same
+   * `MAX_APP_RESOURCE_BYTES` so an interface cannot pull an arbitrarily large
+   * payload into the renderer.
+   */
+  async readServerResource(serverName: string, uri: string): Promise<{
+    contents: Array<{ uri: string; mimeType?: string; text?: string; blob?: string }>;
+  }> {
+    if (isEnterpriseServerBlocked(serverName)) {
+      throw new McpAppResourceError(
+        'server-not-authorized',
+        `Enterprise MCP server ${serverName} is not authorized by the current live session`
+      );
+    }
+    const server = this.servers.get(serverName);
+    if (!server) {
+      throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
+    }
+    const client = server.client as {
+      readResource: (params: { uri: string }) => Promise<{
+        contents?: Array<{ uri?: string; mimeType?: string; text?: string; blob?: string }>;
+      }>;
+    };
+    const result = await client.readResource({ uri });
+    const contents = (result.contents ?? []).map((c) => ({
+      uri: typeof c.uri === 'string' ? c.uri : uri,
+      ...(c.mimeType !== undefined ? { mimeType: c.mimeType } : {}),
+      ...(typeof c.text === 'string' ? { text: c.text } : {}),
+      ...(typeof c.blob === 'string' ? { blob: c.blob } : {}),
+    }));
+    let total = 0;
+    for (const c of contents) {
+      total += utf8ByteLength(c.text ?? '') + (c.blob?.length ?? 0);
+    }
+    if (total > MAX_APP_RESOURCE_BYTES) {
+      throw new McpAppResourceError(
+        'resource-too-large',
+        `Resource ${uri} on ${serverName} exceeds ${MAX_APP_RESOURCE_BYTES} bytes`
+      );
+    }
+    return { contents };
+  }
+
+  /** List a connected server's resources for its app interface (read-only). */
+  async listServerResources(serverName: string, cursor?: string): Promise<{
+    resources: Array<{ uri: string; name?: string; mimeType?: string; description?: string }>;
+    nextCursor?: string;
+  }> {
+    if (isEnterpriseServerBlocked(serverName)) {
+      throw new McpAppResourceError(
+        'server-not-authorized',
+        `Enterprise MCP server ${serverName} is not authorized by the current live session`
+      );
+    }
+    const server = this.servers.get(serverName);
+    if (!server) {
+      throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
+    }
+    const client = server.client as {
+      listResources: (params?: { cursor?: string }) => Promise<{
+        resources?: Array<{ uri?: string; name?: string; mimeType?: string; description?: string }>;
+        nextCursor?: string;
+      }>;
+    };
+    const result = await client.listResources(cursor === undefined ? undefined : { cursor });
+    return {
+      resources: (result.resources ?? [])
+        .filter((r): r is { uri: string } & typeof r => typeof r.uri === 'string')
+        .map((r) => ({
+          uri: r.uri,
+          ...(r.name !== undefined ? { name: r.name } : {}),
+          ...(r.mimeType !== undefined ? { mimeType: r.mimeType } : {}),
+          ...(r.description !== undefined ? { description: r.description } : {}),
+        })),
+      ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
+    };
   }
 
   getStatus(): MCPServerStatus[] {

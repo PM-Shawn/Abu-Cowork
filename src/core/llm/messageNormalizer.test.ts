@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeMessages } from './messageNormalizer';
+import { APP_CONTEXT_SEPARATOR, normalizeMessages } from './messageNormalizer';
 import type { Message } from '../../types';
 
 function makeMessage(overrides: Partial<Message> & Pick<Message, 'role' | 'content'>): Message {
@@ -590,5 +590,70 @@ describe('convertUserContent — resize notice', () => {
   it('stays silent on a non-vision route, where the image is dropped anyway', () => {
     const turns = normalizeMessages(userWithResizedImage(), { supportsVision: false });
     expect(JSON.stringify(turns)).not.toContain('image_resize_notice');
+  });
+});
+
+describe('MCP App model context (spec §4.3)', () => {
+  const step = (over: Record<string, unknown> = {}) => ({
+    id: 'tc-1', name: 'weather__board', input: { city: 'BJ' }, result: '25C', ...over,
+  });
+
+  it('appends the app context to that step’s tool result', () => {
+    const turns = normalizeMessages([
+      makeMessage({ role: 'user', content: 'weather?' }),
+      makeMessage({
+        role: 'assistant',
+        content: '',
+        toolCalls: [step({ modelContext: 'the user picked Beijing' })],
+      }),
+    ]);
+
+    const assistant = turns[1] as { kind: 'assistant'; toolCalls: Array<{ result: string }> };
+    expect(assistant.toolCalls[0].result)
+      .toBe(`25C${APP_CONTEXT_SEPARATOR}the user picked Beijing`);
+  });
+
+  it('reaches the model even when the history uses toolCallsForContext', () => {
+    // The LLM history prefers toolCallsForContext, but the host writes
+    // modelContext onto toolCalls — they must be paired by tool-call id.
+    const turns = normalizeMessages([
+      makeMessage({ role: 'user', content: 'weather?' }),
+      makeMessage({
+        role: 'assistant',
+        content: '',
+        toolCalls: [step({ modelContext: 'row 4' })],
+        toolCallsForContext: [{ id: 'tc-1', name: 'weather__board', input: { city: 'BJ' }, result: '25C' }],
+      }),
+    ]);
+
+    const assistant = turns[1] as { kind: 'assistant'; toolCalls: Array<{ result: string }> };
+    expect(assistant.toolCalls[0].result).toBe(`25C${APP_CONTEXT_SEPARATOR}row 4`);
+  });
+
+  it('leaves every other step alone', () => {
+    const turns = normalizeMessages([
+      makeMessage({ role: 'user', content: 'go' }),
+      makeMessage({
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          step({ id: 'tc-1', modelContext: 'only mine' }),
+          step({ id: 'tc-2', result: 'plain' }),
+        ],
+      }),
+    ]);
+
+    const assistant = turns[1] as { kind: 'assistant'; toolCalls: Array<{ result: string }> };
+    expect(assistant.toolCalls[0].result).toContain('only mine');
+    expect(assistant.toolCalls[1].result).toBe('plain');
+  });
+
+  it('adds nothing for an empty context', () => {
+    const turns = normalizeMessages([
+      makeMessage({ role: 'user', content: 'go' }),
+      makeMessage({ role: 'assistant', content: '', toolCalls: [step({ modelContext: '' })] }),
+    ]);
+    const assistant = turns[1] as { kind: 'assistant'; toolCalls: Array<{ result: string }> };
+    expect(assistant.toolCalls[0].result).toBe('25C');
   });
 });

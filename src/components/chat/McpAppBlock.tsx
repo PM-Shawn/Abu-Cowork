@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
+import { ChevronDown, ChevronRight, X } from 'lucide-react';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
@@ -17,7 +19,15 @@ import {
   type McpAppResourceMeta,
 } from '@/core/mcp/appHost';
 import { createAppBridgeSession, type AppBridgeSession } from '@/core/mcp/appBridgeSession';
-import type { ToolResultContent } from '@/types';
+import {
+  createAppBridgeHandlers,
+  type AppApprovalDecision,
+  type McpAppAuditEntry,
+} from '@/core/mcp/appBridgeHandlers';
+import type { RawCallToolResult } from '@/core/mcp/client';
+import { useChatStore } from '@/stores/chatStore';
+import { openWidgetLink } from './widgetLink';
+import type { ToolDefinition, ToolResult, ToolResultContent } from '@/types';
 
 /** Production handshake budget: the app has this long to answer `ui/initialize`
  *  and send `ui/notifications/initialized` before we give up and fall back to
@@ -128,6 +138,17 @@ export interface McpAppBlockDeps {
   /** 0 disables the handshake timer (tests run without timers). */
   handshakeTimeoutMs?: number;
   isDark?: () => boolean;
+  /** Same-server tool lookup for the app bridge (model tools, then app-only). */
+  findTool?: (server: string, tool: string) => ToolDefinition | undefined;
+  /** The shared approval chain; see `defaultCheckApproval` below. */
+  checkApproval?: (namespacedTool: string, args: Record<string, unknown>) => Promise<AppApprovalDecision>;
+  callTool?: (server: string, tool: string, args: Record<string, unknown>) => Promise<ToolResult>;
+  takeRawAppResult?: (server: string, tool: string, args: Record<string, unknown>) => RawCallToolResult | undefined;
+  readServerResource?: (server: string, uri: string) => Promise<{ contents: Array<Record<string, unknown>> }>;
+  listServerResources?: (server: string, cursor?: string) => Promise<{ resources: Array<Record<string, unknown>> }>;
+  openLink?: (url: string) => void;
+  appendComposerDraft?: (text: string) => void;
+  persistModelContext?: (text: string) => void;
 }
 
 export interface McpAppBlockProps {
@@ -147,7 +168,92 @@ export interface McpAppBlockProps {
   /** Set once the step was aborted; pushes `tool-cancelled` instead of a result. */
   cancelled?: boolean;
   conversationId?: string;
+  /** Namespaced (`server__tool`) step name — the raw-result LRU key. */
+  toolName?: string;
+  /** Message that owns the step; needed to persist `modelContext`. */
+  messageId?: string;
+  /** Already-persisted `ui/update-model-context` text for this step. */
+  modelContext?: string;
   deps?: McpAppBlockDeps;
+}
+
+// ---------------------------------------------------------------------------
+// Default dependencies
+// ---------------------------------------------------------------------------
+
+/**
+ * Run an app-initiated call through the SAME approval chain a model-initiated
+ * call of that tool goes through — `checkToolApproval` (registry.ts), the single
+ * source of truth the sidecar's `approval.check` also calls. Passing the
+ * NAMESPACED name means the plugin / browser / self-extension / enterprise-policy
+ * classifiers all see exactly what they would see for a model call, so an app
+ * call is never classified more leniently than the model path.
+ *
+ * The confirmation goes through `requestCommandConfirmationForConversation`
+ * rather than the loop-bound `requestCommandConfirmation`: an interface is not
+ * running inside an agent loop, so there is no loopId to resolve a conversation
+ * from and the dialog would be filed against the wrong conversation (and then
+ * hidden by ChatView's active-conversation filter).
+ *
+ * Imported lazily so the chat bundle does not pull registry.ts's whole graph in
+ * at module-evaluation time.
+ */
+async function defaultCheckApproval(
+  namespacedTool: string,
+  args: Record<string, unknown>,
+  conversationId: string | undefined,
+): Promise<AppApprovalDecision> {
+  const [{ checkToolApproval }, { requestCommandConfirmationForConversation }] = await Promise.all([
+    import('@/core/tools/registry'),
+    import('@/core/agent/permissionBridge'),
+  ]);
+  return checkToolApproval(
+    namespacedTool,
+    args,
+    { conversationId },
+    (info) => requestCommandConfirmationForConversation(info, conversationId ?? ''),
+  );
+}
+
+/** Strip the `<server>__` prefix a step name carries; app calls use bare names. */
+function bareToolName(server: string, toolName: string | undefined): string | undefined {
+  if (!toolName) return undefined;
+  const prefix = `${server}__`;
+  return toolName.startsWith(prefix) ? toolName.slice(prefix.length) : toolName;
+}
+
+/** One collapsed audit row: what the interface asked its server to do. */
+function AuditRow({ entry, label, argsLabel, resultLabel }: {
+  entry: McpAppAuditEntry;
+  label: string;
+  argsLabel: string;
+  resultLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-testid="mcp-app-audit-row" className="px-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-1 text-left text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+      >
+        {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+        <span className={cn(entry.isError && 'text-[var(--abu-danger)]')}>{label}</span>
+      </button>
+      {open && (
+        <div className="mt-1 space-y-1 pl-4 text-caption text-[var(--abu-text-muted)]">
+          <div>
+            <div className="font-medium">{argsLabel}</div>
+            <pre className="whitespace-pre-wrap break-all">{JSON.stringify(entry.args, null, 2)}</pre>
+          </div>
+          <div>
+            <div className="font-medium">{resultLabel}</div>
+            <pre className="whitespace-pre-wrap break-all">{entry.summary}</pre>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +280,9 @@ export default function McpAppBlock({
   isExecuting,
   cancelled,
   conversationId,
+  toolName,
+  messageId,
+  modelContext,
   deps,
 }: McpAppBlockProps) {
   const { t } = useI18n();
@@ -184,6 +293,27 @@ export default function McpAppBlock({
   const createSession = deps?.createSession ?? createAppBridgeSession;
   const handshakeTimeoutMs = deps?.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
   const readIsDark = deps?.isDark ?? (() => document.documentElement.classList.contains('dark'));
+  const findTool = deps?.findTool ?? ((s: string, tool: string) =>
+    mcpManager.getServerTools(s).find((d) => d.name === `${s}__${tool}`)
+    ?? mcpManager.getAppTool(s, tool));
+  const checkApproval = deps?.checkApproval
+    ?? ((name: string, args: Record<string, unknown>) => defaultCheckApproval(name, args, conversationId));
+  const callToolDep = deps?.callTool
+    ?? ((s: string, tool: string, args: Record<string, unknown>) =>
+      mcpManager.callTool(s, tool, args, { viaAppBridge: true }));
+  const takeRawAppResult = deps?.takeRawAppResult
+    ?? ((s: string, tool: string, args: Record<string, unknown>) => mcpManager.takeRawAppResult(s, tool, args));
+  const readServerResource = deps?.readServerResource
+    ?? ((s: string, uri: string) => mcpManager.readServerResource(s, uri));
+  const listServerResources = deps?.listServerResources
+    ?? ((s: string, cursor?: string) => mcpManager.listServerResources(s, cursor));
+  const openLink = deps?.openLink ?? openWidgetLink;
+  const appendComposerDraft = deps?.appendComposerDraft
+    ?? ((text: string) => useChatStore.getState().appendPendingInput(text));
+  const persistModelContext = deps?.persistModelContext ?? ((text: string) => {
+    if (!conversationId || !messageId) return;
+    useChatStore.getState().setToolCallModelContext(conversationId, messageId, toolCallId, text);
+  });
 
   const [activated, setActivated] = useState(false);
   const active = useSyncExternalStore(
@@ -203,6 +333,14 @@ export default function McpAppBlock({
   const [status, setStatus] = useState<BlockStatus>('loading');
   const [resource, setResource] = useState<McpAppResource | undefined>(undefined);
   const [height, setHeight] = useState(120);
+  const [displayMode, setDisplayMode] = useState<'inline' | 'fullscreen'>('inline');
+  const [audit, setAudit] = useState<McpAppAuditEntry[]>([]);
+  const [rateLimited, setRateLimited] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
+  // Local echo of `ui/update-model-context` so the expander updates even when
+  // the block has no message to persist against (replay-only mounts).
+  const [liveModelContext, setLiveModelContext] = useState<string | undefined>(undefined);
+  const shownModelContext = liveModelContext ?? modelContext;
 
   // Live connection state (spec §4.4: a server that goes away must take its
   // interface with it). A server the store has never heard of says nothing —
@@ -214,6 +352,29 @@ export default function McpAppBlock({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const sessionRef = useRef<AppBridgeSession | null>(null);
+  /** Raw server result for THIS step, taken from the LRU at most once. */
+  const rawResultRef = useRef<{ key: string; value: RawCallToolResult | undefined } | null>(null);
+
+  // The bridge effect only re-runs on active/status/srcdoc, so the handlers it
+  // builds would otherwise close over the props of that one render. Keep the
+  // injectable seams in a ref that every render refreshes and read them at call
+  // time instead.
+  const handlerDepsRef = useRef({
+    findTool, checkApproval, callToolDep, takeRawAppResult,
+    readServerResource, listServerResources, openLink,
+    appendComposerDraft, persistModelContext, readResource,
+  });
+  // Refreshed AFTER each render (never during it — a ref write in the render
+  // body is a React anti-pattern). The handlers only read this at call time,
+  // which is always after a commit, and the `useRef` initializer already holds
+  // the first render's values, so the bridge effect never sees an empty ref.
+  useEffect(() => {
+    handlerDepsRef.current = {
+      findTool, checkApproval, callToolDep, takeRawAppResult,
+      readServerResource, listServerResources, openLink,
+      appendComposerDraft, persistModelContext, readResource,
+    };
+  });
 
   // ---- 1. Fetch the interface resource -------------------------------------
   useEffect(() => {
@@ -286,9 +447,49 @@ export default function McpAppBlock({
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
+    // Policy lives in `appBridgeHandlers` (pure, separately tested); this only
+    // binds it to this block's server, store writes and UI state.
+    const handlers = createAppBridgeHandlers({
+      server,
+      findTool: (tool) => handlerDepsRef.current.findTool(server, tool),
+      checkApproval: (namespaced, args) => handlerDepsRef.current.checkApproval(namespaced, args),
+      callTool: async (tool, args) => {
+        const converted = await handlerDepsRef.current.callToolDep(server, tool, args);
+        // Prefer what the server actually returned (structuredContent/_meta
+        // survive only there) — see the raw-result LRU in client.ts.
+        const raw = handlerDepsRef.current.takeRawAppResult(server, tool, args);
+        if (raw) return raw as CallToolResult;
+        return typeof converted === 'string'
+          ? toCallToolResult(converted, undefined, false)
+          : toCallToolResult(undefined, converted, false);
+      },
+      readAppResource: async (uri) => {
+        const res = await handlerDepsRef.current.readResource(server, uri);
+        return { mimeType: res.mimeType, text: res.text };
+      },
+      readServerResource: async (uri) => {
+        const res = await handlerDepsRef.current.readServerResource(server, uri);
+        return res as unknown as Awaited<ReturnType<typeof handlers.onreadresource>>;
+      },
+      listResources: async (cursor) => {
+        const res = await handlerDepsRef.current.listServerResources(server, cursor);
+        return res as unknown as Awaited<ReturnType<typeof handlers.onlistresources>>;
+      },
+      openLink: (url) => handlerDepsRef.current.openLink(url),
+      appendComposerDraft: (text) => handlerDepsRef.current.appendComposerDraft(text),
+      setModelContext: (text) => {
+        setLiveModelContext(text);
+        handlerDepsRef.current.persistModelContext(text);
+      },
+      setDisplayMode: (mode) => setDisplayMode(mode),
+      onAudit: (entry) => setAudit((prev) => [...prev, entry]),
+      onRateLimited: () => setRateLimited(true),
+    });
+
     const session = createSession({
       frameWindow,
       appVersion: APP_VERSION,
+      handlers,
       hostContext: buildHostContext({
         isDark: readIsDark(),
         locale: getLocale(),
@@ -341,9 +542,41 @@ export default function McpAppBlock({
       return;
     }
     if (isExecuting || result === undefined) return;
-    void session.sendToolResult(toCallToolResult(result, resultContent, isError));
+    // The LRU hands a raw result over exactly once, so remember what we took:
+    // this effect re-runs whenever the bridge is rebuilt (srcdoc/theme churn)
+    // and must replay the same payload rather than silently downgrading to the
+    // converted one. After a conversation reload the LRU is empty by design —
+    // it is per-process — so replay falls back to the converted content and an
+    // app that reads `structuredContent` sees nothing there.
+    const bare = bareToolName(server, toolName);
+    const key = `${bare ?? ''}|${result}`;
+    if (bare && rawResultRef.current?.key !== key) {
+      rawResultRef.current = { key, value: takeRawAppResult(server, bare, input) };
+    }
+    const raw = rawResultRef.current?.key === key ? rawResultRef.current.value : undefined;
+    void session.sendToolResult(raw ? (raw as CallToolResult) : toCallToolResult(result, resultContent, isError));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, srcdoc, result, isExecuting, cancelled]);
+
+  // ---- 3b. Display mode ----------------------------------------------------
+  // Tell the app which mode it ended up in — both on the way into fullscreen
+  // and on the way back — so a view that lays itself out per mode can react.
+  useEffect(() => {
+    void sessionRef.current?.sendHostContextChange({ displayMode });
+  }, [displayMode]);
+
+  const exitFullscreen = useCallback(() => setDisplayMode('inline'), []);
+
+  // Esc leaves fullscreen: the iframe is sandboxed and cannot offer a host
+  // control of its own, so the host must always provide a way out.
+  useEffect(() => {
+    if (displayMode !== 'fullscreen') return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDisplayMode('inline');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [displayMode]);
 
   // ---- 4. Theme + container size -------------------------------------------
   useEffect(() => {
@@ -419,33 +652,108 @@ export default function McpAppBlock({
     );
   }
 
+  const fullscreen = displayMode === 'fullscreen';
+
+  // Fullscreen is a CSS promotion of the very same element tree — the iframe
+  // keeps its position in the JSX children array, so React never unmounts it
+  // and the bridge (and the app's own state) survive. Reparenting the iframe
+  // into a portal container would look tidier but discards the nested browsing
+  // context, i.e. reloads the app; see the spec's "不重建，保状态".
   return (
-    <div className="my-2" data-testid="mcp-app-block" ref={containerRef}>
-      {disclosure && (
-        <div className="mb-1 px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-unsupported">
-          {disclosure}
-        </div>
+    <>
+      {fullscreen && createPortal(
+        <div
+          data-testid="mcp-app-fullscreen-backdrop"
+          className="fixed inset-0 z-40 bg-black/60"
+          onClick={exitFullscreen}
+        />,
+        document.body,
       )}
-      {status === 'loading' || !srcdoc ? (
-        <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
-          {t.chat.mcpAppLoading}
-        </div>
-      ) : (
-        <iframe
-          ref={frameRef}
-          data-testid="mcp-app-frame"
-          title={`${server} · ${resourceUri}`}
-          srcDoc={srcdoc}
-          sandbox={APP_IFRAME_SANDBOX}
-          allow=""
-          referrerPolicy="no-referrer"
-          className={cn(
-            'block w-full rounded-lg',
-            meta?.prefersBorder && 'border border-[var(--abu-border-subtle)]',
-          )}
-          style={{ height: `${height}px`, border: meta?.prefersBorder ? undefined : 'none' }}
-        />
-      )}
-    </div>
+      <div
+        className={cn('my-2', fullscreen && 'fixed inset-0 z-50 my-0 flex flex-col gap-2 p-6')}
+        data-testid="mcp-app-block"
+        data-display-mode={displayMode}
+        ref={containerRef}
+      >
+        {fullscreen && (
+          <div className="flex justify-end" data-testid="mcp-app-fullscreen">
+            <button
+              type="button"
+              onClick={exitFullscreen}
+              data-testid="mcp-app-fullscreen-exit"
+              aria-label={t.chat.mcpAppExitFullscreen}
+              title={t.chat.mcpAppExitFullscreen}
+              className="btn-ghost rounded-full p-1.5"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+        {disclosure && (
+          <div className="mb-1 px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-unsupported">
+            {disclosure}
+          </div>
+        )}
+        {status === 'loading' || !srcdoc ? (
+          <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-status">
+            {t.chat.mcpAppLoading}
+          </div>
+        ) : (
+          <iframe
+            ref={frameRef}
+            data-testid="mcp-app-frame"
+            title={`${server} · ${resourceUri}`}
+            srcDoc={srcdoc}
+            sandbox={APP_IFRAME_SANDBOX}
+            allow=""
+            referrerPolicy="no-referrer"
+            className={cn(
+              'block w-full rounded-lg',
+              fullscreen && 'min-h-0 flex-1 bg-[var(--abu-bg-primary)]',
+              meta?.prefersBorder && 'border border-[var(--abu-border-subtle)]',
+            )}
+            style={{
+              height: fullscreen ? undefined : `${height}px`,
+              border: meta?.prefersBorder ? undefined : 'none',
+            }}
+          />
+        )}
+        {rateLimited && (
+          <div className="px-1 text-caption text-[var(--abu-text-muted)]" data-testid="mcp-app-rate-limited">
+            {t.chat.mcpAppRateLimited}
+          </div>
+        )}
+        {/* Audit trail — every tool call the interface made on the user's
+            behalf, collapsed by default (spec §4.3). */}
+        {audit.map((entry) => (
+          <AuditRow
+            key={entry.id}
+            entry={entry}
+            label={format(t.chat.mcpAppAuditRow, { tool: entry.tool })}
+            argsLabel={t.chat.mcpAppAuditArgs}
+            resultLabel={t.chat.mcpAppAuditResult}
+          />
+        ))}
+        {/* What the interface told the model behind the user's back
+            (`ui/update-model-context`) — visible on demand, spec §4.5. */}
+        {shownModelContext && (
+          <div className="px-1" data-testid="mcp-app-context">
+            <button
+              type="button"
+              onClick={() => setContextOpen((v) => !v)}
+              className="flex w-full items-center gap-1 text-left text-caption text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]"
+            >
+              {contextOpen ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+              {t.chat.mcpAppModelContext}
+            </button>
+            {contextOpen && (
+              <pre className="mt-1 whitespace-pre-wrap break-all pl-4 text-caption text-[var(--abu-text-muted)]">
+                {shownModelContext}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+    </>
   );
 }

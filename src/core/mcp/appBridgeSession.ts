@@ -6,20 +6,25 @@
  * tool-input / tool-result / tool-cancelled / host-context-changed → tear the
  * resource down and close the transport.
  *
- * EVERY request handler is default-deny in this batch. `tools/call`,
- * `resources/read`, `resources/list`, `ui/open-link`, `ui/message`,
- * `ui/update-model-context` and `ui/request-display-mode` all answer with a
- * JSON-RPC error; only `ping` is honoured (the SDK answers it itself). Opening
- * any of them is Task 3's job and must come with its own permission gate — an
- * app that can reach `tools/call` before that gate exists would be an
- * unreviewed execution path, so the fail-closed default is deliberate.
+ * EVERY request handler is default-deny unless the caller hands one in through
+ * `options.handlers` (built by `appBridgeHandlers.ts`, which owns same-server
+ * scoping, schema validation, the shared permission gate, the rate limit and
+ * the byte caps). A handler the caller does not supply keeps answering with a
+ * JSON-RPC error — an app that could reach `tools/call` without that policy
+ * layer would be an unreviewed execution path, so the fail-closed default
+ * survives. `ping` is always honoured (the SDK answers it itself).
+ *
+ * Host capabilities are derived from the handlers actually supplied, so a
+ * well-behaved app never attempts a method this session would refuse.
  */
 import { AppBridge, PostMessageTransport } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type {
+  McpUiHostCapabilities,
   McpUiHostContext,
   McpUiSizeChangedNotification,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { AppBridgeHandlers } from './appBridgeHandlers';
 
 /** JSON-RPC `MethodNotFound`. Protocol copies a numeric `code` straight into
  *  the error response, so this reaches the app as a proper -32601. */
@@ -50,10 +55,15 @@ export interface AppBridgeSessionOptions {
   /** The app asked the host to tear it down (`ui/notifications/request-teardown`). */
   onRequestTeardown?: () => void;
   onError?: (error: Error) => void;
+  /**
+   * Request handlers that replace the default-deny ones. Anything omitted stays
+   * denied; anything supplied is also advertised in `hostCapabilities`.
+   */
+  handlers?: Partial<AppBridgeHandlers>;
 }
 
 export interface AppBridgeSession {
-  /** The underlying SDK bridge — Task 3 replaces the default-deny handlers. */
+  /** The underlying SDK bridge (handlers already wired — see `options.handlers`). */
   readonly bridge: AppBridge;
   isInitialized(): boolean;
   /** Resolves `true` once the app sent `ui/notifications/initialized`, or
@@ -70,15 +80,30 @@ export interface AppBridgeSession {
 
 const HOST_INFO = { name: 'Abu' } as const;
 
+/**
+ * Advertise exactly what this session can actually answer. `downloadFile` is
+ * never advertised (still denied); `sandbox` is not advertised because Abu
+ * grants no device permissions and rewrites the CSP itself.
+ */
+function capabilitiesFor(handlers: Partial<AppBridgeHandlers> | undefined): McpUiHostCapabilities {
+  if (!handlers) return {};
+  return {
+    ...(handlers.oncalltool ? { serverTools: {} } : {}),
+    ...(handlers.onreadresource || handlers.onlistresources ? { serverResources: {} } : {}),
+    ...(handlers.onopenlink ? { openLinks: {} } : {}),
+    ...(handlers.onmessage ? { message: { text: {} } } : {}),
+    ...(handlers.onupdatemodelcontext ? { updateModelContext: { text: {} } } : {}),
+  };
+}
+
 export function createAppBridgeSession(options: AppBridgeSessionOptions): AppBridgeSession {
   const bridge = new AppBridge(
-    // No MCP client: automatic server forwarding would bypass the permission
-    // gate this batch has not built yet. Every handler stays host-owned.
+    // No MCP client: automatic server forwarding would bypass Abu's permission
+    // gate entirely (the SDK would proxy straight to the server). Every handler
+    // stays host-owned so `appBridgeHandlers.ts` is the only way in.
     null,
     { ...HOST_INFO, version: options.appVersion },
-    // Advertise nothing. `serverTools` / `serverResources` are deliberately
-    // absent so a well-behaved app does not even attempt `tools/call`.
-    {},
+    capabilitiesFor(options.handlers),
     { hostContext: options.hostContext },
   );
 
@@ -103,6 +128,16 @@ export function createAppBridgeSession(options: AppBridgeSessionOptions): AppBri
   bridge.onmessage = deny('ui/message');
   bridge.onupdatemodelcontext = deny('ui/update-model-context');
   bridge.onrequestdisplaymode = deny('ui/request-display-mode');
+
+  // Anything supplied overrides its deny; anything else stays fail-closed.
+  const handlers = options.handlers;
+  if (handlers?.oncalltool) bridge.oncalltool = handlers.oncalltool;
+  if (handlers?.onreadresource) bridge.onreadresource = handlers.onreadresource;
+  if (handlers?.onlistresources) bridge.onlistresources = handlers.onlistresources;
+  if (handlers?.onopenlink) bridge.onopenlink = handlers.onopenlink;
+  if (handlers?.onmessage) bridge.onmessage = handlers.onmessage;
+  if (handlers?.onupdatemodelcontext) bridge.onupdatemodelcontext = handlers.onupdatemodelcontext;
+  if (handlers?.onrequestdisplaymode) bridge.onrequestdisplaymode = handlers.onrequestdisplaymode;
 
   bridge.oninitialized = () => {
     initialized = true;

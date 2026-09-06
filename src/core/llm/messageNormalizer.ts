@@ -53,6 +53,13 @@ export interface NormalizeOptions {
 const ORPHAN_PLACEHOLDER = '[Tool execution was interrupted]';
 
 /**
+ * Prefix for the appendix an MCP App interface added to its own step
+ * (`ToolCall.modelContext`). Exported so tests — and anyone reading a
+ * transcript — can recognise host-injected text inside a tool result.
+ */
+export const APP_CONTEXT_SEPARATOR = '\n\n[App context]\n';
+
+/**
  * Tombstone for assistant turns that streamed nothing usable (no text, no
  * tool_use, no thinking). Kept syntactically valid for all providers.
  *
@@ -232,6 +239,19 @@ export function normalizeMessages(
       const toolCallsSource: (ToolCall | ToolCallForContext)[] =
         msg.toolCallsForContext || msg.toolCalls?.filter((tc) => !tc.fromSubagent) || [];
 
+      // MCP App interfaces attach model-visible context to their step
+      // (`ui/update-model-context`, spec §4.3). It lives on `msg.toolCalls`
+      // (the display copy the host writes), while the LLM history prefers
+      // `toolCallsForContext` — so pair them by tool-call id here. Appended to
+      // that step's RESULT, never to the system prompt: it is one step's
+      // addendum, and the system prompt would re-bill the whole history.
+      const appContextById = new Map<string, string>();
+      for (const tc of msg.toolCalls ?? []) {
+        if (typeof tc.id === 'string' && typeof tc.modelContext === 'string' && tc.modelContext.length > 0) {
+          appContextById.set(tc.id, tc.modelContext);
+        }
+      }
+
       const preparedToolCalls: PreparedToolCall[] = toolCallsSource.map((tc, i) => {
         const result = 'result' in tc ? tc.result : undefined;
         const resultContent = 'resultContent' in tc ? tc.resultContent : undefined;
@@ -245,6 +265,8 @@ export function normalizeMessages(
         if (!supportsVision && rawImages.length > 0 && result !== undefined) {
           effectiveResult += '\n[当前模型不支持视觉识别，无法查看截图内容。请使用其他方式获取信息，不要再尝试截图操作。]';
         }
+        const appContext = typeof tc.id === 'string' ? appContextById.get(tc.id) : undefined;
+        if (appContext) effectiveResult += `${APP_CONTEXT_SEPARATOR}${appContext}`;
 
         return {
           id: generateToolId(i, mi),

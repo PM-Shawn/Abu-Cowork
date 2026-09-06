@@ -273,6 +273,18 @@ export interface ToolCall {
    * Optional and additive: ledgers written before MCP Apps simply lack it.
    */
   ui?: { server: string; resourceUri: string };
+  /**
+   * Extra model-visible context the MCP App interface attached to this step
+   * (`ui/update-model-context`, spec §4.3).
+   *
+   * Written by the host from the sandboxed view, capped at 8 KB, OVERWRITTEN
+   * (never appended) by each update. `messageNormalizer` appends it to this
+   * step's tool result when the history is next sent to the model, so it
+   * reaches the model on the NEXT turn — never as system-prompt bytes. The
+   * tool card renders it in an expander so the user can see what the interface
+   * told the model.
+   */
+  modelContext?: string;
 }
 
 // Multimodal content types for messages

@@ -642,6 +642,12 @@ interface ChatActions {
    * No-op when the step already carries the same `ui`.
    */
   setToolCallAppUi: (convId: string, messageId: string, toolCallId: string, ui: NonNullable<ToolCall['ui']>) => void;
+  /**
+   * Persist the MCP App interface's `ui/update-model-context` text on a step.
+   * Overwrite semantics (spec §4.3: each update replaces the last), capped by
+   * the caller. No-op when the step already carries the same text.
+   */
+  setToolCallModelContext: (convId: string, messageId: string, toolCallId: string, modelContext: string) => void;
   setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
@@ -1446,6 +1452,27 @@ export const useChatStore = create<ChatStore>()(
         // Persist so a reopened conversation still knows this step had an
         // interface even if the server is gone. Same write-through as
         // setToolCallNoticeCardAction above.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      setToolCallModelContext: (convId, messageId, toolCallId, modelContext) => {
+        let changed = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (tc.modelContext === modelContext) return;
+          tc.modelContext = modelContext;
+          changed = true;
+        });
+        if (!changed) return;
+        // Write-through so the appendix survives a reload — the model only
+        // sees it on the next turn, which may be after a restart.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ replaceMessageById }) => {

@@ -334,6 +334,19 @@ export interface TranslationDict {
     mcpAppIgnoredDomains: string;
     /** Suffix appended to that list when it was truncated. */
     mcpAppIgnoredDomainsMore: string;
+    /** Collapsed audit row under the tool card: the app called a tool of its
+     *  own server. `{tool}` is the tool name. */
+    mcpAppAuditRow: string;
+    /** Label above the arguments the app passed in that audit row. */
+    mcpAppAuditArgs: string;
+    /** Label above the result summary in that audit row. */
+    mcpAppAuditResult: string;
+    /** Muted status line once the app hit the per-minute call budget. */
+    mcpAppRateLimited: string;
+    /** Expander title for the text the app added to the model's context. */
+    mcpAppModelContext: string;
+    /** Accessible label / tooltip for the button that leaves fullscreen. */
+    mcpAppExitFullscreen: string;
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;

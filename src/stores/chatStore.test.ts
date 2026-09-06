@@ -2959,6 +2959,48 @@ describe('chatStore', () => {
     });
   });
 
+  describe('setToolCallModelContext', () => {
+    function seedStep() {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.setState((state) => {
+        state.conversations[convId]?.messages.push({
+          id: 'msg-1',
+          role: 'assistant',
+          content: '',
+          timestamp: FIXED_TIMESTAMP,
+          toolCalls: [{ id: 'tc-1', name: 'weather__board', input: {} }],
+        });
+      });
+      return convId;
+    }
+    const readBack = (convId: string) => useChatStore
+      .getState()
+      .conversations[convId]?.messages.find((m) => m.id === 'msg-1')
+      ?.toolCalls?.find((t) => t.id === 'tc-1');
+
+    it('writes the app-supplied context onto the step', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'row 4 selected');
+      expect(readBack(convId)?.modelContext).toBe('row 4 selected');
+    });
+
+    it('overwrites rather than appending', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'first');
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'second');
+      expect(readBack(convId)?.modelContext).toBe('second');
+    });
+
+    it('is a no-op for the same value and for a missing step', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'same');
+      const before = useChatStore.getState().conversations[convId]?.messages[0];
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'same');
+      expect(useChatStore.getState().conversations[convId]?.messages[0]).toBe(before);
+      expect(() => useChatStore.getState().setToolCallModelContext(convId, 'nope', 'nope', 'x')).not.toThrow();
+    });
+  });
+
   // ── setConversationPermissionMode ──
   describe('setConversationPermissionMode', () => {
     it('sets permissionMode on a conversation', () => {

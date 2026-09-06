@@ -221,6 +221,9 @@ export default function ToolCallsGroup({ toolCalls, conversationId, messageId }:
           isError={toolCall.isError}
           isExecuting={toolCall.isExecuting}
           conversationId={conversationId}
+          messageId={messageId}
+          toolName={toolCall.name}
+          modelContext={toolCall.modelContext}
         />
       ))}
     </div>

@@ -280,7 +280,7 @@ describe('appHost', () => {
       const ctx = buildHostContext(base);
       expect(ctx.platform).toBe('desktop');
       expect(ctx.displayMode).toBe('inline');
-      expect(ctx.availableDisplayModes).toEqual(['inline']);
+      expect(ctx.availableDisplayModes).toEqual(['inline', 'fullscreen']);
       expect(ctx.locale).toBe('zh-CN');
       expect(ctx.timeZone).toBe('Asia/Shanghai');
       expect(ctx.userAgent).toBe('Abu/0.42.0');

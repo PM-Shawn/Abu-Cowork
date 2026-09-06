@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/ext-apps/app-bridge';
 import { createAppBridgeSession, type AppBridgeSession } from './appBridgeSession';
+import { AppBridgeRpcError } from './appBridgeHandlers';
 import { buildHostContext } from './appHost';
 
 interface JsonRpcMessage {
@@ -191,6 +192,90 @@ describe('createAppBridgeSession', () => {
       const response = frame.responseTo(60);
       expect(response?.error).toBeUndefined();
       expect(response?.result).toBeDefined();
+    });
+  });
+
+  describe('supplied handlers', () => {
+    it('answers only the methods it was given and still denies the rest', async () => {
+      const localFrame = new FakeFrameWindow();
+      const local = createAppBridgeSession({
+        frameWindow: localFrame as unknown as Window,
+        hostContext: HOST_CONTEXT,
+        appVersion: '9.9.9',
+        handlers: {
+          oncalltool: async () => ({ content: [{ type: 'text', text: 'done' }] }),
+        },
+      });
+      await flush();
+      await initialize(localFrame);
+      localFrame.fromApp({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+      await flush();
+
+      localFrame.fromApp({ jsonrpc: '2.0', id: 70, method: 'tools/call', params: { name: 'x', arguments: {} } });
+      await flush();
+      expect(localFrame.responseTo(70)?.error).toBeUndefined();
+      expect(localFrame.responseTo(70)?.result).toMatchObject({ content: [{ type: 'text', text: 'done' }] });
+
+      // Nothing else was supplied, so every other method stays fail-closed.
+      localFrame.fromApp({ jsonrpc: '2.0', id: 71, method: 'ui/open-link', params: { url: 'https://x.dev' } });
+      await flush();
+      expect(localFrame.responseTo(71)?.error?.message).toContain('not supported yet');
+
+      await local.teardown();
+    });
+
+    it('advertises exactly the capabilities backed by a handler', async () => {
+      const localFrame = new FakeFrameWindow();
+      const local = createAppBridgeSession({
+        frameWindow: localFrame as unknown as Window,
+        hostContext: HOST_CONTEXT,
+        appVersion: '9.9.9',
+        handlers: {
+          oncalltool: async () => ({ content: [] }),
+          onreadresource: async () => ({ contents: [] }),
+          onopenlink: async () => ({}),
+          onmessage: async () => ({}),
+          onupdatemodelcontext: async () => ({}),
+        },
+      });
+      await flush();
+      await initialize(localFrame);
+      const caps = (localFrame.responseTo(1)?.result as { hostCapabilities?: Record<string, unknown> })
+        ?.hostCapabilities ?? {};
+      expect(caps.serverTools).toBeDefined();
+      expect(caps.serverResources).toBeDefined();
+      expect(caps.openLinks).toBeDefined();
+      expect(caps.message).toEqual({ text: {} });
+      expect(caps.updateModelContext).toEqual({ text: {} });
+      // Never advertised: Abu denies ui/download-file outright.
+      expect(caps.downloadFile).toBeUndefined();
+
+      await local.teardown();
+    });
+
+    it('turns a handler rejection into a JSON-RPC error instead of a throw', async () => {
+      const localFrame = new FakeFrameWindow();
+      const local = createAppBridgeSession({
+        frameWindow: localFrame as unknown as Window,
+        hostContext: HOST_CONTEXT,
+        appVersion: '9.9.9',
+        handlers: {
+          oncalltool: async () => { throw new AppBridgeRpcError(-32000, 'denied by the user'); },
+        },
+      });
+      await flush();
+      await initialize(localFrame);
+      localFrame.fromApp({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
+      await flush();
+
+      localFrame.fromApp({ jsonrpc: '2.0', id: 72, method: 'tools/call', params: { name: 'x', arguments: {} } });
+      await flush();
+      const response = localFrame.responseTo(72);
+      expect(response?.result).toBeUndefined();
+      expect(response?.error?.code).toBe(-32000);
+      expect(response?.error?.message).toContain('denied by the user');
+
+      await local.teardown();
     });
   });
 

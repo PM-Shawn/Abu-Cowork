@@ -302,6 +302,8 @@ export function buildAppStyleVariables(isDark: boolean): Record<string, string> 
 export type AppContainerDimensions = McpUiHostContext['containerDimensions'];
 
 export interface HostContextInput {
+  /** Current display mode; defaults to `inline` on a fresh mount. */
+  displayMode?: 'inline' | 'fullscreen';
   isDark: boolean;
   locale: string;
   timeZone: string;
@@ -322,8 +324,11 @@ export function buildHostContext(input: HostContextInput): McpUiHostContext {
     timeZone: input.timeZone,
     userAgent: `Abu/${input.appVersion}`,
     platform: 'desktop',
-    displayMode: 'inline',
-    availableDisplayModes: ['inline'],
+    displayMode: input.displayMode ?? 'inline',
+    // `pip` is deliberately absent (spec §2 "不做"): Abu has no
+    // picture-in-picture surface, and advertising one it cannot honour would
+    // just make apps request a mode that always fails.
+    availableDisplayModes: ['inline', 'fullscreen'],
     deviceCapabilities: { touch: false, hover: true },
     styles: { variables: buildAppStyleVariables(input.isDark) as McpUiStyles },
     ...(input.containerDimensions ? { containerDimensions: input.containerDimensions } : {}),

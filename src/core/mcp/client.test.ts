@@ -24,6 +24,11 @@ const mcpMock = vi.hoisted(() => {
     readResource: (uri: string): Promise<unknown> =>
       Promise.resolve({ contents: [{ uri, mimeType: 'text/html;profile=mcp-app', text: '<h1>hi</h1>' }] }),
     callCalls: [] as Array<{ name: string; arguments: Record<string, unknown> }>,
+    callResult: (params: { name: string }): unknown =>
+      ({ content: [{ type: 'text', text: `called ${params.name}` }] }),
+    listResourceCalls: [] as Array<{ cursor?: string } | undefined>,
+    listResources: (): Promise<unknown> =>
+      Promise.resolve({ resources: [{ uri: 'weather://today', name: 'today' }] }),
     notificationHandlers: [] as Array<{ schema: unknown; handler: (n: unknown) => void }>,
     closed: 0,
   };
@@ -42,7 +47,11 @@ const mcpMock = vi.hoisted(() => {
     }
     async callTool(params: { name: string; arguments: Record<string, unknown> }): Promise<unknown> {
       state.callCalls.push(params);
-      return { content: [{ type: 'text', text: `called ${params.name}` }] };
+      return state.callResult(params);
+    }
+    async listResources(params?: { cursor?: string }): Promise<unknown> {
+      state.listResourceCalls.push(params);
+      return state.listResources();
     }
     setNotificationHandler(schema: unknown, handler: (n: unknown) => void): void {
       state.notificationHandlers.push({ schema, handler });
@@ -58,7 +67,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: mcpMock.Fa
 
 const { state } = mcpMock;
 
-import { mcpManager } from './client';
+import { mcpManager, resetRawAppResults } from './client';
 import { MAX_APP_RESOURCE_BYTES, McpAppResourceError } from './appResources';
 
 const SERVER = 'ui-server';
@@ -92,7 +101,13 @@ beforeEach(() => {
   state.readCalls = [];
   state.callCalls = [];
   state.notificationHandlers = [];
+  state.listResourceCalls = [];
   state.closed = 0;
+  state.callResult = (params: { name: string }) =>
+    ({ content: [{ type: 'text', text: `called ${params.name}` }] });
+  state.listResources = () =>
+    Promise.resolve({ resources: [{ uri: 'weather://today', name: 'today' }] });
+  resetRawAppResults();
   state.readResource = (uri: string) =>
     Promise.resolve({ contents: [{ uri, mimeType: 'text/html;profile=mcp-app', text: '<h1>hi</h1>' }] });
 });
@@ -377,5 +392,111 @@ describe('readResource', () => {
     const res = await mcpManager.readResource(SERVER, 'ui://x/1.html');
     expect(res.text).toBe('recovered');
     expect(state.readCalls).toHaveLength(2);
+  });
+});
+
+describe('raw app-result LRU (controller ruling)', () => {
+  const UI_META = { ui: { resourceUri: 'ui://board/main.html', visibility: ['model', 'app'] } };
+
+  it('stashes the server\'s own result for a tool that has an interface', async () => {
+    await connect([tool('board', UI_META)]);
+    state.callResult = () => ({
+      content: [{ type: 'text', text: 'rows' }],
+      structuredContent: { rows: [1, 2] },
+      _meta: { trace: 'abc' },
+    });
+
+    await mcpManager.callTool(SERVER, 'board', { q: 'x' });
+    const raw = mcpManager.takeRawAppResult(SERVER, 'board', { q: 'x' });
+    // Abu's own return value dropped structuredContent/_meta; the stash keeps them.
+    expect(raw).toMatchObject({ structuredContent: { rows: [1, 2] }, _meta: { trace: 'abc' } });
+  });
+
+  it('hands a stashed result over exactly once', async () => {
+    await connect([tool('board', UI_META)]);
+    await mcpManager.callTool(SERVER, 'board', { q: 'x' });
+    expect(mcpManager.takeRawAppResult(SERVER, 'board', { q: 'x' })).toBeDefined();
+    expect(mcpManager.takeRawAppResult(SERVER, 'board', { q: 'x' })).toBeUndefined();
+  });
+
+  it('keys on the arguments regardless of key order', async () => {
+    await connect([tool('board', UI_META)]);
+    await mcpManager.callTool(SERVER, 'board', { q: 'x', z: 1 });
+    expect(mcpManager.takeRawAppResult(SERVER, 'board', { z: 1, q: 'x' })).toBeDefined();
+  });
+
+  it('misses on different arguments, a different tool or a different server', async () => {
+    await connect([tool('board', UI_META)]);
+    await mcpManager.callTool(SERVER, 'board', { q: 'x' });
+    expect(mcpManager.takeRawAppResult(SERVER, 'board', { q: 'other' })).toBeUndefined();
+    expect(mcpManager.takeRawAppResult(SERVER, 'other', { q: 'x' })).toBeUndefined();
+    expect(mcpManager.takeRawAppResult('elsewhere', 'board', { q: 'x' })).toBeUndefined();
+  });
+
+  it('does not stash for a tool without an interface', async () => {
+    await connect([tool('plain')]);
+    await mcpManager.callTool(SERVER, 'plain', { q: 'x' });
+    expect(mcpManager.takeRawAppResult(SERVER, 'plain', { q: 'x' })).toBeUndefined();
+  });
+
+  it('skips a result larger than the per-entry cap', async () => {
+    await connect([tool('board', UI_META)]);
+    state.callResult = () => ({ content: [{ type: 'text', text: 'x'.repeat(300 * 1024) }] });
+    await mcpManager.callTool(SERVER, 'board', { q: 'big' });
+    expect(mcpManager.takeRawAppResult(SERVER, 'board', { q: 'big' })).toBeUndefined();
+  });
+
+  it('evicts the oldest entry past 32', async () => {
+    await connect([tool('board', UI_META)]);
+    for (let i = 0; i < 33; i++) {
+      await mcpManager.callTool(SERVER, 'board', { q: `arg-${i}` });
+    }
+    expect(mcpManager.takeRawAppResult(SERVER, 'board', { q: 'arg-0' })).toBeUndefined();
+    expect(mcpManager.takeRawAppResult(SERVER, 'board', { q: 'arg-32' })).toBeDefined();
+  });
+});
+
+describe('read-only server resources for the app bridge', () => {
+  it('reads a non-ui:// resource without touching the ui:// cache', async () => {
+    await connect([tool('board')]);
+    state.readResource = (uri: string) =>
+      Promise.resolve({ contents: [{ uri, mimeType: 'application/json', text: '{"a":1}' }] });
+
+    const first = await mcpManager.readServerResource(SERVER, 'weather://today');
+    const second = await mcpManager.readServerResource(SERVER, 'weather://today');
+    expect(first.contents[0]).toMatchObject({ uri: 'weather://today', text: '{"a":1}' });
+    // Uncached on purpose — server data can change between reads.
+    expect(state.readCalls).toEqual(['weather://today', 'weather://today']);
+    expect(second.contents[0]).toMatchObject({ text: '{"a":1}' });
+  });
+
+  it('refuses a payload over the 2 MiB cap', async () => {
+    await connect([tool('board')]);
+    const big = 'x'.repeat(MAX_APP_RESOURCE_BYTES + 1);
+    state.readResource = (uri: string) => Promise.resolve({ contents: [{ uri, text: big }] });
+
+    await expect(mcpManager.readServerResource(SERVER, 'weather://big'))
+      .rejects.toMatchObject({ code: 'resource-too-large' });
+  });
+
+  it('refuses a server that is not connected', async () => {
+    await expect(mcpManager.readServerResource('nope', 'weather://today'))
+      .rejects.toBeInstanceOf(McpAppResourceError);
+    await expect(mcpManager.listServerResources('nope'))
+      .rejects.toBeInstanceOf(McpAppResourceError);
+  });
+
+  it('lists that server\'s resources and forwards the cursor', async () => {
+    await connect([tool('board')]);
+    state.listResources = () => Promise.resolve({
+      resources: [{ uri: 'weather://today', name: 'today' }, { name: 'no uri' }],
+      nextCursor: 'c2',
+    });
+
+    const listed = await mcpManager.listServerResources(SERVER, 'c1');
+    expect(state.listResourceCalls).toEqual([{ cursor: 'c1' }]);
+    // Entries without a uri are unusable — dropped rather than passed on.
+    expect(listed.resources).toEqual([{ uri: 'weather://today', name: 'today' }]);
+    expect(listed.nextCursor).toBe('c2');
   });
 });

@@ -862,6 +862,20 @@ export interface SubagentMetadata {
   memory?: 'session' | 'project' | 'user';
   background?: boolean;
   managed?: ManagedAgentMetadata;
+  /**
+   * Where this agent came from, when it did not come from the user.
+   *
+   * Only `plugin` exists: a plugin-contributed agent is read-only (a plugin
+   * update rewrites its AGENT.md), so the UI has to be able to say so. Agents
+   * the user wrote and the built-ins leave this `undefined` — there is no
+   * enumeration of every origin (the ecosystem has one; Abu has one thing to
+   * say, and says it).
+   *
+   * On disk it round-trips as the single frontmatter key `source:
+   * plugin:<pluginKey>`; in memory a plugin agent installed before that key
+   * existed gets it back from `installed.json` (see `discoveryStore.refresh`).
+   */
+  source?: { kind: 'plugin'; plugin: string };
 
   // ── Display-only fields (rendered by toolbox AgentsSection / chat welcome banner)
   //   All optional. User-defined agents can fill any subset; builtins ship full data.

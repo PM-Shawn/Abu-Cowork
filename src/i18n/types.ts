@@ -408,6 +408,8 @@ export interface TranslationDict {
     pickAgent: string;
     pickAgentEmpty: string;
     pickAgentClear: string;
+    /** Trailing tag on a plugin-contributed agent's row in the @ picker. */
+    pickAgentPluginTag: string;
     // Conversation ID badge
     copyConvIdTooltip: string;
     copyConvIdCopied: string;
@@ -1778,6 +1780,10 @@ export interface TranslationDict {
     agentAvatar: string;
     agentSystemPrompt: string;
     agentEdit: string;
+    /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
+    agentFromPlugin: string;
+    agentFromPluginEditDisabled: string;
+    agentFromPluginDeleteDisabled: string;
     agentSave: string;
     agentSaveAndTest: string;
     agentEditorTitle: string;

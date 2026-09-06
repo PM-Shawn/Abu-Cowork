@@ -177,8 +177,15 @@ interface PayloadAgent {
   rendered: string;
 }
 
-/** Both payload shapes, converted, sorted by name, one entry per name. */
-async function readPayloadAgents(scan: PackageScan, packageDir: string): Promise<PayloadAgent[]> {
+/**
+ * Both payload shapes, converted, sorted by name, one entry per name.
+ *
+ * `pluginKey` is stamped into every rendered AGENT.md as its `source:` — the
+ * host's statement of where the agent came from, which is why it is threaded
+ * down here rather than read out of the package (see `agentPayload`'s
+ * `DROPPED_KEYS`).
+ */
+async function readPayloadAgents(scan: PackageScan, packageDir: string, pluginKey: string): Promise<PayloadAgent[]> {
   const found: PayloadAgent[] = [];
   for (const entry of await scan.children('agents')) {
     let relPath: string;
@@ -207,7 +214,7 @@ async function readPayloadAgents(scan: PackageScan, packageDir: string): Promise
       description: converted.description,
       relPath,
       emptyPrompt: converted.body.trim() === '',
-      rendered: renderAgentMd(converted),
+      rendered: renderAgentMd(converted, { pluginKey }),
     });
   }
 
@@ -315,13 +322,14 @@ async function installPayloadAgents(
   installDir: string,
   disclosed: PluginAgentDisclosure[],
   previouslyOurs: ReadonlySet<string>,
+  pluginKey: string,
 ): Promise<string[]> {
   const wanted = new Set(disclosed.filter((a) => !a.conflict).map((a) => a.name));
   if (wanted.size === 0) return [];
 
   let payload: PayloadAgent[];
   try {
-    payload = await readPayloadAgents(scanPluginPackage(installDir), installDir);
+    payload = await readPayloadAgents(scanPluginPackage(installDir), installDir, pluginKey);
   } catch {
     // The same policy one level up: the copy already succeeded and the user
     // already approved it, so a payload that cannot be enumerated narrows the
@@ -496,7 +504,7 @@ async function planInstallWithHistory(opts: PlanInstallOptions): Promise<Planned
 
   const skills = await discoverSkills(scan);
   const key = pluginKey(manifest.name, opts.marketplaceName);
-  const payloadAgents = await readPayloadAgents(scan, sourceDir);
+  const payloadAgents = await readPayloadAgents(scan, sourceDir, key);
   // Without a home there is no install record to read, so every taken name
   // counts as a conflict — the conservative direction: an agent is skipped
   // rather than a user's own one silently replaced.
@@ -575,7 +583,7 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
 
   // After the copy: the agents are materialised from the installed tree, so
   // nothing the copy refused can reach ~/.abu/agents.
-  const agents = await installPayloadAgents(targetDir, disclosure.agents, previouslyContributedAgents);
+  const agents = await installPayloadAgents(targetDir, disclosure.agents, previouslyContributedAgents, disclosure.key);
 
   return {
     record: {

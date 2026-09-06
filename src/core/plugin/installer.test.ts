@@ -1071,7 +1071,7 @@ describe('installing the agents payload', () => {
     // ecosystem-only `color`, and `memory` (dropped, spec §4).
     writeFileSync(
       join(pkg, 'agents', 'writer', 'AGENT.md'),
-      '---\nname: writer\ndescription: Writes\nmemory: user\ncolor: blue\ntools: Read, Grep\n---\n\nYou write.\n',
+      '---\nname: writer\ndescription: Writes\nmemory: user\ncolor: blue\nsource: plugin:impostor@elsewhere\ntools: Read, Grep\n---\n\nYou write.\n',
     );
     writeFileSync(
       join(pkg, 'agents', 'reviewer.md'),
@@ -1107,10 +1107,14 @@ describe('installing the agents payload', () => {
     expect(text).toContain('- Read');
     expect(text).not.toContain('memory:');
     expect(text).not.toContain('color:');
+    // Provenance is the host's statement: stamped with the key this install is
+    // recorded under, and never the one the package claimed for itself.
+    expect(text).toContain('source: plugin:weather@official');
+    expect(text).not.toContain('impostor@elsewhere');
     // The single-file shape lands as a directory of the same shape.
-    expect(readFileSync(join(installDir, 'agents', 'reviewer', 'AGENT.md'), 'utf8')).toContain(
-      'name: reviewer',
-    );
+    const reviewer = readFileSync(join(installDir, 'agents', 'reviewer', 'AGENT.md'), 'utf8');
+    expect(reviewer).toContain('name: reviewer');
+    expect(reviewer).toContain('source: plugin:weather@official');
 
     expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0]).sort()).toEqual([
       join(installDir, 'agents', 'reviewer'),

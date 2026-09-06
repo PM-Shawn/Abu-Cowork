@@ -12,6 +12,8 @@ import { getParentDir } from '@/utils/pathUtils';
 import type { SubagentDefinition } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import { getAgentToolSummary } from '@/utils/agentToolPresentation';
+import { pluginDisplayName } from '@/core/plugin/installedStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { getAllTools } from '@/core/tools/registry';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
@@ -61,6 +63,7 @@ interface AgentsSectionProps {
 
 export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
+  const installedPlugins = usePluginStore((s) => s.installed);
   const { extensionsSearchQuery, disabledAgents, toggleAgentEnabled, closeExtensions } = useSettingsStore();
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
@@ -88,7 +91,12 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
       const fullAgents: SubagentDefinition[] = [];
       for (const meta of agents) {
         const full = agentRegistry.getAgent(meta.name);
-        if (full) fullAgents.push(full);
+        if (!full) continue;
+        // The registry knows only what the AGENT.md said; the discovery store is
+        // where an agent installed before the `source:` key existed gets its
+        // provenance back (see `applyPluginAgentSources`). Carry it over so the
+        // detail view sees the same origin the `@` picker does.
+        fullAgents.push(!full.source && meta.source ? { ...full, source: meta.source } : full);
       }
       setInstalledAgents(fullAgents);
     };
@@ -122,6 +130,9 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   const systemAgents = filteredAgents.filter(isSystemAgent);
 
   const selected = installedAgents.find((a) => a.name === selectedAgent) ?? null;
+  // A plugin owns this agent's file: editing it would be overwritten by the
+  // next plugin update, and removing it belongs to uninstalling the plugin.
+  const selectedPluginSource = selected?.source?.kind === 'plugin' ? selected.source : undefined;
 
   // Delete a user-installed agent
   const handleDelete = async (agent: SubagentDefinition) => {
@@ -272,14 +283,18 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
                 {menuAgent === selected.name && (
                   <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                      disabled={!!selectedPluginSource}
+                      title={selectedPluginSource ? t.toolbox.agentFromPluginEditDisabled : undefined}
                       onClick={() => { setEditorAgent(selected); setMenuAgent(null); setSelectedAgent(null); }}
                     >
                       <Pencil className="h-3 w-3" />
                       {t.toolbox.agentEdit}
                     </button>
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                      disabled={!!selectedPluginSource}
+                      title={selectedPluginSource ? t.toolbox.agentFromPluginDeleteDisabled : undefined}
                       onClick={() => { handleDelete(selected); setMenuAgent(null); }}
                     >
                       <Trash2 className="h-3 w-3" />
@@ -297,7 +312,11 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
             {/* Added by */}
             <div>
               <div className="text-minor text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
-              <div className="text-body font-medium text-[var(--abu-text-primary)]">{isSystemAgent(selected) ? 'System' : 'User'}</div>
+              <div className="text-body font-medium text-[var(--abu-text-primary)]" data-testid="agent-added-by">
+                {selectedPluginSource
+                  ? format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
+                  : isSystemAgent(selected) ? 'System' : 'User'}
+              </div>
             </div>
 
             {/* Description */}

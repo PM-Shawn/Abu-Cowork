@@ -35,6 +35,37 @@ export function getBuiltinAgentNames(): ReadonlySet<string> {
 }
 
 /**
+ * The one `source:` value AGENT.md frontmatter can carry: `plugin:<pluginKey>`.
+ *
+ * A string rather than a nested map because that is the shape the ecosystem
+ * already labels provenance with (Claude Code renders `plugin:${pluginName}`),
+ * and because a one-line scalar survives hand-editing better than a block.
+ */
+const AGENT_SOURCE_PLUGIN_PREFIX = 'plugin:';
+
+/**
+ * Read a frontmatter `source:` value.
+ *
+ * Anything that is not `plugin:<non-empty>` is ignored rather than rejected:
+ * the key is metadata, and a file that spells it wrong is still a usable agent
+ * — it simply has no provenance to show. (An unknown value must NOT be kept
+ * either: the UI would then claim an origin nothing verified.)
+ */
+export function parseAgentSource(value: unknown): SubagentMetadata['source'] {
+  if (typeof value !== 'string') return undefined;
+  if (!value.startsWith(AGENT_SOURCE_PLUGIN_PREFIX)) return undefined;
+  const plugin = value.slice(AGENT_SOURCE_PLUGIN_PREFIX.length).trim();
+  return plugin === '' ? undefined : { kind: 'plugin', plugin };
+}
+
+/** Inverse of {@link parseAgentSource}. */
+export function formatAgentSource(source: SubagentMetadata['source']): string | undefined {
+  if (!source || source.kind !== 'plugin') return undefined;
+  const plugin = source.plugin.trim();
+  return plugin === '' ? undefined : `${AGENT_SOURCE_PLUGIN_PREFIX}${plugin}`;
+}
+
+/**
  * Parse an AGENT.md file: YAML frontmatter + system prompt body
  */
 export function parseAgentFile(raw: string, filePath: string): SubagentDefinition | null {
@@ -58,6 +89,7 @@ export function parseAgentFile(raw: string, filePath: string): SubagentDefinitio
       skills: normalizeDeclaredSkills(meta.skills),
       memory: (meta.memory as 'session' | 'project' | 'user') ?? 'session',
       background: meta.background === true,
+      source: parseAgentSource(meta.source),
       // Display-only fields (optional, only filled for agents that opted in via
       // AgentEditor or the registry.ts builtins). Round-trip through YAML
       // frontmatter so user-created agents survive a restart.
@@ -601,6 +633,10 @@ export function serializeAgentMd(metadata: Partial<SubagentMetadata>, systemProm
   set('skills', metadata.skills);
   set('memory', metadata.memory);
   if (metadata.background) set('background', true);
+  // Provenance, if any. Emitted as the same `plugin:<key>` scalar the parser
+  // reads, so an agent written by the plugin installer and one re-saved by the
+  // editor carry it identically.
+  set('source', formatAgentSource(metadata.source));
   // Display-only fields for the toolbox detail panel and chat welcome banner.
   // Skipped when empty so the AGENT.md frontmatter stays minimal.
   set('intro', metadata.intro);

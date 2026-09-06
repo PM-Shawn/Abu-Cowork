@@ -183,3 +183,16 @@ export async function findInstalled(home: string, key: string): Promise<Installe
   const plugins = await readInstalled(home);
   return plugins.find((x) => x.key === key) ?? null;
 }
+
+/**
+ * What to call the plugin behind a `plugin:<key>` provenance label.
+ *
+ * The key is `${name}@${marketplace}` — accurate but not what a user calls the
+ * thing, so the record's own `name` wins when the plugin is installed. An
+ * unknown key falls back to the key itself: the label must still say something
+ * true when a record is missing (uninstalled between a scan and a render, or a
+ * hand-edited manifest).
+ */
+export function pluginDisplayName(installed: readonly InstalledPlugin[], key: string): string {
+  return installed.find((p) => p.key === key)?.name ?? key;
+}

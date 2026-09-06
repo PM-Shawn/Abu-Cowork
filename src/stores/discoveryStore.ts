@@ -1,9 +1,60 @@
 import { create } from 'zustand';
+import { homeDir } from '@tauri-apps/api/path';
 import type { SkillMetadata, SubagentMetadata } from '../types';
 import { skillLoader } from '../core/skill/loader';
 import { agentRegistry } from '../core/agent/registry';
+import { readInstalled, type InstalledPlugin } from '../core/plugin/installedStore';
 import { useSettingsStore } from './settingsStore';
 import { useWorkspaceStore } from './workspaceStore';
+
+/**
+ * Give a plugin-contributed agent its `source` back when its AGENT.md has none.
+ *
+ * Agents installed before the `source:` frontmatter key existed have no
+ * provenance on disk, and rewriting their AGENT.md to add one would edit a file
+ * that now lives in the user's `~/.abu/agents` — so the label is restored here,
+ * in memory, from the record that already knows what each plugin contributed
+ * (`installed.json`'s `contributed.agents`, the same list uninstall trusts).
+ *
+ * Lives in the store, not in `core/agent/registry`, on purpose: the registry
+ * must not learn about `core/plugin` (the plugin installer already depends on
+ * the registry, and the reverse edge would close the cycle).
+ *
+ * A `source` already parsed off disk wins — a fresh install stamps the file
+ * itself, and that is the more specific statement. Agents no record claims are
+ * returned untouched.
+ */
+export function applyPluginAgentSources(
+  agents: SubagentMetadata[],
+  installed: readonly InstalledPlugin[],
+): SubagentMetadata[] {
+  const owner = new Map<string, string>();
+  for (const record of installed) {
+    for (const name of record.contributed?.agents ?? []) {
+      if (!owner.has(name)) owner.set(name, record.key);
+    }
+  }
+  if (owner.size === 0) return agents;
+
+  return agents.map((agent) => {
+    if (agent.source) return agent;
+    const plugin = owner.get(agent.name);
+    return plugin ? { ...agent, source: { kind: 'plugin' as const, plugin } } : agent;
+  });
+}
+
+/**
+ * `installed.json`, or `[]`. Discovery must not fail because the plugin
+ * manifest could not be read — the agents themselves are already on disk and
+ * usable; only the provenance label is lost.
+ */
+async function readInstalledPluginsSafely(): Promise<InstalledPlugin[]> {
+  try {
+    return await readInstalled(await homeDir());
+  } catch {
+    return [];
+  }
+}
 
 interface DiscoveryState {
   skills: SkillMetadata[];
@@ -54,9 +105,10 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
         workspaceOverride !== undefined
           ? workspaceOverride
           : useWorkspaceStore.getState().currentPath;
-      const [skills, agents] = await Promise.all([
+      const [skills, agents, installedPlugins] = await Promise.all([
         skillLoader.discoverSkills(wp),
         agentRegistry.discoverAgents(),
+        readInstalledPluginsSafely(),
       ]);
 
       // Auto-disable project-level skills on first discovery (opt-in model).
@@ -68,7 +120,7 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
         useSettingsStore.getState().autoDisableProjectSkills(projectSkillNames);
       }
 
-      set({ skills, agents, isLoading: false });
+      set({ skills, agents: applyPluginAgentSources(agents, installedPlugins), isLoading: false });
     } catch (err) {
       console.warn('Discovery refresh failed:', err);
       set({ isLoading: false });

@@ -84,6 +84,11 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       samplePrompts: samplePrompts.length > 0 ? samplePrompts : undefined,
       category: category.trim() || undefined,
       tags: tags.length > 0 ? tags : undefined,
+      // Provenance is not an editable field: carried over verbatim so a save
+      // cannot quietly launder a plugin's agent into a user-authored one. A new
+      // agent has none. (The detail views disable Edit for plugin agents, so
+      // this is the invariant behind that gate, not a second entry point.)
+      source: agent?.source,
     };
   };
 

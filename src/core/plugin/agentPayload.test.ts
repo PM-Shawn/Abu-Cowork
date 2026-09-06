@@ -41,6 +41,7 @@ describe('AGENT_FRONTMATTER_ALLOWLIST', () => {
         'name',
         'sample-prompts',
         'skills',
+        'source',
         'tags',
         'tools',
       ].sort(),
@@ -215,6 +216,41 @@ describe('renderAgentMd', () => {
     const parsed = parseAgentFile(renderAgentMd(converted), '/p/AGENT.md');
     expect(parsed?.name).toBe('from-file');
     expect(parsed?.systemPrompt).toBe('body only');
+  });
+
+  /**
+   * Provenance is the host's statement, not the package's. A package that
+   * declares its own `source:` is claiming to come from somewhere — the exact
+   * claim the label exists to make trustworthy — so the declared value is
+   * dropped on conversion and only the installer's key is ever written.
+   */
+  describe('source: provenance', () => {
+    const claiming = '---\nname: reviewer\nsource: plugin:trusted-vendor@official\n---\n\nYou review.';
+
+    it('stamps the caller\'s plugin key, overriding what the package claimed', () => {
+      const converted = convertSingleFileAgent(claiming, 'reviewer');
+      // Dropped at conversion — the claim never even reaches the renderer.
+      expect(converted.frontmatter.source).toBeUndefined();
+
+      const rendered = renderAgentMd(converted, { pluginKey: 'weather@official' });
+      expect(rendered).toContain('source: plugin:weather@official');
+      expect(rendered).not.toContain('trusted-vendor@official');
+      expect(parseAgentFile(rendered, '/p/AGENT.md')?.source).toEqual({
+        kind: 'plugin',
+        plugin: 'weather@official',
+      });
+    });
+
+    it('writes no source at all without a plugin key (the user-authored path)', () => {
+      const rendered = renderAgentMd(convertSingleFileAgent(claiming, 'reviewer'));
+      expect(rendered).not.toContain('source:');
+      expect(parseAgentFile(rendered, '/p/AGENT.md')?.source).toBeUndefined();
+    });
+
+    it('treats a blank plugin key as no key rather than emitting an empty claim', () => {
+      const converted = convertSingleFileAgent(claiming, 'reviewer');
+      expect(renderAgentMd(converted, { pluginKey: '   ' })).not.toContain('source:');
+    });
   });
 });
 

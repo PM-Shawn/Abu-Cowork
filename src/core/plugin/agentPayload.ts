@@ -12,11 +12,12 @@
  *   - **allowlist**, not denylist: only the keys `parseAgentFile` actually
  *     reads survive, so ecosystem-only keys (`color`, `permissionMode`, …)
  *     cannot smuggle behaviour into a file Abu will later parse;
- *   - **`memory` is dropped**, declared or not. `memory` has no runtime
+ *   - **`memory` and `source` are dropped**, declared or not. `memory` has no runtime
  *     consumer today (it is pure metadata), so a package's `memory: user`
  *     would only colour a detail panel; a converted agent is written without
  *     the key and is treated exactly like an agent that never declared one
- *     (spec §4, Ruling 2026-09-06).
+ *     (spec §4, Ruling 2026-09-06). `source` is provenance and belongs to the
+ *     host: only `renderAgentMd`'s `pluginKey` option can write one (spec §1).
  * `tools` / `disallowed-tools` pass through: every tool call still goes through
  * Abu's permission gate and approvals, so declaring them only narrows the
  * default set (spec §4).
@@ -54,21 +55,30 @@ export const AGENT_FRONTMATTER_ALLOWLIST = [
   'sample-prompts',
   'category',
   'tags',
+  'source',
 ] as const;
 
 /** Allowlisted keys whose value is a list, however the author spelled it. */
 const LIST_KEYS = ['tools', 'disallowed-tools', 'skills', 'tags'] as const;
 
 /**
- * Allowlisted (i.e. `parseAgentFile` reads them) but never emitted.
+ * Allowlisted (i.e. `parseAgentFile` reads them) but never carried over from
+ * the package's own frontmatter.
  *
  * `memory` stays in the allowlist because that constant documents the parser's
  * key set, but no converted agent carries it: writing a package's own
  * `memory: user` back out would hand a stranger's agent a claim over the user's
  * memory, and writing anything else would state a restriction nothing enforces.
  * Absent, the agent reads exactly like one whose author never declared it.
+ *
+ * `source` is dropped for a sharper reason: it is provenance, and provenance is
+ * the host's statement, not the package's. A package declaring
+ * `source: plugin:trusted-vendor@official` would otherwise get to label itself
+ * as coming from somewhere it does not. The only `source` a converted agent
+ * carries is the one `renderAgentMd` injects from the key the installer is
+ * actually installing under (spec §1).
  */
-const DROPPED_KEYS = ['memory'] as const;
+const DROPPED_KEYS = ['memory', 'source'] as const;
 
 export interface ConvertedAgent {
   /** Frontmatter `name`, or the caller's fallback (the file/directory name). */
@@ -187,9 +197,15 @@ function normalizeList(value: unknown): string[] {
  * The body is trimmed because that is what the round trip settles on anyway:
  * `parseAgentFile` trims the prompt on read, and the serializer supplies its
  * own blank line after the closing fence.
+ *
+ * `options.pluginKey` is the ONLY way a `source:` key reaches the output: pass
+ * the key the install record will carry and the agent is stamped with it; omit
+ * it and the file has no provenance. A package's own `source:` never survives
+ * (see {@link DROPPED_KEYS}).
  */
-export function renderAgentMd(agent: ConvertedAgent): string {
+export function renderAgentMd(agent: ConvertedAgent, options?: { pluginKey?: string }): string {
   const fm = agent.frontmatter;
+  const pluginKey = options?.pluginKey?.trim();
   const metadata: Partial<SubagentMetadata> = {
     name: agent.name,
     description: agent.description,
@@ -205,6 +221,10 @@ export function renderAgentMd(agent: ConvertedAgent): string {
     samplePrompts: asStringArray(fm['sample-prompts']),
     category: asString(fm.category),
     tags: asStringArray(fm.tags),
+    // Provenance comes from the caller — never from `fm`, which had `source`
+    // dropped on conversion. Rendering the same agent without a key (the
+    // user-authored path) writes no `source` at all.
+    source: pluginKey ? { kind: 'plugin', plugin: pluginKey } : undefined,
   };
   // No `memory`: `serializeAgentMd` omits an undefined one, so the AGENT.md
   // simply has no such key and `parseAgentFile` applies its own default on read

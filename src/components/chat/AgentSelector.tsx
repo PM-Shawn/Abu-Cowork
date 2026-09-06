@@ -141,6 +141,14 @@ export default function AgentSelector({
                         >
                           {toolLabel}
                         </span>
+                        {a.source?.kind === 'plugin' && (
+                          <span
+                            data-testid="agent-source-plugin"
+                            className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                          >
+                            {t.chat.pickAgentPluginTag}
+                          </span>
+                        )}
                         {isActive && <Check className="h-3 w-3 text-[var(--abu-clay)] shrink-0" />}
                       </div>
                       <p className="text-caption text-[var(--abu-text-tertiary)] mt-0.5 line-clamp-2 leading-snug">

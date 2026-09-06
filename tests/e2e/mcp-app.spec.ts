@@ -23,11 +23,17 @@
  * app-initiated calls are classified identically (that is the whole point of
  * the app bridge reusing `checkToolApproval`), and neither asks. The dialog
  * appears for *plugin-contributed* connectors. So the run arms that gate the
- * way a real boot does — `abu-plugins`'s persisted `knownMcpServerNames`, which
- * `onRehydrateStorage` feeds to `setPluginServerNames` — and reloads. The
- * reload is also what clears the per-conversation grant minted by an approval,
- * and it doubles as the spec's "reopen the conversation, the interface comes
- * back" acceptance item.
+ * way a real boot does — it writes a real `installed.json` crediting a plugin
+ * with this connector, and reloads, so `bootstrapPluginUpdates` →
+ * `refreshInstalled` → `mcpServerNamesOf` derives the gate from disk exactly
+ * as it would for a genuinely installed plugin. The reload is also what clears
+ * the per-conversation grant minted by an approval, and it doubles as the
+ * spec's "reopen the conversation, the interface comes back" acceptance item.
+ *
+ * Nothing may be asserted about the connector's card in 「我的」 after that
+ * point: a plugin-owned server is deliberately excluded from that list
+ * (`MCPSection`'s `scopedServers`), because it belongs to the package that
+ * brought it. That is why the §6.5b disconnect journey runs BEFORE the seed.
  */
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
@@ -50,6 +56,11 @@ const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const TEST_API_KEY = 'abu-e2e-mcp-app-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-e2e-mcp-app-model';
 const SERVER_NAME = 'mcp-app-demo';
+// Identity of the install record that credits a plugin with SERVER_NAME — the
+// only thing that arms the plugin-tool approval gate (see seedPluginInstall).
+const PLUGIN_MARKETPLACE = 'abu-e2e-marketplace';
+const PLUGIN_NAME = 'abu-e2e-mcp-app-plugin';
+const PLUGIN_VERSION = '1.0.0';
 // `chat.mcpAppNotConnected` with `{server}` filled in — the block's own
 // disconnected placeholder (spec §6.5b). Spelled out rather than imported so a
 // silent wording change has to be acknowledged here.
@@ -240,6 +251,10 @@ async function useSystemTheme(page: Page): Promise<void> {
  * store status the UI actually writes.
  */
 async function toggleDemoConnector(page: Page, expectConnected: boolean): Promise<void> {
+  // 「扩展」 lives in the sidebar, which starts collapsed and stays collapsed
+  // until something reveals it — so reveal it, rather than clicking at a
+  // button that is in the DOM but off-screen behind the transcript.
+  await showSidebar(page);
   await page.getByLabel('Main navigation').getByRole('button', { name: /^(扩展|Extensions)$/ }).click();
   const panel = page.getByRole('main');
   await panel.getByRole('button', { name: /^(连接器|Connectors)$/ }).click({ timeout: READY_TIMEOUT });
@@ -257,10 +272,15 @@ async function toggleDemoConnector(page: Page, expectConnected: boolean): Promis
   await page.keyboard.press('Escape');
 }
 
-/** Back to the conversation the run opened, from wherever the sidebar is. */
-async function openConversation(page: Page, prompt: string): Promise<void> {
+/** Reveal the sidebar if it is collapsed; a no-op when it is already open. */
+async function showSidebar(page: Page): Promise<void> {
   const sidebarToggle = page.getByTitle(/显示侧栏|Show sidebar/);
   if (await sidebarToggle.count()) await sidebarToggle.first().click();
+}
+
+/** Back to the conversation the run opened, from wherever the sidebar is. */
+async function openConversation(page: Page, prompt: string): Promise<void> {
+  await showSidebar(page);
   const recentConversation = page
     .getByRole('button', { name: `${prompt.slice(0, 30)}...` })
     .first();
@@ -268,14 +288,46 @@ async function openConversation(page: Page, prompt: string): Promise<void> {
   await recentConversation.click();
 }
 
-/** Arm the plugin-tool approval gate for the demo connector (see file header). */
-async function armPluginApprovalGate(page: Page): Promise<void> {
-  await page.evaluate((serverName) => {
-    window.localStorage.setItem('abu-plugins', JSON.stringify({
-      state: { marketplaces: [], knownMcpServerNames: [serverName] },
-      version: 2,
-    }));
-  }, SERVER_NAME);
+/**
+ * Arm the plugin-tool approval gate for the demo connector (see file header).
+ *
+ * A REAL install record on disk, not a forged `abu-plugins` localStorage
+ * entry. Persisted `knownMcpServerNames` alone no longer survives a boot: the
+ * app re-derives the gate from `installed.json` on every launch
+ * (`bootstrapPluginUpdates` → `refreshInstalled` → `mcpServerNamesOf`), and a
+ * missing manifest is a legitimate empty read — so the very reload that is
+ * supposed to apply the forged entry is what erases it. Seeding the manifest
+ * arms the gate through the production path instead.
+ *
+ * Paths are spelled out rather than imported from `src/core/plugin/paths.ts`:
+ * this file already spells out the localStorage keys and the UI strings it
+ * depends on, and the E2E build has no `@/` alias. `Home` under the run's
+ * appData root is where `electron/main.cjs` redirects `app.getPath('home')`
+ * for an E2E launch, which is the `home` the renderer's `homeDir()` resolves.
+ */
+function seedPluginInstall(dataRoot: ElectronDataRoot): void {
+  const pluginRoot = path.join(dataRoot.appDataDir, 'Home', '.abu', 'plugin-packages');
+  // A real install has its package on disk, and the skill loader reads
+  // `<install dir>/skills` for every record. This one contributes no skills,
+  // so the directory is there and empty.
+  fs.mkdirSync(
+    path.join(pluginRoot, PLUGIN_MARKETPLACE, PLUGIN_NAME, PLUGIN_VERSION, 'skills'),
+    { recursive: true },
+  );
+  fs.writeFileSync(
+    path.join(pluginRoot, 'installed.json'),
+    JSON.stringify([{
+      key: `${PLUGIN_NAME}@${PLUGIN_MARKETPLACE}`,
+      marketplace: PLUGIN_MARKETPLACE,
+      name: PLUGIN_NAME,
+      version: PLUGIN_VERSION,
+      // Fixed, not `new Date()`: nothing here may vary between runs.
+      installedAt: '2026-01-01T00:00:00.000Z',
+      sourceKind: 'relative',
+      contributed: { skills: [], mcpServers: [SERVER_NAME], agents: [] },
+    }], null, 2),
+    'utf8',
+  );
 }
 
 function appFrame(page: Page, index: number) {
@@ -519,8 +571,30 @@ test.describe.serial('MCP Apps host in Electron', () => {
       'mcp-app-demo summary: alpha=100 beta=200 gamma=300',
     );
 
+    // ---- §6.5b a disconnected connector takes its interface with it ------
+    // The tool card above still shows the plain result; what must go is the
+    // live interface, replaced by a line naming the connector to reconnect.
+    //
+    // Runs BEFORE the plugin seed below, and that ordering is load-bearing:
+    // the only UI that can disconnect a server is the 「我的」 connector card,
+    // and `MCPSection` deliberately keeps plugin-owned servers out of that
+    // list (they belong to the package that brought them). Once the seed
+    // lands, this journey has no entry point at all — see the file header.
+    await toggleDemoConnector(page, false);
+    await openConversation(page, prompt);
+    await expect(page.getByTestId('mcp-app-status')).toHaveText(NOT_CONNECTED, {
+      timeout: READY_TIMEOUT,
+    });
+    await expect(page.locator('[data-testid="mcp-app-frame"]')).toHaveCount(0);
+
+    // Reconnecting brings it back — with its rows, from the persisted step.
+    await toggleDemoConnector(page, true);
+    await openConversation(page, prompt);
+    const reconnected = appFrameContent(page, 0);
+    await expect(reconnected.getByTestId('demo-row')).toHaveCount(3, { timeout: READY_TIMEOUT });
+
     // ---- arm the plugin gate, reload, reopen the conversation ------------
-    await armPluginApprovalGate(page);
+    seedPluginInstall(dataRoot);
     // Drop the readiness marker first: the reload respawns the connector, and
     // the interface can only be rebuilt once that connection is back. Reopening
     // the conversation before then renders nothing at all — the step's `ui`
@@ -555,22 +629,6 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(
       page.getByTestId('mcp-app-audit-row').filter({ hasText: 'refresh_rows' }),
     ).toBeVisible({ timeout: READY_TIMEOUT });
-
-    // ---- §6.5b a disconnected connector takes its interface with it ------
-    // The tool card above still shows the plain result; what must go is the
-    // live interface, replaced by a line naming the connector to reconnect.
-    await toggleDemoConnector(page, false);
-    await openConversation(page, prompt);
-    await expect(page.getByTestId('mcp-app-status')).toHaveText(NOT_CONNECTED, {
-      timeout: READY_TIMEOUT,
-    });
-    await expect(page.locator('[data-testid="mcp-app-frame"]')).toHaveCount(0);
-
-    // Reconnecting brings it back — with its rows, from the persisted step.
-    await toggleDemoConnector(page, true);
-    await openConversation(page, prompt);
-    const reconnected = appFrameContent(page, 0);
-    await expect(reconnected.getByTestId('demo-row')).toHaveCount(3, { timeout: READY_TIMEOUT });
 
     // ---- the hostile interface -------------------------------------------
     const evilPrompt = `abu-e2e-mcp-app-evil-${randomUUID()}`;

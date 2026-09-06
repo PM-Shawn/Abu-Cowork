@@ -381,6 +381,87 @@ describe('a batch is pinned per region', () => {
     expect(args.expectedFrameOrigins).toBeUndefined();
   });
 
+  it('refuses a batch whose SECOND region was never allowed, even though the first was', async () => {
+    // The hole this closes: with several regions under one approval, judging
+    // only the page (or only the first region) lets a step reach a site the
+    // user never authorized on the strength of one they did.
+    const CDN = 'https://cdn.example.org';
+    servePage(PAGE_URL, [
+      { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
+      { frameId: 'f5', origin: CDN, url: `${CDN}/widget`, sameOriginAsTop: false, accessible: true },
+    ]);
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
+    });
+
+    const decision = await checkToolApproval(
+      'abu-browser__batch',
+      {
+        tabId: TAB,
+        steps: JSON.stringify([
+          { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+          { action: 'click', frameId: 'f5', locator: { text: '提交' } },
+        ]),
+      },
+      unattended,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('allows it once every region a step targets is allowed', async () => {
+    const CDN = 'https://cdn.example.org';
+    servePage(PAGE_URL, [
+      { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
+      { frameId: 'f5', origin: CDN, url: `${CDN}/widget`, sameOriginAsTop: false, accessible: true },
+    ]);
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed', [CDN]: 'allowed' },
+    });
+
+    const decision = await checkToolApproval(
+      'abu-browser__batch',
+      {
+        tabId: TAB,
+        steps: JSON.stringify([
+          { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+          { action: 'click', frameId: 'f5', locator: { text: '提交' } },
+        ]),
+      },
+      unattended,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(decision.browserExecution?.expectedFrameOrigins).toEqual({ f4: VENDOR, f5: CDN });
+  });
+
+  it('refuses a batch whose region is a money-movement site, however ordinary the page is', async () => {
+    servePage(PAGE_URL, [
+      { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
+      { frameId: 'f3', origin: BANK, url: BANK_URL, sameOriginAsTop: false, accessible: true },
+    ]);
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed', [BANK]: 'allowed' },
+    });
+
+    const decision = await checkToolApproval(
+      'abu-browser__batch',
+      {
+        tabId: TAB,
+        steps: JSON.stringify([
+          { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+          { action: 'click', frameId: 'f3', locator: { text: '确认转账' } },
+        ]),
+      },
+      unattended,
+    );
+
+    expect(decision.decision).toBe('deny');
+  });
+
   it('refuses the whole batch when one step\'s region was never allowed', async () => {
     useSettingsStore.setState({ browserSitePermissions: { [PAGE]: 'allowed' } });
 

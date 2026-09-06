@@ -1754,11 +1754,31 @@ function validateFrameOrigins(view, frames) {
   });
 }
 
+/**
+ * How long the frame probe is given before a listing gives up on it.
+ *
+ * A tab suspended inside `alert()`/`confirm()` runs NOTHING — not the page's
+ * script, not the automation runtime — so an isolated-world call into it never
+ * settles. `get_tabs` must stay answerable there (it is the one listing that
+ * marks the frozen tab, so a model can avoid picking it), which means the
+ * frame probe has to be bounded rather than trusted. Belt to the braces of the
+ * `pendingDialogs` skip below: a tab can also freeze between the check and the
+ * call, and a renderer can wedge for reasons that raise no dialog at all.
+ */
+const FRAME_PROBE_TIMEOUT_MS = 2000;
+
 /** The page's embedded regions, or `[]` when the runtime could not be asked. */
 async function frameTreeFor(view) {
   try {
     assertAutomationDocumentAllowed(view);
-    const frames = await runDomAutomation(view, 'frames', {});
+    let timer;
+    const frames = await Promise.race([
+      runDomAutomation(view, 'frames', {}),
+      new Promise((resolve) => {
+        timer = armTimer(() => resolve(null), FRAME_PROBE_TIMEOUT_MS);
+      }),
+    ]).finally(() => disarmTimer(timer));
+    if (frames === null) return [];
     return validateFrameOrigins(view, frames) ?? [];
   } catch {
     return [];
@@ -2384,6 +2404,10 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     for (const wantedTabId of framesWanted) {
       const target = tabs.find((tab) => tab.tabId === wantedTabId);
       if (!target) continue;
+      // A tab held by a native dialog cannot be scripted at all. Asking it for
+      // a frame list would stall the whole listing — and this listing is
+      // exactly how a caller LEARNS the tab is frozen.
+      if (pendingDialogs.has(target.id)) continue;
       const wantedView = views.get(target.id);
       if (!wantedView) continue;
       const tree = await frameTreeFor(wantedView);

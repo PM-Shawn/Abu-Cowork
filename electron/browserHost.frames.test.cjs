@@ -100,6 +100,9 @@ class FakeWebContents {
 
   async executeJavaScriptInIsolatedWorld(_worldId, scripts) {
     const code = scripts && scripts[0] ? scripts[0].code : '';
+    // A tab suspended inside a native dialog runs nothing: the isolated-world
+    // call never settles either, same renderer, same blocked main thread.
+    if (this.suspendPageCalls) return new Promise(() => {});
     if (/typeof globalThis/.test(code)) return true;
     const call = /handleAction\(\s*"([a-z_]+)"/.exec(code);
     if (!call) return undefined;
@@ -325,6 +328,28 @@ test('a snapshot\'s region list gets the same cross-check as the listing\'s', as
     const shot = await host.performBrowserAutomation('snapshot', { ownerId: OWNER, tabId });
 
     assert.equal(shot.frames[1].origin, null);
+  } finally {
+    restore();
+  }
+});
+
+test('a listing still answers for a tab frozen by a dialog, instead of waiting on it', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
+    const { tabId, contents } = await openTab(host, { runtimeFrames: [main, REGION_SAME] });
+    // The renderer is suspended — nothing injected into it will ever settle.
+    // `get_tabs` is precisely how a caller LEARNS the tab is frozen, so it has
+    // to come back regardless, with no frame list rather than no answer.
+    contents.suspendPageCalls = true;
+
+    const listing = await Promise.race([
+      host.performBrowserAutomation('get_tabs', { ownerId: OWNER }),
+      new Promise((resolve) => setTimeout(() => resolve('TIMED OUT'), 3000)),
+    ]);
+
+    assert.notEqual(listing, 'TIMED OUT');
+    assert.equal('frames' in tabRow(listing, tabId), false);
   } finally {
     restore();
   }

@@ -484,6 +484,8 @@ interface BrowserActionTarget {
   embeddedOrigins?: string[];
   /** For a `batch`: the origin each region its steps target is showing now. */
   frameOrigins?: Record<string, string>;
+  /** The URL of each named region, for the high-risk check. */
+  frameUrls?: string[];
   /**
    * A region was named but the browser could not confirm what it is showing —
    * it is gone, unreachable on this channel, or not an ordinary web page.
@@ -512,6 +514,28 @@ function strictestVerdict(
   if (a === 'denied' || b === 'denied') return 'denied';
   if (a === 'allowed' && b === 'allowed') return 'allowed';
   return 'default';
+}
+
+/**
+ * The stricter answer across EVERY site one call touches — the page, and each
+ * embedded region its steps target.
+ *
+ * A `batch` can name several regions under one approval, so folding over all
+ * of them is what stops one authorized region from carrying the others.
+ * Duplicates collapse (the same site named twice is one site), and an absent
+ * origin still counts: `getSiteVerdict(null, …)` is `default`, which is
+ * "nothing standing here", not "fine".
+ */
+function strictestVerdictOf(
+  origins: Array<string | null>,
+  sitePermissions: Record<string, 'allowed' | 'denied'>,
+): 'allowed' | 'denied' | 'default' {
+  let verdict: 'allowed' | 'denied' | 'default' | null = null;
+  for (const origin of [...new Set(origins)]) {
+    const next = getSiteVerdict(origin, sitePermissions);
+    verdict = verdict === null ? next : strictestVerdict(verdict, next);
+  }
+  return verdict ?? 'default';
 }
 
 /** Only the one value the gate acts on; anything else is treated as absent. */
@@ -639,6 +663,9 @@ async function resolveBrowserActionTarget(
         const frameUrl = namedFrames.length === 1
           ? regions.find((region) => region.frameId === namedFrames[0])?.url ?? null
           : null;
+        const frameUrls = namedFrames
+          .map((frameId) => regions.find((region) => region.frameId === frameId)?.url)
+          .filter((url): url is string => typeof url === 'string');
         return {
           // ANY named region the browser could not confirm makes the whole call
           // origin-unknown, batch included: a run that fell back to the page's
@@ -650,6 +677,7 @@ async function resolveBrowserActionTarget(
           topUrl,
           ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
           ...(Object.keys(frameOrigins).length > 0 ? { frameOrigins } : {}),
+          ...(frameUrls.length > 0 ? { frameUrls } : {}),
           ...(unverified ? { frameUnverified: true as const } : {}),
         };
       }
@@ -1380,11 +1408,19 @@ export async function checkToolApproval(
        * decision is made on.
        */
       const storedVerdict = consequence === 'state-changing' || runMode === 'unattended'
-        ? strictestVerdict(
-          getSiteVerdict(origin, settingsSnapshot.browserSitePermissions ?? {}),
-          target.topOrigin !== undefined
-            ? getSiteVerdict(target.topOrigin, settingsSnapshot.browserSitePermissions ?? {})
-            : null,
+        ? strictestVerdictOf(
+          [
+            origin,
+            // Only when a region was named — otherwise these ARE the same site
+            // and folding it in would say nothing.
+            ...(target.topOrigin !== undefined ? [target.topOrigin] : []),
+            // A `batch` may name several regions, and every one of them is a
+            // site this approval would let it act on. Judging only the first
+            // (or only the page) is how a step reaches a region the user never
+            // authorized on the strength of one it did.
+            ...Object.values(target.frameOrigins ?? {}),
+          ],
+          settingsSnapshot.browserSitePermissions ?? {},
         )
         : 'default';
       /**
@@ -1401,7 +1437,7 @@ export async function checkToolApproval(
       // embedded in an ordinary one, and an ordinary region on a payment page,
       // are both "this call touches money".
       const highRisk = storedVerdict !== 'denied'
-        && (isHighRiskUrl(target.url) || isHighRiskUrl(target.topUrl ?? null));
+        && [target.url, target.topUrl ?? null, ...(target.frameUrls ?? [])].some(isHighRiskUrl);
       const siteVerdict: DecideBrowserOperationSiteVerdict = highRisk
         ? 'high-risk'
         : storedVerdict;

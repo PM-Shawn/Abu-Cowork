@@ -1440,14 +1440,39 @@ export const useSettingsStore = create<SettingsStore>()(
       setPetOpen: (open) => set({ petOpen: open }),
     }),
     {
-      name: SETTINGS_STORAGE_KEY,
+      // Literal, not `SETTINGS_STORAGE_KEY`: `tests/e2e/storeVersions.ts` reads
+      // this store's persisted version by matching `name: '<key>', version: N`
+      // in this source file, so that a seeded localStorage entry can never
+      // drift from the app's own version. A constant here would break it.
+      name: 'abu-settings',
+      version: 48,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
+      //
+      // Declared AFTER `version` on purpose: `tests/e2e/storeVersions.ts`
+      // matches `name: '<key>', version: N` with only whitespace and comments
+      // allowed between the two, so anything else in that gap silently breaks
+      // the probe that keeps e2e seeds from drifting.
       storage: createJSONStorage(() => settingsStateStorage),
-      version: 47,
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V48: `browserConfigRevisions` — one monotonic counter per browser
+        // authorization field, so a write from a second window keeps whichever
+        // side of each field is newer instead of overwriting the lot (S18).
+        //
+        // Starting every counter at 0 is correct rather than merely
+        // convenient: an upgraded store has exactly one writer, so there is no
+        // ordering to reconstruct, and 0 is the value a missing counter is
+        // read as anyway (`readBrowserConfigRevisions`). The first edit after
+        // the upgrade bumps past whatever it finds on disk, which is what makes
+        // a second window that upgrades later still able to win its own field.
+        // ════════════════════════════════════════════════
+        if (version < 48) {
+          state.browserConfigRevisions = { ...INITIAL_BROWSER_CONFIG_REVISIONS };
+        }
 
         // ════════════════════════════════════════════════
         // V47: `browserOperationPolicy` collapses its two run-mode columns

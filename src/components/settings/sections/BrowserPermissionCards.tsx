@@ -418,6 +418,13 @@ function BrowserAutomationOverviewCard() {
           })
           : t.settings.browserAutomationOverviewEmpty}
       </p>
+      {/*
+        With nothing that could use the browser, the prerequisites, the
+        "nothing needs attention" line and the run-time note are all answers to
+        a question nobody asked — four lines of text about an empty set. The
+        subtitle above already said it.
+      */}
+      {overview.anyBrowserCapable && (
       <div className="mt-3 border-t border-[var(--abu-border)] pt-3">
         {overview.prerequisites.map((prerequisite) => (
           <p
@@ -467,6 +474,7 @@ function BrowserAutomationOverviewCard() {
           {t.settings.browserAutomationRuntimeCheck}
         </p>
       </div>
+      )}
     </div>
   );
 }

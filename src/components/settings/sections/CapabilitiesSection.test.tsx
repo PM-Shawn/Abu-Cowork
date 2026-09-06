@@ -1820,6 +1820,23 @@ describe('CapabilitiesSection', () => {
       expect(overviewCard()).toHaveTextContent('No automatic task can use the browser yet');
     });
 
+    // Four lines of prerequisites, all-clear and caveats about an EMPTY set is
+    // text that answers a question nobody asked. The subtitle already said it.
+    it('says nothing else when there is nothing to say it about', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: false,
+        browserSitePermissions: testSiteVerdicts({}),
+      });
+      withAutomations({});
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).not.toHaveTextContent('The master switch is off');
+      expect(overviewCard()).not.toHaveTextContent('Nothing here needs attention');
+      expect(overviewCard()).not.toHaveTextContent('only known at run time');
+    });
+
     it('names the master switch as the thing blocking everything, once', async () => {
       useSettingsStore.setState({ allowUnattendedBrowser: false });
       withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });

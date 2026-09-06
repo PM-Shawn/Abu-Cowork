@@ -1,5 +1,34 @@
 "use strict";
 (() => {
+  // src/shared/types.ts
+  var MAIN_FRAME_REF = "f0";
+  function isFrameRef(value) {
+    return typeof value === "string" && /^f\d+$/.test(value);
+  }
+  function frameOfRef(ref) {
+    const colon = ref.indexOf(":");
+    if (colon <= 0) return MAIN_FRAME_REF;
+    const prefix = ref.slice(0, colon);
+    return isFrameRef(prefix) ? prefix : MAIN_FRAME_REF;
+  }
+  function localRef(ref) {
+    const colon = ref.indexOf(":");
+    if (colon <= 0) return ref;
+    return isFrameRef(ref.slice(0, colon)) ? ref.slice(colon + 1) : ref;
+  }
+  function qualifyRef(frameId, ref) {
+    return frameId === MAIN_FRAME_REF ? ref : `${frameId}:${ref}`;
+  }
+  function frameGoneMessage(frameId) {
+    return `Embedded region "${frameId}" is not on this page any more (it reloaded, or was removed). Any refs from it are stale too. Take a fresh snapshot to get the current frame list, then use the frameId from it.`;
+  }
+  function frameUnreachableMessage(node) {
+    if (node.inaccessibleReason === "not-a-web-page") {
+      return `Embedded region "${node.frameId}" is not an ordinary web page (${node.url ?? "no address"}), so it has no addressable content. Act on the main page instead.`;
+    }
+    return `Embedded region "${node.frameId}" comes from ${node.origin ?? "another site"} and the built-in browser cannot reach inside a third-party embedded region: its automation runs in the main page only. Do this part in your own Chrome (the browser extension channel can address that region), or ask the user to complete it by hand. Do not try to script around it.`;
+  }
+
   // src/content/index.ts
   var MAX_EXTRACT_TEXT_SIZE = 5e4;
   var MAX_SNAPSHOT_ELEMENTS = 200;
@@ -26,19 +55,27 @@
   var elementByRef = /* @__PURE__ */ new Map();
   var refCounter = 0;
   function refFor(el) {
+    const frameId = frameIdOfElement(el);
     const existing = refByElement.get(el);
-    if (existing && elementByRef.get(existing)?.deref() === el) return existing;
+    if (existing && elementByRef.get(existing)?.deref() === el) return qualifyRef(frameId, existing);
     const ref = `e${++refCounter}`;
     refByElement.set(el, ref);
     elementByRef.set(ref, new WeakRef(el));
-    return ref;
+    return qualifyRef(frameId, ref);
   }
-  function resolveRef(ref) {
-    const el = elementByRef.get(ref)?.deref();
+  function frameIdOfElement(el) {
+    const doc = el.ownerDocument;
+    if (!doc || doc === document) return hostFrameId;
+    return frameIdByDoc.get(doc) ?? frameIdForDoc(doc);
+  }
+  function resolveRef(ref, scope) {
+    if (frameOfRef(ref) !== scope.frameId) return null;
+    const el = elementByRef.get(localRef(ref))?.deref();
     if (!el || !el.isConnected) {
-      elementByRef.delete(ref);
+      elementByRef.delete(localRef(ref));
       return null;
     }
+    if (el.ownerDocument !== scope.doc) return null;
     return el;
   }
   function sweepRefs() {
@@ -47,19 +84,253 @@
       if (!el || !el.isConnected) elementByRef.delete(ref);
     }
   }
+  var MAX_FRAME_DEPTH = 8;
+  var MAX_FRAMES = 40;
+  var MAX_SHADOW_DEPTH = 10;
+  var LOCAL_FRAME_WALK = !!electronBrowserRuntime;
+  var hostFrameId = MAIN_FRAME_REF;
+  var frameListTruncated = false;
+  function hostScope() {
+    return { doc: document, frameId: hostFrameId };
+  }
+  var frameIdByDoc = /* @__PURE__ */ new WeakMap();
+  var docByFrameId = /* @__PURE__ */ new Map();
+  var frameIdByFrameEl = /* @__PURE__ */ new WeakMap();
+  var frameElByFrameId = /* @__PURE__ */ new Map();
+  var frameNodeById = /* @__PURE__ */ new Map();
+  var frameCounter = 0;
+  function frameIdForDoc(doc) {
+    if (doc === document) return hostFrameId;
+    const existing = frameIdByDoc.get(doc);
+    if (existing && docByFrameId.get(existing)?.deref() === doc) return existing;
+    const id = `f${++frameCounter}`;
+    frameIdByDoc.set(doc, id);
+    docByFrameId.set(id, new WeakRef(doc));
+    return id;
+  }
+  function frameIdForCrossOriginEl(el) {
+    const existing = frameIdByFrameEl.get(el);
+    if (existing && frameElByFrameId.get(existing)?.deref() === el) return existing;
+    const id = `f${++frameCounter}`;
+    frameIdByFrameEl.set(el, id);
+    frameElByFrameId.set(id, new WeakRef(el));
+    return id;
+  }
+  function reachableFrameDoc(el) {
+    try {
+      const doc = el.contentDocument;
+      if (!doc || !doc.defaultView || !doc.documentElement) return null;
+      return doc;
+    } catch {
+      return null;
+    }
+  }
+  function originOfDocument(doc) {
+    return normalizedOrigin(doc.location.origin) ?? normalizedOrigin(doc.location.href);
+  }
+  function frameElementIsHidden(el) {
+    const view = el.ownerDocument.defaultView;
+    if (!view) return true;
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return true;
+    if (view.getComputedStyle(el).visibility === "hidden") return true;
+    const docLeft = rect.left + (view.scrollX || 0);
+    const docTop = rect.top + (view.scrollY || 0);
+    return docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+  }
+  function enumerateFrames() {
+    const topOrigin = originOfDocument(document);
+    const out = [{
+      frameId: hostFrameId,
+      origin: topOrigin,
+      url: document.location.href,
+      sameOriginAsTop: true,
+      accessible: topOrigin !== null,
+      ...topOrigin === null ? { inaccessibleReason: "not-a-web-page" } : {}
+    }];
+    const walk = (doc, parentFrameId, parentOrigin, depth) => {
+      if (depth >= MAX_FRAME_DEPTH || out.length >= MAX_FRAMES) return;
+      for (const el of queryAllDeep(doc, "iframe, frame")) {
+        if (out.length >= MAX_FRAMES) return;
+        const hidden = frameElementIsHidden(el) ? { hidden: true } : {};
+        const child = reachableFrameDoc(el);
+        if (child) {
+          const origin = originOfDocument(child) ?? parentOrigin;
+          const id = frameIdForDoc(child);
+          out.push({
+            frameId: id,
+            parentFrameId,
+            origin,
+            url: child.location.href,
+            sameOriginAsTop: origin !== null && origin === topOrigin,
+            accessible: origin !== null,
+            ...hidden,
+            ...origin === null ? { inaccessibleReason: "not-a-web-page" } : {}
+          });
+          if (origin !== null) walk(child, id, origin, depth + 1);
+          continue;
+        }
+        const src = el.getAttribute("src") ?? "";
+        let hinted;
+        try {
+          hinted = src ? normalizedOrigin(new URL(src, doc.baseURI).href) : null;
+        } catch {
+          hinted = null;
+        }
+        out.push({
+          frameId: frameIdForCrossOriginEl(el),
+          parentFrameId,
+          origin: hinted,
+          ...src ? { url: src } : {},
+          sameOriginAsTop: false,
+          accessible: false,
+          ...hidden,
+          inaccessibleReason: hinted === null ? "not-a-web-page" : "cross-origin-unreachable"
+        });
+      }
+    };
+    if (LOCAL_FRAME_WALK) walk(document, hostFrameId, topOrigin, 0);
+    frameListTruncated = out.length >= MAX_FRAMES;
+    frameNodeById.clear();
+    for (const node of out) frameNodeById.set(node.frameId, node);
+    return out;
+  }
+  function resolveScope(payload) {
+    const named = payload.frameId;
+    if (named !== void 0 && !isFrameRef(named)) {
+      throw new Error(
+        `Invalid frameId ${JSON.stringify(named)}. Frame handles come from a snapshot's \`frames\` list (or get_tabs) and look like "f0", "f3". Omit it to act on the main document.`
+      );
+    }
+    const fromRef = frameFromLocators(payload);
+    if (named !== void 0 && fromRef !== null && named !== fromRef) {
+      throw new Error(
+        `frameId ${JSON.stringify(named)} does not match the ref you passed, which belongs to ${JSON.stringify(fromRef)}. A ref can only be used in the frame that minted it \u2014 drop the frameId, or use a ref from that frame.`
+      );
+    }
+    const wanted = named ?? fromRef ?? hostFrameId;
+    if (wanted === hostFrameId) return hostScope();
+    if (!LOCAL_FRAME_WALK) {
+      throw new Error(frameGoneMessage(wanted));
+    }
+    const doc = docByFrameId.get(wanted)?.deref();
+    if (doc && doc.defaultView) return { doc, frameId: wanted };
+    const known = frameNodeById.get(wanted);
+    if (known && !known.accessible) throw new Error(frameUnreachableMessage(known));
+    throw new Error(
+      frameGoneMessage(wanted) + (frameListTruncated ? ` This page has more than ${MAX_FRAMES} embedded regions and only the first ${MAX_FRAMES} are listed, so this one may simply be past the end of that list rather than gone.` : "")
+    );
+  }
+  var LOCATOR_ROUTED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select"]);
+  function resolveLocatorFrame(action, payload, scope) {
+    if (!LOCAL_FRAME_WALK || !LOCATOR_ROUTED_ACTIONS.has(action)) return scope;
+    if (payload.frameId !== void 0) return scope;
+    const locator = payload.locator;
+    if (!locator || locator.ref) return scope;
+    try {
+      if (findElement(scope, locator) !== null) return scope;
+    } catch {
+      return scope;
+    }
+    const hits = [];
+    const ambiguous = [];
+    for (const node of enumerateFrames()) {
+      if (node.frameId === scope.frameId || !node.accessible) continue;
+      if (node.hidden) continue;
+      const doc = docByFrameId.get(node.frameId)?.deref();
+      if (!doc || !doc.defaultView) continue;
+      const candidate = { doc, frameId: node.frameId };
+      try {
+        if (findElement(candidate, locator) !== null) hits.push(candidate);
+      } catch {
+        ambiguous.push(candidate);
+      }
+    }
+    const all = [...hits, ...ambiguous];
+    if (all.length > 1) {
+      throw new Error(
+        `That locator matches an element in ${all.length} different embedded regions of this page, so it does not identify one. Nothing was clicked or changed. Pass \`frameId\` to say which:
+` + all.map((c) => `  ${c.frameId} (${normalizedOrigin(c.doc.location.href) ?? "unknown region"})`).join("\n")
+      );
+    }
+    return all[0] ?? scope;
+  }
+  function frameFromLocators(payload) {
+    const refs = [];
+    const collect = (value) => {
+      if (typeof value !== "object" || value === null) return;
+      const ref = value.ref;
+      if (typeof ref === "string" && ref !== "") refs.push(ref);
+    };
+    collect(payload.locator);
+    const condition = payload.condition;
+    if (typeof condition === "object" && condition !== null) {
+      collect(condition.locator);
+    }
+    if (refs.length === 0) return null;
+    const frames = new Set(refs.map(frameOfRef));
+    if (frames.size > 1) {
+      throw new Error("The refs in this call come from different frames; one call acts in one frame.");
+    }
+    return [...frames][0];
+  }
+  var MAX_SHADOW_SCAN_NODES = 2e4;
+  function shadowRootsIn(root, depth = 0, budget = { left: MAX_SHADOW_SCAN_NODES }) {
+    if (depth >= MAX_SHADOW_DEPTH || budget.left <= 0) return [];
+    const found = [];
+    for (const el of root.querySelectorAll("*")) {
+      if (budget.left <= 0) break;
+      budget.left -= 1;
+      const shadow = el.shadowRoot;
+      if (shadow) {
+        found.push(shadow);
+        found.push(...shadowRootsIn(shadow, depth + 1, budget));
+      }
+    }
+    return found;
+  }
+  function queryAllDeep(root, selector) {
+    const out = [...root.querySelectorAll(selector)];
+    for (const shadow of shadowRootsIn(root)) out.push(...shadow.querySelectorAll(selector));
+    return out;
+  }
+  function closedShadowHostCount(scope) {
+    let count = 0;
+    for (const el of scope.doc.querySelectorAll("*")) {
+      if (!el.tagName.includes("-")) continue;
+      if (el.shadowRoot) continue;
+      if (el.children.length > 0) continue;
+      if ((el.textContent ?? "").trim() !== "") continue;
+      count += 1;
+      if (count >= 20) break;
+    }
+    return count;
+  }
+  function closedShadowNote(count) {
+    return ` This page also has ${count} sealed region${count === 1 ? "" : "s"} (closed shadow DOM), whose contents no automation can read or operate \u2014 not this tool, and not a script. If what you are looking for is in one, ask the user to do that step by hand.`;
+  }
   var ORIGIN_PINNED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select", "keyboard"]);
-  function assertOriginPin(action, payload) {
-    if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  var ORIGIN_PINNED_READ_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "find",
+    "locate",
+    "get_html",
+    "extract_text",
+    "extract_table"
+  ]);
+  function assertOriginPin(action, payload, scope) {
+    const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
+    if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
     const expected = typeof payload.expectedOrigin === "string" ? payload.expectedOrigin : "";
     if (!expected) {
-      if (payload.unattended !== true) return;
+      if (pinnedRead || payload.unattended !== true) return;
       throw new Error(
         "Refused: this unattended run sent no approved origin for the page, so the action could not be verified against what was authorized. Call get_tabs to re-read where you are, then request this action again."
       );
     }
-    const current = normalizedOrigin(location.href);
+    const current = normalizedOrigin(scope.doc.location.href);
     if (current === expected) return;
-    if (window.top !== window) {
+    if (scope.frameId !== MAIN_FRAME_REF || window.top !== window) {
       throw new Error(
         `Refused: this action targeted a frame from a different site than the one approved (approved ${expected}, this frame is ${current ?? "not an ordinary web page"}). Embedded third-party frames are not covered by that approval and a fresh snapshot will not change it \u2014 act on the main page, or ask for this site to be authorized separately.`
       );
@@ -85,49 +356,75 @@
       return null;
     }
   }
-  function frameServicesAction(action, payload) {
+  function frameServicesAction(action, payload, scope) {
     const locator = payload.locator;
     if (locator !== void 0) {
       try {
-        return findElement(locator) !== null;
+        return findElement(scope, locator) !== null;
       } catch {
         return false;
       }
     }
-    const focused = document.activeElement;
-    const hasRealFocus = focused !== null && focused !== document.body && focused !== document.documentElement;
+    const focused = scope.doc.activeElement;
+    const hasRealFocus = focused !== null && focused !== scope.doc.body && focused !== scope.doc.documentElement;
     return hasRealFocus || window.top === window;
   }
+  var FRAME_SCOPED_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "find",
+    "locate",
+    "click",
+    "fill",
+    "select",
+    "wait_for",
+    "extract_text",
+    "extract_table"
+  ]);
   async function handleAction(action, payload) {
-    if (ORIGIN_PINNED_ACTIONS.has(action)) {
-      if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
-      else assertFrameAbstains(payload);
+    const stamped = payload?.__abuFrameId;
+    if (isFrameRef(stamped)) hostFrameId = stamped;
+    if (!FRAME_SCOPED_ACTIONS.has(action) && payload?.frameId !== void 0) {
+      throw new Error(
+        `${action} does not act on a located element, so it takes no frameId. Click into the region first, then send this action.`
+      );
     }
-    return annotateAdvisory(action, await dispatchAction(action, payload));
+    const scope = resolveLocatorFrame(action, payload ?? {}, resolveScope(payload ?? {}));
+    if (ORIGIN_PINNED_ACTIONS.has(action)) {
+      if (frameServicesAction(action, payload, scope)) assertOriginPin(action, payload, scope);
+      else assertFrameAbstains(payload);
+    } else if (ORIGIN_PINNED_READ_ACTIONS.has(action)) {
+      assertOriginPin(action, payload, scope);
+    }
+    return annotateAdvisory(action, await dispatchAction(action, payload, scope));
   }
-  async function dispatchAction(action, payload) {
+  async function dispatchAction(action, payload, scope) {
     switch (action) {
       case "snapshot":
         return takeSnapshot(
+          scope,
           payload.selector,
           typeof payload.maxChars === "number" ? payload.maxChars : void 0
         );
       case "find":
-        return findElements(payload.query, payload.limit);
+        return findElements(scope, payload.query, payload.limit);
+      case "frames":
+        return enumerateFrames();
+      case "locate":
+        return locateOnly(scope, payload.locator);
       case "click":
-        return clickElement(payload.locator);
+        return clickElement(scope, payload.locator);
       case "fill":
-        return fillElement(payload.locator, payload.value);
+        return fillElement(scope, payload.locator, payload.value);
       case "select":
-        return selectOption(payload.locator, payload.value);
+        return selectOption(scope, payload.locator, payload.value);
       case "wait_for":
-        return waitFor(payload.condition, payload.timeout);
+        return waitFor(scope, payload.condition, payload.timeout);
       case "get_html":
         return getHtml(payload.selector);
       case "extract_text":
-        return extractText(payload.selector);
+        return extractText(scope, payload.selector);
       case "extract_table":
-        return extractTable(payload.selector);
+        return extractTable(scope, payload.selector);
       case "scroll":
         return scrollPage(payload);
       case "keyboard":
@@ -347,8 +644,8 @@
       ...handoff ? { handoff } : {}
     };
   }
-  function takeSnapshot(scopeSelector, maxChars = MAX_SNAPSHOT_CHARS) {
-    const roots = scopeSelector ? [...document.querySelectorAll(scopeSelector)] : document.body ? [document.body] : [];
+  function takeSnapshot(scope, scopeSelector, maxChars = MAX_SNAPSHOT_CHARS) {
+    const roots = scopeSelector ? queryAllDeep(scope.doc, scopeSelector) : scope.doc.body ? [scope.doc.body] : [];
     if (roots.length === 0) {
       throw new Error(
         `Scope element not found: ${scopeSelector}. Take a snapshot without a selector to see what the page actually contains.`
@@ -378,7 +675,7 @@
       "switch",
       "slider"
     ]);
-    const openPopups = [...document.querySelectorAll('[role="listbox"], [role="menu"], [role="grid"]')].map((list) => popupRootFor(list)).filter((popup) => hasBox(popup));
+    const openPopups = queryAllDeep(scope.doc, '[role="listbox"], [role="menu"], [role="grid"]').map((list) => popupRootFor(list)).filter((popup) => hasBox(popup));
     const isPopupRow = (el) => {
       if (openPopups.length === 0) return false;
       if (!hasBox(el)) return false;
@@ -390,12 +687,21 @@
     const elements = [];
     const seenElements = /* @__PURE__ */ new WeakSet();
     let hitCap = false;
+    const walkDeep = (root, depth, visit) => {
+      if (!visit(root)) return false;
+      if (depth < MAX_SHADOW_DEPTH && root.shadowRoot) {
+        for (const child of root.shadowRoot.children) {
+          if (!walkDeep(child, depth + 1, visit)) return false;
+        }
+      }
+      for (const child of root.children) {
+        if (!walkDeep(child, depth, visit)) return false;
+      }
+      return true;
+    };
     for (const root of roots) {
       if (hitCap) break;
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-      let node = walker.currentNode;
-      while (node) {
-        const el = node;
+      walkDeep(root, 0, (el) => {
         const tag = el.tagName?.toLowerCase();
         const isInteractive = interactiveTags.has(tag) || el.hasAttribute("onclick") || el.hasAttribute("tabindex") || el.getAttribute("role") && interactiveRoles.has(el.getAttribute("role")) || el.contentEditable === "true" || tag === "div" && el.getAttribute("role") && interactiveRoles.has(el.getAttribute("role")) || isPopupRow(el);
         if (isInteractive && !seenElements.has(el) && isSnapshotVisible(el)) {
@@ -443,11 +749,11 @@
           elements.push(info);
           if (elements.length >= MAX_SNAPSHOT_ELEMENTS) {
             hitCap = true;
-            break;
+            return false;
           }
         }
-        node = walker.nextNode();
-      }
+        return true;
+      });
     }
     const hitElementCap = elements.length >= MAX_SNAPSHOT_ELEMENTS;
     const total = elements.length;
@@ -469,26 +775,38 @@
       elements.length = kept;
     }
     const overBudget = kept < total;
+    const sealed = closedShadowHostCount(scope);
     if (elements.length === 0 && scopeSelector) {
       return {
-        url: location.href,
-        title: document.title,
+        url: scope.doc.location.href,
+        title: scope.doc.title,
+        frameId: scope.frameId,
+        ...frameTreeField(scope),
         elements,
-        message: `"${scopeSelector}" matched ${roots.length} element${roots.length === 1 ? "" : "s"}, none of which contain anything interactive right now \u2014 a popup that is closed looks like this. Take a snapshot without a selector to see the whole page, or open the control first.`
+        ...sealed > 0 ? { closedShadowHosts: sealed } : {},
+        message: `"${scopeSelector}" matched ${roots.length} element${roots.length === 1 ? "" : "s"}, none of which contain anything interactive right now \u2014 a popup that is closed looks like this. Take a snapshot without a selector to see the whole page, or open the control first.` + (sealed > 0 ? closedShadowNote(sealed) : "")
       };
     }
     const reasons = [];
     if (hitElementCap) reasons.push(`the ${MAX_SNAPSHOT_ELEMENTS}-element cap`);
     if (overBudget) reasons.push(`the ${maxChars}-character budget`);
     return {
-      url: location.href,
-      title: document.title,
+      url: scope.doc.location.href,
+      title: scope.doc.title,
+      frameId: scope.frameId,
+      ...frameTreeField(scope),
       elements,
+      ...sealed > 0 ? { closedShadowHosts: sealed } : {},
       ...reasons.length ? {
         truncated: true,
         message: `Showing ${elements.length} of ${total}+ interactive elements \u2014 hit ${reasons.join(" and ")}. To see the rest: pass \`selector\` to scope the snapshot to one region (e.g. the form you are filling), or raise \`maxChars\`. The elements listed above are complete and their refs are valid.`
       } : {}
     };
+  }
+  function frameTreeField(scope) {
+    if (!LOCAL_FRAME_WALK || scope.frameId !== MAIN_FRAME_REF) return {};
+    const frames = enumerateFrames();
+    return frames.length > 1 ? { frames } : {};
   }
   function escapeCSS(value) {
     if (typeof CSS !== "undefined" && CSS.escape) {
@@ -501,6 +819,10 @@
   function isAbuOverlay(el) {
     const selector = [...ABU_OVERLAY_IDS].map((id) => `#${id}`).join(",");
     return el.closest(selector) !== null;
+  }
+  function styleOf(el) {
+    const view = el.ownerDocument?.defaultView ?? window;
+    return view.getComputedStyle(el);
   }
   function describeElement(el) {
     const tag = el.tagName.toLowerCase();
@@ -595,7 +917,8 @@
     if (tag === "input" && inputType(el) === "hidden") return "";
     const labels = /* @__PURE__ */ new Set();
     if (el.id) {
-      for (const label of document.querySelectorAll("label[for]")) {
+      const root = el.getRootNode();
+      for (const label of root.querySelectorAll("label[for]")) {
         if (label.getAttribute("for") === el.id) labels.add(label);
       }
     }
@@ -607,7 +930,7 @@
   function accessibleName(el) {
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
-      const joined = labelledBy.split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter((node) => node !== null).map((node) => normalizeWhitespace(node.textContent ?? "")).filter(Boolean).join(" ");
+      const joined = labelledBy.split(/\s+/).filter(Boolean).map((id) => el.getRootNode().getElementById(id)).filter((node) => node !== null).map((node) => normalizeWhitespace(node.textContent ?? "")).filter(Boolean).join(" ");
       if (joined) return joined;
     }
     const ariaLabel = normalizeWhitespace(el.getAttribute("aria-label") ?? "");
@@ -639,8 +962,8 @@
   }
   function isFullyTransparent(el) {
     if (!hasBox(el)) return false;
-    for (let node = el; node && node !== document.documentElement; node = node.parentElement) {
-      if (getComputedStyle(node).opacity === "0") return true;
+    for (let node = el; node && node !== el.ownerDocument.documentElement; node = node.parentElement) {
+      if (styleOf(node).opacity === "0") return true;
     }
     return false;
   }
@@ -649,12 +972,12 @@
     if (isAbuOverlay(el)) return false;
     return isLocatorVisible(el);
   }
-  function elementsWithRole(role) {
+  function elementsWithRole(scope, role) {
     const wanted = role.trim().toLowerCase();
     const selectors = ["[role]"];
     const implicit = IMPLICIT_ROLE_SELECTORS[wanted];
     if (implicit) selectors.push(implicit);
-    return [...document.querySelectorAll(selectors.join(", "))].filter(
+    return queryAllDeep(scope.doc, selectors.join(", ")).filter(
       (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && effectiveRole(el) === wanted
     );
   }
@@ -694,11 +1017,11 @@
   ...and ${matches.length - 8} more` : "")
     );
   }
-  function textMatches(text, tag) {
-    const scope = tag ?? "*";
+  function textMatches(scope, text, tag) {
+    const tagScope = tag ?? "*";
     const wanted = text.trim();
     const squashed = wanted.replace(/\s+/g, "");
-    const candidates = [...document.querySelectorAll(scope)].filter((el) => {
+    const candidates = queryAllDeep(scope.doc, tagScope).filter((el) => {
       if (!isLocatorTarget(el)) return false;
       const own = normalizedText(el);
       return own.includes(wanted) || squashed !== "" && own.replace(/\s+/g, "").includes(squashed);
@@ -715,9 +1038,9 @@
     if (clickable.length > 0) deepest = clickable;
     return deepest;
   }
-  function matchElements(locator) {
+  function matchElements(scope, locator) {
     if (locator.ref) {
-      const el = resolveRef(locator.ref);
+      const el = resolveRef(locator.ref, scope);
       const what = `Ref ${JSON.stringify(locator.ref)}`;
       if (el) return { elements: [el], what, strategy: "ref" };
       const err = new Error(
@@ -728,20 +1051,20 @@
     }
     if (locator.css) {
       return {
-        elements: [...document.querySelectorAll(locator.css)].filter(isLocatorTarget),
+        elements: queryAllDeep(scope.doc, locator.css).filter(isLocatorTarget),
         what: `CSS selector ${JSON.stringify(locator.css)}`,
         strategy: "css"
       };
     }
     if (locator.text) {
       return {
-        elements: textMatches(locator.text, locator.tag),
+        elements: textMatches(scope, locator.text, locator.tag),
         what: `Text ${JSON.stringify(locator.text)}`,
         strategy: "text"
       };
     }
     if (locator.role) {
-      const byRole = elementsWithRole(locator.role).filter(isLocatorTarget);
+      const byRole = elementsWithRole(scope, locator.role).filter(isLocatorTarget);
       return {
         elements: locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole,
         what: locator.name ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}` : `role ${JSON.stringify(locator.role)}`,
@@ -750,13 +1073,13 @@
     }
     if (locator.testId) {
       return {
-        elements: [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)].filter(isLocatorTarget),
+        elements: queryAllDeep(scope.doc, `[data-testid="${escapeCSS(locator.testId)}"]`).filter(isLocatorTarget),
         what: `testId ${JSON.stringify(locator.testId)}`,
         strategy: "testId"
       };
     }
     if (locator.xpath) {
-      const result = document.evaluate(locator.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      const result = scope.doc.evaluate(locator.xpath, scope.doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
       const el = result.singleNodeValue;
       return {
         elements: el ? [el] : [],
@@ -766,8 +1089,8 @@
     }
     throw new Error(`Invalid locator: ${JSON.stringify(locator)}`);
   }
-  function findElement(locator) {
-    const { elements, what, strategy } = matchElements(locator);
+  function findElement(scope, locator) {
+    const { elements, what, strategy } = matchElements(scope, locator);
     if (elements.length <= 1) return elements[0] ?? null;
     if (strategy === "text") {
       throw new Error(
@@ -778,24 +1101,37 @@ ${elements.slice(0, 8).map((el) => `  ${describeElement(el)}`).join("\n")}` + (e
     }
     return uniqueOrAmbiguous(elements, what);
   }
-  function nearbyCandidates(locator, cap = 5) {
+  function nearbyCandidates(scope, locator, cap = 5) {
     if (locator.role) {
-      return elementsWithRole(locator.role).filter(isLocatorTarget).slice(0, cap);
+      return elementsWithRole(scope, locator.role).filter(isLocatorTarget).slice(0, cap);
     }
     const wanted = normalizeWhitespace(locator.text ?? locator.name ?? "");
     if (!wanted) return [];
     const needle = wanted.length > 2 ? wanted.slice(0, Math.ceil(wanted.length / 2)) : wanted;
-    return [...document.querySelectorAll("a, button, input, textarea, select, summary, [role], [onclick], [tabindex]")].filter(isLocatorTarget).filter((el) => looselyNamed(`${accessibleName(el)} ${normalizeWhitespace(el.textContent ?? "")}`, needle)).slice(0, cap);
+    return queryAllDeep(scope.doc, "a, button, input, textarea, select, summary, [role], [onclick], [tabindex]").filter(isLocatorTarget).filter((el) => looselyNamed(`${accessibleName(el)} ${normalizeWhitespace(el.textContent ?? "")}`, needle)).slice(0, cap);
   }
-  function findElementOrThrow(locator) {
-    const el = findElement(locator);
+  function findElementOrThrow(scope, locator) {
+    const el = findElement(scope, locator);
     if (el) return el;
-    const near = nearbyCandidates(locator);
+    const near = nearbyCandidates(scope, locator);
+    const sealed = near.length === 0 ? closedShadowHostCount(scope) : 0;
     throw new Error(
-      `Element not found: ${JSON.stringify(locator)}.` + (near.length > 0 ? ` The closest things on the page right now:
+      `Element not found: ${JSON.stringify(locator)}${whereClause(scope)}.` + (near.length > 0 ? ` The closest things on the page right now:
 ${near.map((c) => `  ${describeCandidate(c)}`).join("\n")}
-Pick one by ref, or call find to search by text.` : ` Call find to search the page by text/role, or snapshot to list what is there.`)
+Pick one by ref, or call find to search by text.` : ` Call find to search the page by text/role, or snapshot to list what is there.`) + framesNote(scope) + (sealed > 0 ? closedShadowNote(sealed) : "")
     );
+  }
+  function whereClause(scope) {
+    return scope.frameId === MAIN_FRAME_REF ? "" : ` in embedded region ${scope.frameId}`;
+  }
+  function framesNote(scope) {
+    if (!LOCAL_FRAME_WALK || scope.frameId !== hostFrameId) return "";
+    const others = enumerateFrames().filter((f) => f.frameId !== scope.frameId);
+    if (others.length === 0) return "";
+    const listed = others.slice(0, 5).map(
+      (f) => `${f.frameId} (${f.origin ?? "not a web page"}${f.accessible ? "" : ", not reachable from here"})`
+    );
+    return ` This page also has ${others.length} embedded region${others.length === 1 ? "" : "s"}: ${listed.join(", ")}${others.length > 5 ? ", \u2026" : ""}. A search only covers one document \u2014 pass \`frameId\` to look inside one of these.`;
   }
   var FIND_DEFAULT_LIMIT = 20;
   var FIND_MAX_LIMIT = 50;
@@ -807,7 +1143,7 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     return value.length > max ? `${value.slice(0, max)}\u2026` : value;
   }
   var FIND_QUERY_KEYS = ["role", "name", "text", "css", "testId", "label", "placeholder"];
-  function findElements(rawQuery, rawLimit) {
+  function findElements(scope, rawQuery, rawLimit) {
     const query = rawQuery ?? {};
     if (typeof query !== "object" || Array.isArray(query)) {
       throw new Error(`find: query must be an object with at least one of: ${FIND_QUERY_KEYS.join(", ")}`);
@@ -822,13 +1158,13 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     const limit = Math.max(1, Math.min(FIND_MAX_LIMIT, Math.trunc(Number(rawLimit) || FIND_DEFAULT_LIMIT)));
     let candidates;
     if (query.css) {
-      candidates = [...document.querySelectorAll(query.css)];
+      candidates = queryAllDeep(scope.doc, query.css);
     } else if (query.testId) {
-      candidates = [...document.querySelectorAll(`[data-testid="${escapeCSS(query.testId)}"]`)];
+      candidates = queryAllDeep(scope.doc, `[data-testid="${escapeCSS(query.testId)}"]`);
     } else if (query.role) {
-      candidates = elementsWithRole(query.role);
+      candidates = elementsWithRole(scope, query.role);
     } else {
-      candidates = [...document.querySelectorAll("*")];
+      candidates = queryAllDeep(scope.doc, "*");
     }
     candidates = candidates.filter(
       (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && !isAbuOverlay(el)
@@ -894,13 +1230,16 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       };
     });
     const describeQuery = used.map((key) => `${key}=${JSON.stringify(query[key])}`).join(" ");
+    const sealed = total === 0 ? closedShadowHostCount(scope) : 0;
     const build = (kept) => ({
-      url: location.href,
-      title: document.title,
+      url: scope.doc.location.href,
+      title: scope.doc.title,
+      frameId: scope.frameId,
       matches: kept,
       total,
+      ...sealed > 0 ? { closedShadowHosts: sealed } : {},
       ...total === 0 ? {
-        message: `Nothing on this page matches ${describeQuery}. Hidden elements are excluded. Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`
+        message: `Nothing${whereClause(scope) || " on this page"} matches ${describeQuery}. Hidden elements are excluded. Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.` + framesNote(scope) + (sealed > 0 ? closedShadowNote(sealed) : "")
       } : {},
       ...total > kept.length ? {
         truncated: true,
@@ -925,6 +1264,14 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     }
     return build(matches);
   }
+  function locateOnly(scope, locator) {
+    try {
+      return { matched: matchElements(scope, locator).elements.length };
+    } catch (err) {
+      if (err instanceof Error && / matches \d+ /.test(err.message)) return { matched: 2 };
+      return { matched: 0 };
+    }
+  }
   function targetInfo(el) {
     const text = getVisibleText(el)?.replace(/\s+/g, " ").trim().slice(0, 50);
     return {
@@ -947,8 +1294,8 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     el.dispatchEvent(new MouseEvent("mouseup", opts));
     el.click();
   }
-  function clickElement(locator) {
-    const el = findElementOrThrow(locator);
+  function clickElement(scope, locator) {
+    const el = findElementOrThrow(scope, locator);
     const target = targetInfo(el);
     el.scrollIntoView({ behavior: "instant", block: "center" });
     highlightElement(el);
@@ -963,8 +1310,8 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       target
     };
   }
-  function fillElement(locator, value) {
-    const el = findElementOrThrow(locator);
+  function fillElement(scope, locator, value) {
+    const el = findElementOrThrow(scope, locator);
     const previousValue = reportableValue(el, el.value, 100);
     highlightElement(el);
     showStatus(`Fill: ${fieldLabel(el)}`, "info");
@@ -994,7 +1341,7 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       return target.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
     }
     for (let node = el; node; node = node.parentElement) {
-      const style = getComputedStyle(node);
+      const style = styleOf(node);
       if (style.display === "none" || style.visibility === "hidden") return false;
     }
     return true;
@@ -1032,20 +1379,22 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
   }
   function popupRootFor(container) {
     let node = container;
-    while (node && node !== document.body) {
+    const body = container.ownerDocument?.body ?? null;
+    while (node && node !== body) {
       if (hasBox(node)) return node;
       node = node.parentElement;
     }
     return container;
   }
   function optionsFor(trigger) {
-    const owned = (trigger.getAttribute("aria-controls") ?? trigger.getAttribute("aria-owns") ?? "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)).filter((el) => el !== null);
+    const owned = (trigger.getAttribute("aria-controls") ?? trigger.getAttribute("aria-owns") ?? "").split(/\s+/).filter(Boolean).map((id) => trigger.getRootNode().getElementById(id)).filter((el) => el !== null);
     if (owned.length > 0) {
       return owned.flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')]).filter(isRendered);
     }
-    const containers = [...document.querySelectorAll('[role="listbox"], [role="menu"]')].filter(isVisible);
+    const ownerDoc = trigger.ownerDocument;
+    const containers = queryAllDeep(ownerDoc, '[role="listbox"], [role="menu"]').filter(isVisible);
     const fromContainers = containers.flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')]);
-    const options = fromContainers.length > 0 ? fromContainers : [...document.querySelectorAll('[role="option"], [role="menuitem"]')];
+    const options = fromContainers.length > 0 ? fromContainers : queryAllDeep(ownerDoc, '[role="option"], [role="menuitem"]');
     return options.filter(isVisible);
   }
   function scrollerWithin(popup) {
@@ -1118,8 +1467,8 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     }
     return { option: null, label: "", seen: [...seen] };
   }
-  async function selectOption(locator, value) {
-    const el = findElementOrThrow(locator);
+  async function selectOption(scope, locator, value) {
+    const el = findElementOrThrow(scope, locator);
     if (el.tagName.toLowerCase() === "select") {
       const select = el;
       const options = [...select.options];
@@ -1170,14 +1519,14 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       target: targetInfo(chosen)
     };
   }
-  async function waitFor(condition, timeout = 3e4) {
+  async function waitFor(scope, condition, timeout = 3e4) {
     const start = Date.now();
     const condType = condition.type;
     const describeCurrentState = () => {
-      if (condType === "urlContains") return `current url is ${location.href}`;
+      if (condType === "urlContains") return `current url is ${scope.doc.location.href}`;
       let found;
       try {
-        found = matchElements(condition.locator);
+        found = matchElements(scope, condition.locator);
       } catch (err) {
         if (err instanceof Error && err.name === "StaleRefError") {
           return "the locator no longer resolves (its ref is stale) \u2014 take a fresh snapshot";
@@ -1201,7 +1550,7 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       }
       return `matched <${el.tagName.toLowerCase()}>, which does not satisfy "${condType}"`;
     };
-    const matched = () => matchElements(condition.locator).elements;
+    const matched = () => matchElements(scope, condition.locator).elements;
     const check = () => {
       switch (condType) {
         case "appear": {
@@ -1225,13 +1574,14 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
           return matched().some((el) => (getVisibleText(el) ?? "").includes(wanted));
         }
         case "urlContains": {
-          return location.href.includes(condition.pattern);
+          return scope.doc.location.href.includes(condition.pattern);
         }
         default:
           throw new Error(`Unknown wait condition: ${condType}`);
       }
     };
     const staleRefMessage = (err) => err instanceof Error && err.name === "StaleRefError" ? err.message : null;
+    const frameGone = () => scope.doc.defaultView === null;
     try {
       if (check()) {
         return { success: true, message: `Condition met immediately`, timedOut: false, elapsed: 0 };
@@ -1261,6 +1611,10 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       };
       const tryCheck = () => {
         if (resolved) return;
+        if (frameGone()) {
+          complete(false, frameGoneMessage(scope.frameId));
+          return;
+        }
         try {
           if (check()) complete(false);
         } catch (err) {
@@ -1274,17 +1628,20 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       const observer = new MutationObserver(() => {
         if (!checkScheduled && !resolved) {
           checkScheduled = true;
-          requestAnimationFrame(() => {
+          (scope.doc.defaultView ?? window).requestAnimationFrame(() => {
             checkScheduled = false;
             tryCheck();
           });
         }
       });
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-        attributes: true
-      });
+      const observed = scope.doc.body ?? scope.doc.documentElement;
+      if (observed) {
+        observer.observe(observed, {
+          childList: true,
+          subtree: true,
+          attributes: true
+        });
+      }
       const pollTimer = setInterval(tryCheck, 500);
       const timeoutTimer = setTimeout(() => complete(true), timeout);
     });
@@ -1359,19 +1716,19 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     }
     return serializeElementWithFrames(root);
   }
-  function extractText(selector) {
+  function extractText(scope, selector) {
     let text;
-    let scope;
+    let region;
     if (selector) {
-      const el = document.querySelector(selector);
-      if (!el) throw new Error(`Element not found: ${selector}`);
-      scope = el;
+      const el = queryAllDeep(scope.doc, selector)[0] ?? null;
+      if (!el) throw new Error(`Element not found: ${selector}${whereClause(scope)}`);
+      region = el;
       text = el.innerText ?? el.textContent ?? "";
     } else {
-      scope = document.body;
-      text = document.body.innerText ?? "";
+      region = scope.doc.body;
+      text = scope.doc.body?.innerText ?? "";
     }
-    for (const secret of sensitiveValuesIn(scope)) {
+    for (const secret of sensitiveValuesIn(region)) {
       text = text.split(secret).join(REDACTED_VALUE);
     }
     if (text.length > MAX_EXTRACT_TEXT_SIZE) {
@@ -1381,12 +1738,12 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     }
     return text;
   }
-  function extractTable(selector) {
+  function extractTable(scope, selector) {
     let table;
     if (selector) {
-      table = document.querySelector(selector);
+      table = queryAllDeep(scope.doc, selector)[0] ?? null;
     } else {
-      const tables = [...document.querySelectorAll("table")];
+      const tables = queryAllDeep(scope.doc, "table");
       table = tables.sort((a, b) => b.rows.length - a.rows.length)[0] ?? null;
     }
     if (!table) throw new Error("No table found on the page");
@@ -1604,11 +1961,13 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     window.scrollTo({ top: scrollY, left: scrollX, behavior: "instant" });
     return { success: true };
   }
-  var highlightOverlay = null;
+  var highlightOverlays = /* @__PURE__ */ new WeakMap();
   function highlightElement(el) {
     const rect = el.getBoundingClientRect();
-    if (!highlightOverlay) {
-      highlightOverlay = document.createElement("div");
+    const doc = el.ownerDocument ?? document;
+    let highlightOverlay = highlightOverlays.get(doc) ?? null;
+    if (!highlightOverlay || !highlightOverlay.isConnected) {
+      highlightOverlay = doc.createElement("div");
       highlightOverlay.id = "abu-highlight";
       highlightOverlay.style.cssText = `
       position: fixed; pointer-events: none; z-index: 2147483647;
@@ -1616,7 +1975,8 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       background: rgba(217, 119, 87, 0.12);
       transition: all 0.15s ease;
     `;
-      document.documentElement.appendChild(highlightOverlay);
+      doc.documentElement.appendChild(highlightOverlay);
+      highlightOverlays.set(doc, highlightOverlay);
     }
     highlightOverlay.style.top = `${rect.top - 2}px`;
     highlightOverlay.style.left = `${rect.left - 2}px`;
@@ -1624,13 +1984,12 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     highlightOverlay.style.height = `${rect.height + 4}px`;
     highlightOverlay.style.display = "block";
     highlightOverlay.style.opacity = "1";
+    const ring = highlightOverlay;
     setTimeout(() => {
-      if (highlightOverlay) {
-        highlightOverlay.style.opacity = "0";
-        setTimeout(() => {
-          if (highlightOverlay) highlightOverlay.style.display = "none";
-        }, 300);
-      }
+      ring.style.opacity = "0";
+      setTimeout(() => {
+        ring.style.display = "none";
+      }, 300);
     }, 1500);
   }
   var statusBubble = null;
@@ -1673,7 +2032,7 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
   }
   function isVisible(el) {
     const htmlEl = el;
-    const style = getComputedStyle(htmlEl);
+    const style = styleOf(el);
     if (style.visibility === "hidden" || style.visibility === "collapse") return false;
     if (htmlEl.offsetParent === null && htmlEl.style?.position !== "fixed" && htmlEl.style?.position !== "sticky") {
       if (style.display === "none") return false;

@@ -24,6 +24,7 @@ import {
   normalizeBrowserOrigin,
   type BrowserOperationClass,
   type BrowserOperationState,
+  getSiteVerdict,
   type DecideBrowserOperationSiteVerdict,
 } from '@/core/permissions/browserToolPolicy';
 import {
@@ -74,6 +75,7 @@ export function BrowserSitePermissionsPage({
 }) {
   const { t } = useI18n();
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const viaEmbedGrants = useSettingsStore((s) => s.browserSiteGrantViaEmbed);
   const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
   const setBrowserSitePermission = useSettingsStore((s) => s.setBrowserSitePermission);
   const removeBrowserSitePermission = useSettingsStore((s) => s.removeBrowserSitePermission);
@@ -96,8 +98,13 @@ export function BrowserSitePermissionsPage({
   // watching acts on, and this list never said so. The summary answers "would
   // a scheduled task use these?" without making the user reconstruct it from
   // the master switch plus the high-risk rule.
-  const authorization = summarizeBrowserAuthorization(sitePermissions, allowUnattended);
+  const authorization = summarizeBrowserAuthorization(
+    sitePermissions,
+    allowUnattended,
+    viaEmbedGrants,
+  );
   const highRisk = new Set(authorization.highRiskAllowed);
+  const viaEmbed = new Set(authorization.viaEmbedAllowed);
   const reachSummary = !authorization.masterSwitchOn
     ? t.settings.browserUnattendedReachOff
     : authorization.reachableUnattended.length === 0
@@ -236,6 +243,21 @@ export function BrowserSitePermissionsPage({
                     {t.settings.browserHighRiskTag}
                   </span>
                 )}
+                {/*
+                  R2-C-② — the other thing an 「始终允许」 row cannot imply: this
+                  grant was given from another site's page, so an automatic task
+                  will still be refused here. Re-choosing the verdict on this
+                  row (or re-adding the origin above) promotes it to an ordinary
+                  standing grant and the tag goes away.
+                */}
+                {sitePermissions[origin] === 'allowed' && viaEmbed.has(origin) && (
+                  <span
+                    className="shrink-0 rounded-md bg-[var(--abu-bg-hover)] px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)]"
+                    title={t.settings.browserViaEmbedTagHint}
+                  >
+                    {t.settings.browserViaEmbedTag}
+                  </span>
+                )}
                 <Select
                   variant="inline"
                   value={sitePermissions[origin]}
@@ -345,6 +367,12 @@ function BrowserAutomationOverviewCard() {
   const policy = useSettingsStore((s) => s.browserOperationPolicy);
   const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  // Round-3 R3-C. This is the THIRD screen that answers "where may a scheduled
+  // task go?", and it arrived with a later settings batch after the other two were
+  // taught about via-embed grants — so it counted them as reachable and
+  // suppressed the "no allowed site" warning for a user who has none. The
+  // summary already knows the rule; it just has to be told the marks.
+  const viaEmbedGrants = useSettingsStore((s) => s.browserSiteGrantViaEmbed);
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const tasks = useScheduleStore((s) => s.tasks);
@@ -375,13 +403,14 @@ function BrowserAutomationOverviewCard() {
     })),
     policy,
     masterSwitchOn: allowUnattended,
-    reachableSiteCount:
-      summarizeBrowserAuthorization(sitePermissions, allowUnattended).reachableUnattended.length,
+    reachableSiteCount: summarizeBrowserAuthorization(
+      sitePermissions, allowUnattended, viaEmbedGrants,
+    ).reachableUnattended.length,
     // The REAL rule, not a copy of it: the same resolver the gate builds its
     // approval target from, so "this task has nobody to ask" here means exactly
     // what it will mean at 3am.
     hasApprovalTarget: (binding) => resolveUnattendedImTarget(binding) !== null,
-  }), [tasks, triggers, channels, policy, allowUnattended, sitePermissions]);
+  }), [tasks, triggers, channels, policy, allowUnattended, sitePermissions, viaEmbedGrants]);
 
   const sourceLabel: Record<BrowserAutomationSource, string> = {
     schedule: t.settings.browserAutomationSourceSchedule,
@@ -512,6 +541,7 @@ function BrowserPermissionPreview() {
   const policy = useSettingsStore((s) => s.browserOperationPolicy);
   const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const viaEmbedGrants = useSettingsStore((s) => s.browserSiteGrantViaEmbed);
   const permissionMode = useSettingsStore((s) => s.permissionMode);
   const [draft, setDraft] = useState('');
 
@@ -545,15 +575,29 @@ function BrowserPermissionPreview() {
       high-risk REPLACES it, except on a site the user blocked (a block outranks
       everything and could only be loosened by the substitution).
     */
-    const stored = sitePermissions[origin];
-    const siteVerdict: DecideBrowserOperationSiteVerdict = stored === 'denied'
-      ? 'denied'
-      : isHighRiskUrl(targetUrl) ? 'high-risk' : (stored ?? 'default');
+    /*
+      Per RUN MODE, not once for both (round-2 R2-C-②): a grant minted through
+      the merged embedded-region prompt is a full grant while somebody is
+      watching and no standing grant at all for an automatic run, so the two
+      columns of this table genuinely have different answers. Reading it
+      through `getSiteVerdict` — the same function the gate reads it through —
+      is what keeps that from being a second implementation.
+    */
+    const verdictFor = (runMode: 'attended' | 'unattended'): DecideBrowserOperationSiteVerdict => {
+      const stored = getSiteVerdict(origin, sitePermissions, {
+        viaEmbed: viaEmbedGrants,
+        runMode,
+      });
+      return stored === 'denied'
+        ? 'denied'
+        : isHighRiskUrl(targetUrl) ? 'high-risk' : stored;
+    };
 
     return PREVIEW_CLASSES.map(({ opClass, labelKey }) => ({
       opClass,
       label: t.settings[labelKey],
       cells: (['attended', 'unattended'] as const).map((runMode) => {
+        const siteVerdict = verdictFor(runMode);
         const evaluation = evaluateBrowserGate({
           opClass,
           runMode,
@@ -592,7 +636,7 @@ function BrowserPermissionPreview() {
         };
       }),
     }));
-  }, [origin, targetUrl, sitePermissions, policy, allowUnattended, permissionMode, t]);
+  }, [origin, targetUrl, sitePermissions, viaEmbedGrants, policy, allowUnattended, permissionMode, t]);
 
   const verdictColor = (verdict: 'allow' | 'ask' | 'deny'): string =>
     verdict === 'allow'

@@ -130,9 +130,15 @@ async function wireActionsByTool(): Promise<Map<string, string[]>> {
     const args: Record<string, unknown> = { ...TOOL_ARGS[tool.name] };
     for (const [key, zodType] of Object.entries(tool.schema ?? {})) {
       if (key in args) continue;
-      args[key] = zodType.safeParse(ANY_ARG).success ? ANY_ARG
-        : zodType.safeParse(1).success ? 1
-          : ANY_ARG;
+      if (zodType.safeParse(ANY_ARG).success) { args[key] = ANY_ARG; continue; }
+      if (zodType.safeParse(1).success) { args[key] = 1; continue; }
+      // An OPTIONAL field this filler cannot satisfy is left out rather than
+      // stuffed with a value the schema refuses: `frameId` only accepts a
+      // frame handle, and passing "test" would make the handler reject the
+      // call before it ever reached the wire — turning "which action does this
+      // tool send" into "does the filler happen to know every format".
+      if (zodType.safeParse(undefined).success) continue;
+      args[key] = ANY_ARG;
     }
     try {
       await (tool.schema ? tool.handler(args, {}) : tool.handler({}));

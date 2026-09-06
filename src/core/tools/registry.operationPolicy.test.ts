@@ -1012,6 +1012,21 @@ describe('browser gate — operation-class policy', () => {
       expect(mockCallTool).not.toHaveBeenCalled();
     });
 
+    it('leaves ATTENDED read-only on the cheap path when nothing is blocked', async () => {
+      useSettingsStore.setState({ browserSitePermissions: {} });
+      withTabOrigin('https://neutral.com/page');
+
+      const decision = await checkToolApproval(
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      // No verdict can differ, so the round trip is not bought: these calls run
+      // every turn, and paying for one on each of them is what the cheap path
+      // exists to avoid.
+      expect(mockCallTool).not.toHaveBeenCalled();
+    });
+
     it('does not probe for a tool that carries no tab (get_tabs stays free)', async () => {
       const decision = await checkToolApproval(
         'abu-browser__get_tabs', {}, unattendedOwner, (async () => true) as never,

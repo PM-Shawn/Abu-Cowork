@@ -41,6 +41,10 @@ interface FakeTab { id: number; windowId: number; url: string; title: string; ac
 let tabs: FakeTab[] = [];
 /** Every `chrome.scripting.executeScript` the worker performed. */
 const injected: { tabId: number; world?: string; args?: unknown[] }[] = [];
+/** Every `chrome.tabs.captureVisibleTab` — the pixels that left the browser. */
+const captured: number[] = [];
+/** Every `chrome.tabs.sendMessage` — the full-page capture's first move. */
+const messaged: { tabId: number; action: unknown }[] = [];
 /** The socket(s) the service worker opened at load. */
 const sockets: FakeSocket[] = [];
 
@@ -100,6 +104,17 @@ function fakeChrome(): Record<string, unknown> {
         return tab;
       },
       update: async () => undefined,
+      captureVisibleTab: async (windowId: number) => {
+        captured.push(windowId);
+        return 'data:image/png;base64,PIXELS';
+      },
+      sendMessage: async (tabId: number, msg: { action?: unknown }) => {
+        messaged.push({ tabId, action: msg?.action });
+        // `screenshot_full_page` asks the page for its dimensions first. No
+        // case here is expected to get this far, so the shape only has to be
+        // enough that an accidental pass is loud rather than a crash.
+        return { success: true, data: { scrollHeight: 100, viewportHeight: 100, viewportWidth: 100, scrollX: 0, scrollY: 0 } };
+      },
     },
     windows: {
       WINDOW_ID_NONE: -1,
@@ -162,8 +177,25 @@ beforeAll(async () => {
 
 beforeEach(() => {
   injected.length = 0;
+  captured.length = 0;
+  messaged.length = 0;
   twoTabWindow();
 });
+
+/**
+ * The target tab is the one the user is already looking at.
+ *
+ * Both screenshot cases activate a background tab and then wait 300ms for it
+ * to paint. That real timer is not what these cases are about — the pin is
+ * taken after it either way — so they start from a tab that needs no
+ * activation and the request completes within microtasks.
+ */
+function activeTargetWindow(): void {
+  tabs = [
+    { id: 11, windowId: 1, url: `${APPROVED}/cart`, title: 'cart', active: true },
+    { id: 12, windowId: 1, url: 'https://b.example/', title: 'B', active: false },
+  ];
+}
 
 /** A tab that reports `url`; `null` models a tab whose url cannot be read. */
 const tabAt = (url: string | null) => async () =>
@@ -337,5 +369,85 @@ describe('execute_js: the worker pins the tab it is about to script', () => {
 
     expect(response).toMatchObject({ success: true, data: 'evaluated' });
     expect(injected).toEqual([{ tabId: 11, world: 'MAIN', args: ['1 + 1'] }]);
+  });
+});
+
+
+/**
+ * R3-A — the screenshots are reads too, and they are the widest ones.
+ *
+ * Round 2 brought the TEXT reads under the execution-time pin on both
+ * channels. Pixels were left out, and not by decision: a screenshot on this
+ * channel never reaches the content script (where the read pin lives) — the
+ * worker takes it itself with `chrome.tabs.captureVisibleTab`. So the
+ * highest-bandwidth read of the whole set was the one still unchecked, on the
+ * channel that drives the user's real logged-in Chrome, while the content
+ * script's comment claimed its list mirrored the host's.
+ *
+ * The screenshots are READS, so they follow the read rule, not `execute_js`'s:
+ * a pin they carry is compared in both run modes, and a call carrying NO pin
+ * keeps its previous path in both run modes (whether an unattended run may
+ * look at a page with no resolved origin is the gate's question).
+ */
+describe('screenshot: the worker pins the tab before it captures pixels', () => {
+  const OWNER = { ownerId: 'conv-1', runId: 'run-1' };
+
+  beforeEach(() => { activeTargetWindow(); });
+
+  it('captures while the tab is still on the approved origin', async () => {
+    const response = await request('screenshot', {
+      ...OWNER, tabId: 11, expectedOrigin: APPROVED, unattended: true,
+    });
+
+    expect(response).toMatchObject({ success: true, data: 'data:image/png;base64,PIXELS' });
+    expect(captured).toEqual([1]);
+  });
+
+  it('refuses, and captures nothing, once the tab has drifted cross-origin', async () => {
+    tabs.find((t) => t.id === 11)!.url = 'https://evil.example.com/';
+
+    const response = await request('screenshot', {
+      ...OWNER, tabId: 11, expectedOrigin: APPROVED, unattended: true,
+    });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/no longer on the page this action was approved for/);
+    // The whole point: no screen of the new site reached the transcript.
+    expect(captured).toEqual([]);
+  });
+
+  it('compares an ATTENDED pin too (I3)', async () => {
+    tabs.find((t) => t.id === 11)!.url = 'https://evil.example.com/';
+
+    const response = await request('screenshot', { ...OWNER, tabId: 11, expectedOrigin: APPROVED });
+
+    expect(response.success).toBe(false);
+    expect(captured).toEqual([]);
+  });
+
+  it('a call carrying NO pin keeps its previous path — in BOTH run modes', async () => {
+    // Reads split from state changes here: `execute_js` with no pin is refused
+    // when unattended, a read is not. Absence of a pin is the gate's business.
+    const unattendedNoPin = await request('screenshot', { ...OWNER, tabId: 11, unattended: true });
+    expect(unattendedNoPin).toMatchObject({ success: true });
+
+    const attendedNoPin = await request('screenshot', { ...OWNER, tabId: 11 });
+    expect(attendedNoPin).toMatchObject({ success: true });
+    expect(captured).toEqual([1, 1]);
+  });
+
+  it('screenshot_full_page is pinned before its first scroll', async () => {
+    tabs.find((t) => t.id === 11)!.url = 'https://evil.example.com/';
+
+    const response = await request('screenshot_full_page', {
+      ...OWNER, tabId: 11, expectedOrigin: APPROVED, unattended: true,
+    });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/no longer on the page this action was approved for/);
+    expect(captured).toEqual([]);
+    // It never even asked the page for its dimensions: the refusal costs the
+    // drifted site nothing, and leaves its scroll position alone.
+    expect(messaged).toEqual([]);
   });
 });

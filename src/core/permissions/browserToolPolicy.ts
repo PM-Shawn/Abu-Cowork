@@ -305,14 +305,46 @@ export type BrowserSiteVerdicts = Record<string, 'allowed' | 'denied'> & {
  * is what restores ask-every-time). So the precedence above is what makes a
  * block actually stick, and it is pinned by tests.
  */
+export interface SiteVerdictOptions {
+  /**
+   * Which `'allowed'` verdicts were minted through the merged embedded-region
+   * prompt — `settingsStore`'s `browserSiteGrantViaEmbed`.
+   */
+  viaEmbed?: Record<string, true>;
+  /**
+   * The run this verdict is being read for. Only `'unattended'` changes the
+   * answer, and only for a marked grant.
+   */
+  runMode?: 'attended' | 'unattended';
+}
+
 export function getSiteVerdict(
   origin: string | null,
   sitePermissions: Record<string, 'allowed' | 'denied'>,
+  options?: SiteVerdictOptions,
 ): SiteVerdict {
   if (!origin) return 'default';
   const verdict = sitePermissions[origin];
   if (verdict === 'denied') return 'denied';
-  if (verdict === 'allowed') return 'allowed';
+  if (verdict === 'allowed') {
+    /**
+     * Round-2 R2-C-②. A grant the user gave through the merged prompt covers
+     * origins the PAGE chose to embed, and in the order the page laid them
+     * out. That is informed consent for work the user is watching — they read
+     * the list before clicking — but it is not the premise the unattended path
+     * is built on, which is "the user went to this site and allowed it"
+     * (Settings › 网站授权, or a prompt raised while that site was the page in
+     * front of them). So a marked grant is a full grant with a human present,
+     * and no standing grant at all for an automatic run: it falls back to
+     * `'default'`, which `decideBrowserOperation` and `registry.ts`'s
+     * `site-not-allowed` refusal both read as "nothing standing here".
+     *
+     * Never applied to `'denied'`: a block is a block in every direction, and
+     * a mark can only ever take authorization away.
+     */
+    if (options?.runMode === 'unattended' && options.viaEmbed?.[origin] === true) return 'default';
+    return 'allowed';
+  }
   return 'default';
 }
 

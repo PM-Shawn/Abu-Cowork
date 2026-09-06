@@ -8,8 +8,15 @@
  * 4. Handle tab-level operations (get_tabs, navigate, screenshot)
  */
 
-import type { BridgeRequest, BridgeResponse, JsDialogAction } from '../shared/types.js';
+import type { BridgeRequest, BridgeResponse, FrameTree, JsDialogAction } from '../shared/types.js';
+import { MAIN_FRAME_REF } from '../shared/types.js';
 import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
+import {
+  ambiguousFrameMessage,
+  createFrameStore,
+  hostFrameStamp,
+  type FrameInjection,
+} from './frames.js';
 import {
   chromeGetDialogResult,
   chromeHandleDialogResult,
@@ -414,13 +421,21 @@ export function normalizedOrigin(href: string | undefined): string | null {
 }
 
 /**
- * The pin for actions that never reach the content script — `execute_js`,
- * which this worker runs through `chrome.scripting.executeScript`.
+ * The pin for actions that never reach the content script — `execute_js` and
+ * the two screenshots, which this worker runs itself (`chrome.scripting`
+ * and `chrome.tabs.captureVisibleTab`).
  *
  * Compares the tab's LIVE url (read here, not whatever the gate saw) against
  * the origin the approval was given for. Same rules and the same message as
  * the content script's `assertOriginPin` and the Electron host's: both run
  * modes compare, only the missing-value refusal is unattended-only.
+ *
+ * `read: true` marks a READ (round-3 R3-A: the screenshots). A read that
+ * CARRIES a pin is compared exactly like a state change; a read that carries
+ * NO pin keeps its previous path in both run modes — the same split the other
+ * two channels make in `ORIGIN_PINNED_READ_ACTIONS`, and for the same reason:
+ * whether an unattended run may look at a page with no resolved origin is the
+ * gate's question, not this file's.
  *
  * A tab whose url cannot be read at all is a mismatch, not a pass.
  */
@@ -428,10 +443,11 @@ export async function assertTabOriginPin(
   tabId: number,
   payload: Record<string, unknown>,
   getTab: (id: number) => Promise<{ url?: string }> = (id) => chrome.tabs.get(id),
+  opts: { read?: boolean } = {},
 ): Promise<void> {
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
   if (!expected) {
-    if (payload.unattended !== true) return;
+    if (opts.read || payload.unattended !== true) return;
     throw new Error(
       'Refused: this unattended run sent no approved origin for the page, so the action could not be '
       + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
@@ -586,6 +602,37 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           };
         });
 
+        // A frame tree costs one browser round trip, so it is computed only
+        // for the tab a caller asked about by name — the APPROVAL GATE, which
+        // needs it because a frame-targeted action is authorized against the
+        // FRAME's origin, and `batch`'s own between-step re-read when a step
+        // targets a region.
+        //
+        // It used to be computed for the caller's current tab as well, on
+        // EVERY listing. `batch` re-reads the tab before every step, so an
+        // ordinary 25-step batch that mentions no region paid 25
+        // `executeScript` round trips for a frame list nobody asked for
+        // (round-2 F6). The model still gets the regions from `snapshot`,
+        // which `annotateWithFrames` decorates — that is where it reads the
+        // page anyway. Unlike the built-in host there is no free precheck to
+        // fall back on here: `webNavigation` is not among this extension's
+        // permissions, and adding it would force every user to re-authorize.
+        const framesWanted = new Set<number>();
+        const askedFor = Number(payload.framesForTabId);
+        if (Number.isFinite(askedFor)) framesWanted.add(askedFor);
+        const framesByTab = new Map<number, FrameTree>();
+        for (const wantedTabId of framesWanted) {
+          if (!normalTabs.some((t) => t.id === wantedTabId)) continue;
+          const tree = await frameStore.tree(wantedTabId).catch(() => [] as FrameTree);
+          if (tree.length > 1) framesByTab.set(wantedTabId, tree);
+        }
+        for (const win of windows) {
+          for (const tab of win.tabs) {
+            const tree = tab.tabId === undefined ? undefined : framesByTab.get(tab.tabId);
+            if (tree) (tab as { frames?: FrameTree }).frames = tree;
+          }
+        }
+
         // Sort: current window first
         windows.sort((a, b) => (b.isCurrentWindow ? 1 : 0) - (a.isCurrentWindow ? 1 : 0));
 
@@ -609,6 +656,20 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data: recentDownloads };
       }
 
+      // ## Both screenshots are pinned reads (round-3 R3-A)
+      //
+      // Round 2 brought the text reads under the execution-time origin pin on
+      // both channels, but pixels never reached that code: a screenshot does
+      // not go through the content script at all — it is taken here, by
+      // `chrome.tabs.captureVisibleTab`. So the highest-bandwidth read of the
+      // set was the one still unchecked, on the channel driving the user's
+      // REAL logged-in Chrome. A page that drifts between approval and capture
+      // put a full screen of the new site into the transcript.
+      //
+      // The pin is taken AFTER the activation below, not before: activating a
+      // background tab and waiting for it to paint is 300ms during which the
+      // page can navigate, and the url that matters is the one showing when
+      // the pixels are read.
       case 'screenshot': {
         const tab = await chrome.tabs.get(tabId);
         // Activate the target tab first to ensure we capture the right one
@@ -617,6 +678,7 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           // Brief wait for tab switch to render
           await new Promise(r => setTimeout(r, 300));
         }
+        await assertTabOriginPin(tabId, payload, undefined, { read: true });
         const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
         return { id, success: true, data: dataUrl };
       }
@@ -627,6 +689,9 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           await chrome.tabs.update(tabId, { active: true });
           await new Promise(r => setTimeout(r, 300));
         }
+        // Scrolls the page and stitches many captures, so it is a strictly
+        // longer window than `screenshot` — pinned before the first scroll.
+        await assertTabOriginPin(tabId, payload, undefined, { read: true });
         const result = await captureFullPage(tabId, tab.windowId);
         return { id, success: true, data: result };
       }
@@ -731,12 +796,105 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
   }
 }
 
+// --- Frame addressing ---
+
+/**
+ * Read from INSIDE one frame, in the extension's isolated world. `location` is
+ * unforgeable and the world is out of the page's reach, so what comes back is
+ * the frame's real current address — not the `src` the embedding page wrote.
+ *
+ * `hidden` answers "can the user see this region at all". It is measured on
+ * the frame ELEMENT in the EMBEDDING document, which a frame can reach through
+ * `window.frameElement` when its parent is same-origin — and same-origin is
+ * exactly the direction that needs it, since a cross-site region is already
+ * held by its own site grant and its own origin pin. When the parent is out of
+ * reach the frame falls back to its own viewport, which is 0 for a `display:
+ * none` or 0×0 region; anything it cannot decide is reported as visible, never
+ * guessed.
+ *
+ * Serialized and injected by `chrome.scripting.executeScript`, so it has to be
+ * entirely self-contained — no imports, no closure over this module. The rule
+ * it applies is the same one `frameElementIsHidden` applies in the content
+ * runtime. The two copies cannot be shared (a serialized function loses every
+ * reference to its module), so each half is pinned by its own test:
+ * `content/index.test.ts` for the built-in walk, `background/index.test.ts`
+ * and `background/frames.test.ts` for this one.
+ */
+function probeFrameIdentity(): { url: string; origin: string; title: string; hidden?: true } {
+  let hidden = false;
+  try {
+    const el = window.frameElement;
+    if (el) {
+      const view = el.ownerDocument.defaultView;
+      const rect = el.getBoundingClientRect();
+      if (!view) {
+        hidden = true;
+      } else if (rect.width < 2 || rect.height < 2) {
+        hidden = true;
+      } else if (view.getComputedStyle(el).visibility === 'hidden') {
+        hidden = true;
+      } else {
+        const docLeft = rect.left + (view.scrollX || 0);
+        const docTop = rect.top + (view.scrollY || 0);
+        hidden = docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+      }
+    } else if (window !== window.top) {
+      hidden = window.innerWidth < 2 || window.innerHeight < 2;
+    }
+  } catch {
+    // A cross-origin parent throws on `frameElement`. Not knowing is not the
+    // same as hidden: the region stays routable and its own site grant and
+    // origin pin decide whether anything may happen in it.
+    hidden = false;
+  }
+  return {
+    url: location.href,
+    origin: location.origin,
+    title: document.title,
+    ...(hidden ? { hidden: true as const } : {}),
+  };
+}
+
+const frameStore = createFrameStore({
+  probeFrames: async (tabId) => (await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: probeFrameIdentity,
+  })) as unknown as FrameInjection[],
+  normalizeOrigin: normalizedOrigin,
+});
+
+/** Locator actions that may be resolved to the frame actually holding the target. */
+const LOCATOR_ROUTED_ACTIONS = new Set(['click', 'fill', 'select']);
+
+/** A frame list appended to a failed search, so "not found" is not the last word. */
+async function framesHint(tabId: number): Promise<string> {
+  try {
+    const tree = await frameStore.tree(tabId);
+    const others = tree.filter((f) => f.frameId !== MAIN_FRAME_REF);
+    if (others.length === 0) return '';
+    // `hidden` is said out loud: a region a locator will never be resolved
+    // into automatically is one the caller has to name on purpose, and a bare
+    // list would leave "why did it not find it there" unanswerable.
+    const listed = others.slice(0, 5).map(
+      (f) => `${f.frameId} (${f.origin ?? f.url ?? 'unknown'}${f.hidden ? ', hidden' : ''})`,
+    );
+    return (
+      ` This page also has ${others.length} embedded region${others.length === 1 ? '' : 's'}: `
+      + `${listed.join(', ')}${others.length > 5 ? ', …' : ''}. `
+      + 'A search only covers one document — pass `frameId` to look inside one of these.'
+    );
+  } catch {
+    return '';
+  }
+}
+
 // --- Content Script Communication ---
 
 const injectedTabs = new Set<number>();
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   injectedTabs.delete(tabId);
+  frameStore.forget(tabId);
   // A closed tab belongs to nobody. Without this the claim outlives the page and
   // refuses the next task Chrome hands the same id to.
   tabClaims.releaseTab(tabId);
@@ -766,36 +924,155 @@ async function sendToContentScript(
 ): Promise<unknown> {
   await ensureContentScript(tabId);
 
-  const doSend = (): Promise<unknown> => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`Content script did not respond within ${CONTENT_SCRIPT_TIMEOUT / 1000}s (action: ${action})`));
-    }, CONTENT_SCRIPT_TIMEOUT);
+  // Which frame this action is for. A caller that named one gets exactly that
+  // frame (and a refusal if it is gone or has been replaced since it last saw
+  // the tree); a caller that named none gets the MAIN frame, deliberately —
+  // the old no-frameId broadcast delivered to every frame and kept whichever
+  // answered first, so "which element did that click land on" was decided by
+  // scheduling.
+  const namedFrame = payload.frameId !== undefined;
+  const chromeFrameId = namedFrame ? await frameStore.resolve(tabId, payload.frameId) : 0;
 
-    chrome.tabs.sendMessage(tabId, { action, payload }, (response) => {
-      clearTimeout(timer);
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
-      } else if (response && response.error) {
-        reject(new Error(response.error));
-      } else {
-        resolve(response?.data ?? response);
-      }
+  const doSend = (frameId: number, actionName = action, body = payload): Promise<unknown> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`Content script did not respond within ${CONTENT_SCRIPT_TIMEOUT / 1000}s (action: ${actionName})`));
+      }, CONTENT_SCRIPT_TIMEOUT);
+
+      chrome.tabs.sendMessage(
+        tabId,
+        // `__abuFrameId` tells that copy of the runtime which frame it is, so
+        // the refs it mints carry the handle a later call can route on. It is
+        // stamped HERE, in the worker: the model's payload cannot name it (the
+        // bridge builds payloads field by field from the tool schema) and a
+        // page cannot see it (isolated world).
+        { action: actionName, payload: { ...body, __abuFrameId: hostFrameStamp(frameId) } },
+        { frameId },
+        (response) => {
+          clearTimeout(timer);
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (response && response.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response?.data ?? response);
+          }
+        },
+      );
     });
-  });
+
+  const send = async (frameId: number): Promise<unknown> => {
+    try {
+      return await doSend(frameId);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      // Auto-retry once on "context invalidated" — re-inject content script
+      if (msg.includes('context invalidated') || msg.includes('Receiving end does not exist')) {
+        console.log(`[abu-ext] Content script stale for tab ${tabId}, re-injecting...`);
+        injectedTabs.delete(tabId);
+        await ensureContentScript(tabId);
+        return doSend(frameId);
+      }
+      throw err;
+    }
+  };
 
   try {
-    return await doSend();
+    const result = await send(chromeFrameId);
+    return namedFrame ? result : await annotateWithFrames(tabId, action, result);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : '';
-    // Auto-retry once on "context invalidated" — re-inject content script
-    if (msg.includes('context invalidated') || msg.includes('Receiving end does not exist')) {
-      console.log(`[abu-ext] Content script stale for tab ${tabId}, re-injecting...`);
-      injectedTabs.delete(tabId);
-      await ensureContentScript(tabId);
-      return doSend();
-    }
-    throw err;
+    if (namedFrame || !isNotFound(err)) throw err;
+    return resolveAcrossFrames(tabId, action, payload, doSend, err);
   }
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof Error && err.message.startsWith('Element not found');
+}
+
+/**
+ * A locator that named no frame and was not in the main document.
+ *
+ * Asking every frame "how many does this match" and acting only on a UNIQUE
+ * answer is the frame-level form of the rule the locator layer already
+ * follows inside one document: never resolve an ambiguous target by position.
+ * It also restores — deterministically — what the old broadcast did by
+ * accident, which is what keeps a form inside a same-origin iframe working.
+ *
+ * The origin pin is unaffected and does the security half: the gate approved
+ * one origin, so a locator that resolves into a DIFFERENT site's region is
+ * refused there by the frame's own pin, with the "ask for this site to be
+ * authorized separately" wording.
+ */
+async function resolveAcrossFrames(
+  tabId: number,
+  action: string,
+  payload: Record<string, unknown>,
+  doSend: (frameId: number, actionName?: string, body?: Record<string, unknown>) => Promise<unknown>,
+  notFound: unknown,
+): Promise<unknown> {
+  if (!LOCATOR_ROUTED_ACTIONS.has(action) || payload.locator === undefined) {
+    throw await withFramesHint(tabId, notFound);
+  }
+  let others: number[];
+  try {
+    // Visible regions only. A page that plants a same-named control in a 0×0
+    // or off-screen iframe would otherwise get a UNIQUE match there and steer
+    // the click into a document the user cannot see, reported as a success.
+    // Naming the frameId explicitly still reaches a hidden region.
+    others = await frameStore.otherFrameIds(tabId);
+  } catch {
+    throw notFound;
+  }
+  // No VISIBLE region to ask. The hint still goes out — with hidden regions
+  // excluded from resolution this is now the ordinary way a page with nothing
+  // but hidden frames lands here, and "Element not found" alone would leave
+  // the caller with no way to learn the regions exist at all.
+  if (others.length === 0) throw await withFramesHint(tabId, notFound);
+
+  const probes = await Promise.all(others.map(async (frameId) => {
+    try {
+      const counted = await doSend(frameId, 'locate', { locator: payload.locator }) as { matched?: number };
+      return { frameId, matched: Number(counted?.matched ?? 0) };
+    } catch {
+      return { frameId, matched: 0 };
+    }
+  }));
+  const hits = probes.filter((p) => p.matched === 1).map((p) => p.frameId);
+  const ambiguous = probes.filter((p) => p.matched > 1).map((p) => p.frameId);
+
+  if (hits.length === 1 && ambiguous.length === 0) return doSend(hits[0]);
+  if (hits.length + ambiguous.length > 1 || ambiguous.length === 1) {
+    throw new Error(ambiguousFrameMessage(await frameStore.tree(tabId), [...hits, ...ambiguous]));
+  }
+  throw await withFramesHint(tabId, notFound);
+}
+
+async function withFramesHint(tabId: number, err: unknown): Promise<unknown> {
+  if (!(err instanceof Error)) return err;
+  const hint = await framesHint(tabId);
+  return hint ? new Error(err.message + hint) : err;
+}
+
+/**
+ * Give a main-frame read the frame list it cannot compute for itself.
+ *
+ * The content runtime only walks child documents in the BUILT-IN browser (one
+ * isolated world, main frame only). Here every frame has its own copy and the
+ * authoritative list lives in Chrome, so the worker is the only place that can
+ * answer "what regions does this page have".
+ */
+async function annotateWithFrames(tabId: number, action: string, result: unknown): Promise<unknown> {
+  if (action !== 'snapshot' && action !== 'find') return result;
+  if (typeof result !== 'object' || result === null) return result;
+  const record = result as Record<string, unknown> & { frames?: FrameTree; total?: number; message?: string };
+  if (action === 'snapshot') {
+    const tree = await frameStore.tree(tabId).catch(() => [] as FrameTree);
+    return tree.length > 1 ? { ...record, frames: tree } : record;
+  }
+  if (record.total !== 0) return record;
+  const hint = await framesHint(tabId);
+  return hint ? { ...record, message: `${record.message ?? ''}${hint}` } : record;
 }
 
 // --- Popup Communication ---

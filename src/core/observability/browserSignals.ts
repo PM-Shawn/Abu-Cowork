@@ -35,7 +35,15 @@ import type { BrowserOperationClass, BrowserDenialReasonCode } from '../permissi
 // ── Event shapes ──────────────────────────────────────────────────────────
 
 export type BrowserSignalEvent =
-  | { kind: 'tool_call'; tool: string; tabId?: number; origin?: string; frameHint?: boolean; ok: boolean; errorClass?: string; durationMs: number }
+  /**
+   * `frameHint` is a GUESS — the word "iframe" turning up in a failed result —
+   * and predates frames being addressable at all. `frameTargeted` is the fact:
+   * the call named an embedded region. Both are kept because they answer
+   * different questions: how often a failure smells like an iframe (the
+   * problem T4 exists to remove) versus how often the new addressing is
+   * actually being used, which is what says whether it removed it.
+   */
+  | { kind: 'tool_call'; tool: string; tabId?: number; origin?: string; frameHint?: boolean; frameTargeted?: true; ok: boolean; errorClass?: string; durationMs: number }
   | { kind: 'fallback_to_script' }
   | { kind: 'repeat_action'; tool: string; targetKey: string; count: number }
   | { kind: 'confirm_prompt'; origin?: string }

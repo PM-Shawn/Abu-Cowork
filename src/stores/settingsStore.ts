@@ -18,6 +18,7 @@ import {
   BROWSER_CONFIG_FIELDS,
   INITIAL_BROWSER_CONFIG_REVISIONS,
   browserConfigWasStored,
+  browserConfigCompanionsOf,
   mergeBrowserConfigForWrite,
   nextBrowserConfigRevision,
   parsePersistedSettings,
@@ -285,6 +286,28 @@ export interface SettingsState {
    */
   browserSitePermissions: BrowserSiteVerdicts;
   /**
+   * Which of those `'allowed'` verdicts were minted through the MERGED prompt
+   * that a page's embedded regions get (round-2 R2-C-②).
+   *
+   * A page decides what it embeds and in what order, so the regions a merged
+   * "always allow this site and its N embedded regions" click covers are
+   * chosen by the page, not by the user — the user consented to a list they
+   * read, on a page they were looking at, which is real consent for work they
+   * are watching, and NOT the premise an unattended run is built on ("the user
+   * went to this site and allowed it"). So a marked grant is a full grant while
+   * a human is present, and no grant at all for an automatic run.
+   *
+   * Kept as a sibling map rather than a richer verdict value so
+   * `getSiteVerdict`'s two-value precedence — the thing every gate path reads
+   * — stays exactly what it was. The two cannot drift because every write goes
+   * through `setBrowserSitePermission` / `removeBrowserSitePermission`, and
+   * `browserSiteGrantWriters.test.ts` pins that the writers can be enumerated.
+   * Any later write of the same origin without `viaEmbed` (Settings › 网站授权,
+   * or a dialog on the page itself) CLEARS the mark: that write is the direct
+   * authorization the mark was recording the absence of.
+   */
+  browserSiteGrantViaEmbed: Record<string, true>;
+  /**
    * Operation-class three-state policy: one allow/deny/ask row per operation
    * class (read-only / interactive / scripting). Consumed by
    * `decideBrowserOperation` in `browserToolPolicy.ts`.
@@ -476,7 +499,16 @@ interface SettingsActions {
   setBehaviorSensorEnabled: (enabled: boolean) => void;
   setTelemetryOptOut: (optOut: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
-  setBrowserSitePermission: (origin: string, verdict: 'allowed' | 'denied') => void;
+  setBrowserSitePermission: (
+    origin: string,
+    verdict: 'allowed' | 'denied',
+    /**
+     * The grant came from the merged embedded-region prompt — see
+     * `browserSiteGrantViaEmbed`. Omitted everywhere a user authorized the
+     * origin directly, which is what CLEARS an existing mark.
+     */
+    options?: { viaEmbed?: boolean },
+  ) => void;
   removeBrowserSitePermission: (origin: string) => void;
   /** Set one operation-class row of `browserOperationPolicy`. */
   setBrowserOperationState: (
@@ -487,7 +519,18 @@ interface SettingsActions {
   /** Write the last CONFIRMED value of one browser field back into memory —
    *  after a failed save, or after another window turned out to hold a newer
    *  one. See `installBrowserConfigSaveReporting`. */
-  restoreBrowserConfigField: (field: BrowserConfigField, value: unknown, revision: number) => void;
+  restoreBrowserConfigField: (
+    field: BrowserConfigField,
+    value: unknown,
+    revision: number,
+    /**
+     * The values that qualify `value` and have no revision of their own — see
+     * `BROWSER_CONFIG_COMPANION_FIELDS`. Restored WITH it, because a mark left
+     * behind while its grant is replaced is a grant that reads wider than what
+     * is stored.
+     */
+    companions?: Record<string, unknown>,
+  ) => void;
   /** Try the failed write again, with the value it was trying to store. */
   retryBrowserConfigSave: (field: BrowserConfigField) => void;
   setPreventSleep: (enabled: boolean) => void;
@@ -722,7 +765,10 @@ const browserConfigWriteQueue = new Set<BrowserConfigField>();
  * that one may itself never have been stored, and rolling back to an
  * unconfirmed value would be the same lie one step removed.
  */
-const lastConfirmedBrowserConfig = new Map<BrowserConfigField, { value: unknown; revision: number }>();
+const lastConfirmedBrowserConfig = new Map<
+  BrowserConfigField,
+  { value: unknown; revision: number; companions: Record<string, unknown> }
+>();
 
 /**
  * What a FAILED write was trying to store.
@@ -732,7 +778,10 @@ const lastConfirmedBrowserConfig = new Map<BrowserConfigField, { value: unknown;
  * from it would cheerfully re-save the setting the user was trying to change
  * away from and report success.
  */
-const lastAttemptedBrowserConfig = new Map<BrowserConfigField, unknown>();
+const lastAttemptedBrowserConfig = new Map<
+  BrowserConfigField,
+  { value: unknown; companions: Record<string, unknown> }
+>();
 
 /**
  * True while the store is being corrected FROM the storage layer (a rollback
@@ -803,13 +852,19 @@ const settingsStateStorage: StateStorage = {
         lastConfirmedBrowserConfig.set(field, {
           value: intended.state[field],
           revision: revisions[field],
+          companions: companionValues(field, intended.state),
         });
       }
     }
     for (const field of pending) browserSaveStatus.settle(field, stored ? 'saved' : 'failed');
     if (!stored) {
       for (const field of pending) {
-        if (intended !== null) lastAttemptedBrowserConfig.set(field, intended.state[field]);
+        if (intended !== null) {
+          lastAttemptedBrowserConfig.set(field, {
+            value: intended.state[field],
+            companions: companionValues(field, intended.state),
+          });
+        }
       }
       if (pending.length > 0) repairBrowserConfig(pending, null);
     }
@@ -837,18 +892,36 @@ function repairBrowserConfig(
     const revisions = source === null ? null : readBrowserConfigRevisions(source.state);
     for (const field of fields) {
       const confirmed = source !== null && revisions !== null
-        ? { value: source.state[field], revision: revisions[field] }
+        ? {
+          value: source.state[field],
+          revision: revisions[field],
+          companions: companionValues(field, source.state),
+        }
         : lastConfirmedBrowserConfig.get(field);
       // Nothing was ever confirmed for this field (the very first write of a
       // fresh install failed). There is no known-good value to show, so the
       // status is left as the only signal rather than inventing one.
       if (confirmed === undefined) continue;
       useSettingsStore.getState()
-        .restoreBrowserConfigField(field, confirmed.value, confirmed.revision);
+        .restoreBrowserConfigField(field, confirmed.value, confirmed.revision, confirmed.companions);
     }
   } finally {
     repairingBrowserConfig = false;
   }
+}
+
+/**
+ * The companion values a field carries, read out of a persisted state blob.
+ * Absent means "this store has none", which is a value in its own right — the
+ * restore below writes an empty map rather than leaving a stale one standing.
+ */
+function companionValues(
+  field: BrowserConfigField,
+  state: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const companion of browserConfigCompanionsOf(field)) out[companion] = state[companion];
+  return out;
 }
 
 /** Test-only — module-level bookkeeping shared across a test file. */
@@ -958,6 +1031,7 @@ export const useSettingsStore = create<SettingsStore>()(
       telemetryOptOut: false,
       computerUseEnabled: false,
       browserSitePermissions: mintBrowserSiteVerdicts({}),
+      browserSiteGrantViaEmbed: {},
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
       browserConfigRevisions: INITIAL_BROWSER_CONFIG_REVISIONS,
@@ -1309,18 +1383,30 @@ export const useSettingsStore = create<SettingsStore>()(
       closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
-      setBrowserSitePermission: (origin, verdict) => set((state) => ({
-        browserSitePermissions: mintBrowserSiteVerdicts({
-          ...state.browserSitePermissions,
-          [origin]: verdict,
-        }),
-        ...beginBrowserFieldWrite('browserSitePermissions', state.browserConfigRevisions),
-      })),
+      setBrowserSitePermission: (origin, verdict, options) => set((state) => {
+        // The mark lives and dies with the verdict it qualifies: a block, or a
+        // grant given anywhere the user authorized this origin directly,
+        // leaves nothing marked behind.
+        const viaEmbed = { ...state.browserSiteGrantViaEmbed };
+        if (verdict === 'allowed' && options?.viaEmbed === true) viaEmbed[origin] = true;
+        else delete viaEmbed[origin];
+        return {
+          browserSitePermissions: mintBrowserSiteVerdicts({
+            ...state.browserSitePermissions,
+            [origin]: verdict,
+          }),
+          browserSiteGrantViaEmbed: viaEmbed,
+          ...beginBrowserFieldWrite('browserSitePermissions', state.browserConfigRevisions),
+        };
+      }),
       removeBrowserSitePermission: (origin) => set((state) => {
         const next: Record<string, 'allowed' | 'denied'> = { ...state.browserSitePermissions };
         delete next[origin];
+        const viaEmbed = { ...state.browserSiteGrantViaEmbed };
+        delete viaEmbed[origin];
         return {
           browserSitePermissions: mintBrowserSiteVerdicts(next),
+          browserSiteGrantViaEmbed: viaEmbed,
           ...beginBrowserFieldWrite('browserSitePermissions', state.browserConfigRevisions),
         };
       }),
@@ -1350,12 +1436,20 @@ export const useSettingsStore = create<SettingsStore>()(
        * carries. Used for a rollback after a failed write, and for adopting a
        * newer value another window stored.
        */
-      restoreBrowserConfigField: (field, value, revision) => set((state) => ({
+      restoreBrowserConfigField: (field, value, revision, companions) => set((state) => ({
         ...(field === 'browserSitePermissions'
           ? {
             browserSitePermissions: mintBrowserSiteVerdicts(
               value as Record<string, 'allowed' | 'denied'>,
             ),
+            // An absent companion is not a reason to keep this window's copy:
+            // the adopted value is taken WHOLE, companions included, so one
+            // store wins rather than a splice of two. The cost of that (a mark
+            // dropped by an older build that never knew about marks widens the
+            // grant) is stated where the rule lives —
+            // `BROWSER_CONFIG_COMPANION_FIELDS` in browserConfigPersistence.ts.
+            browserSiteGrantViaEmbed:
+              (companions?.browserSiteGrantViaEmbed as Record<string, true> | undefined) ?? {},
           }
           : field === 'browserOperationPolicy'
             ? { browserOperationPolicy: normalizeBrowserOperationPolicy(value) }
@@ -1373,12 +1467,15 @@ export const useSettingsStore = create<SettingsStore>()(
           ...(field === 'browserSitePermissions'
             ? {
               browserSitePermissions: mintBrowserSiteVerdicts(
-                attempted as Record<string, 'allowed' | 'denied'>,
+                attempted.value as Record<string, 'allowed' | 'denied'>,
               ),
+              browserSiteGrantViaEmbed:
+                (attempted.companions.browserSiteGrantViaEmbed as Record<string, true> | undefined)
+                ?? {},
             }
             : field === 'browserOperationPolicy'
-              ? { browserOperationPolicy: normalizeBrowserOperationPolicy(attempted) }
-              : { allowUnattendedBrowser: attempted === true }),
+              ? { browserOperationPolicy: normalizeBrowserOperationPolicy(attempted.value) }
+              : { allowUnattendedBrowser: attempted.value === true }),
           ...beginBrowserFieldWrite(field, state.browserConfigRevisions),
         };
       }),
@@ -1445,7 +1542,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 48,
+      version: 49,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -1515,6 +1612,16 @@ export const useSettingsStore = create<SettingsStore>()(
           // Browser site permissions start empty: every site keeps asking until
           // the user explicitly settles it from the confirmation dialog.
           if (state.browserSitePermissions === undefined) state.browserSitePermissions = {};
+        }
+
+        // ════════════════════════════════════════════════
+        // V49: `browserSiteGrantViaEmbed`. Every grant that already exists was
+        // minted before the merged embedded-region prompt could mark one, so
+        // an empty map is the truthful answer: nothing stored so far is known
+        // to have come in that way, and an unmarked grant is a full one.
+        // ════════════════════════════════════════════════
+        if (version < 49) {
+          if (state.browserSiteGrantViaEmbed === undefined) state.browserSiteGrantViaEmbed = {};
         }
 
         // ════════════════════════════════════════════════
@@ -2351,6 +2458,7 @@ export const useSettingsStore = create<SettingsStore>()(
         behaviorSensorEnabled: state.behaviorSensorEnabled,
         telemetryOptOut: state.telemetryOptOut,
         browserSitePermissions: state.browserSitePermissions,
+        browserSiteGrantViaEmbed: state.browserSiteGrantViaEmbed,
         browserOperationPolicy: state.browserOperationPolicy,
         allowUnattendedBrowser: state.allowUnattendedBrowser,
         browserConfigRevisions: state.browserConfigRevisions,

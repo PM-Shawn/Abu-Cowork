@@ -3461,7 +3461,94 @@ test('U5 pin: navigate is exempt — its target IS what the gate approved', asyn
   }
 });
 
-test('U5 pin: read-only actions are exempt — they change nothing', async () => {
+/**
+ * ── R2-A: reads are pinned too ─────────────────────────────────────────────
+ *
+ * This block used to assert the opposite ("read-only actions are exempt — they
+ * change nothing"). The exemption was reasoning about the wrong subject: a read
+ * does not change the PAGE, it changes the CONVERSATION. If the tab drifted
+ * between approval and execution, a read copies the body of a site nobody
+ * authorized into the transcript and the model's context — an exfiltration, and
+ * the hole a batch's parallel read group walked straight into.
+ */
+test('R2-A pin: a read carrying a pin is refused after the page drifted', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    for (const action of ['snapshot', 'find', 'locate', 'get_html', 'extract_text', 'extract_table', 'screenshot']) {
+      const tab = await tabOn(host, 'https://shop.example.com/cart');
+      contentsFor(tab).url = 'https://evil.example.com/';
+
+      await assert.rejects(
+        host.performBrowserAutomation(action, {
+          ownerId: OWNER_A,
+          tabId: tab,
+          unattended: true,
+          expectedOrigin: 'https://shop.example.com',
+        }),
+        (error) => {
+          assert.match(
+            error.message,
+            /no longer on the page this action was approved for/,
+            `wrong message for ${action}`
+          );
+          return true;
+        }
+      );
+    }
+  } finally {
+    restore();
+  }
+});
+
+test('R2-A pin: an ATTENDED read is refused on a drift too', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    // No `unattended` marker. A human watching cannot perceive a sub-second
+    // redirect either, and the content lands in the same transcript.
+    await assert.rejects(
+      host.performBrowserAutomation('extract_text', {
+        ownerId: OWNER_A,
+        tabId: tab,
+        expectedOrigin: 'https://shop.example.com',
+      }),
+      /no longer on the page this action was approved for/
+    );
+  } finally {
+    restore();
+  }
+});
+
+test('R2-A pin: a read on the approved origin still runs', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    // A same-origin path change is not a drift, for a read either.
+    contentsFor(tab).url = 'https://shop.example.com/cart/step-2';
+
+    await host.performBrowserAutomation('snapshot', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      unattended: true,
+      expectedOrigin: 'https://shop.example.com',
+    });
+  } finally {
+    restore();
+  }
+});
+
+/**
+ * The missing-value refusal stays STATE-CHANGE-only. Widening it to reads would
+ * change what an unattended run may look at, which is the gate's question, not
+ * this file's — and it would break the worker's bare auto-routing probes, which
+ * carry no gate fields at all.
+ */
+test('R2-A pin: a read that carries NO pin keeps its pre-R2-A path, unattended included', async () => {
   const { host, restore } = loadHost();
   try {
     host.__testing.setClock(fakeClock().clock);
@@ -3471,6 +3558,24 @@ test('U5 pin: read-only actions are exempt — they change nothing', async () =>
     await host.performBrowserAutomation('snapshot', {
       ownerId: OWNER_A,
       tabId: tab,
+      unattended: true,
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('R2-A pin: wait_for stays exempt — a wait is how a run waits OUT a navigation', async () => {
+  const { host, restore } = loadHost();
+  try {
+    host.__testing.setClock(fakeClock().clock);
+    const tab = await tabOn(host, 'https://shop.example.com/cart');
+    contentsFor(tab).url = 'https://evil.example.com/';
+
+    await host.performBrowserAutomation('wait_for', {
+      ownerId: OWNER_A,
+      tabId: tab,
+      condition: { urlContains: 'evil' },
       unattended: true,
       expectedOrigin: 'https://shop.example.com',
     });

@@ -69,10 +69,33 @@ const TEST_VERDICT_HELPER = join('src', 'test', 'browserSiteVerdicts.ts');
  *   clicking in a settings page they navigated to; the add row additionally
  *   refuses to mint `'allowed'` for a high-risk origin, which the dialog also
  *   refuses (`allowPersistentGrant: false`).
+ *
+ * ## The mark is the WIDE default when omitted (round-3 R3-H)
+ *
+ * `setBrowserSitePermission(origin, verdict, { viaEmbed })` takes the mark as
+ * an OPTIONAL option, and leaving it out mints a full grant — the kind an
+ * automatic task may act on. So the dangerous edit is not a new writer, it is
+ * an existing-shaped writer that learns to grant on behalf of an EMBEDDED
+ * REGION and forgets the third argument: nothing would be red, and a region
+ * grant would silently become a standing one. The last two cases below make
+ * that an enumerated decision as well.
  */
 const PERMITTED_WRITERS = [
   join('src', 'components', 'common', 'CommandConfirmDialog.tsx'),
   join('src', 'components', 'settings', 'sections', 'BrowserPermissionCards.tsx'),
+];
+
+/**
+ * The writers that grant on behalf of an EMBEDDED REGION, and therefore have
+ * to mark what they mint. Exactly one today: the merged prompt, which is the
+ * only surface that is ever shown a page's embedded origins.
+ *
+ * `browserPageOrigin` is the signal — the gate sends it only when the action
+ * lands somewhere other than the top page, so a writer that reads it is by
+ * definition deciding about a region.
+ */
+const REGION_AWARE_WRITERS = [
+  join('src', 'components', 'common', 'CommandConfirmDialog.tsx'),
 ];
 
 function sourceFiles(): string[] {
@@ -139,6 +162,35 @@ describe('standing browser site verdicts have exactly two writers', () => {
     // that, and it must not appear in shipped code.
     const forced = filesMatching((src) => /\bas\s+BrowserSiteVerdicts\b/.test(src));
     expect(forced).toEqual([]);
+  });
+
+  it('lets nobody but the merged region prompt mint a MARKED grant', () => {
+    // The mark itself is a small enumerable set, so that "which screens can
+    // produce a grant an automatic task may NOT act on" stays answerable by
+    // reading one list.
+    const markers = filesMatching((src) => /viaEmbed:\s*true/.test(src));
+    expect(markers).toEqual([...REGION_AWARE_WRITERS].sort());
+  });
+
+  it('makes a writer that knows about embedded regions mark what it mints', () => {
+    // The failure this catches: a NEW granting surface (or a change to an
+    // existing one) that starts reading `browserPageOrigin` — i.e. starts
+    // deciding about a region — and calls the setter without the mark. The
+    // option is optional and omitting it is the WIDE branch, so nothing else
+    // in the build would notice.
+    const grantsForRegionsUnmarked = filesMatching(
+      (src) => src.includes('setBrowserSitePermission(')
+        && src.includes('browserPageOrigin')
+        && !src.includes('viaEmbed'),
+    );
+    expect(grantsForRegionsUnmarked).toEqual([]);
+
+    // …and the region-aware writer really is one, so the case above is not
+    // passing on an empty premise.
+    const regionAware = filesMatching(
+      (src) => src.includes('setBrowserSitePermission(') && src.includes('browserPageOrigin'),
+    );
+    expect(regionAware).toEqual([...REGION_AWARE_WRITERS].sort());
   });
 
   it('lets nobody reach for the test-only minting helper', () => {

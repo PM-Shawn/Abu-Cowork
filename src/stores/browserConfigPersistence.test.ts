@@ -133,6 +133,77 @@ describe('mergeBrowserConfigForWrite', () => {
     expect(adopted).toEqual(['browserSitePermissions']);
   });
 
+  /**
+   * Round-2 R2-C-②. `browserSiteGrantViaEmbed` has no revision of its own —
+   * it is always written in the same `set` as the verdicts it qualifies. What
+   * must not happen is for it to stay behind when its owner is adopted: the
+   * merge would then pair the OTHER window's grants with THIS window's marks,
+   * and a marked grant read as unmarked is a grant an automatic run may act
+   * on.
+   */
+  it('carries the via-embed marks with the verdicts they qualify', () => {
+    const windowB = blob(
+      {
+        browserSitePermissions: { 'https://old.example.com': 'allowed' },
+        browserSiteGrantViaEmbed: {},
+      },
+      {},
+    );
+    const onDisk = blob(
+      {
+        browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+      },
+      { browserSitePermissions: 4 },
+    );
+
+    const { merged } = mergeBrowserConfigForWrite(windowB, onDisk);
+
+    expect(merged.state.browserSitePermissions)
+      .toEqual({ 'https://vendor.example.net': 'allowed' });
+    expect(merged.state.browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': true });
+  });
+
+  it('drops a mark the adopted copy does not carry, rather than keeping a stale one', () => {
+    const windowB = blob(
+      {
+        browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+      },
+      {},
+    );
+    // A store that predates the mark: its grants are unmarked by its own
+    // account, and saying otherwise would be this window's opinion.
+    const onDisk = blob(
+      { browserSitePermissions: { 'https://vendor.example.net': 'allowed' } },
+      { browserSitePermissions: 4 },
+    );
+
+    const { merged } = mergeBrowserConfigForWrite(windowB, onDisk);
+
+    expect(merged.state.browserSiteGrantViaEmbed).toBeUndefined();
+  });
+
+  it('leaves the marks alone when the writer keeps its own verdicts', () => {
+    const windowB = blob(
+      {
+        browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+      },
+      { browserSitePermissions: 9 },
+    );
+    const onDisk = blob(
+      { browserSitePermissions: {}, browserSiteGrantViaEmbed: {} },
+      { browserSitePermissions: 4 },
+    );
+
+    const { merged } = mergeBrowserConfigForWrite(windowB, onDisk);
+
+    expect(merged.state.browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': true });
+  });
+
   it('reports each field it had to adopt, so the loser can be corrected on screen', () => {
     const outgoing = blob(
       { browserSitePermissions: {}, allowUnattendedBrowser: false },
@@ -218,6 +289,16 @@ describe('browserConfigWasStored', () => {
       const partial = blob({ ...intended.state, [field]: undefined });
       expect(browserConfigWasStored(intended, JSON.stringify(partial))).toBe(false);
     }
+  });
+
+  it('refuses to confirm when the via-embed marks did not land with the verdicts', () => {
+    const marked = blob({
+      ...intended.state,
+      browserSiteGrantViaEmbed: { 'https://a.example.com': true },
+    });
+    // The verdicts stored; the mark did not. A grant that reads as unmarked is
+    // wider than the one that was meant to be saved, so this is not a success.
+    expect(browserConfigWasStored(marked, JSON.stringify(intended))).toBe(false);
   });
 
   it('ignores changes outside the browser fields — another pane save is not this one failing', () => {

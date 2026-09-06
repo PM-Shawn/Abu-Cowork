@@ -49,9 +49,17 @@ export default function ScheduleTaskDetail() {
   } = useScheduleStore();
 
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const viaEmbedGrants = useSettingsStore((s) => s.browserSiteGrantViaEmbed);
   const allowUnattendedBrowser = useSettingsStore((s) => s.allowUnattendedBrowser);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
-  const browserAuth = summarizeBrowserAuthorization(sitePermissions, allowUnattendedBrowser);
+  // A grant minted through the merged embedded-region prompt is not one this
+  // task can act on (R2-C-②), so the page that answers "where may this run
+  // go?" must not count it.
+  const browserAuth = summarizeBrowserAuthorization(
+    sitePermissions,
+    allowUnattendedBrowser,
+    viaEmbedGrants,
+  );
 
   const [isRunning, setIsRunning] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);

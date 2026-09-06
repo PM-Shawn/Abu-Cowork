@@ -11,9 +11,21 @@ import type {
   FindMatch,
   FindQuery,
   FindResult,
+  FrameNode,
+  FrameRef,
+  FrameTree,
   PageHandoff,
   PageHandoffKind,
   PageSnapshot,
+} from '../shared/types.js';
+import {
+  MAIN_FRAME_REF,
+  frameGoneMessage,
+  frameOfRef,
+  frameUnreachableMessage,
+  isFrameRef,
+  localRef,
+  qualifyRef,
 } from '../shared/types.js';
 
 // Max text size returned by extractText (50KB)
@@ -83,23 +95,53 @@ const refByElement = new WeakMap<Element, string>();
 const elementByRef = new Map<string, WeakRef<Element>>();
 let refCounter = 0;
 
-/** Stable ref for an element — same element, same ref, for as long as it lives. */
+/**
+ * Stable ref for an element — same element, same ref, for as long as it lives.
+ *
+ * Namespaced by the frame that holds the element (`f3:e17`), because in the
+ * extension every frame runs its OWN copy of this runtime with its own
+ * counter, so a bare `e17` names a different element in every frame of the
+ * page. The main document is deliberately left bare (`e17`) — see
+ * `qualifyRef` for why.
+ */
 function refFor(el: Element): string {
+  const frameId = frameIdOfElement(el);
   const existing = refByElement.get(el);
-  if (existing && elementByRef.get(existing)?.deref() === el) return existing;
+  if (existing && elementByRef.get(existing)?.deref() === el) return qualifyRef(frameId, existing);
   const ref = `e${++refCounter}`;
   refByElement.set(el, ref);
   elementByRef.set(ref, new WeakRef(el));
-  return ref;
+  return qualifyRef(frameId, ref);
 }
 
-/** Resolve a ref, dropping it if the element is gone or detached. */
-function resolveRef(ref: string): Element | null {
-  const el = elementByRef.get(ref)?.deref();
+/** Which frame handle an element's own document answers to. */
+function frameIdOfElement(el: Element): FrameRef {
+  const doc = el.ownerDocument;
+  if (!doc || doc === document) return hostFrameId;
+  return frameIdByDoc.get(doc) ?? frameIdForDoc(doc);
+}
+
+/**
+ * Resolve a ref, dropping it if the element is gone or detached.
+ *
+ * A ref that names ANOTHER frame resolves to null rather than to whatever
+ * element happens to carry that number here: the two frames' counters are
+ * independent, so answering it would act on a different element than the
+ * caller asked for and report success — the exact failure the ref registry's
+ * own header exists to prevent, one document over.
+ */
+function resolveRef(ref: string, scope: DomScope): Element | null {
+  if (frameOfRef(ref) !== scope.frameId) return null;
+  const el = elementByRef.get(localRef(ref))?.deref();
   if (!el || !el.isConnected) {
-    elementByRef.delete(ref);
+    elementByRef.delete(localRef(ref));
     return null;
   }
+  // The registry is shared across every document this runtime reaches (the
+  // built-in browser walks into same-origin frames from one isolated world),
+  // so identity has to be confirmed against the document actually being acted
+  // on, not just against the counter.
+  if (el.ownerDocument !== scope.doc) return null;
   return el;
 }
 
@@ -111,6 +153,507 @@ function sweepRefs(): void {
   }
 }
 
+
+// =============================================================================
+// 0a. FRAMES AND SHADOW ROOTS — what "the document" means for one action
+// =============================================================================
+//
+// Every DOM primitive below used to read the bare global `document`. On a page
+// whose form lives in an `<iframe>` — the ordinary shape of an OA/ERP screen —
+// that meant `snapshot` could describe a field (`get_html` inlines same-origin
+// frames) that `fill` could never reach. The fix is not a special case for
+// iframes; it is making "which document" an explicit argument that every
+// search takes, and defaulting it to the one this runtime is hosted in.
+//
+// Two very different hosts run this same file, and they differ in exactly one
+// respect — who can put code inside a child frame:
+//
+// - **Chrome extension**: the worker injects into `allFrames`, so every frame
+//   has its own copy of this runtime and `chrome.tabs.sendMessage(…,{frameId})`
+//   delivers straight to the right one. A frame's own copy always works on its
+//   own `document`, cross-origin included, and mints refs under the frame id
+//   the worker stamps on the message.
+// - **Built-in Electron browser**: `executeJavaScriptInIsolatedWorld` targets
+//   the MAIN frame only (Electron 43's `WebFrameMain` has no isolated-world
+//   entry point), and the view deliberately ships no preload, so there is no
+//   way to place this runtime inside a child frame without injecting into the
+//   page's own world — which would hand every third-party frame a global that
+//   advertises "this browser is automated". So the main frame's copy reaches
+//   child documents the only way an isolated world can: `contentDocument`,
+//   which same-origin policy grants for same-origin frames and refuses for the
+//   rest. Cross-origin frames are therefore ENUMERATED and REFUSED here, with
+//   the honest reason, rather than silently missing.
+
+/** How deep a frame walk goes. Deeper than any real page; stops a cycle. */
+const MAX_FRAME_DEPTH = 8;
+/** How many frames one tab reports. A page with more is an ad farm. */
+const MAX_FRAMES = 40;
+/** How deep open shadow roots are followed. */
+const MAX_SHADOW_DEPTH = 10;
+
+/**
+ * True when this runtime is the built-in browser's single main-frame copy,
+ * i.e. the host that has to walk into child documents itself. In the
+ * extension every frame runs its own copy and the worker does the routing, so
+ * this runtime must NOT mint frame ids of its own — they would collide with
+ * Chrome's, which are what the worker routes on.
+ */
+const LOCAL_FRAME_WALK = !!electronBrowserRuntime;
+
+/**
+ * The frame id of THIS runtime's own document.
+ *
+ * `f0` in the built-in browser (always the main frame) and for the extension's
+ * main-frame copy; in a subframe the extension worker stamps the message with
+ * the Chrome frame id it routed to, and that becomes this copy's identity for
+ * the rest of the call — which is what makes a ref minted here (`f7:e3`)
+ * resolvable by the next call routed to the same frame.
+ */
+let hostFrameId: FrameRef = MAIN_FRAME_REF;
+
+/** Did the last frame walk stop at `MAX_FRAMES` with regions still unvisited? */
+let frameListTruncated = false;
+
+/** A document plus the frame handle it answers to. The unit every search takes. */
+interface DomScope {
+  doc: Document;
+  frameId: FrameRef;
+}
+
+/** The scope for this runtime's own document. */
+function hostScope(): DomScope {
+  return { doc: document, frameId: hostFrameId };
+}
+
+// Frame identity is minted per DOCUMENT, not per `<iframe>` element: a frame
+// that reloads is a new document, and reusing the handle would let a ref
+// minted before the reload resolve against content the caller never saw. A
+// reloaded frame therefore gets a NEW id and the old one is refused with the
+// same "take a fresh snapshot" shape a stale ref is refused with.
+const frameIdByDoc = new WeakMap<Document, FrameRef>();
+const docByFrameId = new Map<FrameRef, WeakRef<Document>>();
+/** Cross-origin frames have no document, so those ids are keyed on the element. */
+const frameIdByFrameEl = new WeakMap<Element, FrameRef>();
+const frameElByFrameId = new Map<FrameRef, WeakRef<Element>>();
+/** What the last walk learned about each frame, for the refusal messages. */
+const frameNodeById = new Map<FrameRef, FrameNode>();
+let frameCounter = 0;
+
+function frameIdForDoc(doc: Document): FrameRef {
+  if (doc === document) return hostFrameId;
+  const existing = frameIdByDoc.get(doc);
+  if (existing && docByFrameId.get(existing)?.deref() === doc) return existing;
+  const id: FrameRef = `f${++frameCounter}`;
+  frameIdByDoc.set(doc, id);
+  docByFrameId.set(id, new WeakRef(doc));
+  return id;
+}
+
+function frameIdForCrossOriginEl(el: Element): FrameRef {
+  const existing = frameIdByFrameEl.get(el);
+  if (existing && frameElByFrameId.get(existing)?.deref() === el) return existing;
+  const id: FrameRef = `f${++frameCounter}`;
+  frameIdByFrameEl.set(el, id);
+  frameElByFrameId.set(id, new WeakRef(el));
+  return id;
+}
+
+/** The child document of a frame element, or null when it is not reachable. */
+function reachableFrameDoc(el: Element): Document | null {
+  try {
+    const doc = (el as HTMLIFrameElement).contentDocument;
+    // A frame mid-navigation exposes an about:blank document with no view;
+    // treating that as reachable would hand back a document that is about to
+    // be replaced.
+    if (!doc || !doc.defaultView || !doc.documentElement) return null;
+    return doc;
+  } catch {
+    // Cross-origin access throws in some engines and returns null in others.
+    return null;
+  }
+}
+
+/**
+ * Every addressable region of this document tree, main document first.
+ *
+ * Only meaningful in the built-in browser (see `LOCAL_FRAME_WALK`): in the
+ * extension the worker enumerates frames from Chrome's own injection results,
+ * which are authoritative for cross-origin frames too.
+ */
+/**
+ * A document's own origin.
+ *
+ * `location.origin` first: it is what a browser reports for an `about:blank`
+ * or `about:srcdoc` frame, which INHERITS the embedder's origin rather than
+ * having one of its own — deriving the origin from `about:srcdoc` as a URL
+ * would say "not a web page" about a region that is plainly part of the page.
+ */
+function originOfDocument(doc: Document): string | null {
+  return normalizedOrigin(doc.location.origin) ?? normalizedOrigin(doc.location.href);
+}
+
+/**
+ * A frame element the user cannot see — zero-sized, `display:none`, or parked
+ * off the left/top edge of its own document.
+ *
+ * Measured on the frame ELEMENT in its EMBEDDING document, which is the only
+ * place the answer exists: `isVisible` further down measures a node inside its
+ * OWN document, and a control in an 800×600 iframe dragged to `left:-9999px`
+ * has a perfectly ordinary box there.
+ *
+ * Deliberately conservative — a false "hidden" would make a real region
+ * unreachable by automatic resolution, so only unambiguous cases count:
+ *
+ * - a box under 2px on either axis (0×0, the 1×1 tracking pixel, and the
+ *   `clip: rect(…)` visually-hidden idiom, which leaves a 1px box);
+ * - `visibility: hidden`, which INHERITS, so an ancestor's counts too
+ *   (`display:none` needs no separate test — it produces no box at all);
+ * - a box lying entirely left of, or above, the DOCUMENT's origin. Document
+ *   coordinates and not viewport ones on purpose: `getBoundingClientRect` is
+ *   scroll-relative, so a viewport test would call every frame the user has
+ *   scrolled past "hidden".
+ *
+ * Everything else — below the fold, behind a modal, `opacity` on an ancestor,
+ * an arbitrary `clip-path` — reads as visible. Those are not decidable cheaply
+ * and the origin pin, not this, is what stops a cross-site region.
+ */
+function frameElementIsHidden(el: Element): boolean {
+  const view = el.ownerDocument.defaultView;
+  if (!view) return true;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return true;
+  if (view.getComputedStyle(el).visibility === 'hidden') return true;
+  const docLeft = rect.left + (view.scrollX || 0);
+  const docTop = rect.top + (view.scrollY || 0);
+  return docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+}
+
+function enumerateFrames(): FrameTree {
+  const topOrigin = originOfDocument(document);
+  const out: FrameTree = [{
+    frameId: hostFrameId,
+    origin: topOrigin,
+    url: document.location.href,
+    sameOriginAsTop: true,
+    accessible: topOrigin !== null,
+    ...(topOrigin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
+  }];
+
+  const walk = (
+    doc: Document,
+    parentFrameId: FrameRef,
+    parentOrigin: string | null,
+    depth: number,
+  ): void => {
+    if (depth >= MAX_FRAME_DEPTH || out.length >= MAX_FRAMES) return;
+    for (const el of queryAllDeep(doc, 'iframe, frame')) {
+      if (out.length >= MAX_FRAMES) return;
+      // Read once, from the embedding document, and carried on the node: the
+      // routing rule below and the model's own listing must agree about which
+      // regions a frameless locator may land in.
+      const hidden = frameElementIsHidden(el) ? { hidden: true as const } : {};
+      const child = reachableFrameDoc(el);
+      if (child) {
+        // A READABLE `contentDocument` is the browser's own same-origin check
+        // having already passed, so this region is covered by the page's grant.
+        // The parent's origin is the honest answer for a document that inherits
+        // one (`about:blank` written by the page, `srcdoc`) and never widens
+        // anything: a cross-origin frame never gets here at all.
+        const origin = originOfDocument(child) ?? parentOrigin;
+        const id = frameIdForDoc(child);
+        out.push({
+          frameId: id,
+          parentFrameId,
+          origin,
+          url: child.location.href,
+          sameOriginAsTop: origin !== null && origin === topOrigin,
+          accessible: origin !== null,
+          ...hidden,
+          ...(origin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
+        });
+        if (origin !== null) walk(child, id, origin, depth + 1);
+        continue;
+      }
+      // Not reachable from this isolated world. The `src` ATTRIBUTE is the
+      // only address available here and it is written by the embedding page,
+      // which can also navigate the frame elsewhere afterwards — so it is
+      // reported as a hint for the refusal message and NEVER as the origin an
+      // authorization is granted against. The built-in host cross-checks it
+      // against the browser's own frame list before the gate ever sees it.
+      const src = el.getAttribute('src') ?? '';
+      let hinted: string | null;
+      try {
+        hinted = src ? normalizedOrigin(new URL(src, doc.baseURI).href) : null;
+      } catch {
+        hinted = null;
+      }
+      out.push({
+        frameId: frameIdForCrossOriginEl(el),
+        parentFrameId,
+        origin: hinted,
+        ...(src ? { url: src } : {}),
+        sameOriginAsTop: false,
+        accessible: false,
+        ...hidden,
+        inaccessibleReason: hinted === null ? 'not-a-web-page' : 'cross-origin-unreachable',
+      });
+    }
+  };
+
+  if (LOCAL_FRAME_WALK) walk(document, hostFrameId, topOrigin, 0);
+  // A page with more regions than the cap is reported truncated, and a handle
+  // that is not in the list then gets an honest refusal rather than "it
+  // reloaded, or was removed" — which of a region that is sitting right there,
+  // just past row 40, is simply untrue.
+  frameListTruncated = out.length >= MAX_FRAMES;
+  frameNodeById.clear();
+  for (const node of out) frameNodeById.set(node.frameId, node);
+  return out;
+}
+
+/**
+ * Which document an action means, from the frame it names and the refs it
+ * carries — and a refusal, never a silent fallback to the main document, when
+ * the two disagree or the frame is gone.
+ */
+function resolveScope(payload: Record<string, unknown>): DomScope {
+  const named = payload.frameId;
+  if (named !== undefined && !isFrameRef(named)) {
+    throw new Error(
+      `Invalid frameId ${JSON.stringify(named)}. Frame handles come from a snapshot's \`frames\` list `
+      + '(or get_tabs) and look like "f0", "f3". Omit it to act on the main document.',
+    );
+  }
+  const fromRef = frameFromLocators(payload);
+  if (named !== undefined && fromRef !== null && named !== fromRef) {
+    throw new Error(
+      `frameId ${JSON.stringify(named)} does not match the ref you passed, which belongs to `
+      + `${JSON.stringify(fromRef)}. A ref can only be used in the frame that minted it — drop the `
+      + 'frameId, or use a ref from that frame.',
+    );
+  }
+  const wanted = (named as FrameRef | undefined) ?? fromRef ?? hostFrameId;
+  if (wanted === hostFrameId) return hostScope();
+  if (!LOCAL_FRAME_WALK) {
+    // Extension channel: the worker routes by Chrome frame id, so a copy of
+    // this runtime is only ever asked about its OWN document. Anything else is
+    // a stale handle from a frame that has since gone (or been re-numbered).
+    throw new Error(frameGoneMessage(wanted));
+  }
+  const doc = docByFrameId.get(wanted)?.deref();
+  if (doc && doc.defaultView) return { doc, frameId: wanted };
+  const known = frameNodeById.get(wanted);
+  if (known && !known.accessible) throw new Error(frameUnreachableMessage(known));
+  throw new Error(
+    frameGoneMessage(wanted)
+    + (frameListTruncated
+      ? ` This page has more than ${MAX_FRAMES} embedded regions and only the first ${MAX_FRAMES} `
+        + 'are listed, so this one may simply be past the end of that list rather than gone.'
+      : ''),
+  );
+}
+
+/**
+ * Locator actions that may be resolved to the region actually holding the
+ * target, when the caller named none. Same list the extension worker uses —
+ * `wait_for` is deliberately absent: it waits for something that does not
+ * exist yet, so "which frame holds it" has no answer to resolve.
+ */
+const LOCATOR_ROUTED_ACTIONS = new Set(['click', 'fill', 'select']);
+
+/**
+ * The region a frameless locator actually names — the built-in browser's half
+ * of the resolution the extension worker does by messaging each frame.
+ *
+ * Runs BEFORE the origin pin, so the pin is applied to the document the action
+ * will really execute in rather than to the one it was aimed at by default.
+ * Only same-origin regions are reachable from this isolated world, so the pin
+ * verdict is the same either way — but that is a property of this channel, not
+ * something the ordering should depend on.
+ *
+ * Exactly one match acts; several is refused with the regions listed, for the
+ * same reason two matches inside one document are refused: acting on whichever
+ * came first is a wrong, irreversible action reported as a success.
+ */
+function resolveLocatorFrame(
+  action: string,
+  payload: Record<string, unknown>,
+  scope: DomScope,
+): DomScope {
+  if (!LOCAL_FRAME_WALK || !LOCATOR_ROUTED_ACTIONS.has(action)) return scope;
+  if (payload.frameId !== undefined) return scope;
+  const locator = payload.locator as ElementLocator | undefined;
+  // A ref already names its own frame, and a malformed/ambiguous locator has
+  // to be reported by the ordinary path, not turned into a frame question.
+  if (!locator || locator.ref) return scope;
+  try {
+    if (findElement(scope, locator) !== null) return scope;
+  } catch {
+    return scope;
+  }
+
+  const hits: DomScope[] = [];
+  const ambiguous: DomScope[] = [];
+  for (const node of enumerateFrames()) {
+    if (node.frameId === scope.frameId || !node.accessible) continue;
+    // A region nobody can see never wins a locator the caller did not aim.
+    // Planting a same-named control in a 0×0 or off-screen iframe is otherwise
+    // enough to steer a click into a document the user cannot inspect, and the
+    // "exactly one match" rule would call that a success. Naming the frameId
+    // explicitly still reaches it — a hidden step of a wizard is a real thing.
+    if (node.hidden) continue;
+    const doc = docByFrameId.get(node.frameId)?.deref();
+    if (!doc || !doc.defaultView) continue;
+    const candidate: DomScope = { doc, frameId: node.frameId };
+    try {
+      if (findElement(candidate, locator) !== null) hits.push(candidate);
+    } catch {
+      ambiguous.push(candidate);
+    }
+  }
+  const all = [...hits, ...ambiguous];
+  if (all.length > 1) {
+    throw new Error(
+      `That locator matches an element in ${all.length} different embedded regions of this page, so `
+      + 'it does not identify one. Nothing was clicked or changed. Pass `frameId` to say which:\n'
+      + all.map((c) => `  ${c.frameId} (${normalizedOrigin(c.doc.location.href) ?? 'unknown region'})`).join('\n'),
+    );
+  }
+  // A single AMBIGUOUS region is returned so the ordinary path refuses it with
+  // the in-document candidate list, which is the more useful message.
+  return all[0] ?? scope;
+}
+
+/** The frame a payload's refs belong to, or null when it carries none. */
+function frameFromLocators(payload: Record<string, unknown>): FrameRef | null {
+  const refs: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value !== 'object' || value === null) return;
+    const ref = (value as { ref?: unknown }).ref;
+    if (typeof ref === 'string' && ref !== '') refs.push(ref);
+  };
+  collect(payload.locator);
+  const condition = payload.condition;
+  if (typeof condition === 'object' && condition !== null) {
+    collect((condition as { locator?: unknown }).locator);
+  }
+  if (refs.length === 0) return null;
+  const frames = new Set(refs.map(frameOfRef));
+  if (frames.size > 1) {
+    throw new Error('The refs in this call come from different frames; one call acts in one frame.');
+  }
+  return [...frames][0];
+}
+
+// --- Open shadow roots ---
+//
+// A design-system page (`<my-date-picker>` wrapping the real `<input>`) puts
+// its controls behind a shadow root, where `document.querySelectorAll` cannot
+// see them: a screen reader and a user can both reach the field, and the
+// automation reported "not found". Following OPEN roots costs one extra walk
+// and is what every browser-automation tool does. CLOSED roots are the page's
+// explicit opt-out and are reported as such, never worked around.
+
+/**
+ * How many elements one shadow-host hunt may walk, across every tree it
+ * descends into.
+ *
+ * Finding open shadow roots means visiting every element — there is no
+ * selector for "has a shadow root" — and every locator strategy now goes
+ * through it, so the walk is paid per action on a page that may carry tens of
+ * thousands of nodes (an ERP list view). The budget is what keeps a pathological
+ * page from turning each locator into a full traversal without end.
+ *
+ * The trade-off, stated plainly: past the budget, a control that lives ONLY
+ * inside a shadow root beyond it reads as "not found" — which is the exact
+ * behaviour this whole feature replaced, so the failure mode is the old one
+ * rather than a new one. Light-DOM matches are unaffected: they come from the
+ * engine's own `querySelectorAll`, which the budget never touches. 20k is far
+ * past any real design-system page and still bounded.
+ */
+const MAX_SHADOW_SCAN_NODES = 20_000;
+
+/** Every open shadow root at or under `root`, outermost first. */
+function shadowRootsIn(
+  root: Document | ShadowRoot | Element,
+  depth = 0,
+  budget = { left: MAX_SHADOW_SCAN_NODES },
+): ShadowRoot[] {
+  if (depth >= MAX_SHADOW_DEPTH || budget.left <= 0) return [];
+  const found: ShadowRoot[] = [];
+  for (const el of root.querySelectorAll('*')) {
+    if (budget.left <= 0) break;
+    budget.left -= 1;
+    const shadow = el.shadowRoot;
+    if (shadow) {
+      found.push(shadow);
+      found.push(...shadowRootsIn(shadow, depth + 1, budget));
+    }
+  }
+  return found;
+}
+
+/**
+ * `querySelectorAll` that also descends into open shadow roots.
+ *
+ * Order is light DOM first, then each shadow tree in host order — near enough
+ * to document order for the "deepest wins" and "first match" rules above,
+ * which compare by containment rather than by index.
+ *
+ * The shadow half is NOT skipped when the light DOM already matched, even
+ * though that would be the obvious saving: callers count the matches to decide
+ * whether a locator is ambiguous, and a search that stopped early would report
+ * one match where there are two and act on it.
+ *
+ * `MAX_SHADOW_SCAN_NODES` has the SAME failure mode, and saying otherwise
+ * would be the documentation lying about the code (round-2 R2-E — the earlier
+ * wording here claimed the bound "does not cost correctness"). Once the budget
+ * runs out, a second match living only in an unvisited shadow tree is not seen,
+ * and "there are two of these" is again reported as "there is one". What the
+ * bound changes is not WHETHER that can happen but WHEN: from "the moment the
+ * light DOM matches" to "on a page with more than 20,000 elements", which is
+ * far past any real design-system page. It pushes the failure out of reach; it
+ * does not remove it.
+ */
+function queryAllDeep(root: Document | ShadowRoot | Element, selector: string): Element[] {
+  const out: Element[] = [...root.querySelectorAll(selector)];
+  for (const shadow of shadowRootsIn(root)) out.push(...shadow.querySelectorAll(selector));
+  return out;
+}
+
+/**
+ * Elements that look like they hold a CLOSED shadow root: a custom element
+ * (its tag name has a dash — the only tag names that may host one) with no
+ * reachable `shadowRoot` and nothing in its light DOM.
+ *
+ * A heuristic on purpose. There is no API that answers "does this element have
+ * a closed shadow root", by design — that is what closed means. What matters
+ * is that the caller is told "this region is sealed, a person has to do it"
+ * instead of "not found", which reads as a locator mistake and invites a
+ * scripted work-around that cannot work either.
+ */
+function closedShadowHostCount(scope: DomScope): number {
+  let count = 0;
+  for (const el of scope.doc.querySelectorAll('*')) {
+    if (!el.tagName.includes('-')) continue;
+    if (el.shadowRoot) continue;
+    if (el.children.length > 0) continue;
+    if ((el.textContent ?? '').trim() !== '') continue;
+    count += 1;
+    if (count >= 20) break;
+  }
+  return count;
+}
+
+/** The sentence appended when a search came back empty and a sealed region exists. */
+function closedShadowNote(count: number): string {
+  return (
+    ` This page also has ${count} sealed region${count === 1 ? '' : 's'} (closed shadow DOM), whose `
+    + 'contents no automation can read or operate — not this tool, and not a script. If what you are '
+    + 'looking for is in one, ask the user to do that step by hand.'
+  );
+}
+
 /**
  * Actions that change page state and must land on the page the approval gate
  * decided on. Mirrors `ORIGIN_PINNED_ACTIONS` in `electron/browserHost.cjs`;
@@ -120,6 +663,43 @@ function sweepRefs(): void {
  * `navigate` is exempt in both places: its target IS what was approved.
  */
 const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
+
+/**
+ * Actions that copy the page's CONTENTS into the conversation, and must
+ * therefore land on the document the gate approved (round-2 R2-A).
+ *
+ * A read changes nothing about the page, which is why it was exempt — but it
+ * changes the transcript, and on this channel the region it reads is a
+ * third-party document that navigates whenever its owner feels like it. Reading
+ * the body of a site the gate never judged is an exfiltration, so a read that
+ * CARRIES a pin has to match it.
+ *
+ * A read that carries NO pin keeps its previous path in both run modes: the
+ * auto-routing probe (`resolveAcrossFrames` in the worker) sends bare `locate`
+ * calls with no gate fields at all, and whether an unattended run may read
+ * without a resolved origin is the gate's question, not this file's.
+ *
+ * ## Why this is NOT the same list as `electron/browserHost.cjs` (R3-A)
+ *
+ * The host's `ORIGIN_PINNED_READ_ACTIONS` also carries `screenshot` and
+ * `screenshot_full_page`. They are absent here because on THIS channel a
+ * screenshot never reaches the content script: the background worker takes it
+ * with `chrome.tabs.captureVisibleTab`, and pins it there
+ * (`assertTabOriginPin(…, { read: true })`) — the same split `execute_js`
+ * already has. Two files, one rule; neither list is complete on its own.
+ *
+ * `wait_for` is exempt on both channels because waiting is frequently how a
+ * run waits OUT a navigation: pinning it would refuse the one call whose whole
+ * purpose is to watch the page become something else. The cost is real and
+ * accepted rather than talked away — its TIMEOUT diagnostic reports the page's
+ * current URL and up to 80 characters of visible text (`describeCurrentState`
+ * below), so a wait that times out inside a drift window can carry that much
+ * of the new site back. Known, bounded, and not a claim that a wait reads
+ * nothing.
+ */
+const ORIGIN_PINNED_READ_ACTIONS = new Set([
+  'snapshot', 'find', 'locate', 'get_html', 'extract_text', 'extract_table',
+]);
 
 /**
  * ## Execution-time origin pin, content-script half (U5, review round 1)
@@ -144,24 +724,32 @@ const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
  * the MISSING-value rule is unattended-only, so an attended call that carried
  * no pin keeps its exact pre-U5 path.
  */
-function assertOriginPin(action: string, payload: Record<string, unknown>): void {
-  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+function assertOriginPin(action: string, payload: Record<string, unknown>, scope: DomScope): void {
+  const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
+  if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
   if (!expected) {
-    if (payload.unattended !== true) return;
+    // A read that arrived without a pin keeps its pre-R2-A path whatever the
+    // run mode — see `ORIGIN_PINNED_READ_ACTIONS`.
+    if (pinnedRead || payload.unattended !== true) return;
     throw new Error(
       'Refused: this unattended run sent no approved origin for the page, so the action could not be '
       + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
     );
   }
-  const current = normalizedOrigin(location.href);
+  // The SCOPE's document, not the global one: an action aimed into an embedded
+  // region executes there, so that is the origin the approval has to match.
+  // For a cross-origin region the gate has to have authorized that region's
+  // own origin — which is exactly what makes an unauthorized third-party frame
+  // fail closed here even though the top page was approved.
+  const current = normalizedOrigin(scope.doc.location.href);
   if (current === expected) return;
   // A SUBFRAME that fails the pin is a different situation from a top frame
   // that drifted, and the drift wording is advice that can never work there:
   // this frame is permanently a different site from the approved one, so "take
   // a fresh snapshot" would send the model round a loop it cannot exit. Same
   // refusal, honest attribution.
-  if (window.top !== window) {
+  if (scope.frameId !== MAIN_FRAME_REF || window.top !== window) {
     throw new Error(
       `Refused: this action targeted a frame from a different site than the one approved (approved `
       + `${expected}, this frame is ${current ?? 'not an ordinary web page'}). Embedded third-party `
@@ -248,53 +836,95 @@ function normalizedOrigin(href: string): string | null {
  *   only when its own origin genuinely drifted, which is the true answer.
  *   A subframe with nothing focused stays silent.
  */
-function frameServicesAction(action: string, payload: Record<string, unknown>): boolean {
+function frameServicesAction(action: string, payload: Record<string, unknown>, scope: DomScope): boolean {
   const locator = payload.locator as ElementLocator | undefined;
   if (locator !== undefined) {
     try {
-      return findElement(locator) !== null;
+      return findElement(scope, locator) !== null;
     } catch {
       // A malformed locator resolves nowhere in any frame; let the ordinary
       // handler report it rather than turning it into a pin refusal.
       return false;
     }
   }
-  const focused = document.activeElement;
+  const focused = scope.doc.activeElement;
   const hasRealFocus = focused !== null
-    && focused !== document.body
-    && focused !== document.documentElement;
+    && focused !== scope.doc.body
+    && focused !== scope.doc.documentElement;
   return hasRealFocus || window.top === window;
 }
 
+/**
+ * Actions that act on ONE document and therefore take a `frameId`.
+ *
+ * `scroll` and `keyboard` are deliberately absent: both act on a viewport or
+ * on whatever holds focus rather than on a located element, and in the
+ * extension a key press already lands in the frame the worker routed it to.
+ * Accepting a `frameId` there would promise a targeting this layer does not
+ * do, so it is refused out loud instead.
+ */
+const FRAME_SCOPED_ACTIONS = new Set([
+  'snapshot', 'find', 'locate', 'click', 'fill', 'select', 'wait_for', 'extract_text', 'extract_table',
+]);
+
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
+  // Which frame this copy of the runtime IS. Stamped by the extension worker
+  // on every message it routes (`__abuFrameId`), so it is reachable only from
+  // the extension's isolated world — a page cannot author it, and the model
+  // cannot either: the bridge builds payloads field by field from the tool
+  // schema, which has no such field. The built-in browser sends none and stays
+  // on the main frame.
+  const stamped = payload?.__abuFrameId;
+  if (isFrameRef(stamped)) hostFrameId = stamped;
+
+  if (!FRAME_SCOPED_ACTIONS.has(action) && payload?.frameId !== undefined) {
+    throw new Error(
+      `${action} does not act on a located element, so it takes no frameId. `
+      + 'Click into the region first, then send this action.',
+    );
+  }
+  const scope = resolveLocatorFrame(action, payload ?? {}, resolveScope(payload ?? {}));
+
   // Before the switch, so no action can be added that forgets it — but only in
   // the frame that is going to act (see `frameServicesAction`). A frame that
   // is NOT acting abstains rather than falling through to do the work
   // unchecked (see `assertFrameAbstains`).
   if (ORIGIN_PINNED_ACTIONS.has(action)) {
-    if (frameServicesAction(action, payload)) assertOriginPin(action, payload);
+    if (frameServicesAction(action, payload, scope)) assertOriginPin(action, payload, scope);
     else assertFrameAbstains(payload);
+  } else if (ORIGIN_PINNED_READ_ACTIONS.has(action)) {
+    // No deferral to arrange here: the worker addresses every message to one
+    // frame (`chrome.tabs.sendMessage(..., { frameId })`), so this copy IS the
+    // one answering and there is no losing racer to keep quiet.
+    assertOriginPin(action, payload, scope);
   }
   // U6 — advisory annotation runs AFTER the action and AFTER the pin, so a
   // page-derived detection can never reorder, skip, or excuse the pin. See
   // `annotateAdvisory`'s "advisory only" note.
-  return annotateAdvisory(action, await dispatchAction(action, payload));
+  return annotateAdvisory(action, await dispatchAction(action, payload, scope));
 }
 
-async function dispatchAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
+async function dispatchAction(
+  action: string,
+  payload: Record<string, unknown>,
+  scope: DomScope,
+): Promise<unknown> {
   switch (action) {
     case 'snapshot': return takeSnapshot(
+      scope,
       payload.selector as string | undefined,
       typeof payload.maxChars === 'number' ? payload.maxChars : undefined,
     );
-    case 'find': return findElements(payload.query, payload.limit);
-    case 'click': return clickElement(payload.locator as ElementLocator);
-    case 'fill': return fillElement(payload.locator as ElementLocator, payload.value as string);
-    case 'select': return selectOption(payload.locator as ElementLocator, payload.value as string);
-    case 'wait_for': return waitFor(payload.condition as Record<string, unknown>, payload.timeout as number | undefined);
+    case 'find': return findElements(scope, payload.query, payload.limit);
+    case 'frames': return enumerateFrames();
+    case 'locate': return locateOnly(scope, payload.locator as ElementLocator);
+    case 'click': return clickElement(scope, payload.locator as ElementLocator);
+    case 'fill': return fillElement(scope, payload.locator as ElementLocator, payload.value as string);
+    case 'select': return selectOption(scope, payload.locator as ElementLocator, payload.value as string);
+    case 'wait_for': return waitFor(scope, payload.condition as Record<string, unknown>, payload.timeout as number | undefined);
     case 'get_html': return getHtml(payload.selector as string | undefined);
-    case 'extract_text': return extractText(payload.selector as string | undefined);
-    case 'extract_table': return extractTable(payload.selector as string | undefined);
+    case 'extract_text': return extractText(scope, payload.selector as string | undefined);
+    case 'extract_table': return extractTable(scope, payload.selector as string | undefined);
     case 'scroll': return scrollPage(payload as Record<string, unknown>);
     case 'keyboard': return sendKeyboard(payload as Record<string, unknown>);
     case 'start_recording': return startRecording();
@@ -875,6 +1505,7 @@ function annotateAdvisory(action: string, result: unknown): unknown {
 // =============================================================================
 
 function takeSnapshot(
+  scope: DomScope,
   scopeSelector?: string,
   maxChars: number = MAX_SNAPSHOT_CHARS,
 ): PageSnapshot {
@@ -885,8 +1516,8 @@ function takeSnapshot(
   // the page. Same defect as a text locator resolving to the first ancestor:
   // never resolve an ambiguous target by position.
   const roots: Element[] = scopeSelector
-    ? [...document.querySelectorAll(scopeSelector)]
-    : (document.body ? [document.body] : []);
+    ? queryAllDeep(scope.doc, scopeSelector)
+    : (scope.doc.body ? [scope.doc.body] : []);
   if (roots.length === 0) {
     throw new Error(
       `Scope element not found: ${scopeSelector}. ` +
@@ -912,7 +1543,7 @@ function takeSnapshot(
   // zero-sized mirror — so nothing above would classify them as interactive
   // and an open dropdown looked empty. Anchoring on the listbox/menu that IS
   // roled keeps this generic instead of a per-library selector list.
-  const openPopups = [...document.querySelectorAll('[role="listbox"], [role="menu"], [role="grid"]')]
+  const openPopups = queryAllDeep(scope.doc, '[role="listbox"], [role="menu"], [role="grid"]')
     .map((list) => popupRootFor(list))
     .filter((popup) => hasBox(popup));
   const isPopupRow = (el: Element): boolean => {
@@ -929,12 +1560,26 @@ function takeSnapshot(
   const seenElements = new WeakSet<Element>();
   let hitCap = false;
 
+  // A hand-rolled DFS rather than a TreeWalker: the walk has to step THROUGH
+  // open shadow roots, and a TreeWalker cannot leave the tree it was created
+  // on. Element order is identical to `SHOW_ELEMENT`'s for the light DOM; a
+  // host's shadow content is visited straight after the host.
+  const walkDeep = (root: Element, depth: number, visit: (el: Element) => boolean): boolean => {
+    if (!visit(root)) return false;
+    if (depth < MAX_SHADOW_DEPTH && root.shadowRoot) {
+      for (const child of root.shadowRoot.children) {
+        if (!walkDeep(child, depth + 1, visit)) return false;
+      }
+    }
+    for (const child of root.children) {
+      if (!walkDeep(child, depth, visit)) return false;
+    }
+    return true;
+  };
+
   for (const root of roots) {
     if (hitCap) break;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-    let node: Node | null = walker.currentNode;
-    while (node) {
-    const el = node as Element;
+    walkDeep(root, 0, (el) => {
     const tag = el.tagName?.toLowerCase();
 
     const isInteractive =
@@ -1012,11 +1657,11 @@ function takeSnapshot(
       if (ariaLabel) info.ariaLabel = ariaLabel;
 
       elements.push(info);
-      if (elements.length >= MAX_SNAPSHOT_ELEMENTS) { hitCap = true; break; }
+      if (elements.length >= MAX_SNAPSHOT_ELEMENTS) { hitCap = true; return false; }
     }
 
-      node = walker.nextNode();
-    }
+      return true;
+    });
   }
 
   // Bound the payload here, at the only place that still knows what an element
@@ -1052,15 +1697,20 @@ function takeSnapshot(
   // A scope that matched something but holds nothing actionable is not the
   // same as an empty page, and saying so is what keeps the caller from
   // concluding the tools are broken and scripting the page instead.
+  const sealed = closedShadowHostCount(scope);
   if (elements.length === 0 && scopeSelector) {
     return {
-      url: location.href,
-      title: document.title,
+      url: scope.doc.location.href,
+      title: scope.doc.title,
+      frameId: scope.frameId,
+      ...frameTreeField(scope),
       elements,
+      ...(sealed > 0 ? { closedShadowHosts: sealed } : {}),
       message:
         `"${scopeSelector}" matched ${roots.length} element${roots.length === 1 ? '' : 's'}, ` +
         `none of which contain anything interactive right now — a popup that is closed looks like this. ` +
-        `Take a snapshot without a selector to see the whole page, or open the control first.`,
+        `Take a snapshot without a selector to see the whole page, or open the control first.`
+        + (sealed > 0 ? closedShadowNote(sealed) : ''),
     };
   }
 
@@ -1069,9 +1719,12 @@ function takeSnapshot(
   if (overBudget) reasons.push(`the ${maxChars}-character budget`);
 
   return {
-    url: location.href,
-    title: document.title,
+    url: scope.doc.location.href,
+    title: scope.doc.title,
+    frameId: scope.frameId,
+    ...frameTreeField(scope),
     elements,
+    ...(sealed > 0 ? { closedShadowHosts: sealed } : {}),
     ...(reasons.length
       ? {
         truncated: true,
@@ -1083,6 +1736,20 @@ function takeSnapshot(
       }
       : {}),
   };
+}
+
+/**
+ * The tab's frame list, attached to a snapshot of the MAIN document only.
+ *
+ * Repeating it on a snapshot OF a frame would cost tokens to say the same
+ * thing, and the extension channel does not compute it here at all — its
+ * worker attaches Chrome's own frame list, which is authoritative for
+ * cross-origin frames this runtime cannot see.
+ */
+function frameTreeField(scope: DomScope): { frames?: FrameTree } {
+  if (!LOCAL_FRAME_WALK || scope.frameId !== MAIN_FRAME_REF) return {};
+  const frames = enumerateFrames();
+  return frames.length > 1 ? { frames } : {};
 }
 
 // =============================================================================
@@ -1126,6 +1793,20 @@ const ABU_OVERLAY_IDS = new Set(['abu-status', 'abu-highlight']);
 function isAbuOverlay(el: Element): boolean {
   const selector = [...ABU_OVERLAY_IDS].map((id) => `#${id}`).join(',');
   return el.closest(selector) !== null;
+}
+
+/**
+ * Computed style read through the element's OWN window.
+ *
+ * `getComputedStyle` here is the TOP frame's, and this runtime now inspects
+ * elements from embedded documents too. Every engine happens to tolerate a
+ * foreign element today, but the guarantee belongs to the element's own view —
+ * and a detached document has none, which is a "not visible" rather than a
+ * throw that would abort a whole snapshot.
+ */
+function styleOf(el: Element): CSSStyleDeclaration {
+  const view = el.ownerDocument?.defaultView ?? window;
+  return view.getComputedStyle(el as HTMLElement);
 }
 
 /** Short, human-readable handle for an element, used in error messages. */
@@ -1295,10 +1976,15 @@ function nativeLabelText(el: Element): string {
   // gets filled instead.
   const labels = new Set<Element>();
   if (el.id) {
+    // Scoped to the element's OWN tree, not the global document: ids are
+    // per-shadow-tree, so `<label for="name">` inside a component names the
+    // input inside that component, and a same-id label out in the page does
+    // not. `getRootNode()` is the document for ordinary elements.
+    const root = el.getRootNode() as Document | ShadowRoot;
     // Compared as attribute values rather than interpolated into a selector:
     // an id is author-controlled, and no escaping scheme has to be trusted if
     // nothing is ever concatenated into a query.
-    for (const label of document.querySelectorAll('label[for]')) {
+    for (const label of root.querySelectorAll('label[for]')) {
       if (label.getAttribute('for') === el.id) labels.add(label);
     }
   }
@@ -1326,7 +2012,7 @@ function accessibleName(el: Element): string {
     const joined = labelledBy
       .split(/\s+/)
       .filter(Boolean)
-      .map((id) => document.getElementById(id))
+      .map((id) => (el.getRootNode() as Document | ShadowRoot).getElementById(id))
       .filter((node): node is HTMLElement => node !== null)
       .map((node) => normalizeWhitespace(node.textContent ?? ''))
       .filter(Boolean)
@@ -1401,8 +2087,12 @@ function isFullyTransparent(el: Element): boolean {
   if (!hasBox(el)) return false;
   // opacity does not inherit — a transparent wrapper still reports `1` on its
   // children — so the chain has to be walked.
-  for (let node: Element | null = el; node && node !== document.documentElement; node = node.parentElement) {
-    if (getComputedStyle(node as HTMLElement).opacity === '0') return true;
+  for (
+    let node: Element | null = el;
+    node && node !== el.ownerDocument.documentElement;
+    node = node.parentElement
+  ) {
+    if (styleOf(node).opacity === '0') return true;
   }
   return false;
 }
@@ -1421,12 +2111,12 @@ function isLocatorTarget(el: Element): boolean {
  * one. An unmapped role (`dialog`, `alert`, …) scans only `[role]`, which is
  * correct — this module claims no implicit mapping for those.
  */
-function elementsWithRole(role: string): Element[] {
+function elementsWithRole(scope: DomScope, role: string): Element[] {
   const wanted = role.trim().toLowerCase();
   const selectors = ['[role]'];
   const implicit = IMPLICIT_ROLE_SELECTORS[wanted];
   if (implicit) selectors.push(implicit);
-  return [...document.querySelectorAll(selectors.join(', '))].filter(
+  return queryAllDeep(scope.doc, selectors.join(', ')).filter(
     (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && effectiveRole(el) === wanted,
   );
 }
@@ -1528,14 +2218,14 @@ function uniqueOrAmbiguous(matches: Element[], what: string): Element | null {
  * Returning the set rather than "the one" is what lets `wait_for` ask a
  * different question of the same locator — see `matchElements`.
  */
-function textMatches(text: string, tag?: string): Element[] {
-  const scope = tag ?? '*';
+function textMatches(scope: DomScope, text: string, tag?: string): Element[] {
+  const tagScope = tag ?? '*';
   const wanted = text.trim();
   // antd inserts a space between the two characters of a two-character Chinese
   // button, so the DOM holds "提 交" while the user — and anyone describing the
   // page — says "提交". Whitespace is presentation here, not identity.
   const squashed = wanted.replace(/\s+/g, '');
-  const candidates = [...document.querySelectorAll(scope)].filter((el) => {
+  const candidates = queryAllDeep(scope.doc, tagScope).filter((el) => {
     if (!isLocatorTarget(el)) return false;
     const own = normalizedText(el);
     return own.includes(wanted) || (squashed !== '' && own.replace(/\s+/g, '').includes(squashed));
@@ -1584,10 +2274,10 @@ interface LocatorMatches {
  * it left `appear` with no way out at all — "pick one by ref" needs a ref, and
  * the caller is waiting for something that does not exist yet.
  */
-function matchElements(locator: ElementLocator): LocatorMatches {
+function matchElements(scope: DomScope, locator: ElementLocator): LocatorMatches {
   // ref — from snapshot
   if (locator.ref) {
-    const el = resolveRef(locator.ref);
+    const el = resolveRef(locator.ref, scope);
     const what = `Ref ${JSON.stringify(locator.ref)}`;
     if (el) return { elements: [el], what, strategy: 'ref' };
     // Naming a ref that no longer resolves is not the same as naming nothing.
@@ -1607,7 +2297,7 @@ function matchElements(locator: ElementLocator): LocatorMatches {
   // CSS selector — every match, not the first one
   if (locator.css) {
     return {
-      elements: [...document.querySelectorAll(locator.css)].filter(isLocatorTarget),
+      elements: queryAllDeep(scope.doc, locator.css).filter(isLocatorTarget),
       what: `CSS selector ${JSON.stringify(locator.css)}`,
       strategy: 'css',
     };
@@ -1616,7 +2306,7 @@ function matchElements(locator: ElementLocator): LocatorMatches {
   // Text content
   if (locator.text) {
     return {
-      elements: textMatches(locator.text, locator.tag),
+      elements: textMatches(scope, locator.text, locator.tag),
       what: `Text ${JSON.stringify(locator.text)}`,
       strategy: 'text',
     };
@@ -1624,7 +2314,7 @@ function matchElements(locator: ElementLocator): LocatorMatches {
 
   // ARIA role + name — explicit `role=` and native roles both count
   if (locator.role) {
-    const byRole = elementsWithRole(locator.role).filter(isLocatorTarget);
+    const byRole = elementsWithRole(scope, locator.role).filter(isLocatorTarget);
     return {
       elements: locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole,
       what: locator.name
@@ -1637,7 +2327,7 @@ function matchElements(locator: ElementLocator): LocatorMatches {
   // data-testid — escape to prevent injection
   if (locator.testId) {
     return {
-      elements: [...document.querySelectorAll(`[data-testid="${escapeCSS(locator.testId)}"]`)]
+      elements: queryAllDeep(scope.doc, `[data-testid="${escapeCSS(locator.testId)}"]`)
         .filter(isLocatorTarget),
       what: `testId ${JSON.stringify(locator.testId)}`,
       strategy: 'testId',
@@ -1646,7 +2336,9 @@ function matchElements(locator: ElementLocator): LocatorMatches {
 
   // XPath
   if (locator.xpath) {
-    const result = document.evaluate(locator.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    // XPath cannot cross a shadow boundary — there is no such thing as an
+    // XPath into a shadow tree — so this one strategy stays light-DOM only.
+    const result = scope.doc.evaluate(locator.xpath, scope.doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
     const el = result.singleNodeValue as Element | null;
     return {
       elements: el ? [el] : [],
@@ -1662,8 +2354,8 @@ function matchElements(locator: ElementLocator): LocatorMatches {
  * The one element a locator identifies, or `null` — the entry point for every
  * caller that is about to DO something. More than one match throws.
  */
-function findElement(locator: ElementLocator): Element | null {
-  const { elements, what, strategy } = matchElements(locator);
+function findElement(scope: DomScope, locator: ElementLocator): Element | null {
+  const { elements, what, strategy } = matchElements(scope, locator);
   if (elements.length <= 1) return elements[0] ?? null;
   if (strategy === 'text') {
     // The text path keeps its own wording, which existing callers and tests
@@ -1686,30 +2378,59 @@ function findElement(locator: ElementLocator): Element | null {
  * right one — and keeps the model from concluding the tools are broken and
  * falling back to scripting the page.
  */
-function nearbyCandidates(locator: ElementLocator, cap = 5): Element[] {
+function nearbyCandidates(scope: DomScope, locator: ElementLocator, cap = 5): Element[] {
   if (locator.role) {
-    return elementsWithRole(locator.role).filter(isLocatorTarget).slice(0, cap);
+    return elementsWithRole(scope, locator.role).filter(isLocatorTarget).slice(0, cap);
   }
   const wanted = normalizeWhitespace(locator.text ?? locator.name ?? '');
   if (!wanted) return [];
   // Half the query, so "保存并提交" still surfaces when "保存" was asked for.
   const needle = wanted.length > 2 ? wanted.slice(0, Math.ceil(wanted.length / 2)) : wanted;
-  return [...document.querySelectorAll('a, button, input, textarea, select, summary, [role], [onclick], [tabindex]')]
+  return queryAllDeep(scope.doc, 'a, button, input, textarea, select, summary, [role], [onclick], [tabindex]')
     .filter(isLocatorTarget)
     .filter((el) => looselyNamed(`${accessibleName(el)} ${normalizeWhitespace(el.textContent ?? '')}`, needle))
     .slice(0, cap);
 }
 
-function findElementOrThrow(locator: ElementLocator): Element {
-  const el = findElement(locator);
+function findElementOrThrow(scope: DomScope, locator: ElementLocator): Element {
+  const el = findElement(scope, locator);
   if (el) return el;
-  const near = nearbyCandidates(locator);
+  const near = nearbyCandidates(scope, locator);
+  const sealed = near.length === 0 ? closedShadowHostCount(scope) : 0;
   throw new Error(
-    `Element not found: ${JSON.stringify(locator)}.`
+    `Element not found: ${JSON.stringify(locator)}${whereClause(scope)}.`
     + (near.length > 0
       ? ` The closest things on the page right now:\n${near.map((c) => `  ${describeCandidate(c)}`).join('\n')}\n`
         + `Pick one by ref, or call find to search by text.`
-      : ` Call find to search the page by text/role, or snapshot to list what is there.`),
+      : ` Call find to search the page by text/role, or snapshot to list what is there.`)
+    + framesNote(scope)
+    + (sealed > 0 ? closedShadowNote(sealed) : ''),
+  );
+}
+
+/** " in embedded region f3", or nothing at all for the main document. */
+function whereClause(scope: DomScope): string {
+  return scope.frameId === MAIN_FRAME_REF ? '' : ` in embedded region ${scope.frameId}`;
+}
+
+/**
+ * Point a failed search at the page's other documents.
+ *
+ * Without this a form inside an iframe reads as "the page does not have that
+ * field", which is what sends a model off to script the page. Only emitted
+ * when there ARE other regions, and only from the frame that was searched.
+ */
+function framesNote(scope: DomScope): string {
+  if (!LOCAL_FRAME_WALK || scope.frameId !== hostFrameId) return '';
+  const others = enumerateFrames().filter((f) => f.frameId !== scope.frameId);
+  if (others.length === 0) return '';
+  const listed = others.slice(0, 5).map(
+    (f) => `${f.frameId} (${f.origin ?? 'not a web page'}${f.accessible ? '' : ', not reachable from here'})`,
+  );
+  return (
+    ` This page also has ${others.length} embedded region${others.length === 1 ? '' : 's'}: `
+    + `${listed.join(', ')}${others.length > 5 ? ', …' : ''}. `
+    + 'A search only covers one document — pass `frameId` to look inside one of these.'
   );
 }
 
@@ -1759,7 +2480,7 @@ const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label', 'plac
  * Several keys are ANDed. Refs come from the same registry `snapshot` hands
  * out, so anything found here can be acted on by ref with no extra round trip.
  */
-function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
+function findElements(scope: DomScope, rawQuery: unknown, rawLimit?: unknown): FindResult {
   const query = (rawQuery ?? {}) as FindQuery;
   if (typeof query !== 'object' || Array.isArray(query)) {
     throw new Error(`find: query must be an object with at least one of: ${FIND_QUERY_KEYS.join(', ')}`);
@@ -1779,13 +2500,13 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
   // the visibility test) runs on as few nodes as possible.
   let candidates: Element[];
   if (query.css) {
-    candidates = [...document.querySelectorAll(query.css)];
+    candidates = queryAllDeep(scope.doc, query.css);
   } else if (query.testId) {
-    candidates = [...document.querySelectorAll(`[data-testid="${escapeCSS(query.testId)}"]`)];
+    candidates = queryAllDeep(scope.doc, `[data-testid="${escapeCSS(query.testId)}"]`);
   } else if (query.role) {
-    candidates = elementsWithRole(query.role);
+    candidates = elementsWithRole(scope, query.role);
   } else {
-    candidates = [...document.querySelectorAll('*')];
+    candidates = queryAllDeep(scope.doc, '*');
   }
   candidates = candidates.filter(
     (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && !isAbuOverlay(el),
@@ -1861,16 +2582,21 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
   });
 
   const describeQuery = used.map((key) => `${key}=${JSON.stringify(query[key])}`).join(' ');
+  const sealed = total === 0 ? closedShadowHostCount(scope) : 0;
   const build = (kept: FindMatch[]): FindResult => ({
-    url: location.href,
-    title: document.title,
+    url: scope.doc.location.href,
+    title: scope.doc.title,
+    frameId: scope.frameId,
     matches: kept,
     total,
+    ...(sealed > 0 ? { closedShadowHosts: sealed } : {}),
     ...(total === 0
       ? {
         message:
-            `Nothing on this page matches ${describeQuery}. Hidden elements are excluded. `
-            + `Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`,
+            `Nothing${whereClause(scope) || ' on this page'} matches ${describeQuery}. Hidden elements are excluded. `
+            + `Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`
+            + framesNote(scope)
+            + (sealed > 0 ? closedShadowNote(sealed) : ''),
       }
       : {}),
     ...(total > kept.length
@@ -1913,6 +2639,28 @@ function findElements(rawQuery: unknown, rawLimit?: unknown): FindResult {
   return build(matches);
 }
 
+/**
+ * How many elements a locator identifies in THIS document — and nothing else.
+ *
+ * An internal probe, not a tool: the extension worker sends it to each frame
+ * of a tab when a locator names no frame and the main document did not have
+ * the element, so the frame that DOES hold it can be resolved deterministically
+ * instead of by whichever frame answers a broadcast first. Read-only: it
+ * resolves a target and reports a count, it never scrolls, highlights or
+ * dispatches anything.
+ */
+function locateOnly(scope: DomScope, locator: ElementLocator): { matched: number } {
+  try {
+    return { matched: matchElements(scope, locator).elements.length };
+  } catch (err) {
+    // An ambiguous locator throws here exactly as it would for an action, and
+    // "several" is the honest answer for the worker's resolution rule. A stale
+    // ref or a malformed locator matches nothing in this document.
+    if (err instanceof Error && / matches \d+ /.test(err.message)) return { matched: 2 };
+    return { matched: 0 };
+  }
+}
+
 // =============================================================================
 // 3. CLICK
 // =============================================================================
@@ -1951,13 +2699,13 @@ function dispatchClickSequence(el: HTMLElement): void {
   el.click();
 }
 
-function clickElement(locator: ElementLocator): {
+function clickElement(scope: DomScope, locator: ElementLocator): {
   success: boolean;
   message: string;
   elementText?: string;
   target: ReturnType<typeof targetInfo>;
 } {
-  const el = findElementOrThrow(locator);
+  const el = findElementOrThrow(scope, locator);
   const target = targetInfo(el);
 
   // Scroll into view if needed
@@ -1983,8 +2731,8 @@ function clickElement(locator: ElementLocator): {
 // 4. FILL
 // =============================================================================
 
-function fillElement(locator: ElementLocator, value: string): { success: boolean; message: string; previousValue?: string } {
-  const el = findElementOrThrow(locator) as HTMLInputElement | HTMLTextAreaElement;
+function fillElement(scope: DomScope, locator: ElementLocator, value: string): { success: boolean; message: string; previousValue?: string } {
+  const el = findElementOrThrow(scope, locator) as HTMLInputElement | HTMLTextAreaElement;
   // Same rule as the snapshot: what was ALREADY in the field is the user's
   // secret (a browser-autofilled password, a saved card), and handing it back
   // in the result would put it in the model's context, the logs, and any
@@ -2049,7 +2797,7 @@ function isRendered(el: Element): boolean {
     return target.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
   }
   for (let node: Element | null = el; node; node = node.parentElement) {
-    const style = getComputedStyle(node as HTMLElement);
+    const style = styleOf(node);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
   }
   return true;
@@ -2136,7 +2884,8 @@ function clickTargetForOption(ariaOption: Element, popup: Element): Element | nu
 /** Nearest ancestor of the a11y list that is actually laid out — the popup. */
 function popupRootFor(container: Element): Element {
   let node: Element | null = container;
-  while (node && node !== document.body) {
+  const body = container.ownerDocument?.body ?? null;
+  while (node && node !== body) {
     if (hasBox(node)) return node;
     node = node.parentElement;
   }
@@ -2152,7 +2901,7 @@ function optionsFor(trigger: Element): Element[] {
   const owned = (trigger.getAttribute('aria-controls') ?? trigger.getAttribute('aria-owns') ?? '')
     .split(/\s+/)
     .filter(Boolean)
-    .map((id) => document.getElementById(id))
+    .map((id) => (trigger.getRootNode() as Document | ShadowRoot).getElementById(id))
     .filter((el): el is HTMLElement => el !== null);
 
   if (owned.length > 0) {
@@ -2165,11 +2914,12 @@ function optionsFor(trigger: Element): Element[] {
   // No naming: the options render in a portal on <body>, so the only way to
   // tell one dropdown from another is that ours is the one on screen. Here
   // the stricter check earns its keep.
-  const containers = [...document.querySelectorAll('[role="listbox"], [role="menu"]')].filter(isVisible);
+  const ownerDoc = trigger.ownerDocument;
+  const containers = queryAllDeep(ownerDoc, '[role="listbox"], [role="menu"]').filter(isVisible);
   const fromContainers = containers.flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')]);
   const options = fromContainers.length > 0
     ? fromContainers
-    : [...document.querySelectorAll('[role="option"], [role="menuitem"]')];
+    : queryAllDeep(ownerDoc, '[role="option"], [role="menuitem"]');
 
   return options.filter(isVisible);
 }
@@ -2301,10 +3051,11 @@ async function findOption(
  * selector list that rots whenever a library renames a class.
  */
 async function selectOption(
+  scope: DomScope,
   locator: ElementLocator,
   value: string,
 ): Promise<{ success: boolean; message: string; target?: ReturnType<typeof targetInfo> }> {
-  const el = findElementOrThrow(locator);
+  const el = findElementOrThrow(scope, locator);
 
   if (el.tagName.toLowerCase() === 'select') {
     const select = el as HTMLSelectElement;
@@ -2385,6 +3136,7 @@ async function selectOption(
 // =============================================================================
 
 async function waitFor(
+  scope: DomScope,
   condition: Record<string, unknown>,
   timeout: number = 30000
 ): Promise<{ success: boolean; message: string; timedOut: boolean; elapsed: number; observed?: string }> {
@@ -2398,10 +3150,10 @@ async function waitFor(
    * round trip that used to get spent on a script.
    */
   const describeCurrentState = (): string => {
-    if (condType === 'urlContains') return `current url is ${location.href}`;
+    if (condType === 'urlContains') return `current url is ${scope.doc.location.href}`;
     let found: LocatorMatches;
     try {
-      found = matchElements(condition.locator as ElementLocator);
+      found = matchElements(scope, condition.locator as ElementLocator);
     } catch (err) {
       // Only a stale ref is "the locator no longer resolves". Reporting every
       // other failure that way sent the caller off to re-snapshot for reasons
@@ -2438,7 +3190,7 @@ async function waitFor(
    * locator rework, and what the question means — the alternative fails a
    * perfectly ordinary `{css:'.toast'}` on a page that shows two toasts.
    */
-  const matched = (): Element[] => matchElements(condition.locator as ElementLocator).elements;
+  const matched = (): Element[] => matchElements(scope, condition.locator as ElementLocator).elements;
 
   const check = (): boolean => {
     switch (condType) {
@@ -2466,7 +3218,7 @@ async function waitFor(
         return matched().some((el) => (getVisibleText(el) ?? '').includes(wanted));
       }
       case 'urlContains': {
-        return location.href.includes(condition.pattern as string);
+        return scope.doc.location.href.includes(condition.pattern as string);
       }
       default:
         throw new Error(`Unknown wait condition: ${condType}`);
@@ -2475,6 +3227,14 @@ async function waitFor(
 
   const staleRefMessage = (err: unknown): string | null =>
     err instanceof Error && err.name === 'StaleRefError' ? err.message : null;
+
+  /**
+   * A frame that goes away mid-wait can never satisfy the condition, and its
+   * document keeps answering queries as a detached tree — so polling on would
+   * burn the whole timeout and then report "no element matches", which reads
+   * as a locator mistake rather than "the region you were watching is gone".
+   */
+  const frameGone = (): boolean => scope.doc.defaultView === null;
 
   // Fast check first
   try {
@@ -2514,6 +3274,10 @@ async function waitFor(
 
     const tryCheck = () => {
       if (resolved) return;
+      if (frameGone()) {
+        complete(false, frameGoneMessage(scope.frameId));
+        return;
+      }
       try {
         if (check()) complete(false);
       } catch (err) {
@@ -2535,17 +3299,27 @@ async function waitFor(
     const observer = new MutationObserver(() => {
       if (!checkScheduled && !resolved) {
         checkScheduled = true;
-        requestAnimationFrame(() => {
+        // The watched document's own frame callback: a detached frame has no
+        // view, and the top window's rAF would keep firing against a document
+        // that can never change again.
+        (scope.doc.defaultView ?? window).requestAnimationFrame(() => {
           checkScheduled = false;
           tryCheck();
         });
       }
     });
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-    });
+    // The document being waited ON, not the top one: mutations inside an
+    // embedded region never reach the parent document's observer, so a wait
+    // scoped to a frame fell back to the 500ms poll and reported "timed out"
+    // for a condition that had been true for most of a second.
+    const observed = scope.doc.body ?? scope.doc.documentElement;
+    if (observed) {
+      observer.observe(observed, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+      });
+    }
 
     // Interval fallback (for URL changes, computed styles, etc.)
     const pollTimer = setInterval(tryCheck, 500);
@@ -2705,21 +3479,21 @@ function getHtml(selector?: string): string {
 // 7. EXTRACT TEXT
 // =============================================================================
 
-function extractText(selector?: string): string {
+function extractText(scope: DomScope, selector?: string): string {
   let text: string;
-  let scope: Element | null;
+  let region: Element | null;
   if (selector) {
-    const el = document.querySelector(selector);
-    if (!el) throw new Error(`Element not found: ${selector}`);
-    scope = el;
+    const el = queryAllDeep(scope.doc, selector)[0] ?? null;
+    if (!el) throw new Error(`Element not found: ${selector}${whereClause(scope)}`);
+    region = el;
     text = (el as HTMLElement).innerText ?? el.textContent ?? '';
   } else {
-    scope = document.body;
-    text = document.body.innerText ?? '';
+    region = scope.doc.body;
+    text = scope.doc.body?.innerText ?? '';
   }
   // See `sensitiveValuesIn`: this path reads the live DOM (innerText needs
   // layout), so the scrubbing happens on the extracted string.
-  for (const secret of sensitiveValuesIn(scope)) {
+  for (const secret of sensitiveValuesIn(region)) {
     text = text.split(secret).join(REDACTED_VALUE);
   }
 
@@ -2734,13 +3508,13 @@ function extractText(selector?: string): string {
 // 8. EXTRACT TABLE
 // =============================================================================
 
-function extractTable(selector?: string): { headers: string[]; rows: string[][]; rowCount: number } {
+function extractTable(scope: DomScope, selector?: string): { headers: string[]; rows: string[][]; rowCount: number } {
   let table: HTMLTableElement | null;
 
   if (selector) {
-    table = document.querySelector(selector) as HTMLTableElement;
+    table = queryAllDeep(scope.doc, selector)[0] as HTMLTableElement | undefined ?? null;
   } else {
-    const tables = [...document.querySelectorAll('table')] as HTMLTableElement[];
+    const tables = queryAllDeep(scope.doc, 'table') as HTMLTableElement[];
     table = tables.sort((a, b) => b.rows.length - a.rows.length)[0] ?? null;
   }
 
@@ -3056,12 +3830,21 @@ function fullpageRestore(scrollX: number, scrollY: number): { success: boolean }
 // VISUAL FEEDBACK — highlight elements during operations
 // =============================================================================
 
-let highlightOverlay: HTMLDivElement | null = null;
+/**
+ * One ring per document. `getBoundingClientRect` is relative to the element's
+ * OWN viewport, so a ring drawn in the top document at a frame element's
+ * coordinates lands somewhere else entirely — it has to be painted inside the
+ * same document as the element. `isAbuOverlay` then excludes it from that
+ * document's own searches, which is the reason the id is the same everywhere.
+ */
+const highlightOverlays = new WeakMap<Document, HTMLDivElement>();
 
 function highlightElement(el: Element): void {
   const rect = el.getBoundingClientRect();
-  if (!highlightOverlay) {
-    highlightOverlay = document.createElement('div');
+  const doc = el.ownerDocument ?? document;
+  let highlightOverlay = highlightOverlays.get(doc) ?? null;
+  if (!highlightOverlay || !highlightOverlay.isConnected) {
+    highlightOverlay = doc.createElement('div');
     highlightOverlay.id = 'abu-highlight';
     highlightOverlay.style.cssText = `
       position: fixed; pointer-events: none; z-index: 2147483647;
@@ -3069,7 +3852,8 @@ function highlightElement(el: Element): void {
       background: rgba(217, 119, 87, 0.12);
       transition: all 0.15s ease;
     `;
-    document.documentElement.appendChild(highlightOverlay);
+    doc.documentElement.appendChild(highlightOverlay);
+    highlightOverlays.set(doc, highlightOverlay);
   }
   highlightOverlay.style.top = `${rect.top - 2}px`;
   highlightOverlay.style.left = `${rect.left - 2}px`;
@@ -3079,11 +3863,10 @@ function highlightElement(el: Element): void {
   highlightOverlay.style.opacity = '1';
 
   // Fade out after 1.5s
+  const ring = highlightOverlay;
   setTimeout(() => {
-    if (highlightOverlay) {
-      highlightOverlay.style.opacity = '0';
-      setTimeout(() => { if (highlightOverlay) highlightOverlay.style.display = 'none'; }, 300);
-    }
+    ring.style.opacity = '0';
+    setTimeout(() => { ring.style.display = 'none'; }, 300);
   }, 1500);
 }
 
@@ -3139,7 +3922,7 @@ function showStatus(text: string, type: 'info' | 'success' | 'error' = 'info'): 
 
 function isVisible(el: Element): boolean {
   const htmlEl = el as HTMLElement;
-  const style = getComputedStyle(htmlEl);
+  const style = styleOf(el);
   // Checked unconditionally: `visibility: hidden` keeps the layout box, so
   // `offsetParent` stays non-null and the branch below never sees it — a
   // closed dropdown a library hides this way would otherwise count as the

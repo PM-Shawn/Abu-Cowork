@@ -235,6 +235,9 @@ describe('CapabilitiesSection', () => {
       systemSettingsOpen: true,
       viewMode: 'chat',
       activeToolboxTab: 'skills',
+      // `setState` MERGES, so a case that marks a grant would otherwise leave
+      // the mark standing for every case after it.
+      browserSiteGrantViaEmbed: {},
     });
     useMCPStore.setState({
       servers: {
@@ -1895,6 +1898,43 @@ describe('CapabilitiesSection', () => {
       await openBuiltinBrowser(user);
 
       expect(overviewCard()).toHaveTextContent('No site is set to Always allow');
+    });
+
+    /**
+     * Round-3 R3-C. Three screens answer "where may a scheduled task go?", and
+     * this one is the newest; when via-embed marks were introduced it was the
+     * one that did not get told about them. A user whose only 「始终允许」 came
+     * from a merged embedded-region prompt therefore saw no warning here at
+     * all, while the gate refused every one of that task's actions with
+     * `site-not-allowed` — the interface and the gate saying opposite things,
+     * which is the exact failure the mark was added to prevent.
+     */
+    it('a via-embed grant is not a site an automatic task can reach', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserSiteGrantViaEmbed: { 'https://example.com': true },
+      });
+      withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).toHaveTextContent('No site is set to Always allow');
+    });
+
+    it('an ordinary grant still counts, so the warning is not simply always on', async () => {
+      useSettingsStore.setState({
+        allowUnattendedBrowser: true,
+        browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
+        browserSiteGrantViaEmbed: {},
+      });
+      withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      expect(overviewCard()).not.toHaveTextContent('No site is set to Always allow');
     });
 
     /*

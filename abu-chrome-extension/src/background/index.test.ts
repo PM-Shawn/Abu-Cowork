@@ -34,7 +34,13 @@ type HandleAction = (action: string, payload: Record<string, unknown>) => Promis
 
 const ROUTED_ACTIONS = [...CONTENT_SCRIPT_ACTIONS];
 
-interface SentMessage { tabId: number; action: string; payload: Record<string, unknown> }
+interface SentMessage {
+  tabId: number;
+  action: string;
+  payload: Record<string, unknown>;
+  /** Which frame the worker aimed at. `undefined` would mean a broadcast. */
+  frameId?: number;
+}
 
 const sentToContent: SentMessage[] = [];
 const sockets: FakeSocket[] = [];
@@ -85,10 +91,22 @@ const browserState: {
   pageDialogState: unknown;
   /** When true, an injection never settles — a tab frozen by a native dialog. */
   pageIsFrozen: boolean;
+  /**
+   * What `executeScript({allFrames:true})` reports per tab — Chrome's own
+   * frame ids, document ids and the address each frame reads from its own
+   * `location`. This is the browser-authoritative source the frame handles and
+   * the gate's per-frame origins are built from, so the fake carries it in the
+   * same shape rather than letting the worker invent one.
+   */
+  frames: Record<number, { frameId: number; documentId: string; url: string }[]>;
+  /** Content-script answers by `${tabId}:${frameId}:${action}`; default is a routed echo. */
+  contentAnswers: Record<string, { data?: unknown; error?: string }>;
 } = {
   windows: [], tabs: [], updated: [], reloaded: [], injected: [], captured: [], sessionStore: {},
   pageDialogState: { installed: false, armed: null, last: null },
   pageIsFrozen: false,
+  frames: {},
+  contentAnswers: {},
 };
 
 /** Enough of the extension APIs to drive the real request path. */
@@ -128,10 +146,14 @@ function fakeChrome(): Record<string, unknown> {
       sendMessage: (
         tabId: number,
         message: { action: string; payload: Record<string, unknown> },
-        cb: (response: { data?: unknown; error?: string }) => void,
+        options: { frameId?: number } | ((response: { data?: unknown; error?: string }) => void),
+        maybeCb?: (response: { data?: unknown; error?: string }) => void,
       ) => {
-        sentToContent.push({ tabId, action: message.action, payload: message.payload });
-        cb({ data: { routed: message.action } });
+        const cb = typeof options === 'function' ? options : maybeCb!;
+        const frameId = typeof options === 'function' ? undefined : options.frameId;
+        sentToContent.push({ tabId, action: message.action, payload: message.payload, frameId });
+        const scripted = browserState.contentAnswers[`${tabId}:${frameId ?? 0}:${message.action}`];
+        cb(scripted ?? { data: { routed: message.action } });
       },
     },
     windows: {
@@ -151,12 +173,27 @@ function fakeChrome(): Record<string, unknown> {
     alarms: { create: () => {}, onAlarm: slot('alarms.onAlarm') },
     scripting: {
       executeScript: async (opts: {
-        target: { tabId: number }; files?: string[]; world?: string; args?: unknown[];
+        target: { tabId: number; allFrames?: boolean }; files?: string[]; world?: string; args?: unknown[];
         func?: (...a: never[]) => unknown;
       }) => {
         browserState.injected.push({
           tabId: opts.target.tabId, files: opts.files, world: opts.world, args: opts.args,
         });
+        // The frame probe: one result row per frame, exactly as Chrome returns
+        // it, so the worker reads frame ids and document ids from the browser
+        // rather than from anything the page could author.
+        if (String(opts.func ?? '').includes('location.href')) {
+          const rows = browserState.frames[opts.target.tabId];
+          if (rows === undefined) {
+            const tab = browserState.tabs.find((t) => t.id === opts.target.tabId);
+            return [{ frameId: 0, documentId: 'doc-main', result: { url: tab?.url ?? '', title: '' } }];
+          }
+          return rows.map((row) => ({
+            frameId: row.frameId,
+            documentId: row.documentId,
+            result: { url: row.url, title: '' },
+          }));
+        }
         // A tab held by a native dialog cannot be scripted at all, and Chrome
         // simply never settles the promise — the case `runInPageWorld`'s
         // deadline exists for.
@@ -183,8 +220,11 @@ async function request(
   const socket = sockets[0];
   const id = `req-${action}`;
   socket.onmessage?.({ data: JSON.stringify({ id, action, payload }) });
-  // The handler is async; give it the microtasks it needs to reply.
-  for (let i = 0; i < 20 && socket.sent.length === 0; i += 1) await Promise.resolve();
+  // The handler is async; give it the microtasks it needs to reply. Frame
+  // routing adds a couple of awaited probes to some paths, so this has to be
+  // generous — a reply that lands one turn late is not a failure of the code,
+  // and (worse) it desynchronises every later `request` in the file.
+  for (let i = 0; i < 500 && socket.sent.length === 0; i += 1) await Promise.resolve();
   // A couple of paths sleep on a real timer (the tab-switch settle before a
   // screenshot). Advance a FAKE clock rather than waiting on a real one — the
   // suite must not be able to fail because a machine was busy.
@@ -224,6 +264,8 @@ beforeEach(() => {
   browserState.reloaded.length = 0;
   browserState.injected.length = 0;
   browserState.captured.length = 0;
+  browserState.frames = {};
+  browserState.contentAnswers = {};
   sentToContent.length = 0;
 });
 
@@ -256,7 +298,14 @@ describe('every content-script action the bridge registers is routed', () => {
 
     expect(response.success).toBe(true);
     expect(sentToContent).toEqual([
-      { tabId: 42, action, payload: { tabId: 42, marker: action } },
+      {
+        tabId: 42,
+        action,
+        // Aimed at the MAIN frame, not broadcast: `frameId: undefined` would
+        // mean every frame of the tab answers and the first reply wins.
+        frameId: 0,
+        payload: { tabId: 42, marker: action, __abuFrameId: 'f0' },
+      },
     ]);
   });
 
@@ -282,6 +331,166 @@ describe('every content-script action the bridge registers is routed', () => {
   });
 });
 
+describe('frames', () => {
+  /** A page whose form sits in a cross-origin embedded region. */
+  function tabWithVendorFrame(): void {
+    twoTabWindow();
+    browserState.frames[11] = [
+      { frameId: 0, documentId: 'doc-main', url: 'https://a.example/' },
+      { frameId: 4, documentId: 'doc-vendor', url: 'https://vendor.example/form' },
+    ];
+  }
+
+  it('aims a named region at that frame, and tells its runtime which frame it is', async () => {
+    tabWithVendorFrame();
+
+    const response = await request('fill', {
+      tabId: 11, frameId: 'f4', locator: { css: '#name' }, value: '张三',
+    });
+
+    expect(response.success).toBe(true);
+    expect(sentToContent).toEqual([
+      {
+        tabId: 11,
+        action: 'fill',
+        frameId: 4,
+        payload: {
+          tabId: 11, frameId: 'f4', locator: { css: '#name' }, value: '张三', __abuFrameId: 'f4',
+        },
+      },
+    ]);
+  });
+
+  it('refuses a region that reloaded, and touches the page not at all', async () => {
+    tabWithVendorFrame();
+    await request('snapshot', { tabId: 11 });
+    browserState.frames[11] = [
+      { frameId: 0, documentId: 'doc-main', url: 'https://a.example/' },
+      { frameId: 4, documentId: 'doc-vendor-2', url: 'https://vendor.example/form' },
+    ];
+    sentToContent.length = 0;
+
+    const response = await request('click', { tabId: 11, frameId: 'f4', locator: { css: '#save' } });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/reloaded, or was removed/);
+    expect(sentToContent).toHaveLength(0);
+  });
+
+  it('refuses a region the page does not have, rather than acting on the main document', async () => {
+    tabWithVendorFrame();
+
+    const response = await request('click', { tabId: 11, frameId: 'f9', locator: { css: '#save' } });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/not on this page any more/);
+    expect(sentToContent).toHaveLength(0);
+  });
+
+  it('resolves a locator that named no region to the ONE region that holds it', async () => {
+    tabWithVendorFrame();
+    browserState.contentAnswers['11:0:fill'] = { error: 'Element not found: {"css":"#name"}.' };
+    browserState.contentAnswers['11:4:locate'] = { data: { matched: 1 } };
+    browserState.contentAnswers['11:4:fill'] = { data: { success: true, message: 'filled' } };
+
+    const response = await request('fill', { tabId: 11, locator: { css: '#name' }, value: '张三' });
+
+    expect(response.success).toBe(true);
+    // Main frame first, then a read-only probe, then the action in the frame
+    // that actually holds the field — never a broadcast.
+    expect(sentToContent.map((m) => [m.action, m.frameId])).toEqual([
+      ['fill', 0], ['locate', 4], ['fill', 4],
+    ]);
+  });
+
+  it('refuses when two regions hold the same locator instead of picking one', async () => {
+    twoTabWindow();
+    browserState.frames[11] = [
+      { frameId: 0, documentId: 'doc-main', url: 'https://a.example/' },
+      { frameId: 4, documentId: 'doc-4', url: 'https://vendor.example/form' },
+      { frameId: 5, documentId: 'doc-5', url: 'https://other.example/form' },
+    ];
+    browserState.contentAnswers['11:0:click'] = { error: 'Element not found: {"css":".primary"}.' };
+    browserState.contentAnswers['11:4:locate'] = { data: { matched: 1 } };
+    browserState.contentAnswers['11:5:locate'] = { data: { matched: 1 } };
+
+    const response = await request('click', { tabId: 11, locator: { css: '.primary' } });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/2 different embedded regions/);
+    expect(response.error).toMatch(/https:\/\/vendor\.example/);
+    // The probe is read-only; the refusal costs the page nothing.
+    expect(sentToContent.filter((m) => m.action === 'click').map((m) => m.frameId)).toEqual([0]);
+  });
+
+  it('keeps "not found" when no region holds it, and points at the regions that exist', async () => {
+    tabWithVendorFrame();
+    browserState.contentAnswers['11:0:click'] = { error: 'Element not found: {"css":"#nope"}.' };
+    browserState.contentAnswers['11:4:locate'] = { data: { matched: 0 } };
+
+    const response = await request('click', { tabId: 11, locator: { css: '#nope' } });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/Element not found/);
+    expect(response.error).toMatch(/embedded region/);
+    expect(response.error).toMatch(/f4 \(https:\/\/vendor\.example\)/);
+  });
+
+  it('never resolves ACROSS frames for an action that named one', async () => {
+    tabWithVendorFrame();
+    browserState.contentAnswers['11:4:click'] = { error: 'Element not found: {"css":"#nope"}.' };
+
+    const response = await request('click', { tabId: 11, frameId: 'f4', locator: { css: '#nope' } });
+
+    expect(response.success).toBe(false);
+    expect(sentToContent.map((m) => m.action)).toEqual(['click']);
+  });
+
+  it('gives a snapshot the tab\'s frame list, which only the worker can know here', async () => {
+    tabWithVendorFrame();
+    browserState.contentAnswers['11:0:snapshot'] = { data: { url: 'https://a.example/', elements: [] } };
+
+    const response = await request('snapshot', { tabId: 11 });
+
+    expect((response.data as { frames?: unknown[] }).frames).toEqual([
+      {
+        frameId: 'f0', origin: 'https://a.example', url: 'https://a.example/',
+        sameOriginAsTop: true, accessible: true,
+      },
+      {
+        frameId: 'f4', origin: 'https://vendor.example', url: 'https://vendor.example/form',
+        sameOriginAsTop: false, accessible: true,
+      },
+    ]);
+  });
+
+  it('leaves a frameless page\'s snapshot alone', async () => {
+    twoTabWindow();
+    browserState.contentAnswers['11:0:snapshot'] = { data: { url: 'https://a.example/', elements: [] } };
+
+    const response = await request('snapshot', { tabId: 11 });
+
+    expect(response.data).toEqual({ url: 'https://a.example/', elements: [] });
+  });
+
+  it('gives get_tabs the frame tree of the tab the GATE names, not of every tab', async () => {
+    tabWithVendorFrame();
+    browserState.frames[12] = [
+      { frameId: 0, documentId: 'doc-b', url: 'https://b.example/' },
+      { frameId: 2, documentId: 'doc-b2', url: 'https://ads.example/' },
+    ];
+
+    const response = await request('get_tabs', { framesForTabId: 11 });
+
+    const windows = (response.data as { windows: { tabs: { tabId: number; frames?: unknown[] }[] }[] }).windows;
+    const tabs = windows.flatMap((w) => w.tabs);
+    expect(tabs.find((t) => t.tabId === 11)?.frames).toHaveLength(2);
+    // Tab 12 is the user's active tab, so it gets one too — but no OTHER tab
+    // is probed, because a frame tree costs a browser round trip each.
+    expect(tabs.find((t) => t.tabId === 12)?.frames).toHaveLength(2);
+  });
+});
+
 describe('find', () => {
   it('forwards the query and limit untouched', async () => {
     sentToContent.length = 0;
@@ -292,6 +501,7 @@ describe('find', () => {
       tabId: 9,
       query: { role: 'button', name: '保存' },
       limit: 5,
+      __abuFrameId: 'f0',
     });
   });
 
@@ -498,16 +708,29 @@ describe('actions the service worker answers itself', () => {
   });
 });
 
+/**
+ * Only the `content.js` injections. A snapshot also runs the frame probe
+ * (`executeScript` with a function, no files), and counting those as
+ * "injections" would make this suite assert something it does not mean.
+ */
+function contentScriptInjections(): typeof browserState.injected {
+  return browserState.injected.filter((row) => row.files !== undefined);
+}
+
 describe('content script injection', () => {
   it('injects into every frame once, then reuses it', async () => {
     twoTabWindow();
+    // Self-contained: whether an EARLIER test in this file already drove tab 11
+    // must not decide what this one observes.
+    fire('tabs.onUpdated', 11, { status: 'loading' });
+    browserState.injected.length = 0;
 
     await request('snapshot', { tabId: 11 });
-    const first = browserState.injected.length;
+    const first = contentScriptInjections().length;
     await request('snapshot', { tabId: 11 });
 
-    expect(browserState.injected[0]).toMatchObject({ tabId: 11, files: ['content.js'] });
-    expect(browserState.injected.length).toBe(first);
+    expect(contentScriptInjections()[0]).toMatchObject({ tabId: 11, files: ['content.js'] });
+    expect(contentScriptInjections().length).toBe(first);
   });
 
   it('re-injects after the tab starts loading a new document', async () => {
@@ -518,7 +741,7 @@ describe('content script injection', () => {
     fire('tabs.onUpdated', 11, { status: 'loading' });
     await request('snapshot', { tabId: 11 });
 
-    expect(browserState.injected).toHaveLength(1);
+    expect(contentScriptInjections()).toHaveLength(1);
   });
 });
 

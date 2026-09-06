@@ -367,6 +367,12 @@ function BrowserAutomationOverviewCard() {
   const policy = useSettingsStore((s) => s.browserOperationPolicy);
   const allowUnattended = useSettingsStore((s) => s.allowUnattendedBrowser);
   const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  // Round-3 R3-C. This is the THIRD screen that answers "where may a scheduled
+  // task go?", and it arrived with a later settings batch after the other two were
+  // taught about via-embed grants — so it counted them as reachable and
+  // suppressed the "no allowed site" warning for a user who has none. The
+  // summary already knows the rule; it just has to be told the marks.
+  const viaEmbedGrants = useSettingsStore((s) => s.browserSiteGrantViaEmbed);
   const closeSystemSettings = useSettingsStore((s) => s.closeSystemSettings);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const tasks = useScheduleStore((s) => s.tasks);
@@ -397,13 +403,14 @@ function BrowserAutomationOverviewCard() {
     })),
     policy,
     masterSwitchOn: allowUnattended,
-    reachableSiteCount:
-      summarizeBrowserAuthorization(sitePermissions, allowUnattended).reachableUnattended.length,
+    reachableSiteCount: summarizeBrowserAuthorization(
+      sitePermissions, allowUnattended, viaEmbedGrants,
+    ).reachableUnattended.length,
     // The REAL rule, not a copy of it: the same resolver the gate builds its
     // approval target from, so "this task has nobody to ask" here means exactly
     // what it will mean at 3am.
     hasApprovalTarget: (binding) => resolveUnattendedImTarget(binding) !== null,
-  }), [tasks, triggers, channels, policy, allowUnattended, sitePermissions]);
+  }), [tasks, triggers, channels, policy, allowUnattended, sitePermissions, viaEmbedGrants]);
 
   const sourceLabel: Record<BrowserAutomationSource, string> = {
     schedule: t.settings.browserAutomationSourceSchedule,

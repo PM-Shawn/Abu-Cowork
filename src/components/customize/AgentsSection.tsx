@@ -116,11 +116,17 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
       for (const meta of agents) {
         const full = agentRegistry.getAgent(meta.name);
         if (!full) continue;
-        // The registry knows only what the AGENT.md said; the discovery store is
-        // where an agent installed before the `source:` key existed gets its
-        // provenance back (see `applyPluginAgentSources`). Carry it over so the
-        // detail view sees the same origin the `@` picker does.
-        fullAgents.push(!full.source && meta.source ? { ...full, source: meta.source } : full);
+        // The store's `meta.source` is the only authority on provenance, so it
+        // replaces the registry's copy outright rather than merely filling a
+        // gap. The registry echoes back whatever the AGENT.md frontmatter said;
+        // `applyPluginAgentSources` is what turns that into a fact — it drops a
+        // `source:` no `installed.json` record backs and overwrites a claimed
+        // one with the owning record's key. Preferring the raw value whenever
+        // it exists would hand a forged `source: plugin:x` (writable via the
+        // `save_agent` tool or a hand edit) the read-only treatment, locking
+        // the user out of editing and deleting their own agent.
+        const { source: _rawSource, ...withoutSource } = full;
+        fullAgents.push(meta.source ? { ...withoutSource, source: meta.source } : withoutSource);
       }
       setInstalledAgents(fullAgents);
     };

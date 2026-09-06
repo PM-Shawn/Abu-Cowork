@@ -175,3 +175,39 @@ describe('AgentsSection — plugin ownership invariant', () => {
     expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
   });
 });
+
+describe('AgentsSection — the store\'s normalised source wins over the registry\'s', () => {
+  // `applyPluginAgentSources` has already ruled on provenance by the time the
+  // section reads the store; the registry only echoes the AGENT.md frontmatter,
+  // which the user (or the `save_agent` tool) can write. Taking the raw value
+  // would let a forged `source:` lock the user out of their own agent.
+  it('ignores a forged plugin source the store already stripped', () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      ...definition,
+      source: { kind: 'plugin', plugin: 'forged@nowhere' },
+    });
+    openDetail({ name: 'reviewer', description: 'Reviews code' });
+
+    expect(screen.getByTestId('agent-added-by').textContent).toBe('User');
+    expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(false);
+    const remove = screen.getByText(tb().uninstall).closest('button')!;
+    expect(remove.hasAttribute('disabled')).toBe(false);
+
+    // …and the handler behind the entry actually proceeds to the disk delete.
+    fireEvent.click(remove);
+    expect(vi.mocked(fsRemove)).toHaveBeenCalledWith('/Users/tester/.abu/agents/reviewer', { recursive: true });
+  });
+
+  it('still carries a backfilled source the registry never saw', () => {
+    openDetail({
+      name: 'reviewer',
+      description: 'Reviews code',
+      source: { kind: 'plugin', plugin: 'weather@official' },
+    });
+
+    expect(screen.getByTestId('agent-added-by').textContent).toBe(
+      format(tb().agentFromPlugin, { plugin: 'Weather Pack' }),
+    );
+    expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(true);
+  });
+});

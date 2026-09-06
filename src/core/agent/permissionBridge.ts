@@ -21,6 +21,7 @@ import type { EventRouter } from './eventRouter';
 import type { SettingsReader } from './ports/settingsReader';
 import type { IMContext } from './orchestrator';
 import * as approvalBridge from './ports/approvalBridge';
+import { decideTeamConfirmation } from './teamConfirmations';
 
 // The file-permission queue's dequeue-time re-check ("another tool call may
 // have already been granted this permission while this request sat in the
@@ -166,6 +167,14 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
   const agentName = ctx?.agentName;
+  // Team conversations never block on a dialog (teamConfirmations.ts).
+  const teamDecision = decideTeamConfirmation(convId, {
+    kind: info.kind ?? 'command',
+    detail: info.command,
+    reason: info.reason,
+    member: agentName,
+  });
+  if (teamDecision !== 'ask') return teamDecision === 'approved';
   return approvalBridge.request('command', {
     loopId,
     conversationId: convId,
@@ -255,6 +264,17 @@ export async function requestFilePermission(request: {
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
   const agentName = ctx?.agentName;
+  // Team conversations never block on a dialog; approving the item grants the
+  // path through permissionStore, so the retry passes the check above.
+  const teamDecision = decideTeamConfirmation(convId, {
+    kind: 'file',
+    detail: request.path,
+    reason: request.toolName,
+    path: request.path,
+    capability: request.capability,
+    member: agentName,
+  });
+  if (teamDecision !== 'ask') return teamDecision === 'approved';
   return approvalBridge.request('file-permission', {
     loopId,
     conversationId: convId,

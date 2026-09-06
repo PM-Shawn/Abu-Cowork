@@ -579,7 +579,7 @@ export async function checkToolApproval(
           reason: reviewReason || analysis.reason,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -640,7 +640,12 @@ export async function checkToolApproval(
                 toolName: name,
               }, toolContext?.loopId);
               if (!granted) {
-                return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
+                return {
+                  decision: 'deny',
+                  reason: toolContext?.teamRoster
+                    ? `${t.commandConfirm.teamPendingConfirmation} (${pathCheck.permissionPath})`
+                    : `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`,
+                };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
               pathCheck = await checkFn(pathInfo.path, scopeId);
@@ -747,7 +752,7 @@ export async function checkToolApproval(
           allowPersistentGrant: !scripting && origin !== null,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
         // A script approval covers that one run only — minting the
         // conversation grant from it would silently unlock 30 minutes of
@@ -783,7 +788,7 @@ export async function checkToolApproval(
           kind: 'self-extension',
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }

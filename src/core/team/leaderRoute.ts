@@ -95,6 +95,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push('7. Shared inputs first: when parallel members would each invent the same figures, definitions or sources, settle them in one earlier step (or let the member that produces them run first) and pass that output verbatim to the others. When merging, list every difference in figures or definitions between members and say which one you kept and why.');
   lines.push('8. Files: when a member must write files, say in its task text to save them under `<workspace>/<member name>/` with distinct file names; two members must never write the same path.');
   lines.push(`9. Bounds: this run allows at most ${TEAM_MAX_DISPATCHES_PER_RUN} hand-offs in total, and a member that fails ${TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER} hand-offs in a row is blocked for the rest of the run. When a dispatch tool refuses for either reason, do not retry or work around it: stop dispatching and give the user your consolidated report — what is done, what is not, and what blocked it.`);
+  lines.push('10. Confirmations: nobody is asked mid-run. When a member reports that an action was refused pending the user\'s confirmation, do not retry it and do not work around it; continue with steps that do not depend on it and list it under "等你确认" in your report. If the user later approves, you get a follow-up message — re-dispatch ONLY that step to the same member.');
   return lines.join('\n');
 }
 

@@ -16,6 +16,10 @@ import {
   findQuestionOwningMessage,
   setLoopContext,
   clearLoopContext,
+  requestCommandConfirmation,
+  resolveCommandConfirmation,
+  getPendingCommandConfirmation,
+  drainConfirmationQueue,
   getLoopContextForConversation,
   requestFilePermission,
   resolveFilePermission,
@@ -165,6 +169,69 @@ describe('permissionBridge — UserQuestion queue', () => {
         clearLoopContext('loop-a');
         clearLoopContext('loop-b');
       }
+    });
+  });
+
+  describe('team conversations never block on a confirmation (block O)', () => {
+    const makeTeamCtx = (loopId: string, conversationId: string, agentName?: string) => ({
+      loopId,
+      conversationId,
+      agentName,
+      commandConfirmCallback: async () => false,
+      filePermissionCallback: async () => false,
+      signal: new AbortController().signal,
+      eventRouter: {} as never,
+      toolCallToStepId: new Map(),
+    });
+
+    beforeEach(async () => {
+      const { useChatStore } = await import('../../stores/chatStore');
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {} });
+      useChatStore.setState({
+        conversations: {
+          'conv-team': { id: 'conv-team', title: 't', teamId: 'team-1', createdAt: 1, updatedAt: 1, status: 'running', messages: [] },
+          'conv-plain': { id: 'conv-plain', title: 'p', createdAt: 1, updatedAt: 1, status: 'running', messages: [] },
+        },
+      } as never);
+      setLoopContext('loop-team', makeTeamCtx('loop-team', 'conv-team', 'zz发布员') as never);
+      setLoopContext('loop-plain', makeTeamCtx('loop-plain', 'conv-plain') as never);
+    });
+    afterEach(() => {
+      clearLoopContext('loop-team');
+      clearLoopContext('loop-plain');
+      drainConfirmationQueue();
+      drainFilePermissionQueue();
+    });
+
+    it('refuses a command now, records it as pending, and lets an approved identical request through once', async () => {
+      const { useTeamConfirmationStore, pendingFor, confirmationKey } = await import('../../stores/teamConfirmationStore');
+      const info = { command: 'npm publish', level: 'danger' as const, reason: '发布到公网' };
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+      const pending = pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team');
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({ kind: 'command', detail: 'npm publish', member: 'zz发布员', reason: '发布到公网' });
+      expect(getPendingCommandConfirmation()).toBeNull();
+      // A retry does not pile up duplicates.
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')).toHaveLength(1);
+
+      useTeamConfirmationStore.getState().approveOnce('conv-team', confirmationKey({ kind: 'command', detail: 'npm publish' }));
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(true);
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+    });
+
+    it('records file access as pending and leaves plain conversations on the dialog path', async () => {
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      await expect(requestFilePermission({ path: '/tmp/out/report.md', capability: 'write', toolName: 'write_file' }, 'loop-team')).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')[0]).toMatchObject({ kind: 'file', path: '/tmp/out/report.md', capability: 'write' });
+      expect(getPendingFilePermission()).toBeNull();
+
+      const plain = requestCommandConfirmation({ command: 'rm -rf x', level: 'danger', reason: 'r' }, 'loop-plain');
+      expect(getPendingCommandConfirmation()?.conversationId).toBe('conv-plain');
+      resolveCommandConfirmation(false);
+      await expect(plain).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-plain')).toEqual([]);
     });
   });
 

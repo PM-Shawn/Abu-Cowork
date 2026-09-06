@@ -86,6 +86,16 @@ export async function notifyScheduledTeamRunUnconfirmed(message: string): Promis
   });
 }
 
+/** A team run refused an action pending the user's confirmation (block O). */
+export async function notifyTeamConfirmationPending(title: string, conversationId: string): Promise<void> {
+  publish({
+    type: 'permission_request',
+    source: 'agent',
+    payload: { title, conversationId },
+    dedupKey: `team_confirm:${conversationId}:${title}`,
+  });
+}
+
 export async function notifyScheduledTaskError(taskName: string): Promise<void> {
   publish({
     type: 'agent_error',

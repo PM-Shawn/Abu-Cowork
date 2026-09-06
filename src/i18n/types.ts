@@ -1427,6 +1427,14 @@ export interface TranslationDict {
     rerunConversation: string;
     rerunConversationTitle: string;
     rerunConversationEmpty: string;
+    confirmationStripTitle: string;
+    confirmationSeparator: string;
+    confirmationLeader: string;
+    confirmationApprove: string;
+    confirmationReject: string;
+    confirmationNotice: string;
+    confirmationApprovedFollowUp: string;
+    confirmationRejectedFollowUp: string;
     followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
@@ -2583,6 +2591,8 @@ export interface TranslationDict {
     confirm: string;
     blocked: string;
     userCancelled: string;
+    /** Team run: action refused pending the user's confirmation (never blocks). */
+    teamPendingConfirmation: string;
     aiDenied: string;
     browserAction: string;
     browserReason: string;

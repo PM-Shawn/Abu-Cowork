@@ -9,7 +9,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
 import { readInstalled } from './installedStore';
-import { pluginSkillDirs, pluginMcpServerNames } from './skillRoots';
+import { pluginSkillDirs, mcpServerNamesOf } from './skillRoots';
 
 const mockRead = vi.mocked(readTextFile);
 const mockExists = vi.mocked(exists);
@@ -70,9 +70,9 @@ describe('installed.json is treated as untrusted input', () => {
     await expect(pluginSkillDirs('/home/u')).resolves.toEqual([]);
   });
 
-  it('never throws out of pluginMcpServerNames either', async () => {
+  it('never throws out of the approval-gate arming path either', async () => {
     // A throw here would leave the approval gate unarmed.
     onDisk('[{"key":"a@b"}]');
-    await expect(pluginMcpServerNames('/home/u')).resolves.toEqual([]);
+    expect(mcpServerNamesOf(await readInstalled('/home/u'))).toEqual([]);
   });
 });

@@ -213,13 +213,15 @@ export default function MarketplaceBrowser({
   // rows below read their 「更新」 state from the same store keys, so the badge
   // and the buttons cannot disagree.
   //
-  // `installed` is deliberately NOT a dep. The store recomputes after every
-  // install/uninstall itself, so re-running here on each new `installed`
-  // identity only duplicates that scan — and the boot-time hydrate has already
-  // landed by the time this panel can be opened.
+  // `installed` IS a dep: the rows read their update state only from the store,
+  // so a panel opened before the boot-time hydrate lands would show every row
+  // as up-to-date forever — the first scan ran against an empty `installed` and
+  // nothing re-runs it. Redundant scans are the store's problem, not this
+  // effect's: `recomputeUpdates` carries a `recomputeSeq` guard that drops
+  // whatever a superseded scan computes.
   useEffect(() => {
     void recomputeUpdates(home);
-  }, [recomputeUpdates, home, marketplaces]);
+  }, [recomputeUpdates, home, marketplaces, installed]);
 
   /** Store keys are `pluginKey(entryName, marketName)` — see `updateCheck`. */
   const updateKeySet = useMemo(() => new Set(updateAvailableKeys), [updateAvailableKeys]);

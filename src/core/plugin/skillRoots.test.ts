@@ -8,8 +8,8 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
-import { pluginSkillDirs, pluginMcpServerNames } from './skillRoots';
-import type { InstalledPlugin } from './installedStore';
+import { pluginSkillDirs, mcpServerNamesOf } from './skillRoots';
+import { readInstalled, type InstalledPlugin } from './installedStore';
 
 const mockRead = vi.mocked(readTextFile);
 const mockExists = vi.mocked(exists);
@@ -64,19 +64,22 @@ describe('pluginSkillDirs', () => {
   });
 });
 
-describe('pluginMcpServerNames', () => {
+// The approval gate is armed as `mcpServerNamesOf(records the caller already
+// read)` — see `pluginStore.refreshInstalled`. These drive the pure function
+// through `readInstalled` so the fixtures stay the on-disk shape.
+describe('mcpServerNamesOf', () => {
   it('collects every contributed server name across plugins', async () => {
     installed(weather, notes);
-    await expect(pluginMcpServerNames('/home/u')).resolves.toEqual(['forecast', 'notes-db']);
+    expect(mcpServerNamesOf(await readInstalled('/home/u'))).toEqual(['forecast', 'notes-db']);
   });
 
   it('de-duplicates when two plugins contribute the same server name', async () => {
     installed(weather, { ...notes, contributed: { skills: [], mcpServers: ['forecast'] } });
-    await expect(pluginMcpServerNames('/home/u')).resolves.toEqual(['forecast']);
+    expect(mcpServerNamesOf(await readInstalled('/home/u'))).toEqual(['forecast']);
   });
 
   it('returns an empty list when nothing is installed', async () => {
     mockExists.mockResolvedValue(false);
-    await expect(pluginMcpServerNames('/home/u')).resolves.toEqual([]);
+    expect(mcpServerNamesOf(await readInstalled('/home/u'))).toEqual([]);
   });
 });

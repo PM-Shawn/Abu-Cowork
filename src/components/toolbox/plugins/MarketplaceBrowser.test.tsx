@@ -502,6 +502,26 @@ describe('MarketplaceBrowser', () => {
     await waitFor(() => expect(screen.getByTestId('plugin-update-button')).toBeInTheDocument());
   });
 
+  it('rescans when `installed` arrives after the panel is already open', async () => {
+    // The panel can be opened before the boot-time hydrate lands, and the rows
+    // read their update state ONLY from the store. Without `installed` in the
+    // mount effect's deps that first scan (against an empty `installed`) is the
+    // last one, and every row claims to be up to date forever.
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry').length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('plugin-update-button')).toBeNull();
+
+    await act(async () => {
+      usePluginStore.setState({
+        installed: [{
+          key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
+          installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+        }],
+      });
+    });
+    await waitFor(() => expect(screen.getByTestId('plugin-update-button')).toBeInTheDocument());
+  });
+
   it('scores every added market, not just the displayed one', async () => {
     // The badge is the union across markets. Browsing a second market used to
     // REPLACE the personal-scope keys, so opening a market with nothing to

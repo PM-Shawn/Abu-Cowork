@@ -8,21 +8,29 @@ import { useSettingsStore } from './settingsStore';
 import { useWorkspaceStore } from './workspaceStore';
 
 /**
- * Give a plugin-contributed agent its `source` back when its AGENT.md has none.
+ * Resolve every agent's plugin provenance against `installed.json`.
  *
- * Agents installed before the `source:` frontmatter key existed have no
- * provenance on disk, and rewriting their AGENT.md to add one would edit a file
- * that now lives in the user's `~/.abu/agents` — so the label is restored here,
- * in memory, from the record that already knows what each plugin contributed
- * (`installed.json`'s `contributed.agents`, the same list uninstall trusts).
+ * `installed.json`'s `contributed.agents` — the same list uninstall trusts — is
+ * the SOLE authority on which agents belong to a plugin. A `source:` parsed off
+ * an AGENT.md is only a cache of it:
+ *
+ *  - a name a record claims is labelled with THAT record's key, whatever the
+ *    file said (a fresh install stamps the file, but the file can also be stale,
+ *    hand-edited, or written by the `save_agent` tool);
+ *  - a name no record claims loses any `source` it carried in, so a user's own
+ *    agent cannot lock itself behind the plugin read-only gates (delete/save
+ *    disabled in `AgentsSection`/`AgentEditor`) just because the string
+ *    `source: plugin:x` reached its frontmatter — nor can an orphan left behind
+ *    by a refused `removeContributedAgent`.
+ *
+ * Backfill is the same rule seen from the other side: an agent installed before
+ * the `source:` key existed has no provenance on disk, and rewriting its
+ * AGENT.md would edit a file that now lives in the user's `~/.abu/agents`, so
+ * the label is restored here, in memory.
  *
  * Lives in the store, not in `core/agent/registry`, on purpose: the registry
  * must not learn about `core/plugin` (the plugin installer already depends on
  * the registry, and the reverse edge would close the cycle).
- *
- * A `source` already parsed off disk wins — a fresh install stamps the file
- * itself, and that is the more specific statement. Agents no record claims are
- * returned untouched.
  */
 export function applyPluginAgentSources(
   agents: SubagentMetadata[],
@@ -34,12 +42,16 @@ export function applyPluginAgentSources(
       if (!owner.has(name)) owner.set(name, record.key);
     }
   }
-  if (owner.size === 0) return agents;
 
   return agents.map((agent) => {
-    if (agent.source) return agent;
     const plugin = owner.get(agent.name);
-    return plugin ? { ...agent, source: { kind: 'plugin' as const, plugin } } : agent;
+    if (plugin) {
+      if (agent.source?.plugin === plugin) return agent;
+      return { ...agent, source: { kind: 'plugin' as const, plugin } };
+    }
+    if (!agent.source) return agent;
+    const { source: _unclaimed, ...withoutSource } = agent;
+    return withoutSource;
   });
 }
 

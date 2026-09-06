@@ -48,8 +48,3 @@ export function mcpServerNamesOf(installed: readonly InstalledPlugin[]): string[
   }
   return [...names];
 }
-
-/** Every MCP server name contributed by an installed plugin, de-duplicated. */
-export async function pluginMcpServerNames(home: string): Promise<string[]> {
-  return mcpServerNamesOf(await readInstalled(home));
-}

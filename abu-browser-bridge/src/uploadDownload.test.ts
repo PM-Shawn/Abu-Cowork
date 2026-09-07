@@ -84,6 +84,22 @@ function pinOf(file: string): { mtimeMs: number; ino: number; dev: number } {
   return { mtimeMs: Math.floor(stat.mtimeMs), ino: stat.ino, dev: stat.dev };
 }
 
+/**
+ * A modification time a fixture can set and read back unchanged.
+ *
+ * `utimes` takes seconds, and Node turns a `Date` into `date.getTime() / 1000`
+ * — a double that libuv then splits back into whole seconds plus nanoseconds.
+ * For an arbitrary millisecond that split lands a few nanoseconds short about
+ * half the time, so `Math.floor(mtimeMs)` reads back one millisecond LOWER
+ * than the value that was written (measured: 93 of 200). A whole second has
+ * no fractional part to lose, so it survives the round trip exactly.
+ *
+ * Fixtures that need the clock to hold still while something ELSE about the
+ * file changes set this instead of echoing back whatever the write happened
+ * to stamp.
+ */
+const PINNED_SECONDS = 1_700_000_000;
+
 const UPLOAD_ARGS = {
   tabId: 1,
   target: '{"css":"input[type=file]"}',
@@ -331,6 +347,13 @@ describe('upload_file', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-upload-'));
     const approvedPath = path.join(dir, 'report.txt');
     fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    // Round-2 review N5: the INODE has to be the only thing that differs, or
+    // the mtime check rejects this before the identity pin is ever consulted
+    // and a mutation that deletes that pin goes red only by luck. So both the
+    // approved file and its replacement are stamped with the same whole
+    // second — see `PINNED_SECONDS` for why a whole second and not the mtime
+    // the write happened to leave behind.
+    fs.utimesSync(approvedPath, PINNED_SECONDS, PINNED_SECONDS);
     const pin = pinOf(approvedPath);
     const stamp = APPROVED_META([
       { path: approvedPath, name: 'report.txt', size: 8, ...pin },
@@ -339,11 +362,7 @@ describe('upload_file', () => {
     const other = path.join(dir, 'other.txt');
     fs.writeFileSync(other, 'SECRET!!');
     fs.renameSync(other, approvedPath);
-    // Round-2 review N5: put the clock back so the INODE is the only thing
-    // that differs. Two writes usually land in different milliseconds, and
-    // then the mtime check rejects this before the identity pin is consulted
-    // — which made a mutation that deletes that pin go red only by luck.
-    fs.utimesSync(approvedPath, new Date(pin.mtimeMs), new Date(pin.mtimeMs));
+    fs.utimesSync(approvedPath, PINNED_SECONDS, PINNED_SECONDS);
     expect(pinOf(approvedPath).mtimeMs).toBe(pin.mtimeMs);
     expect(pinOf(approvedPath).ino).not.toBe(pin.ino);
 
@@ -360,12 +379,13 @@ describe('upload_file', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-upload-'));
     const approvedPath = path.join(dir, 'report.txt');
     fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    fs.utimesSync(approvedPath, PINNED_SECONDS, PINNED_SECONDS);
     const pin = pinOf(approvedPath);
     const stamp = APPROVED_META([
       { path: approvedPath, name: 'report.txt', size: 8, ...pin },
     ]);
     fs.writeFileSync(approvedPath, 'SECRET!!');
-    fs.utimesSync(approvedPath, new Date(pin.mtimeMs + 5_000), new Date(pin.mtimeMs + 5_000));
+    fs.utimesSync(approvedPath, PINNED_SECONDS + 5, PINNED_SECONDS + 5);
 
     try {
       const { tool, sent } = harness('bytes');

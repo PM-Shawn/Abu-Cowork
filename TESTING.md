@@ -51,7 +51,7 @@ under `scripts/`). E2E (`e2e/*.spec.ts`) is handled by Playwright and runs as a 
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Web E2E (`e2e/*.spec.ts`, Playwright) | 8 |
 | Real-Electron E2E (`tests/e2e/*.spec.ts`) | 18 |
-| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 45 |
+| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 46 |
 <!-- test-inventory:end -->
 
 ---
@@ -258,7 +258,7 @@ describe('module name', () => {
 
 ## 7. CI Integration
 
-The CI workflow (`.github/workflows/ci.yml`) has one blocking job, `check`, plus two advisory jobs.
+The CI workflow (`.github/workflows/ci.yml`) has one required job, `check`, the dependency `audit` job (fails for real, but not yet a required status check), and one advisory job.
 
 **`check` job — gate steps.** The quality gate is split into **independent steps**:
 Lint → Type check → Test with coverage (`npm run test:coverage`) → Test-infra scripts
@@ -283,12 +283,24 @@ opening a PR.
   the PR comment write through `GITHUB_TOKEN`, which is read-only on Dependabot and fork PRs, so
   they are skipped there rather than failing the job.
 
-**Advisory jobs** (`continue-on-error: true`, yellow, not blocking):
+**`audit` job — dependency scan with an allowlist.** `npm audit --omit=dev --json` is piped into
+`scripts/npm-audit-check.mjs`, which fails on any high/critical production finding not covered by
+an unexpired entry in `.github/npm-audit-allowlist.json`. The allowlist exists because some
+advisories have no patched version at all (e.g. `image-size`, reachable only through `pptxgenjs`,
+which never loads it). Every entry needs `ghsa`, `package`, `reason`, `expires` (YYYY-MM-DD); an
+expired entry fails the job so the acceptance is re-reviewed rather than forgotten, and entries npm
+no longer reports are listed as safe to delete. First try to fix (`npm audit fix
+--package-lock-only`); only allowlist when there is no upstream fix and the reason says why the
+code path is unreachable or the impact is accepted. Run it locally with
+`npm audit --omit=dev --json > audit.json; node scripts/npm-audit-check.mjs audit.json`
+(add `--registry=https://registry.npmjs.org` to `npm audit` if your default registry is a mirror
+without the advisories endpoint). The checker is covered by `scripts/npm-audit-check.test.mjs`
+(`npm run test:infra`).
+
+**Advisory job** (`continue-on-error: true`, yellow, not blocking):
 - `test-windows` — first Windows run of the unit suite (`npx vitest run`, no coverage); junit
   uploaded as the `test-results-windows` artifact. Triage path-sensitive failures, then drop
   `continue-on-error`.
-- `audit` — `npm audit --omit=dev --audit-level=high`; stays yellow until the 2 high baseline
-  findings in transitive production deps are cleaned, then flip to blocking.
 
 Model-data freshness (`gen:models:check`) runs automatically before tests via the `pretest` npm hook
 and again inside `npm run build` — no separate CI step is needed.

@@ -203,12 +203,13 @@ jobs:
           path: test-results/
           retention-days: 14
 
-  # Dependency vulnerability scan — ADVISORY for now: both repos already carry
-  # high findings in transitive deps (client prod-only: 2 high as of
-  # 2026-09-02). Flip to blocking once the baseline is clean.
+  # Dependency vulnerability scan. Fails on any high/critical production
+  # finding that is not covered by an unexpired entry in
+  # .github/npm-audit-allowlist.json (scripts/npm-audit-check.mjs) — the
+  # allowlist exists because some advisories have no patched version at all.
+  # Not a required status check yet (branch protection only requires `check`).
   audit:
     runs-on: ubuntu-latest
-    continue-on-error: true
     permissions:
       contents: read
     steps:
@@ -217,14 +218,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: 24
-      - name: npm audit (production deps, high+)
+      - name: npm audit (production deps, high+, allowlist-aware)
         run: |
-          npm audit --omit=dev --audit-level=high | tee audit.txt
+          # npm audit exits non-zero whenever it finds anything; the checker decides.
+          npm audit --omit=dev --json > audit.json || true
+          node scripts/npm-audit-check.mjs audit.json | tee -a "$GITHUB_STEP_SUMMARY"
           status=${PIPESTATUS[0]}
-          {
-            echo "### npm audit (production, high+)"
-            echo '```'
-            tail -n 5 audit.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
           exit "$status"

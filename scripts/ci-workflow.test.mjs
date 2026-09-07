@@ -55,16 +55,22 @@ test('CI comments coverage on pull requests and renders the junit report', () =>
   assert.match(ci, /checks: write/);
 });
 
-test('Windows unit-test job and npm audit job exist and are advisory for now', () => {
+test('Windows unit-test job exists and is advisory for now', () => {
   assert.match(ci, /test-windows:[\s\S]*?runs-on: windows-latest[\s\S]*?continue-on-error: true/);
+});
+
+test('npm audit job is allowlist-aware and fails for real (no continue-on-error)', () => {
   const auditStart = ci.indexOf('\n  audit:');
   assert.ok(auditStart > -1, 'audit job missing');
   const audit = ci.slice(auditStart);
-  assert.match(audit, /continue-on-error: true/);
-  assert.match(audit, /npm audit --omit=dev --audit-level=high/);
+  assert.ok(!audit.includes('continue-on-error'), 'audit must not be advisory: the allowlist is the escape hatch');
+  // Production deps only, machine-readable, and `|| true` because npm audit exits
+  // non-zero on any finding — the checker script is what decides pass/fail.
+  assert.match(audit, /npm audit --omit=dev --json > audit\.json \|\| true/);
+  assert.match(audit, /node scripts\/npm-audit-check\.mjs audit\.json \| tee -a "\$GITHUB_STEP_SUMMARY"/);
   // Without an explicit shell: GitHub runs bash without pipefail, so tee would
-  // swallow npm audit's exit status and continue-on-error would never engage.
-  assert.ok(audit.includes('PIPESTATUS[0]'), 'audit step must capture npm audit exit status through tee');
+  // swallow the checker's exit status.
+  assert.ok(audit.includes('PIPESTATUS[0]'), 'audit step must capture the checker exit status through tee');
   assert.ok(audit.includes('exit "$status"'), 'audit step must propagate the captured exit status');
 });
 

@@ -1,6 +1,7 @@
 import { useTriggerStore } from '../../stores/triggerStore';
 import { useChatStore } from '../../stores/chatStore';
 import { useToastStore } from '../../stores/toastStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import { BROWSER_DENIAL_ABORT_CAUSE } from '../agent/browserDenialTracker';
 import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
@@ -81,6 +82,20 @@ function prefixesOutcomeIntoContent(output: Trigger['output']): boolean {
   return output?.target === 'im_channel' && output.extractMode !== 'custom_template';
 }
 
+/**
+ * Where the trigger server listens.
+ *
+ * Both conditions, and `allowLanWebhook` must be exactly `true`: a store
+ * written by an older build (or hand-edited) can hold any value there, and a
+ * truthy string must not open the listener to the network.
+ */
+export function resolveTriggerBindAddress(
+  hasHeartbeatPlugin: boolean,
+  allowLanWebhook: unknown,
+): '0.0.0.0' | '127.0.0.1' {
+  return hasHeartbeatPlugin && allowLanWebhook === true ? '0.0.0.0' : '127.0.0.1';
+}
+
 const MAX_CONCURRENT_TRIGGERS = 5;
 const MAX_RETRY_ATTEMPTS = 3;
 const MAX_DEBOUNCE_CACHE_SIZE = 10_000;
@@ -102,12 +117,18 @@ class TriggerEngine {
 
     // Start HTTP server (Rust side)
     try {
-      // Use 0.0.0.0 if any IM plugin needs heartbeat/callback (LAN-accessible),
-      // otherwise use 127.0.0.1 (localhost-only, more secure)
+      // LAN exposure is an explicit opt-in, never a side effect of installing
+      // a plugin. A heartbeat/callback plugin NEEDS the LAN listener, but this
+      // endpoint accepts inbound messages: widening it because a plugin is
+      // present would let an install decide, on the user's behalf, that every
+      // machine on the network may talk to Abu. Both must be true.
       const { getRegisteredPluginManifests } = await import('../im/pluginRegistry');
       const hasHeartbeatPlugin = getRegisteredPluginManifests()
         .some((m) => m.capabilities.connectionType === 'heartbeat');
-      const bindAddr = hasHeartbeatPlugin ? '0.0.0.0' : '127.0.0.1';
+      const bindAddr = resolveTriggerBindAddress(
+        hasHeartbeatPlugin,
+        useSettingsStore.getState().imChannel?.allowLanWebhook,
+      );
       const port = await invoke<number>('start_trigger_server', { port: DEFAULT_PORT, bindAddr });
       this.serverPort = port;
       console.log(`[Trigger] HTTP server started on port ${port}`);

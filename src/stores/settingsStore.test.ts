@@ -849,6 +849,23 @@ describe('settingsStore labs flags', () => {
       });
     });
 
+    /**
+     * V50. An install that already carries a heartbeat plugin was binding
+     * 0.0.0.0 without ever being asked; the upgrade must CLOSE that listener,
+     * not grandfather it — so the default is false for every existing store.
+     */
+    it('defaults the LAN webhook opt-in to false, including for a store that predates the field', () => {
+      expect(getMigrate()({ theme: 'light' }, 45).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: {} }, 49).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: { allowLanWebhook: 'yes' } }, 49).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: null }, 49).imChannel).toEqual({ allowLanWebhook: false });
+    });
+
+    it('keeps an explicit LAN webhook opt-in and any sibling field beside it', () => {
+      const migrated = getMigrate()({ imChannel: { allowLanWebhook: true, other: 1 } }, 49);
+      expect(migrated.imChannel).toEqual({ allowLanWebhook: true, other: 1 });
+    });
+
     it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
       const migrated = getMigrate()({ theme: 'light' }, 45);
       expect(migrated.allowUnattendedBrowser).toBe(false);

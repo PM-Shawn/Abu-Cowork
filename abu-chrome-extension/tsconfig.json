@@ -8,7 +8,15 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "lib": ["ES2022", "DOM"]
+    /* DOM.Iterable: the content script iterates NodeList/HTMLCollection with
+       for...of and spread — native in the esbuild target (chrome120) and the
+       same lib set tsconfig.app.json uses. */
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    /* TypeScript 6 no longer auto-includes @types/*; name the chrome typings
+       explicitly. They resolve from this package's own node_modules, so the
+       root `npm run typecheck` needs `npm ci` here too (CI's install step).
+       `node`: the background tests read fixtures through node:fs / node:url. */
+    "types": ["chrome", "node"]
   },
   "include": ["src/**/*"]
 }

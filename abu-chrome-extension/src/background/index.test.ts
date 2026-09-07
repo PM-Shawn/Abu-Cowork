@@ -108,12 +108,22 @@ const browserState: {
   probeFunc?: (...a: never[]) => unknown;
   /** Content-script answers by `${tabId}:${frameId}:${action}`; default is a routed echo. */
   contentAnswers: Record<string, { data?: unknown; error?: string }>;
+  /**
+   * What the BROWSER does while a content-script message is in flight.
+   *
+   * `download`'s whole contract is about ordering — the waiter is armed before
+   * the click and the file may land before the click even returns — so a test
+   * needs a seam at exactly that instant. This is it; everything else in this
+   * file leaves it null.
+   */
+  onContentMessage: ((action: string, tabId: number) => void) | null;
 } = {
   windows: [], tabs: [], updated: [], reloaded: [], injected: [], captured: [], sessionStore: {},
   pageDialogState: { installed: false, armed: null, last: null },
   pageIsFrozen: false,
   frames: {},
   contentAnswers: {},
+  onContentMessage: null,
 };
 
 /** Enough of the extension APIs to drive the real request path. */
@@ -159,6 +169,7 @@ function fakeChrome(): Record<string, unknown> {
         const cb = typeof options === 'function' ? options : maybeCb!;
         const frameId = typeof options === 'function' ? undefined : options.frameId;
         sentToContent.push({ tabId, action: message.action, payload: message.payload, frameId });
+        browserState.onContentMessage?.(message.action, tabId);
         const scripted = browserState.contentAnswers[`${tabId}:${frameId ?? 0}:${message.action}`];
         cb(scripted ?? { data: { routed: message.action } });
       },
@@ -175,7 +186,15 @@ function fakeChrome(): Record<string, unknown> {
         return Promise.resolve(populated);
       },
     },
-    downloads: { onCreated: slot('downloads.onCreated'), onChanged: slot('downloads.onChanged') },
+    downloads: {
+      onCreated: slot('downloads.onCreated'),
+      onChanged: slot('downloads.onChanged'),
+      // T6 — the hook that files an Abu download into its own folder. Present
+      // here because the worker registers it conditionally, and a fake without
+      // it would make the "leaves the user's own downloads alone" claim
+      // vacuously true.
+      onDeterminingFilename: slot('downloads.onDeterminingFilename'),
+    },
     runtime: { onMessage: slot('runtime.onMessage'), lastError: undefined },
     alarms: { create: () => {}, onAlarm: slot('alarms.onAlarm') },
     scripting: {
@@ -274,6 +293,7 @@ beforeEach(() => {
   browserState.captured.length = 0;
   browserState.frames = {};
   browserState.contentAnswers = {};
+  browserState.onContentMessage = null;
   sentToContent.length = 0;
 });
 
@@ -844,6 +864,114 @@ describe('actions the service worker answers itself', () => {
     const downloads = (await request('get_downloads', { ownerId: 'conv-a' })).data as unknown[];
 
     expect(downloads).toEqual([]);
+  });
+
+  /**
+   * T6 — the `download` tool on this channel: arm, click, follow the file.
+   *
+   * The waiter is armed BEFORE the click for a reason a slower fake would
+   * hide: a small file can finish before `sendToContentScript` returns, and a
+   * waiter armed afterwards would miss the download its own click produced and
+   * then report «这次点击没产生可识别的下载» for a file already on disk. The
+   * hook below fires the browser events at exactly that instant.
+   */
+  it('presses the control and comes back with the file that click produced', async () => {
+    twoTabWindow();
+    browserState.onContentMessage = (action) => {
+      if (action !== 'click') return;
+      fire('downloads.onCreated', {
+        id: 31, filename: '', url: 'https://x.example/排班表.xlsx', state: 'in_progress',
+      });
+      fire('downloads.onChanged', {
+        id: 31,
+        filename: { current: '/Users/me/Downloads/Abu/conv-a/排班表.xlsx' },
+        state: { current: 'complete' },
+      });
+    };
+
+    const response = await request('download', {
+      ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 5_000,
+    });
+
+    expect(response.success).toBe(true);
+    expect(response.data).toMatchObject({ started: true, complete: true });
+    expect((response.data as { download: { filename: string; path: string } }).download)
+      .toMatchObject({
+        filename: '排班表.xlsx',
+        path: '/Users/me/Downloads/Abu/conv-a/排班表.xlsx',
+      });
+    // A plain click, through the ordinary content-script path.
+    expect(sentToContent.filter((m) => m.action === 'click')).toHaveLength(1);
+  });
+
+  it('files the download it asked for under this task, and leaves the user\'s own alone', async () => {
+    twoTabWindow();
+    const suggested: unknown[] = [];
+    browserState.onContentMessage = (action) => {
+      if (action !== 'click') return;
+      // Chrome asks the extension where to put it, before or after onCreated.
+      fire('downloads.onDeterminingFilename',
+        { id: 32, filename: '排班表.xlsx' },
+        (s: unknown) => suggested.push(s));
+      fire('downloads.onCreated', { id: 32, filename: '', url: 'https://x/a', state: 'in_progress' });
+      fire('downloads.onChanged', { id: 32, state: { current: 'complete' } });
+    };
+
+    await request('download', {
+      ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 5_000,
+    });
+    // A download nobody armed for: the user's own, and untouched.
+    const before = suggested.length;
+    fire('downloads.onDeterminingFilename',
+      { id: 33, filename: 'mine.pdf' },
+      (s: unknown) => suggested.push(s));
+
+    // One folder per OWNER — conversation plus subagent run, flattened into a
+    // single writable segment (`safeSegment`), which is as deep as `suggest()`
+    // lets an extension file anything.
+    expect(suggested).toEqual([{ filename: 'Abu/conv-a_main/排班表.xlsx', conflictAction: 'uniquify' }]);
+    expect(suggested).toHaveLength(before);
+  });
+
+  it('says the click produced no download rather than adopting another task\'s file', async () => {
+    twoTabWindow();
+    vi.useFakeTimers();
+    try {
+      const response = await request('download', {
+        ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 50,
+      }, { pumpMs: 200 });
+
+      expect(response.success).toBe(true);
+      expect(response.data).toMatchObject({ started: false });
+      expect((response.data as { message: string }).message).toMatch(/no other file was adopted/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to wait on a download id that is not this task\'s', async () => {
+    twoTabWindow();
+    browserState.onContentMessage = (action) => {
+      if (action !== 'click') return;
+      fire('downloads.onCreated', { id: 34, filename: '/d/a.csv', url: 'https://x/a', state: 'in_progress' });
+      fire('downloads.onChanged', { id: 34, state: { current: 'complete' } });
+    };
+    const started = await request('download', {
+      ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 5_000,
+    });
+    const downloadId = (started.data as { download: { downloadId: string } }).download.downloadId;
+
+    // A DIFFERENT tab, so the tab-claim gate (which would refuse first, and
+    // for its own reason) is out of the way and the download's own ownership
+    // check is what answers.
+    const other = await request('download', {
+      ownerId: 'conv-b', tabId: 12, action: 'wait', downloadId,
+    });
+
+    expect(other.success).toBe(false);
+    expect(other.error).toMatch(/belongs to this task/);
+    // And the neighbour cannot see it in a listing either.
+    expect((await request('get_downloads', { ownerId: 'conv-b' })).data).toEqual([]);
   });
 
   it('answers a missing tab with the browser error rather than a silent success', async () => {

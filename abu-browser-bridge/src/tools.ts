@@ -419,6 +419,9 @@ async function uploadPayloadFiles(
             + 'Nothing was uploaded.'
           : `"${file.name}" could not be opened for upload (${code ?? 'unknown error'}). `
             + 'Nothing was uploaded.',
+        // The open error itself is the symptom's cause; the sentence above is
+        // for the model, the cause is for whoever reads a stack.
+        { cause: error },
       );
     }
     try {

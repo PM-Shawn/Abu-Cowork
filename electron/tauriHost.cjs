@@ -168,6 +168,21 @@ function isMigrationStartupPending() {
   return migrationStartupPending;
 }
 
+// Real-Electron E2E runs cannot answer native modal dialogs — Playwright
+// drives only web contents — so on a host where the OS permissions ARE
+// granted (hosted CI runners with SIP disabled), a Computer Use approval
+// dialog would block a headless run forever. This explicit env flag makes the
+// three Computer Use approval prompts auto-DECLINE instead. Deny, never
+// approve: the flag can only refuse capability, so a stray variable in a
+// user's environment cannot grant anything. Packaged builds additionally
+// require ABU_PACKAGED_E2E, the same guard as ABU_E2E_APP_DATA_ROOT in
+// main.cjs.
+const E2E_DECLINE_CU_APPROVALS_ENV = 'ABU_E2E_DECLINE_CU_APPROVALS';
+function shouldAutoDeclineCuApprovals(app) {
+  if (process.env[E2E_DECLINE_CU_APPROVALS_ENV] !== '1') return false;
+  return !app.isPackaged || process.env.ABU_PACKAGED_E2E === '1';
+}
+
 function showMigrationRetryDialog(app) {
   const isZh = app.getLocale().toLowerCase().startsWith('zh');
   void dialog
@@ -818,6 +833,7 @@ function registerTauriHost(app, options = {}) {
     getNativeHelperGeneration,
     killNativeHelper,
     requestTaskApproval: async ({ target, mode }) => {
+      if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const modeLabel = mode === 'autonomous'
         ? (isZh ? '完全自主' : 'Full Autonomy')
@@ -849,6 +865,7 @@ function registerTauriHost(app, options = {}) {
       return result.response === 0;
     },
     requestAppApproval: async ({ target, classification, scope, permissionMode }) => {
+      if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const canControl = scope === 'ui-control';
       const title = isZh
@@ -895,6 +912,7 @@ function registerTauriHost(app, options = {}) {
       return result.response === 0;
     },
     requestActionApproval: async ({ target, consequence }) => {
+      if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const options = buildActionApprovalDialogOptions({
         isZh,
@@ -1508,6 +1526,7 @@ function getStubbedCommands() {
 
 module.exports = {
   registerTauriHost,
+  shouldAutoDeclineCuApprovals,
   osInternals,
   baseDir,
   dispatch,

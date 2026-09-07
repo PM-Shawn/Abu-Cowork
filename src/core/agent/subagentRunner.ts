@@ -103,10 +103,10 @@ const logger = createLogger('subagent-transport');
 /** Security boundary for tool-triggered nesting: inherit the parent run's
  * frozen provider/model snapshot and conversation identity as one unit. */
 export function getSubagentRunInheritance(
-  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId'> | null | undefined,
+  loopContext: Pick<LoopContext, 'loopId' | 'conversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'imReplyTarget' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow'> | null | undefined,
   authorizationScopeId?: string,
   workspacePath?: string | null,
-): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId'> {
+): Pick<SubagentLoopOptions, 'parentLoopId' | 'parentConversationId' | 'settingsReader' | 'authorizationScopeId' | 'runPermissionCeiling' | 'workspaceReader' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy' | 'reportBrowserDenial' | 'reportBrowserAllow'> {
   const imReplyTarget = loopContext?.imReplyTarget;
   const runPermissionCeiling = loopContext?.runPermissionCeiling;
   const imContext = imReplyTarget && runPermissionCeiling?.source === 'im'
@@ -126,6 +126,15 @@ export function getSubagentRunInheritance(
     ...(loopContext?.triggerId !== undefined ? { triggerId: loopContext.triggerId } : {}),
     ...(loopContext?.scheduledTaskId !== undefined
       ? { scheduledTaskId: loopContext.scheduledTaskId }
+      : {}),
+    ...(loopContext?.initiatedBy !== undefined ? { initiatedBy: loopContext.initiatedBy } : {}),
+    // The parent run's browser-denial guard crosses the delegation boundary
+    // with everything else it owns — see SubagentLoopOptions for why.
+    ...(loopContext?.reportBrowserDenial !== undefined
+      ? { reportBrowserDenial: loopContext.reportBrowserDenial }
+      : {}),
+    ...(loopContext?.reportBrowserAllow !== undefined
+      ? { reportBrowserAllow: loopContext.reportBrowserAllow }
       : {}),
     ...(imContext ? { imContext } : {}),
     ...(workspacePath !== undefined
@@ -147,6 +156,8 @@ import {
   scopeSubagentLoopProgress,
   scopeSubagentProgressEvent,
 } from './subagentProgressIdentity';
+import { disposeRunBrowserViews } from '../browser/browserViewLifecycle';
+import { releaseRunBrowserTabClaims } from '../browser/bridgeTabClaims';
 import {
   materializeSidecarMediaRefsForShell,
   prepareToolResultForSidecarWire,
@@ -196,6 +207,7 @@ export interface SubagentRunParams {
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  initiatedBy?: import('./runInteractionMode').RunInitiator;
   /** Hand-off key so the member loop (wherever it runs) can take direct instructions. */
   dispatchKey?: string;
   locale: string;
@@ -246,6 +258,18 @@ export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
   'capsPort',
   'workspaceReader',
   'skillCommandApprovalFactory',
+  // Functions, like the callbacks above: the parent run's denial guard is
+  // re-stamped shell-side from the session (buildTrustedSubagentToolContext),
+  // never serialized.
+  'reportBrowserDenial',
+  'reportBrowserAllow',
+  // Deliberately NOT on the wire: run identity is what decides whose browser
+  // tabs a tool call may see and reclaim, so the shell stamps it into the
+  // trusted tool context from its OWN session (`RunSession.runId`) rather than
+  // accepting the sidecar's copy. Sending it would create a second, forgeable
+  // source of the same fact. The in-process engine reads it from these options
+  // directly, which is why the field exists at all.
+  'agentRunId',
 ] as const satisfies readonly (keyof SubagentLoopOptions)[];
 
 export type SubagentLoopOptionsWireExhaustive = AssertNever<
@@ -313,6 +337,15 @@ function isSerializableSubagentResult(v: unknown): v is SerializableSubagentResu
 // only the runId crosses the wire. See module doc's "Reverse channel".
 
 interface RunSession {
+  /**
+   * The app-owned `sar-*` id this session is registered under. Held on the
+   * session so `buildTrustedSubagentToolContext` can stamp it into every tool
+   * context WITHOUT trusting the sidecar's copy — the sidecar sends a `context`
+   * with each `tool.invoke`, and run identity is exactly the kind of field a
+   * compromised or buggy sidecar must not be able to choose (it decides which
+   * run's browser tabs the call may see and reclaim).
+   */
+  runId: string;
   options: SubagentLoopOptions;
   /** Shell-owned outbound identity for IM tools; never accepted from sidecar context. */
   imReplyTarget?: { platform: string; chatId: string };
@@ -342,8 +375,18 @@ function buildTrustedSubagentToolContext(
     runPermissionCeiling: session.options.runPermissionCeiling,
     loopId: session.options.parentLoopId,
     conversationId: session.options.parentConversationId,
+    agentRunId: session.runId,
     imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
     interactionMode: resolveSubagentInteractionMode(session.options),
+    // Inherited from the parent run at delegation time — the sidecar's copy
+    // is not consulted, same as `interactionMode` above.
+    initiatedBy: session.options.initiatedBy,
+    // The parent run's consecutive-browser-denial seam. Function-valued, so it
+    // never crossed the wire: the sidecar's context cannot carry it, and
+    // without stamping it here a delegated browser refusal would land in
+    // nobody's counter and the guard would never trip for a run that delegates.
+    reportBrowserDenial: session.options.reportBrowserDenial,
+    reportBrowserAllow: session.options.reportBrowserAllow,
     abortSignal: session.options.signal,
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
@@ -671,6 +714,7 @@ function buildSubagentRunParams(
     runPermissionCeiling: options.runPermissionCeiling,
     triggerId: options.triggerId,
     scheduledTaskId: options.scheduledTaskId,
+    initiatedBy: options.initiatedBy,
     dispatchKey: options.dispatchKey,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
@@ -744,6 +788,24 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
   }
 }
 
+/**
+ * The in-process engine plus the same per-run resource release the sidecar path
+ * gets at its settlement seal (A2). There is no `RunResourceSettlement` on this
+ * path — nothing crosses a transport, so there is nothing to wait to settle —
+ * but the run still owns browser tabs that only it can see, and the moment it
+ * returns is the moment nothing can reach them again.
+ */
+async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
+  try {
+    return await runSubagentLoop(options);
+  } finally {
+    disposeRunBrowserViews(options.parentConversationId, options.agentRunId);
+    // Same seal, the other browser channel: the extension drives the user's
+    // own Chrome, so this run's claim on a real page has to end here too.
+    releaseRunBrowserTabClaims(options.parentConversationId, options.agentRunId);
+  }
+}
+
 async function runSubagentForSignal(options: SubagentLoopOptions): Promise<SubagentResult> {
   if (options.signal?.aborted) {
     return cancelledSubagentResult();
@@ -765,7 +827,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
 
   if (getSidecarStatus() !== 'running') {
     logger.debug('subagent path selected', { path: 'local', runId, sidecarStatus: getSidecarStatus() });
-    return runSubagentLoop(localOptions);
+    return runLocalSubagentLoop(localOptions);
   }
 
   ensureHandlersRegistered();
@@ -783,7 +845,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       runId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return runSubagentLoop(localOptions);
+    return runLocalSubagentLoop(localOptions);
   }
 
   const sessionOptions: SubagentLoopOptions = {
@@ -791,6 +853,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
   const session: RunSession = {
+    runId,
     options: sessionOptions,
     imReplyTarget: options.imContext?.replyChatId
       ? { platform: options.imContext.platform, chatId: options.imContext.replyChatId }
@@ -862,7 +925,10 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         runId,
         error: err instanceof Error ? err.message : String(err),
       });
-      return runSubagentLoop(scopeSubagentLoopProgress(options));
+      // A fresh scope id on purpose (the sidecar attempt may already have
+      // emitted progress under `runId`); the rerun therefore owns — and
+      // releases — its own browser tabs.
+      return runLocalSubagentLoop(scopeSubagentLoopProgress(options));
     }
     logger.warn('subagent transport failed after tool execution — surfacing error, no rerun', {
       runId,
@@ -886,6 +952,12 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   } finally {
     await session.progressApplyTail;
     session.resourceSettlement.seal();
+    // A2 — the seal is the point after which this run can no longer start
+    // another tool, so it is the point at which its per-run resources are
+    // nobody's any more. Its browser tabs are invisible to every other run, so
+    // nothing else could ever list or close them.
+    disposeRunBrowserViews(options.parentConversationId, runId);
+    releaseRunBrowserTabClaims(options.parentConversationId, runId);
     if (options.authorizationScopeId !== undefined) {
       await session.resourceSettlement.settlement;
     }

@@ -187,3 +187,32 @@ describe('toolPrefetch', () => {
     });
   });
 });
+
+/**
+ * The prefetch list is a hand-copied mirror of what `abu-browser-bridge`
+ * actually registers, and nothing links the two files. A tool that exists,
+ * routes correctly through both channels, and is missing from that list is
+ * simply never injected into a turn — so the model cannot call it, and the
+ * symptom ("the tool doesn't exist") points nowhere near the cause.
+ */
+describe('browser tool prefetch list vs the real tool surface', () => {
+  it('offers every tool the bridge actually registers', async () => {
+    const { registerTools } = await import('../../../abu-browser-bridge/src/tools.js');
+    const registered: string[] = [];
+    const server = { tool: (name: string) => { registered.push(name); } };
+    const transport = {
+      isConnected: () => true,
+      send: async () => ({ success: true }),
+      getConnectionError: () => '',
+    };
+    registerTools(
+      server as unknown as Parameters<typeof registerTools>[0],
+      transport as unknown as Parameters<typeof registerTools>[1],
+    );
+
+    const offered = prefetchTools(makeCtx({ userInput: '打开网页帮我填个表单' }));
+    for (const name of registered) {
+      expect(offered).toContain(`abu-browser__${name}`);
+    }
+  });
+});

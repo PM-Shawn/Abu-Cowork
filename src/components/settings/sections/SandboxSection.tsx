@@ -3,13 +3,13 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
 import { getAuthorizedWritablePaths, revokeWorkspace } from '@/core/tools/pathSafety';
 import { useI18n } from '@/i18n';
-import { isMacOS } from '@/utils/platform';
+import { isWindows } from '@/utils/platform';
 import { Shield, ShieldAlert, Globe, Plus, X, Info, Rocket, Bot, ShieldCheck, FolderOpen, Trash2 } from 'lucide-react';
 import { Toggle } from '@/components/ui/toggle';
 import { cn } from '@/lib/utils';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
-import { syncNetworkWhitelist } from '@/core/sandbox/config';
+import { isOsSandboxCapable, syncNetworkWhitelist } from '@/core/sandbox/config';
 
 const PERMISSION_MODES: { value: PermissionMode; icon: typeof Shield; color: string }[] = [
   { value: 'standard', icon: ShieldCheck, color: 'text-[var(--abu-info)]' },
@@ -27,7 +27,32 @@ export default function SandboxSection() {
   const allowPrivateNetworks = useSettingsStore(s => s.allowPrivateNetworks);
   const setAllowPrivateNetworks = useSettingsStore(s => s.setAllowPrivateNetworks);
   const { t } = useI18n();
-  const macOS = isMacOS();
+  // Windows has a real OS-level sandbox too (restricted token + PowerShell
+  // ConstrainedLanguage, see electron/commandHost.cjs) — the settings UI must
+  // expose the same toggle there, with Windows-specific copy since the
+  // mechanism differs from macOS Seatbelt (no file-path isolation).
+  const windows = isWindows();
+  const osSandboxAvailable = isOsSandboxCapable();
+  // Per-platform copy resolved once — the Windows sandbox restricts what a
+  // command may DO (privileges), not which paths it may touch, so nearly
+  // every string differs from the macOS (Seatbelt path-isolation) wording.
+  const copy = windows
+    ? {
+        sectionDescription: t.settings.sandboxDescriptionWindows,
+        protectionDescription: t.settings.sandboxProtectionDescriptionWindows,
+        tooltipPrimary: t.settings.sandboxWindowsMechanism,
+        tooltipSecondary: t.settings.sandboxWindowsScope,
+        networkIsolationDescription: t.settings.networkIsolationDescriptionWindows,
+        disableWarning: t.settings.sandboxDisableWarningWindows,
+      }
+    : {
+        sectionDescription: t.settings.sandboxDescription,
+        protectionDescription: t.settings.sandboxProtectionDescription,
+        tooltipPrimary: t.settings.sandboxProtectedPaths,
+        tooltipSecondary: t.settings.sandboxWritablePaths,
+        networkIsolationDescription: t.settings.networkIsolationDescription,
+        disableWarning: t.settings.sandboxDisableWarning,
+      };
   const [showWarning, setShowWarning] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [newDomain, setNewDomain] = useState('');
@@ -67,9 +92,9 @@ export default function SandboxSection() {
 
   return (
     <div className="space-y-4">
-      <SettingsSectionHeader title={t.settings.sandbox} description={t.settings.sandboxDescription} />
+      <SettingsSectionHeader title={t.settings.sandbox} description={copy.sectionDescription} />
 
-      {macOS ? (
+      {osSandboxAvailable ? (
         <>
           {/* Sandbox Toggle */}
           <button
@@ -97,18 +122,18 @@ export default function SandboxSection() {
                     {showDetails && (
                       <div className="absolute left-1/2 -translate-x-1/2 top-6 z-50 w-72 p-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-lg text-left pointer-events-none">
                         <p className="text-caption text-[var(--abu-text-tertiary)] leading-relaxed">
-                          {t.settings.sandboxProtectedPaths}
+                          {copy.tooltipPrimary}
                         </p>
                         <div className="border-t border-[var(--abu-border)] my-1.5" />
                         <p className="text-caption text-[var(--abu-text-muted)] leading-relaxed">
-                          {t.settings.sandboxWritablePaths}
+                          {copy.tooltipSecondary}
                         </p>
                       </div>
                     )}
                   </div>
                 </div>
                 <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                  {t.settings.sandboxProtectionDescription}
+                  {copy.protectionDescription}
                 </p>
               </div>
             </div>
@@ -138,7 +163,7 @@ export default function SandboxSection() {
                       {t.settings.networkIsolation}
                     </p>
                     <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                      {t.settings.networkIsolationDescription}
+                      {copy.networkIsolationDescription}
                     </p>
                   </div>
                 </div>
@@ -220,11 +245,16 @@ export default function SandboxSection() {
             </div>
           )}
 
+          {/* On Windows the app-layer guards ARE the file-path defense (the OS
+              sandbox only reduces privileges), so keep the notice Windows
+              users always had — macOS conveys paths via the Seatbelt copy. */}
+          {windows && <AppLayerProtectionCard />}
+
           {/* Disable confirmation dialog */}
           <ConfirmDialog
             open={showWarning}
             title={t.settings.sandbox}
-            message={t.settings.sandboxDisableWarning}
+            message={copy.disableWarning}
             confirmText={t.common.confirm}
             cancelText={t.common.cancel}
             variant="danger"
@@ -243,14 +273,7 @@ export default function SandboxSection() {
               {t.settings.sandboxMacOSOnly}
             </p>
           </div>
-          <div className="p-4 rounded-xl border border-[var(--abu-success)] bg-[var(--abu-success-bg)]">
-            <div className="flex items-center gap-2 mb-2">
-              <Shield className="h-4 w-4 text-[var(--abu-success)] shrink-0" />
-              <p className="text-minor text-[var(--abu-success)] font-medium">
-                {t.settings.sandboxAppLayerProtection}
-              </p>
-            </div>
-          </div>
+          <AppLayerProtectionCard />
         </div>
       )}
       {/* Permission Mode */}
@@ -281,6 +304,20 @@ export default function SandboxSection() {
           <AuthorizedPathsList />
         </div>
       )}
+    </div>
+  );
+}
+
+function AppLayerProtectionCard() {
+  const { t } = useI18n();
+  return (
+    <div className="p-4 rounded-xl border border-[var(--abu-success)] bg-[var(--abu-success-bg)]">
+      <div className="flex items-center gap-2">
+        <Shield className="h-4 w-4 text-[var(--abu-success)] shrink-0" />
+        <p className="text-minor text-[var(--abu-success)] font-medium">
+          {t.settings.sandboxAppLayerProtection}
+        </p>
+      </div>
     </div>
   );
 }

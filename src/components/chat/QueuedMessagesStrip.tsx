@@ -41,7 +41,7 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
     try {
       if (next) {
         announceChatTurnScrollIntent({ conversationId, source: 'queue-resume' });
-        const result = await runAgentLoopDispatched(conversationId, next.text);
+        const result = await runAgentLoopDispatched(conversationId, next.text, { initiatedBy: 'user' });
         if (result.reason === 'error' && !result.messageTaken) {
           restoreDequeuedUserInput(conversationId, next);
         }

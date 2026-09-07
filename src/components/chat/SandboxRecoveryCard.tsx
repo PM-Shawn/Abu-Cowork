@@ -119,6 +119,7 @@ export default function SandboxRecoveryCard({
             TOOL_NAMES.ASK_USER_QUESTION,
           ],
           requireNewRun: true,
+          initiatedBy: 'user',
         },
       );
       if (result.reason === 'completed') {

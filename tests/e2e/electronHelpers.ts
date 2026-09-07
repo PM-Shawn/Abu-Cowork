@@ -64,6 +64,12 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
 /**
  * Launch electron/main.cjs with fully isolated Chromium userData and appData.
  *
+ * `--lang=zh-CN` pins the renderer's `navigator.language` (and therefore the
+ * i18n system's resolved locale — see src/i18n/index.ts detectSystemLocale)
+ * to zh-CN regardless of the host OS language. The suite asserts the zh-CN
+ * UI; without this, an English-locale host (hosted CI runners, contributors'
+ * machines) renders the en-US UI and every Chinese-text locator times out.
+ *
  * main.cjs calls `app.requestSingleInstanceLock()`; if a second instance's
  * lock loses the race against an already-running instance sharing the same
  * userData dir, it calls `app.quit()` and NO window is ever created. Chromium/
@@ -81,12 +87,22 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
   fs.mkdirSync(dataRoot.userDataDir, { recursive: true });
   fs.mkdirSync(dataRoot.appDataDir, { recursive: true });
   const app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`],
+    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`, '--lang=zh-CN'],
     cwd: REPO_ROOT,
     env: {
       ...process.env,
       [E2E_APP_DATA_ROOT_ENV]: dataRoot.appDataDir,
       [E2E_SIDECAR_CRASH_TOKEN_ENV]: dataRoot.sidecarCrashToken,
+      // Native modal dialogs cannot be driven by Playwright. On hosts where
+      // the OS grants Computer Use permissions (hosted CI runners), the CU
+      // approval prompts would block a headless run forever — this makes them
+      // auto-DECLINE (fail-closed; see tauriHost.cjs).
+      ABU_E2E_DECLINE_CU_APPROVALS: '1',
+      // Reveal windows with showInactive() (and hide the macOS Dock icon) so a
+      // full suite run — ~40 launches — does not steal focus on a developer
+      // machine. Windows are still real and rendered: drag-region and
+      // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
+      ABU_E2E_QUIET_WINDOW: '1',
     },
     timeout: 60_000,
   });
@@ -196,7 +212,12 @@ export async function configureLocalMockProvider(
     if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
     if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
 
-    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
+    // Write `persisted` back whole, version untouched. Stamping a literal here
+    // (this line carried a stale `version: 42` through four store bumps) makes
+    // zustand replay the migration chain over the state we just injected on the
+    // reload below — so a future migrate branch that rewrites one of these
+    // fields would silently clobber every spec's provider setup.
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
   }, {
     apiKey,
     baseUrl,

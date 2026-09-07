@@ -42,6 +42,7 @@ import {
   SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS,
   SUBAGENT_HOST_RUN_WIRE_FIELDS,
 } from './subagentHost';
+import { applySettingsSnapshot, __resetSettingsMirror } from './settingsMirror';
 
 // Unique default runId per call — `activeRuns` is real module-level state
 // that persists across tests within this file (no reset hook exists for
@@ -137,6 +138,7 @@ describe('subagentHost', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'initiatedBy',
         'dispatchKey',
         'locale',
         'uiStrings',
@@ -362,6 +364,54 @@ describe('subagentHost', () => {
           content: [{ type: 'image', attachment: { ...delegatedUserTurn.content[1].attachment, id: '/Users/tester/secret.png' } }],
         },
       }))).rejects.toMatchObject({ code: -32602 });
+    });
+
+    /**
+     * config-batch4 — the subagent's settings snapshot used to be frozen for
+     * the whole run (`getSnapshot: () => params.settingsSnapshot`). A user who
+     * turned the unattended-browser master switch off mid-run was still read as
+     * having it on by every subagent already in flight, which is exactly the
+     * case S10's 「关闭总闸阻止下一浏览器动作」 promises to cover.
+     */
+    describe('settings are LIVE, not frozen at dispatch', () => {
+      it('reads a setting the user changed after the run started', async () => {
+        __resetSettingsMirror();
+        let capturedReader: { getSnapshot: () => Record<string, unknown> } | undefined;
+        runSubagentLoopMock.mockImplementation(async (options: { settingsReader: { getSnapshot: () => Record<string, unknown> } }) => {
+          capturedReader = options.settingsReader;
+          return resultShape('ok');
+        });
+
+        await handleSubagentRun(baseParams({
+          settingsSnapshot: { agentMaxTurns: 200, allowUnattendedBrowser: true },
+        }));
+
+        expect(capturedReader?.getSnapshot().allowUnattendedBrowser).toBe(true);
+
+        // The user flips the master switch off; the shell pushes the new
+        // snapshot into the shared mirror while this subagent is still running.
+        applySettingsSnapshot(
+          { agentMaxTurns: 200, allowUnattendedBrowser: false } as never,
+          0,
+        );
+
+        expect(capturedReader?.getSnapshot().allowUnattendedBrowser).toBe(false);
+      });
+
+      it('still falls back to its own dispatch snapshot when no push has landed yet', async () => {
+        __resetSettingsMirror();
+        let capturedReader: { getSnapshot: () => Record<string, unknown> } | undefined;
+        runSubagentLoopMock.mockImplementation(async (options: { settingsReader: { getSnapshot: () => Record<string, unknown> } }) => {
+          capturedReader = options.settingsReader;
+          return resultShape('ok');
+        });
+
+        await handleSubagentRun(baseParams({
+          settingsSnapshot: { agentMaxTurns: 42, allowUnattendedBrowser: true },
+        }));
+
+        expect(capturedReader?.getSnapshot().agentMaxTurns).toBe(42);
+      });
     });
 
     it('restores only the trusted text-only delegated-media fallback', async () => {

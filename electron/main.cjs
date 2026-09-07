@@ -45,6 +45,7 @@ const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs')
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
+const { resolveWindowShowPolicy, revealWindow } = require('./windowShowPolicy.cjs');
 const {
   WINDOW_DRAG_REGION_CSS,
   attachEditContextMenu,
@@ -86,6 +87,14 @@ const PACKAGED_E2E_ENV = 'ABU_PACKAGED_E2E';
 const E2E_AUTO_CONFIRM_TRANSITION_ENV = 'ABU_E2E_AUTO_CONFIRM_TRANSITION';
 const allowE2EAppDataRedirect =
   !app.isPackaged || process.env[PACKAGED_E2E_ENV] === '1';
+// E2E launches may also ask for windows to be revealed without activating the
+// app (ABU_E2E_QUIET_WINDOW=1), so a full suite run does not steal focus on a
+// developer machine. Same gate as the app-data redirect above.
+const windowShowPolicy = resolveWindowShowPolicy({
+  env: process.env,
+  allowE2E: allowE2EAppDataRedirect,
+  platform: process.platform,
+});
 let e2eTauriStorageRoot = null;
 if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)) {
   const appDataRoot = process.env[E2E_APP_DATA_ROOT_ENV];
@@ -101,6 +110,23 @@ if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)
   // Keep its Downloads write inside the launch-specific temp root so the
   // test never leaves artifacts in a developer's real ~/Downloads folder.
   app.setPath('downloads', path.join(appDataRoot, 'Downloads'));
+  // ~/.abu is Abu's own state root (memdir memories, skills, agents, plugins,
+  // canvas history, task log, plus the managed ~/Abu default workspace), and
+  // every renderer path under it resolves through tauriHost's
+  // BaseDirectory.Home → app.getPath('home'). Left unredirected, an E2E run
+  // reads the developer's REAL memory index into its LLM requests and can
+  // write extracted junk memories back into the real store. Redirecting
+  // 'home' here — inside the same gate — moves ALL of those composition
+  // sites at once, so this stays the single decision point instead of a
+  // per-module state-root override. Documents/Desktop/Downloads resolve from
+  // their own app.getPath keys and are deliberately NOT moved by this:
+  // tests/e2e/infra-hygiene.spec.ts exercises permission scoping against
+  // fixtures in the real ~/Documents (accepted team design). The sidecar's
+  // twin resolution follows via the ABU_HOME_DIR bootstrap env var that
+  // sidecarManager passes at spawn time (see sidecar/src/bootstrap.ts).
+  const e2eHomeDir = path.join(appDataRoot, 'Home');
+  fs.mkdirSync(e2eHomeDir, { recursive: true });
+  app.setPath('home', e2eHomeDir);
   e2eTauriStorageRoot = path.join(appDataRoot, 'tauri-webview-user-data');
 }
 
@@ -231,7 +257,7 @@ function createWindow(transitionWindow = null) {
           legacyInstall,
         );
       }
-      win.show();
+      revealWindow(win, windowShowPolicy);
       if (transitionWindow) {
         showTransitionSuccess(app, win);
       }
@@ -389,7 +415,7 @@ async function createTransitionWindow(appInstance, inspection) {
       size: formatBytes(inspection.bytes),
     },
   });
-  win.show();
+  revealWindow(win, windowShowPolicy);
   return win;
 }
 
@@ -424,6 +450,11 @@ if (!app.requestSingleInstanceLock()) {
     // Fallback for a platform where the pre-ready resolution above failed;
     // idempotent, so it is a no-op on the normal path.
     configureRuntimeObservability(app);
+    // Quiet E2E launches: drop the Dock icon before any window exists so the
+    // app never becomes frontmost (see windowShowPolicy.cjs).
+    if (windowShowPolicy.hideDock && app.dock) {
+      app.dock.hide();
+    }
     let transitionInspection = null;
     let transitionWindow = null;
     try {

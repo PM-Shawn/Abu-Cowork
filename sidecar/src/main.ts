@@ -68,8 +68,12 @@
  *     applies `report_plan`'s planned-steps write (which bypasses
  *     ExecutionPort shell-side) to that run's execution mirror. Unknown
  *     runId silent drop.
- *   - `state.settings` → P1-3B-3A: `{settings}` — sidecar-GLOBAL settings
- *     mirror push (see settingsMirror.ts), NOT per-run/routed by runId.
+ *   - `state.settings` → P1-3B-3A: `{settings, revision}` — sidecar-GLOBAL
+ *     settings mirror push (see settingsMirror.ts), NOT per-run/routed by
+ *     runId. `revision` is the shell's monotonic push counter and is
+ *     REQUIRED: a push that is not strictly newer than the last applied one
+ *     is dropped, so an out-of-order notification cannot restore a
+ *     permission the user just removed.
  *   - `state.planMode` → P1-3B-3A: `{conversationId, mode}` — mirror-apply
  *     via planMode.ts's applyPlanModeState (does not re-notify the shell).
  * Notifications sidecar→shell:

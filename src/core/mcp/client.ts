@@ -2,7 +2,7 @@
 // Stdio transport uses Tauri Rust backend for child process management.
 // HTTP transports (StreamableHTTP, SSE) use the MCP SDK directly.
 
-import type { ToolDefinition, ToolParameter, ToolResult, ToolResultContent } from '../../types';
+import type { ToolDefinition, ToolExecutionContext, ToolParameter, ToolResult, ToolResultContent } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
@@ -13,6 +13,128 @@ import { isEnterpriseModuleActive } from '@/core/enterprise/entitlement';
 
 const mcpLogger = createLogger('mcp');
 const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
+
+/**
+ * MCP request `_meta` key carrying the owning conversation id. Mirrors
+ * `ABU_CONVERSATION_META_KEY` exported from `abu-browser-bridge/src/tools.ts`
+ * (duplicated here rather than imported — abu-browser-bridge is published to
+ * npm separately and isn't a workspace dependency of this app).
+ */
+const ABU_CONVERSATION_META_KEY = 'abu/conversationId';
+
+/**
+ * MCP request `_meta` key that turns off `get_tabs`' "provision a tab when the
+ * caller owns none" behavior. Rides `_meta` rather than the tool's arguments
+ * on purpose: it is a host-side probe concern, and putting it in the schema
+ * would expose it to the model. Mirrors `ABU_CREATE_IF_EMPTY_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts` (same duplication rationale as above).
+ */
+const ABU_CREATE_IF_EMPTY_META_KEY = 'abu/createIfEmpty';
+
+/**
+ * MCP request `_meta` key carrying the SUBAGENT RUN that issued the call. The
+ * browser host owns tabs by the pair `{conversationId, runKey}` (N6), so the
+ * conversation id above is only half the owner: without this, a conversation's
+ * own loop and each of its delegated subagent runs share one tab pool and one
+ * "current tab" and steal each other's pages. Absent ⇒ the conversation's own
+ * loop (the host reads that as `main`). Mirrors `ABU_RUN_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts` (same duplication rationale as above).
+ */
+const ABU_RUN_META_KEY = 'abu/runKey';
+
+/**
+ * MCP request `_meta` key carrying the ORIGIN the approval gate decided on for
+ * this exact call (U5). The host compares it against the tab's actual URL
+ * immediately before executing a state-changing action, closing the window
+ * between "approved for shop.example.com" and "the page redirected somewhere
+ * else". Rides `_meta`, never the tool's input schema — the model must be able
+ * to neither read nor forge it. Mirrors `ABU_EXPECTED_ORIGIN_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts` (same duplication rationale as above).
+ */
+const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
+
+/**
+ * MCP request `_meta` key marking a call that came from an UNATTENDED run.
+ * Present only when true. It is what makes the origin pin fail-closed: without
+ * it the host cannot tell "attended, no pin needed" from "unattended and the
+ * pin went missing", and would have to choose one of the two wrong answers.
+ * Mirrors `ABU_UNATTENDED_META_KEY` in `abu-browser-bridge/src/tools.ts`.
+ */
+const ABU_UNATTENDED_META_KEY = 'abu/unattended';
+
+/**
+ * MCP request `_meta` key asking the browser server's `get_tabs` to include
+ * ONE tab's frame tree. The gate's only probe is `get_tabs`, and a
+ * frame-targeted action is authorized against the FRAME's origin — so the gate
+ * has to be able to ask for the tree of the tab it is judging. Not in the tool
+ * schema: a tree costs a browser round trip, and the model must not be able to
+ * spend them at will. Mirrors `ABU_FRAMES_FOR_TAB_META_KEY` in
+ * `abu-browser-bridge/src/tools.ts`.
+ */
+const ABU_FRAMES_FOR_TAB_META_KEY = 'abu/framesForTab';
+
+/**
+ * MCP request `_meta` key carrying, for a `batch`, the origin the gate
+ * approved for each embedded region its steps target. The page-level pin says
+ * nothing about a third-party region inside it — that region can navigate on
+ * its own without the tab's address changing. An authorization fact, so it
+ * rides `_meta` exactly as `expectedOrigin` does. Mirrors
+ * `ABU_EXPECTED_FRAME_ORIGINS_META_KEY` in `abu-browser-bridge/src/tools.ts`.
+ */
+const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
+
+/**
+ * The Chrome-extension bridge. Named here because it is the one MCP server
+ * whose tab bookkeeping outlives a single tool call, so the app has to tell it
+ * when a run is over. (`abu-browser` — the built-in Electron host — is told the
+ * same thing over IPC instead; see `browserViewLifecycle.ts`.)
+ */
+const CHROME_BRIDGE_SERVER_NAME = 'abu-browser-bridge';
+
+/**
+ * MCP notification method the bridge answers by dropping one run's tab claims.
+ * Mirrors `ABU_RUN_SETTLED_NOTIFICATION` in `abu-browser-shared/types.ts`
+ * (duplicated, same rationale as the `_meta` keys above).
+ *
+ * A notification, not a tool call: tools are listed to the model, and a
+ * model-callable "release" would invite one task to free a tab another task is
+ * driving.
+ */
+const ABU_RUN_SETTLED_NOTIFICATION = 'notifications/abu/runSettled';
+
+/**
+ * Run key for a conversation's own loop — the other half of the browser tab
+ * owner pair when there is no subagent run. Sent EXPLICITLY at a settlement:
+ * the bridge's release protocol reads an absent run key as "every run of the
+ * conversation", which is conversation-delete scope and would strip sibling
+ * delegations of tabs they are still driving.
+ */
+const MAIN_RUN_KEY = 'main';
+
+/**
+ * The `{conversationId, runKey}` pair as one map key. NUL-separated, like the
+ * host's own composite owner key: neither id can contain it, so two different
+ * pairs can never collide into one.
+ */
+function browserRunOwnerKey(conversationId: string, agentRunId?: string): string {
+  return `${conversationId}\u0000${agentRunId || MAIN_RUN_KEY}`;
+}
+
+/**
+ * Map a tool's runtime ToolExecutionContext to callTool() opts. Factored out
+ * of the execute() closure built during tool discovery so the mapping is
+ * directly unit-testable — the discovery flow itself depends on the MCP SDK,
+ * which the test environment stubs out entirely.
+ */
+export function toCallToolOpts(
+  context?: ToolExecutionContext
+): { conversationId?: string; agentRunId?: string; signal?: AbortSignal } {
+  return {
+    conversationId: context?.conversationId,
+    agentRunId: context?.agentRunId,
+    signal: context?.abortSignal,
+  };
+}
 
 function isEnterpriseServerBlocked(name: string): boolean {
   return name.startsWith(ENTERPRISE_SERVER_PREFIX) && !isEnterpriseModuleActive('mcp');
@@ -304,6 +426,16 @@ export class MCPClientManager {
   private reconnectAttempts: Map<string, number> = new Map();
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private serverLogs: Map<string, MCPLogEntry[]> = new Map();
+  /**
+   * `{conversationId, runKey}` pairs that have called a Chrome-bridge tool and
+   * have not been told they are over yet.
+   *
+   * Only these get a settlement notification. Every run would otherwise wake
+   * the bridge process at its seal, including the overwhelming majority that
+   * never opened a browser — and the release itself is a no-op for them, since
+   * a run that never drove a tab holds no claim.
+   */
+  private browserBridgeRunOwners: Set<string> = new Set();
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -397,8 +529,8 @@ export class MCPClientManager {
             properties,
             required: inputSchema.required,
           },
-          execute: async (input) => {
-            return this.callTool(config.name, tool.name, input);
+          execute: async (input, context) => {
+            return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
         };
 
@@ -521,6 +653,7 @@ export class MCPClientManager {
     }
 
     this.servers.delete(name);
+    this.forgetBrowserBridgeRunOwners(name);
     this.notifyListeners();
 
     // No auto-reconnect — user can manually reconnect from the Toolbox
@@ -641,7 +774,19 @@ export class MCPClientManager {
       console.error(`[MCP] Error disconnecting from ${name}:`, err);
     }
     this.servers.delete(name);
+    this.forgetBrowserBridgeRunOwners(name);
     this.notifyListeners();
+  }
+
+  /**
+   * The bridge process is gone, so every claim it was holding is gone with it
+   * — the extension drops the lot when its socket closes. Keeping the owners
+   * would only send a release to whichever bridge connects next, about runs it
+   * never heard of.
+   */
+  private forgetBrowserBridgeRunOwners(name: string): void {
+    if (name !== CHROME_BRIDGE_SERVER_NAME) return;
+    this.browserBridgeRunOwners.clear();
   }
 
   async disconnectAll(): Promise<void> {
@@ -704,8 +849,8 @@ export class MCPClientManager {
             properties,
             required: inputSchema.required,
           },
-          execute: async (input) => {
-            return this.callTool(config.name, tool.name, input);
+          execute: async (input, context) => {
+            return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
         };
 
@@ -734,7 +879,42 @@ export class MCPClientManager {
   async callTool(
     serverName: string,
     toolName: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    opts?: {
+      conversationId?: string;
+      /**
+       * The `sar-*` subagent run that issued the call, or omitted for the
+       * conversation's own loop. Second half of the browser host's tab-owner
+       * pair — see `ABU_RUN_META_KEY`.
+       */
+      agentRunId?: string;
+      signal?: AbortSignal;
+      /**
+       * Only meaningful for the browser server's `get_tabs`: pass `false` for a
+       * read-only probe that must not provision an automation view as a side
+       * effect (the permission gate's origin lookup). Omitted ⇒ host default
+       * (create), so every existing caller is unchanged.
+       */
+      createBrowserTabIfEmpty?: boolean;
+      /**
+       * Browser servers only: the origin the approval gate decided on for this
+       * call, and whether the run is unattended. Together they are the
+       * execution-time origin pin — see `ABU_EXPECTED_ORIGIN_META_KEY`.
+       */
+      expectedOrigin?: string;
+      unattended?: boolean;
+      /**
+       * Only meaningful for the browser server's `get_tabs`: include this
+       * tab's frame tree in the listing, so the gate can resolve a
+       * frame-targeted action's origin without a second probe.
+       */
+      framesForTabId?: number;
+      /**
+       * Browser servers' `batch` only: the origin the gate approved for each
+       * embedded region the batch's steps target, keyed by frame handle.
+       */
+      expectedFrameOrigins?: Record<string, string>;
+    }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
       throw new Error('Enterprise MCP is not authorized by the current live session');
@@ -752,7 +932,15 @@ export class MCPClientManager {
     let timerId: ReturnType<typeof setTimeout>;
     try {
       const client = server.client as {
-        callTool: (params: { name: string; arguments: Record<string, unknown> }) => Promise<{
+        callTool: (
+          params: {
+            name: string;
+            arguments: Record<string, unknown>;
+            _meta?: Record<string, unknown>;
+          },
+          resultSchema?: undefined,
+          options?: { signal?: AbortSignal; timeout?: number }
+        ) => Promise<{
           content?: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
         }>;
       };
@@ -764,8 +952,66 @@ export class MCPClientManager {
       const timeout = new Promise<never>((_, reject) => {
         timerId = setTimeout(() => reject(new Error(`MCP tool call timed out after ${serverTimeout / 1000}s: ${toolName}`)), serverTimeout);
       });
+      const params: { name: string; arguments: Record<string, unknown>; _meta?: Record<string, unknown> } = {
+        name: toolName,
+        arguments: coercedArgs,
+      };
+      const meta: Record<string, unknown> = {};
+      if (opts?.conversationId) {
+        meta[ABU_CONVERSATION_META_KEY] = opts.conversationId;
+      }
+      // Only when there IS one: a main-loop call keeps its exact pre-N6 `_meta`
+      // shape, and the host owns the "absent ⇒ main" default.
+      if (opts?.agentRunId) {
+        meta[ABU_RUN_META_KEY] = opts.agentRunId;
+      }
+      if (opts?.createBrowserTabIfEmpty === false) {
+        meta[ABU_CREATE_IF_EMPTY_META_KEY] = false;
+      }
+      if (opts?.expectedOrigin) {
+        meta[ABU_EXPECTED_ORIGIN_META_KEY] = opts.expectedOrigin;
+      }
+      // Only when true: an attended call keeps its exact pre-U5 `_meta` shape,
+      // and the host reads "absent ⇒ attended ⇒ no pin enforcement".
+      if (opts?.unattended === true) {
+        meta[ABU_UNATTENDED_META_KEY] = true;
+      }
+      if (typeof opts?.framesForTabId === 'number' && Number.isFinite(opts.framesForTabId)) {
+        meta[ABU_FRAMES_FOR_TAB_META_KEY] = opts.framesForTabId;
+      }
+      // `!== undefined`, NOT "has keys" (round-3 R3-B). An EMPTY map is a
+      // statement the gate makes on purpose — "I judged no region" — and the
+      // run reads a region with no pin as `origin-unverifiable` and stops. The
+      // length test silently turned that statement back into an absence, and
+      // absence makes `runBatch` fall back to the origins it observed for
+      // itself, i.e. to policing itself against its own observations. Only a
+      // caller that passes nothing keeps the pre-existing `_meta` shape.
+      if (opts?.expectedFrameOrigins !== undefined) {
+        meta[ABU_EXPECTED_FRAME_ORIGINS_META_KEY] = opts.expectedFrameOrigins;
+      }
+      if (Object.keys(meta).length > 0) {
+        params._meta = meta;
+      }
+      if (serverName === CHROME_BRIDGE_SERVER_NAME && opts?.conversationId) {
+        // Recorded BEFORE the call, not after it succeeds: the extension
+        // claims its target tab while resolving the request, so a call that
+        // then times out or is cancelled has still left a claim behind.
+        this.browserBridgeRunOwners.add(
+          browserRunOwnerKey(opts.conversationId, opts.agentRunId)
+        );
+      }
+      // Always pass `timeout` (not only when a signal is given): the SDK's
+      // own request/response cycle has an internal default request timeout
+      // (60s) that fires independently of the manual `Promise.race` above.
+      // For browser servers, serverTimeout is 120s — without this, the SDK's
+      // 60s default would reject `wait_for`-style long calls before our own
+      // race ever gets a chance to.
       const result = await Promise.race([
-        client.callTool({ name: toolName, arguments: coercedArgs }),
+        client.callTool(
+          params,
+          undefined,
+          opts?.signal ? { signal: opts.signal, timeout: serverTimeout } : { timeout: serverTimeout }
+        ),
         timeout,
       ]);
       clearTimeout(timerId!);
@@ -804,9 +1050,80 @@ export class MCPClientManager {
       return JSON.stringify(result);
     } catch (err) {
       clearTimeout(timerId!);
+      // The conversation run was stopped: the SDK already cancelled the
+      // in-flight request (see toCallToolOpts/callTool's `signal` param) and
+      // rejected promptly. Only browser automation servers get the friendlier
+      // cancellation message shown to the model/user — other MCP servers keep
+      // whatever error the SDK surfaced for its own abort handling.
+      if (
+        opts?.signal?.aborted &&
+        (serverName === 'abu-browser' || serverName === 'abu-browser-bridge')
+      ) {
+        throw new Error('Browser action cancelled because the run was stopped.', { cause: err });
+      }
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[MCP] Tool call failed: ${serverName}:${toolName}`, err);
       throw new Error(`Tool call failed: ${errorMsg}`, { cause: err });
+    }
+  }
+
+  /**
+   * Tell the Chrome bridge that one agent run is over, so it releases the
+   * browser tabs that run claimed.
+   *
+   * Called at a run's settlement seal — the point after which the run can no
+   * longer start another tool — for BOTH ways a run ends: it finished, or the
+   * user stopped it. Deliberately not derived from the per-request abort the
+   * bridge already sees: the MCP SDK aborts a tool handler for its own request
+   * timeouts too, so acting on that would hand a still-running task's page to
+   * another conversation (`abu-browser-bridge/src/wsServer.ts` has the full
+   * note). This is the app saying it outright, once, at the one moment it is
+   * certain.
+   *
+   * `agentRunId` omitted ⇒ the conversation's own loop, sent as the explicit
+   * run key `main`. The notification never carries "every run of this
+   * conversation": that is conversation-delete scope, and a settling
+   * delegation must not strip its siblings — or the main loop — of tabs they
+   * are still driving.
+   *
+   * Consequence worth stating: unlike the built-in host, whose `main` pool
+   * survives between turns, a conversation's Chrome tab claim ends with the
+   * run. The next turn re-claims on its first explicit `tabId` (and `get_tabs`
+   * still lists the page, since the extension's listing is never filtered) —
+   * one extra call, in exchange for not holding one of the USER's real tabs
+   * hostage while nothing is running.
+   *
+   * Fire-and-forget and best-effort, like the built-in host's own dispose
+   * calls: a failed release costs one stale claim, which the tab closing or
+   * the socket dropping clears anyway, and a run must never fail or be held
+   * open by its own bookkeeping.
+   */
+  notifyBrowserBridgeRunSettled(conversationId?: string, agentRunId?: string): void {
+    if (!conversationId) return;
+    const ownerKey = browserRunOwnerKey(conversationId, agentRunId);
+    if (!this.browserBridgeRunOwners.delete(ownerKey)) return;
+
+    const server = this.servers.get(CHROME_BRIDGE_SERVER_NAME);
+    if (!server) return;
+    const client = server.client as {
+      notification?: (notification: { method: string; params?: unknown }) => Promise<void>;
+    };
+    if (typeof client.notification !== 'function') return;
+    try {
+      void Promise.resolve(
+        client.notification({
+          method: ABU_RUN_SETTLED_NOTIFICATION,
+          params: { ownerId: conversationId, runId: agentRunId || MAIN_RUN_KEY },
+        })
+      ).catch((err) => {
+        mcpLogger.debug('browser bridge run-settled notification failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } catch (err) {
+      mcpLogger.debug('browser bridge run-settled notification threw', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

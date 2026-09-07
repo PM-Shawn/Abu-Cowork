@@ -7,6 +7,10 @@
  * (P1-3a-pre's port #7 + the new per-run-injectable-options extension —
  * see subagentLoop.ts's `SubagentLoopOptions.settingsReader`/`toolInvoker`).
  *
+ * The `SettingsReader` is the ONE port that is deliberately NOT per-run: it is
+ * the sidecar's shared `settingsMirror`, so a setting the user changes mid-run
+ * reaches subagents already in flight. See `handleSubagentRun`'s comment.
+ *
  * Per-run isolation: each `subagent.run` gets its OWN `AbortController`,
  * `ToolInvoker` (closes over its OWN `runId` for `tool.invoke` routing),
  * and `AsyncLocalStorage` context (`subagentRunContext.ts` — carries the
@@ -43,6 +47,7 @@ import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
 import { findActiveRunDeltaForConversation } from './agentLoopHost';
+import { getSettingsMirrorReader, seedSettingsMirrorIfEmpty } from './settingsMirror';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
 import { makeSubagentProgressToolCallId } from '@/core/agent/subagentProgressIdentity';
@@ -54,9 +59,20 @@ interface SerializableToolDefinition {
   inputSchema: ToolDefinition['inputSchema'];
 }
 
+/**
+ * Strip every LOCAL-ONLY field before a tool context crosses the wire. The two
+ * browser-denial reporters are named for the same reason `agentLoopHost.ts`'s
+ * copy names them: they are a shell-owned authorization seam, and relying on
+ * `JSON.stringify` to drop functions is an incident, not a boundary (R2).
+ */
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
-  const { abortSignal: _abortSignal, ...wireContext } = context;
+  const {
+    abortSignal: _abortSignal,
+    reportBrowserDenial: _reportBrowserDenial,
+    reportBrowserAllow: _reportBrowserAllow,
+    ...wireContext
+  } = context;
   return wireContext;
 }
 
@@ -82,6 +98,7 @@ export interface SubagentHostRunParams {
   runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
   dispatchKey?: string;
   locale: string;
   uiStrings: SubagentUiStrings;
@@ -240,6 +257,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (params.scheduledTaskId !== undefined && typeof params.scheduledTaskId !== 'string') {
     throw new RpcError(-32602, 'Invalid params: scheduledTaskId must be a string');
   }
+  if (params.initiatedBy !== undefined && params.initiatedBy !== 'user' && params.initiatedBy !== 'automation') {
+    throw new RpcError(-32602, "Invalid params: initiatedBy must be 'user' or 'automation'");
+  }
   if (params.dispatchKey !== undefined && typeof params.dispatchKey !== 'string') {
     throw new RpcError(-32602, 'Invalid params: dispatchKey must be a string');
   }
@@ -376,7 +396,34 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   const controller = new AbortController();
   activeRuns.set(runId, { controller });
 
-  const settingsReader: SettingsReader = { getSnapshot: () => params.settingsSnapshot };
+  /**
+   * Read settings through the sidecar's SHARED mirror, not through this run's
+   * dispatch-time snapshot (config-batch4, 2026-09-06).
+   *
+   * This used to be `getSnapshot: () => params.settingsSnapshot` — a snapshot
+   * frozen for the whole life of the subagent. The original note called that an
+   * acceptable simplification because a subagent run is short; it is not. A
+   * delegated agent can browse for minutes, and a user who changes a setting
+   * mid-run expects the change to take effect, not to wait for the run to end.
+   *
+   * WHAT THIS DOES AND DOES NOT COVER. What was frozen is what the subagent
+   * LOOP reads out of settings for itself — its turn limit, its model, the
+   * per-tool switches it consults directly. The browser gate is NOT in that
+   * set and never was: a sidecar-hosted tool call goes back to the shell over
+   * `approval.check`, and the shell answers from the renderer's LIVE store. So
+   * turning the unattended-browser master switch off did already stop the next
+   * browser action of a running subagent; do not read this comment as saying
+   * it did not. (S10/AC-S16 is satisfied by that round-trip, not by this
+   * line.) The freeze was still a real defect — a run must not read a stale
+   * turn limit or a stale model either — and SCOPE-RULING §7 named it.
+   *
+   * Seeding first preserves the previous behaviour for the only case the freeze
+   * was actually protecting: a subagent that starts before any `state.settings`
+   * push has landed still has its own snapshot to read. Once a push arrives,
+   * every run — main loop and subagent alike — reads the same live value.
+   */
+  seedSettingsMirrorIfEmpty(params.settingsSnapshot);
+  const settingsReader: SettingsReader = getSettingsMirrorReader();
   const toolInvoker = createReverseToolInvoker(runId, params.tools, params.parentConversationId, controller.signal);
   const workspaceReader: WorkspaceReader = { getCurrentPath: () => params.workspacePathSnapshot };
   const capsPort = createDegradedCapsPort();
@@ -456,6 +503,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     runPermissionCeiling: params.runPermissionCeiling,
     triggerId: params.triggerId,
     scheduledTaskId: params.scheduledTaskId,
+    initiatedBy: params.initiatedBy,
     dispatchKey: params.dispatchKey,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;

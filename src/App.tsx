@@ -22,7 +22,7 @@ import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
 import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
 import RightPanel from '@/components/panel/RightPanel';
-import { usePreviewStore } from '@/stores/previewStore';
+import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
 import ToastContainer from '@/components/common/ToastContainer';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
@@ -74,6 +74,7 @@ import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
 import { startInboundDispatcher, stopInboundDispatcher } from '@/core/im/inboundDispatcher';
+import { installImApprovalResolver } from '@/core/im/pendingApprovals';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
 import { startWeChatManager, stopWeChatManager } from '@/core/im/wechatConnectionManager';
 import { loadIMPlugins } from '@/core/im/pluginLoader';
@@ -165,8 +166,12 @@ function App() {
   // Preview split (TRAE-style): when the workspace panel has WIDE content
   // (preview/browser/terminal — not the narrow summary tab), the chat column
   // takes a stable, resizable width and the workspace flex-fills the rest.
-  const hasAnyTab = usePreviewStore((s) => s.tabs.length > 0);
-  const hasWideContent = usePreviewStore((s) => s.tabs.some((t) => t.kind !== 'summary'));
+  // `visibleTabs`: a browser tab adopted for another conversation stays alive
+  // in the store but must not size or reveal THIS conversation's panel.
+  const hasAnyTab = useHasTabs();
+  const hasWideContent = usePreviewStore(
+    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+  );
   const chatWidth = usePreviewStore((s) => s.chatWidth);
   const viewportWidth = useViewportWidth();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
@@ -326,14 +331,47 @@ function App() {
   // WebContentsView into the normal workspace. Keeping this in the existing
   // BrowserTab UI gives users a visible address bar, history controls, and a
   // close button while the agent operates the page.
+  //
+  // `ownerId` is the conversation main created the view for. It is what keeps a
+  // background conversation's adoption out of whatever conversation happens to
+  // be on screen; absent (legacy owner) means "any conversation may see it".
   useEffect(() => {
     if (!isTauriEnv()) return;
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<{ id: string; url: string }>('browser://automation-open', (event) => {
-      const { id, url } = event.payload ?? {};
+    listen<{ id: string; url: string; ownerId?: string }>('browser://automation-open', (event) => {
+      const { id, url, ownerId } = event.payload ?? {};
       if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
-      usePreviewStore.getState().openBrowser(typeof url === 'string' ? url : 'about:blank', id);
+      usePreviewStore.getState().openBrowser(
+        typeof url === 'string' ? url : 'about:blank',
+        id,
+        typeof ownerId === 'string' && ownerId ? ownerId : undefined,
+      );
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // ...and the matching withdrawal. Main cancels an adoption whose run was
+  // stopped, or whose owning conversation was deleted, and can no longer let
+  // this tab exist: the invitation was already sent, so without this the
+  // renderer would keep (or create) a tab record whose owner conversation is
+  // gone — invisible in every strip, closable from none, and still mounted.
+  // Dropping the record is also what destroys any native view already built for
+  // it (previewStore commits every removal through closeBrowserViews).
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen<{ id: string }>('browser://automation-cancel', (event) => {
+      const { id } = event.payload ?? {};
+      if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
+      usePreviewStore.getState().closeAdoptedBrowserTab(id);
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;
@@ -357,7 +395,7 @@ function App() {
         (conversationId && store.conversations[conversationId] ? conversationId : null) ??
         store.activeConversationId ??
         store.createConversation(null);
-      runAgentLoopDispatched(convId, text).catch((err) => {
+      runAgentLoopDispatched(convId, text, { initiatedBy: 'user' }).catch((err) => {
         console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });
     }).then((fn) => {
@@ -618,6 +656,12 @@ function App() {
           // The recovery message is visible when user clicks the conversation in sidebar.
         }
       }).catch(() => {});
+      // Give unattended runs a way to ask. Until this is installed the
+      // confirmation seam keeps its fail-closed default ("nobody to ask, so
+      // no"), so this must run alongside the inbound dispatcher that delivers
+      // the answers — an approval channel with no listener would hang every
+      // request until it timed out.
+      installImApprovalResolver();
       startInboundDispatcher();
       startTraySync();
       startFeishuWsManager();

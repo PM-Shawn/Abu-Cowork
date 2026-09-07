@@ -18,6 +18,10 @@ import {
   scopedAuthorizeWorkspace,
 } from '../tools/pathSafety';
 import { TOOL_NAMES } from '../tools/toolNames';
+import { BROWSER_DENIAL_ABORT_CAUSE } from './browserDenialTracker';
+import { getBrowserSignalCursor } from '../observability/browserSignals';
+import { browserRunReportOutcomeFor } from '../observability/browserRunReport';
+import { emitBrowserRunReport } from '../observability/browserRunReportEmitter';
 
 export interface FileWatchRule {
   id: string;
@@ -100,19 +104,47 @@ export async function handleWatchTrigger(rule: FileWatchRule, filePath: string) 
   );
 
   const authorizationScopeId = createAuthorizationScope();
+  /**
+   * U7 review / B6 — this is the third unattended entry point, and it was
+   * getting no run report at all.
+   *
+   * Structurally identical to `scheduler.ts` and `triggerEngine.ts`: a fresh
+   * hidden conversation, `initiatedBy: 'automation'` (so the gate treats it as
+   * unattended), and a try/finally that already owns the run's lifecycle. A
+   * watcher rule can drive the browser exactly like a scheduled task can, so
+   * "the browser did nothing all night and nobody said why" is the same
+   * failure here.
+   *
+   * Cursor taken BEFORE the run (Ruling 2), outcome defaulting to 'error' so a
+   * throw still produces an honest card rather than none.
+   */
+  const browserSignalCursor = getBrowserSignalCursor();
+  let reportOutcome = browserRunReportOutcomeFor('error', false);
   try {
     scopedAuthorizeWorkspace(authorizationScopeId, rule.path, ['read', 'write']);
-    await runAgentLoopDispatched(conversationId, prompt, {
+    const result = await runAgentLoopDispatched(conversationId, prompt, {
       // Auto-deny dangerous commands in background mode
       commandConfirmCallback: async () => false,
       filePermissionCallback: async () => false,
       blockedTools: [TOOL_NAMES.REQUEST_WORKSPACE],
       authorizationScopeId,
+      initiatedBy: 'automation',
     });
+    reportOutcome = browserRunReportOutcomeFor(
+      result.reason,
+      result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE,
+    );
     console.log(`[FileWatcher] Task completed for rule ${rule.id}: ${fileName}`);
   } catch (err) {
     console.error(`[FileWatcher] Task failed for rule ${rule.id}:`, err);
   } finally {
+    // Emits nothing when the run never touched the browser. Never throws, so
+    // it cannot turn a finished watcher task into a failed one.
+    emitBrowserRunReport({
+      conversationId,
+      sinceSeq: browserSignalCursor,
+      outcome: reportOutcome,
+    });
     disposeAuthorizationScope(authorizationScopeId);
   }
 }

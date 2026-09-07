@@ -55,6 +55,9 @@ describe('deriveCapabilityStatuses', () => {
         configured: true,
         enabled: true,
         status: 'error',
+        // What "disconnected" means: it handshaked at some point. Without
+        // this the bridge has simply never come up, which is setup, not loss.
+        extensionEverConnected: true,
       },
     });
 
@@ -88,6 +91,59 @@ describe('deriveCapabilityStatuses', () => {
     expect(probeUnavailable[CAPABILITY_IDS.chromeBridge]).toMatchObject({
       code: 'unavailable',
       reason: 'probe-unavailable',
+    });
+  });
+
+  /*
+    A machine that never installed the extension must describe itself the same
+    way at every moment of startup. Before this, the local bridge coming up
+    read as "connection lost" and then flipped to "not connected" once the
+    probe answered — one state, two contradictory descriptions, decided by
+    which of them the user happened to look at.
+  */
+  it('never reports a lost connection for an extension that never connected', () => {
+    const everyStartupMoment = [
+      { status: 'disconnected' as const, extensionConnected: undefined },
+      { status: 'connecting' as const, extensionConnected: undefined },
+      { status: 'error' as const, extensionConnected: undefined },
+      { status: 'connected' as const, extensionConnected: false },
+    ];
+
+    for (const phase of everyStartupMoment) {
+      const statuses = deriveCapabilityStatuses({
+        ...baseSnapshot,
+        chromeBridge: {
+          configured: true,
+          enabled: true,
+          extensionEverConnected: false,
+          ...phase,
+        },
+      });
+
+      expect(statuses[CAPABILITY_IDS.chromeBridge], JSON.stringify(phase)).toMatchObject({
+        code: 'setup-required',
+        reason: 'not-configured',
+      });
+    }
+  });
+
+  // The flag is what separates the two, so it must survive a probe that comes
+  // back false: the extension WAS there, so this is a regression to report.
+  it('reports a lost connection once the extension has handshaked before', () => {
+    const statuses = deriveCapabilityStatuses({
+      ...baseSnapshot,
+      chromeBridge: {
+        configured: true,
+        enabled: true,
+        status: 'connected',
+        extensionConnected: false,
+        extensionEverConnected: true,
+      },
+    });
+
+    expect(statuses[CAPABILITY_IDS.chromeBridge]).toMatchObject({
+      code: 'connection-lost',
+      reason: 'runtime-disconnected',
     });
   });
 

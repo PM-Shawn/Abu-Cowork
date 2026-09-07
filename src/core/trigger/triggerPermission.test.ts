@@ -10,6 +10,12 @@ import {
   revokeWorkspace,
 } from '../tools/pathSafety';
 import { usePermissionStore } from '../../stores/permissionStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
+import {
+  __resetUnattendedConfirmationForTests,
+  setUnattendedConfirmationResolver,
+} from '../permissions/unattendedConfirmation';
 
 describe('resolveTriggerCallbacks', () => {
   function resolveForTest(action: Parameters<typeof resolveTriggerCallbacks>[0]) {
@@ -21,6 +27,109 @@ describe('resolveTriggerCallbacks', () => {
       dispose: () => disposeAuthorizationScope(scopeId),
     };
   }
+
+  // A trigger run whose confirmation seam has no conversationId can never be
+  // asked anything: the approval channel has no chat to look up and no id to
+  // put on the fallback notice, so every confirmation dies silently.
+  it('threads the run conversation into the confirmation seam', async () => {
+    const seen: (string | undefined)[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request.conversationId);
+      return { approved: false, reason: 'no' };
+    });
+    const scopeId = createAuthorizationScope();
+    try {
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'x', capability: 'safe_tools' },
+        { authorizationScopeId: scopeId, conversationId: 'conv-trigger-1' },
+      );
+      await callbacks.commandConfirmCallback({
+        command: 'ls', level: 'warn', reason: 'because',
+      });
+      expect(seen).toEqual(['conv-trigger-1']);
+    } finally {
+      __resetUnattendedConfirmationForTests();
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+
+  /*
+    A trigger run binds no IM session to its conversation, so until the engine
+    started building one from the trigger's own output config, 「每次询问」 in
+    the automatic-tasks column refused itself with `no_binding` — the same gap
+    the scheduler had. Both tiers that reach the seam (`read_tools` and
+    `safe_tools`; `full` and `custom` answer inline and never get here) must
+    forward it, or the tier a user picked would silently decide whether they
+    can be asked at all.
+  */
+  it.each(['read_tools', 'safe_tools'] as const)(
+    'threads the approval target and the trigger name into the seam (%s)',
+    async (capability) => {
+      const seen: { imTarget?: unknown; runLabel?: string }[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        seen.push({ imTarget: request.imTarget, runLabel: request.runLabel });
+        return { approved: false, reason: 'no', audit: {} };
+      });
+      const scopeId = createAuthorizationScope();
+      try {
+        const callbacks = resolveTriggerCallbacks(
+          { prompt: 'x', capability },
+          {
+            authorizationScopeId: scopeId,
+            conversationId: 'conv-trigger-2',
+            imTarget: {
+              platform: 'feishu',
+              channelId: 'ch-trigger',
+              chatId: 'oc_ops',
+              chatIdType: 'chat_id',
+              senderId: 'ou_li',
+            },
+            runLabel: '磁盘告警',
+          },
+        );
+        await callbacks.commandConfirmCallback({
+          command: 'ls', level: 'warn', reason: 'because',
+        });
+        expect(seen).toEqual([{
+          imTarget: {
+            platform: 'feishu',
+            channelId: 'ch-trigger',
+            chatId: 'oc_ops',
+            chatIdType: 'chat_id',
+            senderId: 'ou_li',
+          },
+          runLabel: '磁盘告警',
+        }]);
+      } finally {
+        __resetUnattendedConfirmationForTests();
+        disposeAuthorizationScope(scopeId);
+      }
+    },
+  );
+
+  // No output channel on the trigger → nothing handed over, and the seam keeps
+  // its old fallback-then-refuse behavior rather than a guessed chat.
+  it('hands over no target when the caller supplies none', async () => {
+    const seen: (unknown)[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request.imTarget);
+      return { approved: false, reason: 'no', audit: {} };
+    });
+    const scopeId = createAuthorizationScope();
+    try {
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'x', capability: 'safe_tools' },
+        { authorizationScopeId: scopeId, conversationId: 'conv-trigger-3' },
+      );
+      await callbacks.commandConfirmCallback({
+        command: 'ls', level: 'warn', reason: 'because',
+      });
+      expect(seen).toEqual([undefined]);
+    } finally {
+      __resetUnattendedConfirmationForTests();
+      disposeAuthorizationScope(scopeId);
+    }
+  });
 
   it('carries a custom trigger tool whitelist to the agent run', () => {
     const { callbacks, dispose } = resolveForTest({
@@ -333,5 +442,96 @@ describe('resolveTriggerCallbacks', () => {
       dispose();
       expect(allowed.some((p) => matchesToolName('run_command', p))).toBe(false);
     });
+  });
+});
+
+// The trigger tiers are the twin of `authGate`'s IM tiers, and carried the
+// same shape of hole: `full` answered every confirmation with "allowed unless
+// hard-blocked", which for a browser confirmation meant page scripting ran in
+// an unattended trigger with nobody approving it. A tier is a ceiling — it may
+// only remove authority — so the browser operation-class policy is evaluated
+// independently of the tier.
+describe('resolveTriggerCallbacks — tiers cannot loosen the browser operation policy', () => {
+  const scriptingConfirm = {
+    command: 'Browser action: abu-browser__execute_js',
+    level: 'warn' as const,
+    reason: 'runs a script in the page',
+    kind: 'browser' as const,
+    browserOperationClass: 'scripting' as const,
+    browserOrigin: 'https://allowed.com',
+  };
+
+  function callbacksFor(capability: 'full' | 'custom' | 'read_tools' | 'safe_tools') {
+    const scopeId = createAuthorizationScope();
+    const callbacks = resolveTriggerCallbacks(
+      capability === 'custom'
+        ? { prompt: 'x', capability, permissions: { allowedCommands: ['*'] } }
+        : { prompt: 'x', capability },
+      { authorizationScopeId: scopeId },
+    );
+    return { callbacks, dispose: () => disposeAuthorizationScope(scopeId) };
+  }
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      browserSitePermissions: { 'https://allowed.com': 'allowed' },
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: false,
+    });
+    __resetUnattendedConfirmationForTests();
+  });
+
+  it('full denies execute_js under the default policy', async () => {
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+    dispose();
+  });
+
+  it('custom denies a browser action even with a wide-open command allowlist', async () => {
+    const { callbacks, dispose } = callbacksFor('custom');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+    dispose();
+  });
+
+  it('full still approves an interactive action the unattended policy allows', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback({
+      ...scriptingConfirm,
+      browserOperationClass: 'interactive',
+    })).resolves.toBe(true);
+    dispose();
+  });
+
+  it('full and custom answer no to a refusal notice', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    for (const capability of ['full', 'custom'] as const) {
+      const { callbacks, dispose } = callbacksFor(capability);
+      await expect(callbacks.commandConfirmCallback({
+        command: 'ls',
+        level: 'safe',
+        reason: '',
+        deniedNotice: 'the gate already refused this',
+      })).resolves.toBe(false);
+      dispose();
+    }
+  });
+
+  it('full leaves non-browser commands at its own answer', async () => {
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback({
+      command: 'ls', level: 'safe', reason: '',
+    })).resolves.toBe(true);
+    dispose();
+  });
+
+  it('read_tools and safe_tools stay fail-closed through the unattended seam', async () => {
+    for (const capability of ['read_tools', 'safe_tools'] as const) {
+      const { callbacks, dispose } = callbacksFor(capability);
+      await expect(callbacks.commandConfirmCallback({
+        command: 'ls', level: 'safe', reason: '',
+      })).resolves.toBe(false);
+      dispose();
+    }
   });
 });

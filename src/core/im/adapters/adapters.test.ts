@@ -156,6 +156,24 @@ describe('CustomAdapter', () => {
     expect(payload.color).toBe('warning');
     expect(payload.timestamp).toBeDefined();
   });
+
+  /**
+   * Batch 8 — the free-form JSON envelope is the one adapter that can carry a
+   * machine-readable run ending, so it does. Additive on both sides: `content`
+   * is untouched, and the key is absent entirely when there is no metadata,
+   * so a payload built before this batch is byte-identical.
+   */
+  it('passes metadata through, and omits the key when there is none', () => {
+    const withMeta = adapter.formatOutbound({
+      content: 'data',
+      metadata: { abuRunOutcome: { v: 1, code: 'failed' } },
+    }) as Record<string, unknown>;
+    expect(withMeta.metadata).toEqual({ abuRunOutcome: { v: 1, code: 'failed' } });
+    expect(withMeta.content).toBe('data');
+
+    const without = adapter.formatOutbound({ content: 'data' }) as Record<string, unknown>;
+    expect('metadata' in without).toBe(false);
+  });
 });
 
 // ── BaseAdapter chunking ──

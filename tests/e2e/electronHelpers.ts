@@ -98,6 +98,11 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
       // approval prompts would block a headless run forever — this makes them
       // auto-DECLINE (fail-closed; see tauriHost.cjs).
       ABU_E2E_DECLINE_CU_APPROVALS: '1',
+      // Reveal windows with showInactive() (and hide the macOS Dock icon) so a
+      // full suite run — ~40 launches — does not steal focus on a developer
+      // machine. Windows are still real and rendered: drag-region and
+      // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
+      ABU_E2E_QUIET_WINDOW: '1',
     },
     timeout: 60_000,
   });
@@ -207,7 +212,12 @@ export async function configureLocalMockProvider(
     if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
     if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
 
-    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
+    // Write `persisted` back whole, version untouched. Stamping a literal here
+    // (this line carried a stale `version: 42` through four store bumps) makes
+    // zustand replay the migration chain over the state we just injected on the
+    // reload below — so a future migrate branch that rewrites one of these
+    // fields would silently clobber every spec's provider setup.
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
   }, {
     apiKey,
     baseUrl,

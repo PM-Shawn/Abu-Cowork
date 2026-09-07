@@ -17,10 +17,12 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import CompactDivider from './CompactDivider';
+import BrowserRunReportCard from './BrowserRunReportCard';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
+import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
@@ -56,6 +58,7 @@ import {
   subscribeChatTurnScrollIntent,
 } from './chatTurnScrollIntent';
 import {
+  ANCHOR_TOLERANCE_PX,
   VIRTUOSO_AT_BOTTOM_THRESHOLD_PX,
   armTurnScrollAnchor,
   canArmTurnScrollAnchor,
@@ -836,6 +839,9 @@ export default function ChatView({
       dispatch = await runAgentLoopDispatched(convId, text, {
         images,
         onMessageTaken: () => onAccepted?.(),
+        // A human typed this — attended, even inside a scheduled/trigger
+        // conversation (the browser gate offers dialogs on that basis).
+        initiatedBy: 'user',
       });
     } catch (error) {
       // The runner deliberately keeps persistence/transport failures as
@@ -1055,6 +1061,44 @@ export default function ChatView({
     reconcileActiveTurnGeometry,
     scrollParentEl,
   ]);
+  // The bottom lock's last mile. `totalListHeightChanged` reports Virtuoso's
+  // own height model and its correction is deferred a frame, so content that
+  // reaches the scroller after that write — Virtuoso's final measurement
+  // settling once tokens stop — produces no further event and leaves a pinned
+  // reader parked a few pixels above the bottom for the rest of the turn.
+  // Observing the scrolled content closes that race at its source: the
+  // scroller's own geometry is the authority, and ResizeObserver runs after
+  // layout and before paint, so the correction is invisible rather than the
+  // one-frame jump a deferred re-scroll would show.
+  useLayoutEffect(() => {
+    if (!scrollParentEl || typeof ResizeObserver === 'undefined') return;
+    const content = scrollParentEl.querySelector<HTMLElement>('[data-chat-scroll-content]');
+    if (!content) return;
+
+    const observer = new ResizeObserver(() => {
+      if (!pinnedRef.current) return;
+      // A turn whose anchor has been announced but not yet armed is holding the
+      // bottom-pin off on purpose (see shouldSuppressLegacyFollow, whose
+      // callers "must agree" so one path cannot re-enable what another holds
+      // off). Reading the ref rather than calling that helper keeps this
+      // observer out of its suppression budget, which belongs to the callbacks.
+      if (pendingTurnAnchorRef.current) return;
+      // An armed anchor owns its own geometry: its spacer ledger deliberately
+      // holds the viewport away from the bottom, so a bottom sync here would
+      // fight the anchor instead of completing it.
+      if (turnAnchorRef.current?.phase === 'armed') return;
+      const distanceToBottom =
+        scrollParentEl.scrollHeight - scrollParentEl.scrollTop - scrollParentEl.clientHeight;
+      // Same dead zone the other writers use, so a settled scroller stays put
+      // instead of trading sub-pixel corrections with them every resize.
+      if (distanceToBottom <= ANCHOR_TOLERANCE_PX) return;
+      emitChatScrollTrace('content-resize', 'scheduled', scrollParentEl, {});
+      const scrollDelta = syncElementToBottom(scrollParentEl);
+      emitChatScrollTrace('content-resize', 'applied', scrollParentEl, { scrollDelta });
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollParentEl]);
   useLayoutEffect(() => {
     if (scrollParentEl) reconcileActiveTurnGeometry(scrollParentEl);
   });
@@ -1400,7 +1444,10 @@ export default function ChatView({
         {chapterNavVisible && railFits && (
           <ChapterRail chapters={chapters} currentIndex={currentChapter} onJump={jumpToChapter} />
         )}
-        <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden">
+        <div
+          data-chat-scroll-content
+          className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
+        >
           <Virtuoso
             // Remount per conversation so `initialTopMostItemIndex` re-applies
             // on every switch — the view lands at the newest message without a
@@ -1463,6 +1510,12 @@ export default function ChatView({
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider message={group[0]} />
+              ) : group.length === 1 && isBrowserRunReportMessage(group[0]) ? (
+                // U7 — the unattended run's report card. Its own group by
+                // construction: the marker carries no loopId, and
+                // `groupMessagesByLoop` starts a fresh group at every message
+                // without one.
+                <BrowserRunReportCard message={group[0]} />
               ) : (
                 <MessageGroup
                   conversationId={activeConv.id}

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets } from './settingsStore';
+import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets, __resetBrowserConfigPersistenceForTests } from './settingsStore';
 import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
 
 // ─── Test fixture helpers ─────────────────────────────────────
@@ -449,6 +449,181 @@ describe('settingsStore partialize', () => {
   });
 });
 
+/**
+ * Round-2 R2-C-②. The mark and the verdict are two fields, so the ONE thing
+ * that can go wrong is drift — a mark outliving the grant it qualifies, or a
+ * direct authorization leaving an old mark in place and staying invisible to
+ * automatic tasks forever. Both directions are pinned here, because the setter
+ * is the only thing standing between them.
+ */
+describe('settingsStore browser site grants — the via-embed mark', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ browserSitePermissions: {}, browserSiteGrantViaEmbed: {} });
+  });
+
+  it('marks a grant taken through the merged embedded-region prompt', () => {
+    useSettingsStore.getState()
+      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': true });
+  });
+
+  it('leaves an ordinary grant unmarked', () => {
+    useSettingsStore.getState().setBrowserSitePermission('https://example.com', 'allowed');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+  });
+
+  it('clears the mark when the user authorizes the same origin directly', () => {
+    const store = useSettingsStore.getState();
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    // Settings › 网站授权, or a prompt raised while that site WAS the page.
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+    expect(useSettingsStore.getState().browserSitePermissions['https://vendor.example.net'])
+      .toBe('allowed');
+  });
+
+  it('clears the mark when the origin is blocked instead', () => {
+    const store = useSettingsStore.getState();
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    store.setBrowserSitePermission('https://vendor.example.net', 'denied');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+  });
+
+  it('clears the mark when the verdict is removed', () => {
+    const store = useSettingsStore.getState();
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    store.removeBrowserSitePermission('https://vendor.example.net');
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+  });
+
+  it('survives a localStorage roundtrip — a mark that is not persisted is no mark', () => {
+    const partialize = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { partialize?: (state: unknown) => Record<string, unknown> } };
+    }).persist.getOptions().partialize!;
+    useSettingsStore.getState()
+      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+
+    expect(partialize(useSettingsStore.getState()).browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': true });
+  });
+
+  /**
+   * Round-3 R3-F / mutation M9. `restoreBrowserConfigField` is the OTHER half
+   * of the companion rule — the one that runs when another window turns out to
+   * hold a newer copy — and it was the half nothing pinned. Rewriting it to
+   * keep this window's marks (`?? state.browserSiteGrantViaEmbed`) left all
+   * 123 cases green, and that rewrite is the widening direction: it would
+   * strand a mark on a store that has no way to clear it, and the mirror of it
+   * (adopting a mark the other window already cleared) would take away a grant
+   * the user just gave back.
+   *
+   * The rule is "the adopted value is taken WHOLE, companions included" — one
+   * store wins, never a splice of two — so both directions are pinned here.
+   */
+  describe('restoreBrowserConfigField takes the adopted value whole', () => {
+    beforeEach(() => {
+      // The save pipeline is LIVE in this file, and it is doing its job: a
+      // restore carrying a revision older than the blob already in storage is
+      // legitimately adopted straight back by the cross-window merge. These
+      // cases are about the action itself, so they start from an empty disk.
+      localStorage.clear();
+      __resetBrowserConfigPersistenceForTests();
+    });
+
+    /**
+     * One marked grant, at a LOW revision. The revision matters: the restores
+     * below carry revision 7, and a restore older than the copy already in
+     * storage is (correctly) adopted straight back by the cross-window merge —
+     * which would make these cases pass or fail on the write queue rather than
+     * on the rule they are about.
+     */
+    function seedMarkedGrant(): void {
+      useSettingsStore.setState({
+        browserSitePermissions: { 'https://a.example.com': 'allowed' } as never,
+        browserSiteGrantViaEmbed: { 'https://a.example.com': true },
+        browserConfigRevisions: {
+          browserSitePermissions: 1, browserOperationPolicy: 0, allowUnattendedBrowser: 0,
+        },
+      });
+    }
+
+    it('adopts the other window\'s marks along with its verdicts', () => {
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField(
+        'browserSitePermissions',
+        { 'https://b.example.com': 'allowed' },
+        7,
+        { browserSiteGrantViaEmbed: { 'https://b.example.com': true } },
+      );
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+        .toEqual({ 'https://b.example.com': true });
+    });
+
+    it('drops this window\'s marks when the adopted store carries none', () => {
+      // The widening direction, and the one M9 could reverse in silence: a
+      // mark kept here would qualify grants that are no longer in the store,
+      // and a marked grant that outlives its store reads as a standing one an
+      // automatic run may act on.
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField(
+        'browserSitePermissions',
+        { 'https://a.example.com': 'allowed' },
+        7,
+        {},
+      );
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+    });
+
+    it('drops them when no companions are passed at all', () => {
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField(
+        'browserSitePermissions', { 'https://a.example.com': 'allowed' }, 7,
+      );
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
+      // The verdict itself still landed — this is not "restore did nothing".
+      expect(useSettingsStore.getState().browserSitePermissions['https://a.example.com'])
+        .toBe('allowed');
+      expect(useSettingsStore.getState().browserConfigRevisions.browserSitePermissions).toBe(7);
+    });
+
+    it('leaves the marks alone when a DIFFERENT field is restored', () => {
+      seedMarkedGrant();
+
+      useSettingsStore.getState().restoreBrowserConfigField('allowUnattendedBrowser', true, 3);
+
+      expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+        .toEqual({ 'https://a.example.com': true });
+    });
+  });
+
+  it('v49 migration gives pre-existing installs an empty map, not a marked one', () => {
+    const migrate = (useSettingsStore as unknown as {
+      persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+    }).persist.getOptions().migrate;
+
+    // Every grant that already exists was minted before the mark could be
+    // written, so none of them is known to have come in that way — and an
+    // unmarked grant is a full one.
+    const migrated = migrate(
+      { browserSitePermissions: { 'https://example.com': 'allowed' } },
+      48,
+    );
+    expect(migrated.browserSiteGrantViaEmbed).toEqual({});
+  });
+});
+
 describe('settingsStore labs flags', () => {
   beforeEach(() => {
     useSettingsStore.setState({ labs: {} });
@@ -546,6 +721,106 @@ describe('settingsStore labs flags', () => {
     it('does NOT re-run for users already at v42 (dark re-choice sticks)', () => {
       const migrated = getMigrate()({ theme: 'dark' }, 42);
       expect(migrated.theme).toBe('dark');
+    });
+  });
+
+  describe('v46/v47 migration (operation-class browser policy + unattended master switch)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+
+    it('adds the default operation-class policy for pre-v46 state that lacks it', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'allow', scripting: 'ask',
+      });
+    });
+
+    it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
+      const migrated = getMigrate()({ theme: 'light' }, 45);
+      expect(migrated.allowUnattendedBrowser).toBe(false);
+    });
+
+    /**
+     * V47, the 2026-09-04 column collapse. Every installed copy carries the
+     * two-column shape, and the surviving values are the ATTENDED column's:
+     * that is where the user said what Abu may do. Taking the other column
+     * instead would be a silent, invisible change to a permission — which is
+     * why this is pinned in BOTH directions below.
+     */
+    it('collapses a v46 two-column policy onto its attended column', () => {
+      const migrated = getMigrate()(
+        {
+          browserOperationPolicy: {
+            attended: { readOnly: 'allow', interactive: 'ask', scripting: 'ask' },
+            unattended: { readOnly: 'allow', interactive: 'deny', scripting: 'deny' },
+          },
+          allowUnattendedBrowser: true,
+        },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+      });
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    it('does not let an unattended-only value survive the collapse', () => {
+      const migrated = getMigrate()(
+        {
+          browserOperationPolicy: {
+            attended: { readOnly: 'ask', interactive: 'deny', scripting: 'deny' },
+            unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+          },
+        },
+        46,
+      );
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'ask', interactive: 'deny', scripting: 'deny',
+      });
+    });
+
+    it('preserves an already-collapsed policy rather than overwriting it', () => {
+      const customPolicy = { readOnly: 'allow', interactive: 'ask', scripting: 'ask' };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        45,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    it('does NOT re-run for users already at v47', () => {
+      const customPolicy = { readOnly: 'allow', interactive: 'deny', scripting: 'deny' };
+      const migrated = getMigrate()(
+        { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
+        47,
+      );
+      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    // I3 (runtime shape validation): a PRESENT-but-malformed policy — e.g.
+    // from hand-edited localStorage, or a future bug that wrote a partial
+    // object — must be clamped to the strictest state per row, not passed
+    // through as-is (which is exactly what the "preserves an already-
+    // collapsed policy" test above verifies for a WELL-FORMED policy).
+    it('normalizes a present-but-malformed policy to the strictest row instead of passing it through', () => {
+      const migrated = getMigrate()({
+        browserOperationPolicy: {
+          attended: { readOnly: 'allow' /* interactive, scripting missing */ },
+          unattended: { readOnly: 'allow', interactive: 'not-a-real-state', scripting: 'deny' },
+        },
+      }, 45);
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+      });
+    });
+
+    it('coerces a non-boolean allowUnattendedBrowser to false — fail-safe, never silently truthy', () => {
+      const migrated = getMigrate()({ allowUnattendedBrowser: 'true' }, 45);
+      expect(migrated.allowUnattendedBrowser).toBe(false);
     });
   });
 

@@ -21,6 +21,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { startWSServer, stopWSServer } from './wsServer.js';
 import { registerTools } from './tools.js';
+import { registerRunSettledHandler } from './runSettled.js';
 import { PKG_VERSION } from './version.js';
 
 const DEFAULT_WS_PORT = 9876;
@@ -54,6 +55,11 @@ async function main(): Promise<void> {
 
   // 3. Register browser tools
   registerTools(mcpServer);
+
+  // 3b. Listen for the app's run-settlement notification, the channel that
+  // releases a finished run's extension tab claims. Not a tool — the model
+  // never sees it and cannot call it (see runSettled.ts).
+  registerRunSettledHandler(mcpServer.server);
 
   // 4. Connect MCP server to stdio transport
   const transport = new StdioServerTransport();

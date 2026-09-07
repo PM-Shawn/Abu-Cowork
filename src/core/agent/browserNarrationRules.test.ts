@@ -63,4 +63,32 @@ describe('BROWSER_NARRATION_RULES', () => {
   it('forbids narrating troubleshooting', () => {
     expect(BROWSER_NARRATION_RULES).toContain('Do not narrate your troubleshooting');
   });
+
+  // U6 — the two page states that are not refusals but still must not be
+  // retried. Both reach subagents too, because `browserNarrationSection`
+  // returns this same constant.
+  it('tells the model to hand back on an expired session rather than retry', () => {
+    expect(BROWSER_NARRATION_RULES).toContain('authState: "login_required"');
+    expect(BROWSER_NARRATION_RULES).toContain('never retry the action');
+  });
+
+  it('tells the model to relay a handoff hint and stop, naming the manual step', () => {
+    expect(BROWSER_NARRATION_RULES).toContain('handoff');
+    expect(BROWSER_NARRATION_RULES).toContain('hand the step back');
+    expect(BROWSER_NARRATION_RULES).toMatch(/Do not retry it, work around it, or try to solve it yourself/);
+  });
+
+  it('singles out MFA push and says why it must never be re-triggered', () => {
+    // A general "do not retry" is not enough here: re-triggering a push is not
+    // just wasted work, it is indistinguishable from a push-bombing attack.
+    expect(BROWSER_NARRATION_RULES).toContain('mfa_push');
+    expect(BROWSER_NARRATION_RULES).toContain('never re-trigger the prompt');
+    expect(BROWSER_NARRATION_RULES).toMatch(/locked/);
+  });
+
+  it('reaches a subagent roster too, not just the main loop', () => {
+    const section = browserNarrationSection(['abu-browser-bridge__click']);
+    expect(section).toContain('authState: "login_required"');
+    expect(section).toContain('mfa_push');
+  });
 });

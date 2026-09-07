@@ -26,17 +26,107 @@
  */
 import { getPlatform } from '../../utils/platform';
 import { APP_VERSION } from '../../utils/version';
+// Type-only: erased at build time, so this module stays runtime-dependency-free
+// (see the module doc). Importing the union instead of re-declaring it is
+// deliberate — a hand-copied second definition is how the operation-class
+// vocabulary drifts between the gate and the report that describes the gate.
+import type { BrowserOperationClass, BrowserDenialReasonCode } from '../permissions/browserToolPolicy';
 
 // ── Event shapes ──────────────────────────────────────────────────────────
 
 export type BrowserSignalEvent =
-  | { kind: 'tool_call'; tool: string; tabId?: number; origin?: string; frameHint?: boolean; ok: boolean; errorClass?: string; durationMs: number }
+  /**
+   * `frameHint` is a GUESS — the word "iframe" turning up in a failed result —
+   * and predates frames being addressable at all. `frameTargeted` is the fact:
+   * the call named an embedded region. Both are kept because they answer
+   * different questions: how often a failure smells like an iframe (the
+   * problem T4 exists to remove) versus how often the new addressing is
+   * actually being used, which is what says whether it removed it.
+   */
+  | { kind: 'tool_call'; tool: string; tabId?: number; origin?: string; frameHint?: boolean; frameTargeted?: true; ok: boolean; errorClass?: string; durationMs: number }
   | { kind: 'fallback_to_script' }
   | { kind: 'repeat_action'; tool: string; targetKey: string; count: number }
   | { kind: 'confirm_prompt'; origin?: string }
   | { kind: 'blocked_page'; className: 'http_429' | 'challenge' | 'verify_wall' }
+  /** A page's own alert/confirm/prompt/beforeunload froze a tab. `event`:
+   *  `opened` (seen holding the tab), `handled` (answered by the model),
+   *  `timed_out` (nobody answered, so it was dismissed for safety). Carries
+   *  NO page text — the dialog's message is page-authored content, and this
+   *  module never records any (see the module header). */
+  | { kind: 'js_dialog'; event: 'opened' | 'handled' | 'timed_out'; dialogType: string; action?: 'accept' | 'dismiss' }
   | { kind: 'tab_lifetime'; event: 'created' | 'closed'; aliveMs?: number }
-  | { kind: 'task_end'; browserToolCalls: number; unfinishedHint: boolean };
+  | { kind: 'task_end'; browserToolCalls: number; unfinishedHint: boolean }
+  /**
+   * U7 / G1 — the authorization gate refused a browser action.
+   *
+   * Until this event existed, a refusal left NO trace here at all: the run
+   * result carried a sentence and the tool result carried a diagnostic, but
+   * the signal buffer (and therefore the unattended task report) saw an
+   * action that simply never happened. A report whose "blocked actions"
+   * section is structurally always empty is worse than no report.
+   *
+   * `reason` is the SAME closed taxonomy the gate uses to pick the sentence
+   * it shows the user (`browserToolPolicy.BrowserDenialReasonCode`), not a
+   * parallel string set — one vocabulary, two renderings.
+   */
+  | {
+      kind: 'gate_denied';
+      tool: string;
+      opClass: BrowserOperationClass;
+      origin?: string;
+      reason: BrowserDenialReasonCode;
+      runMode: 'attended' | 'unattended';
+    }
+  /**
+   * F2 (2026-09-06 review) — an attended READ could not be checked against the
+   * user's block list, because the origin would not resolve.
+   *
+   * Emitted only when there is something to enforce: the user has blocked at
+   * least one site, the tool acts on a page, and the origin probe came back
+   * empty. The read is allowed anyway (a human is watching it, and failing
+   * closed on a screenshot would break the path that runs constantly), so
+   * without this event the miss would leave no trace at all — the gate hands
+   * `evaluateBrowserGate` a `'default'` verdict, which cannot say whether it
+   * means "not blocked" or "could not check".
+   *
+   * Carries no origin, because there is none — that is the whole event.
+   */
+  | {
+      kind: 'site_check_unresolved';
+      tool: string;
+      opClass: BrowserOperationClass;
+    }
+  /**
+   * U7 / G2 — a human answered (or failed to answer) an unattended approval
+   * over IM. This is the ONLY human decision in the whole unattended path,
+   * and it used to land without a trace.
+   *
+   * Recorded once per real round-trip: a coalesced follower or a cached
+   * answer must NOT emit another one, or "you approved 1 time" becomes "you
+   * approved 14 times" for a chatty tool.
+   */
+  | {
+      kind: 'approval';
+      via: 'im';
+      outcome: BrowserApprovalOutcome;
+      opClass: BrowserOperationClass;
+      origin?: string;
+    };
+
+/**
+ * What became of one approval round-trip. Mirrors `ImApprovalResult.cause`
+ * (`core/im/pendingApprovals.ts`) rather than re-bucketing it: "nobody
+ * answered" and "there was nobody to ask" are different things to tell a user
+ * at 8am, and collapsing them here would make the report unable to say which.
+ */
+export type BrowserApprovalOutcome =
+  | 'approved'
+  | 'declined'
+  | 'timeout'
+  | 'no-channel'
+  | 'too-many'
+  | 'undeliverable'
+  | 'aborted';
 
 /** Fields the collection layer (registry.ts et al.) attaches uniformly to every event. */
 export interface BrowserSignalContext {
@@ -44,10 +134,29 @@ export interface BrowserSignalContext {
   appVersion: string;
   channel: 'builtin' | 'chrome';
   conversationId?: string;
+  /**
+   * The agent loop this signal was produced by (`ToolExecutionContext.loopId`).
+   * Absent for collection points that have no loop in hand (the workspace-tab
+   * lifecycle in `previewStore.ts`). Carried so a run's signals can be
+   * correlated in a diagnostic bundle; the run report slices with the
+   * sequence cursor below, which does not depend on it being present.
+   */
+  loopId?: string;
   ts: number;
 }
 
 export type BrowserSignalRecord = BrowserSignalEvent & BrowserSignalContext;
+
+/**
+ * A record as it sits in the buffer: stamped with a process-monotonic sequence
+ * number by `recordBrowserSignal`.
+ *
+ * This is what makes "the signals THIS run produced" answerable without a
+ * clock. A consumer captures `getBrowserSignalCursor()` before the run and
+ * keeps records whose `seq` is greater — immune to clock skew, DST, an NTP
+ * step, and to two runs of the same scheduled task sharing a conversation.
+ */
+export type StoredBrowserSignalRecord = BrowserSignalRecord & { seq: number };
 
 export function buildBrowserSignalRecord(
   event: BrowserSignalEvent,
@@ -123,12 +232,14 @@ export function buildBrowserSignalContext(
   channel: 'builtin' | 'chrome',
   conversationId?: string,
   now: number = Date.now(),
+  loopId?: string,
 ): BrowserSignalContext {
   return {
     platform: resolvedPlatform(),
     appVersion: APP_VERSION,
     channel,
     ...(conversationId ? { conversationId } : {}),
+    ...(loopId ? { loopId } : {}),
     ts: now,
   };
 }
@@ -256,7 +367,21 @@ export function classifyBlockedPage(resultText: string | undefined | null): 'htt
 
 // ── classifyBrowserToolError / detectFrameHint / isBrowserToolResultError ──
 
+/**
+ * The sentence `electron/browserHost.cjs` refuses every other action with
+ * while a JavaScript dialog holds a tab (`DIALOG_BLOCKING_PREFIX` there).
+ * Duplicated rather than imported — that file is a CommonJS main-process
+ * module — and pinned to it by
+ * `src/core/tools/browserDialogs.contract.test.ts`.
+ */
+export const DIALOG_BLOCKING_SENTENCE = 'This tab is blocked by a JavaScript dialog';
+
 const ERROR_CLASS_PATTERNS: [string, RegExp][] = [
+  // First: a dialog-blocked tab is its own thing, and every OTHER browser
+  // tool fails this way while one is open, so it must not be filed as a
+  // generic `unknown_error` (which is what the diagnostic bundle would show
+  // for a task that got stuck behind one confirm box).
+  ['dialog_pending', new RegExp(DIALOG_BLOCKING_SENTENCE, 'i')],
   ['timeout', /\btimeout\b|timed out/i],
   ['not_connected', /extension is not connected|not connected/i],
   ['not_found', /no (?:element|tab|match)(?:es)? found|not found/i],
@@ -284,6 +409,68 @@ export function classifyBrowserToolError(resultText: string | undefined | null):
 export function detectFrameHint(resultText: string | undefined | null): boolean {
   if (!resultText) return false;
   return /\biframe\b/i.test(scanPrefix(resultText));
+}
+
+/**
+ * The `js_dialog` events one browser tool result reveals — derived from the
+ * result the runtime actually sent, not from a side channel.
+ *
+ * `opened` has two sources on purpose: `get_dialog` reporting a pending
+ * dialog, and ANY other browser tool being refused because one is holding the
+ * tab (the far more common way a run discovers it). `timed_out` is only
+ * visible after the fact — nobody is listening at the moment the 60s
+ * auto-dismiss fires, so it is read off the next `get_dialog`'s `last`.
+ *
+ * Deliberately carries no `message`: the dialog's text is page-authored, and
+ * this module records no page content (module header).
+ */
+export function jsDialogSignals(
+  bareToolName: string,
+  resultText: string,
+): Array<Extract<BrowserSignalEvent, { kind: 'js_dialog' }>> {
+  if (isBrowserToolResultError(resultText)) {
+    return DIALOG_BLOCKING_RE.test(resultText)
+      ? [{ kind: 'js_dialog', event: 'opened', dialogType: dialogTypeFromRefusal(resultText) }]
+      : [];
+  }
+  if (bareToolName !== 'get_dialog' && bareToolName !== 'handle_dialog') return [];
+  let envelope: { pending?: unknown; dialog?: unknown; last?: unknown; handled?: unknown; action?: unknown };
+  try {
+    envelope = JSON.parse(resultText) as typeof envelope;
+  } catch {
+    return [];
+  }
+  if (typeof envelope !== 'object' || envelope === null) return [];
+  const events: Array<Extract<BrowserSignalEvent, { kind: 'js_dialog' }>> = [];
+  const dialogType = (value: unknown): string => {
+    const type = (value as { type?: unknown } | null)?.type;
+    return typeof type === 'string' ? type : 'unknown';
+  };
+  if (envelope.pending === true) {
+    events.push({ kind: 'js_dialog', event: 'opened', dialogType: dialogType(envelope.dialog) });
+  }
+  const last = envelope.last as { disposition?: unknown } | undefined;
+  if (last && last.disposition === 'auto-dismissed') {
+    events.push({ kind: 'js_dialog', event: 'timed_out', dialogType: dialogType(envelope.last) });
+  }
+  if (envelope.handled === true) {
+    events.push({
+      kind: 'js_dialog',
+      event: 'handled',
+      dialogType: dialogType(envelope.dialog),
+      ...(envelope.action === 'accept' || envelope.action === 'dismiss'
+        ? { action: envelope.action }
+        : {}),
+    });
+  }
+  return events;
+}
+
+const DIALOG_BLOCKING_RE = new RegExp(`${DIALOG_BLOCKING_SENTENCE} the page opened \\((\\w+)\\)`, 'i');
+
+function dialogTypeFromRefusal(resultText: string): string {
+  const match = DIALOG_BLOCKING_RE.exec(resultText);
+  return match ? match[1].toLowerCase() : 'unknown';
 }
 
 /** This codebase's error-result convention: every failing ToolResult string
@@ -366,20 +553,40 @@ export function deriveTargetKey(toolName: string, input: Record<string, unknown>
 // (only logger.ts's warn/error path persists eagerly), and adding one here
 // would be new always-on disk I/O this batch does not ask for.
 const MAX_BROWSER_SIGNAL_ENTRIES = 5000;
-let browserSignalBuffer: BrowserSignalRecord[] = [];
+let browserSignalBuffer: StoredBrowserSignalRecord[] = [];
 let browserSignalWriteIndex = 0;
 let browserSignalCount = 0;
+/**
+ * Process-monotonic signal counter — the "which run produced this" key.
+ *
+ * Deliberately NOT reset by `clearBrowserSignals()`: a cursor captured before
+ * a clear must stay a lower bound afterwards. Resetting would make every
+ * surviving record look newer than that cursor and pull a previous run's
+ * actions into the next run's report — the exact cross-run bleed the cursor
+ * exists to prevent.
+ */
+let browserSignalSeq = 0;
+
+/**
+ * A lower bound on the signals that come next. Capture before a run, pass to
+ * `buildBrowserRunReport` as `sinceSeq` after it.
+ */
+export function getBrowserSignalCursor(): number {
+  return browserSignalSeq;
+}
 
 /** Never throws — a bad/malformed record is silently dropped. Observability
  *  must never become a reason the app misbehaves. */
 export function recordBrowserSignal(record: BrowserSignalRecord): void {
   try {
     if (!record || typeof record !== 'object') return;
+    browserSignalSeq++;
+    const stored: StoredBrowserSignalRecord = { ...record, seq: browserSignalSeq };
     if (browserSignalCount < MAX_BROWSER_SIGNAL_ENTRIES) {
-      browserSignalBuffer.push(record);
+      browserSignalBuffer.push(stored);
       browserSignalCount++;
     } else {
-      browserSignalBuffer[browserSignalWriteIndex] = record;
+      browserSignalBuffer[browserSignalWriteIndex] = stored;
     }
     browserSignalWriteIndex = (browserSignalWriteIndex + 1) % MAX_BROWSER_SIGNAL_ENTRIES;
   } catch {
@@ -387,10 +594,10 @@ export function recordBrowserSignal(record: BrowserSignalRecord): void {
   }
 }
 
-export function getRecentBrowserSignals(): BrowserSignalRecord[] {
+export function getRecentBrowserSignals(): StoredBrowserSignalRecord[] {
   const total = Math.min(browserSignalCount, MAX_BROWSER_SIGNAL_ENTRIES);
   const start = browserSignalCount < MAX_BROWSER_SIGNAL_ENTRIES ? 0 : browserSignalWriteIndex;
-  const result: BrowserSignalRecord[] = [];
+  const result: StoredBrowserSignalRecord[] = [];
   for (let i = 0; i < total; i++) result.push(browserSignalBuffer[(start + i) % MAX_BROWSER_SIGNAL_ENTRIES]);
   return result;
 }

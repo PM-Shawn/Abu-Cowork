@@ -1,9 +1,15 @@
 /**
  * AuthGate Tests
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { resolveCapability, getBlockedToolsForLevel, getAllowedToolsForLevel, getCallbacksForLevel } from './authGate';
 import { matchesToolName } from '../skill/toolFilter';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
+import {
+  __resetUnattendedConfirmationForTests,
+  setUnattendedConfirmationResolver,
+} from '../permissions/unattendedConfirmation';
 import type { IMChannel } from '../../types/imChannel';
 
 function makeChannel(overrides: Partial<IMChannel> = {}): IMChannel {
@@ -153,5 +159,114 @@ describe('getAllowedToolsForLevel', () => {
       path: '/Users/testuser/Desktop/outside.txt',
       capability: 'read',
     })).resolves.toBe(false);
+  });
+});
+
+// A capability tier may only remove authority. `full` used to answer every
+// confirmation with `true`, so a chat message on a full channel auto-approved
+// browser scripting — arbitrary code in the user's logged-in sessions, with
+// nobody approving it. The operation-class policy is evaluated independently
+// of the tier, so the tier can only ever be stricter than it.
+describe('getCallbacksForLevel — full tier cannot loosen the browser operation policy', () => {
+  const scriptingConfirm = {
+    command: 'Browser action: abu-browser__execute_js',
+    level: 'warn' as const,
+    reason: 'runs a script in the page',
+    kind: 'browser' as const,
+    browserOperationClass: 'scripting' as const,
+    browserOrigin: 'https://allowed.com',
+  };
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      browserSitePermissions: { 'https://allowed.com': 'allowed' },
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: false,
+    });
+  });
+
+  it('denies execute_js under the default policy', async () => {
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+  });
+
+  it('still denies execute_js with the unattended master switch ON — the class is denied', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+  });
+
+  it('denies a browser confirmation that carries no operation class (treated as scripting)', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback({
+      command: 'Browser action: abu-browser__click',
+      level: 'warn',
+      reason: 'acts in your browser',
+      kind: 'browser',
+      browserOrigin: 'https://allowed.com',
+    })).resolves.toBe(false);
+  });
+
+  it('approves an interactive action the unattended policy allows', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback({
+      ...scriptingConfirm,
+      browserOperationClass: 'interactive',
+    })).resolves.toBe(true);
+  });
+
+  it('answers no to a refusal notice, whatever the tier would otherwise say', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback({
+      ...scriptingConfirm,
+      browserOperationClass: 'interactive', // a class the tier WOULD approve
+      deniedNotice: 'the gate already refused this',
+    })).resolves.toBe(false);
+  });
+
+  it('leaves non-browser confirmations at the tier\'s own answer', async () => {
+    const callbacks = getCallbacksForLevel('full');
+    await expect(callbacks.commandConfirmCallback({
+      command: 'ls', level: 'safe', reason: '',
+    })).resolves.toBe(true);
+  });
+});
+
+describe('getCallbacksForLevel — denying tiers route through the unattended seam', () => {
+  afterEach(() => {
+    __resetUnattendedConfirmationForTests();
+  });
+
+  it.each(['chat_only', 'read_tools', 'safe_tools'] as const)(
+    '%s stays fail-closed today',
+    async (level) => {
+      const callbacks = getCallbacksForLevel(level);
+      await expect(callbacks.commandConfirmCallback({
+        command: 'ls', level: 'safe', reason: '',
+      })).resolves.toBe(false);
+    },
+  );
+
+  it('passes the IM run\'s delivery target through the seam', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push({ source: request.source, conversationId: request.conversationId, imTarget: request.imTarget });
+      return { approved: false, reason: 'no channel' };
+    });
+    const callbacks = getCallbacksForLevel('safe_tools', {
+      conversationId: 'conv-im-1',
+      imTarget: { platform: 'feishu', channelId: 'ch1', chatId: 'chat-9' },
+    });
+
+    await callbacks.commandConfirmCallback({ command: 'ls', level: 'safe', reason: '' });
+
+    expect(seen).toEqual([{
+      source: 'im',
+      conversationId: 'conv-im-1',
+      imTarget: { platform: 'feishu', channelId: 'ch1', chatId: 'chat-9' },
+    }]);
   });
 });

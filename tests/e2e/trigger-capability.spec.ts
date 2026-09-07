@@ -8,7 +8,7 @@
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ElectronApplication, Page } from 'playwright';
+import type { ElectronApplication, Locator, Page } from 'playwright';
 import {
   closeAbuElectron,
   launchAbuElectron,
@@ -31,6 +31,14 @@ const EDIT = /^(编辑|Edit)$/;
 const SAVE = /^(保存|Save)$/;
 const AUTONOMY = /^(自主程度|Autonomy Level)$/;
 const FULL = /^(完全放开|Fully open)$/;
+/**
+ * The Select trigger's accessible name is `<field label>: <current value>`
+ * (`ui/select.tsx`), so it names both the control and what it currently
+ * shows. Left unanchored because the zh option label carries a `（默认）`
+ * suffix the assertion has no reason to restate.
+ */
+const AUTONOMY_READ_ONLY = /自主程度: 只看不动|Autonomy Level: Read only/;
+const AUTONOMY_FULL = /自主程度: 完全放开|Autonomy Level: Fully open/;
 
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
@@ -54,6 +62,25 @@ function triggerEditor(page: Page) {
 
 function autonomyField(editor: ReturnType<typeof triggerEditor>) {
   return editor.getByText(AUTONOMY, { exact: true }).locator('..');
+}
+
+/**
+ * The menu a `Select` trigger has just opened.
+ *
+ * Since the Capabilities rebuild the menu is portalled into `document.body`
+ * (`src/components/ui/select.tsx`) so that no card below it can paint over it.
+ * An option is therefore no longer a descendant of the field that owns the
+ * control, and reaching one *through* that field finds nothing at all. Resolve
+ * options at page scope instead — but pin them to the menu THIS trigger
+ * controls (`aria-controls`), so the assertion still says which control was
+ * opened rather than clicking whatever option-shaped button the page happens
+ * to have. Same idiom as `capabilities.spec.ts`.
+ */
+async function openedMenu(page: Page, trigger: Locator): Promise<Locator> {
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  const menuId = await trigger.getAttribute('aria-controls');
+  expect(menuId).toBeTruthy();
+  return page.locator(`#${menuId}`);
 }
 
 async function persistedCapability(page: Page, triggerName: string): Promise<string | undefined> {
@@ -100,9 +127,12 @@ test.describe.serial('Trigger autonomy — real Electron', () => {
     let editor = triggerEditor(page);
     await expect(editor).toBeVisible();
     const field = autonomyField(editor);
-    await expect(field.getByRole('button', { name: /自主程度: 只看不动|Autonomy Level: Read only/ })).toBeVisible();
-    await field.getByRole('button', { name: /自主程度: 只看不动|Autonomy Level: Read only/ }).click();
-    await field.getByRole('button', { name: FULL }).click();
+    const autonomyTrigger = field.getByRole('button', { name: AUTONOMY_READ_ONLY });
+    await expect(autonomyTrigger).toBeVisible();
+    await autonomyTrigger.click();
+    const autonomyMenu = await openedMenu(page, autonomyTrigger);
+    await autonomyMenu.getByRole('button', { name: FULL }).click();
+    await expect(autonomyMenu).toBeHidden();
     await expect(editor.getByText(/完全放开只适合可信输入源|trusted event sources only/)).toBeVisible();
 
     const triggerName = 'Electron capability E2E';
@@ -123,7 +153,7 @@ test.describe.serial('Trigger autonomy — real Electron', () => {
     await page.getByRole('button', { name: EDIT }).click();
     editor = triggerEditor(page);
     await expect(editor).toBeVisible();
-    await expect(autonomyField(editor).getByRole('button', { name: /自主程度: 完全放开|Autonomy Level: Fully open/ })).toBeVisible();
+    await expect(autonomyField(editor).getByRole('button', { name: AUTONOMY_FULL })).toBeVisible();
     await editor.getByRole('button', { name: SAVE }).click();
     await expect(editor).toBeHidden();
 

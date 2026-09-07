@@ -12,6 +12,7 @@
  * `extensionSocket`), just without opening an OS socket.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { NotificationFallbackTarget } from './runSettled.js';
 
 // `vi.mock` factories are hoisted above this file's imports, so they can't
 // close over an `import { EventEmitter } from 'node:events'` declared below
@@ -161,6 +162,38 @@ describe('sendToExtension abort handling', () => {
     }).not.toThrow();
   });
 
+  /**
+   * An abort is NOT proof the run stopped: the MCP SDK cancels a request when
+   * its own timeout fires, and that cancellation reaches this bridge as the
+   * same handler abort. Releasing here would hand a still-running task's tab to
+   * another conversation — silently, and only on the slow calls. So the abort
+   * path cancels the request and releases nothing, whatever the abort meant.
+   */
+  it.each([
+    ['the user stopped the run', { tabId: 1, ownerId: 'conversation-a', runId: 'sar-1' }, new Error('run stopped')],
+    ['the request carried no runId', { tabId: 1, ownerId: 'conversation-a' }, new Error('run stopped')],
+    ['the caller named no owner at all', { tabId: 1 }, new Error('run stopped')],
+    [
+      'the MCP request timed out while the run kept going',
+      { tabId: 1, ownerId: 'conversation-a', runId: 'sar-1' },
+      new Error('MCP error -32001: Request timed out'),
+    ],
+  ])('cancels but never releases tab claims when %s', async (_case, payload, reason) => {
+    const { sendToExtension } = await import('./wsServer.js');
+    const controller = new AbortController();
+
+    const pending = sendToExtension('click', payload, 30_000, controller.signal);
+    const sent = JSON.parse(fakeExtension.send.mock.calls[0][0] as string);
+
+    controller.abort(reason);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+    // Exactly two messages: the request, then the cancel. No release.
+    expect(fakeExtension.send).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fakeExtension.send.mock.calls[1][0] as string))
+      .toEqual({ type: 'cancel', requestId: sent.id });
+  });
+
   it('rejects immediately without sending anything when the signal is already aborted', async () => {
     const { sendToExtension } = await import('./wsServer.js');
     const controller = new AbortController();
@@ -170,5 +203,114 @@ describe('sendToExtension abort handling', () => {
       sendToExtension('click', { tabId: 1 }, 5000, controller.signal)
     ).rejects.toMatchObject({ name: 'AbortError' });
     expect(fakeExtension.send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The release seam itself, plus the one path that reaches it: the app's
+ * run-settlement notification (`runSettled.ts`). These pin the wire shape and,
+ * above all, the SCOPE rule that caller has to honour — a run's settlement
+ * releases that run, never the whole conversation.
+ */
+describe('releaseExtensionTabs', () => {
+  let fakeExtension: ReturnType<typeof makeFakeSocket>;
+
+  beforeEach(async () => {
+    capturedWsServers.length = 0;
+    capturedHttpServers.length = 0;
+    vi.resetModules();
+
+    const { startWSServer } = await import('./wsServer.js');
+    await startWSServer(9876);
+
+    const wss = capturedWsServers[0];
+    fakeExtension = makeFakeSocket();
+    wss.emit('connection', fakeExtension, { headers: { origin: 'chrome-extension://fake' } });
+  });
+
+  afterEach(async () => {
+    const { stopWSServer } = await import('./wsServer.js');
+    stopWSServer();
+  });
+
+  it('releases one run when given its run key', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+
+    releaseExtensionTabs('conversation-a', 'sar-1');
+
+    expect(JSON.parse(fakeExtension.send.mock.calls[0][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a', runId: 'sar-1' });
+  });
+
+  it('releases every run of the conversation when no run key is given', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+
+    releaseExtensionTabs('conversation-a');
+
+    // The conversation-wide scope, reserved for a conversation-level dispose —
+    // the same scope `browser_dispose_owner {conversationId}` has in the host.
+    // A run-settlement caller must pass `runId ?? 'main'` instead.
+    expect(JSON.parse(fakeExtension.send.mock.calls[0][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a' });
+  });
+
+  it('says nothing when there is no owner to release', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+
+    releaseExtensionTabs(undefined, 'sar-1');
+    releaseExtensionTabs('', 'sar-1');
+    releaseExtensionTabs(42, 'sar-1');
+
+    // A legacy caller claims nothing, so there is nothing to release — and a
+    // release with no owner would be unbounded.
+    expect(fakeExtension.send).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the extension is not connected', async () => {
+    const { releaseExtensionTabs, stopWSServer } = await import('./wsServer.js');
+    stopWSServer();
+
+    // Releasing is best-effort in both directions: the app fires it at every
+    // run settlement without first asking whether Chrome is even attached.
+    expect(() => releaseExtensionTabs('conversation-a', 'main')).not.toThrow();
+    expect(fakeExtension.send).not.toHaveBeenCalled();
+  });
+
+  it('reaches the extension end-to-end from the run-settlement notification', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+    const { registerRunSettledHandler } = await import('./runSettled.js');
+    const { ABU_RUN_SETTLED_NOTIFICATION } = await import('./types.js');
+    // The real production wiring: index.ts installs this handler over the real
+    // `releaseExtensionTabs`, so a notification arriving on the MCP connection
+    // is what puts `{type:'release'}` on the extension socket.
+    const target: NotificationFallbackTarget = {};
+    registerRunSettledHandler(target, releaseExtensionTabs);
+
+    await target.fallbackNotificationHandler!({
+      method: ABU_RUN_SETTLED_NOTIFICATION,
+      params: { ownerId: 'conversation-a', runId: 'sar-1' },
+    });
+
+    expect(fakeExtension.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fakeExtension.send.mock.calls[0][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a', runId: 'sar-1' });
+  });
+
+  it('never widens a run settlement into a conversation-wide release', async () => {
+    const { releaseExtensionTabs } = await import('./wsServer.js');
+    const { registerRunSettledHandler } = await import('./runSettled.js');
+    const { ABU_RUN_SETTLED_NOTIFICATION } = await import('./types.js');
+    const target: NotificationFallbackTarget = {};
+    registerRunSettledHandler(target, releaseExtensionTabs);
+
+    await target.fallbackNotificationHandler!({
+      method: ABU_RUN_SETTLED_NOTIFICATION,
+      params: { ownerId: 'conversation-a' },
+    });
+
+    // `main`, not the bare conversation form — a settling run must not strip
+    // its siblings of tabs they are still driving.
+    expect(JSON.parse(fakeExtension.send.mock.calls[0][0] as string))
+      .toEqual({ type: 'release', ownerId: 'conversation-a', runId: 'main' });
   });
 });

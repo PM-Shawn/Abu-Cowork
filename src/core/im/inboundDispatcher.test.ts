@@ -28,6 +28,11 @@ vi.mock('./channelRouter', () => ({
 vi.mock('../../utils/tauriEnv', () => ({ isTauriEnv: () => false }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
 
+const mockConsume = vi.fn(() => false);
+vi.mock('./pendingApprovals', () => ({
+  tryConsumeApprovalReply: (...a: unknown[]) => mockConsume(...(a as [])),
+}));
+
 import { dispatchDirect } from './inboundDispatcher';
 
 function parsed(overrides: Partial<NormalizedIMMessage> = {}): NormalizedIMMessage {
@@ -46,6 +51,29 @@ describe('dispatchDirect', () => {
     mockParse.mockReset().mockReturnValue(parsed());
     mockDispatchMessage.mockReset();
     mockTryMatch.mockReset().mockReturnValue(0);
+    mockConsume.mockReset().mockReturnValue(false);
+  });
+
+  // A pending approval's answer ("同意") is a reply to a question Abu asked,
+  // not a new instruction. Forwarding it would leave the blocked run waiting
+  // AND hand the model a one-word prompt to invent work from.
+  it('consumes an approval answer before triggers or the model see it', () => {
+    mockConsume.mockReturnValue(true);
+
+    dispatchDirect('feishu', {}, undefined, '同意');
+
+    expect(mockConsume).toHaveBeenCalledTimes(1);
+    // The hook sees the FINAL message, after the adapter's text won.
+    expect((mockConsume.mock.calls[0] as unknown as [{ text: string }])[0].text).toBe('同意');
+    expect(mockTryMatch).not.toHaveBeenCalled();
+    expect(mockDispatchMessage).not.toHaveBeenCalled();
+  });
+
+  it('routes normally when the message is not an approval answer', () => {
+    dispatchDirect('feishu', {}, undefined, '同意书在哪');
+
+    expect(mockConsume).toHaveBeenCalledTimes(1);
+    expect(mockDispatchMessage).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the adapter's text, which carries the downloaded file path", () => {

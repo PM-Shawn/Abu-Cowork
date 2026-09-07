@@ -27,7 +27,6 @@ interface SnapshotElement {
   visible: boolean;
   text?: string;
   type?: string;
-  id?: string;
   name?: string;
   value?: string;
   placeholder?: string;

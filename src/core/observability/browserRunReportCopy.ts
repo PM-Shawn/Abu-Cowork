@@ -49,7 +49,6 @@ export function reasonLabel(reason: BrowserDenialReasonCode, t: TranslationDict)
     case 'site-denied': return r.siteDenied;
     case 'high-risk-site': return r.highRiskSite;
     case 'policy-denied': return r.policyDenied;
-    case 'upload-unattended': return r.uploadUnattended;
     case 'enterprise-policy-denied': return r.enterprisePolicyDenied;
     case 'capability-denied': return r.capabilityDenied;
     case 'origin-unverified': return r.originUnverified;

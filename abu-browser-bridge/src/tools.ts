@@ -586,7 +586,7 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
     'upload_file',
     `Attach a file from THIS COMPUTER to a file-upload control on the page. Use this instead of clicking an "选择文件 / Browse" button: clicking one opens the operating system's own file picker, which nothing here can fill in.
 Point \`target\` at the file input itself — \`{ "css": "input[type=file]" }\` finds it even when the page hides it behind a styled button, and \`find\` will show you the ones a page has. Give \`files\` the absolute paths on this computer.
-EVERY upload is confirmed by the user, one call at a time, showing the file names and the site. That confirmation is not remembered: there is no "always allow" for uploads, and an automatic task (scheduled / triggered / IM) cannot upload at all — if you are running unattended and need a file sent, say so and let the user do it.
+Uploading follows the user's own setting for it, the same way clicking does: out of the box every upload is confirmed one call at a time, showing the file names and the target site, and a user who set uploads to "allow" on a site they always allow gets no prompt. An automatic task follows the same setting — authorized means it runs, otherwise the approval goes to the user wherever they are.
 A file must live somewhere Abu has been authorized to read; symbolic links are refused; the ceiling is 20 MB per file. The result reports what the page's input actually holds afterwards, so check it before you submit the form.`,
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),

@@ -1629,12 +1629,13 @@ export async function checkToolApproval(
        */
       const browserAskReason = (): string => {
         if (isScriptingBrowserTool(name)) return t.commandConfirm.browserScriptReason;
-        // Before the high-risk sentence, because an upload to a high-risk page
-        // is not asked about at all (`decideBrowserOperation` denies it), so
-        // reaching this line for an upload means the page is ordinary and the
-        // thing the user needs to read about is the FILE.
-        if (uploadsFile(name)) return t.commandConfirm.browserUploadReason;
+        // AFTER the high-risk sentence (2026-09-07): an upload to a bank or a
+        // government page is now asked about rather than refused outright, and
+        // when both apply the page is the sharper warning — the file names and
+        // sizes are in `browserConfirmLabel` either way, so nothing about the
+        // file is lost by letting 「资金 / 政务」 have the sentence.
         if (highRisk) return t.commandConfirm.browserHighRiskReason;
+        if (uploadsFile(name)) return t.commandConfirm.browserUploadReason;
         if (answersPageDialog(name)) {
           // Named, because "browser action: …__handle_dialog" tells a user
           // nothing about what they are agreeing to. The question the dialog

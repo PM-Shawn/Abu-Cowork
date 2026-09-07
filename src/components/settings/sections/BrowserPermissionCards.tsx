@@ -777,13 +777,10 @@ export function BrowserPermissionCards({
           ? t.settings.browserOpStateAllowDesc
           : t.settings.browserOpStateAllowDescSiteScoped;
       case 'ask':
-        // The shared sentence promises an IM approval for an automatic task.
-        // For an upload that road does not exist — the run is refused, not
-        // asked (§5②) — and a description that describes a road the gate does
-        // not have is the same class of lie F8 removed from 「允许」.
-        return opClass === 'upload'
-          ? t.settings.browserOpStateAskDescUpload
-          : t.settings.browserOpStateAskDesc;
+        // One sentence for every row, uploads included: since the 2026-09-07
+        // ruling an unattended 「每次询问」 upload really does go to the IM
+        // approval target, so the shared sentence is true here too.
+        return t.settings.browserOpStateAskDesc;
       case 'deny':
         return t.settings.browserOpStateDenyDesc;
     }

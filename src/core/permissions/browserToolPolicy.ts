@@ -144,6 +144,11 @@ export type BrowserToolConsequence = 'read-only' | 'state-changing';
  *   that was only ever on the user's disk and puts it on somebody else's
  *   server, where no later decision can take it back. Codex's public
  *   commons — inbound permissive, outbound strict — is the same split.
+ *
+ *   Its own ROW, not its own rulebook: since the 2026-09-07 ruling the three
+ *   states mean exactly what they mean for `interactive`, and the class exists
+ *   so the user can answer 「上传文件」 separately from 「点击和填写」 rather
+ *   than so the gate can treat it specially.
  */
 export type BrowserOperationClass = 'read-only' | 'interactive' | 'scripting' | 'upload';
 
@@ -176,8 +181,10 @@ const SCRIPTING_TOOLS = new Set(['execute_js']);
  * channels will grow a second spelling long before this rule changes, and the
  * failure mode of forgetting to add it there is silent: an unlisted upload
  * tool falls through to `classifyBrowserTool`'s `'interactive'` fallback,
- * which rides the conversation grant and the site grant — precisely the two
- * things §5② took away from uploads.
+ * where it would ride the 「点击和填写」 row instead of the one the user set
+ * for uploads — and, worse, would never reach the file resolution in
+ * `registry.ts` that is keyed off this same predicate. The row would be wrong;
+ * the missing path/symlink/size check would be a hole.
  */
 const UPLOAD_TOOLS = new Set(['upload_file']);
 
@@ -186,11 +193,11 @@ const UPLOAD_TOOLS = new Set(['upload_file']);
  *
  * Its own predicate alongside `isScriptingBrowserTool` / `answersPageDialog`,
  * and consulted for the same reason: `registry.ts` has to know, by NAME and
- * not by inference from `opClass`, which calls may never mint or spend the
- * 30-minute conversation grant. `opClass` would nearly do — `'upload'` is
- * exactly this set — but "nearly" is how `execute_js__x` got in (U9/C1), and
- * a batch's class is computed from its arguments rather than its name, so the
- * two are not interchangeable in general.
+ * not by inference from `opClass`, which calls must have their file list
+ * resolved and frozen before anything is sent. `opClass` would nearly do —
+ * `'upload'` is exactly this set — but "nearly" is how `execute_js__x` got in
+ * (U9/C1), and a batch's class is computed from its arguments rather than its
+ * name, so the two are not interchangeable in general.
  */
 export function uploadsFile(namespacedName: string): boolean {
   const toolName = browserToolNameOf(namespacedName);
@@ -673,9 +680,11 @@ export interface BrowserOperationPolicy {
   interactive: BrowserOperationState;
   scripting: BrowserOperationState;
   /**
-   * Sending a local file into a page (batch-三 T5). The one row that offers no
-   * `'allow'` — see `browserOperationStatesFor` — so its two reachable values
-   * are 「每次询问」 (the default) and 「拒绝」.
+   * Sending a local file into a page (batch-三 T5). Three states like every
+   * other row (2026-09-07 ruling); it differs from `interactive` only in its
+   * DEFAULT, which is 「每次询问」 rather than 「允许」 — an upload leaves the
+   * machine, so the shipped setting asks once and the user may then set it to
+   * 「允许」 for the sites they trust.
    */
   upload: BrowserOperationState;
 }
@@ -698,24 +707,8 @@ export interface BrowserOperationPolicy {
  * restricted row would be expressed.
  */
 export function browserOperationStatesFor(
-  opClass: BrowserOperationClass,
+  _opClass: BrowserOperationClass,
 ): readonly BrowserOperationState[] {
-  /**
-   * Upload is the restricted row the collapse left behind (§5②, 2026-09-05).
-   *
-   * Every other class can be set to 「允许」 because there is a standing,
-   * user-authored fact that makes the silence safe: the site is one they set
-   * to 始终允许. An upload has no such fact to lean on — the site grant says
-   * the user trusts this site to be CLICKED, and «我信任这个网站» is not
-   * «把我硬盘上的东西发给它». So the option is not offered at all, rather
-   * than offered and then quietly ignored by `decideBrowserOperation`: a
-   * control that does nothing is worse than one that is absent.
-   *
-   * `decideBrowserOperation` clamps a stray `'allow'` anyway (a hand-edited
-   * store, a downgrade), so this list is the honest UI and that clamp is the
-   * enforcement — not two copies of one rule.
-   */
-  if (opClass === 'upload') return ['ask', 'deny'] as const;
   return ['allow', 'ask', 'deny'] as const;
 }
 
@@ -740,9 +733,11 @@ export const DEFAULT_BROWSER_OPERATION_POLICY: BrowserOperationPolicy = {
   readOnly: 'allow',
   interactive: 'allow',
   scripting: 'ask',
-  // §5② — every upload asks, and an automatic run does not get one at all
-  // (`decideBrowserOperation`). 'ask' is not just the default here, it is the
-  // most permissive value the row can hold.
+  // 2026-09-07 ruling — 「默认每次询问」. The row can be set to 「允许」 like
+  // any other (and then behaves exactly like `interactive`); what ships is the
+  // asking one, because an upload is the one action whose effect leaves this
+  // machine and the user should authorize it deliberately rather than
+  // discover it happened.
   upload: 'ask',
 };
 
@@ -795,14 +790,6 @@ export type BrowserDenialReasonCode =
   | 'high-risk-site'
   /** The user's operation-class policy says deny for this class. */
   | 'policy-denied'
-  /**
-   * An upload with nobody watching (§5②) — refused whatever the row says, so
-   * it is NOT `policy-denied`. The advice differs and that is the whole point
-   * of a separate code: 「去设置里放宽」 is the right next step for a policy
-   * cell and actively wrong here, because there is no setting that turns this
-   * on. The only next step is to run it while you are at the machine.
-   */
-  | 'upload-unattended'
   /**
    * An ENTERPRISE policy refused this tool — a different thing from
    * `policy-denied`, which is the user's own three-state setting.
@@ -985,33 +972,24 @@ export function decideBrowserOperation(
   if (siteVerdict === 'high-risk' && runMode === 'unattended') return 'deny';
   const state = policy[OPERATION_CLASS_TO_POLICY_KEY[opClass]];
   /**
-   * Uploads, before the row is consulted at all (§5②, 2026-09-05 ruling).
+   * NOTE (2026-09-07 ruling, Shawn) — `upload` has NO branch here.
    *
-   * Two refusals nothing configurable can lift:
-   * 1. **Nobody watching → deny.** An upload is the one action whose effect
-   *    survives the run: a click can be undone by another click, a file that
-   *    reached somebody's server cannot be recalled. There is no standing fact
-   *    that makes doing it silently at 3am acceptable, so unlike `scripting`
-   *    this is not an opt-in tier with prerequisites — it is off. Deliberately
-   *    `deny` rather than `ask`: routing it to an IM round-trip would wake a
-   *    human to approve something that has no path to running.
-   * 2. **Money movement / government → deny, in both run modes.** Everywhere
-   *    else a watched high-risk page is upgraded to an ask (see below); here
-   *    the ask would be «把这份文件发给这个银行页面吗», and the class of
-   *    mistake it guards against — an upload aimed at a page that only LOOKS
-   *    like the one the user meant — is not one a confirmation catches. The
-   *    user does this one themselves.
+   * The 09-05 口径 gave it two refusals nothing configurable could lift
+   * (unattended → deny, high-risk → deny in both run modes) and no `'allow'`
+   * tier at all. That is gone. 「不区分什么有人无人值守，只要用户授权，就算
+   * 自动，不授权就要申请」: an upload is authorized exactly the way a click
+   * is — the row's three states mean the same three things, the site grant
+   * and the conversation grant apply, high-risk is handled by the shared
+   * precedence below, and an unattended 「每次询问」 goes to the IM approval
+   * target instead of refusing itself.
    *
-   * Everything else about an upload is an ask: `browserOperationStatesFor`
-   * offers this row no `'allow'`, and a stray one (hand-edited store, a
-   * downgrade that wrote a value this build no longer offers) is clamped here
-   * rather than honoured.
+   * What did NOT move is the file: path canonicalization, the outside-the-
+   * workspace refusal, the symlink refusal and the size ceiling run on EVERY
+   * release path including the silent one (`registry.ts` resolves the file
+   * list whenever the gate is not a deny). That is a fact about the file, not
+   * a decision about the site, which is why it lives in
+   * `browserUploadFiles.ts` and not here.
    */
-  if (opClass === 'upload') {
-    if (runMode === 'unattended') return 'deny';
-    if (siteVerdict === 'high-risk') return 'deny';
-    return state === 'deny' ? 'deny' : 'ask';
-  }
   /**
    * Automatic-task scripting — the one row whose configured `'allow'` is not
    * taken at face value here.

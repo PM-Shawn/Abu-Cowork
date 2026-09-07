@@ -783,8 +783,6 @@ export interface TranslationDict {
       siteDenied: string;
       highRiskSite: string;
       policyDenied: string;
-      /** An upload with nobody watching — refused by class, not by the row. */
-      uploadUnattended: string;
       enterprisePolicyDenied: string;
       capabilityDenied: string;
       originUnverified: string;
@@ -1136,12 +1134,6 @@ export interface TranslationDict {
      * 结果与审批推送频道.
      */
     browserOpStateAskDesc: string;
-    /**
-     * 「每次询问」 on the UPLOAD row. The shared sentence promises an IM
-     * approval for an automatic task, and that road does not exist here:
-     * an unattended upload is refused rather than asked about (§5②).
-     */
-    browserOpStateAskDescUpload: string;
     /** ⚠ line under the scripting select while `allow` is selected AND the
      *  automatic-tasks master switch is on — i.e. only while the risk is
      *  live. An attended script is asked about every time whatever this row
@@ -2903,11 +2895,9 @@ export interface TranslationDict {
     /** Unattended or attended run whose operation-class policy is set to
      *  'deny' for this kind of browser action. */
     browserPolicyDenied: string;
-    /** T5 — an automatic run asked to upload a file. Refused whatever the
-     *  upload row says: there is no setting that turns this on. */
-    browserUploadUnattended: string;
     /** Why an upload is being asked about — the sentence every ask channel
-     *  shows above the file list and the target site. */
+     *  (desktop dialog and IM) shows above the file list and the target
+     *  site. */
     browserUploadReason: string;
     /** `files` could not be read as a list of paths. */
     browserUploadMalformed: string;

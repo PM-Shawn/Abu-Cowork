@@ -32,7 +32,6 @@ export function browserDenialReasonText(
     case 'site-denied': return t.commandConfirm.browserSiteDenied;
     case 'high-risk-site': return t.commandConfirm.browserUnattendedHighRiskSite;
     case 'policy-denied': return t.commandConfirm.browserPolicyDenied;
-    case 'upload-unattended': return t.commandConfirm.browserUploadUnattended;
     case 'enterprise-policy-denied': return t.commandConfirm.browserEnterprisePolicyDenied;
     case 'capability-denied': return t.commandConfirm.browserUnattendedCapabilityDenied;
     case 'origin-unverified': return t.commandConfirm.browserUnattendedOriginUnverified;

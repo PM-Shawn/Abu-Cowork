@@ -1,10 +1,9 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n } from '@/i18n';
-import { skillTemplates } from '@/data/marketplace/skills';
 import { skillLoader } from '@/core/skill/loader';
 import SkillEditor from './SkillEditor';
 import SkillDraftsPanel from './SkillDraftsPanel';
@@ -12,19 +11,19 @@ import SkillCategoryBlocksPanel from './SkillCategoryBlocksPanel';
 import SkillHistoryModal from './SkillHistoryModal';
 import SkillUploadModal from './SkillUploadModal';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, FileText, Pencil, MoreHorizontal, Eye, Code, Info, MessageCircle, Download, Clock, ChevronDown, ChevronRight, Folder } from 'lucide-react';
+import { Trash2, FileText, Pencil, MoreHorizontal, MessageCircle, Download, Clock } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import { packSkill } from '@/core/skill/packager';
 import { useToastStore } from '@/stores/toastStore';
 import { getParentDir } from '@/utils/pathUtils';
-import type { Skill, SkillUXCategory } from '@/types';
+import type { Skill, SkillSource, SkillUXCategory } from '@/types';
 import { sourceToUXCategory } from '@/core/skill/uxCategory';
-import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
-import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import SkillDetailPanel from '@/components/toolbox/skills/SkillDetailPanel';
+import { isSystemSkill } from '@/components/toolbox/skills/isSystemSkill';
 
 // Build a set of system skill names from marketplace templates
 /**
@@ -52,96 +51,16 @@ const SOURCE_BADGE_TONE: Record<'neutral' | 'clay' | 'blue' | 'slate', string> =
   slate: 'bg-slate-100 dark:bg-[var(--abu-bg-muted)] text-slate-600 dark:text-[var(--abu-text-secondary)]',
 };
 
-const systemSkillNames = new Set(
-  skillTemplates.filter((t) => t.isBuiltin).map((t) => t.name)
-);
-
-function isSystemSkill(skill: Skill): boolean {
-  return skill.filePath.includes('builtin-skills') || systemSkillNames.has(skill.name);
-}
-
-// ── Supporting-file tree (restored from the pre-modal list-panel version and
-// adapted to render inside the detail modal). ───────────────────────────────
-interface FileNode {
-  name: string;
-  path: string;
-  isDir: boolean;
-  children: FileNode[];
-}
-
-function buildFileTree(files: string[]): FileNode[] {
-  const root: FileNode[] = [];
-  for (const filePath of files) {
-    const parts = filePath.split('/');
-    let current = root;
-    let accPath = '';
-    for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
-      accPath = accPath ? `${accPath}/${part}` : part;
-      const isLast = i === parts.length - 1;
-      let existing = current.find((n) => n.name === part);
-      if (!existing) {
-        existing = { name: part, path: accPath, isDir: !isLast, children: [] };
-        current.push(existing);
-      }
-      current = existing.children;
-    }
-  }
-  const sortNodes = (nodes: FileNode[]) => {
-    nodes.sort((a, b) => {
-      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    nodes.forEach((n) => { if (n.children.length) sortNodes(n.children); });
-  };
-  sortNodes(root);
-  return root;
-}
-
-/** Recursive file tree row — indent adapted for the modal (no list-panel base offset). */
-function FileTreeItem({
-  node, depth = 0, selectedFile, onFileClick,
-}: {
-  node: FileNode; depth?: number;
-  selectedFile?: string | null;
-  onFileClick?: (path: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const ml = depth * 16;
-
-  if (node.isDir) {
-    return (
-      <div>
-        <div
-          className="flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer hover:bg-[var(--abu-bg-active)]/60 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] text-body transition-colors"
-          style={{ marginLeft: ml }}
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? <ChevronDown className="h-3 w-3 shrink-0" /> : <ChevronRight className="h-3 w-3 shrink-0" />}
-          <Folder className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-          <span className="truncate">{node.name}</span>
-        </div>
-        {expanded && node.children.map((child) => (
-          <FileTreeItem key={child.path} node={child} depth={depth + 1} selectedFile={selectedFile} onFileClick={onFileClick} />
-        ))}
-      </div>
-    );
-  }
-
-  const isActive = selectedFile === node.path;
-  return (
-    <div
-      className={`flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer text-body transition-colors ${
-        isActive ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-active)]/60 hover:text-[var(--abu-text-primary)]'
-      }`}
-      style={{ marginLeft: ml }}
-      onClick={() => onFileClick?.(node.path)}
-    >
-      <FileText className="h-3.5 w-3.5 shrink-0" />
-      <span className="truncate">{node.name}</span>
-    </div>
-  );
-}
+/**
+ * 「我的」 = skills the user or their project/team authored on disk. The
+ * complement (builtin / plugin / enterprise) came from outside and lives in
+ * 「市场」 — see EXTERNAL_SOURCES in `toolbox/skills/ExternalSkillsPanel.tsx`.
+ * `standard` (~/.agents/skills) counts as the user's own: it is their global
+ * cross-client folder, just not Abu's.
+ */
+const MINE_SOURCES: ReadonlySet<SkillSource> = new Set<SkillSource>([
+  'user', 'workspace-auto', 'draft', 'project', 'project-standard', 'standard',
+]);
 
 interface SkillsSectionProps {
   manualCreateTrigger?: number;
@@ -150,15 +69,24 @@ interface SkillsSectionProps {
    *  showAddForm, with an internal fallback so the component still works standalone. */
   showUploadModal?: boolean;
   onUploadModalChange?: (open: boolean) => void;
+  /** `'mine'` narrows the list to skills the user (or their project/team) put on
+   *  disk — the 「我的」 half of the Extensions source sub-nav. Everything that
+   *  arrived from outside (builtin / plugin / organization) belongs to 「市场」,
+   *  which is {@link ExternalSkillsPanel}, not this list. Omitted = every source,
+   *  the pre-split behaviour. */
+  sourceFilter?: 'mine';
 }
 
-export default function SkillsSection({ manualCreateTrigger, showUploadModal: externalShowUploadModal, onUploadModalChange }: SkillsSectionProps) {
+export default function SkillsSection({ manualCreateTrigger, showUploadModal: externalShowUploadModal, onUploadModalChange, sourceFilter }: SkillsSectionProps) {
   const { skills, refresh } = useDiscoveryStore();
   // We subscribe to drafts count here (not SkillDraftsPanel itself) so
   // the 阿布沉淀 category's visibility condition accounts for pending
   // drafts even when there are no workspace-auto skills yet.
   const draftsCount = useSkillDraftsStore((s) => s.drafts.length);
-  const { toolboxSearchQuery, disabledSkills, toggleSkillEnabled, closeToolbox } = useSettingsStore();
+  const { disabledSkills, toggleSkillEnabled, closeExtensions } = useSettingsStore();
+  // The 技能 tab's own remembered query (per-tab since the search box stopped
+  // being cleared on every tab switch).
+  const extensionsSearchQuery = useExtensionsSearchQuery('skills');
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const { t } = useI18n();
@@ -168,13 +96,6 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   const [editorSkill, setEditorSkill] = useState<Skill | 'new' | null>(null);
   const [menuSkill, setMenuSkill] = useState<string | null>(null);
   const [historySkill, setHistorySkill] = useState<Skill | null>(null);
-  // Content view mode: preview (rendered) or source (raw)
-  const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
-  // Supporting-file browsing inside the detail modal. `activeFilePath` = 'SKILL.md'
-  // shows selected.content; any other path loads via skillLoader on demand.
-  const [modalFiles, setModalFiles] = useState<string[]>([]);
-  const [activeFilePath, setActiveFilePath] = useState<string>('SKILL.md');
-  const [activeFileContent, setActiveFileContent] = useState<string | null>(null);
   // Unified upload dialog (folder / .askill / .zip via click or drag-drop)
   const [internalShowUploadModal, setInternalShowUploadModal] = useState(false);
   const showUploadModal = externalShowUploadModal ?? internalShowUploadModal;
@@ -206,17 +127,27 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
   const disabledSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
 
+  // Scope by source first, search second — the two answer different questions,
+  // and the empty state needs them apart: nothing of the user's own at all
+  // ("还没有你创建的技能") reads differently from "your skills, none matching".
+  const scopedSkills = useMemo(() => {
+    if (sourceFilter !== 'mine') return installedSkills;
+    // An un-tagged legacy skill counts as the user's own, matching
+    // sourceToUXCategory()'s treatment of `undefined`.
+    return installedSkills.filter((s) => s.source === undefined || MINE_SOURCES.has(s.source));
+  }, [installedSkills, sourceFilter]);
+
   // Filter by search
-  const searchLower = toolboxSearchQuery.toLowerCase();
+  const searchLower = extensionsSearchQuery.toLowerCase();
   const filteredSkills = useMemo(() => {
-    if (!searchLower) return installedSkills;
-    return installedSkills.filter((s) => {
+    if (!searchLower) return scopedSkills;
+    return scopedSkills.filter((s) => {
       const tagStr = (s.tags ?? []).join(' ').toLowerCase();
       return s.name.toLowerCase().includes(searchLower) ||
         s.description.toLowerCase().includes(searchLower) ||
         tagStr.includes(searchLower);
     });
-  }, [installedSkills, searchLower]);
+  }, [scopedSkills, searchLower]);
 
   // Group skills by source for display
   // Group skills by UX category — 4 top-level buckets that match the
@@ -239,29 +170,6 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   }, [filteredSkills]);
 
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
-
-  // Load the open skill's supporting files; reset the viewer to SKILL.md.
-  useEffect(() => {
-    setActiveFilePath('SKILL.md');
-    setActiveFileContent(null);
-    if (!selectedSkill) { setModalFiles([]); return; }
-    let cancelled = false;
-    skillLoader.listSupportingFiles(selectedSkill)
-      .then((files) => { if (!cancelled) setModalFiles(files); })
-      .catch(() => { if (!cancelled) setModalFiles([]); });
-    return () => { cancelled = true; };
-  }, [selectedSkill]);
-
-  // Load a supporting file's content on demand (SKILL.md uses selected.content).
-  useEffect(() => {
-    if (!selectedSkill || activeFilePath === 'SKILL.md') { setActiveFileContent(null); return; }
-    let cancelled = false;
-    setActiveFileContent(null);
-    skillLoader.loadSupportingFile(selectedSkill, activeFilePath)
-      .then((content) => { if (!cancelled) setActiveFileContent(content ?? ''); })
-      .catch(() => { if (!cancelled) setActiveFileContent(''); });
-    return () => { cancelled = true; };
-  }, [selectedSkill, activeFilePath]);
 
   // Delete a user-installed skill. With the detail now a modal (not a
   // list panel), there's no natural "adjacent" item to select after
@@ -354,8 +262,19 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {filteredSkills.length === 0 ? (
-          <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noSkillsFound}</div>
+        {/* Drafts are not skills on disk yet, so they are absent from
+            filteredSkills — but 阿布沉淀 is rendered from the grid branch below.
+            Falling into the empty state while drafts are pending would hide
+            them behind 「还没有你创建的技能」, and 「市场」 never shows drafts
+            (`draft` ∈ MINE_SOURCES), so nothing else would surface them. */}
+        {filteredSkills.length === 0 && draftsCount === 0 ? (
+          sourceFilter === 'mine' && scopedSkills.length === 0 ? (
+            <div className="py-16 text-center">
+              <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.skillsMineEmptyTitle}</p>
+            </div>
+          ) : (
+            <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noSkillsFound}</div>
+          )
         ) : (
           <div className="max-w-5xl mx-auto space-y-6">
             {/* Category · Mine — user's own or team-shipped skills.
@@ -398,14 +317,12 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
         )}
       </div>
 
-      {/* Detail modal */}
-      <ToolDetailModal
-        open={!!selected}
+      {/* Detail modal — shared with 「市场」 (ExternalSkillsPanel); only the
+          header actions differ, because only 「我的」 can edit or delete. */}
+      <SkillDetailPanel
+        skill={selected}
         onClose={() => { setSelectedSkill(null); setMenuSkill(null); }}
         disableEscape={!!historySkill}
-        maxWidth="max-w-2xl"
-        avatar={selected ? <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" /> : undefined}
-        title={selected?.name}
         headerActions={selected ? (
           <>
             <Toggle
@@ -431,7 +348,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                         setMenuSkill(null);
                         startNewConversation();
                         setPendingInput(`/${selected.name} `);
-                        closeToolbox();
+                        closeExtensions();
                       }}
                     >
                       <MessageCircle className="h-3 w-3" />
@@ -480,90 +397,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             </div>
           </>
         ) : undefined}
-      >
-        {selected && (
-          <div className="space-y-5">
-            {/* Added by */}
-            <div>
-              <div className="text-minor text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
-              <div className="text-body font-medium text-[var(--abu-text-primary)]">{
-                selected.source === 'builtin' ? t.toolbox.skillSourceBuiltin :
-                selected.source === 'user' ? t.toolbox.skillSourceUser :
-                selected.source === 'standard' ? t.toolbox.skillSourceStandard :
-                (selected.source === 'project' || selected.source === 'project-standard') ? t.toolbox.skillSourceProject :
-                (isSystemSkill(selected) ? t.toolbox.skillSourceBuiltin : t.toolbox.skillSourceUser)
-              }</div>
-            </div>
-
-            {/* Description */}
-            <div>
-              <div className="flex items-center gap-1 mb-1.5">
-                <span className="text-minor text-[var(--abu-text-muted)]">Description</span>
-                <Info className="h-3 w-3 text-[var(--abu-text-muted)]" />
-              </div>
-              <p className="text-body text-[var(--abu-text-primary)] leading-relaxed">{selected.description}</p>
-            </div>
-
-            {/* Files: SKILL.md + supporting files, with an on-demand viewer */}
-            {(() => {
-              const isMd = activeFilePath.endsWith('.md');
-              const displayContent = activeFilePath === 'SKILL.md' ? selected.content : activeFileContent;
-              const fileTree = buildFileTree(modalFiles);
-              return (
-                <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
-                  {/* File list — only when the skill ships supporting files */}
-                  {modalFiles.length > 0 && (
-                    <div className="max-h-40 overflow-y-auto overlay-scroll border-b border-[var(--abu-border)] p-1.5 space-y-0.5">
-                      <div
-                        className={`flex items-center gap-2 py-1 px-2 rounded-md cursor-pointer text-body transition-colors ${
-                          activeFilePath === 'SKILL.md' ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-muted)] hover:bg-[var(--abu-bg-active)]/60 hover:text-[var(--abu-text-primary)]'
-                        }`}
-                        onClick={() => setActiveFilePath('SKILL.md')}
-                      >
-                        <FileText className="h-3.5 w-3.5 shrink-0" />
-                        <span className="truncate">SKILL.md</span>
-                      </div>
-                      {fileTree.map((node) => (
-                        <FileTreeItem key={node.path} node={node} selectedFile={activeFilePath} onFileClick={setActiveFilePath} />
-                      ))}
-                    </div>
-                  )}
-                  {/* Viewer header: active filename + preview/source toggle */}
-                  <div className="flex items-center justify-between gap-2 px-4 py-2.5 bg-[var(--abu-bg-base)] border-b border-[var(--abu-border)]">
-                    <span className="text-minor font-medium text-[var(--abu-text-secondary)] truncate">{activeFilePath}</span>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={() => setContentViewMode('preview')}
-                        className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                        title="Preview"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </button>
-                      <button
-                        onClick={() => setContentViewMode('source')}
-                        className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                        title="Source"
-                      >
-                        <Code className="h-4 w-4" />
-                      </button>
-                    </div>
-                  </div>
-                  {/* Content */}
-                  <div className="px-4 py-4 bg-[var(--abu-bg-base)]">
-                    {displayContent === null ? (
-                      <div className="text-minor text-[var(--abu-text-muted)] py-6 text-center">…</div>
-                    ) : contentViewMode === 'preview' && isMd ? (
-                      <MarkdownRenderer content={displayContent} />
-                    ) : (
-                      <pre className="text-minor text-[var(--abu-text-primary)] whitespace-pre-wrap break-words font-mono leading-relaxed">{displayContent}</pre>
-                    )}
-                  </div>
-                </div>
-              );
-            })()}
-          </div>
-        )}
-      </ToolDetailModal>
+      />
 
       {/* Unified upload modal — conditionally mounted so useFileDragDrop's
           window-level Tauri listener only runs while the modal is open. */}

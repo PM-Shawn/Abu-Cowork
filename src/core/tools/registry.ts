@@ -35,6 +35,12 @@ import {
   type DecideBrowserOperationSiteVerdict,
   type SiteVerdictOptions,
 } from '../permissions/browserToolPolicy';
+import {
+  classifyPluginTool,
+  hasPluginGrant,
+  grantPluginServer,
+  pluginServerOf,
+} from '../permissions/pluginToolPolicy';
 import { evaluateBrowserGate } from '../permissions/browserGateEvaluation';
 import {
   browserDenialReasonText as sharedBrowserDenialReasonText,
@@ -2228,6 +2234,43 @@ export async function checkToolApproval(
         ...(target.frameOrigins ? { expectedFrameOrigins: target.frameOrigins } : {}),
         ...(loginRequired ? { loginRequired: true as const } : {}),
       };
+    }
+  }
+
+  // Plugin-contributed MCP tools. Without this block they would fall through
+  // to `decideConsequentialTool(undefined)` → 'allow', i.e. third-party code
+  // installed with one click would execute silently in all three permission
+  // modes. Approval is per (conversation, server) so approving one plugin
+  // never unlocks another.
+  {
+    const consequence = classifyPluginTool(name);
+    if (consequence === 'state-changing') {
+      const pluginCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
+        runPermissionCeiling,
+        'plugin',
+      );
+      if (pluginCeilingDecision.decision === 'deny') {
+        return pluginCeilingDecision;
+      }
+      const serverName = pluginServerOf(name) ?? '';
+      const granted = hasPluginGrant(toolContext?.conversationId, serverName);
+      const decision = strategy.decideOtherTool(consequence, granted);
+      if (decision !== 'allow') {
+        if (!onRequireConfirmation) {
+          // Fail closed. A headless run must not be the cheap way to execute
+          // plugin code the user never saw.
+          return { decision: 'deny', reason: `Error: ${t.commandConfirm.pluginToolDenied}` };
+        }
+        const confirmed = await onRequireConfirmation({
+          command: `${t.commandConfirm.pluginToolAction}: ${name}`,
+          level: 'warn',
+          reason: t.commandConfirm.pluginToolReason,
+        }, toolContext?.loopId);
+        if (!confirmed) {
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+        }
+        grantPluginServer(toolContext?.conversationId, serverName);
+      }
     }
   }
 

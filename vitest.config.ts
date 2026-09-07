@@ -15,6 +15,23 @@ export default defineConfig({
       { find: '@modelcontextprotocol/sdk/client/streamableHttp.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
       { find: '@modelcontextprotocol/sdk/client/sse.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
       { find: '@modelcontextprotocol/sdk/validation/cfworker', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
+      // Own stub file (not mcp.ts): test files that vi.mock the client entry would
+      // otherwise replace the shared module and drop the notification schemas.
+      // It re-exports the REAL types.js — `@modelcontextprotocol/ext-apps/app-bridge`
+      // (MCP Apps host) needs the actual zod schemas to evaluate.
+      { find: '@modelcontextprotocol/sdk/types.js', replacement: path.resolve(__dirname, './src/test/__mocks__/mcpTypes.ts') },
+      // Same reason: the Apps bridge extends the SDK `Protocol` class. This file
+      // is pure protocol logic (no Node built-ins), so the real one loads fine —
+      // without this entry the generic prefix below would mangle it into
+      // `mcp.ts/shared/protocol.js`.
+      { find: '@modelcontextprotocol/sdk/shared/protocol.js', replacement: path.resolve(__dirname, './node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js') },
+      // The MCP App demo fixture (tests/fixtures/mcp-app-demo) boots a REAL
+      // server over a REAL in-memory transport — a stub would make its contract
+      // test assert nothing. Both files are pure protocol code (zod only, no
+      // Node built-ins), so they load unchanged; without these entries the
+      // generic prefix below mangles them into `mcp.ts/server/mcp.js`.
+      { find: '@modelcontextprotocol/sdk/server/mcp.js', replacement: path.resolve(__dirname, './node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js') },
+      { find: '@modelcontextprotocol/sdk/inMemory.js', replacement: path.resolve(__dirname, './node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js') },
       { find: '@modelcontextprotocol/sdk', replacement: path.resolve(__dirname, './src/test/__mocks__/mcp.ts') },
     ],
   },
@@ -53,14 +70,22 @@ export default defineConfig({
     // the built-in Electron browser, which injects the same content bundle).
     // They were outside the gate entirely; anything shipped from them was
     // unverified. Keep them in.
-    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts', 'abu-chrome-extension/**/*.test.ts', 'abu-browser-bridge/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}', 'src/__tests__/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts', 'sidecar/**/*.test.ts', 'electron/**/*.test.ts', 'abu-chrome-extension/**/*.test.ts', 'abu-browser-bridge/**/*.test.ts', 'tests/fixtures/**/*.test.ts'],
     exclude: [...configDefaults.exclude, 'src/__tests__/quarantine/**'],
     // NOTE: the existing *.integration.test.ts files here are fast, in-process
     // (Tauri/SDKs mocked — no real DB or network), so they stay in the default
     // gate. If P3 introduces slow / external-dependency tests, give them a
     // dedicated script + exclude them here then — never silently drop them.
+    // Machine-readable outputs for CI: junit feeds the PR test report
+    // (dorny/test-reporter); coverage json/lcov feed the PR coverage comment
+    // (vitest-coverage-report-action) and the downloadable HTML report.
+    // Both directories are gitignored.
+    reporters: ['default', ['junit', { outputFile: 'test-results/junit.xml' }]],
     coverage: {
       provider: 'v8',
+      reporter: ['text', 'html', 'lcov', 'json-summary', 'json'],
+      // Still write reports when thresholds fail so the PR comment can show WHY.
+      reportOnFailure: true,
       exclude: [
         'src/components/**',
         'src/test/**',

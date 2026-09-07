@@ -18,6 +18,12 @@ interface ToolCallsGroupProps {
   conversationId?: string;
 }
 
+// MCP Apps note: an app-backed step's interface is NOT rendered here. Assistant
+// turns reach the transcript through `MessageGroup`, which never renders this
+// component (a `MessageBubble` for an assistant message returns early in
+// `actionsOnly` mode), so a block wired in here would be unreachable for every
+// tool call a model makes. `MessageGroup` owns it — see `mcpAppSteps` there.
+
 type ToolResultImageBlock = Extract<ToolResultContent, { type: 'image' }>;
 type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
 
@@ -27,7 +33,7 @@ type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
  */
 export default function ToolCallsGroup({ toolCalls, conversationId }: ToolCallsGroupProps) {
   // Filter out hidden tool calls (like report_plan)
-  const visibleToolCalls = toolCalls.filter((tc) => !tc.hidden);
+  const visibleToolCalls = useMemo(() => toolCalls.filter((tc) => !tc.hidden), [toolCalls]);
 
   const [expanded, setExpanded] = useState(false);
   const [currentDisplayIndex, setCurrentDisplayIndex] = useState(0);

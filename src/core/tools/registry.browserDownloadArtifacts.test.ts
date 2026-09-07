@@ -123,6 +123,7 @@ describe('a download this run produced reaches the card and the IM summary', () 
       config: { name: 'abu-browser' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
@@ -289,6 +290,7 @@ describe('a download in an ordinary conversation becomes the downloads-only card
       config: { name: 'abu-browser' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });

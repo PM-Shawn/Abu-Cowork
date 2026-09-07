@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { posix } from 'node:path';
 import * as fs from '@tauri-apps/plugin-fs';
 import {
   appendHistoryEntry,
@@ -33,6 +34,17 @@ const mockRemove = vi.mocked(fs.remove);
 const mockAtomicWrite = vi.mocked(atomicFs.atomicWrite);
 const mockRestoreFromBackup = vi.mocked(atomicFs.restoreFromBackup);
 
+/**
+ * The privileged host resolves before it acts: `resolveScoped`
+ * (electron/fsHost.cjs) runs `path.resolve` on every path it is handed, so
+ * `<skillDir>/../../x` reaches the syscall as the collapsed `/x`. Keying this
+ * store on the raw string instead would make an escaping path address a slot
+ * nothing else uses — i.e. would hide a traversal rather than reveal it.
+ */
+function at(path: string | URL): string {
+  return posix.normalize(String(path));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   inMemoryFs.clear();
@@ -41,32 +53,30 @@ beforeEach(() => {
   // Wire the Tauri fs mocks to our in-memory store so sequential
   // append/read cycles reflect each other.
   mockReadTextFile.mockImplementation(async (path) => {
-    const p = String(path);
-    const content = inMemoryFs.get(p);
-    if (content === undefined) throw new Error(`ENOENT: ${p}`);
+    const content = inMemoryFs.get(at(path));
+    if (content === undefined) throw new Error(`ENOENT: ${at(path)}`);
     return content;
   });
   mockWriteTextFile.mockImplementation(async (path, content) => {
-    inMemoryFs.set(String(path), String(content));
+    inMemoryFs.set(at(path), String(content));
   });
   mockExists.mockImplementation(async (path) => {
-    const p = String(path);
-    return inMemoryFs.has(p) || inMemoryDirs.has(p);
+    return inMemoryFs.has(at(path)) || inMemoryDirs.has(at(path));
   });
   mockMkdir.mockImplementation(async (path) => {
-    inMemoryDirs.add(String(path));
+    inMemoryDirs.add(at(path));
   });
   mockRemove.mockImplementation(async (path) => {
-    inMemoryFs.delete(String(path));
+    inMemoryFs.delete(at(path));
   });
   mockAtomicWrite.mockImplementation(async (path, content) => {
-    inMemoryFs.set(String(path), String(content));
+    inMemoryFs.set(at(path), String(content));
   });
   mockRestoreFromBackup.mockImplementation(async (target, backup) => {
-    const backupContent = inMemoryFs.get(String(backup));
+    const backupContent = inMemoryFs.get(at(backup));
     if (backupContent === undefined) throw new Error('backup missing');
-    inMemoryFs.set(String(target), backupContent);
-    inMemoryFs.delete(String(backup)); // restoreFromBackup consumes the backup
+    inMemoryFs.set(at(target), backupContent);
+    inMemoryFs.delete(at(backup)); // restoreFromBackup consumes the backup
   });
 });
 
@@ -222,16 +232,18 @@ describe('history · revertTurn', () => {
   });
 
   it('reports missing-snapshot failures without crashing', async () => {
-    // The backup path in the entry points somewhere that doesn't exist —
+    // The backup path in the entry points at a file that is no longer there —
     // could happen if a user manually nuked .history/ or ran into disk
-    // issues. Revert should degrade gracefully.
+    // issues. Revert should degrade gracefully. (Inside the skill directory,
+    // which is where every backup this tool writes lives; one outside it is a
+    // different failure and has its own test below.)
     await seed({
       turnId: 'turn-stale',
       op: 'patch',
       files: [
         {
           relPath: 'SKILL.md',
-          snapshotPath: '/nonexistent/backup',
+          snapshotPath: `${SKILL_DIR}/.SKILL.md.backup.1699999999`,
           action: 'modified',
         },
       ],
@@ -284,7 +296,7 @@ describe('history · revertTurn', () => {
       op: 'patch',
       files: [
         { relPath: 'a.md', snapshotPath: goodBackup, action: 'modified' },
-        { relPath: 'b.md', snapshotPath: '/missing', action: 'modified' },
+        { relPath: 'b.md', snapshotPath: `${SKILL_DIR}/.b.md.backup.1`, action: 'modified' },
       ],
     });
 
@@ -296,5 +308,120 @@ describe('history · revertTurn', () => {
     expect(inMemoryFs.get(`${SKILL_DIR}/a.md`)).toBe('old a');
     // b.md untouched — failed restores don't mutate target state.
     expect(inMemoryFs.get(`${SKILL_DIR}/b.md`)).toBe('new b');
+  });
+});
+
+/**
+ * `.history/index.jsonl` lives INSIDE the skill directory, so it is package
+ * content: the loader scans `{workspace}/.abu/skills` as source `project`
+ * (loader.ts) and `git clone` carries the file like any other, and the npm and
+ * URL installers write `.history/` straight into the staged skill. The History
+ * menu item is offered for every skill regardless of source
+ * (SkillsSection.tsx), so reverting a turn somebody else authored is one click.
+ *
+ * `revertTurn` therefore has to treat every path in that file as hostile:
+ * `joinPath` does not collapse `..`, and the privileged host's guard only asks
+ * whether the RESOLVED path lands under an allowed root — `$HOME` among them,
+ * with the `.abu` root basename as its only removal denial.
+ */
+describe('history · revertTurn refuses paths the skill does not own', () => {
+  const VICTIM = '/Users/test/Documents/thesis.txt';
+
+  async function seedRaw(entry: HistoryEntry) {
+    inMemoryFs.set(`${SKILL_DIR}/.history/index.jsonl`, JSON.stringify(entry) + '\n');
+  }
+
+  it("does not delete a file outside the skill directory (action='created')", async () => {
+    inMemoryFs.set(VICTIM, 'a thesis');
+    await seedRaw({
+      turnId: 'evil-created',
+      ts: 1,
+      op: 'write_file',
+      files: [{ relPath: '../../../Users/test/Documents/thesis.txt', snapshotPath: null, action: 'created' }],
+    });
+
+    const result = await revertTurn(SKILL_DIR, 'evil-created');
+
+    expect(inMemoryFs.get(VICTIM)).toBe('a thesis');
+    expect(mockRemove).not.toHaveBeenCalled();
+    expect(result.restored).toBe(0);
+    expect(result.failed).toHaveLength(1);
+  });
+
+  it("does not overwrite a file outside the skill directory (action='removed')", async () => {
+    inMemoryFs.set(VICTIM, 'a thesis');
+    const tombstone = `${SKILL_DIR}/.history/tombstones/1-x`;
+    inMemoryFs.set(tombstone, 'ATTACKER CONTENT');
+    await seedRaw({
+      turnId: 'evil-removed',
+      ts: 1,
+      op: 'remove_file',
+      files: [
+        { relPath: '../../../Users/test/Documents/thesis.txt', snapshotPath: tombstone, action: 'removed' },
+      ],
+    });
+
+    const result = await revertTurn(SKILL_DIR, 'evil-removed');
+
+    expect(inMemoryFs.get(VICTIM)).toBe('a thesis');
+    expect(mockAtomicWrite).not.toHaveBeenCalled();
+    expect(result.restored).toBe(0);
+  });
+
+  it('does not read or consume a snapshot outside the skill directory', async () => {
+    // The snapshot pointer is the other half of the same trust: a genuine one
+    // is either the `.backup.<ts>` alongside the target or a tombstone under
+    // `.history/`, both inside the skill. An arbitrary one is a read of
+    // somebody else's file followed by `remove` of it.
+    const secret = '/Users/test/.ssh/id_rsa';
+    inMemoryFs.set(secret, 'PRIVATE KEY BYTES');
+    await seedRaw({
+      turnId: 'evil-snapshot',
+      ts: 1,
+      op: 'remove_file',
+      files: [{ relPath: 'notes.md', snapshotPath: secret, action: 'removed' }],
+    });
+
+    const result = await revertTurn(SKILL_DIR, 'evil-snapshot');
+
+    expect(inMemoryFs.get(secret)).toBe('PRIVATE KEY BYTES');
+    expect(inMemoryFs.has(`${SKILL_DIR}/notes.md`)).toBe(false);
+    expect(mockRemove).not.toHaveBeenCalled();
+    expect(result.restored).toBe(0);
+  });
+
+  it("does not restore a 'modified' file from a backup outside the skill directory", async () => {
+    inMemoryFs.set('/Users/test/.ssh/id_rsa', 'PRIVATE KEY BYTES');
+    await seedRaw({
+      turnId: 'evil-backup',
+      ts: 1,
+      op: 'patch',
+      files: [{ relPath: 'SKILL.md', snapshotPath: '/Users/test/.ssh/id_rsa', action: 'modified' }],
+    });
+
+    const result = await revertTurn(SKILL_DIR, 'evil-backup');
+
+    expect(mockRestoreFromBackup).not.toHaveBeenCalled();
+    expect(result.restored).toBe(0);
+  });
+
+  it('still reverts an ordinary turn whose paths the skill does own', async () => {
+    // The rule is ownership, not a ban on reverting: a nested relPath and a
+    // backup alongside its target are exactly what the tool writes.
+    const backup = `${SKILL_DIR}/scripts/.build.sh.backup.1700`;
+    inMemoryFs.set(backup, 'old script');
+    inMemoryFs.set(`${SKILL_DIR}/scripts/build.sh`, 'new script');
+    await seedRaw({
+      turnId: 'honest',
+      ts: 1,
+      op: 'patch',
+      files: [{ relPath: 'scripts/build.sh', snapshotPath: backup, action: 'modified' }],
+    });
+
+    const result = await revertTurn(SKILL_DIR, 'honest');
+
+    expect(result.ok).toBe(true);
+    expect(result.restored).toBe(1);
+    expect(inMemoryFs.get(`${SKILL_DIR}/scripts/build.sh`)).toBe('old script');
   });
 });

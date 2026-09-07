@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AgentRegistry } from './registry'
+import { AgentRegistry, getBuiltinAgentNames } from './registry'
 import type { SubagentDefinition } from '@/types'
 
 function definition(ready = true): SubagentDefinition {
@@ -66,5 +66,20 @@ describe('builtin Agent tool boundaries', () => {
     ['数据分析师', 'abu-browser-bridge__*'],
   ])('%s retains the declared %s capability', (name, tool) => {
     expect(registry.getAgent(name)?.tools).toContain(tool)
+  })
+})
+
+describe('getBuiltinAgentNames', () => {
+  it('lists exactly the agents registerBuiltins registers', () => {
+    // The plugin installer refuses a package agent whose name is a built-in,
+    // and it reads that answer from this set instead of building a registry.
+    // A built-in added to `registerBuiltins` but not to the set would leave a
+    // name a package could quietly take over, so the two are pinned together.
+    const registry = new AgentRegistry()
+    ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+
+    expect([...getBuiltinAgentNames()].sort()).toEqual(
+      registry.getAvailableAgents().map(agent => agent.name).sort(),
+    )
   })
 })

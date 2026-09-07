@@ -8,19 +8,25 @@ test.describe('Tab Navigation', () => {
     await waitForAppReady(page);
   });
 
-  test('toolbox button shows toolbox view', async ({ page }) => {
-    // Toolbox button in sidebar nav (t.sidebar.toolbox = '工具箱')
-    const toolboxBtn = page.getByRole('button', { name: '工具箱' });
-    await expect(toolboxBtn).toBeVisible();
-    await toolboxBtn.click();
+  test('extensions button shows extensions view', async ({ page }) => {
+    // Extensions button in sidebar nav (t.sidebar.extensions = '扩展'). Scope it
+    // to the navigation region so it cannot match anything the panel renders.
+    const extensionsBtn = page
+      .getByLabel('Main navigation')
+      .getByRole('button', { name: '扩展' });
+    await expect(extensionsBtn).toBeVisible();
+    await extensionsBtn.click();
 
-    // After entering toolbox view, the ToolboxModal renders a left-nav with
-    // sub-tabs (技能 / 代理 / MCP). These buttons are unique to ToolboxView —
-    // they do NOT exist in the sidebar — so their visibility confirms we
-    // actually transitioned into the toolbox view.
-    await expect(
-      page.getByRole('button', { name: '技能' }).first(),
-    ).toBeVisible({ timeout: 5000 });
+    // The Extensions view (ExtensionsView, formerly the toolbox) carries no page
+    // title — its top tabs (插件 / 技能 / 连接器) are the header. Those tab
+    // buttons live in the panel, not the sidebar, so their visibility confirms
+    // we actually transitioned into the view.
+    const panel = page.getByRole('main');
+    await expect(panel.getByRole('button', { name: '插件' })).toBeVisible({ timeout: 5000 });
+    await expect(panel.getByRole('button', { name: '技能' })).toBeVisible();
+    // 市场 | 我的 is the source split every tab shares, mounted above the panel.
+    await expect(page.getByTestId('extensions-source-market')).toBeVisible();
+    await expect(page.getByTestId('extensions-source-mine')).toBeVisible();
   });
 
   test('automation button shows automation view', async ({ page }) => {

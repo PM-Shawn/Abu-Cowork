@@ -190,6 +190,36 @@ describe('delegated user turn materializer', () => {
     expect(mocks.persistDelegatedMedia).not.toHaveBeenCalled();
   });
 
+  // Contract: the MCP App step appendix (`ToolCall.modelContext`, spec §4.3)
+  // reaches the loop — which runs in the SIDECAR — only through this snapshot.
+  // `messageNormalizer` appends it to that step's tool result on the next turn,
+  // so if the wire ever starts projecting tool calls field-by-field instead of
+  // spreading them, this is the test that catches the silent drop.
+  it('carries an MCP App step’s modelContext across the sidecar wire', async () => {
+    const snapshot = conversation([
+      userMessage({ id: 'u1', content: 'weather?' }),
+      userMessage({
+        id: 'a1',
+        role: 'assistant',
+        content: '',
+        toolCalls: [{
+          id: 'tc-1',
+          name: 'weather__board',
+          input: { city: 'BJ' },
+          result: '25C',
+          ui: { server: 'weather', resourceUri: 'ui://weather/board.html' },
+          modelContext: 'the user picked Beijing',
+        }],
+      }),
+    ]);
+
+    const prepared = await prepareConversationSnapshotForSidecarWire(snapshot);
+    const wire = JSON.parse(JSON.stringify(prepared)) as Conversation;
+    const step = wire.messages[1].toolCalls?.[0];
+    expect(step?.modelContext).toBe('the user picked Beijing');
+    expect(step?.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/board.html' });
+  });
+
   it('strips base64 and absolute paths from the full sidecar conversation snapshot without dropping media', async () => {
     const imageData = uint8ArrayToBase64(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
     const pdfData = uint8ArrayToBase64(new Uint8Array([37, 80, 68, 70, 45, 49]));

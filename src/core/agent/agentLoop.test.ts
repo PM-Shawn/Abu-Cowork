@@ -318,9 +318,19 @@ describe('buildDirectDelegateSubagentOptions', () => {
     const settingsReader = { getSnapshot: () => ({}) };
     const runPermissionCeiling = { version: 1, source: 'trigger', capability: 'safe_tools' } as never;
 
+    const preloadedSkills = {
+      text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nbody',
+      resolved: ['weekly-report'],
+      missing: [],
+      truncated: [],
+    };
+
     const params = buildDirectDelegateSubagentOptions({
       agent,
       task: 'look this up',
+      // Shell-resolved by entryOrchestration and carried on the route; the
+      // sidecar-run venue has no populated skill loader of its own.
+      preloadedSkills,
       parentConversationSummary: 'parent context',
       signal: controller.signal,
       commandConfirmCallback: async () => true,
@@ -339,6 +349,7 @@ describe('buildDirectDelegateSubagentOptions', () => {
     expect(params).toEqual(expect.objectContaining({
       agent,
       task: 'look this up',
+      preloadedSkills,
       parentConversationId: 'conv-1',
       settingsReader,
       allowedTools: ['read_*'],

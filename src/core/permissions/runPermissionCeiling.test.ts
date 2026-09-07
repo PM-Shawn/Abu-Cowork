@@ -86,7 +86,16 @@ describe('runPermissionCeiling', () => {
       'outside',
     ).decision).toBe('allow');
     expect(decideFileUnderRunPermissionCeiling(ceiling, 'write', false).decision).toBe('allow');
-    expect(decideStateChangingToolUnderRunPermissionCeiling(ceiling, 'browser').decision).toBe('allow');
+    // Browser is no longer the one escalation this ceiling waves through: it
+    // routes the operation-class policy verdict the caller computed. An
+    // omitted verdict means the caller never evaluated the policy → fail
+    // closed.
+    expect(decideStateChangingToolUnderRunPermissionCeiling(ceiling, 'browser').decision).toBe('deny');
+    expect(decideStateChangingToolUnderRunPermissionCeiling(ceiling, 'browser', 'deny').decision).toBe('deny');
+    expect(decideStateChangingToolUnderRunPermissionCeiling(ceiling, 'browser', 'allow').decision).toBe('allow');
+    // 'ask' passes the ceiling — whether an unattended run has a channel that
+    // can answer belongs to the confirmation seam, not to this function.
+    expect(decideStateChangingToolUnderRunPermissionCeiling(ceiling, 'browser', 'ask').decision).toBe('allow');
     expect(decideStateChangingToolUnderRunPermissionCeiling(ceiling, 'self-extension').decision).toBe('deny');
   });
 

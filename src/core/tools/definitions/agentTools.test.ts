@@ -150,6 +150,51 @@ describe('delegateToAgentTool', () => {
     );
   });
 
+  // The parent run's consecutive-browser-denial guard is a run-scoped
+  // restriction like the two above: a run that delegates its browser work must
+  // not be able to be refused forever without ever tripping it.
+  it('forwards the parent run\'s browser-denial reporters into the delegated run', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    const reportBrowserDenial = vi.fn();
+    const reportBrowserAllow = vi.fn();
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'researcher',
+      description: 'test',
+      systemPrompt: 'test',
+    } as never);
+    vi.mocked(createSubagentController).mockReturnValue({
+      signal: new AbortController().signal,
+      cleanup: vi.fn(),
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'done', stopReason: 'completed' } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(),
+      loopId: 'loop-1',
+      conversationId: 'conv-1',
+      reportBrowserDenial,
+      reportBrowserAllow,
+      eventRouter: {
+        getCurrentStepId: () => undefined,
+        addChildStepToDelegate: () => undefined,
+        completeChildStep: () => undefined,
+      },
+    } as never);
+
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'look something up' },
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+    );
+
+    expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledWith(
+      expect.objectContaining({ reportBrowserDenial, reportBrowserAllow }),
+    );
+  });
+
   it('hands the triggering multimodal user turn to delegate_to_agent', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getLoopContext } = await import('../../agent/permissionBridge');

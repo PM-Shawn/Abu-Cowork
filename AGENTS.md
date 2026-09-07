@@ -51,12 +51,13 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 
 1. 确保 `dev` 分支 CI 全绿（build + lint + test）。
 2. **版本号在 `dev` 上 bump，三处同步**：`package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`（顺带 `src-tauri/Cargo.lock` 里 `name = "abu"` 那条）。（版本号跟着 dev 流到 main，不再出现 dev/main 版本错位。）
+   - 📦 **`package-lock.json` 的两个 `version` 字段也要跟着 bump**：bump 完 `package.json` 后跑 `npm install --package-lock-only`，应该只出 2 行 diff、没有依赖变化。忘了它不会当场报错，但之后任何人一跑 `npm install` 都会被 npm 顺手改回来，把这 2 行无关 churn 漏进别人的 PR。`release:check` 现在会拦这个。
    - 🌐 **更新日志双语双维护（语言分流）** —— 每次发版在 `dev` 上把该版条目**两份都写好**，语言不混：
      - **`CHANGELOG.md`（英文 canonical）** → 驱动 **GitHub Release**（CI「Create GitHub Release」步抽该版段）+ latest.json 的 `notes`（英文默认，给 Tauri updater 和国际用户）。
      - **`CHANGELOG.zh-CN.md`（中文）** → 驱动 latest.json 的 `notes_i18n["zh-CN"]`。
      - CI publish job 把两份各抽该版段写进 `latest.json.notes_i18n`；**客户端 `checker.ts` 按 UI locale（`getLocale()`）选对应语言**推给更新弹窗，官网按页面语言取。
      - ⚠️ 两份同版号、结构对应，但**语言不混**：CHANGELOG.md 全英文、CHANGELOG.zh-CN.md 全中文。v0.31.0 之前的历史仅英文版有，不用回填。
-   - ✅ **发版前跑 `npm run release:check`**（`scripts/release-preflight.mjs`）：校验四处版本号一致 + 两份 CHANGELOG 该版段都在且语言正确（英文版无 CJK、中文版有中文）。CI 也把它挂成 `release.yml` 的 `preflight` job（tag 一推先跑，**任一项不对就整个发版红、包都不出**）；本地先跑省一次 CI 往返。
+   - ✅ **发版前跑 `npm run release:check`**（`scripts/release-preflight.mjs`）：校验五个文件的版本号一致（`package.json`、`package-lock.json` 的两个字段、`tauri.conf.json`、`Cargo.toml`、`Cargo.lock`）+ 两份 CHANGELOG 该版段都在且语言正确（英文版无 CJK、中文版有中文）。CI 也把它挂成 `release.yml` 的 `preflight` job（tag 一推先跑，**任一项不对就整个发版红、包都不出**）；本地先跑省一次 CI 往返。
 3. 在 `dev` 的候选提交上打一个最终 RC tag；等三平台原生构建、签名/公证、安装态冒烟和发布预检全部通过。
 4. `git checkout main && git pull --ff-only origin main && git merge --ff-only dev` — `main` 只 fast-forward 到这个已经在 `dev` 验证过的**同一 SHA**，不使用 GitHub squash/rebase/cherry-pick 生成孪生提交。
 5. `git push origin main`，然后 `git tag vX.Y.Z && git push origin vX.Y.Z`。主分支保护要求该 SHA 先在 `dev` 上获得 `promotion-ready`，任意 feature/main 直推都会被拒绝。⚠️ **别用 `git push origin main --tags`**。

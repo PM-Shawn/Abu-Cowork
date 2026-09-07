@@ -71,6 +71,7 @@ import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
 import { startInboundDispatcher, stopInboundDispatcher } from '@/core/im/inboundDispatcher';
+import { installImApprovalResolver } from '@/core/im/pendingApprovals';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
 import { startWeChatManager, stopWeChatManager } from '@/core/im/wechatConnectionManager';
 import { loadIMPlugins } from '@/core/im/pluginLoader';
@@ -391,7 +392,7 @@ function App() {
         (conversationId && store.conversations[conversationId] ? conversationId : null) ??
         store.activeConversationId ??
         store.createConversation(null);
-      runAgentLoopDispatched(convId, text).catch((err) => {
+      runAgentLoopDispatched(convId, text, { initiatedBy: 'user' }).catch((err) => {
         console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });
     }).then((fn) => {
@@ -648,6 +649,12 @@ function App() {
           // The recovery message is visible when user clicks the conversation in sidebar.
         }
       }).catch(() => {});
+      // Give unattended runs a way to ask. Until this is installed the
+      // confirmation seam keeps its fail-closed default ("nobody to ask, so
+      // no"), so this must run alongside the inbound dispatcher that delivers
+      // the answers — an approval channel with no listener would hang every
+      // request until it timed out.
+      installImApprovalResolver();
       startInboundDispatcher();
       startTraySync();
       startFeishuWsManager();

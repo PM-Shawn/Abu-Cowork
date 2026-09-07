@@ -25,6 +25,7 @@ export const SUBAGENT_RUN_WIRE_FIELDS = [
   'runPermissionCeiling',
   'triggerId',
   'scheduledTaskId',
+  'initiatedBy',
   'locale',
   'uiStrings',
   'settingsSnapshot',

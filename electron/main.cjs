@@ -45,6 +45,7 @@ const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs')
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
+const { resolveWindowShowPolicy, revealWindow } = require('./windowShowPolicy.cjs');
 const {
   WINDOW_DRAG_REGION_CSS,
   attachEditContextMenu,
@@ -86,6 +87,14 @@ const PACKAGED_E2E_ENV = 'ABU_PACKAGED_E2E';
 const E2E_AUTO_CONFIRM_TRANSITION_ENV = 'ABU_E2E_AUTO_CONFIRM_TRANSITION';
 const allowE2EAppDataRedirect =
   !app.isPackaged || process.env[PACKAGED_E2E_ENV] === '1';
+// E2E launches may also ask for windows to be revealed without activating the
+// app (ABU_E2E_QUIET_WINDOW=1), so a full suite run does not steal focus on a
+// developer machine. Same gate as the app-data redirect above.
+const windowShowPolicy = resolveWindowShowPolicy({
+  env: process.env,
+  allowE2E: allowE2EAppDataRedirect,
+  platform: process.platform,
+});
 let e2eTauriStorageRoot = null;
 if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)) {
   const appDataRoot = process.env[E2E_APP_DATA_ROOT_ENV];
@@ -248,7 +257,7 @@ function createWindow(transitionWindow = null) {
           legacyInstall,
         );
       }
-      win.show();
+      revealWindow(win, windowShowPolicy);
       if (transitionWindow) {
         showTransitionSuccess(app, win);
       }
@@ -406,7 +415,7 @@ async function createTransitionWindow(appInstance, inspection) {
       size: formatBytes(inspection.bytes),
     },
   });
-  win.show();
+  revealWindow(win, windowShowPolicy);
   return win;
 }
 
@@ -441,6 +450,11 @@ if (!app.requestSingleInstanceLock()) {
     // Fallback for a platform where the pre-ready resolution above failed;
     // idempotent, so it is a no-op on the normal path.
     configureRuntimeObservability(app);
+    // Quiet E2E launches: drop the Dock icon before any window exists so the
+    // app never becomes frontmost (see windowShowPolicy.cjs).
+    if (windowShowPolicy.hideDock && app.dock) {
+      app.dock.hide();
+    }
     let transitionInspection = null;
     let transitionWindow = null;
     try {

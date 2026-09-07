@@ -1300,6 +1300,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
         task: taskText,
+        // Resolved shell-side with the rest of the entry orchestration (see
+        // entryOrchestration.ts) — this loop may itself be running in the
+        // sidecar, where the skill loader has no index to resolve from.
+        preloadedSkills: route.delegatePreloadedSkills,
         parentConversationSummary: parentConversationSummary || undefined,
         delegatedUserTurn,
         signal: subagentSignal,

@@ -10,6 +10,8 @@ import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
+import { atomicInstallDir } from '@/core/fsAtomic';
+import { isSafeSkillDirName } from './skillDirName';
 import {
   downloadTarball,
   extractTarball,
@@ -96,6 +98,12 @@ export async function installSkillFromUrl(
   if (!skillName) {
     throw new NpmInstallError('NO_NAME', 'SKILL.md is missing a valid "name" field in frontmatter');
   }
+  // The name becomes a directory under ~/.abu/skills. The entry-path check
+  // below refuses `..` inside a file path; this refuses it in the segment
+  // those paths are written UNDER — see isSafeSkillDirName.
+  if (!isSafeSkillDirName(skillName)) {
+    throw new NpmInstallError('PATH_TRAVERSAL', `SKILL.md declares an unsafe skill name: "${skillName}"`);
+  }
 
   // Write to ~/.abu/skills/<name>/
   const home = await homeDir();
@@ -105,26 +113,42 @@ export async function installSkillFromUrl(
     throw new NpmInstallError('ALREADY_EXISTS', `Skill "${skillName}" already exists`);
   }
 
-  await mkdir(targetDir, { recursive: true });
-
+  // Stage the whole archive OUTSIDE ~/.abu/skills, then swap it in — the same
+  // primitive and the same reason as the folder and npm routes.
+  //
+  // The per-entry guards below throw MID-LOOP, and the entry order belongs to
+  // whoever built the archive — which here is an arbitrary attacker-hosted zip
+  // with no registry in between. Writing straight into `~/.abu/skills/<name>/`
+  // therefore left a REFUSED archive's files on disk, where the skill loader
+  // scans and a watcher picks them up: its SKILL.md became a live,
+  // model-visible skill under the frontmatter name IT chose while the install
+  // reported failure, and the residue bricked the honest retry with
+  // ALREADY_EXISTS.
   const files: string[] = [];
-  for (const entry of entries) {
-    const rel = stripPrefix(entry.path, prefix);
-    if (!rel || rel.endsWith('/')) continue;
-    if (rel.includes('..') || rel.startsWith('/')) {
-      throw new NpmInstallError('PATH_TRAVERSAL', `Unsafe path: ${entry.path}`);
-    }
-    if (entry.data.length > MAX_SINGLE_FILE) {
-      throw new NpmInstallError('FILE_TOO_LARGE', `File "${rel}" exceeds 10 MB limit`);
-    }
+  await atomicInstallDir({
+    targetDir,
+    workDir: joinPath(home, '.abu', 'skill-staging'),
+    write: async (stagingDir) => {
+      await mkdir(stagingDir, { recursive: true });
+      for (const entry of entries) {
+        const rel = stripPrefix(entry.path, prefix);
+        if (!rel || rel.endsWith('/')) continue;
+        if (rel.includes('..') || rel.startsWith('/')) {
+          throw new NpmInstallError('PATH_TRAVERSAL', `Unsafe path: ${entry.path}`);
+        }
+        if (entry.data.length > MAX_SINGLE_FILE) {
+          throw new NpmInstallError('FILE_TOO_LARGE', `File "${rel}" exceeds 10 MB limit`);
+        }
 
-    const dest = joinPath(targetDir, rel);
-    const lastSlash = dest.lastIndexOf('/');
-    if (lastSlash > 0) await mkdir(dest.substring(0, lastSlash), { recursive: true });
+        const dest = joinPath(stagingDir, rel);
+        const lastSlash = dest.lastIndexOf('/');
+        if (lastSlash > 0) await mkdir(dest.substring(0, lastSlash), { recursive: true });
 
-    await writeFile(dest, entry.data);
-    files.push(rel);
-  }
+        await writeFile(dest, entry.data);
+        files.push(rel);
+      }
+    },
+  });
 
   return { skillName, files, targetDir };
 }

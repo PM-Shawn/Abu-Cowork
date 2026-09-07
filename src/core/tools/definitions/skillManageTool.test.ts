@@ -939,6 +939,48 @@ describe('skill_manage · install', () => {
     expect(result.error).toContain('overwrite: true');
   });
 
+  it('tells the model which symlinks the install left out', async () => {
+    // Its own sentence, not folded into the hidden-files note: the model has to
+    // be able to tell the installed skill is missing exactly these entries, and
+    // "hidden file(s)" would be a false description of a link.
+    mockDetectSourceType.mockReturnValue('folder');
+    mockInstallSkillFromFolder.mockResolvedValue({
+      ok: true,
+      name: 'my-skill',
+      fileCount: 2,
+      skipped: [],
+      skippedSymlinks: ['.cursor/skills', 'data/x'],
+    });
+
+    const result = JSON.parse(
+      (await skillManageTool.execute({ action: 'install', source: '/path/to/my-skill' }, {})) as string,
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('.cursor/skills');
+    expect(result.message).toContain('data/x');
+    // Every placeholder resolved — an unpassed one renders as literal "{name}".
+    expect(result.message).not.toMatch(/\{\w+\}/);
+  });
+
+  it('explains a source folder that is itself a symlink instead of leaking the raw message', async () => {
+    mockDetectSourceType.mockReturnValue('folder');
+    mockInstallSkillFromFolder.mockResolvedValue({
+      ok: false,
+      code: 'SYMLINK_ROOT',
+      message: 'Refusing a skill folder that is itself a symlink: /path/to/link',
+    });
+
+    const result = JSON.parse(
+      (await skillManageTool.execute({ action: 'install', source: '/path/to/link' }, {})) as string,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('/path/to/link');
+    // The localized refusal, not the developer-facing English in `message`.
+    expect(result.error).not.toContain('Refusing a skill folder');
+  });
+
   it('routes npm source to installSkillFromNpm', async () => {
     mockDetectSourceType.mockReturnValue('npm');
     mockInstallSkillFromNpm.mockResolvedValue({ skillName: 'cooper', files: ['SKILL.md', 'README.md'], targetDir: '/home/.abu/skills/cooper', packageName: 'cooper', version: '1.0.0' });

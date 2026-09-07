@@ -17,6 +17,7 @@ import {
   type ElectronUserAttachmentToken,
 } from '@/utils/electronHost';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
@@ -145,6 +146,8 @@ interface SuggestionItem {
   name: string;
   description: string;
   trigger?: string;
+  /** True when the agent's AGENT.md was installed by a plugin (provenance tag). */
+  fromPlugin?: boolean;
 }
 
 interface FileAttachmentItem {
@@ -949,6 +952,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         .map((a) => ({
           name: a.name,
           description: a.description,
+          fromPlugin: isPluginOwnedAgent(a),
         }));
     }
 
@@ -1472,6 +1476,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   </span>
                   <span className="font-medium text-[var(--abu-text-primary)] text-body">{item.name}</span>
                   <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
+                  {item.fromPlugin && (
+                    <span
+                      data-testid="agent-source-plugin"
+                      className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                    >
+                      {t.chat.pickAgentPluginTag}
+                    </span>
+                  )}
                 </div>
                 {item.trigger && (
                   <div className="pl-8 text-caption text-[var(--abu-text-muted)] truncate">

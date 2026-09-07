@@ -1,7 +1,7 @@
 import { readText as clipboardReadText, writeText as clipboardWriteText } from '@tauri-apps/plugin-clipboard-manager';
 import { sendNotification, isPermissionGranted, requestPermission } from '@tauri-apps/plugin-notification';
 import type { ToolDefinition } from '../../../types';
-import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer, addCustomMCPServer, getEntryDescription, getEnvHint } from '../../agent/mcpDiscovery';
+import { searchMCPRegistry, installMCPServer, getRegistryEntry, ensureMCPServer, addCustomMCPServer, getEntryDescription, getEnvHint, getArgLabel } from '../../agent/mcpDiscovery';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
@@ -130,6 +130,11 @@ export const manageMCPServerTool: ToolDefinition = {
         type: 'object',
         description: 'Environment variable key-value pairs (optional when action=install, e.g. API keys)',
       },
+      args: {
+        type: 'array',
+        items: { type: 'string' },
+        description: "Positional arguments for the server's configurable slots, in order (optional when action=install), e.g. the PostgreSQL connection string for \"postgres\"",
+      },
       url: { type: 'string', description: 'MCP service URL (required when action=add_custom), e.g. "http://10.0.0.1:8080/mcp"' },
       headers: {
         type: 'object',
@@ -152,7 +157,13 @@ export const manageMCPServerTool: ToolDefinition = {
       const lines = results.map((r) => {
         const envNeeded = Object.keys(r.env).filter((k) => getEnvHint(k));
         const envNote = envNeeded.length > 0 ? format(t.searchEnvNote, { envList: envNeeded.join(', ') }) : '';
-        return `- **${r.name}**: ${getEntryDescription(r.name)}${envNote}`;
+        // Positional slots are as required as a token is, and the model cannot
+        // discover them from the entry — surface them next to the env vars.
+        const argsNeeded = (r.configurableArgs ?? [])
+          .map((slot) => getArgLabel(r.name, slot.index))
+          .filter((label): label is string => Boolean(label));
+        const argNote = argsNeeded.length > 0 ? format(t.searchArgNote, { argList: argsNeeded.join(', ') }) : '';
+        return `- **${r.name}**: ${getEntryDescription(r.name)}${envNote}${argNote}`;
       });
       return format(t.searchResults, { count: String(results.length), lines: lines.join('\n') });
     }
@@ -161,6 +172,7 @@ export const manageMCPServerTool: ToolDefinition = {
       const name = input.name as string;
       if (!name) return t.errInstallNeedsName;
       const env = input.env as Record<string, string> | undefined;
+      const args = input.args as string[] | undefined;
 
       const entry = getRegistryEntry(name);
       if (!entry) {
@@ -168,7 +180,7 @@ export const manageMCPServerTool: ToolDefinition = {
       }
 
       try {
-        const result = await installMCPServer(entry, env);
+        const result = await installMCPServer(entry, env, args);
         return result.message;
       } catch (err) {
         return format(t.installFailed, { error: err instanceof Error ? err.message : String(err) });

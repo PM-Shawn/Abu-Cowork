@@ -11,6 +11,7 @@ import {
   request,
   resolve,
   resolveActive,
+  cancelById,
   drainAll,
   drainByConversationId,
   subscribe,
@@ -356,6 +357,45 @@ describe('approvalBridge — drainByConversationId()', () => {
 
     resolve('user-question', 'tc-b', null);
     await pB;
+  });
+});
+
+describe('approvalBridge — cancelById()', () => {
+  const info = { command: 'x', level: 'warn' as const, reason: 'r' };
+
+  it('cancels the ACTIVE entry and promotes the next one', async () => {
+    const first = request('command', { id: 'first', conversationId: 'c1', payload: { info } });
+    const second = request('command', { id: 'second', conversationId: 'c1', payload: { info } });
+    expect(getSnapshot('command')?.id).toBe('first');
+
+    cancelById('command', 'first');
+
+    expect(await first).toBe(false);
+    // The slot must free up, or every later confirmation queues forever.
+    expect(getSnapshot('command')?.id).toBe('second');
+    resolveActive('command', true);
+    expect(await second).toBe(true);
+  });
+
+  it('cancels a QUEUED entry without disturbing the active one', async () => {
+    const active = request('command', { id: 'active', conversationId: 'c1', payload: { info } });
+    const queued = request('command', { id: 'queued', conversationId: 'c1', payload: { info } });
+
+    cancelById('command', 'queued');
+    expect(await queued).toBe(false);
+    expect(getSnapshot('command')?.id).toBe('active');
+
+    resolveActive('command', true);
+    expect(await active).toBe(true);
+    expect(getSnapshot('command')).toBeNull();
+  });
+
+  it('is a no-op for an unknown id', async () => {
+    const p = request('command', { id: 'only', conversationId: 'c1', payload: { info } });
+    cancelById('command', 'nope');
+    expect(getSnapshot('command')?.id).toBe('only');
+    resolveActive('command', true);
+    expect(await p).toBe(true);
   });
 });
 

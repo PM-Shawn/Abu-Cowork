@@ -8,6 +8,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
+import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginToolPolicy';
 import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { checkToolApproval } from './registry';
 import {
@@ -631,4 +632,86 @@ describe('self-extension approval gate', () => {
       expect(confirm).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('plugin tool approval gate', () => {
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    setPluginServerNames(['weather']);
+    forgetPluginGrants();
+  });
+
+  const collectingConfirm = (asked: string[]) =>
+    (async (info: { command: string }) => { asked.push(info.command); return true; }) as never;
+
+  // The whole point of pluginToolPolicy: before it, `consequence` was undefined
+  // for every non-browser MCP server, so `decideConsequentialTool` returned
+  // 'allow' — identically in all three modes. This asserts the gap is closed
+  // in each of them, not just the strictest one.
+  it.each(['standard', 'smart', 'full'] as const)(
+    'asks before running a plugin-contributed MCP tool in %s mode',
+    async (mode) => {
+      useSettingsStore.setState({ permissionMode: mode });
+      const asked: string[] = [];
+      const decision = await checkToolApproval(
+        'weather__get_forecast', {}, { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toContain('weather__get_forecast');
+    },
+  );
+
+  it('does not ask for an MCP server no plugin contributed', async () => {
+    const asked: string[] = [];
+    await checkToolApproval(
+      'handwired__do_thing', {}, { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+    expect(asked).toHaveLength(0);
+  });
+
+  it('denies when the user declines', async () => {
+    const decision = await checkToolApproval(
+      'weather__get_forecast', {}, { conversationId: 'conv-1' } as never,
+      (async () => false) as never,
+    );
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('only asks once per conversation for the same plugin', async () => {
+    const asked: string[] = [];
+    const confirm = collectingConfirm(asked);
+    await checkToolApproval('weather__get_forecast', {}, { conversationId: 'conv-1' } as never, confirm);
+    await checkToolApproval('weather__list_stations', {}, { conversationId: 'conv-1' } as never, confirm);
+    expect(asked).toHaveLength(1);
+  });
+
+  it('does not let one plugin approval cover a different plugin', async () => {
+    setPluginServerNames(['weather', 'notes']);
+    const asked: string[] = [];
+    const confirm = collectingConfirm(asked);
+    await checkToolApproval('weather__get_forecast', {}, { conversationId: 'conv-1' } as never, confirm);
+    await checkToolApproval('notes__delete_all', {}, { conversationId: 'conv-1' } as never, confirm);
+    expect(asked).toHaveLength(2);
+  });
+
+  it('fails closed when there is no confirmation channel', async () => {
+    // A headless/background run must not become the cheap path to executing
+    // third-party plugin code the user never saw.
+    const decision = await checkToolApproval(
+      'weather__get_forecast', {}, { conversationId: 'conv-1' } as never, undefined,
+    );
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('denies plugin tools under a scheduled run ceiling', async () => {
+    const decision = await checkToolApproval(
+      'weather__get_forecast', {},
+      { conversationId: 'conv-1', runPermissionCeiling: buildTriggerRunPermissionCeiling('scheduled') } as never,
+      (async () => true) as never,
+    );
+    expect(decision.decision).toBe('deny');
+  });
 });

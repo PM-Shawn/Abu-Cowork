@@ -212,11 +212,21 @@ export async function resolveUploadFiles(
  * newline in it would let a confirmation dialog grow a second line that reads
  * like the app wrote it. Separators are normalized first so a Windows path
  * yields its last component rather than the whole string.
+ *
+ * The BIDI OVERRIDES belong with the control characters, and they are why this
+ * is not merely a tidiness rule: `report\u202Egpj.exe` RENDERS as
+ * `reportexe.jpg` anywhere Unicode bidi is honoured, so a confirmation naming
+ * the file about to be sent would name a different file than the one being
+ * sent — the one lie this dialog cannot afford. U+202A–U+202E (embedding /
+ * override) and U+2066–U+2069 (isolates) are the whole vocabulary of that
+ * trick; U+200B–U+200F covers the cruder zero-width and mark characters.
  */
 export function displayName(path: string): string {
   const base = getBaseName(normalizeSeparators(path));
-  // eslint-disable-next-line no-control-regex -- control characters are exactly what this guard rejects
-  const flattened = base.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\s]+/g, ' ').trim();
+  const flattened = base
+    // eslint-disable-next-line no-control-regex -- control characters are exactly what this guard rejects
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029\s]+/g, ' ')
+    .trim();
   if (flattened === '') return '(unnamed)';
   return flattened.length > 80 ? `${flattened.slice(0, 79)}…` : flattened;
 }

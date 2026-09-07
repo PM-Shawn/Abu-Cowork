@@ -472,7 +472,9 @@ describe('SkillLoader over a real tree with real symlinks', () => {
     expect(await loader.loadSupportingFile('helper', 'refs/api.md')).toBeNull();
   });
 
-  it('treats a FIFO as absent rather than reading it', async () => {
+  // Skipped on Windows: no `mkfifo(1)`, so the non-regular dirent this test is
+  // about cannot be created there.
+  it.skipIf(process.platform === 'win32')('treats a FIFO as absent rather than reading it', async () => {
     // A FIFO's dirent is `{ isDirectory: false, isFile: false, isSymlink: false }`
     // — the one non-regular shape a symlink test does not catch. `readFileSync`
     // on one blocks the privileged host's event loop until a writer appears, so

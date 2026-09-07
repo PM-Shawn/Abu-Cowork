@@ -597,8 +597,11 @@ describe('installSkillFromFolder with a traversing frontmatter name', () => {
  * A real `mkfifo`, deliberately: hand-written dirents all say
  * `isFile: false, isSymlink: false` for directories too, so only a real one
  * produces this combination by itself.
+ *
+ * Skipped on Windows: no `mkfifo(1)`, and no FIFO dirent for the copy to meet —
+ * the shape this guard protects against does not exist there.
  */
-describe('installSkillFromFolder over a folder containing a FIFO', () => {
+describe.skipIf(process.platform === 'win32')('installSkillFromFolder over a folder containing a FIFO', () => {
   let root: string;
   let src: string;
   let installed: string;

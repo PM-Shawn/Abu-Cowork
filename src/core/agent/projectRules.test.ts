@@ -422,6 +422,11 @@ describe('rules loading over a real workspace with real symlinks', () => {
     mkdirSync(join(ws4, '.abu'), { recursive: true });
     writeFileSync(join(ws4, '.abu', 'ABU.md'), 'real rules');
     await loadProjectRules(ws4);
-    expect(mockLstat).toHaveBeenCalledWith(join(ws4, '.abu', 'ABU.md'));
+    // The module joins with `joinPath` (always `/`), while `ws4` comes from
+    // `path.join` (`\` on Windows) — compare on the separator-neutral form.
+    const posix = (p: string) => p.replace(/\\/g, '/');
+    expect(mockLstat.mock.calls.map((c) => posix(String(c[0])))).toContain(
+      `${posix(ws4)}/.abu/ABU.md`,
+    );
   });
 });

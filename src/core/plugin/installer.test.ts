@@ -1015,6 +1015,13 @@ describe('installing the agents payload', () => {
   let pkg: string;
   let installDir: string;
 
+  // The module under test builds every path with `joinPath`, which is always
+  // `/`-separated; these fixtures are built with `path.join`, which is `\` on
+  // Windows. Compare on the separator-neutral form so the assertions pin the
+  // path and not the platform.
+  const posix = (p: string) => p.replace(/\\/g, '/');
+  const agentDir = (name: string) => posix(join(installDir, 'agents', name));
+
   const entry = { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } as PluginSource };
 
   function useRealTree() {
@@ -1135,10 +1142,12 @@ describe('installing the agents payload', () => {
     expect(reviewer).toContain('name: reviewer');
     expect(reviewer).toContain('source: plugin:weather@official');
 
-    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0]).sort()).toEqual([
-      join(installDir, 'agents', 'reviewer'),
-      join(installDir, 'agents', 'writer'),
-    ]);
+    expect(
+      vi
+        .mocked(installAgentFromFolder)
+        .mock.calls.map((c) => posix(String(c[0])))
+        .sort(),
+    ).toEqual([agentDir('reviewer'), agentDir('writer')]);
     // A fresh install never overwrites: a user agent that appeared between the
     // plan and now still wins, and neither name was ever this plugin's.
     expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[1])).toEqual([
@@ -1182,8 +1191,8 @@ describe('installing the agents payload', () => {
 
     const { record } = await install();
 
-    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0])).toEqual([
-      join(installDir, 'agents', 'writer'),
+    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => posix(String(c[0])))).toEqual([
+      agentDir('writer'),
     ]);
     expect(existsSync(join(installDir, 'agents', 'reviewer', 'AGENT.md'))).toBe(false);
     expect(record.contributed.agents).toEqual(['writer']);
@@ -1194,8 +1203,8 @@ describe('installing the agents payload', () => {
 
     const { record } = await install();
 
-    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0])).toEqual([
-      join(installDir, 'agents', 'writer'),
+    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => posix(String(c[0])))).toEqual([
+      agentDir('writer'),
     ]);
     expect(existsSync(join(installDir, 'agents', 'abu', 'AGENT.md'))).toBe(false);
     expect(record.contributed.agents).toEqual(['writer']);
@@ -1214,11 +1223,13 @@ describe('installing the agents payload', () => {
     const written = [
       ...vi.mocked(writeTextFile).mock.calls,
       ...vi.mocked(writeFile).mock.calls,
-    ].map((c) => String(c[0]));
-    expect(written.filter((path) => path.startsWith(join(root, '.abu', 'agents')))).toEqual([]);
+    ].map((c) => posix(String(c[0])));
+    expect(written.filter((path) => path.startsWith(posix(join(root, '.abu', 'agents'))))).toEqual(
+      [],
+    );
     expect(existsSync(join(installDir, 'agents', 'reviewer', 'AGENT.md'))).toBe(false);
-    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => c[0])).toEqual([
-      join(installDir, 'agents', 'writer'),
+    expect(vi.mocked(installAgentFromFolder).mock.calls.map((c) => posix(String(c[0])))).toEqual([
+      agentDir('writer'),
     ]);
     expect(record.contributed.agents).toEqual(['writer']);
   });
@@ -1235,11 +1246,11 @@ describe('installing the agents payload', () => {
     const { record } = await install();
 
     const handedOver = new Map(
-      vi.mocked(installAgentFromFolder).mock.calls.map((c) => [String(c[0]), c[1]]),
+      vi.mocked(installAgentFromFolder).mock.calls.map((c) => [posix(String(c[0])), c[1]]),
     );
-    expect(handedOver.get(join(installDir, 'agents', 'reviewer'))).toEqual({ overwrite: true });
+    expect(handedOver.get(agentDir('reviewer'))).toEqual({ overwrite: true });
     // Only the names the record already claimed: `writer` is a first install.
-    expect(handedOver.get(join(installDir, 'agents', 'writer'))).toEqual({ overwrite: false });
+    expect(handedOver.get(agentDir('writer'))).toEqual({ overwrite: false });
     expect(record.contributed.agents).toEqual(['reviewer', 'writer']);
   });
 
@@ -1254,9 +1265,9 @@ describe('installing the agents payload', () => {
 
     const { record } = await install();
 
-    expect(vi.mocked(installAgentFromFolder).mock.calls).toEqual([
-      [join(installDir, 'agents', 'writer'), { overwrite: false }],
-    ]);
+    expect(
+      vi.mocked(installAgentFromFolder).mock.calls.map((c) => [posix(String(c[0])), c[1]]),
+    ).toEqual([[agentDir('writer'), { overwrite: false }]]);
     expect(record.contributed.agents).toEqual(['writer']);
   });
 
@@ -1276,7 +1287,8 @@ describe('installing the agents payload', () => {
     writeFileSync(join(pkg, 'skills', 'forecast', 'SKILL.md'), '# forecast\n');
     const realReadDir = vi.mocked(readDir).getMockImplementation()!;
     vi.mocked(readDir).mockImplementation(async (path) => {
-      if (String(path) === join(installDir, 'agents')) throw new Error('EIO: cannot list');
+      if (posix(String(path)) === posix(join(installDir, 'agents')))
+        throw new Error('EIO: cannot list');
       return realReadDir(path);
     });
 

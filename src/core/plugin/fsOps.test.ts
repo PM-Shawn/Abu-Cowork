@@ -474,8 +474,12 @@ describe('copyPluginDir over a package whose only link points at a file', () => 
  *
  * A real `mkfifo`, deliberately — the virtual trees above hand-write
  * `isFile: !isDirectory`, which is exactly the assumption a pipe breaks.
+ *
+ * Skipped on Windows: there is no `mkfifo(1)` there (and no FIFO dirent for the
+ * copy to meet), so the fixture cannot build the shape this guard protects
+ * against — same skip as `installAgentFromFolder over a folder containing a FIFO`.
  */
-describe('a package containing a FIFO', () => {
+describe.skipIf(process.platform === 'win32')('a package containing a FIFO', () => {
   let root: string;
   let src: string;
   let dst: string;

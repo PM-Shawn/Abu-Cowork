@@ -1649,17 +1649,17 @@ describe('CapabilitiesSection', () => {
     });
 
     /*
-      One setting, two execution contexts — so each option says what it means
-      in BOTH, on one line. Before the collapse there were two columns and two
-      descriptions per state; what did not change is that the explanation
-      travels with the choice instead of sitting in a paragraph above the
-      control.
+      One setting, ONE intent (acceptance F4). Each option says what Abu will
+      do — allow / ask first / refuse — and the explanation still travels with
+      the choice instead of sitting in a paragraph above the control.
 
-      «Ask every time» is the one that carries a real second fact: attended it
-      is a dialog, and in an automatic task it is an IM approval at the channel
-      the automation itself named (`core/im/approvalTarget.ts`), refused when
-      none is bound. Promising only a dialog would promise something nobody is
-      there to answer.
+      «Ask every time» used to spend its line on WHERE the question appears:
+      a dialog while the user is here, an IM approval in an automatic task.
+      Both true, and both the approval channel's business rather than this
+      setting's: naming them left the reader working out whether one upload
+      permission secretly has a second set of rules for a second context. The
+      promise is the same either way — nothing runs until you say so — so that
+      is what the line says.
 
       «Allow» is the one that is NOT the same on every row (2026-09-05 F8).
       Reading a page under it really is unconditional; clicking and scripting
@@ -1667,7 +1667,7 @@ describe('CapabilitiesSection', () => {
       site with no verdict still opens a confirmation. One shared 「不再询问」
       was true for exactly one of the three rows, so the wording now splits.
     */
-    it('says what each state means in both execution contexts, and scopes 「允许」 per row', async () => {
+    it('says what each state means as one promise, and scopes 「允许」 per row', async () => {
       const user = userEvent.setup();
       render(<CapabilitiesSection />);
       await openBuiltinBrowser(user);
@@ -1682,7 +1682,7 @@ describe('CapabilitiesSection', () => {
       expect(openedOptionLabels(readOnlyCell)).toEqual(['Allow', 'Ask every time', 'Deny']);
       expect(openedOptionDescriptions(readOnlyCell)).toEqual([
         'Never asks again',
-        'Asks you here, and over IM in automatic tasks',
+        'Asks for your go-ahead before each one',
         'Abu will not do this kind of thing',
       ]);
       await user.click(readOnlyCell);
@@ -1694,20 +1694,22 @@ describe('CapabilitiesSection', () => {
         expect(openedOptionLabels(cell)).toEqual(['Allow', 'Ask every time', 'Deny']);
         expect(openedOptionDescriptions(cell)).toEqual([
           'Never asks again on allowed sites',
-          'Asks you here, and over IM in automatic tasks',
+          'Asks for your go-ahead before each one',
           'Abu will not do this kind of thing',
         ]);
         await user.click(cell);
       }
 
-      // The two facts the merged sentence had to keep: it must not promise
-      // only a dialog, and it must name the automatic-task channel.
+      // What the sentence must NOT do: explain the permission by where the
+      // user happens to be. It still must not promise a dialog (there is not
+      // always one) — and it no longer sends the reader off to think about
+      // automatic tasks and IM channels either.
       const cell = policySelect(rows[1]);
       await user.click(cell);
       const ask = openedOptionDescriptions(cell)[openedOptionLabels(cell).indexOf('Ask every time')];
       expect(ask).not.toMatch(/dialog/i);
-      expect(ask).toMatch(/IM/);
-      expect(ask).toMatch(/automatic tasks/);
+      expect(ask).not.toMatch(/\bIM\b/);
+      expect(ask).not.toMatch(/automatic task/i);
       // ...and the withdrawn per-column strings are gone from the surface.
       expect(openedOptionDescriptions(cell)).not.toContain('Only on sites set to Always allow');
     });
@@ -1751,8 +1753,9 @@ describe('CapabilitiesSection', () => {
       2026-09-04 R1 ended that premise — 「允许」 now really stops asking on
       「始终允许」 sites while the user is watching. The risk is live the moment
       the row reads allow, on either side of the switch, and the sentence has
-      to describe BOTH execution contexts rather than scoping itself to
-      automatic tasks.
+      to state the SCOPE it applies to — the sites set to 「始终允许」 — rather
+      than scoping itself to automatic tasks, or (acceptance F4) enumerating
+      the contexts it covers.
     */
     it('shows the risk warning whenever the row says allow, master switch or not', async () => {
       useSettingsStore.setState({
@@ -1770,12 +1773,15 @@ describe('CapabilitiesSection', () => {
       // attended script can now run unprompted on an always-allowed site.
       const warning = within(scriptCard).getByText(/Elevated risk/);
       expect(within(scriptCard).getAllByText(/Elevated risk/)).toHaveLength(1);
-      // It names the scope that actually applies — and BOTH contexts it
-      // applies in. Scoping the sentence to automatic tasks alone is what made
-      // the old copy false for the person sitting in front of the app.
+      // It names the scope that actually applies: the sites carrying a
+      // standing 「始终允许」 verdict, with no confirmation on any of them.
+      // Scoping the sentence to automatic tasks is what made the old copy
+      // false for the person sitting in front of the app — and enumerating
+      // the contexts instead of stating the scope (acceptance F4) is what
+      // made the reader wonder whether there were two sets of rules.
       expect(warning.textContent).toMatch(/Always allow/);
-      expect(warning.textContent).toMatch(/here/);
-      expect(warning.textContent).toMatch(/automatic tasks/i);
+      expect(warning.textContent).toMatch(/without asking/);
+      expect(warning.textContent).not.toMatch(/automatic task/i);
 
       // Turning the switch on changes nothing about this line.
       await user.click(within(permissionCard('Automatic tasks')).getByRole('switch'));

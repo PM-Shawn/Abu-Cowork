@@ -8,24 +8,24 @@
  * If any quarantined test exceeds the SLA, this gate test fails, forcing
  * the owner to either fix the test (and move it back) or delete it.
  *
- * DATE NOTE: BASE_DATE is a fixed constant, not Date.now(), to avoid
- * flakiness from clock drift across CI runs. Update it when you extend
- * the SLA window (e.g., quarterly "did anyone fix these?" sweep).
- * Current window: 2026-06-30 + 28 days = expires 2026-07-28.
+ * DATE NOTE: the as-of date comes from resolveQuarantineAsOf(): CI injects
+ * QUARANTINE_ASOF=YYYY-MM-DD so the window advances every run; locally the
+ * committed FALLBACK_ASOF applies so the test stays deterministic (no
+ * Date.now()). Bump FALLBACK_ASOF whenever you touch this file.
  */
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { resolveQuarantineAsOf } from '../test/quarantineAsOf';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const QUARANTINE_DIR = join(__dirname, 'quarantine');
 
-// Fixed reference date for SLA window.
-// This constant must be updated if the SLA window is intentionally extended.
-// Do NOT use new Date() here — that would make the test flaky (passes today, fails in 4 weeks).
-const BASE_DATE = new Date('2026-06-30');
+// Committed fallback for local runs (CI overrides via QUARANTINE_ASOF).
+const FALLBACK_ASOF = '2026-09-02';
+const BASE_DATE = resolveQuarantineAsOf(process.env, FALLBACK_ASOF);
 const SLA_DAYS = 28;
 const SLA_MS = SLA_DAYS * 24 * 60 * 60 * 1000;
 

@@ -32,10 +32,16 @@ function walk(dir, out = []) {
 
 export function collectInventory(repoRoot) {
   const files = walk(repoRoot).map((f) => path.relative(repoRoot, f).split(path.sep).join('/'));
-  const inv = { unit: 0, integration: 0, contract: 0, enterprise: 0, quarantine: 0, e2eWeb: 0, e2eElectron: 0, nodeTest: 0 };
+  const inv = { unit: 0, integration: 0, contract: 0, enterprise: 0, quarantine: 0, quarantinedSpec: 0, e2eWeb: 0, e2eElectron: 0, nodeTest: 0 };
   for (const f of files) {
-    if (/^e2e\/.*\.spec\.ts$/.test(f)) { inv.e2eWeb++; continue; }
-    if (/^tests\/e2e\/.*\.spec\.ts$/.test(f)) { inv.e2eElectron++; continue; }
+    if (/^(?:e2e|tests\/e2e)\/.*\.spec\.ts$/.test(f)) {
+      if (readFileSync(path.join(repoRoot, f), 'utf8').includes('QUARANTINED:')) {
+        inv.quarantinedSpec++;
+      }
+      if (f.startsWith('e2e/')) inv.e2eWeb++;
+      else inv.e2eElectron++;
+      continue;
+    }
     if (/\.test\.(mjs|cjs)$/.test(f)) { inv.nodeTest++; continue; }
     if (!/\.test\.tsx?$/.test(f)) continue;
     // enterprise-tests/** is never picked up by the default vitest.config.ts
@@ -61,6 +67,7 @@ export function renderBlock(inv) {
     `| Contract (\`*.contract.test.ts\`) | ${inv.contract} |`,
     `| Enterprise (\`enterprise-tests/**\`, \`npm run test:enterprise\`, private build only — not in the default gate) | ${inv.enterprise} |`,
     `| Quarantined (\`src/__tests__/quarantine/\`) | ${inv.quarantine} |`,
+    `| Quarantined specs (\`e2e/**/*.spec.ts\`, \`tests/e2e/**/*.spec.ts\`) | ${inv.quarantinedSpec} |`,
     `| Web E2E (\`e2e/*.spec.ts\`, Playwright) | ${inv.e2eWeb} |`,
     `| Real-Electron E2E (\`tests/e2e/*.spec.ts\`) | ${inv.e2eElectron} |`,
     `| Node \`node:test\` scripts (\`*.test.mjs\` / \`*.test.cjs\`) | ${inv.nodeTest} |`,

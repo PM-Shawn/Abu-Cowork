@@ -244,6 +244,232 @@ describe('browser gate — preview and the real gate agree', () => {
   );
 });
 
+/**
+ * ── The region dimension (round-2 T4 / R2-C) ───────────────────────────────
+ *
+ * A call that names an embedded region is judged against EVERY site it
+ * touches, strictest first — the page and each named region — and the fold
+ * happens in `registry.ts` before the pure function is called, exactly the way
+ * the high-risk substitution does. That makes it the one input to
+ * `evaluateBrowserGate` no other test proves the gate computes correctly, so
+ * this block extends the agreement property with a region axis: the predictor
+ * folds the verdicts itself, and the real gate has to arrive at the same
+ * answer through `resolveBrowserActionTarget` and `strictestVerdictOf`.
+ *
+ * `via-embed` is a fifth region state rather than a variant of `allowed`
+ * because it is the one whose answer DIFFERS BY RUN MODE: a grant minted
+ * through the merged embedded-region prompt is a full grant with a human
+ * present and none at all for an automatic run.
+ *
+ * Held fixed at what the other matrix varies: one op class (`interactive` —
+ * the class that can actually name a region), the shipped policy, master
+ * switch on. The point here is the fold, not a second sweep of the same rows.
+ *
+ * ## What this block therefore does NOT say (round-3 R3-G)
+ *
+ * Because the class is pinned to `interactive`, none of these rows describes a
+ * READ. That matters for `via-embed` in particular: the mark takes the grant
+ * down to `'default'`, and an unattended READ on a `'default'` site is allowed
+ * — `browserGateEvaluation.ts`'s cross-origin fail-closed rule is written
+ * `if (stateChanging && …)`. So "a marked site is unreachable for an automatic
+ * task" is true of ACTING and not of reading, and no row here is evidence
+ * either way. The user-facing strings say so explicitly; this note exists so
+ * the next reader does not take the 30 green rows as the broader claim.
+ */
+describe('browser gate — a call that names a region agrees too', () => {
+  // Its own setup: a sibling describe does not inherit the other one's.
+  beforeEach(() => {
+    mockCallTool = vi.fn(() => Promise.resolve({
+      content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
+    }));
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.set('abu-browser', {
+      config: { name: 'abu-browser' },
+      client: { callTool: mockCallTool },
+      transport: {},
+      tools: new Map(),
+    });
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    __resetBrowserGrantsForTests();
+    __resetUnattendedConfirmationForTests();
+  });
+
+  afterEach(() => {
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
+    __resetBrowserGrantsForTests();
+    __resetUnattendedConfirmationForTests();
+  });
+
+  const PAGE = 'https://page.example.com';
+  const PAGE_URL = `${PAGE}/apply`;
+  const REGION = 'https://region.example.net';
+  const REGION_URL = `${REGION}/widget`;
+
+  /** What the user's settings say about the region's own site. */
+  const REGION_STATES = {
+    none: { stored: undefined, marked: false, present: false },
+    default: { stored: undefined, marked: false, present: true },
+    allowed: { stored: 'allowed' as const, marked: false, present: true },
+    'via-embed': { stored: 'allowed' as const, marked: true, present: true },
+    denied: { stored: 'denied' as const, marked: false, present: true },
+  } satisfies Record<string, { stored?: 'allowed' | 'denied'; marked: boolean; present: boolean }>;
+
+  type RegionState = keyof typeof REGION_STATES;
+
+  /** What the user's settings say about the PAGE. */
+  const PAGE_STATES = {
+    default: undefined,
+    allowed: 'allowed' as const,
+    denied: 'denied' as const,
+  } satisfies Record<string, 'allowed' | 'denied' | undefined>;
+
+  type PageState = keyof typeof PAGE_STATES;
+
+  function servePageWithRegion(present: boolean): void {
+    mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
+      Promise.resolve(
+        params._meta?.['abu/conversationId'] === OWNER
+          ? {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                windows: [{
+                  windowId: 1,
+                  tabs: [{
+                    tabId: OWNED_TAB_ID,
+                    url: PAGE_URL,
+                    frames: [
+                      {
+                        frameId: 'f0',
+                        origin: PAGE,
+                        url: PAGE_URL,
+                        sameOriginAsTop: true,
+                        accessible: true,
+                      },
+                      ...(present
+                        ? [{
+                          frameId: 'f4',
+                          origin: REGION,
+                          url: REGION_URL,
+                          sameOriginAsTop: false,
+                          accessible: true,
+                        }]
+                        : []),
+                    ],
+                  }],
+                }],
+              }),
+            }],
+          }
+          : { content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }] },
+      ),
+    );
+  }
+
+  /** The strictest of the sites this call touches — what the gate folds to. */
+  function foldedVerdict(
+    page: PageState,
+    region: RegionState,
+    runMode: 'attended' | 'unattended',
+  ): DecideBrowserOperationSiteVerdict {
+    const each: Array<'allowed' | 'denied' | 'default'> = [
+      PAGE_STATES[page] ?? 'default',
+    ];
+    const spec = REGION_STATES[region];
+    if (spec.present) {
+      const regionVerdict = spec.stored === undefined
+        ? 'default'
+        : spec.stored === 'denied'
+          ? 'denied'
+          // The mark is what an automatic run does not get to use.
+          : (spec.marked && runMode === 'unattended') ? 'default' : 'allowed';
+      each.push(regionVerdict);
+    }
+    if (each.includes('denied')) return 'denied';
+    return each.every((v) => v === 'allowed') ? 'allowed' : 'default';
+  }
+
+  const pageStates = Object.keys(PAGE_STATES) as PageState[];
+  const regionStates = Object.keys(REGION_STATES) as RegionState[];
+  const runModes: Array<'attended' | 'unattended'> = ['attended', 'unattended'];
+
+  const matrix: Array<[PageState, RegionState, 'attended' | 'unattended']> = [];
+  for (const page of pageStates) {
+    for (const region of regionStates) {
+      for (const runMode of runModes) matrix.push([page, region, runMode]);
+    }
+  }
+
+  it('covers the whole region matrix (3 page states x 5 region states x 2 contexts)', () => {
+    expect(matrix).toHaveLength(3 * 5 * 2);
+  });
+
+  it.each(matrix)('page=%s region=%s %s', async (page, region, runMode) => {
+    const spec = REGION_STATES[region];
+    servePageWithRegion(spec.present);
+    useSettingsStore.setState({
+      permissionMode: 'standard',
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: true,
+      browserSitePermissions: testSiteVerdicts({
+        ...(PAGE_STATES[page] !== undefined ? { [PAGE]: PAGE_STATES[page] } : {}),
+        ...(spec.present && spec.stored !== undefined ? { [REGION]: spec.stored } : {}),
+      }),
+      browserSiteGrantViaEmbed: spec.marked ? { [REGION]: true } : {},
+    });
+
+    let askChannel: 'dialog' | 'im' | null = null;
+    setUnattendedConfirmationResolver(async () => {
+      askChannel = 'im';
+      return { approved: true, reason: 'approved in chat' };
+    });
+    const onRequireConfirmation = vi.fn(async (info: { deniedNotice?: string }) => {
+      if (info.deniedNotice === undefined) askChannel = 'dialog';
+      return true;
+    });
+    const context = runMode === 'unattended'
+      ? { conversationId: OWNER, interactionMode: 'background' }
+      : { conversationId: OWNER };
+
+    const decision = await checkToolApproval(
+      'abu-browser__click',
+      // Naming the region is what puts it into the fold at all: a call that
+      // names none is judged on the page alone, which is the `none` row.
+      {
+        tabId: OWNED_TAB_ID,
+        ...(spec.present ? { frameId: 'f4' } : {}),
+        locator: '{"css":"#go"}',
+      },
+      context as never,
+      onRequireConfirmation as never,
+    );
+
+    const evaluation = evaluateBrowserGate({
+      opClass: 'interactive',
+      runMode,
+      policy: DEFAULT_BROWSER_OPERATION_POLICY,
+      masterSwitchUnattended: true,
+      siteVerdict: foldedVerdict(page, region, runMode),
+      permissionMode: 'standard',
+      runPermissionCeiling: null,
+      toolTargetsPage: true,
+      originResolved: true,
+      answersPageDialog: false,
+      loginRequired: false,
+      conversationGrant: false,
+      confirmationChannelAvailable: true,
+      originKnown: true,
+    });
+
+    expect({
+      outcome: decision.decision === 'allow' ? 'allow' : 'deny',
+      askChannel,
+    }).toEqual({
+      outcome: evaluation.outcome,
+      askChannel: evaluation.ask?.channel ?? null,
+    });
+  });
+});
+
 describe('browserGatePreviewVerdict', () => {
   const base = {
     outcome: 'allow' as const,

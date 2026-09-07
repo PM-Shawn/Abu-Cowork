@@ -505,3 +505,356 @@ describe('batchOrigin', () => {
     }
   });
 });
+
+describe('runBatch — region identity between steps', () => {
+  /**
+   * A batch whose steps act inside an embedded region.
+   *
+   * The tab's own address is deliberately held CONSTANT in every case here: a
+   * third-party region can navigate on its own without the page moving at all,
+   * so a run that only watched the tab would carry the approval straight into
+   * whatever replaced the region. `frames` is served the way `get_tabs` really
+   * serves it, and only `accessible` rows count — an unreachable region's
+   * origin is a hint the embedding page could have authored.
+   */
+  function framedHarness(frameUrls: Array<string | null>, options: { accessible?: boolean } = {}) {
+    const sent: string[] = [];
+    const framesAsked: boolean[] = [];
+    /** Every page action's outgoing payload, in dispatch order. */
+    const payloads: Array<Record<string, unknown>> = [];
+    let probe = 0;
+    let clock = 0;
+    const deps: BatchDeps = {
+      now: () => { clock += 1; return clock; },
+      send: async (action, payload) => {
+        sent.push(action);
+        if (action !== 'get_tabs') payloads.push(payload);
+        if (action === 'get_tabs') {
+          framesAsked.push((payload as { framesForTabId?: number }).framesForTabId === TAB);
+          const url = frameUrls[Math.min(probe, frameUrls.length - 1)];
+          probe += 1;
+          return {
+            success: true,
+            data: {
+              windows: [{
+                tabs: [{
+                  tabId: TAB,
+                  url: 'https://oa.example.com/apply',
+                  frames: [
+                    {
+                      frameId: 'f0',
+                      origin: 'https://oa.example.com',
+                      sameOriginAsTop: true,
+                      accessible: true,
+                    },
+                    ...(url === null ? [] : [{
+                      frameId: 'f4',
+                      origin: new URL(url).origin,
+                      url,
+                      sameOriginAsTop: false,
+                      accessible: options.accessible ?? true,
+                    }]),
+                  ],
+                }],
+              }],
+            },
+          };
+        }
+        return { success: true, data: { success: true, message: 'ok' } };
+      },
+    };
+    return { deps, sent, framesAsked, payloads };
+  }
+
+  const framedSteps: BatchStep[] = [
+    { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+    { action: 'click', frameId: 'f4', locator: { text: '提交' } },
+  ];
+
+  it('asks for the frame tree only when a step targets a region', async () => {
+    const plain = harness();
+    await runBatch(plain.deps, TAB, steps('fill', 'click'), 'https://erp.example.com');
+    const framed = framedHarness(['https://vendor.example.net/form']);
+    await runBatch(framed.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(framed.framesAsked.every(Boolean)).toBe(true);
+  });
+
+  it('runs every step while the region keeps showing the site it was approved for', async () => {
+    const h = framedHarness(['https://vendor.example.net/form']);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.completedSteps).toHaveLength(2);
+    expect(result.frameOrigins).toEqual({ f4: 'https://vendor.example.net' });
+  });
+
+  /**
+   * Round-2 F1. The page-level pin travels on `_meta` and the caller merges it
+   * into every outgoing step; a step aimed into a third-party region that
+   * carried it would be refused by that region's own `assertOriginPin`
+   * (`content/index.ts`), which compares against the region's `location` —
+   * so a cross-region batch failed on step 0 with a refusal nobody could act
+   * on. Each framed step therefore carries the origin ITS OWN region was
+   * approved for.
+   */
+  it('pins each framed step to the region it was approved for, not to the page', async () => {
+    const h = framedHarness(['https://vendor.example.net/form']);
+
+    await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(h.payloads.map((p) => p.expectedOrigin)).toEqual([
+      'https://vendor.example.net',
+      'https://vendor.example.net',
+    ]);
+  });
+
+  it('leaves a main-document step to inherit the page-level pin, in the same batch', async () => {
+    const h = framedHarness(['https://vendor.example.net/form']);
+
+    await runBatch(
+      h.deps,
+      TAB,
+      [
+        { action: 'fill', frameId: 'f4', locator: { css: '#name' }, value: '张三' },
+        { action: 'click', locator: { text: '下一步' } },
+      ],
+      'https://oa.example.com',
+      { f4: 'https://vendor.example.net' },
+    );
+
+    // The region step names its region; the page step names nothing, so the
+    // owner fields the caller merges in supply the page's own pin.
+    expect(h.payloads.map((p) => p.expectedOrigin)).toEqual([
+      'https://vendor.example.net',
+      undefined,
+    ]);
+  });
+
+  it('sends no per-step pin at all for a batch the gate gave no region origins', async () => {
+    const plain = harness();
+
+    await runBatch(plain.deps, TAB, steps('fill', 'click'), 'https://erp.example.com');
+
+    // Nothing to override: the owner fields carry the only pin, exactly as
+    // before regions existed.
+    expect(plain.actions).toEqual(['fill', 'click']);
+  });
+
+  it('stops when the region navigates to another site, even though the tab never moved', async () => {
+    const h = framedHarness([
+      'https://vendor.example.net/form',
+      'https://evil.example.com/collect',
+    ]);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    expect(result.completedSteps).toHaveLength(1);
+    expect(result.remainingSteps).toBe(1);
+    // And the page really was left alone after the stop.
+    expect(h.sent.filter((a) => a === 'click')).toHaveLength(0);
+  });
+
+  it('stops before step 0 when the region is already showing something else', async () => {
+    const h = framedHarness(['https://evil.example.com/collect']);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    expect(result.completedSteps).toHaveLength(0);
+    expect(h.sent.filter((a) => a !== 'get_tabs')).toEqual([]);
+  });
+
+  it('stops when the region is gone rather than falling back to the page', async () => {
+    const h = framedHarness([null]);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(h.sent.filter((a) => a !== 'get_tabs')).toEqual([]);
+  });
+
+  it('stops when the region\'s origin is one the browser could not confirm', async () => {
+    // `accessible: false` ⇒ the reported origin came from the embedding page's
+    // markup, and nothing may be checked (or authorized) against it.
+    const h = framedHarness(['https://vendor.example.net/form'], { accessible: false });
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(h.sent.filter((a) => a !== 'get_tabs')).toEqual([]);
+  });
+
+  it('takes the GATE\'s origin for a region, not the one observed at the start', async () => {
+    // Same shape as `approvedOrigin` for the page: the run must not re-pin onto
+    // wherever the region had drifted to by the time it began.
+    const h = framedHarness(['https://evil.example.com/collect']);
+
+    const result = await runBatch(h.deps, TAB, framedSteps, 'https://oa.example.com', {
+      f4: 'https://vendor.example.net',
+    });
+
+    expect(result.stopped).toBe('frame-origin-changed');
+  });
+
+  it('leaves a frameless batch pinning only the page, exactly as before', async () => {
+    const h = harness({ urls: ['https://erp.example.com/form'] });
+
+    const result = await runBatch(h.deps, TAB, steps('fill', 'click'), 'https://erp.example.com');
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.frameOrigins).toBeUndefined();
+  });
+});
+
+/**
+ * ## Round-2 R2-A — every step of a parallel read group is checked, not the first
+ *
+ * Consecutive `find` / `read` steps are dispatched in one instant. The region
+ * check used to ask only about the step the loop happened to be standing on,
+ * so a group's second step went out with nobody having asked where ITS region
+ * had got to — and `extract_text` / `find` were exempt from the execution-time
+ * pin, so nothing downstream asked either. A region that had drifted to another
+ * site got its body read into the transcript under an approval that named a
+ * different one.
+ *
+ * The tab's own address is constant throughout, as in the block above: this is
+ * about a third-party region navigating under a page that never moved.
+ */
+describe('runBatch — every region in a parallel read group', () => {
+  /** Two third-party regions, each of which can be pointed somewhere else. */
+  function twoRegionHarness(f4Url: string, f5Url: string) {
+    /** Every page action's outgoing payload, in dispatch order. */
+    const payloads: Array<Record<string, unknown>> = [];
+    const sent: string[] = [];
+    let clock = 0;
+    const deps: BatchDeps = {
+      now: () => { clock += 1; return clock; },
+      send: async (action, payload) => {
+        sent.push(action);
+        if (action !== 'get_tabs') payloads.push(payload);
+        if (action === 'get_tabs') {
+          return {
+            success: true,
+            data: {
+              windows: [{
+                tabs: [{
+                  tabId: TAB,
+                  url: 'https://oa.example.com/apply',
+                  frames: [
+                    { frameId: 'f0', origin: 'https://oa.example.com', sameOriginAsTop: true, accessible: true },
+                    {
+                      frameId: 'f4',
+                      origin: new URL(f4Url).origin,
+                      url: f4Url,
+                      sameOriginAsTop: false,
+                      accessible: true,
+                    },
+                    {
+                      frameId: 'f5',
+                      origin: new URL(f5Url).origin,
+                      url: f5Url,
+                      sameOriginAsTop: false,
+                      accessible: true,
+                    },
+                  ],
+                }],
+              }],
+            },
+          };
+        }
+        return { success: true, data: { text: 'whatever this region is showing' } };
+      },
+    };
+    return { deps, sent, payloads };
+  }
+
+  /** Two reads in a row — consecutive, so they form one parallel group. */
+  const twoRegionReads: BatchStep[] = [
+    { action: 'read', frameId: 'f4', selector: '#a' },
+    { action: 'read', frameId: 'f5', selector: '#b' },
+  ];
+
+  const approvedRegions = {
+    f4: 'https://vendor.example.net',
+    f5: 'https://cdn.example.org',
+  };
+
+  it('reads both regions while each keeps showing the site it was approved for', async () => {
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://cdn.example.org/b');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions,
+    );
+
+    expect(result.stopped).toBeUndefined();
+    expect(result.completedSteps).toHaveLength(2);
+    // Still ONE group: the fix checks more, it does not serialise reads.
+    expect(h.sent).toEqual(['get_tabs', 'extract_text', 'extract_text']);
+  });
+
+  it('stops the group when the SECOND region drifted, and reads neither', async () => {
+    // The gate approved cdn.example.org for f5; by the time the batch runs, f5
+    // is showing evil.example. The first step's region never moved.
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://evil.example/collect');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions,
+    );
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    // Nothing was dispatched — not even the innocent first step, because the
+    // group goes out in one instant and there is no recalling it.
+    expect(h.payloads).toEqual([]);
+    expect(result.completedSteps).toHaveLength(0);
+  });
+
+  it('stops the group when the SECOND region is one the gate never judged', async () => {
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://cdn.example.org/b');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', { f4: 'https://vendor.example.net' },
+    );
+
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(h.payloads).toEqual([]);
+  });
+
+  it('still stops when the FIRST region of the group drifted', async () => {
+    const h = twoRegionHarness('https://evil.example/collect', 'https://cdn.example.org/b');
+
+    const result = await runBatch(
+      h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions,
+    );
+
+    expect(result.stopped).toBe('frame-origin-changed');
+    expect(h.payloads).toEqual([]);
+  });
+
+  it('carries each region\'s own pin on its own step, across the group', async () => {
+    const h = twoRegionHarness('https://vendor.example.net/a', 'https://cdn.example.org/b');
+
+    await runBatch(h.deps, TAB, twoRegionReads, 'https://oa.example.com', approvedRegions);
+
+    expect(h.payloads).toEqual([
+      { tabId: TAB, frameId: 'f4', expectedOrigin: 'https://vendor.example.net', selector: '#a' },
+      { tabId: TAB, frameId: 'f5', expectedOrigin: 'https://cdn.example.org', selector: '#b' },
+    ]);
+  });
+});

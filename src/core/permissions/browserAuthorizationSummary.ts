@@ -33,6 +33,20 @@ export interface BrowserAuthorizationSummary {
    * the user's own settings.
    */
   highRiskAllowed: string[];
+  /**
+   * Origins marked `'allowed'` whose grant was minted through the merged
+   * embedded-region prompt (round-2 R2-C-②, `settingsStore`'s
+   * `browserSiteGrantViaEmbed`). Like `highRiskAllowed` they are NOT
+   * unattended-reachable — `getSiteVerdict` reads them as `'default'` for a
+   * run nobody is watching — so they are reported separately rather than
+   * inflating the "a scheduled task can act here" count.
+   *
+   * "Reachable" means ACT (round-3 R3-G). A marked site behaves exactly like
+   * any never-listed site for an unattended run: no clicking, filling or
+   * scripting, and reading unchanged. Every string built on this field is
+   * scoped to acting for that reason.
+   */
+  viaEmbedAllowed: string[];
   /** Origins with a `'denied'` verdict — blocked in both run modes. */
   blocked: string[];
 }
@@ -40,10 +54,12 @@ export interface BrowserAuthorizationSummary {
 export function summarizeBrowserAuthorization(
   sitePermissions: Record<string, 'allowed' | 'denied'> | undefined,
   allowUnattendedBrowser: boolean | undefined,
+  viaEmbed?: Record<string, true> | undefined,
 ): BrowserAuthorizationSummary {
   const masterSwitchOn = allowUnattendedBrowser === true;
   const reachableUnattended: string[] = [];
   const highRiskAllowed: string[] = [];
+  const viaEmbedAllowed: string[] = [];
   const blocked: string[] = [];
 
   for (const origin of Object.keys(sitePermissions ?? {}).sort()) {
@@ -60,8 +76,14 @@ export function summarizeBrowserAuthorization(
       highRiskAllowed.push(origin);
       continue;
     }
+    // Reported before the reach count, in the same shape high-risk is: a grant
+    // the gate will not honour unattended must not be counted as one it will.
+    if (viaEmbed?.[origin] === true) {
+      viaEmbedAllowed.push(origin);
+      continue;
+    }
     if (masterSwitchOn) reachableUnattended.push(origin);
   }
 
-  return { masterSwitchOn, reachableUnattended, highRiskAllowed, blocked };
+  return { masterSwitchOn, reachableUnattended, highRiskAllowed, viaEmbedAllowed, blocked };
 }

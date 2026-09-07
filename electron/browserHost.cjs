@@ -479,10 +479,7 @@ const DIALOG_WATCHED_ACTIONS = new Set([
  * (never the tool's input schema, so the model can neither read nor forge it);
  * this set names the actions that must match it before executing.
  *
- * Two deliberate exemptions:
- * - READ-ONLY actions (snapshot/screenshot/extract/scroll/…): they change
- *   nothing, and the run's site verdict already gated whether it may read at
- *   all. A drifted read returns a page the model can see is different.
+ * One deliberate exemption:
  * - `navigate` ITSELF: its target IS the thing the gate approved, and the tab's
  *   current origin is by definition the page it is leaving. Pinning it would
  *   refuse every navigation away from anywhere.
@@ -493,6 +490,48 @@ const ORIGIN_PINNED_ACTIONS = new Set([
   'select',
   'keyboard',
   'execute_js',
+]);
+
+/**
+ * ## Reads are pinned too (round-2 R2-A)
+ *
+ * The set above used to be the whole story, on the reasoning that a read
+ * "changes nothing". That reasoning was wrong about WHERE the change lands: a
+ * read does not change the page, it changes the CONVERSATION — the body of
+ * whatever site the tab is showing goes into the transcript and the model's
+ * context. If the page drifted between the approval and this instant, the site
+ * the user (or the standing grant) authorized is not the site being copied out.
+ * That is an exfiltration, and it is the exact hole a batch's parallel read
+ * group walked into.
+ *
+ * These are checked against the pin they CARRY, but — unlike a state change —
+ * a read that carries no pin at all keeps its pre-existing path in both run
+ * modes. Widening the missing-pin refusal to reads would change what an
+ * unattended run may look at, which is a policy question for the gate, not a
+ * question this file gets to answer.
+ *
+ * `wait_for` is deliberately absent: waiting is frequently how a run waits OUT
+ * a navigation, so pinning it would refuse the one call whose whole purpose is
+ * to observe the page becoming something else.
+ *
+ * That exemption has a price, and it is stated rather than argued away (R3-E):
+ * a wait is NOT contents-free on its TIMEOUT path, which reports the page's
+ * current URL and up to 80 characters of visible text (`describeCurrentState`
+ * in the content runtime) so the model can see why the condition never held.
+ * A `wait_for` that times out inside a drift window can therefore carry that
+ * much of the new site back. Known, bounded, accepted — tightening it (a
+ * timeout that says "the page is no longer the approved site" instead of
+ * quoting it) is tracked, not done here.
+ */
+const ORIGIN_PINNED_READ_ACTIONS = new Set([
+  'snapshot',
+  'screenshot',
+  'screenshot_full_page',
+  'find',
+  'locate',
+  'get_html',
+  'extract_text',
+  'extract_table',
 ]);
 
 /** ownerKey -> ts of the last input the USER landed on one of that owner's views. */
@@ -942,10 +981,13 @@ function normalizedOriginOf(urlString) {
  * approval gate over `_meta`, never the model-visible tool schema.
  */
 function assertOriginPin(action, payload, view) {
-  if (!ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
+  if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
   if (!expected) {
-    if (payload.unattended !== true) return;
+    // A read that arrived without a pin keeps its pre-R2-A path whatever the
+    // run mode — see `ORIGIN_PINNED_READ_ACTIONS`.
+    if (pinnedRead || payload.unattended !== true) return;
     throw new Error(
       'Refused: this unattended run sent no approved origin for the page, so the action could not be ' +
         'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.'
@@ -1720,6 +1762,99 @@ async function installAutomationRuntime(view) {
   automationRuntimeReady.add(contents);
 }
 
+/**
+ * Cross-check the runtime's frame list against the BROWSER's own.
+ *
+ * The runtime reaches same-origin child documents through `contentDocument`
+ * and reads their real `location` — authoritative. A CROSS-origin frame is
+ * opaque to it, so all it can offer is the `src` ATTRIBUTE, which the
+ * embedding page writes and the frame can navigate away from. Reporting that
+ * as an origin would let a page name any site it liked as "the region embedded
+ * here", and the approval gate's merged grant reads this list.
+ *
+ * `webContents.mainFrame.framesInSubtree` is the main process's own view of
+ * the frame tree, which no page authors. An unreachable frame keeps its origin
+ * only if the browser agrees a frame with that origin is really embedded;
+ * otherwise the origin is dropped and the region is reported without one —
+ * still listed (so a refusal can name it) but never authorizable.
+ */
+function validateFrameOrigins(view, frames) {
+  if (!Array.isArray(frames)) return frames;
+  const real = new Set();
+  try {
+    for (const frame of view.webContents.mainFrame.framesInSubtree) {
+      // `WebFrameMain.origin` over `url`: it is the browser's own answer, and
+      // it is honest about an opaque origin (a sandboxed frame reports the
+      // string "null", which normalizes away and so confirms nothing) where
+      // reverse-engineering one from the address would quietly manufacture a
+      // site. `url` remains the fallback for a frame that reports no origin.
+      const stated = typeof frame.origin === 'string' && frame.origin !== ''
+        ? frame.origin
+        : frame.url;
+      const origin = normalizedOriginOf(stated);
+      if (origin) real.add(origin);
+    }
+  } catch {
+    // A destroyed webContents has no frame tree; then nothing can be confirmed.
+  }
+  return frames.map((frame) => {
+    if (!frame || frame.accessible !== false || !frame.origin) return frame;
+    if (real.has(frame.origin)) return frame;
+    return { ...frame, origin: null };
+  });
+}
+
+/**
+ * How long the frame probe is given before a listing gives up on it.
+ *
+ * A tab suspended inside `alert()`/`confirm()` runs NOTHING — not the page's
+ * script, not the automation runtime — so an isolated-world call into it never
+ * settles. `get_tabs` must stay answerable there (it is the one listing that
+ * marks the frozen tab, so a model can avoid picking it), which means the
+ * frame probe has to be bounded rather than trusted. Belt to the braces of the
+ * `pendingDialogs` skip below: a tab can also freeze between the check and the
+ * call, and a renderer can wedge for reasons that raise no dialog at all.
+ */
+const FRAME_PROBE_TIMEOUT_MS = 2000;
+
+/**
+ * Does the BROWSER itself say this tab has any child frame?
+ *
+ * Main-process only — `framesInSubtree` is Electron's own view of the tree and
+ * costs no round trip into the page, which is the whole point: the frame probe
+ * DOES cost one, and on a page with no iframes it can only ever come back with
+ * the main frame, which every caller then discards (`tree.length > 1`). Asking
+ * first is therefore free and changes no answer.
+ *
+ * A destroyed webContents has no tree; "unknown" is treated as "might have
+ * one" so the probe still runs and the ordinary timeout handles it.
+ */
+function viewHasChildFrames(view) {
+  try {
+    return view.webContents.mainFrame.framesInSubtree.length > 1;
+  } catch {
+    return true;
+  }
+}
+
+/** The page's embedded regions, or `[]` when the runtime could not be asked. */
+async function frameTreeFor(view) {
+  try {
+    assertAutomationDocumentAllowed(view);
+    let timer;
+    const frames = await Promise.race([
+      runDomAutomation(view, 'frames', {}),
+      new Promise((resolve) => {
+        timer = armTimer(() => resolve(null), FRAME_PROBE_TIMEOUT_MS);
+      }),
+    ]).finally(() => disarmTimer(timer));
+    if (frames === null) return [];
+    return validateFrameOrigins(view, frames) ?? [];
+  } catch {
+    return [];
+  }
+}
+
 async function runDomAutomation(view, action, payload) {
   await installAutomationRuntime(view);
   const code = `globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__.handleAction(
@@ -1729,10 +1864,18 @@ async function runDomAutomation(view, action, payload) {
   // Never auto-retry an action: a click/fill can take effect just before its
   // execution context is replaced. Replaying it could submit or delete twice.
   // The next explicit tool call installs into the new document as needed.
-  return view.webContents.executeJavaScriptInIsolatedWorld(
+  const result = await view.webContents.executeJavaScriptInIsolatedWorld(
     AUTOMATION_WORLD_ID,
     [{ code }],
   );
+  // A snapshot carries the page's frame list, and the runtime can only guess
+  // the origin of a region it cannot see into. Same cross-check as
+  // `frameTreeFor` — the model must never be shown an origin the browser does
+  // not confirm, because that list is what an approval is granted against.
+  if (action === 'snapshot' && result && typeof result === 'object' && Array.isArray(result.frames)) {
+    return { ...result, frames: validateFrameOrigins(view, result.frames) };
+  }
+  return result;
 }
 
 async function navigateAutomationTab(view, payload) {
@@ -2319,6 +2462,34 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // U6 / F2.4. Spread in ONLY when there is something to say, so a listing
     // for healthy tabs is byte-for-byte what it was before this existed.
     const currentAuthState = tabs.find((tab) => tab.tabId === currentTabId)?.authState ?? null;
+    // A frame tree costs one round trip INTO the page, so it is computed only
+    // when a caller asked for it by name (`framesForTabId` — the approval
+    // gate, and `batch`'s own between-step re-read when a step targets a
+    // region), and only when the browser's own frame tree already says there
+    // is something to find.
+    //
+    // It used to be computed for the current tab unconditionally as well, on
+    // every listing. `batch` re-reads the tab before EVERY step, so an
+    // ordinary 25-step batch that never mentions a region paid 25 page round
+    // trips for a frame list nobody had asked for (round-2 F6). The model
+    // still gets the regions from `snapshot`, which is where it reads the page
+    // anyway.
+    const framesWanted = new Set();
+    if (Number.isFinite(Number(payload.framesForTabId))) framesWanted.add(Number(payload.framesForTabId));
+    const framesByTab = new Map();
+    for (const wantedTabId of framesWanted) {
+      const target = tabs.find((tab) => tab.tabId === wantedTabId);
+      if (!target) continue;
+      // A tab held by a native dialog cannot be scripted at all. Asking it for
+      // a frame list would stall the whole listing — and this listing is
+      // exactly how a caller LEARNS the tab is frozen.
+      if (pendingDialogs.has(target.id)) continue;
+      const wantedView = views.get(target.id);
+      if (!wantedView) continue;
+      if (!viewHasChildFrames(wantedView)) continue;
+      const tree = await frameTreeFor(wantedView);
+      if (tree.length > 1) framesByTab.set(wantedTabId, tree);
+    }
     return {
       summary: {
         totalWindows: 1,
@@ -2347,6 +2518,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
             ? { dialogPending: pendingDialogs.get(tab.id).info.type }
             : {}),
           ...(tab.authState ? { authState: tab.authState } : {}),
+          ...(framesByTab.has(tab.tabId) ? { frames: framesByTab.get(tab.tabId) } : {}),
         })),
       }],
     };
@@ -2524,6 +2696,10 @@ async function runBrowserAutomation(action, payload, signal, scope) {
  *  `src/core/tools/browserToolRouting.test.ts`. */
 const domActions = new Set([
   'snapshot',
+  // Read-only, and internal: the tool layer never registers `frames`. It is
+  // how this file asks the injected runtime what embedded regions the page
+  // has, so `get_tabs` and `snapshot` can report them.
+  'frames',
   // Read-only, and deliberately NOT in TAKEOVER_GATED_ACTIONS: `find`
   // changes nothing, so making it wait out a quiet window would only slow
   // down the step a model takes to avoid clicking the wrong thing.

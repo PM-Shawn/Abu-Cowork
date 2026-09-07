@@ -443,6 +443,47 @@ describe('imApprovalResolver', () => {
     await expect(promise).resolves.toMatchObject({ approved: true });
   });
 
+  /**
+   * Round-2 R2-D. The remote approver is the reader who can see the least: no
+   * browser, no page, just a sentence in a chat. Naming only the region asks
+   * them about a site they have never visited.
+   */
+  it('names the page an action inside an embedded region is happening on', async () => {
+    imApprovalResolver(seamRequest({
+      info: {
+        command: '浏览器操作: abu-browser__click (https://vendor.example.net)',
+        level: 'warn',
+        reason: 'clicks a button in the page',
+        kind: 'browser',
+        browserOperationClass: 'interactive',
+        browserOrigin: 'https://vendor.example.net',
+        browserPageOrigin: 'https://oa.example.com',
+        allowPersistentGrant: false,
+      },
+    }));
+    await settle();
+
+    const message = (mocks.send.mock.calls[0] as unknown as [unknown, { content: string }])[1];
+    expect(message.content).toContain(
+      format(getI18n().imChannel.approvalPromptPageOrigin, { origin: 'https://oa.example.com' }),
+    );
+    // Both sites, and the region still first — it is where the click lands.
+    expect(message.content.indexOf('vendor.example.net'))
+      .toBeLessThan(message.content.indexOf('oa.example.com'));
+
+    tryConsumeApprovalReply(inbound('拒绝'));
+  });
+
+  it('says nothing about a page when the action targets the page itself', async () => {
+    imApprovalResolver(seamRequest());
+    await settle();
+
+    const message = (mocks.send.mock.calls[0] as unknown as [unknown, { content: string }])[1];
+    expect(message.content).not.toContain('当前页面');
+
+    tryConsumeApprovalReply(inbound('拒绝'));
+  });
+
   it('denies on 拒绝 and says so in the user-facing reason', async () => {
     const promise = imApprovalResolver(seamRequest());
     await settle();
@@ -1464,6 +1505,7 @@ describe('an automation supplies its own approval target', () => {
         .toBeLessThan(dict.approvalPrompt.indexOf('{action}'));
       expect(dict.approvalPromptTask).toContain('{task}');
       expect(dict.approvalPromptOrigin).toContain('{origin}');
+      expect(dict.approvalPromptPageOrigin).toContain('{origin}');
     });
   });
 

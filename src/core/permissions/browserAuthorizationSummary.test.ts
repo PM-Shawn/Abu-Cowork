@@ -42,7 +42,37 @@ describe('summarizeBrowserAuthorization', () => {
       masterSwitchOn: false,
       reachableUnattended: [],
       highRiskAllowed: [],
+      viaEmbedAllowed: [],
       blocked: [],
     });
+  });
+
+  /**
+   * Round-2 R2-C-②. A grant minted through the merged embedded-region prompt
+   * is not one an automatic task may act on, so the screens that answer "where
+   * may a scheduled task go?" must not count it. Reported separately, the same
+   * way high-risk is, so the list does not silently look shorter than the
+   * user's own settings.
+   */
+  it('keeps a via-embed grant out of the unattended reach, and says where it went', () => {
+    const summary = summarizeBrowserAuthorization(
+      { 'https://vendor.example.net': 'allowed', 'https://ok.example.com': 'allowed' },
+      true,
+      { 'https://vendor.example.net': true },
+    );
+
+    expect(summary.reachableUnattended).toEqual(['https://ok.example.com']);
+    expect(summary.viaEmbedAllowed).toEqual(['https://vendor.example.net']);
+  });
+
+  it('leaves the reach alone when nothing is marked', () => {
+    const summary = summarizeBrowserAuthorization(
+      { 'https://vendor.example.net': 'allowed' },
+      true,
+      {},
+    );
+
+    expect(summary.reachableUnattended).toEqual(['https://vendor.example.net']);
+    expect(summary.viaEmbedAllowed).toEqual([]);
   });
 });

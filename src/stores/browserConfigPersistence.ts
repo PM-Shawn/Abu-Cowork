@@ -40,6 +40,53 @@ export const BROWSER_CONFIG_FIELDS = [
 
 export type BrowserConfigField = (typeof BROWSER_CONFIG_FIELDS)[number];
 
+/**
+ * Fields that carry no revision of their own and must travel with one that
+ * does (round-2 R2-C-②).
+ *
+ * `browserSiteGrantViaEmbed` qualifies the `'allowed'` entries in
+ * `browserSitePermissions`: a marked grant is a full grant with a human
+ * present and no standing grant at all for an automatic run. The two are
+ * always written in the same `set`, so giving the mark its own counter would
+ * only invent a way for them to disagree. What it must NOT do is stay behind
+ * when its owner is adopted from disk — that would strip the mark off a grant
+ * the other window still holds, silently promoting a region grant into one an
+ * unattended run may act on.
+ *
+ * A companion the disk copy does not have is REMOVED rather than kept.
+ *
+ * ## What that choice really costs (round-3 R3-F)
+ *
+ * Everything else in this module fails CLOSED — an unreadable revision counts
+ * as 0, a `setItem` that returns proves nothing, a blob that will not parse is
+ * not merged. This one rule fails OPEN: dropping a mark promotes a region
+ * grant into one an automatic run may act on.
+ *
+ * It is deliberate anyway, and the honest reason is narrower than "its own
+ * account": a disk copy with no `browserSiteGrantViaEmbed` key was written by
+ * a build that does not KNOW about marks, not by one that examined its grants
+ * and declared them unmarked. Keeping this window's marks over it would be
+ * just as much of a guess, and would strand a mark on a store that has no way
+ * to clear it. So the rule is "the adopted state is taken whole, companions
+ * included" — one store wins, not a splice of two.
+ *
+ * The trigger is another window running an OLDER build (or a downgrade, whose
+ * v48 blob comes back through migrate unmarked). v48/v49 are unreleased and
+ * shipped builds stop at v45, so in practice this is a development machine.
+ * Both halves of the rule are pinned: `mergeBrowserConfigForWrite` below, and
+ * `restoreBrowserConfigField` in `settingsStore.ts`.
+ */
+export const BROWSER_CONFIG_COMPANION_FIELDS: Readonly<
+  Partial<Record<BrowserConfigField, readonly string[]>>
+> = {
+  browserSitePermissions: ['browserSiteGrantViaEmbed'],
+};
+
+/** The companions of one field, or nothing. */
+export function browserConfigCompanionsOf(field: BrowserConfigField): readonly string[] {
+  return BROWSER_CONFIG_COMPANION_FIELDS[field] ?? [];
+}
+
 /** One counter per field, persisted alongside the values they order. */
 export type BrowserConfigRevisions = Record<BrowserConfigField, number>;
 
@@ -152,6 +199,11 @@ export function mergeBrowserConfigForWrite(
     // revisions mean neither side has newer news, and the writer keeps its own.
     if (!(field in onDisk.state)) continue;
     mergedState[field] = onDisk.state[field];
+    // …and everything that qualifies it. See `BROWSER_CONFIG_COMPANION_FIELDS`.
+    for (const companion of browserConfigCompanionsOf(field)) {
+      if (companion in onDisk.state) mergedState[companion] = onDisk.state[companion];
+      else delete mergedState[companion];
+    }
     mergedRevisions[field] = diskRevisions[field];
     adopted.push(field);
   }
@@ -182,7 +234,11 @@ export function browserConfigWasStored(
 ): boolean {
   const stored = parsePersistedSettings(storedRaw);
   if (stored === null) return false;
+  // Companions are compared too: a grant whose mark did not land is a grant
+  // that reads as unmarked, which is wider than what was meant to be saved.
   return BROWSER_CONFIG_FIELDS.every(
-    (field) => JSON.stringify(stored.state[field]) === JSON.stringify(intended.state[field]),
+    (field) => [field, ...browserConfigCompanionsOf(field)].every(
+      (key) => JSON.stringify(stored.state[key]) === JSON.stringify(intended.state[key]),
+    ),
   );
 }

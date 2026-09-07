@@ -487,6 +487,10 @@ export function mayUnattendedTierApproveBrowser(info: ConfirmationInfo): boolean
       siteVerdict: getSiteVerdict(
         info.browserOrigin ?? null,
         settings.browserSitePermissions ?? {},
+        // Unattended by construction — this function answers "may the
+        // capability tier approve this on its own". A grant minted through the
+        // merged embedded-region prompt is not a standing grant here (R2-C-②).
+        { viaEmbed: settings.browserSiteGrantViaEmbed ?? {}, runMode: 'unattended' },
       ),
     }) === 'allow'
   );

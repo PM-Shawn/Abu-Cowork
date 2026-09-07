@@ -98,6 +98,11 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
       // approval prompts would block a headless run forever — this makes them
       // auto-DECLINE (fail-closed; see tauriHost.cjs).
       ABU_E2E_DECLINE_CU_APPROVALS: '1',
+      // Reveal windows with showInactive() (and hide the macOS Dock icon) so a
+      // full suite run — ~40 launches — does not steal focus on a developer
+      // machine. Windows are still real and rendered: drag-region and
+      // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
+      ABU_E2E_QUIET_WINDOW: '1',
     },
     timeout: 60_000,
   });

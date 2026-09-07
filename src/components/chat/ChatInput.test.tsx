@@ -994,7 +994,7 @@ describe('ChatInput inline agent selection', () => {
         // Not an @ prefix: the pin lives on the conversation, the text goes as-is.
         fireEvent.change(textarea, { target: { value: '出周报' } });
         fireEvent.keyDown(textarea, { key: 'Enter' });
-        expect(onSend).toHaveBeenCalledWith('出周报', undefined, null);
+        expect(onSend).toHaveBeenCalledWith('出周报', undefined, null, expect.any(Function));
         // Sticky: the pin survives the send.
         expect(useChatStore.getState().pendingTeamId).toBe('tm1');
         expect(screen.getByTestId('composer-team-chip')).toBeTruthy();

@@ -824,6 +824,15 @@ const CONFIRM_DIALOG_TITLES = [
 ];
 
 /**
+ * The upload confirmation's heading is composed, not fixed — 「上传 2 个文件到
+ * oa.example.com」 (acceptance F5) — so it cannot sit in the exact-match list
+ * above. It still has to be caught: a guard that says "no dialog appeared"
+ * while the one dialog that sends files off the machine slipped past it would
+ * be worse than no guard.
+ */
+const CONFIRM_DIALOG_TITLE_PATTERNS = [/^上传 \d+ 个文件到 /, /^Upload \d+ files? to /];
+
+/**
  * Start recording every `<h2>` that appears from now on. Survives until the
  * next page reload, so it must be installed AFTER the last seeding reload and
  * BEFORE the run is fired. A spot check at the end could not see a dialog that
@@ -864,7 +873,10 @@ async function seenDialogTitles(page: Page): Promise<string[]> {
 async function expectNoConfirmationDialogEverAppeared(page: Page): Promise<void> {
   const titles = await seenDialogTitles(page);
   expect(
-    titles.filter((title) => CONFIRM_DIALOG_TITLES.includes(title)),
+    titles.filter((title) => (
+      CONFIRM_DIALOG_TITLES.includes(title)
+      || CONFIRM_DIALOG_TITLE_PATTERNS.some((pattern) => pattern.test(title))
+    )),
     `a confirmation dialog appeared during an unattended run (headings seen: ${JSON.stringify(titles)})`,
   ).toEqual([]);
 }

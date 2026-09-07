@@ -504,6 +504,25 @@ function browserConfirmHeading(page: Page) {
   return page.getByRole('heading', { name: /^(浏览器操作确认|Confirm browser action)$/ });
 }
 
+/**
+ * The upload's own heading (acceptance F5).
+ *
+ * An upload is asked with its own wording — how many files, and to which host
+ * — so it does NOT show 「浏览器操作确认」 and must not be found by the helper
+ * above. Matched loosely on the host, since the fixture's loopback port is
+ * assigned per run.
+ */
+function browserUploadHeading(page: Page) {
+  return page.getByRole('heading', { name: /^(上传 \d+ 个文件到 |Upload \d+ files? to )/ });
+}
+
+/** 「确认上传」 — the upload's own verb, in place of the generic 「确认执行」. */
+function browserUploadConfirmButton(page: Page) {
+  return page.getByRole('button', {
+    name: /^(仅本次上传|This upload only|确认上传|Confirm upload)$/,
+  });
+}
+
 function browserAllowOnceButton(page: Page) {
   return page.getByRole('button', { name: /^(仅本次对话|This conversation only)$/ });
 }
@@ -1248,10 +1267,20 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
       // Then the upload asks on its own — and the question NAMES the file, in
       // the spelling the user wrote it, which is the whole point of freezing
       // the resolved list before anybody is asked.
+      //
+      // It asks in its OWN words (acceptance F5): 「上传 1 个文件到 <host>」
+      // over 「确认上传」, not 「浏览器操作确认」 over 「确认执行」, and with
+      // no `abu-browser__upload_file` anywhere on the box. Asserted in the
+      // real shell because the string a person actually reads is assembled
+      // from three tiers — the gate's resolved file list, the ask's `kind`,
+      // and the dialog's own wording — and each was individually plausible
+      // while the box still said the tool's name.
       await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(3);
-      await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(browserUploadHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(browserConfirmHeading(page)).toBeHidden();
       await expect(page.getByText(uploadName, { exact: false })).toBeVisible({ timeout: READY_TIMEOUT });
-      await browserConfirmButton(page).click();
+      await expect(page.getByText('abu-browser__upload_file', { exact: false })).toHaveCount(0);
+      await browserUploadConfirmButton(page).click();
 
       await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
       await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -1351,5 +1380,27 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     expect(savedPath).toContain('browser-downloads');
     expect(savedPath.endsWith('排班表.csv')).toBe(true);
     expect(readFileSync(savedPath, 'utf8')).toBe(exported);
+
+    /*
+      ...and the person who asked for it gets somewhere to click (acceptance
+      F3). Until this existed the file reached the disk and the conversation
+      said nothing about it: the path lived only in a tool result buried in
+      the transcript, and the report card had three emitters, all of them
+      unattended. The card that appears here carries the FILES and nothing
+      else — no outcome badge, no 「访问过的网站」 — because the person watched
+      the run and needs the file, not an account of it.
+    */
+    const downloadsCard = page.getByRole('region', { name: /^(下载到的文件|Files it downloaded)$/ });
+    await expect(downloadsCard).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(downloadsCard.getByText('排班表.csv', { exact: false })).toBeVisible();
+    await expect(page.getByText(/^(浏览器任务报告|Browser task report)$/)).toHaveCount(0);
+    // And the row really is a pair of controls, not a line of text: both the
+    // name and 「在文件夹中显示」 are reachable. They are not CLICKED here —
+    // one opens Finder — but which path each is handed is pinned at the
+    // component level (`BrowserRunReportCard.test.tsx`).
+    await expect(downloadsCard.getByRole('button', { name: /排班表\.csv/ })).toBeEnabled();
+    await expect(
+      downloadsCard.getByRole('button', { name: /^(在文件夹中显示|Show in folder)$/ }),
+    ).toBeEnabled();
   });
 });

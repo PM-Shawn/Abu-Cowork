@@ -366,6 +366,61 @@ describe('BrowserRunReportCard', () => {
     });
   });
 
+  /**
+   * R-1. A scheduled export used to end with a green card and no way to reach
+   * the file it produced — the path existed only in the tool output buried in
+   * the transcript.
+   */
+  describe('the files it downloaded', () => {
+    const saved = (name: string, path: string, bytes: number, downloadId: string) => ({
+      kind: 'download_saved' as const, downloadId, name, path, bytes,
+    });
+
+    it('lists each file with its size', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10 });
+        record(saved('排班表.xlsx', '/data/abu/排班表.xlsx', 1_258_291, 'dl_1'));
+      });
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.getByText('下载到的文件')).toBeInTheDocument();
+      expect(screen.getByText('排班表.xlsx')).toBeInTheDocument();
+      expect(screen.getByText('1.2 MB')).toBeInTheDocument();
+    });
+
+    it('has no such section for a run that downloaded nothing', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 5 });
+      });
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.queryByText('下载到的文件')).not.toBeInTheDocument();
+    });
+
+    /**
+     * A card written before this field existed is read back without it. The
+     * defect shape this repo has already shipped once: a snapshot that
+     * dropped a field and a component that assumed it.
+     */
+    it('renders a snapshot from before artifacts existed without throwing', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 5 });
+      });
+      const legacy = { ...report, omitted: { sites: 0, problems: 0 } };
+      delete (legacy as { artifacts?: unknown }).artifacts;
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(legacy)} />);
+
+      expect(screen.getByText('浏览器任务报告')).toBeInTheDocument();
+      expect(screen.queryByText('下载到的文件')).not.toBeInTheDocument();
+    });
+  });
+
   it('renders the same snapshot in the other locale', () => {
     const report = snapshotOf(() => {
       record({

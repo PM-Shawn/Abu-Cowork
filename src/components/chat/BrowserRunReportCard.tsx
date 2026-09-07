@@ -1,11 +1,14 @@
-import { AlertTriangle, Ban, Check, CircleStop, Globe, ShieldAlert, UserCheck, X } from 'lucide-react';
+import { AlertTriangle, Ban, Check, CircleStop, FolderOpen, Globe, ShieldAlert, UserCheck, X } from 'lucide-react';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import type { Message } from '@/types';
 import type {
+  BrowserRunReportArtifact,
   BrowserRunReportOutcome,
   BrowserRunReportSnapshot,
 } from '@/core/observability/browserRunReport';
 import { rawCode, reasonLabel, stepLabel } from '@/core/observability/browserRunReportCopy';
+import { formatBytes } from '@/core/permissions/browserUploadFiles';
+import { usePreviewStore } from '@/stores/previewStore';
 
 /**
  * The one thing a person reads after an overnight unattended run.
@@ -29,6 +32,55 @@ import { rawCode, reasonLabel, stepLabel } from '@/core/observability/browserRun
  * run also sends (F7) quotes the very same codes, and one table is the only
  * way the card and that message cannot drift apart.
  */
+
+/**
+ * One downloaded file, opened the way every other file in this app is opened.
+ *
+ * The preview panel and 「在文件夹中显示」 are the mechanisms attachments and
+ * workspace files already use (`FileAttachment.tsx`, `WorkspaceFileTree.tsx`)
+ * — a card that grew its own file viewer would be a second answer to a
+ * question this product has already answered.
+ *
+ * The name is page-influenceable (it comes from a `Content-Disposition`
+ * header, sanitized by the host and clamped by the aggregator), so it is
+ * rendered as PLAIN TEXT like every origin on this card — never as a link.
+ */
+function ArtifactRow({ artifact }: { artifact: BrowserRunReportArtifact }) {
+  const { t } = useI18n();
+  const tr = t.browserRunReport;
+  const openPreview = usePreviewStore((s) => s.openPreview);
+  const reveal = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+      await revealItemInDir(artifact.path);
+    } catch { /* the desktop shell said no; the path is still on the row */ }
+  };
+  return (
+    <li className="group/artifact flex items-baseline gap-2 text-minor">
+      <button
+        type="button"
+        onClick={() => openPreview(artifact.path)}
+        title={`${artifact.path}\n${tr.artifactOpenHint}`}
+        className="min-w-0 flex-1 truncate text-left text-[var(--abu-text-primary)] hover:underline"
+      >
+        {artifact.name}
+      </button>
+      <span className="flex-shrink-0 text-caption text-[var(--abu-text-tertiary)]">
+        {formatBytes(artifact.bytes)}
+      </span>
+      <button
+        type="button"
+        onClick={reveal}
+        title={tr.artifactReveal}
+        aria-label={tr.artifactReveal}
+        className="flex-shrink-0 text-[var(--abu-text-tertiary)] opacity-0 transition-opacity group-hover/artifact:opacity-100 hover:text-[var(--abu-text-secondary)]"
+      >
+        <FolderOpen aria-hidden="true" className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
+}
 
 function outcomeLabel(outcome: BrowserRunReportOutcome, t: TranslationDict): string {
   const o = t.browserRunReport.outcome;
@@ -264,6 +316,21 @@ export default function BrowserRunReportCard({ message }: { message: Message }) 
               {format(tr.approvalsLastDecision, {
                 time: new Date(approvals.lastDecisionAt).toLocaleString(),
               })}
+            </div>
+          )}
+        </Section>
+      )}
+
+      {(report.artifacts?.length ?? 0) > 0 && (
+        <Section title={tr.artifactsTitle}>
+          <ul className="space-y-0.5">
+            {report.artifacts?.map((artifact) => (
+              <ArtifactRow key={artifact.downloadId} artifact={artifact} />
+            ))}
+          </ul>
+          {(report.omitted.artifacts ?? 0) > 0 && (
+            <div className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
+              {format(tr.moreArtifacts, { count: String(report.omitted.artifacts) })}
             </div>
           )}
         </Section>

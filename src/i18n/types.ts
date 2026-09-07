@@ -777,6 +777,14 @@ export interface TranslationDict {
     /** "{count} 次被页面拦住（验证码 / 频率限制等）" */
     blockedPages: string;
     nextStepsTitle: string;
+    /** Section header over the files this run downloaded (T6 / R-1). */
+    artifactsTitle: string;
+    /** "另有 {count} 个文件未列出" */
+    moreArtifacts: string;
+    /** Tooltip on an artifact row — click opens it in the preview panel. */
+    artifactOpenHint: string;
+    /** Label of the reveal-in-folder button on an artifact row. */
+    artifactReveal: string;
     /** Short label per denial reason code. */
     reason: {
       masterSwitchOff: string;
@@ -859,6 +867,11 @@ export interface TranslationDict {
     detailBrowserToolsNotReady: string;
     /** "接下来：{step}" — second line, only when there is something to do. */
     nextStep: string;
+    /**
+     * "产物：{name}（{size}）· {path}" — one line per file the run downloaded.
+     * Name, size and location; never the file itself (T6 / R-1).
+     */
+    artifactLine: string;
   };
 
   // Settings Modal

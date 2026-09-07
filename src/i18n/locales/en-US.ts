@@ -608,6 +608,10 @@ const enUS: TranslationDict = {
     approvalsLastDecision: 'Last decision: {time}',
     blockedPages: 'Blocked by the page {count} times (CAPTCHA / rate limiting, etc.)',
     nextStepsTitle: 'What you can do next',
+    artifactsTitle: 'Files it downloaded',
+    moreArtifacts: '{count} more files not listed',
+    artifactOpenHint: 'Click to preview',
+    artifactReveal: 'Show in folder',
     reason: {
       masterSwitchOff: 'Unattended browser master switch is off',
       siteDenied: 'You blocked automation on this site',
@@ -659,6 +663,7 @@ const enUS: TranslationDict = {
     detailTurnLimit: 'hit the turn limit — the partial result is below',
     detailBrowserToolsNotReady: 'the browser tools were not ready, so this run had no browser',
     nextStep: 'Next: {step}',
+    artifactLine: 'File: {name} ({size}) · {path}',
   },
 
   settings: {

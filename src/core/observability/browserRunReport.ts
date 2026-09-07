@@ -65,6 +65,11 @@ export const MAX_REPORT_ORIGIN_LENGTH = 120;
 export const MAX_REPORT_ERROR_CLASS_LENGTH = 64;
 export const MAX_REPORT_SITES = 8;
 export const MAX_REPORT_PROBLEMS = 5;
+/** Files listed on the card and in the IM summary before it says "and N more". */
+export const MAX_REPORT_ARTIFACTS = 5;
+/** A download's name/path are header-derived; clamp them like an origin. */
+export const MAX_REPORT_ARTIFACT_NAME_LENGTH = 120;
+export const MAX_REPORT_ARTIFACT_PATH_LENGTH = 240;
 export const MAX_REPORT_ORIGINS_PER_ROW = 3;
 
 /**
@@ -118,6 +123,27 @@ export interface BrowserRunReportProblem {
   errorClass: string;
   count: number;
   origins: string[];
+}
+
+/**
+ * A file this run actually produced (batch-三 T6 / R-1).
+ *
+ * The module header used to say a run has no addressable artifact and that a
+ * field nobody can populate is schema debt. `download` is its first producer,
+ * so the field exists now — and only for downloads that REACHED a terminal
+ * `complete`, because a path to a file that is not finished is worse than no
+ * path at all.
+ *
+ * `name`/`path` come from a `Content-Disposition` header by way of the host's
+ * own sanitizer, so they are clamped here like every other untrusted string
+ * on this card.
+ */
+export interface BrowserRunReportArtifact {
+  downloadId: string;
+  name: string;
+  path: string;
+  bytes: number;
+  mime?: string;
 }
 
 export interface BrowserRunReportApprovals {
@@ -193,9 +219,19 @@ export interface BrowserRunReportSnapshot {
    */
   skippedByMasterSwitch: boolean;
   nextSteps: BrowserRunReportNextStep[];
+  /**
+   * The files this run downloaded, newest last, capped at
+   * `MAX_REPORT_ARTIFACTS`.
+   *
+   * OPTIONAL because the snapshot is PERSISTED: a card written before this
+   * field existed is read back without it, and every reader must cope rather
+   * than render an empty list as "no files" for a run that had some. New
+   * snapshots always carry the field (possibly empty).
+   */
+  artifacts?: BrowserRunReportArtifact[];
   /** Rows the caps dropped, so the card can say "and N more" honestly rather
    *  than quietly showing a partial list as if it were the whole list. */
-  omitted: { sites: number; problems: number };
+  omitted: { sites: number; problems: number; artifacts?: number };
 }
 
 export interface BuildBrowserRunReportInput {
@@ -342,6 +378,8 @@ export function buildBrowserRunReport(
   let failed = 0;
   let scriptRuns = 0;
   let blockedPages = 0;
+  /** downloadId -> the file, so a click and its later `wait` count once. */
+  const artifacts = new Map<string, BrowserRunReportArtifact>();
   /** Feeds `outcomeWithRefusals`. Counted off the gate's own signals only. */
   let refusedStateChangingActions = false;
 
@@ -402,6 +440,18 @@ export function buildBrowserRunReport(
       case 'blocked_page':
         blockedPages++;
         break;
+      case 'download_saved':
+        // Keyed by downloadId: a big export is reported once by the click that
+        // started it and again by the `wait` that saw it finish, and the user
+        // downloaded one file.
+        artifacts.set(signal.downloadId, {
+          downloadId: signal.downloadId,
+          name: clampUntrusted(signal.name, MAX_REPORT_ARTIFACT_NAME_LENGTH),
+          path: clampUntrusted(signal.path, MAX_REPORT_ARTIFACT_PATH_LENGTH),
+          bytes: signal.bytes,
+          ...(signal.mime ? { mime: clampUntrusted(signal.mime, MAX_REPORT_ERROR_CLASS_LENGTH) } : {}),
+        });
+        break;
       default:
         // fallback_to_script / repeat_action / confirm_prompt / tab_lifetime /
         // task_end / site_check_unresolved carry no row of their own in this
@@ -424,6 +474,7 @@ export function buildBrowserRunReport(
   // nothing to report — do not manufacture an empty card for it.
   const hasSomethingToSay =
     total > 0
+    || artifacts.size > 0
     || denialRows.length > 0
     || blockedPages > 0
     || approvals.approved > 0
@@ -488,9 +539,11 @@ export function buildBrowserRunReport(
     blockedPages,
     skippedByMasterSwitch: denials.has('master-switch-off'),
     nextSteps: NEXT_STEP_ORDER.filter((step) => steps.has(step)),
+    artifacts: [...artifacts.values()].slice(0, MAX_REPORT_ARTIFACTS),
     omitted: {
       sites: Math.max(0, allSites.length - MAX_REPORT_SITES),
       problems: Math.max(0, allProblems.length - MAX_REPORT_PROBLEMS),
+      artifacts: Math.max(0, artifacts.size - MAX_REPORT_ARTIFACTS),
     },
   };
 }

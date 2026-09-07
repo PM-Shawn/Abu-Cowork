@@ -1,0 +1,223 @@
+/**
+ * What a run PRODUCED, from the tool call to the sentence a person reads
+ * (batch-三 T6 · R-1).
+ *
+ * The gap this closes: `download`已经把文件落到磁盘并把路径写进工具结果，但
+ * 结局对象和 IM 摘要里没有「产物」这回事。一个凌晨跑完的导出任务给用户的是
+ * 一张绿卡片和一句「已完成」，没有任何一处告诉他文件在哪 —— 他得回去翻聊天
+ * 记录里的工具输出。
+ *
+ * So this walks the whole chain in one test, from the shipped executor:
+ *
+ *   `executeAnyTool('abu-browser__download')`   ← the real tool gate
+ *      → `download_saved` browser signal
+ *      → `buildBrowserRunReport` snapshot       ← what the card renders
+ *      → `deriveUnattendedRunOutcome`           ← what IM sends
+ *      → `formatUnattendedOutcomeSummary`       ← the sentence
+ *
+ * Pinning it end to end rather than per layer is the point: every one of those
+ * hops was individually plausible while the chain as a whole did nothing.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { executeAnyTool } from './registry';
+import { mcpManager } from '../mcp/client';
+import { getI18n } from '../../i18n';
+import { useChatStore } from '../../stores/chatStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import {
+  clearBrowserSignals,
+  getBrowserSignalCursor,
+  getRecentBrowserSignals,
+} from '../observability/browserSignals';
+import { buildBrowserRunReport } from '../observability/browserRunReport';
+import {
+  deriveUnattendedRunOutcome,
+  formatUnattendedOutcomeSummary,
+} from '../observability/unattendedRunOutcome';
+import {
+  DEFAULT_BROWSER_OPERATION_POLICY,
+  __resetBrowserGrantsForTests,
+} from '../permissions/browserToolPolicy';
+import { testSiteVerdicts } from '../../test/browserSiteVerdicts';
+
+vi.mock('@/core/enterprise/policy/enforcer', () => ({
+  getCurrentPolicy: () => ({ mode: 'test-policy' }),
+}));
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkTool: () => ({ decision: 'allow' as const }),
+}));
+
+const SITE = 'https://oa.example.com';
+const OWNER = 'download-owner';
+const TAB = 88;
+
+let mockCallTool: ReturnType<typeof vi.fn>;
+
+/** `get_tabs` answers with the owned tab; `download` answers with a result. */
+function serveDownload(result: unknown) {
+  mockCallTool.mockImplementation((params: { name: string; _meta?: Record<string, unknown> }) => {
+    if (params.name === 'get_tabs') {
+      return Promise.resolve({
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            params._meta?.['abu/conversationId'] === OWNER
+              ? { windows: [{ windowId: 1, tabs: [{ tabId: TAB, url: `${SITE}/reports` }] }] }
+              : { windows: [] },
+          ),
+        }],
+      });
+    }
+    return Promise.resolve({ content: [{ type: 'text', text: JSON.stringify(result) }] });
+  });
+}
+
+const COMPLETED = {
+  started: true,
+  complete: true,
+  download: {
+    downloadId: 'dl_abc',
+    filename: '排班表.xlsx',
+    url: `${SITE}/export.xlsx`,
+    state: 'completed',
+    time: 1_757_000_000_000,
+    path: '/Users/me/Library/Application Support/abu/browser-downloads/conv/main/排班表.xlsx',
+    size: 1_258_291,
+    mime: 'application/vnd.ms-excel',
+  },
+  message: 'Saved to …. The file is complete.',
+};
+
+/** Run one `download` through the shipped executor and report on the run. */
+async function runOneDownload(result: unknown = COMPLETED) {
+  const since = getBrowserSignalCursor();
+  serveDownload(result);
+  await executeAnyTool(
+    'abu-browser__download',
+    { tabId: TAB, action: 'click', locator: '{"css":"a#export"}' },
+    (async () => true) as never,
+    undefined,
+    { conversationId: OWNER, interactionMode: 'background' } as never,
+  );
+  const report = buildBrowserRunReport({
+    signals: getRecentBrowserSignals(),
+    conversationId: OWNER,
+    sinceSeq: since,
+    outcome: 'completed',
+  });
+  const outcome = deriveUnattendedRunOutcome({
+    reason: 'completed', abortedByBrowserDenials: false, report,
+  });
+  return { report, outcome };
+}
+
+describe('a download this run produced reaches the card and the IM summary', () => {
+  beforeEach(() => {
+    clearBrowserSignals();
+    mockCallTool = vi.fn();
+    serveDownload(COMPLETED);
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.set('abu-browser', {
+      config: { name: 'abu-browser' },
+      client: { callTool: mockCallTool },
+      transport: {},
+      tools: new Map(),
+    });
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({
+      permissionMode: 'standard',
+      browserSitePermissions: testSiteVerdicts({ [SITE]: 'allowed' }),
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: true,
+      browserSiteGrantViaEmbed: {},
+    });
+    __resetBrowserGrantsForTests();
+  });
+
+  afterEach(() => {
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
+    __resetBrowserGrantsForTests();
+    clearBrowserSignals();
+  });
+
+  it('files the finished download on the run report as an artifact', async () => {
+    const { report } = await runOneDownload();
+
+    expect(report?.artifacts).toEqual([{
+      downloadId: 'dl_abc',
+      name: '排班表.xlsx',
+      path: COMPLETED.download.path,
+      bytes: 1_258_291,
+      mime: 'application/vnd.ms-excel',
+    }]);
+    expect(report?.omitted.artifacts).toBe(0);
+  });
+
+  it('carries it onto the outcome object both surfaces read', async () => {
+    const { outcome } = await runOneDownload();
+
+    expect(outcome.code).toBe('succeeded');
+    expect(outcome.artifacts.map((a) => a.name)).toEqual(['排班表.xlsx']);
+  });
+
+  /**
+   * The sentence. Name, size and where it is — and NOT the file itself: IM
+   * carries a pointer, never the bytes.
+   */
+  it('names the file, its size and its path in the message IM sends', async () => {
+    const { outcome } = await runOneDownload();
+    const summary = formatUnattendedOutcomeSummary(outcome, getI18n());
+
+    expect(summary).toContain('排班表.xlsx');
+    expect(summary).toContain('1.2 MB');
+    expect(summary).toContain(COMPLETED.download.path);
+  });
+
+  /**
+   * A path to a file that is not finished is worse than no path: the user
+   * opens it and gets half a spreadsheet.
+   */
+  it('says nothing about a download that has not finished', async () => {
+    const { report, outcome } = await runOneDownload({
+      started: true,
+      complete: false,
+      download: { ...COMPLETED.download, state: 'progressing' },
+      message: 'Still downloading.',
+    });
+
+    expect(report?.artifacts).toEqual([]);
+    expect(outcome.artifacts).toEqual([]);
+    expect(formatUnattendedOutcomeSummary(outcome, getI18n())).not.toContain('排班表.xlsx');
+  });
+
+  it('says nothing about a click that produced no download at all', async () => {
+    const { report } = await runOneDownload({
+      started: false,
+      message: 'That click produced no download.',
+    });
+
+    expect(report?.artifacts).toEqual([]);
+  });
+
+  /**
+   * A big export is reported twice — once by the click that started it, once
+   * by the `wait` that saw it finish — and the user downloaded one file.
+   */
+  it('counts one file once, however many calls reported it', async () => {
+    const since = getBrowserSignalCursor();
+    serveDownload(COMPLETED);
+    for (const action of ['click', 'wait']) {
+      await executeAnyTool(
+        'abu-browser__download',
+        { tabId: TAB, action, ...(action === 'click' ? { locator: '{"css":"a#export"}' } : { downloadId: 'dl_abc' }) },
+        (async () => true) as never,
+        undefined,
+        { conversationId: OWNER, interactionMode: 'background' } as never,
+      );
+    }
+    const report = buildBrowserRunReport({
+      signals: getRecentBrowserSignals(), conversationId: OWNER, sinceSeq: since, outcome: 'completed',
+    });
+
+    expect(report?.artifacts).toHaveLength(1);
+  });
+});

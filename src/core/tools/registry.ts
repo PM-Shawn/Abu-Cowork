@@ -88,6 +88,7 @@ import {
   noteBrowserToolOutcome,
   noteTabOrigin,
   safeRecordBrowserSignal,
+  type BrowserSignalEvent,
 } from '../observability/browserSignals';
 import { toolResultToString as browserSignalToolResultToString } from './toolResultToString';
 
@@ -914,6 +915,42 @@ function batchStepSignals(
   return events.length > 0 ? events : null;
 }
 
+/**
+ * The file a finished `download` left on disk, as a signal — or null.
+ *
+ * Read from the tool's OWN result envelope (the same technique
+ * `batchStepSignals` uses), and only when it says `complete`: a download still
+ * in flight has a path nothing is at yet, and reporting it as a product of the
+ * run would be a link to a file that is not there.
+ */
+function downloadSignal(
+  bareToolName: string,
+  resultText: string,
+): Extract<BrowserSignalEvent, { kind: 'download_saved' }> | null {
+  if (bareToolName !== 'download') return null;
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resultText);
+  } catch {
+    return null;
+  }
+  const { complete, download } = (envelope ?? {}) as { complete?: unknown; download?: unknown };
+  if (complete !== true || typeof download !== 'object' || download === null) return null;
+  const d = download as Record<string, unknown>;
+  const path = typeof d.path === 'string' ? d.path : '';
+  const name = typeof d.filename === 'string' ? d.filename : '';
+  const downloadId = typeof d.downloadId === 'string' ? d.downloadId : '';
+  if (path === '' || name === '' || downloadId === '') return null;
+  return {
+    kind: 'download_saved',
+    downloadId,
+    name,
+    path,
+    bytes: typeof d.size === 'number' && Number.isFinite(d.size) && d.size >= 0 ? d.size : 0,
+    ...(typeof d.mime === 'string' && d.mime !== '' ? { mime: d.mime } : {}),
+  };
+}
+
 function recordBrowserToolCallSignal(
   namespacedName: string,
   toolContext: ToolExecutionContext | undefined,
@@ -985,6 +1022,13 @@ function recordBrowserToolCallSignal(
       },
       context,
     ));
+  }
+
+  // What the run PRODUCED, when it produced a file. Recorded next to the tool
+  // call rather than instead of it: the call is still an action.
+  const downloaded = ok ? downloadSignal(bareToolName, resultText) : null;
+  if (downloaded) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(downloaded, context));
   }
 
   // A dialog freezing a tab is its own failure mode: without this it shows up

@@ -609,6 +609,10 @@ const zhCN: TranslationDict = {
     approvalsLastDecision: '最后一次决定：{time}',
     blockedPages: '{count} 次被页面挡住（验证码 / 频率限制等）',
     nextStepsTitle: '接下来可以做什么',
+    artifactsTitle: '下载到的文件',
+    moreArtifacts: '另有 {count} 个文件未列出',
+    artifactOpenHint: '点击预览',
+    artifactReveal: '在文件夹中显示',
     reason: {
       masterSwitchOff: '无人值守浏览器总开关已关闭',
       siteDenied: '该站点已被你禁止操作',
@@ -660,6 +664,7 @@ const zhCN: TranslationDict = {
     detailTurnLimit: '达到轮次上限，下面是已有结果',
     detailBrowserToolsNotReady: '浏览器工具未就绪，这次运行没有浏览器能力',
     nextStep: '接下来：{step}',
+    artifactLine: '产物：{name}（{size}）· {path}',
   },
 
   settings: {

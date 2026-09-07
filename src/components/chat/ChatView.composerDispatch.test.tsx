@@ -113,7 +113,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
     expect(dispatchMock).toHaveBeenCalledWith(
       expect.any(String),
       'hello',
-      { images: undefined, onMessageTaken: expect.any(Function) },
+      { images: undefined, onMessageTaken: expect.any(Function), initiatedBy: 'user' },
     );
     await waitFor(() => expect(textarea).toHaveValue(''));
     expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');

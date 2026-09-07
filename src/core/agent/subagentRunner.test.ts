@@ -197,6 +197,11 @@ vi.mock('../browser/browserViewLifecycle', () => ({
   closeBrowserViews: vi.fn(),
 }));
 
+const releaseRunBrowserTabClaimsMock = vi.fn();
+vi.mock('../browser/bridgeTabClaims', () => ({
+  releaseRunBrowserTabClaims: (...a: unknown[]) => releaseRunBrowserTabClaimsMock(...a),
+}));
+
 const emitHookMock = vi.fn((event: unknown) => event);
 vi.mock('./lifecycleHooks', () => ({
   emitHook: (...a: unknown[]) => emitHookMock(...a),
@@ -293,6 +298,7 @@ describe('subagentRunner', () => {
     resolveEffectiveLlmCredsMock.mockReturnValue({ apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false });
     emitHookMock.mockClear();
     disposeRunBrowserViewsMock.mockReset();
+    releaseRunBrowserTabClaimsMock.mockReset();
   });
 
   describe('wire projection contract', () => {
@@ -324,7 +330,8 @@ describe('subagentRunner', () => {
         | 'authorizationScopeId'
         | 'runPermissionCeiling'
         | 'triggerId'
-        | 'scheduledTaskId';
+        | 'scheduledTaskId'
+        | 'initiatedBy';
       type CoveredOptionField = WireOptionField | LocalOnlyField;
       type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
       expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
@@ -348,6 +355,7 @@ describe('subagentRunner', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'initiatedBy',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -365,6 +373,10 @@ describe('subagentRunner', () => {
         'capsPort',
         'workspaceReader',
         'skillCommandApprovalFactory',
+        // U4: the parent run's browser-denial seam is a pair of functions —
+        // shell-stamped into the trusted tool context, never serialized.
+        'reportBrowserDenial',
+        'reportBrowserAllow',
         // N6: run identity is shell-stamped into the trusted tool context, so
         // sending it would create a second, forgeable source of the same fact.
         'agentRunId',
@@ -942,6 +954,28 @@ describe('subagentRunner', () => {
         scheduledTaskId: 'task-1',
       }));
 
+      // A subagent inherits WHO started the parent run: a human-typed turn in
+      // a scheduled conversation keeps its dialogs across delegation, and an
+      // automation-started one stays unattended.
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-user-parent',
+        conversationId: 'conv-user-parent',
+        scheduledTaskId: 'task-1',
+        initiatedBy: 'user',
+      } as never)).toEqual(expect.objectContaining({
+        scheduledTaskId: 'task-1',
+        initiatedBy: 'user',
+      }));
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-auto-parent',
+        conversationId: 'conv-auto-parent',
+        initiatedBy: 'automation',
+      } as never)).toEqual(expect.objectContaining({ initiatedBy: 'automation' }));
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-plain-parent',
+        conversationId: 'conv-plain-parent',
+      } as never)).not.toHaveProperty('initiatedBy');
+
       expect(getSubagentRunInheritance({
         loopId: 'loop-im-parent',
         conversationId: 'conv-im-parent',
@@ -1090,6 +1124,82 @@ describe('subagentRunner', () => {
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
         expect.objectContaining({ runPermissionCeiling: ceiling }),
       );
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    // The parent run's consecutive-browser-denial guard has to survive the
+    // delegation boundary: the reporters are functions, so the sidecar's
+    // context cannot carry them and the shell must re-stamp them from the
+    // session. Without this a run that delegates its browser work could be
+    // refused indefinitely and never trip the guard.
+    it('two browser refusals inside a delegated run trip the PARENT run\'s abort', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const { createBrowserDenialTracker } = await import('./browserDenialTracker');
+
+      const onThreshold = vi.fn();
+      const parentTracker = createBrowserDenialTracker(onThreshold);
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'browse something',
+        reportBrowserDenial: () => parentTracker.reportDenial(),
+        reportBrowserAllow: () => parentTracker.reportAllow(),
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: {} });
+      const first = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        reportBrowserDenial?: () => void; reportBrowserAllow?: () => void;
+      };
+      first.reportBrowserDenial!();
+      expect(onThreshold).not.toHaveBeenCalled();
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'y.txt' }, context: {} });
+      const second = executeAnyToolMock.mock.calls.at(-1)?.[4] as { reportBrowserDenial?: () => void };
+      second.reportBrowserDenial!();
+
+      expect(onThreshold).toHaveBeenCalledTimes(1);
+      expect(parentTracker.tripped).toBe(true);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('a consented allow inside a delegated run resets the PARENT run\'s streak', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const { createBrowserDenialTracker } = await import('./browserDenialTracker');
+
+      const onThreshold = vi.fn();
+      const parentTracker = createBrowserDenialTracker(onThreshold);
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'browse something',
+        reportBrowserDenial: () => parentTracker.reportDenial(),
+        reportBrowserAllow: () => parentTracker.reportAllow(),
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: {} });
+      const ctx = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        reportBrowserDenial?: () => void; reportBrowserAllow?: () => void;
+      };
+      ctx.reportBrowserDenial!();
+      ctx.reportBrowserAllow!();
+      ctx.reportBrowserDenial!();
+
+      expect(onThreshold).not.toHaveBeenCalled();
+      expect(parentTracker.consecutiveDenials).toBe(1);
+
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;
     });
@@ -1462,6 +1572,36 @@ describe('subagentRunner', () => {
       // The same id the in-process loop stamped into its tool contexts.
       expect(runKey).toBe((runSubagentLoopMock.mock.calls[0][0] as { agentRunId?: string }).agentRunId);
       expect(runKey).toMatch(/^sar-/);
+    });
+
+    it('releases the run\'s Chrome-extension tab claims at the same seal', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+
+      // The extension channel drives the user's REAL Chrome, so an unreleased
+      // claim outlives the run on a page the user can see. Same seal, same
+      // {conversationId, runKey} owner, different transport (MCP notification
+      // rather than IPC — the bridge is a separate stdio process).
+      expect(releaseRunBrowserTabClaimsMock).toHaveBeenCalledTimes(1);
+      const [conversationId, runKey] = releaseRunBrowserTabClaimsMock.mock.calls[0];
+      expect(conversationId).toBe('conv-1');
+      expect(runKey).toBe(disposeRunBrowserViewsMock.mock.calls[0][1]);
+      // Never the conversation-wide form: that scope belongs to conversation
+      // deletion and would strip sibling runs still driving their tabs.
+      expect(runKey).toMatch(/^sar-/);
+    });
+
+    it('releases the tab claims of a sidecar-hosted run too', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      expect(releaseRunBrowserTabClaimsMock).toHaveBeenCalledWith('conv-1', runId);
     });
   });
 

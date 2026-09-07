@@ -26,6 +26,7 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
 
 import { buildShareBundle, SHARE_SCHEMA_VERSION } from './shareBundle';
 import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
+import { createBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 
 function makeConv(messages: Message[], overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -243,6 +244,39 @@ describe('buildShareBundle', () => {
     expect(bundle.messages).toHaveLength(2);
     expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
     expect(JSON.stringify(bundle)).not.toContain('SENTINEL_SUMMARY_do_not_leak_this_verbatim');
+  });
+
+  it('drops unattended run report cards and never leaks the origins they visited', async () => {
+    // Same hazard as the compact-boundary marker above: the payload lives
+    // outside `content`, so `redactText` never sees it — and what it holds is
+    // the list of (often internal) hosts the overnight run visited.
+    const card = createBrowserRunReportMessage({
+      id: 'card-1',
+      timestamp: 3,
+      report: {
+        v: 1,
+        outcome: 'completed',
+        actions: { total: 1, failed: 0 },
+        sites: [{ origin: 'https://SENTINEL-intranet.internal', actions: 1, failures: 0 }],
+        denials: [],
+        problems: [],
+        approvals: { approved: 0, declined: 0, timedOut: 0, unreachable: 0 },
+        blockedPages: 0,
+        skippedByMasterSwitch: false,
+        nextSteps: [],
+        omitted: { sites: 0, problems: 0 },
+      },
+    });
+    const conv = makeConv([
+      { id: 'real-1', role: 'user', content: 'real question', timestamp: 1 },
+      card,
+      { id: 'real-2', role: 'assistant', content: 'real answer', timestamp: 4 },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+
+    expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
+    expect(JSON.stringify(bundle)).not.toContain('SENTINEL-intranet.internal');
   });
 
   it('does not mutate the source conversation object', async () => {

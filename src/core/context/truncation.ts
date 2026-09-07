@@ -42,6 +42,18 @@ const DEFAULT_RULE: TruncationRule = { headLines: 0, tailLines: 0, maxChars: 350
  */
 const MCP_TOOL_RULES: Record<string, TruncationRule> = {
   snapshot: { headLines: 0, tailLines: 0, maxChars: 32000 },
+  // `find` bounds its own payload to this exact number (`MAX_FIND_CHARS` in
+  // `abu-chrome-extension/src/content/index.ts`) by binary search on the real
+  // serialized size, so the character slicer below never gets to shred that
+  // JSON. Changing this without changing that one re-opens the gap.
+  find: { headLines: 0, tailLines: 0, maxChars: 16000 },
+  // Same arrangement as `find`, and for a sharper version of the same reason:
+  // a batch envelope carries up to 25 step results, each of which can itself
+  // be a whole `find` or `extract_text` payload. `MAX_BATCH_CHARS` in
+  // `abu-browser-bridge/src/batch.ts` trims the envelope to this exact number
+  // (dropping the oldest step results, with a message) so the character slicer
+  // below never has to. Changing one without the other re-opens the gap.
+  batch: { headLines: 0, tailLines: 0, maxChars: 32000 },
   query_js: { headLines: 0, tailLines: 0, maxChars: 32000 },
   extract_text: { headLines: 0, tailLines: 0, maxChars: 20000 },
   extract_table: { headLines: 0, tailLines: 0, maxChars: 20000 },

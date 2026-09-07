@@ -1,20 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CheckCircle2,
   ChevronRight,
   Chrome,
-  Circle,
-  CircleAlert,
   Eye,
   Globe2,
-  LoaderCircle,
   MonitorCog,
   MousePointer2,
   RefreshCw,
 } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Select } from '@/components/ui/select';
+import { Button } from '@/components/ui/button';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useMCPStore } from '@/stores/mcpStore';
@@ -39,6 +35,10 @@ import {
   readCapabilityRuntimeSnapshot,
 } from '@/core/capabilityPlugins/runtime';
 import { deriveCapabilityStatuses } from '@/core/capabilityPlugins/status';
+import {
+  hasChromeExtensionHandshaked,
+  setChromeExtensionHandshaked,
+} from '@/core/capabilityPlugins/chromeHandshakeLatch';
 import type {
   CapabilitySetupTarget,
   CapabilityStatus,
@@ -53,11 +53,29 @@ import { isMacOS } from '@/utils/platform';
 import { resolveAgentModelCapabilities } from '@/core/llm/modelCapabilities';
 import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
 import {
+  CapabilityStatusRow,
   ChromeSetupView,
   ComputerUseSetupView,
+  SetupHeader,
+  StatusBadge,
+  settingsCardClass,
+  type StatusBadgeTone,
 } from './CapabilitySetupView';
+import {
+  BrowserPermissionCards,
+  BrowserSitePermissionsPage,
+  type BrowserBackend,
+} from './BrowserPermissionCards';
 
-type CapabilitySetupView = CapabilitySetupTarget | null;
+/**
+ * Where the section is currently pointed. `CapabilitySetupTarget` is only what
+ * a RUNNING TASK can ask for ('chrome' | 'computer') and is a persisted store
+ * field — it is deliberately NOT widened here. The two extra destinations are
+ * user-driven drill-ins with no task counterpart, so they live in local view
+ * state only and the store keeps the exact shape it had.
+ */
+type CapabilityDetailView = CapabilitySetupTarget | 'builtin' | 'sites' | null;
+
 
 interface CapabilitiesSectionProps {
   setupTarget?: CapabilitySetupTarget;
@@ -69,141 +87,73 @@ interface CapabilitiesSectionProps {
   onSetupRelaunch?: () => void;
 }
 
-type CapabilityCardProps = {
-  icon: typeof Globe2;
-  title: string;
-  description: string;
-  status: CapabilityStatus;
-  statusLabel: string;
-  statusNote: string;
-  checking?: boolean;
-  action?: React.ReactNode;
-  children?: React.ReactNode;
-};
-
-function statusTone(code: CapabilityStatusCode): string {
+/** The overview card's badge tone. See `StatusBadgeTone` for why there are
+ *  only three of them for five runtime status codes. */
+function badgeToneFor(code: CapabilityStatusCode): StatusBadgeTone {
   switch (code) {
     case 'ready':
-      return 'bg-[var(--abu-success-bg)] text-[var(--abu-success)]';
+      return 'ready';
+    // Nothing to set up — the shell does not offer this capability at all.
+    case 'unavailable':
+      return 'neutral';
     case 'setup-required':
-      return 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]';
     case 'permission-required':
     case 'connection-lost':
-      return 'bg-[var(--abu-warning-bg)] text-[var(--abu-warning)]';
-    case 'unavailable':
-      return 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)]';
+      return 'attention';
   }
 }
 
-function CapabilityCard({
+/**
+ * A channel on the overview: name, one state, one line, and a chevron.
+ *
+ * The ENTIRE ROW is the control — one target, one affordance, and the chevron
+ * is the only thing claiming anything is clickable. An earlier revision put a
+ * named button on the right of each card instead; the user's call is that
+ * three cards each carrying a differently-worded button is three decisions to
+ * read where there is really only one. Connecting Chrome is not lost — it
+ * lives on the page this row opens.
+ */
+function ChannelCard({
   icon: Icon,
   title,
-  description,
-  status,
+  subtitle,
   statusLabel,
-  statusNote,
+  statusTone,
   checking = false,
-  action,
-  children,
-}: CapabilityCardProps) {
+  onOpen,
+}: {
+  icon: typeof Globe2;
+  title: string;
+  subtitle: string;
+  statusLabel: string;
+  statusTone: StatusBadgeTone;
+  checking?: boolean;
+  onOpen: () => void;
+}) {
   return (
-    <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
-      <div className="flex items-start gap-3">
-        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-base)] text-[var(--abu-clay)]">
-          <Icon className="h-4.5 w-4.5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">{title}</h4>
-            <span className={cn(
-              'inline-flex items-center gap-1 rounded px-2 py-0.5 text-caption font-medium',
-              checking
-                ? 'bg-[var(--abu-info-bg)] text-[var(--abu-info)]'
-                : statusTone(status.code),
-            )}>
-              {checking && <LoaderCircle className="h-3 w-3 animate-spin" />}
-              {statusLabel}
-            </span>
-          </div>
-          <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">{description}</p>
-        </div>
-        {action && <div className="shrink-0">{action}</div>}
-      </div>
-
-      {children}
-
-      <div className="mt-3 flex items-start gap-2 border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
-        {status.code === 'ready'
-          ? <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-success)]" />
-          : status.code === 'setup-required'
-            ? <Circle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-            : <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-warning)]" />}
-        <span>{statusNote}</span>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Persistent per-site browser-automation verdicts, written from the
- * confirmation dialog ("always allow this site" / "block this site"). Listed
- * here so every standing verdict is visible, switchable between allow and
- * block, and removable — removing restores ask-every-time for that site.
- */
-function BrowserSitePermissionsList() {
-  const { t } = useI18n();
-  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
-  const setBrowserSitePermission = useSettingsStore((s) => s.setBrowserSitePermission);
-  const removeBrowserSitePermission = useSettingsStore((s) => s.removeBrowserSitePermission);
-  const origins = Object.keys(sitePermissions).sort();
-  const verdictOptions = [
-    { value: 'allowed', label: t.settings.browserSitePermsAllowed },
-    { value: 'denied', label: t.settings.browserSitePermsDenied },
-  ];
-
-  return (
-    <div className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4">
-      <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
-        {t.settings.browserSitePermsTitle}
-      </h4>
-      <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-        {t.settings.browserSitePermsDesc}
-      </p>
-      {origins.length === 0 ? (
-        <p className="mt-3 border-t border-[var(--abu-border)] pt-3 text-minor text-[var(--abu-text-tertiary)]">
-          {t.settings.browserSitePermsEmpty}
-        </p>
-      ) : (
-        <ul className="mt-3 divide-y divide-[var(--abu-border)] border-t border-[var(--abu-border)]">
-          {origins.map((origin) => (
-            <li key={origin} className="flex items-center gap-3 py-2">
-              <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-text-secondary)]" title={origin}>
-                {origin}
-              </span>
-              <Select
-                variant="inline"
-                value={sitePermissions[origin]}
-                options={verdictOptions}
-                onChange={(v) => setBrowserSitePermission(origin, v as 'allowed' | 'denied')}
-                className={cn(
-                  'shrink-0',
-                  sitePermissions[origin] === 'allowed'
-                    ? 'text-[var(--abu-success)]'
-                    : 'text-[var(--abu-danger)]',
-                )}
-              />
-              <button
-                type="button"
-                onClick={() => removeBrowserSitePermission(origin)}
-                className="shrink-0 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
-              >
-                {t.settings.browserSitePermsRevoke}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <Button
+      variant="ghost"
+      onClick={onOpen}
+      // The status is the whole reason this row exists, so it belongs in the
+      // accessible name — a screen reader hearing only "My Chrome" learns
+      // nothing the page did not already imply.
+      aria-label={`${title} · ${statusLabel}`}
+      className="h-auto w-full items-center justify-start gap-3 whitespace-normal rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4 text-left hover:bg-[var(--abu-bg-hover)]"
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-base)] text-[var(--abu-clay)]">
+        <Icon className="size-4.5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-2">
+          <span className="text-body font-semibold text-[var(--abu-text-primary)]">{title}</span>
+          <StatusBadge label={statusLabel} tone={statusTone} checking={checking} />
+        </span>
+        <span className="mt-1 block text-minor font-normal leading-relaxed text-[var(--abu-text-muted)]">
+          {subtitle}
+        </span>
+      </span>
+      <ChevronRight className="size-4 shrink-0 text-[var(--abu-text-muted)]" />
+    </Button>
   );
 }
 
@@ -241,10 +191,38 @@ export default function CapabilitiesSection({
   const [browserChecking, setBrowserChecking] = useState(false);
   const [chromeChecking, setChromeChecking] = useState(false);
   const [chromeExtensionConnected, setChromeExtensionConnected] = useState<boolean>();
+  /*
+    Has the extension ever answered the handshake. It separates "never set up"
+    from "was working and broke", and because it only ever latches ON, two
+    probes racing cannot make the card describe the same machine two different
+    ways depending on which lands last.
+
+    The truth lives in a module (see chromeHandshakeLatch), not here: this
+    component unmounts every time the settings dialog closes, and a genuinely
+    lost connection must not read as "never connected" again just because
+    someone closed and reopened settings. The local state exists only to
+    re-render on change.
+  */
+  const [chromeExtensionEverConnected, setChromeExtensionEverConnectedState] =
+    useState(hasChromeExtensionHandshaked);
+  const setChromeExtensionEverConnected = useCallback((value: boolean) => {
+    setChromeExtensionHandshaked(value);
+    setChromeExtensionEverConnectedState(value);
+  }, []);
+  /*
+    Probe ordering. Several paths probe the extension (the bridge-status
+    effect, the Check button, the setup flow, the setup-page poll) and they
+    can overlap; without a sequence the SLOWEST reply won rather than the
+    NEWEST, so a stale answer could overwrite a fresh one.
+  */
+  const chromeProbeSeqRef = useRef(0);
   const [computerChecking, setComputerChecking] = useState(false);
-  const [setupView, setSetupView] = useState<CapabilitySetupView>(
+  const [setupView, setSetupView] = useState<CapabilityDetailView>(
     setupTarget ?? null,
   );
+  // Which channel's detail page the site list was opened from, so "back" lands
+  // where the user actually was rather than always on the built-in browser.
+  const [sitesOrigin, setSitesOrigin] = useState<BrowserBackend>('builtin');
   const [setupRequestedByTask, setSetupRequestedByTask] =
     useState(requestedByTask);
   const [chromeSetupWorking, setChromeSetupWorking] = useState(false);
@@ -274,8 +252,33 @@ export default function CapabilitiesSection({
     setRuntimeRevision((revision) => revision + 1);
   }), []);
 
+  /** The one way this component learns whether the extension is attached. */
+  const probeChromeExtension = useCallback(async (
+    { keepLastWhenUnknown = false }: { keepLastWhenUnknown?: boolean } = {},
+  ) => {
+    const seq = ++chromeProbeSeqRef.current;
+    const connected = await probeChromeBridgeConnection();
+    // A newer probe (or a disconnect) already spoke: this answer is history.
+    if (seq !== chromeProbeSeqRef.current) return connected;
+    if (connected === undefined && keepLastWhenUnknown) return connected;
+    setChromeExtensionConnected(connected);
+    if (connected === true) setChromeExtensionEverConnected(true);
+    return connected;
+  }, [setChromeExtensionEverConnected]);
+
   useEffect(() => {
     if (!chromeBridge || !chromeBridgeEnabled || chromeBridgeStatus !== 'connected') {
+      /*
+        Invalidate in-flight probes BEFORE clearing, exactly as an explicit
+        disconnect does. A probe started while the bridge was up can otherwise
+        land after the bridge has died and report `true` — its sequence is
+        still current, so the guard waves it through, and the derivation
+        (which tests `extensionConnected === true` first) then renders a dead
+        bridge as ready AND latches the handshake. The bridge's own status
+        used to backstop that; once "has it ever handshaked" was allowed to
+        outrank runtime status, this bump became the backstop.
+      */
+      chromeProbeSeqRef.current += 1;
       setChromeExtensionConnected(undefined);
       setChromeChecking(false);
       return;
@@ -283,15 +286,13 @@ export default function CapabilitiesSection({
 
     let active = true;
     setChromeChecking(true);
-    void probeChromeBridgeConnection().then((connected) => {
-      if (!active) return;
-      setChromeExtensionConnected(connected);
-      setChromeChecking(false);
+    void probeChromeExtension().then(() => {
+      if (active) setChromeChecking(false);
     });
     return () => {
       active = false;
     };
-  }, [chromeBridge, chromeBridgeEnabled, chromeBridgeStatus]);
+  }, [chromeBridge, chromeBridgeEnabled, chromeBridgeStatus, probeChromeExtension]);
 
   const statuses = deriveCapabilityStatuses(
     readCapabilityRuntimeSnapshot({
@@ -300,6 +301,7 @@ export default function CapabilitiesSection({
             enabled: chromeBridge.config.enabled ?? true,
             status: chromeBridge.status,
             extensionConnected: chromeExtensionConnected,
+            extensionEverConnected: chromeExtensionEverConnected,
           }
         : undefined,
       computerUseEnabled,
@@ -307,12 +309,15 @@ export default function CapabilitiesSection({
     }),
   );
 
+  // Three outcomes, and only three. `unavailable` reads as "not connected"
+  // rather than "needs setup" because there is nothing the user could set up;
+  // the subtitle underneath says which shell limitation caused it.
   const statusLabels: Record<CapabilityStatusCode, string> = {
     ready: t.settings.capabilityStatusReady,
     'setup-required': t.settings.capabilityStatusSetupRequired,
-    'permission-required': t.settings.capabilityStatusPermissionRequired,
-    'connection-lost': t.settings.capabilityStatusConnectionLost,
-    unavailable: t.settings.capabilityStatusUnavailable,
+    'permission-required': t.settings.capabilityStatusSetupRequired,
+    'connection-lost': t.settings.capabilityStatusSetupRequired,
+    unavailable: t.settings.capabilityStatusNotConnected,
   };
 
   const handleBrowserRetry = async () => {
@@ -362,8 +367,7 @@ export default function CapabilitiesSection({
 
   const refreshChromeConnection = async () => {
     setChromeChecking(true);
-    const connected = await probeChromeBridgeConnection();
-    setChromeExtensionConnected(connected);
+    await probeChromeExtension();
     setChromeChecking(false);
   };
 
@@ -380,14 +384,13 @@ export default function CapabilitiesSection({
         setChromeSetupError(result.message);
         return;
       }
-      const connected = await probeChromeBridgeConnection();
-      setChromeExtensionConnected(connected);
+      await probeChromeExtension();
     } catch (error) {
       setChromeSetupError(error instanceof Error ? error.message : String(error));
     } finally {
       setChromeSetupWorking(false);
     }
-  }, [chromeBridge, chromeBridgeEnabled, updateMCPServer]);
+  }, [chromeBridge, chromeBridgeEnabled, probeChromeExtension, updateMCPServer]);
 
   const disconnectChromeBridge = useCallback(async () => {
     setChromeSetupWorking(true);
@@ -395,13 +398,17 @@ export default function CapabilitiesSection({
     updateMCPServer(CAPABILITY_IDS.chromeBridge, { enabled: false });
     try {
       await disconnectMCPServer(CAPABILITY_IDS.chromeBridge);
+      // Invalidate anything in flight, then forget the handshake: after an
+      // explicit disconnect this is "not connected", not "connection lost".
+      chromeProbeSeqRef.current += 1;
       setChromeExtensionConnected(undefined);
+      setChromeExtensionEverConnected(false);
     } catch (error) {
       setChromeSetupError(error instanceof Error ? error.message : String(error));
     } finally {
       setChromeSetupWorking(false);
     }
-  }, [disconnectMCPServer, updateMCPServer]);
+  }, [disconnectMCPServer, setChromeExtensionEverConnected, updateMCPServer]);
 
   const openChromeSetup = () => {
     setSetupRequestedByTask(false);
@@ -433,6 +440,16 @@ export default function CapabilitiesSection({
     setSetupRequestedByTask(false);
     setSetupView('computer');
     void syncComputerPermissions();
+  };
+
+  const openBuiltinBrowser = () => {
+    setSetupRequestedByTask(false);
+    setSetupView('builtin');
+  };
+
+  const openSitePermissions = (origin: BrowserBackend) => {
+    setSitesOrigin(origin);
+    setSetupView('sites');
   };
 
   useEffect(() => {
@@ -609,12 +626,16 @@ export default function CapabilitiesSection({
       return;
     }
     const poll = window.setInterval(() => {
-      void probeChromeBridgeConnection().then((connected) => {
-        if (connected !== undefined) setChromeExtensionConnected(connected);
-      });
+      void probeChromeExtension({ keepLastWhenUnknown: true });
     }, 2_000);
     return () => window.clearInterval(poll);
-  }, [chromeBridgeEnabled, chromeBridgeStatus, chromeExtensionConnected, setupView]);
+  }, [
+    chromeBridgeEnabled,
+    chromeBridgeStatus,
+    chromeExtensionConnected,
+    probeChromeExtension,
+    setupView,
+  ]);
 
   useEffect(() => {
     if (setupView !== 'computer') return;
@@ -664,16 +685,147 @@ export default function CapabilitiesSection({
       ? { ...computerStatus, code: 'setup-required', reason: 'not-configured' }
       : computerStatus;
 
-  const computerStatusNote = !computerUseEnabled
-    ? t.settings.capabilityComputerDisabled
-    : computerModelCapabilities.computerUseTier === 'unsupported'
-      || computerModelCapabilities.computerUseTier === 'unknown'
-      ? computerModelTierNotes[computerModelCapabilities.computerUseTier]
-      : screenPermission && !controlPermission
-        ? t.settings.capabilityComputerPartial
-        : computerStatus.code === 'permission-required'
-          ? t.settings.capabilityComputerPermissionMissing
-          : t.settings.capabilityComputerDesc;
+  // Off is a state the user chose, not a fault, so it gets the standing
+  // one-liner like any other nominal state — the badge already says "off",
+  // and a line repeating the badge spends the card's only line on nothing.
+  const computerFaultNote = computerModelCapabilities.computerUseTier === 'unsupported'
+    || computerModelCapabilities.computerUseTier === 'unknown'
+    ? computerModelTierNotes[computerModelCapabilities.computerUseTier]
+    : screenPermission && !controlPermission
+      ? t.settings.capabilityComputerPartial
+      : computerStatus.code === 'permission-required'
+        ? t.settings.capabilityComputerPermissionMissing
+        : t.settings.capabilityComputerSubtitle;
+
+  // Only ever read when the capability is NOT ready, so it says what is
+  // wrong and nothing else; the working case has its own one-liner.
+  const browserFaultNote = browserStatus.code === 'unavailable'
+    ? t.settings.capabilityBuiltinBrowserUnavailable
+    : t.settings.capabilityBuiltinBrowserDisconnected;
+
+  const chromeChecking_ = chromeChecking || chromeRuntimeChecking;
+  // The Chrome bridge is optional and has a "never set up" state that is not a
+  // problem, so it reads as not-connected rather than needs-setup.
+  const chromeNeverConnected = !chromeBridge
+    || !chromeBridgeEnabled
+    || chromeStatus.code === 'setup-required';
+  const chromeStatusLabel = chromeChecking_
+    ? t.settings.capabilityStatusChecking
+    : chromeNeverConnected
+      ? t.settings.capabilityStatusNotConnected
+      : statusLabels[chromeStatus.code];
+  const chromeStatusTone: StatusBadgeTone = chromeNeverConnected
+    ? 'neutral'
+    : badgeToneFor(chromeStatus.code);
+  /*
+    Never having connected Chrome is not a fault — the badge already says
+    "not connected" and the button already says "Connect Chrome", so restating
+    it in the subtitle would spend the card's one line on nothing. That line
+    goes to what connecting would BUY. A channel that was connected and then
+    broke is a different matter, and keeps its diagnosis.
+  */
+  const chromeSubtitle = chromeChecking_
+    ? t.settings.capabilityStatusChecking
+    : chromeStatus.code === 'connection-lost'
+      ? t.settings.capabilityChromeDisconnected
+      : chromeStatus.code === 'unavailable'
+        ? t.settings.capabilityChromeProbeUnavailable
+        : chromeNeverConnected
+          ? t.settings.capabilityMyChromeSubtitle
+          : t.settings.capabilityMyChromeScope;
+
+  // Computer Use being switched off is not a fault and not a missing
+  // connection; it renders in the neutral tone with its own word for it.
+  const computerStatusLabel = computerChecking
+    ? t.settings.capabilityStatusChecking
+    : !computerUseEnabled
+      ? t.settings.capabilityStatusOff
+      : statusLabels[computerDisplayStatus.code];
+  const computerStatusTone: StatusBadgeTone = !computerUseEnabled
+    ? 'neutral'
+    : badgeToneFor(computerDisplayStatus.code);
+
+  const overviewLabel = t.settings.capabilityOverview;
+  const builtinTrail = [overviewLabel, t.settings.capabilityBuiltinBrowser];
+  const chromeTrail = [overviewLabel, t.settings.capabilityMyChrome];
+  const computerTrail = [overviewLabel, t.settings.computerUse];
+  const sitesTrail = [
+    ...(sitesOrigin === 'chrome' ? chromeTrail : builtinTrail),
+    t.settings.browserSitePermsTitle,
+  ];
+
+  /** Breadcrumb navigation: index 0 is the overview, anything deeper is the
+   *  detail page the current page hangs off. */
+  const navigateTrail = (origin: BrowserBackend) => (index: number) => {
+    if (index === 0) {
+      cancelSetup();
+      return;
+    }
+    setSetupView(origin);
+  };
+
+  if (setupView === 'sites') {
+    return (
+      <BrowserSitePermissionsPage
+        trail={sitesTrail}
+        onNavigate={navigateTrail(sitesOrigin)}
+      />
+    );
+  }
+
+  if (setupView === 'builtin') {
+    return (
+      <div className="space-y-7">
+        <SetupHeader
+          icon={Globe2}
+          title={t.settings.capabilityBuiltinBrowser}
+          description={t.settings.capabilityBuiltinBrowserSubtitle}
+          onBack={cancelSetup}
+          breadcrumb={builtinTrail}
+        />
+
+        {/*
+          No status row while the browser is working. Unlike the other two
+          channels there is nothing to connect and nothing to switch on, so a
+          working built-in browser has no state worth reporting and no action
+          to offer: the badge on the card the user just came through already
+          said "ready", and the line under the title already says what "its
+          own session" means. The row would have restated both.
+
+          A broken one is the opposite case — that is the only place the fault
+          and the retry can live, so the row comes back for it.
+        */}
+        {browserStatus.code !== 'ready' && (
+          <CapabilityStatusRow
+            label={browserChecking
+              ? t.settings.capabilityStatusChecking
+              : statusLabels[browserStatus.code]}
+            tone={badgeToneFor(browserStatus.code)}
+            checking={browserChecking}
+            note={browserFaultNote}
+            action={(
+              <button
+                type="button"
+                onClick={handleBrowserRetry}
+                disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
+                className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
+                {browserStatus.code === 'connection-lost'
+                  ? t.settings.capabilityRetry
+                  : t.settings.capabilityCheckStatus}
+              </button>
+            )}
+          />
+        )}
+
+        <BrowserPermissionCards
+          backend="builtin"
+          onManageSites={() => openSitePermissions('builtin')}
+        />
+      </div>
+    );
+  }
 
   if (setupView === 'chrome') {
     return (
@@ -682,17 +834,24 @@ export default function CapabilitiesSection({
         requestedByTask={setupRequestedByTask}
         runtimeReady={chromeBridgeEnabled && chromeBridgeStatus === 'connected'}
         extensionConnected={chromeExtensionConnected === true}
+        everConnected={chromeExtensionEverConnected}
         extensionPath={chromeExtensionPath}
         working={chromeSetupWorking || chromeChecking || chromeRuntimeChecking}
         openingInstaller={chromeInstallerOpening}
         error={chromeSetupError}
+        breadcrumb={chromeTrail}
         onBack={cancelSetup}
         onPrepare={prepareChromeBridge}
         onOpenInstaller={openChromeInstaller}
         onCheck={refreshChromeConnection}
         onDone={completeSetup}
         onDisconnect={disconnectChromeBridge}
-      />
+      >
+        <BrowserPermissionCards
+          backend="chrome"
+          onManageSites={() => openSitePermissions('chrome')}
+        />
+      </ChromeSetupView>
     );
   }
 
@@ -707,6 +866,7 @@ export default function CapabilitiesSection({
         requesting={requestingComputerPermission}
         revealingApp={revealingComputerUseApp}
         canOpenSystemSettings={isMacOS()}
+        breadcrumb={computerTrail}
         onBack={cancelSetup}
         onEnable={() => {
           setComputerUseEnabled(true);
@@ -721,7 +881,65 @@ export default function CapabilitiesSection({
         }}
         onDone={completeSetup}
         onRelaunch={onSetupRelaunch}
-      />
+      >
+        {/*
+          The active model decides whether Computer Use can see the screen at
+          all, so it belongs beside the permissions it gates rather than on the
+          overview, where it was a second status the card had to explain.
+        */}
+        <div className={settingsCardClass}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-minor text-[var(--abu-text-secondary)]">
+              {t.settings.capabilityComputerModel}
+            </span>
+            <span className={cn(
+              'text-caption font-medium',
+              computerModelCapabilities.computerUseTier === 'full' && 'text-[var(--abu-success)]',
+              computerModelCapabilities.computerUseTier === 'structured' && 'text-[var(--abu-warning)]',
+              computerModelCapabilities.computerUseTier === 'unsupported' && 'text-[var(--abu-danger)]',
+              computerModelCapabilities.computerUseTier === 'unknown' && 'text-[var(--abu-text-muted)]',
+            )}>
+              {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
+              {' · '}
+              {computerModelTierLabels[computerModelCapabilities.computerUseTier]}
+            </span>
+          </div>
+          <p className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
+            {computerModelTierNotes[computerModelCapabilities.computerUseTier]}
+          </p>
+          <div className="mt-3 grid grid-cols-1 gap-2 border-t border-[var(--abu-border)] pt-3 sm:grid-cols-2">
+            {([
+              {
+                icon: Eye,
+                label: t.settings.capabilityScreenRead,
+                granted: screenPermission,
+              },
+              {
+                icon: MousePointer2,
+                label: t.settings.capabilityUIControl,
+                granted: controlPermission,
+              },
+            ] as const).map(({ icon: PermissionIcon, label, granted }) => (
+              <div key={label} className="flex items-center gap-2">
+                <PermissionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
+                <span className="text-minor text-[var(--abu-text-secondary)]">{label}</span>
+                <span className={cn(
+                  'ml-auto text-caption font-medium',
+                  granted === true && 'text-[var(--abu-success)]',
+                  granted === false && 'text-[var(--abu-warning)]',
+                  granted === undefined && 'text-[var(--abu-text-muted)]',
+                )}>
+                  {granted === true
+                    ? t.settings.capabilityPermissionGranted
+                    : granted === false
+                      ? t.settings.capabilityPermissionMissing
+                      : t.settings.capabilityPermissionUnknown}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </ComputerUseSetupView>
     );
   }
 
@@ -737,179 +955,54 @@ export default function CapabilitiesSection({
           {t.settings.capabilityWebTitle}
         </h4>
         <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          <CapabilityCard
+          {/*
+            A card shows its standing description while everything is fine, and
+            switches to the live note the moment it is not — one line either
+            way, and a problem is never hidden behind a marketing sentence.
+          */}
+          <ChannelCard
             icon={Globe2}
             title={t.settings.capabilityBuiltinBrowser}
-            description={t.settings.capabilityBuiltinBrowserDesc}
-            status={browserStatus}
+            subtitle={browserStatus.code === 'ready'
+              ? t.settings.capabilityBuiltinBrowserSubtitle
+              : browserFaultNote}
             statusLabel={browserChecking
               ? t.settings.capabilityStatusChecking
               : statusLabels[browserStatus.code]}
-            statusNote={browserStatus.code === 'unavailable'
-              ? t.settings.capabilityBuiltinBrowserUnavailable
-              : browserStatus.code === 'connection-lost'
-                ? t.settings.capabilityBuiltinBrowserDisconnected
-                : t.settings.capabilityBuiltinBrowserScope}
+            statusTone={badgeToneFor(browserStatus.code)}
             checking={browserChecking}
-            action={browserStatus.code !== 'ready' ? (
-              <button
-                type="button"
-                onClick={handleBrowserRetry}
-                disabled={browserChecking || browserStatus.reason === 'unsupported-shell'}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', browserChecking && 'animate-spin')} />
-                {browserStatus.code === 'connection-lost'
-                  ? t.settings.capabilityRetry
-                  : t.settings.capabilityCheckStatus}
-              </button>
-            ) : undefined}
+            onOpen={openBuiltinBrowser}
           />
 
-          <CapabilityCard
+          <ChannelCard
             icon={Chrome}
             title={t.settings.capabilityMyChrome}
-            description={t.settings.capabilityMyChromeDesc}
-            status={chromeStatus}
-            statusLabel={chromeChecking || chromeRuntimeChecking
-              ? t.settings.capabilityStatusChecking
-              : !chromeBridge
-                || !chromeBridgeEnabled
-                || chromeStatus.code === 'setup-required'
-                ? t.settings.capabilityStatusNotConnected
-                : statusLabels[chromeStatus.code]}
-            statusNote={chromeChecking || chromeRuntimeChecking
-              ? t.settings.capabilityStatusChecking
-              : !chromeBridge || !chromeBridgeEnabled
-                ? t.settings.capabilityChromeOptional
-                : chromeStatus.code === 'setup-required'
-                  ? t.settings.capabilityChromeSetupRequired
-              : chromeStatus.code === 'connection-lost'
-                ? t.settings.capabilityChromeDisconnected
-                : chromeStatus.code === 'unavailable'
-                  ? t.settings.capabilityChromeProbeUnavailable
-                : t.settings.capabilityMyChromeScope}
-            checking={chromeChecking || chromeRuntimeChecking}
-            action={(
-              <button
-                type="button"
-                onClick={openChromeSetup}
-                className="inline-flex items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)]"
-              >
-                {chromeStatus.code === 'ready'
-                  ? t.settings.capabilityChromeManage
-                  : t.settings.capabilityChromeConnect}
-                <ChevronRight className="h-3.5 w-3.5" />
-              </button>
-            )}
-          >
-            {chromeBridgeStatus === 'connected' && (
-              <button
-                type="button"
-                onClick={refreshChromeConnection}
-                disabled={chromeChecking || chromeRuntimeChecking}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg text-minor font-medium text-[var(--abu-info)] transition-colors hover:text-[var(--abu-info)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', chromeChecking && 'animate-spin')} />
-                {t.settings.capabilityCheckStatus}
-              </button>
-            )}
-          </CapabilityCard>
+            subtitle={chromeStatus.code === 'ready' && !chromeChecking_
+              ? t.settings.capabilityMyChromeSubtitle
+              : chromeSubtitle}
+            statusLabel={chromeStatusLabel}
+            statusTone={chromeStatusTone}
+            checking={chromeChecking_}
+            onOpen={openChromeSetup}
+          />
         </div>
-
-        <BrowserSitePermissionsList />
       </section>
 
       <section className="space-y-3">
         <h4 className="text-body font-medium text-[var(--abu-text-secondary)]">
           {t.settings.capabilityComputerTitle}
         </h4>
-        <CapabilityCard
+        <ChannelCard
           icon={MonitorCog}
           title={t.settings.computerUse}
-          description={t.settings.capabilityComputerDesc}
-          status={computerDisplayStatus}
-          statusLabel={computerChecking
-            ? t.settings.capabilityStatusChecking
-            : !computerUseEnabled
-              ? t.settings.capabilityStatusOff
-              : statusLabels[computerDisplayStatus.code]}
-          statusNote={computerStatusNote}
+          subtitle={!computerUseEnabled || computerDisplayStatus.code === 'ready'
+            ? t.settings.capabilityComputerSubtitle
+            : computerFaultNote}
+          statusLabel={computerStatusLabel}
+          statusTone={computerStatusTone}
           checking={computerChecking}
-          action={(
-            <button
-              type="button"
-              onClick={openComputerSetup}
-              disabled={computerChecking}
-              className="inline-flex items-center gap-1 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-2.5 py-1.5 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:opacity-50"
-            >
-              {!computerUseEnabled
-                ? t.settings.capabilityComputerStartSetup
-                : computerDisplayStatus.code === 'ready'
-                  ? t.settings.capabilityComputerManage
-                  : t.settings.capabilityComputerContinue}
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
-          )}
-        >
-          <div className="mt-4 border-t border-[var(--abu-border)] pt-3">
-            <div className="flex items-start gap-2">
-              <MonitorCog className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-minor text-[var(--abu-text-secondary)]">
-                    {t.settings.capabilityComputerModel}
-                  </span>
-                  <span className={cn(
-                    'text-caption font-medium',
-                    computerModelCapabilities.computerUseTier === 'full' && 'text-[var(--abu-success)]',
-                    computerModelCapabilities.computerUseTier === 'structured' && 'text-[var(--abu-warning)]',
-                    computerModelCapabilities.computerUseTier === 'unsupported' && 'text-[var(--abu-danger)]',
-                    computerModelCapabilities.computerUseTier === 'unknown' && 'text-[var(--abu-text-muted)]',
-                  )}>
-                    {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
-                    {' · '}
-                    {computerModelTierLabels[computerModelCapabilities.computerUseTier]}
-                  </span>
-                </div>
-                <p className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
-                  {computerModelTierNotes[computerModelCapabilities.computerUseTier]}
-                </p>
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-1 gap-2 border-t border-[var(--abu-border)] pt-3 sm:grid-cols-2">
-              {([
-              {
-                icon: Eye,
-                label: t.settings.capabilityScreenRead,
-                granted: screenPermission,
-              },
-              {
-                icon: MousePointer2,
-                label: t.settings.capabilityUIControl,
-                granted: controlPermission,
-              },
-              ] as const).map(({ icon: PermissionIcon, label, granted }) => (
-                <div key={label} className="flex items-center gap-2">
-                  <PermissionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-                  <span className="text-minor text-[var(--abu-text-secondary)]">{label}</span>
-                  <span className={cn(
-                    'ml-auto text-caption font-medium',
-                    granted === true && 'text-[var(--abu-success)]',
-                    granted === false && 'text-[var(--abu-warning)]',
-                    granted === undefined && 'text-[var(--abu-text-muted)]',
-                  )}>
-                    {granted === true
-                      ? t.settings.capabilityPermissionGranted
-                      : granted === false
-                        ? t.settings.capabilityPermissionMissing
-                        : t.settings.capabilityPermissionUnknown}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </CapabilityCard>
+          onOpen={openComputerSetup}
+        />
       </section>
 
     </div>

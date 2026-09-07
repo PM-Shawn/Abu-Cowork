@@ -290,6 +290,29 @@ function extractCurrentTabId(body: unknown): number {
   return Number(match[1]);
 }
 
+/**
+ * Pull a `ref` out of the preceding `abu-browser__find` tool result, so the
+ * next `click` can target the element `find` actually reported. Same regex
+ * approach (and same reason) as `extractCurrentTabId` above: the ref is a
+ * runtime id from the live page's element registry.
+ */
+function extractFoundRef(body: unknown): string {
+  const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages ?? [];
+  const toolMessage = messages.find((message) =>
+    message.role === 'tool'
+    && typeof message.content === 'string'
+    && message.content.includes('"matches"')
+  );
+  if (!toolMessage) {
+    throw new Error('Expected an abu-browser__find tool result in the request body');
+  }
+  const match = /"ref":\s*"(e\d+)"/.exec(String(toolMessage.content));
+  if (!match) {
+    throw new Error(`find returned no ref to click: ${String(toolMessage.content).slice(0, 400)}`);
+  }
+  return match[1];
+}
+
 /** A tiny loopback HTTP fixture the agent can navigate the real browser view to. */
 interface FixturePage {
   url: string;
@@ -297,10 +320,11 @@ interface FixturePage {
   close: () => Promise<void>;
 }
 
-async function startFixturePage(marker: string): Promise<FixturePage> {
+async function startFixturePage(marker: string, bodyHtml?: string): Promise<FixturePage> {
   const server = createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    res.end(`<!doctype html><html><head><title>${marker}</title></head><body><h1>${marker}</h1></body></html>`);
+    res.end(`<!doctype html><html><head><title>${marker}</title></head><body>`
+      + `<h1>${marker}</h1>${bodyHtml ?? ''}</body></html>`);
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -673,6 +697,340 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     expect(finalStates.filter((state) => state.url === fixture!.url)).toHaveLength(1);
     // ...and it is the SAME DOCUMENT: a silent reload would have wiped this.
     expect(await readLivePageMarker(app!, fixture.url)).toBe(liveMarker);
+  });
+
+  test('finds a plain HTML button by role and name, then clicks the ref it handed back', async () => {
+    // The T1 journey end to end, in the real Electron browser against a real
+    // page: `{role:"button", name:"保存"}` on a page whose button carries no
+    // ARIA attributes at all — the exact locator that used to come back
+    // "Element not found" and send the model off to execute_js — then a click
+    // on the ref `find` reported, verified by the page's own click handler.
+    const responseA = `abu-e2e-find-click-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const findCallId = `call-find-${randomUUID()}`;
+    const clickCallId = `call-click-${randomUUID()}`;
+    fixture = await startFixturePage(
+      `abu-e2e-find-click-${randomUUID()}`,
+      // No role=, no aria-label, no data-testid: ordinary office-form HTML.
+      // The decoy shares a class with the target, so a css locator would be
+      // ambiguous and only the accessible name separates them.
+      '<button class="btn" id="cancel">取消</button>'
+      + '<button class="btn" id="save" onclick="window.__abuE2eLivePageMarker = \'saved\'">保存</button>',
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: getTabsCallId,
+        toolName: 'abu-browser__get_tabs',
+      },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          query: JSON.stringify({ role: 'button', name: '保存' }),
+        },
+        toolCallId: findCallId,
+        toolName: 'abu-browser__find',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          locator: JSON.stringify({ ref: extractFoundRef(body) }),
+        },
+        toolCallId: clickCallId,
+        toolName: 'abu-browser__click',
+      }),
+      { kind: 'complete', responseText: responseA },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    const prompt = `abu-e2e-find-${randomUUID().slice(0, 8)}`;
+    await sendComposerMessage(page, mock, prompt);
+
+    // navigate is state-changing, so it asks. One approval covers the rest of
+    // the turn (BROWSER_GRANT_TTL_MS), and `find` — being read-only — must not
+    // add an ask of its own.
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+
+    // The click landed on 保存 — the page's own handler says so. A wrong
+    // target (取消, the decoy sharing its class) leaves this unset.
+    expect(await readLivePageMarker(app!, fixture.url)).toBe('saved');
+
+    // And the find result the model saw actually described that button.
+    const findResult = taskRequests(mock!)
+      .flatMap((request) => ((request.body as { messages?: OpenAiRequestMessage[] }).messages ?? []))
+      .map((message) => String(message.content ?? ''))
+      .find((content) => content.includes('"matches"'));
+    expect(findResult).toBeTruthy();
+    expect(findResult).toContain('"role": "button"');
+    // `accessibleName`, not `name`: snapshot's `name` is the HTML attribute.
+    expect(findResult).toContain('"accessibleName": "保存"');
+    expect(findResult).toContain('"id": "save"');
+    // Exactly one match: the decoy is a button too, but it is not called 保存.
+    expect(findResult).toContain('"total": 1');
+  });
+
+  test('fills a whole form and submits it in ONE batch call, on the ref find handed back', async () => {
+    // The T2 journey end to end, in the real Electron browser against a real
+    // page: find the first field, then one `batch` that fills two fields,
+    // clicks submit and waits for the page's own confirmation — four page
+    // actions, one tool call, and one approval covering the run.
+    const responseA = `abu-e2e-batch-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const findCallId = `call-find-${randomUUID()}`;
+    const batchCallId = `call-batch-${randomUUID()}`;
+    fixture = await startFixturePage(
+      `abu-e2e-batch-${randomUUID()}`,
+      // An ordinary office form: labels, no ARIA, and a submit handler that
+      // records what it actually received.
+      '<form id="f">'
+      + '<label for="no">设备编号</label><input id="no">'
+      + '<label for="owner">负责人</label><input id="owner">'
+      + '<button type="submit">提交</button>'
+      + '</form><div id="done"></div>'
+      + '<script>document.getElementById("f").addEventListener("submit", function (e) {'
+      + ' e.preventDefault();'
+      + ' window.__abuE2eLivePageMarker = document.getElementById("no").value + "|" + document.getElementById("owner").value;'
+      + ' document.getElementById("done").textContent = "保存成功";'
+      + '});</script>',
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: getTabsCallId,
+        toolName: 'abu-browser__get_tabs',
+      },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          query: JSON.stringify({ label: '设备编号' }),
+        },
+        toolCallId: findCallId,
+        toolName: 'abu-browser__find',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          steps: JSON.stringify([
+            // The ref `find` just reported — the find→batch handoff.
+            { action: 'fill', locator: { ref: extractFoundRef(body) }, value: 'EQ-001' },
+            { action: 'fill', locator: { css: '#owner' }, value: '张三' },
+            { action: 'click', locator: { role: 'button', name: '提交' } },
+            {
+              action: 'wait_for',
+              condition: { type: 'textContains', locator: { css: '#done' }, text: '保存成功' },
+              timeout: 5000,
+            },
+          ]),
+        },
+        toolCallId: batchCallId,
+        toolName: 'abu-browser__batch',
+      }),
+      { kind: 'complete', responseText: responseA },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    const prompt = `abu-e2e-batch-${randomUUID().slice(0, 8)}`;
+    await sendComposerMessage(page, mock, prompt);
+
+    // navigate asks; that one approval covers the rest of the turn, so the
+    // four page actions inside the batch must not add a second dialog.
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
+    await expect(browserConfirmHeading(page)).toBeHidden();
+
+    // The form was really submitted, with the values the batch typed — the
+    // page's own submit handler is what wrote this.
+    expect(await readLivePageMarker(app!, fixture.url)).toBe('EQ-001|张三');
+
+    // And the envelope the model saw says all four steps ran, in order.
+    const batchResult = taskRequests(mock!)
+      .flatMap((request) => ((request.body as { messages?: OpenAiRequestMessage[] }).messages ?? []))
+      .map((message) => String(message.content ?? ''))
+      .find((content) => content.includes('"completedSteps"'));
+    expect(batchResult).toBeTruthy();
+    const envelope = JSON.parse(batchResult!) as {
+      completedSteps: Array<{ action: string; ok: boolean }>;
+      remainingSteps: number;
+      origin: string;
+      stopped?: string;
+    };
+    expect(envelope.completedSteps.map((s) => s.action)).toEqual(['fill', 'fill', 'click', 'wait_for']);
+    expect(envelope.completedSteps.every((s) => s.ok)).toBe(true);
+    expect(envelope.remainingSteps).toBe(0);
+    expect(envelope.stopped).toBeUndefined();
+    expect(envelope.origin).toBe(new URL(fixture.url).origin);
+  });
+
+  test('reads and answers the confirm() a real page put in front of the submit', async () => {
+    // T3 end to end in the real Electron browser: the click reaches the page,
+    // the page opens a confirm, and the tab is suspended inside it. The click
+    // must come back saying so (not sit out its transport timeout), the model
+    // must be able to READ the dialog, and accepting it must let the page's own
+    // submit handler finish.
+    const responseA = `abu-e2e-dialog-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const clickCallId = `call-click-${randomUUID()}`;
+    const readCallId = `call-get-dialog-${randomUUID()}`;
+    const handleCallId = `call-handle-dialog-${randomUUID()}`;
+    fixture = await startFixturePage(
+      `abu-e2e-dialog-${randomUUID()}`,
+      '<form id="f"><input id="no" value="EQ-001">'
+      + '<button type="submit">提交</button></form><div id="done"></div>'
+      + '<script>document.getElementById("f").addEventListener("submit", function (e) {'
+      + ' e.preventDefault();'
+      + ' if (!confirm("确定要提交吗")) {'
+      + '  document.getElementById("done").textContent = "已取消";'
+      + '  window.__abuE2eLivePageMarker = "cancelled";'
+      + '  return;'
+      + ' }'
+      + ' window.__abuE2eLivePageMarker = "submitted:" + document.getElementById("no").value;'
+      + ' document.getElementById("done").textContent = "保存成功";'
+      + '});</script>',
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      {
+        kind: 'tool-call',
+        arguments: {},
+        toolCallId: getTabsCallId,
+        toolName: 'abu-browser__get_tabs',
+      },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          locator: JSON.stringify({ role: 'button', name: '提交' }),
+        },
+        toolCallId: clickCallId,
+        toolName: 'abu-browser__click',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body) },
+        toolCallId: readCallId,
+        toolName: 'abu-browser__get_dialog',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), action: 'accept' },
+        toolCallId: handleCallId,
+        toolName: 'abu-browser__handle_dialog',
+      }),
+      { kind: 'complete', responseText: responseA },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    // Playwright DISMISSES every JavaScript dialog on a page it controls unless
+    // that page has a `dialog` listener, and its Electron connection attaches
+    // to the automation WebContentsView too. Without these no-op listeners the
+    // confirm under test is cancelled by the test harness ~300ms after it
+    // opens, and this file would be asserting Playwright's behavior, not Abu's.
+    const keepDialogsOpen = (target: Page) => target.on('dialog', () => {});
+    app.on('window', keepDialogsOpen);
+    for (const known of app.windows()) keepDialogsOpen(known);
+
+    const prompt = `abu-e2e-dialog-${randomUUID().slice(0, 8)}`;
+    await sendComposerMessage(page, mock, prompt);
+
+    // navigate asks, and that approval covers the click. It does NOT cover the
+    // answer: `handle_dialog` is asked separately (F2, 2026-09-06 review),
+    // because the click that raised the confirm is the same click that minted
+    // the conversation grant — so riding it meant the user was asked once,
+    // about the click, and Abu then pressed the page's own OK button. The
+    // second dialog appearing HERE, in a real Electron run against a real
+    // page, is the end-to-end witness for that.
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    // get_dialog is free (reading is), so the next thing to ask is the answer.
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByText(/handle_dialog/)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowOnceButton(page).click();
+
+    await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(6);
+
+    const toolResults = taskRequests(mock!)
+      .flatMap((request) => ((request.body as { messages?: OpenAiRequestMessage[] }).messages ?? []))
+      .filter((message) => message.role === 'tool')
+      .map((message) => String(message.content ?? ''));
+
+    // 1. The click did not hang and did not lie: it named the dialog.
+    const clickResult = toolResults.find((text) => text.includes('blocked by a JavaScript dialog'));
+    expect(clickResult).toBeTruthy();
+    expect(clickResult).toContain('(confirm)');
+    expect(clickResult).toContain('确定要提交吗');
+
+    // 2. get_dialog read it, and labelled the page's words as the page's.
+    const readResult = toolResults.find((text) => text.includes('"pending": true'));
+    expect(readResult).toBeTruthy();
+    expect(readResult).toContain('"type": "confirm"');
+    expect(readResult).toContain('确定要提交吗');
+    expect(readResult).toContain('written by the web page, not by the user');
+
+    // 3. Accepting it let the page's own submit handler run to the end.
+    const handledResult = toolResults.find((text) => text.includes('"handled": true'));
+    expect(handledResult).toBeTruthy();
+    await expect
+      .poll(() => readLivePageMarker(app!, fixture!.url), { timeout: READY_TIMEOUT })
+      .toBe('submitted:EQ-001');
   });
 
   test('keeps the same browser tab and page alive across collapsing and expanding the right panel', async () => {

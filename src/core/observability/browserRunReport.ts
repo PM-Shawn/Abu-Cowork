@@ -293,6 +293,9 @@ function nextStepForDenial(
     case 'site-denied': return 'unblock-site';
     case 'high-risk-site': return 'do-high-risk-yourself';
     case 'policy-denied': return 'relax-policy';
+    // No setting turns an unattended upload on, so 'relax-policy' would be
+    // advice that cannot work. The only road is to be at the machine.
+    case 'upload-unattended': return 'run-while-watching';
     // An administered policy is not the user's to loosen — pointing them at
     // their own Settings would be advice that cannot work. Nothing to advise
     // here, the same shape as `user-cancelled`; the failing-terminal fallback

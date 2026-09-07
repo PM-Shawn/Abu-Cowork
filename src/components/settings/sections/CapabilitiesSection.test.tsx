@@ -1503,9 +1503,14 @@ describe('CapabilitiesSection', () => {
       expect(within(grid).queryByText('Automatic tasks')).toBeNull();
       expect(within(grid).getByText('View pages')).toBeInTheDocument();
       expect(within(grid).getByText('Click and fill in')).toBeInTheDocument();
+      // T5 — one MORE row on the same card, not another card. §5② asks for
+      // uploads to be visible on their own line; giving them scripting's
+      // weight would make attaching a file to an OA form read as an
+      // advanced risk.
+      expect(within(grid).getByText('Upload files')).toBeInTheDocument();
       expect(within(grid).queryByText('Run scripts (advanced)')).not.toBeInTheDocument();
       // One control per row, not two.
-      expect(policyCells(grid)).toHaveLength(2);
+      expect(policyCells(grid)).toHaveLength(3);
 
       const scriptCard = permissionCard('Run scripts (advanced)');
       expect(scriptCard).not.toBe(grid);

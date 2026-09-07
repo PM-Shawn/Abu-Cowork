@@ -214,6 +214,15 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
 
   const stateChanging = opClass !== 'read-only';
   const scripting = opClass === 'scripting';
+  /**
+   * T5. Named here rather than inferred from `asksEveryTime` happening to be
+   * true: the two grant scopes an ordinary click rides — the 30-minute
+   * conversation grant and the site's 「始终允许」 — must be unreachable for an
+   * upload BY CONSTRUCTION, not as a side effect of the row's current value.
+   * `asksEveryTime` would give the same answer today and would stop doing so
+   * the moment anyone adds a fourth state to the row.
+   */
+  const uploading = opClass === 'upload';
 
   /**
    * An ATTENDED READ-ONLY call reads exactly one thing out of the site
@@ -269,6 +278,13 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
     if (!masterSwitchUnattended) return 'master-switch-off';
     if (effectiveSiteVerdict === 'denied') return 'site-denied';
     if (highRisk) return 'high-risk-site';
+    // §5② — placed after the three refusals that outrank it in
+    // `decideBrowserOperation`'s own precedence, and BEFORE the
+    // standing-grant probe below: that probe asks "would an 'allowed' site
+    // have let this run?", and for an upload the answer is no on every site,
+    // so reporting `site-not-allowed` would send the user to authorize a site
+    // that changes nothing.
+    if (opClass === 'upload') return 'upload-unattended';
     if (
       policyVerdict === 'deny'
       && effectiveSiteVerdict !== 'allowed'
@@ -316,7 +332,14 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
   // 3. The configured row says no.
   if (policyVerdict === 'deny') {
     return denied(
-      runMode === 'unattended' ? unattendedDenialCode() : 'policy-denied',
+      runMode === 'unattended'
+        ? unattendedDenialCode()
+        // ATTENDED. Only one refusal here is not the row's own doing: an
+        // upload aimed at a money-movement / government page, which
+        // `decideBrowserOperation` denies whatever the row says. Reporting
+        // that as `policy-denied` would send the user to loosen a setting
+        // that would not have helped.
+        : (uploading && highRisk ? 'high-risk-site' : 'policy-denied'),
       NO_INTERMEDIATES,
     );
   }
@@ -357,7 +380,11 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
     const granted =
       scriptAllowedByPolicy
       || dialogAnswerAllowedByPolicy
-      || (!scripting && !answersPageDialog && !highRisk && !asksEveryTime
+      // `!uploading` is the load-bearing half of §5②'s 「不随站点授权放行、
+      // 不吃会话授权」: without it an upload on a 「始终允许」 site, or one
+      // seconds after any approved click in the same conversation, would run
+      // with no prompt at all — the two grants an upload must not ride.
+      || (!scripting && !answersPageDialog && !uploading && !highRisk && !asksEveryTime
         && (conversationGrant || effectiveSiteVerdict === 'allowed'));
     const intermediates: BrowserGateIntermediates = {
       scriptAllowedByPolicy,
@@ -376,8 +403,12 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
       channel: 'dialog',
       // No 「以后都允许该网站」 for a bank or a checkout page, none under
       // 「每次询问」 (the grant it would mint is one this row now ignores),
-      // none for a script, and none without an origin to key it to.
-      offersPersistentGrant: !scripting && !highRisk && !asksEveryTime && originKnown,
+      // none for a script, none for an upload (§5②: 「不提供始终允许」 — the
+      // grant would be one this class never spends, so offering it would
+      // promise a silence the next upload does not deliver), and none without
+      // an origin to key it to.
+      offersPersistentGrant:
+        !scripting && !uploading && !highRisk && !asksEveryTime && originKnown,
       refusedReason: 'user-cancelled',
     });
   }

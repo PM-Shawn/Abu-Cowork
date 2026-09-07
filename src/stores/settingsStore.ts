@@ -1542,7 +1542,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 49,
+      version: 50,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -1554,6 +1554,25 @@ export const useSettingsStore = create<SettingsStore>()(
       storage: createJSONStorage(() => settingsStateStorage),
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V50: `browserOperationPolicy.upload` — the fourth operation class
+        // (batch-三 T5). Sending a local file into a page used to have no row
+        // of its own because there was no tool that did it; `upload_file` is
+        // that tool, and §5② gives it 「每次询问」 with no 「允许」 tier.
+        //
+        // `normalizeBrowserOperationPolicy` writes the row: a missing key
+        // clamps to `STRICTEST_OPERATION_STATE` (`'ask'`), which is also the
+        // reviewed default here, so the upgrade and corruption paths agree
+        // without a second literal. Nobody gains a capability by upgrading —
+        // the row's most permissive value asks every time, and an automatic
+        // run is refused outright whatever it says.
+        // ════════════════════════════════════════════════
+        if (version < 50) {
+          state.browserOperationPolicy = state.browserOperationPolicy === undefined
+            ? DEFAULT_BROWSER_OPERATION_POLICY
+            : normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+        }
 
         // ════════════════════════════════════════════════
         // V48: `browserConfigRevisions` — one monotonic counter per browser

@@ -319,15 +319,24 @@ async function selectSource(page: Page, source: 'market' | 'mine'): Promise<void
 }
 
 /**
- * The organization catalog card for `name`.
+ * The organization catalog row for `name`.
  *
- * ToolCard carries no testid, so this anchors on the one element that names the
- * plugin unambiguously — the name `<p>`, which sets `title={item.name}` — and
- * walks up the two wrappers to the card itself (name row → card). Filtering
- * divs by text instead would match every ancestor up to the grid.
+ * The catalog is a full-width list (`MarketplaceEntryRow`, the same row the OSS
+ * 插件 市场 uses), so the row itself carries a testid; `has:` then picks the one
+ * whose name element matches EXACTLY — filtering rows by text would also match
+ * a row whose name merely contains this one.
  */
 function orgCard(page: Page, name: string) {
-  return page.getByRole('main').getByTitle(name, { exact: true }).locator('xpath=../..');
+  return page
+    .getByRole('main')
+    .getByTestId('enterprise-plugin-row')
+    .filter({ has: page.getByTitle(name, { exact: true }) });
+}
+
+/** 卸载 lives behind the row's `···` menu, exactly as it does in the OSS 市场. */
+async function uninstallOrgPlugin(page: Page, name: string): Promise<void> {
+  await orgCard(page, name).getByTestId('enterprise-plugin-menu').click();
+  await orgCard(page, name).getByTestId('enterprise-plugin-menu-uninstall').click();
 }
 
 /** Force a catalog re-sync: the tab polls every 5 min, but re-syncs on mount.
@@ -504,9 +513,7 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     const packageRoot = path.join(enterpriseRoot(dataRoot), CATALOG_PLUGIN);
     expect(fs.existsSync(packageRoot)).toBe(true);
 
-    await orgCard(page, CATALOG_PLUGIN)
-      .getByRole('button', { name: `卸载 ${CATALOG_PLUGIN}` })
-      .click();
+    await uninstallOrgPlugin(page, CATALOG_PLUGIN);
 
     await expect
       .poll(() => fs.existsSync(packageRoot), { timeout: INSTALL_TIMEOUT })
@@ -556,7 +563,7 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     await expect.poll(() => stagedEntries(dataRoot), { timeout: INSTALL_TIMEOUT }).toEqual([]);
 
     // Leave the isolated home clean for the teardown.
-    await orgCard(page, OWNED_PLUGIN).getByRole('button', { name: `卸载 ${OWNED_PLUGIN}` }).click();
+    await uninstallOrgPlugin(page, OWNED_PLUGIN);
     await expect
       .poll(() => fs.existsSync(path.join(enterpriseRoot(dataRoot), OWNED_PLUGIN)), { timeout: INSTALL_TIMEOUT })
       .toBe(false);

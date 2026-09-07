@@ -51,6 +51,7 @@ import {
 } from '@/core/plugin/marketplace';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
+import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
@@ -368,88 +369,80 @@ export default function MarketplaceBrowser({
     const hasUpdate = !!selected && updateKeySet.has(pluginKey(entry.name, selected.name));
     return (
       <div className="pb-1.5">
-        <div
-          data-testid="plugin-marketplace-entry"
-          className="flex items-start gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
-        >
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-h-xs text-[var(--abu-text-primary)]">
-                {entry.name}
+        <MarketplaceEntryRow
+          testId="plugin-marketplace-entry"
+          name={entry.name}
+          description={entry.description}
+          chips={[
+            entry.version && (
+              <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
+                v{entry.version}
               </span>
-              {entry.version && (
-                <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
-                  v{entry.version}
-                </span>
-              )}
-              {entry.category && (
-                <span className="shrink-0 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]">
-                  {entry.category}
-                </span>
-              )}
-              {/* Most of a real marketplace (238 of the official 291)
-                  is remote-sourced: installing one fetches it from git
-                  (sha-verified) rather than copying a local folder, so
-                  the row flags it up front. */}
-              {entry.source.kind !== 'relative' && (
-                <span
-                  data-testid="plugin-remote-source-badge"
-                  className="shrink-0 rounded-full bg-[var(--abu-warning-bg)] px-2 py-0.5 text-caption text-[var(--abu-warning)]"
-                >
-                  {tb.pluginsRemoteSourceBadge}
-                </span>
-              )}
-            </div>
-            {entry.description && (
-              <p className="mt-0.5 line-clamp-2 text-minor text-[var(--abu-text-tertiary)]">
-                {entry.description}
-              </p>
-            )}
-          </div>
-          {installedRecord ? (
-            <div className="flex shrink-0 items-center gap-1">
-              {/* Update stays a plain button rather than a menu item: it is the
-                  one action a user comes to an installed row *for*, and it is
-                  only offered when there is genuinely a newer version. */}
-              {hasUpdate && (
-                <Button
-                  size="sm"
-                  data-testid="plugin-update-button"
-                  onClick={() => void handlePlan(entry)}
-                  aria-label={`${tb.pluginsUpdate}: ${entry.name}`}
-                >
-                  {tb.pluginsUpdate}
-                </Button>
-              )}
-              <InstalledItemMenu
-                testId="plugin-item-menu"
-                ariaLabel={format(tb.itemMenuLabel, { name: entry.name })}
-                actions={[
-                  {
-                    id: 'trial',
-                    label: tb.menuTrial,
-                    onSelect: () => launchTrial({ name: entry.name, description: entry.description }),
-                  },
-                  { id: 'manage', label: tb.menuManage, onSelect: () => setManaging(installedRecord) },
-                  {
-                    id: 'uninstall',
-                    label: tb.menuUninstall,
-                    destructive: true,
-                    onSelect: () => setUninstallTarget(installedRecord),
-                  },
-                ]}
-              />
-            </div>
-          ) : (
-            <Button
-              size="sm"
-              onClick={() => void handlePlan(entry)}
-              aria-label={`${tb.pluginsInstall}: ${entry.name}`}
-            >
-              {tb.pluginsInstall}
-            </Button>
-          )}
-        </div>
+            ),
+            entry.category && (
+              <span className="shrink-0 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]">
+                {entry.category}
+              </span>
+            ),
+            /* Most of a real marketplace (238 of the official 291) is
+               remote-sourced: installing one fetches it from git
+               (sha-verified) rather than copying a local folder, so the row
+               flags it up front. */
+            entry.source.kind !== 'relative' && (
+              <span
+                data-testid="plugin-remote-source-badge"
+                className="shrink-0 rounded-full bg-[var(--abu-warning-bg)] px-2 py-0.5 text-caption text-[var(--abu-warning)]"
+              >
+                {tb.pluginsRemoteSourceBadge}
+              </span>
+            ),
+          ]}
+          actions={
+            installedRecord ? (
+              <>
+                {/* Update stays a plain button rather than a menu item: it is the
+                    one action a user comes to an installed row *for*, and it is
+                    only offered when there is genuinely a newer version. */}
+                {hasUpdate && (
+                  <Button
+                    size="sm"
+                    data-testid="plugin-update-button"
+                    onClick={() => void handlePlan(entry)}
+                    aria-label={`${tb.pluginsUpdate}: ${entry.name}`}
+                  >
+                    {tb.pluginsUpdate}
+                  </Button>
+                )}
+                <InstalledItemMenu
+                  testId="plugin-item-menu"
+                  ariaLabel={format(tb.itemMenuLabel, { name: entry.name })}
+                  actions={[
+                    {
+                      id: 'trial',
+                      label: tb.menuTrial,
+                      onSelect: () => launchTrial({ name: entry.name, description: entry.description }),
+                    },
+                    { id: 'manage', label: tb.menuManage, onSelect: () => setManaging(installedRecord) },
+                    {
+                      id: 'uninstall',
+                      label: tb.menuUninstall,
+                      destructive: true,
+                      onSelect: () => setUninstallTarget(installedRecord),
+                    },
+                  ]}
+                />
+              </>
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => void handlePlan(entry)}
+                aria-label={`${tb.pluginsInstall}: ${entry.name}`}
+              >
+                {tb.pluginsInstall}
+              </Button>
+            )
+          }
+        />
       </div>
     );
   };

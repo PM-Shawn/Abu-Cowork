@@ -593,20 +593,24 @@ test('spends one budget on the whole call, not one on each half', async () => {
   try {
     const { tabId, contents } = await openTab(host, OWNER_A);
     let started = null;
-    contents.onClick = () => { started = deliver(new FakeDownloadItem(), contents); };
+    // The shape that separates the two designs: the click takes MOST of the
+    // budget to produce anything, and then the file never finishes. With one
+    // deadline the whole call costs ~300 ms; with a budget per phase it costs
+    // 200 + 300, which is what walked past the bridge's own timeout.
+    contents.onClick = () => {
+      setTimeout(() => { started = deliver(new FakeDownloadItem(), contents); }, 200);
+    };
 
     const began = Date.now();
     const result = await host.performBrowserAutomation('download', {
-      ownerId: OWNER_A, tabId, action: 'click', locator: { css: 'a#export' }, timeoutMs: 120,
+      ownerId: OWNER_A, tabId, action: 'click', locator: { css: 'a#export' }, timeoutMs: 300,
     });
     const spent = Date.now() - began;
 
-    // The click produced a download immediately and it never finished, so the
-    // completion wait got what was LEFT of the 120 ms, not another 120.
     assert.equal(result.started, true);
     assert.equal(result.complete, false);
-    assert.ok(spent < 240, `the call spent ${spent}ms of a 120ms budget`);
-    started.finish();
+    assert.ok(spent < 420, `the call spent ${spent}ms of a 300ms budget`);
+    if (started) started.finish();
   } finally { restore(); }
 });
 

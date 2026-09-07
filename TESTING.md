@@ -162,6 +162,8 @@ coverage run and the inventory check, plus two freshness checks with no CI step 
 (`gen:models:check`, `check:browser-artifacts`); `test:infra`, the production build and the
 Chrome-extension sync check are CI-only (see §7, "Steps that are NOT part of verify").
 
+> **Local pre-commit hook (husky + lint-staged):** `.husky/pre-commit` must stay executable — check with `git ls-files -s .husky/pre-commit` (expect `100755`; fix with `git update-index --chmod=+x .husky/pre-commit`) — and `.husky/_/` must exist in every worktree (created by `npm install` / `npx husky`; without it git runs no hook and prints nothing — `npm run electron:dev:check` reports this).
+
 ---
 
 ## 5. Coverage Thresholds

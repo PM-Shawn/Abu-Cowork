@@ -145,17 +145,54 @@ describe('site matching', () => {
     expect(isSameSiteHost(null, 'example.com')).toBe(false);
   });
 
-  it('matches on the referrer first, then on where the bytes came from', () => {
+  it('lets the referrer decide, and looks at the bytes only when there is none', () => {
+    // The page that started it is same-site; the bytes are on a CDN.
     expect(downloadMatchesSite(
-      { id: 1, referrer: 'https://app.example.com/r', url: 'https://cdn.other/x' },
+      { id: 1, referrer: 'https://app.example.com/r', url: 'https://cdn.other/x', finalUrl: 'https://cdn.other/x' },
+      'app.example.com',
+    )).toBe(true);
+    // No referrer at all: `finalUrl` is what is left to go on.
+    expect(downloadMatchesSite(
+      { id: 1, url: 'https://app.example.com/x.csv', finalUrl: 'https://app.example.com/x.csv' },
       'app.example.com',
     )).toBe(true);
     expect(downloadMatchesSite(
-      { id: 1, url: 'https://app.example.com/x.csv' },
+      { id: 1, url: 'https://bank.example/x', finalUrl: 'https://bank.example/x' },
       'app.example.com',
-    )).toBe(true);
-    expect(downloadMatchesSite({ id: 1, url: 'https://bank.example/x' }, 'app.example.com')).toBe(false);
+    )).toBe(false);
     expect(downloadMatchesSite({ id: 1, url: 'https://app.example.com/x' }, null)).toBe(false);
+  });
+
+  /**
+   * Round-2 review N4. Treating the three candidates as three chances to
+   * match let an UNRELATED page in the user's Chrome plant a file in a
+   * running task: `evil.example` starts a download whose URL points at a
+   * public asset (or a redirector) on the task's own site during the arming
+   * window, and it was claimed — renamed into the task folder, listed by
+   * `get_downloads`, and reported to the model and to IM as a file the run
+   * produced. The referrer disagreed the whole time.
+   */
+  it('refuses a download whose referrer is a third party, however familiar the URL looks', () => {
+    expect(downloadMatchesSite({
+      id: 1,
+      referrer: 'https://evil.example/',
+      url: 'https://app.example.com/public/planted.xlsx',
+      finalUrl: 'https://app.example.com/public/planted.xlsx',
+    }, 'app.example.com')).toBe(false);
+  });
+
+  /**
+   * The other half of N4: with no referrer, the fallback reads where the
+   * bytes ACTUALLY came from. An open redirect on the task's own site would
+   * otherwise let an attacker pick the initial URL and serve the file.
+   */
+  it('falls back to finalUrl, never to the initial url a redirect chose', () => {
+    expect(downloadMatchesSite({
+      id: 2, url: 'https://app.example.com/e', finalUrl: 'https://app.example.com/export.csv',
+    }, 'app.example.com')).toBe(true);
+    expect(downloadMatchesSite({
+      id: 3, url: 'https://app.example.com/redir?to=evil', finalUrl: 'https://evil.example/payload.xlsx',
+    }, 'app.example.com')).toBe(false);
   });
 });
 
@@ -323,10 +360,38 @@ describe('attribution', () => {
     tracker.expect(A, 'example.com');
 
     const record = tracker.onCreated({
-      id: 4, filename: 'x.zip', url: 'https://files.example.com/x.zip', state: 'in_progress',
+      id: 4,
+      filename: 'x.zip',
+      url: 'https://files.example.com/x.zip',
+      finalUrl: 'https://files.example.com/x.zip',
+      state: 'in_progress',
     });
 
     expect(record?.ownerKey).toBe(A);
+  });
+
+  /**
+   * N4 at the tracker, not just at the predicate: the same planted download
+   * must be invisible to `suggestFilename` (which renames it), to
+   * `onCreated` (which files it), to the waiter and to `get_downloads`.
+   */
+  it('leaves a third party\'s download alone even when its URL names the task\'s site', () => {
+    const tracker = createDownloadTracker(fakeDeps());
+    const expectation = tracker.expect(A, SITE);
+
+    const planted = {
+      id: 12,
+      filename: 'planted.xlsx',
+      url: `https://${SITE}/public/planted.xlsx`,
+      finalUrl: `https://${SITE}/public/planted.xlsx`,
+      referrer: 'https://evil.example/',
+      state: 'in_progress',
+    };
+    expect(tracker.suggestFilename(planted)).toBeNull();
+    expect(tracker.onCreated(planted)).toBeNull();
+
+    expect(expectation.claimed()).toBeNull();
+    expect(tracker.listFor(A)).toEqual([]);
   });
 
   /**

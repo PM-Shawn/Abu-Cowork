@@ -96,19 +96,30 @@ export function isSameSiteHost(a: string | null, b: string | null): boolean {
  * reported to the model as the task's own product. A probe walked it with
  * `my-tax-return.pdf` from `bank.example`.
  *
- * The referrer is checked first because it is the page that STARTED the
- * download, which survives the common case of the bytes themselves coming
- * from a CDN or an S3 bucket on another host. `finalUrl`/`url` are the
- * fallback for a page whose referrer policy strips it.
+ * The referrer is the page that STARTED the download, so it DECIDES: present
+ * and same-site → claim, present and cross-site → do not, even if the URL
+ * looks familiar. It also survives the common case of the bytes themselves
+ * coming from a CDN or an S3 bucket on another host.
+ *
+ * ## Why the URL is not a third opinion (2026-09-07 round-2 review, N4)
+ *
+ * Taking any of the three candidates as sufficient made an unrelated page in
+ * the user's Chrome able to plant a file in a task: `evil.example` starts a
+ * download whose `url` points at the task's own site (a public asset, a
+ * redirector) inside the arming window, and it was claimed — renamed into the
+ * task folder, listed by `get_downloads`, reported to the model, and named in
+ * the IM summary as something the run produced. So a referrer that disagrees
+ * is decisive, and when there is none (`Referrer-Policy: no-referrer`) the
+ * fallback reads `finalUrl` — where the bytes ACTUALLY came from — and never
+ * the initial `url`, which an open redirect on the task's own site would let
+ * an attacker choose. The cost is zero for real exports: a same-site page's
+ * CDN download matches on its referrer.
  */
 export function downloadMatchesSite(item: DownloadItemLike, site: string | null): boolean {
   if (site === null) return false;
-  const candidates = [item.referrer, item.finalUrl, item.url];
-  for (const candidate of candidates) {
-    const host = hostOf(candidate);
-    if (host !== null && isSameSiteHost(host, site)) return true;
-  }
-  return false;
+  const referrerHost = hostOf(item.referrer);
+  if (referrerHost !== null) return isSameSiteHost(referrerHost, site);
+  return isSameSiteHost(hostOf(item.finalUrl), site);
 }
 
 /** What a download looks like once it belongs to a task. */

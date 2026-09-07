@@ -23,7 +23,15 @@ export interface AbuMessage {
   color?: MessageColor;
   /** Footer note */
   footer?: string;
-  /** Platform-specific passthrough data */
+  /**
+   * Platform-specific passthrough data, plus the structured run ending under
+   * `RUN_OUTCOME_METADATA_KEY` (`core/observability/unattendedRunOutcome.ts`).
+   *
+   * Carried on every channel; serialized by the adapters whose payload is a
+   * free-form JSON envelope (`custom`). The chat platforms render a fixed
+   * schema of their own and would reject unknown keys, so they ignore it —
+   * their readers are people, who get the sentence in `content` instead.
+   */
   metadata?: Record<string, unknown>;
 }
 
@@ -37,6 +45,15 @@ export interface OutputContext {
   runTime?: string;
   timestamp: string;
   eventData?: string;
+  /**
+   * `$RUN_OUTCOME` — how the run ended, as one short line.
+   *
+   * The opt-in half of the batch-8 ruling: a `custom_template` payload is
+   * written by the user, so the ending is never spliced into it. Whoever
+   * wants it says where it goes. Always a single line, because the usual
+   * template is JSON and a newline inside a string literal is a syntax error.
+   */
+  runOutcome?: string;
 }
 
 // ── Adapter Config ──

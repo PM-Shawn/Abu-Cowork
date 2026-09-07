@@ -52,6 +52,7 @@ import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { browserNarrationSection } from './browserNarrationRules';
 import {
   appendPreloadedSkills,
   normalizeDeclaredSkills,
@@ -97,7 +98,7 @@ const MAX_OUTPUT_TOKENS_RECOVERY_LIMIT = 3;
 export function resolveSubagentInteractionMode(
   options: Pick<
     SubagentLoopOptions,
-    'authorizationScopeId' | 'runPermissionCeiling' | 'imContext' | 'triggerId' | 'scheduledTaskId'
+    'authorizationScopeId' | 'runPermissionCeiling' | 'imContext' | 'triggerId' | 'scheduledTaskId' | 'initiatedBy'
   >,
 ): NonNullable<ToolExecutionContext['interactionMode']> {
   return deriveRunInteractionMode(options);
@@ -435,6 +436,14 @@ export interface SubagentLoopOptions {
   agent: SubagentDefinition;
   task: string;
   context?: string;
+  /**
+   * App-owned identity for THIS run (`sar-*`), stamped by
+   * `scopeSubagentLoopProgress` — the same value that namespaces the run's
+   * progress ids. It reaches tools as `ToolExecutionContext.agentRunId` so
+   * per-run resources (browser tab ownership) can tell sibling delegations
+   * apart; a run without one is treated as the conversation's own loop.
+   */
+  agentRunId?: string;
   /** Summary of parent conversation context for better task understanding */
   parentConversationSummary?: string;
   /** Shell-materialized source user turn for multimodal delegation. */
@@ -477,6 +486,19 @@ export interface SubagentLoopOptions {
   /** Parent unattended provenance, retained across delegation boundaries. */
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Who started the PARENT run — a subagent inherits it, never decides it. */
+  initiatedBy?: import('./runInteractionMode').RunInitiator;
+  /**
+   * The PARENT run's consecutive-browser-denial seam (browserDenialTracker.ts),
+   * threaded in at delegation time exactly like `initiatedBy`. A delegated
+   * browser refusal counts toward the parent's streak, and a delegated
+   * consented allow clears it — otherwise a run could dodge the guard
+   * entirely by doing its browser work through a subagent. Local-only: these
+   * are functions, so they never cross the subagent.run wire; the shell
+   * re-stamps them from its own session on the reverse tool.invoke channel.
+   */
+  reportBrowserDenial?: (kind?: import('./browserDenialTracker').BrowserDenialKind) => void;
+  reportBrowserAllow?: (consent?: import('./browserDenialTracker').BrowserAllowConsent) => void;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */
@@ -732,6 +754,14 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // a toolCallId injected by the main harness that sub-agents never receive —
     // leaving it visible causes a confusing "内部错误" response, so strip it here.
     const offeredToolNames = new Set(tools.map((tool) => tool.name));
+
+    // C8 — narration discipline, conditional on the roster this run actually
+    // got. It has to live HERE rather than with the other prompt blocks above
+    // because the roster is only known now, and it is worth the placement: a
+    // subagent owns its browser tabs per RUN (N6), so it hits the same
+    // refusals the main loop does, while `buildSystemPromptSections` — where
+    // the main loop gets these rules — never runs for a delegation.
+    systemPrompt += browserNarrationSection(offeredToolNames);
 
     // 4. Create LLM adapter
     // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
@@ -1118,10 +1148,18 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           const subagentToolContext: ToolExecutionContext = {
             workspacePath,
             conversationId: options.parentConversationId,
+            // Per-run resources (browser tabs) are owned by the pair
+            // {conversation, run}: without this, sibling delegations of one
+            // conversation share one pool and steal each other's tabs.
+            agentRunId: options.agentRunId,
             loopId: options.parentLoopId,
             interactionMode: resolveSubagentInteractionMode(options),
             authorizationScopeId: options.authorizationScopeId,
             runPermissionCeiling: options.runPermissionCeiling,
+            // The PARENT run's denial guard: a browser refusal inside a
+            // delegated run is still this run being refused.
+            reportBrowserDenial: options.reportBrowserDenial,
+            reportBrowserAllow: options.reportBrowserAllow,
             abortSignal: signal,
             // Forward the IM reply target so send_file works from a subagent
             // delegated inside an IM run (without it the tool would falsely

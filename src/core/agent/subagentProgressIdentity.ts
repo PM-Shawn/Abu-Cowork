@@ -50,17 +50,24 @@ export function scopeSubagentProgressEvent(
 }
 
 /**
- * Wrap one loop's progress callback in an app-owned namespace. Keeping this in
- * a runtime-neutral production module lets both the shell selector and the
- * in-sidecar nested-run shim apply exactly the same identity boundary.
+ * Stamp one loop with its app-owned run identity: it namespaces the loop's
+ * progress ids, and rides `options.agentRunId` into every tool call the loop
+ * makes so per-run resources (browser tab ownership) can tell one delegation
+ * from its siblings. Keeping this in a runtime-neutral production module lets
+ * both the shell selector and the in-sidecar nested-run shim apply exactly the
+ * same identity boundary.
+ *
+ * `agentRunId` is stamped even when the caller passed no `onProgress`: the two
+ * consumers are independent, and a run with no progress sink still owns tabs.
  */
 export function scopeSubagentLoopProgress(
   options: SubagentLoopOptions,
   scopeId: string = createSubagentProgressScopeId(),
 ): SubagentLoopOptions {
-  if (!options.onProgress) return options;
+  if (!options.onProgress) return { ...options, agentRunId: scopeId };
   return {
     ...options,
+    agentRunId: scopeId,
     onProgress: (event) => options.onProgress?.(scopeSubagentProgressEvent(scopeId, event)),
   };
 }

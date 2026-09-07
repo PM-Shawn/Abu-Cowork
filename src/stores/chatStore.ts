@@ -32,8 +32,10 @@ import { useEnterpriseStore } from './enterpriseStore';
 import { useWorkProcessFoldStore } from './workProcessFoldStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
+import { clearBrowserReclaim, disposeOwnedBrowserViews } from '../core/browser/browserViewLifecycle';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../core/llm/adapter';
+import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
 
 enableMapSet();
 
@@ -1045,10 +1047,25 @@ export const useChatStore = create<ChatStore>()(
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
         useWorkProcessFoldStore.getState().clearConversation(id);
+        // Browser-automation observability (batch 1 fix-wave): per-conversation
+        // repeat/fallback trackers and the tab→origin cache in
+        // core/observability/browserSignals.ts would otherwise accumulate one
+        // dead entry per deleted conversation forever in a long-lived session.
+        clearBrowserToolTrackers(id);
         // Workspace subagent tabs are conversation-owned. Close them before
         // clearing their ephemeral batches so the active view lease is
         // released synchronously and no clickable dead tab survives deletion.
         usePreviewStore.getState().closeSubagentTabsForConversation(id);
+        // Browser tabs an agent adopted for this conversation are owned by the
+        // tab RECORD, so dropping it here is what destroys the native view.
+        // Without this the view keeps running with no strip anywhere able to
+        // show or close it: the tab is invisible in every other conversation,
+        // and this one is about to stop existing.
+        usePreviewStore.getState().closeOwnedTabsForConversation(id);
+        // ...and the same for main-side views this renderer holds no record of
+        // (a headless fallback view, an adoption still in flight). Fire-and-
+        // forget, failure-swallowed, like the disk cleanups below.
+        disposeOwnedBrowserViews(id);
         useBatchProgressStore.getState().clearConversation(id);
         clearConversationComposerDraft(
           id,
@@ -1228,6 +1245,18 @@ export const useChatStore = create<ChatStore>()(
             if (meta) await updateIndexEntry(meta);
           }),
         );
+        // N7 — the user closing an agent's browser tab makes the host refuse to
+        // open another one until they speak again; writing to the conversation
+        // is them speaking. This is the one place every send path commits a user
+        // message (the sidecar dispatch in agentLoopRunner and agentLoop's
+        // in-process fallbacks all land here), so the signal is taken here
+        // rather than duplicated per path. `isSystem` messages ride the `user`
+        // role but are the app waking itself up — they must not hand the browser
+        // back on the user's behalf. Fire-and-forget: a send never waits on, or
+        // fails because of, browser bookkeeping.
+        if (message.role === 'user' && !message.isSystem) {
+          clearBrowserReclaim(convId);
+        }
         // Snapshot any user-uploaded files (currently only images with filePath).
         // Fire-and-forget — must never block the UI flow.
         // ★ Architecture contract: when adding new content types with stripForDisk
@@ -2558,7 +2587,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 7,
+      version: 8,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2575,6 +2604,13 @@ export const useChatStore = create<ChatStore>()(
         // payload — persisted state (conversationIndex) is unchanged, so this is a
         // no-op bump that just guards against older builds mis-reading the schema.
         if (version < 7) { /* no transform needed */ }
+        // v7 → v8: added the unattended browser run report card (U7) — an
+        // append-only Message (id prefix `browser-run-report-`) carrying an
+        // optional `browserRunReport` snapshot. Same shape of change as v6→v7:
+        // messages live in JSONL, not in the persisted `conversationIndex`, so
+        // there is nothing to transform. The bump exists so an older build
+        // cannot silently mis-read a newer store.
+        if (version < 8) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

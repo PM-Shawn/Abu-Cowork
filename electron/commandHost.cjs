@@ -40,6 +40,7 @@ const {
   runtimeLayout,
   withBundledRuntimeEnv,
 } = require('./runtimeResolver.cjs');
+const { runtimeState } = require('./runtimeObservability.cjs');
 
 // ── Seatbelt (SBPL) profile generation — line-for-line port of
 // src-tauri/src/sandbox.rs's generate_seatbelt_profile() ──
@@ -747,9 +748,19 @@ async function runShellCommand(app, args) {
   );
   const envOverride = bundledRuntimeEnv(app);
 
+  const startedAt = Date.now();
   const result = isBackground
     ? await spawnBackground(app, spec, { cwd, envOverride, sandboxEnabled }, commandId)
     : await spawnForeground(app, spec, { cwd, envOverride, sandboxEnabled }, timeoutSecs, commandId);
+  // The observability layer redacts and truncates `command` (see
+  // runtimeObservability's sanitizeAttributes) — pass the raw caller command.
+  runtimeState.noteCommandFinished({
+    command,
+    exitCode: result.code,
+    durationMs: Date.now() - startedAt,
+    sandboxEnabled,
+    executionPath: isBackground ? 'background' : 'foreground',
+  });
 
   return {
     stdout: result.stdout,
@@ -783,6 +794,7 @@ async function runArgvCommand(app, args) {
   );
   const envOverride = bundledRuntimeEnv(app);
 
+  const startedAt = Date.now();
   const result = await spawnForeground(
     app,
     spec,
@@ -790,6 +802,13 @@ async function runArgvCommand(app, args) {
     timeoutSecs,
     commandId
   );
+  runtimeState.noteCommandFinished({
+    command: [program, ...argv].join(' '),
+    exitCode: result.code,
+    durationMs: Date.now() - startedAt,
+    sandboxEnabled,
+    executionPath: 'foreground',
+  });
 
   return {
     stdout: result.stdout,

@@ -3,6 +3,12 @@
 // ============================================================
 
 import { encodeBoundedIdentityPart } from '@/utils/boundedIdentity';
+// Type-only: `browserDenialTracker` imports nothing, so this cannot cycle, and
+// sharing the unions keeps the tool-context seam and the counter from drifting.
+import type {
+  BrowserAllowConsent,
+  BrowserDenialKind,
+} from '@/core/agent/browserDenialTracker';
 
 // --- Messages & Conversations ---
 
@@ -423,6 +429,18 @@ export interface Message {
   // to the log and never rewrites earlier entries; the send-side rebuilds a
   // compact context from the LAST marker.
   compactBoundary?: CompactBoundary;
+  /**
+   * Unattended browser run report (U7). Present only on report marker messages
+   * (id prefix `browser-run-report-`).
+   *
+   * This is a FROZEN SNAPSHOT, deliberately: the signals it was aggregated
+   * from live in an in-memory ring buffer that holds 5000 entries and is empty
+   * after a restart. A card that re-derived itself at render time would
+   * therefore be blank exactly when it matters — the morning after an
+   * overnight run — so the whole aggregation is computed once and stored here.
+   * Nothing in the render path may go back to the buffer.
+   */
+  browserRunReport?: import('../core/observability/browserRunReport').BrowserRunReportSnapshot;
 }
 
 /**
@@ -592,6 +610,21 @@ export interface ToolExecutionContext {
   loopId?: string;
   /** Conversation ID — tools should prefer this over activeConversationId */
   conversationId?: string;
+  /**
+   * The app-owned subagent run (`sar-*`) this tool call belongs to, or absent
+   * for the conversation's own agent loop.
+   *
+   * Set by the TRUSTED runtime only (`subagentRunner`'s shell-side session for
+   * a sidecar-hosted run, `subagentLoop` for an in-process one) — never taken
+   * from model input, and never from the sidecar's copy of the context.
+   *
+   * Consumed by resources that must be owned per RUN rather than per
+   * conversation, because one conversation can drive them from its own loop and
+   * from several delegated subagents at the same time: today that is browser tab
+   * ownership (it rides `_meta['abu/runKey']` to the browser host, which keys
+   * every tab, "current tab" and takeover record on `{conversationId, runKey}`).
+   */
+  agentRunId?: string;
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
   /** Assistant message ID owning this tool call; injected by toolExecutor for trusted metadata checkpoints. */
@@ -601,6 +634,14 @@ export interface ToolExecutionContext {
    * scheduled, trigger and IM runs must never open local setup/approval UI.
    */
   interactionMode?: 'foreground' | 'background';
+  /**
+   * Who started this run (`'user'` = a human sent a message; `'automation'` =
+   * scheduler / trigger / IM inbound / file watcher). Shell-owned like
+   * `interactionMode`: stamped by the trusted runtime from the dispatch entry
+   * point, never taken from model input or a sidecar's copy of the context.
+   * The browser gate reads it to decide whether a dialog can be offered.
+   */
+  initiatedBy?: import('../core/agent/runInteractionMode').RunInitiator;
   /** Effective three-tier permission mode for this conversation. */
   permissionMode?: import('../core/permissions/permissionMode').PermissionMode;
   /**
@@ -645,6 +686,22 @@ export interface ToolExecutionContext {
    * the in-process fallback both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
+  /**
+   * Local execution-only seam for the browser authorization gate to report a
+   * refusal / an allow to the run that owns this tool call. The run counts
+   * consecutive refusals and stops itself after a threshold (see
+   * `browserDenialTracker.ts`). Deliberately a pair of narrow callbacks, NOT
+   * the run's AbortController: a tool must be able to say "the user said no"
+   * without being handed the power to cancel the run for any other reason.
+   * Functions, so they never cross the sidecar wire (both `toWireToolContext`
+   * implementations strip them by name — see their docs).
+   *
+   * The arguments classify the event for the tracker's R1 rule (a site grant
+   * cannot dilute a scripting refusal); both default to the strict reading, so
+   * an un-argumented call keeps the pre-U5 semantics.
+   */
+  reportBrowserDenial?: (kind?: BrowserDenialKind) => void;
+  reportBrowserAllow?: (consent?: BrowserAllowConsent) => void;
   /**
    * IM reply target for the current run, set only when the loop was dispatched
    * from an IM channel (channelRouter → agentLoop). Lets outbound tools like

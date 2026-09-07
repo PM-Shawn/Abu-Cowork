@@ -7,9 +7,9 @@
  * `npm run release:check`.
  *
  * Checks:
- *   1. Version agrees across package.json, src-tauri/tauri.conf.json,
- *      src-tauri/Cargo.toml, src-tauri/Cargo.lock — and, when --tag is passed,
- *      matches the tag.
+ *   1. Version agrees across package.json, package-lock.json (both of its
+ *      version fields), src-tauri/tauri.conf.json, src-tauri/Cargo.toml,
+ *      src-tauri/Cargo.lock — and, when --tag is passed, matches the tag.
  *   2. CHANGELOG.md has this version's section, English only (no CJK).
  *   3. CHANGELOG.zh-CN.md has this version's section, containing Chinese (CJK).
  *
@@ -36,12 +36,18 @@ const readOr = (p) => {
 
 // ── 1. Version consistency ──
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+const pkgLock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
 const tauri = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
 const cargoToml = readFileSync('src-tauri/Cargo.toml', 'utf8');
 const cargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8');
 
 const versions = {
   'package.json': pkg.version,
+  // npm mirrors package.json's version in two places in the lockfile. A bump
+  // that forgets them leaves every later `npm install` rewriting these lines,
+  // leaking unrelated churn into whatever PR is open at the time.
+  'package-lock.json (root)': pkgLock.version,
+  'package-lock.json (packages[""])': pkgLock.packages?.['']?.version,
   'src-tauri/tauri.conf.json': tauri.version,
   'src-tauri/Cargo.toml': (cargoToml.match(/^version = "([^"]+)"/m) || [])[1],
   'src-tauri/Cargo.lock': (cargoLock.match(/name = "abu"\nversion = "([^"]+)"/) || [])[1],
@@ -99,7 +105,8 @@ if (errors.length) {
   console.error(
     '\nFix before tagging. Convention (RELEASING.md): CHANGELOG.md is English, ' +
       'CHANGELOG.zh-CN.md is Chinese, and the version must match across package.json, ' +
-      'tauri.conf.json, Cargo.toml, and Cargo.lock.\n',
+      'package-lock.json, tauri.conf.json, Cargo.toml, and Cargo.lock. ' +
+      'Re-sync the lockfile with `npm install --package-lock-only`.\n',
   );
   process.exit(1);
 }

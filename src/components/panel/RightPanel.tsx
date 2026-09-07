@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { usePreviewStore } from '@/stores/previewStore';
+import { getVisibleTabs, isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { useActiveConversation } from '@/stores/chatStore';
 import { cn } from '@/lib/utils';
 import WorkspacePanel from './workspace/WorkspacePanel';
@@ -21,10 +21,22 @@ export default function RightPanel() {
   const collapsed = useSettingsStore((s) => s.rightPanelCollapsed);
   const setRightPanelCollapsed = useSettingsStore((s) => s.setRightPanelCollapsed);
   const viewMode = useSettingsStore((s) => s.viewMode);
-  const hasAnyTab = usePreviewStore((s) => s.tabs.length > 0);
+  // `visibleTabs`, not `tabs`: a browser tab adopted for ANOTHER conversation
+  // stays in the store (its native view is alive) but is not this
+  // conversation's content and must not size or open this conversation's panel.
+  const hasAnyTab = useHasTabs();
   // "Wide" content (preview/browser/terminal) flex-fills; the summary tab and
   // the empty state stay at the narrow fixed width.
-  const hasWideContent = usePreviewStore((s) => s.tabs.some((t) => t.kind !== 'summary'));
+  const hasWideContent = usePreviewStore(
+    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+  );
+  // The conversation the tab set is currently scoped to. Read from the STORE
+  // (not `conversationId` below, which is the chat's active conversation and
+  // changes one commit earlier): this and `hasWideContent` come from the same
+  // store snapshot, so they always move together in a single commit. The
+  // wide-content effect relies on that to tell "content appeared" apart from
+  // "a different conversation's tabs came into view".
+  const scopedConversationId = usePreviewStore((s) => s.currentConversationId);
   const conversation = useActiveConversation();
   const prevHasMessagesRef = useRef(false);
   // Track whether auto-expand already fired for this conversation
@@ -65,7 +77,7 @@ export default function RightPanel() {
     const startX = e.clientX;
     // Wide content flex-fills, so the divider resizes the chat; otherwise it
     // resizes the narrow panel itself.
-    const isWide = usePreviewStore.getState().tabs.some((t) => t.kind !== 'summary');
+    const isWide = getVisibleTabs().some((t) => t.kind !== 'summary');
     const sidebarOpen = !useSettingsStore.getState().sidebarCollapsed;
 
     setIsDragging(true);
@@ -127,11 +139,18 @@ export default function RightPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
-  // Close all workspace tabs when switching conversations (tabs are
-  // conversation-scoped). Defined BEFORE the summary-open effect so that runs
-  // against a cleared tab list.
+  // Close the conversation-scoped workspace tabs when switching conversations
+  // (summary / preview / terminal / subagent). Defined BEFORE the summary-open
+  // effect so that runs against a cleared tab list.
+  //
+  // Browser tabs are exempt: their native view is a page an agent may still be
+  // driving in the background, and closing the tab destroyed it mid-task
+  // (losing the page, its login state and any typed form data) — the panel's
+  // per-conversation reset must not reach into the agent's runtime. Passing the
+  // conversation id re-scopes visibility instead: an agent tab adopted for
+  // another conversation goes hidden here and comes back when the user does.
   useEffect(() => {
-    usePreviewStore.getState().closeAllTabs();
+    usePreviewStore.getState().closeTabsForConversationSwitch(conversationId);
   }, [conversationId]);
 
   // Default the panel to the "task summary" tab: once per conversation, when the
@@ -139,7 +158,9 @@ export default function RightPanel() {
   // the summary tab afterwards leaves the "从这里开始" empty state (not reopened).
   useEffect(() => {
     if (collapsed || !hasMessages || summaryInitedRef.current) return;
-    if (usePreviewStore.getState().tabs.length === 0) {
+    // "No tab" means no tab THIS conversation can see: another conversation's
+    // surviving agent browser tab must not suppress this one's summary.
+    if (getVisibleTabs().length === 0) {
       summaryInitedRef.current = true;
       usePreviewStore.getState().openSummary();
     }
@@ -163,36 +184,49 @@ export default function RightPanel() {
 
   // Auto-expand right panel + collapse left sidebar when WIDE content opens
   // (preview/browser/terminal — not the summary tab, which is the default and
-  // shouldn't fight the sidebar).
+  // shouldn't fight the sidebar), and reset the drag width whenever the panel
+  // crosses between the narrow and wide layouts.
+  //
+  // Both react to the SAME edge, so they share one guard: only a narrow↔wide
+  // flip WITHIN one conversation counts. A conversation switch swaps the whole
+  // visible tab set at once, and the resulting flip is not the user opening or
+  // closing anything — it is a conversation's own layout leaving and coming
+  // back. Treating that as an open would re-expand the panel and re-collapse
+  // the sidebar on every return to a conversation with an agent browser tab,
+  // overriding a collapse the user had just made.
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useSettingsStore((s) => s.toggleSidebar);
+  const wideEdgeRef = useRef<{ conversationId: string | null; wide: boolean } | null>(null);
   useEffect(() => {
+    const previous = wideEdgeRef.current;
+    // Re-seed first: after a switch, whatever this conversation already had
+    // open becomes the new baseline rather than an edge.
+    wideEdgeRef.current = { conversationId: scopedConversationId, wide: hasWideContent };
+    if (!previous || previous.conversationId !== scopedConversationId) return;
+    if (previous.wide === hasWideContent) return;
+
+    setDragWidth(null);
     if (!hasWideContent) return;
     if (collapsed) setRightPanelCollapsed(false);
     // In file-tree mode the sidebar hosts the tree the user is browsing, so
     // collapsing it on file-open would hide the tree — keep it open then.
     if (!sidebarCollapsed && !usePreviewStore.getState().fileTreeMode) toggleSidebar();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasWideContent]);
-
-  // Reset drag width when switching between narrow/wide layout
-  useEffect(() => {
-    setDragWidth(null);
-  }, [hasWideContent]);
+  }, [hasWideContent, scopedConversationId]);
 
   // Narrow-panel width (only meaningful when NOT wide — in wide mode the panel
   // flex-fills and the chat owns the width).
   const currentWidth = dragWidth ?? PANEL_WIDTH;
 
-  // Hide panel when not in chat view or no conversation has started yet
-  if (viewMode !== 'chat' || (!hasMessages && !hasAnyTab)) {
-    return null;
-  }
-
-  // When collapsed, render nothing (toggle button is in the title bar)
-  if (collapsed) {
-    return null;
-  }
+  // Hide the panel when collapsed (the toggle lives in the title bar), when the
+  // app is not on the chat view, or before a conversation has anything to show.
+  //
+  // HIDE, never unmount: unmounting tears down every tab body, and a browser
+  // tab body owns a live native webview an agent may be driving. Same
+  // keep-alive contract WorkspacePanel already applies to its inactive tabs —
+  // the hidden placeholder yields a zero rect, which is exactly the signal
+  // BrowserTab uses to hide its native layer.
+  const panelHidden = viewMode !== 'chat' || (!hasMessages && !hasAnyTab) || collapsed;
 
   // When expanded, render the tabbed workspace.
   // Wide content: flex-fill the space the chat column leaves (chat owns width).
@@ -201,6 +235,7 @@ export default function RightPanel() {
     <div
       data-abu-right-panel
       data-electron-no-drag
+      hidden={panelHidden}
       className={cn(
         // Raised content card floating on the canvas (matches dev's panel redesign):
         // margins on 3 sides + rounded/border/shadow. No h-full — flex fills height
@@ -210,9 +245,14 @@ export default function RightPanel() {
         hasWideContent ? 'flex-1 min-w-0' : 'shrink-0',
       )}
       style={
-        hasWideContent
-          ? { minWidth: PREVIEW_MIN_WIDTH }
-          : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }
+        // Inline `display: none` (not just the `hidden` attribute): the layout
+        // classes above set `display: flex`, which would otherwise win over the
+        // UA stylesheet's `[hidden] { display: none }`.
+        panelHidden
+          ? { display: 'none' }
+          : hasWideContent
+            ? { minWidth: PREVIEW_MIN_WIDTH }
+            : { width: currentWidth, minWidth: currentWidth, maxWidth: currentWidth, transition: isDragging ? 'none' : 'width 200ms, min-width 200ms, max-width 200ms' }
       }
     >
       {/* Full-screen overlay during drag — blocks iframe/webview from stealing mouse events */}

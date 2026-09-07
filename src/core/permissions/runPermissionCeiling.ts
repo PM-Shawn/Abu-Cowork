@@ -3,6 +3,7 @@ import type { TriggerAction, TriggerCapability } from '../../types/trigger';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { matchesToolPattern } from '../skill/toolFilter';
 import type { CmdBoundary } from './commandBoundary';
+import type { BrowserOperationState } from './browserToolPolicy';
 import { READ_ONLY_TOOL_ALLOWLIST } from './readOnlyToolPolicy';
 
 export type RunPermissionCeilingLevel = IMCapabilityLevel | TriggerCapability | 'scheduled';
@@ -335,6 +336,13 @@ export function decideFileUnderRunPermissionCeiling(
 export function decideStateChangingToolUnderRunPermissionCeiling(
   ceiling: RunPermissionCeiling | null,
   kind: 'browser' | 'self-extension' | 'plugin',
+  /**
+   * The operation-class policy's verdict for this browser action, computed by
+   * the caller (`registry.ts`) from `decideBrowserOperation`. Required for
+   * `kind === 'browser'` under a scheduled ceiling — see below. Meaningless
+   * for self-extension and plugin tools.
+   */
+  browserPolicyVerdict?: BrowserOperationState,
 ): CeilingDecision {
   if (!ceiling || ceiling.capability === 'full') return { decision: 'allow' };
   if (ceiling.capability === 'scheduled') {
@@ -346,9 +354,26 @@ export function decideStateChangingToolUnderRunPermissionCeiling(
     // tool is arbitrary third-party code whose behavior nobody has bounded.
     // Letting one run unattended needs its own product decision — denying is
     // the loosenable default, allowing is not.
-    return kind === 'browser'
+    //
+    // Browser is no longer an UNCONDITIONAL allow either. It used to be, on
+    // the reasoning that the per-site verdict downstream was the real gate.
+    // That made the scheduled ceiling the one capability tier with no opinion
+    // at all about browser automation — a scheduled task inherited whatever a
+    // site grant happened to permit, including page scripting. It now routes
+    // through the same operation-class decision every other run mode uses:
+    // 'deny' stops here, and an omitted verdict is treated as a caller that
+    // has not evaluated the policy (fail closed rather than assume allow).
+    // 'ask' is allowed THROUGH — the confirmation seam, not this ceiling,
+    // owns whether an unattended approval channel can answer it.
+    if (kind !== 'browser') {
+      return { decision: 'deny', reason: `Error: ${kind} is outside this scheduled run capability` };
+    }
+    return browserPolicyVerdict === 'allow' || browserPolicyVerdict === 'ask'
       ? { decision: 'allow' }
-      : { decision: 'deny', reason: `Error: ${kind} is outside this scheduled run capability` };
+      : {
+          decision: 'deny',
+          reason: 'Error: browser action is not permitted by the unattended browser policy',
+        };
   }
   return {
     decision: 'deny',

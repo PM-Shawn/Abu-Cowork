@@ -87,6 +87,11 @@ Rules:
 - Before blaming cross-file pollution for this shape of failure, check per-test durations with
   `npx vitest run --reporter=verbose` and look for a body near 5000 ms. As of this writing the
   slowest body in the whole suite is 1946 ms; anything approaching 5 s is the bug.
+- The one sanctioned exception is a **synchronous** body doing real disk I/O whose slow tail is
+  measured on CI, not guessed. Give *those tests* an explicit `it(name, { timeout }, fn)` and put
+  the evidence in a comment (see `NOTICE_SQLITE_TEST_TIMEOUT_MS` in `electron/tauriMigration.test.ts`).
+  No timeout can interrupt a sync body anyway — vitest only checks elapsed time after it returns —
+  so that ceiling is a slowness threshold, not hang protection. Never raise `testTimeout` globally.
 
 **Flaky test quarantine:** If a test is found to be flaky (non-deterministic failure), open a
 GitHub issue tagged `flaky-test` and move the test into `src/__tests__/quarantine/` with a

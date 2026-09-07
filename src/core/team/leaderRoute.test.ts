@@ -76,6 +76,12 @@ describe('roster guard + prompt blocks', () => {
     expect(buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [], lastPlan: { request: 'x', steps: [] } })).not.toContain('Last time');
   });
 
+  it('role block tells the leader that mid-run member instructions are genuine (retest G1)', () => {
+    const block = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')] });
+    expect(block).toContain('14. Mid-run instructions');
+    expect(block).toContain('never tell the member to ignore it');
+  });
+
   it('available-agents text lists only members (null when the team has none)', () => {
     const text = buildTeamAvailableAgentsText({ teamId: 't', teamName: 'x', leader: def('lead'), members: [def('a')] }, () => '[tools]');
     expect(text).toContain('- a: a desc [tools]');

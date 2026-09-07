@@ -108,6 +108,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push('11. Define done before dispatching: whenever a step must produce a file, put its path in `expected_files` (workspace-relative or absolute) on that delegate_to_agent call or run_agent_batch task. The harness checks the files after the member finishes; a missing file fails the step regardless of what the member wrote — re-dispatch that step once quoting the missing paths, then mark it blocked.');
   lines.push(`12. Stalls: a member with no new step for ${STALL_STOP_MINUTES} minutes is stopped automatically and its result says so. Re-dispatch that step once with a smaller scope or a different approach; if it stalls again, mark it blocked.`);
   lines.push('13. Restart: when a message says the app restarted mid-run, first read this conversation and the existing output files to see which steps already completed; never redo them. Dispatch only what is missing, then report.');
+  lines.push('14. Mid-run instructions: the user can address a running member directly; the member sees it as "你的追加指令" in its process and may mention it in its result. Such an instruction is genuine and takes precedence over the original task — never tell the member to ignore it, never treat it as noise, and fold its outcome into your report.');
   return lines.join('\n');
 }
 

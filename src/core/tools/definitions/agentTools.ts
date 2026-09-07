@@ -12,6 +12,7 @@ import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunn
 import { materializeDelegatedUserTurn } from '../../subagent/delegatedUserTurnMaterializer';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
+import { takeDeliveredInstructions } from '../../agent/dispatchInput';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -397,11 +398,22 @@ export const delegateToAgentTool: ToolDefinition = {
           text: result.text,
         }));
       }
+      let text = result.text;
       // No tool call at all = nothing the member could have checked; flag it for the leader.
       if (result.toolCallCount === 0 && toolExecContext?.teamRoster) {
-        return `${result.text}\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;
+        text += `\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;
       }
-      return result.text;
+      // The user spoke to this member mid-run: say so structurally, with the
+      // verbatim instructions, so the leader treats them as the user's.
+      const instructions = dispatchKey ? takeDeliveredInstructions(dispatchKey) : [];
+      if (instructions.length > 0) {
+        text += `\n\n${format(getI18n().toolResult.agent.delegateUserInstructionsNote, {
+          agentName: effectiveAgentName,
+          n: instructions.length,
+          list: instructions.map((entry) => `- ${entry}`).join('\n'),
+        })}`;
+      }
+      return text;
     } catch (err) {
       subagentCleanup();
       if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);

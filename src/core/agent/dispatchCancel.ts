@@ -1,5 +1,5 @@
 import { cancelDispatch, isDispatchActive } from './subagentAbort';
-import { enqueueDispatchInput } from './dispatchInput';
+import { enqueueDispatchInput, noteDeliveredInstruction } from './dispatchInput';
 import { notifySidecar } from '@/core/sidecar/sidecarManager';
 
 /**
@@ -22,6 +22,7 @@ export function requestDispatchCancel(dispatchKey: string, reason?: string): voi
  * it; the other ignores it.
  */
 export function requestDispatchInput(dispatchKey: string, text: string): void {
+  noteDeliveredInstruction(dispatchKey, text);
   if (isDispatchActive(dispatchKey)) enqueueDispatchInput(dispatchKey, text);
   try {
     notifySidecar('state.dispatchInput', { key: dispatchKey, text });

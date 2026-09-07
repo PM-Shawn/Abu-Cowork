@@ -38,6 +38,28 @@ export function clearDispatchInputs(dispatchKey: string): void {
   queues.delete(dispatchKey);
 }
 
+// Instructions the user sent to a hand-off, kept SHELL-side regardless of
+// which process runs the member loop, so the dispatch tool can tell the
+// leader about them structurally when the hand-off returns (a prompt rule
+// alone was ignored — retest G1, 2026-09-07).
+const delivered = new Map<string, string[]>();
+
+export function noteDeliveredInstruction(dispatchKey: string, text: string): void {
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  const list = delivered.get(dispatchKey);
+  if (list) list.push(trimmed);
+  else delivered.set(dispatchKey, [trimmed]);
+}
+
+/** Take (and forget) the instructions delivered to this hand-off. */
+export function takeDeliveredInstructions(dispatchKey: string): string[] {
+  const list = delivered.get(dispatchKey);
+  if (!list) return [];
+  delivered.delete(dispatchKey);
+  return list;
+}
+
 /**
  * Put an instruction in front of the model as user content without breaking
  * role alternation: merged into a trailing user message (turn 0, or a

@@ -6,6 +6,8 @@ import {
   drainDispatchInputs,
   enqueueDispatchInput,
   hasDispatchInput,
+  noteDeliveredInstruction,
+  takeDeliveredInstructions,
 } from './dispatchInput';
 
 describe('dispatch input queue (direct instruction to a running member)', () => {
@@ -20,6 +22,15 @@ describe('dispatch input queue (direct instruction to a running member)', () => 
     expect(drainDispatchInputs('tc-1:0')).toEqual([]);
     clearDispatchInputs('tc-1:1');
     expect(drainDispatchInputs('tc-1:1')).toEqual([]);
+  });
+
+  it('keeps a shell-side log of delivered instructions per hand-off, taken once', () => {
+    noteDeliveredInstruction('tc-5:0', ' 只看 Q3 ');
+    noteDeliveredInstruction('tc-5:0', '');
+    noteDeliveredInstruction('tc-5:1', '别的');
+    expect(takeDeliveredInstructions('tc-5:0')).toEqual(['只看 Q3']);
+    expect(takeDeliveredInstructions('tc-5:0')).toEqual([]);
+    expect(takeDeliveredInstructions('tc-5:1')).toEqual(['别的']);
   });
 
   it('merges into a trailing user message (string or blocks) and otherwise appends a user turn', () => {

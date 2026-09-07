@@ -145,6 +145,16 @@ describe('runAgentBatchTool progress wiring', () => {
     });
   });
 
+  it('quotes the instructions the user sent a member mid-run in that member\'s section', () => {
+    const report = aggregateBatchResults([
+      { label: 'A', status: 'ok', text: 'done', toolCallCount: 2, userInstructions: ['只看 Q3'] },
+      { label: 'B', status: 'ok', text: 'done', toolCallCount: 2 },
+    ]);
+    const [, sectionA, sectionB] = report.split('\n\n### ');
+    expect(sectionA).toContain('- 只看 Q3');
+    expect(sectionB).not.toContain('只看 Q3');
+  });
+
   it('flags a member result that made zero tool calls in the aggregated report', () => {
     const report = aggregateBatchResults([
       { label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 },

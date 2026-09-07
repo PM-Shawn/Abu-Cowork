@@ -3156,6 +3156,8 @@ export interface TranslationDict {
       /** Declared artifacts missing after the member finished (define-done check). */
       errExpectedFilesMissing: string;
       delegateNoToolCallsNote: string;
+      /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
+      delegateUserInstructionsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
       // save_skill / save_agent (createSaveItemTool)
@@ -3209,6 +3211,7 @@ export interface TranslationDict {
       batchFailPrefix: string;
       /** Appended to a member result that made zero tool calls (team leader review). */
       batchNoToolCallsNote: string;
+      batchUserInstructionsNote: string;
       /** Structured path: could not parse JSON. */
       errJsonParseFailed: string;
       /** Structured path: missing required fields. {fields} */

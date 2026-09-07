@@ -20,6 +20,7 @@ import type {
 } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { withDispatchController } from '../../agent/subagentAbort';
+import { takeDeliveredInstructions } from '../../agent/dispatchInput';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
@@ -190,7 +191,7 @@ export async function runWithConcurrency<T, R>(
  *               `### 子任务 N: <label>\n[失败] <text>` (error)
  */
 export function aggregateBatchResults(
-  entries: Array<{ label: string; status: 'ok' | 'error'; text: string; toolCallCount?: number }>,
+  entries: Array<{ label: string; status: 'ok' | 'error'; text: string; toolCallCount?: number; userInstructions?: string[] }>,
   options: { flagNoToolCalls?: boolean } = {},
 ): string {
   const total = entries.length;
@@ -208,7 +209,11 @@ export function aggregateBatchResults(
     // A member that answered without a single tool call produced nothing it
     // could have verified — say so, so the leader reviews instead of trusting.
     const note = options.flagNoToolCalls && entry.status === 'ok' && entry.toolCallCount === 0 ? `\n\n${t.batchNoToolCallsNote}` : '';
-    return `${title}\n${body}${note}`;
+    // The user spoke to this member mid-run: the leader must treat those as the user's instructions.
+    const instructions = entry.userInstructions?.length
+      ? `\n\n${format(t.batchUserInstructionsNote, { n: entry.userInstructions.length, list: entry.userInstructions.map((line) => `- ${line}`).join('\n') })}`
+      : '';
+    return `${title}\n${body}${note}${instructions}`;
   });
 
   return [header, ...sections].join('\n\n');
@@ -293,20 +298,22 @@ function structuredEntryForSettledResult(
 export function aggregateSubagentTextResults(
   settled: PromiseSettledResult<SubagentResult>[],
   labels: string[],
-  options: { flagNoToolCalls?: boolean } = {},
+  options: { flagNoToolCalls?: boolean; userInstructions?: string[][] } = {},
 ): string {
   const entries = settled.map((result, i) => {
     const label = labels[i];
+    const userInstructions = options.userInstructions?.[i];
     if (result.status === 'fulfilled') {
       return {
         label,
         status: isSubagentResultError(result.value) ? 'error' as const : 'ok' as const,
         text: result.value.text,
         toolCallCount: result.value.toolCallCount,
+        userInstructions,
       };
     }
     const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-    return { label, status: 'error' as const, text: errMsg };
+    return { label, status: 'error' as const, text: errMsg, userInstructions };
   });
   return aggregateBatchResults(entries, options);
 }
@@ -712,7 +719,10 @@ export const runAgentBatchTool: ToolDefinition = {
     // Text aggregation path (behavior-preserving, schema absent)
     // Team leaders must not trust a member that never checked anything; an
     // ordinary batch keeps the plain report.
-    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label), { flagNoToolCalls: !!toolExecContext?.teamRoster });
+    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label), {
+      flagNoToolCalls: !!toolExecContext?.teamRoster,
+      userInstructions: resolvedTasks.map((_task, idx) => takeDeliveredInstructions(`${batchIdentity.batchToolCallId}:${idx}`)),
+    });
   },
 
   // Already parallelizes internally — parent must not double-parallelize this tool.

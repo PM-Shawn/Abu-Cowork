@@ -383,6 +383,37 @@ describe('delegateToAgentTool', () => {
     expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
   });
 
+  it('appends the instructions the user sent the member mid-run to the hand-off result', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const { noteDeliveredInstruction } = await import('../../agent/dispatchInput');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-notes', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: '默认结束', stopReason: 'completed', toolCallCount: 2 } as never);
+    noteDeliveredInstruction('tc-notes:0', '只看 Q3');
+
+    const text = String(await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'go' },
+      { conversationId: 'conv-1', loopId: 'loop-notes', toolCallId: 'tc-notes', teamRoster: ['researcher'] } as never,
+    ));
+    expect(text).toContain('默认结束');
+    expect(text).toContain('- 只看 Q3');
+    expect(text).toContain('researcher');
+    // Taken once: a second hand-off under the same key starts clean.
+    const again = String(await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'go' },
+      { conversationId: 'conv-1', loopId: 'loop-notes', toolCallId: 'tc-notes', teamRoster: ['researcher'] } as never,
+    ));
+    expect(again).not.toContain('只看 Q3');
+  });
+
   it('fails the hand-off when a declared expected file is missing, whatever the member said', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getCurrentLoopContext } = await import('../../agent/permissionBridge');

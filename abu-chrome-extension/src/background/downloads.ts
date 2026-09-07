@@ -41,6 +41,10 @@
 export interface DownloadItemLike {
   id: number;
   url?: string;
+  /** After redirects — where the bytes actually came from. */
+  finalUrl?: string;
+  /** The page that started the download. The strongest signal of WHOSE it is. */
+  referrer?: string;
   filename?: string;
   state?: string;
   mime?: string;
@@ -48,6 +52,63 @@ export interface DownloadItemLike {
   bytesReceived?: number;
   fileSize?: number;
   error?: string;
+}
+
+/** The host of a URL, lowercased and without a trailing dot, or null. */
+export function hostOf(url: string | undefined): string | null {
+  if (!url) return null;
+  // `blob:https://site/uuid` carries its origin after the scheme; a plain
+  // `URL()` on it yields an opaque host, so peel the wrapper first.
+  const inner = url.startsWith('blob:') ? url.slice(5) : url;
+  try {
+    const host = new URL(inner).hostname.toLowerCase().replace(/\.$/, '');
+    return host === '' ? null : host;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Do these two hosts belong to the same site, for claiming purposes?
+ *
+ * Equal, or one a subdomain of the other. Deliberately NOT an eTLD+1 rule:
+ * that needs a public-suffix list this extension does not carry, and being
+ * too strict here costs an unclaimed download (reported honestly as "that
+ * click produced no download") while being too loose costs the thing F2 found
+ * — the user's own file renamed and filed under a task.
+ */
+export function isSameSiteHost(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return false;
+  if (a === b) return true;
+  return a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+}
+
+/**
+ * May the run that armed on `site` claim this download?
+ *
+ * ## What went wrong without it (2026-09-07 review F2)
+ *
+ * `chrome.downloads` is browser-wide, and a waiter stayed armed for its whole
+ * budget — up to 120 s — whenever the click it made produced nothing (the
+ * export opened a dialog, failed, rendered inline). Any download the USER
+ * started in that window was the next one to arrive, so it was claimed:
+ * renamed, moved into `Downloads/Abu/<task>/`, listed by `get_downloads`, and
+ * reported to the model as the task's own product. A probe walked it with
+ * `my-tax-return.pdf` from `bank.example`.
+ *
+ * The referrer is checked first because it is the page that STARTED the
+ * download, which survives the common case of the bytes themselves coming
+ * from a CDN or an S3 bucket on another host. `finalUrl`/`url` are the
+ * fallback for a page whose referrer policy strips it.
+ */
+export function downloadMatchesSite(item: DownloadItemLike, site: string | null): boolean {
+  if (site === null) return false;
+  const candidates = [item.referrer, item.finalUrl, item.url];
+  for (const candidate of candidates) {
+    const host = hostOf(candidate);
+    if (host !== null && isSameSiteHost(host, site)) return true;
+  }
+  return false;
 }
 
 /** What a download looks like once it belongs to a task. */
@@ -120,12 +181,22 @@ export function safeDownloadName(raw: string): string {
 
 interface Waiter {
   ownerKey: string;
+  /** The host of the tab this run clicked in — see `downloadMatchesSite`. */
+  site: string | null;
   claim: (item: OwnedDownload) => void;
 }
 
 export interface DownloadTracker {
-  /** Register interest BEFORE the click that should start the download. */
-  expect(ownerKey: string): { cancel: () => void; claimed: () => OwnedDownload | null;
+  /**
+   * Register interest BEFORE the click that should start the download.
+   *
+   * `site` is the host of the tab the click lands in. A waiter only claims a
+   * download that came from that site (`downloadMatchesSite`); `null` claims
+   * nothing, which is the fail-closed answer when the tab's address could not
+   * be read.
+   */
+  expect(ownerKey: string, site: string | null): { cancel: () => void;
+    claimed: () => OwnedDownload | null;
     wait: (ms: number) => Promise<OwnedDownload | null> };
   /** `chrome.downloads.onCreated`. */
   onCreated(item: DownloadItemLike): OwnedDownload | null;
@@ -160,25 +231,29 @@ export function createDownloadTracker(deps: DownloadTrackerDeps): DownloadTracke
   const pendingOwnerByChromeId = new Map<number, string>();
   const doneWaiters = new Map<string, Array<() => void>>();
 
-  const takeWaiter = (ownerKey: string): Waiter | null => {
+  const takeWaiter = (ownerKey: string, item: DownloadItemLike): Waiter | null => {
     const queue = waitersByOwner.get(ownerKey);
     if (!queue || queue.length === 0) return null;
-    const waiter = queue.shift() as Waiter;
+    const at = queue.findIndex((waiter) => downloadMatchesSite(item, waiter.site));
+    if (at < 0) return null;
+    const [waiter] = queue.splice(at, 1);
     if (queue.length === 0) waitersByOwner.delete(ownerKey);
-    return waiter;
+    return waiter ?? null;
   };
 
   /** Which owner (if any) this download is for, taking the waiter if it is
    *  the first of the two Chrome events to ask. */
-  const ownerFor = (chromeId: number): string | null => {
-    const already = pendingOwnerByChromeId.get(chromeId);
+  const ownerFor = (item: DownloadItemLike): string | null => {
+    const already = pendingOwnerByChromeId.get(item.id);
     if (already !== undefined) return already;
-    for (const ownerKey of waitersByOwner.keys()) {
-      // Exactly one owner may claim, and it is the first with a waiter. There
-      // is no way to do better: Chrome does not say which tab started a
-      // download, so two tasks downloading in the same instant are told apart
+    for (const [ownerKey, queue] of waitersByOwner) {
+      // A waiter claims only a download that came from the site its own click
+      // landed on (review F2). Among the waiters that CAN claim it, the first
+      // armed wins — Chrome does not say which tab started a download, so two
+      // tasks on the same site in the same instant are still told apart only
       // by the order they armed, the same rule the built-in host uses.
-      pendingOwnerByChromeId.set(chromeId, ownerKey);
+      if (!queue.some((waiter) => downloadMatchesSite(item, waiter.site))) continue;
+      pendingOwnerByChromeId.set(item.id, ownerKey);
       return ownerKey;
     }
     return null;
@@ -192,11 +267,12 @@ export function createDownloadTracker(deps: DownloadTrackerDeps): DownloadTracke
   };
 
   return {
-    expect(ownerKey) {
+    expect(ownerKey, site) {
       let claimed: OwnedDownload | null = null;
       let onClaim: (() => void) | null = null;
       const waiter: Waiter = {
         ownerKey,
+        site,
         claim: (item) => {
           claimed = item;
           if (onClaim) onClaim();
@@ -232,7 +308,7 @@ export function createDownloadTracker(deps: DownloadTrackerDeps): DownloadTracke
     },
 
     onCreated(item) {
-      const ownerKey = ownerFor(item.id);
+      const ownerKey = ownerFor(item);
       if (ownerKey === null) return null;
       const record: OwnedDownload = {
         downloadId: `dl_${deps.now().toString(36)}_${deps.randomId()}`,
@@ -256,7 +332,7 @@ export function createDownloadTracker(deps: DownloadTrackerDeps): DownloadTracke
         }
       }
       pendingOwnerByChromeId.delete(item.id);
-      const waiter = takeWaiter(ownerKey);
+      const waiter = takeWaiter(ownerKey, item);
       if (waiter) waiter.claim(record);
       if (isTerminal(record.state)) notifyDone(record.downloadId);
       return record;
@@ -283,7 +359,7 @@ export function createDownloadTracker(deps: DownloadTrackerDeps): DownloadTracke
     },
 
     suggestFilename(item) {
-      const ownerKey = ownerFor(item.id);
+      const ownerKey = ownerFor(item);
       if (ownerKey === null) return null;
       return suggestedDownloadPath(ownerKey, item.filename ?? item.url ?? '');
     },

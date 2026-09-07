@@ -33,6 +33,30 @@
   ]);
 
   // src/background/downloads.ts
+  function hostOf(url) {
+    if (!url) return null;
+    const inner = url.startsWith("blob:") ? url.slice(5) : url;
+    try {
+      const host = new URL(inner).hostname.toLowerCase().replace(/\.$/, "");
+      return host === "" ? null : host;
+    } catch {
+      return null;
+    }
+  }
+  function isSameSiteHost(a, b) {
+    if (a === null || b === null) return false;
+    if (a === b) return true;
+    return a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+  }
+  function downloadMatchesSite(item, site) {
+    if (site === null) return false;
+    const candidates = [item.referrer, item.finalUrl, item.url];
+    for (const candidate of candidates) {
+      const host = hostOf(candidate);
+      if (host !== null && isSameSiteHost(host, site)) return true;
+    }
+    return false;
+  }
   function isTerminal(state2) {
     return state2 === "complete" || state2 === "interrupted";
   }
@@ -57,18 +81,21 @@
     const waitersByOwner = /* @__PURE__ */ new Map();
     const pendingOwnerByChromeId = /* @__PURE__ */ new Map();
     const doneWaiters = /* @__PURE__ */ new Map();
-    const takeWaiter = (ownerKey) => {
+    const takeWaiter = (ownerKey, item) => {
       const queue = waitersByOwner.get(ownerKey);
       if (!queue || queue.length === 0) return null;
-      const waiter = queue.shift();
+      const at = queue.findIndex((waiter2) => downloadMatchesSite(item, waiter2.site));
+      if (at < 0) return null;
+      const [waiter] = queue.splice(at, 1);
       if (queue.length === 0) waitersByOwner.delete(ownerKey);
-      return waiter;
+      return waiter ?? null;
     };
-    const ownerFor = (chromeId) => {
-      const already = pendingOwnerByChromeId.get(chromeId);
+    const ownerFor = (item) => {
+      const already = pendingOwnerByChromeId.get(item.id);
       if (already !== void 0) return already;
-      for (const ownerKey of waitersByOwner.keys()) {
-        pendingOwnerByChromeId.set(chromeId, ownerKey);
+      for (const [ownerKey, queue] of waitersByOwner) {
+        if (!queue.some((waiter) => downloadMatchesSite(item, waiter.site))) continue;
+        pendingOwnerByChromeId.set(item.id, ownerKey);
         return ownerKey;
       }
       return null;
@@ -80,11 +107,12 @@
       for (const resolve of list.slice()) resolve();
     };
     return {
-      expect(ownerKey) {
+      expect(ownerKey, site) {
         let claimed = null;
         let onClaim = null;
         const waiter = {
           ownerKey,
+          site,
           claim: (item) => {
             claimed = item;
             if (onClaim) onClaim();
@@ -122,7 +150,7 @@
         };
       },
       onCreated(item) {
-        const ownerKey = ownerFor(item.id);
+        const ownerKey = ownerFor(item);
         if (ownerKey === null) return null;
         const record = {
           downloadId: `dl_${deps.now().toString(36)}_${deps.randomId()}`,
@@ -146,7 +174,7 @@
           }
         }
         pendingOwnerByChromeId.delete(item.id);
-        const waiter = takeWaiter(ownerKey);
+        const waiter = takeWaiter(ownerKey, item);
         if (waiter) waiter.claim(record);
         if (isTerminal(record.state)) notifyDone(record.downloadId);
         return record;
@@ -171,7 +199,7 @@
         }
       },
       suggestFilename(item) {
-        const ownerKey = ownerFor(item.id);
+        const ownerKey = ownerFor(item);
         if (ownerKey === null) return null;
         return suggestedDownloadPath(ownerKey, item.filename ?? item.url ?? "");
       },
@@ -980,6 +1008,14 @@
       `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, now ${current ?? "an unknown page"}). The page moved \u2014 a redirect, a script navigation, or a reload. Take a fresh snapshot to re-read the current state before acting again; the earlier approval does not carry over to a different site.`
     );
   }
+  async function tabUrl(tabId2) {
+    try {
+      const tab = await chrome.tabs.get(tabId2);
+      return typeof tab.url === "string" ? tab.url : "";
+    } catch {
+      return "";
+    }
+  }
   async function handleRequest(request) {
     const { id, action, payload } = request;
     try {
@@ -1134,7 +1170,8 @@
             await downloadTracker.awaitDone(downloadId, timeoutMs);
             return { id, success: true, data: downloadResultFor(known) };
           }
-          const expectation = downloadTracker.expect(owner.key);
+          const clickedSite = hostOf(await tabUrl(tabId));
+          const expectation = downloadTracker.expect(owner.key, clickedSite);
           let claimed;
           try {
             await sendToContentScript(tabId, "click", {

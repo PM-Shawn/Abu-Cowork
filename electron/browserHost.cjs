@@ -2587,6 +2587,15 @@ function takeDownloadWaiter(ownerKey) {
 /** downloadId -> the record, so a `wait` call can find one it did not start. */
 const downloadsById = new Map();
 
+/**
+ * downloadId -> the live `DownloadItem`, while it is still running.
+ *
+ * Kept only until the item reaches a terminal state, and only so a stopped run
+ * can actually STOP its download (review F12): abandoning the wait left the
+ * file downloading into the task's folder after the user pressed Stop.
+ */
+const downloadItemsById = new Map();
+
 /** downloadId -> resolvers waiting for it to reach a terminal state. */
 const downloadDoneWaiters = new Map();
 
@@ -2659,6 +2668,23 @@ function handleWillDownload(item, contents) {
 
   let savePath = null;
   let saveError = null;
+  // ## The user's OWN tabs keep Electron's own behavior (review F3)
+  //
+  // `will-download` is a SESSION event, and the automation views share their
+  // session with the pane tabs the user browses in themselves. Redirecting on
+  // `LEGACY_OWNER` meant a PDF the user clicked in Abu's own browser panel
+  // vanished into `<appData>/browser-downloads/legacy/main/` — no dialog, no
+  // notice, nowhere they would look. That is the same principle the file
+  // chooser follows a few hundred lines up: automation gets the silent path,
+  // the user's own tab keeps the native one. So: no `setSavePath`, Chromium
+  // does what it always did, and the record still goes in the legacy bucket
+  // (where no task can see it) so `get_downloads` stays honest about it.
+  if (ownerKey === LEGACY_OWNER.key) {
+    const record = legacyDownloadRecord(item, downloadId, suggested);
+    trackDownloadRecord(record);
+    watchDownloadItem(item, record);
+    return record;
+  }
   try {
     const dir = path.join(
       browserDownloadRoot(),
@@ -2689,13 +2715,7 @@ function handleWillDownload(item, contents) {
     mime: typeof item.getMimeType === 'function' ? item.getMimeType() : '',
     ...(saveError ? { interruptReason: `could not create the download folder: ${saveError}` } : {}),
   };
-  recentDownloads.unshift(record);
-  downloadsById.set(downloadId, record);
-  if (recentDownloads.length > MAX_RECENT_DOWNLOADS) {
-    for (const dropped of recentDownloads.splice(MAX_RECENT_DOWNLOADS)) {
-      downloadsById.delete(dropped.downloadId);
-    }
-  }
+  trackDownloadRecord(record);
 
   // Hand it to whoever pressed the button, before anything can await.
   const waiter = takeDownloadWaiter(ownerKey);
@@ -2706,6 +2726,47 @@ function handleWillDownload(item, contents) {
     return record;
   }
 
+  watchDownloadItem(item, record);
+  return record;
+}
+
+/**
+ * The record for a download this host is deliberately NOT steering (review
+ * F3): the user's own pane tab, or any contents no automation view owns.
+ *
+ * It is still recorded — `get_downloads` has a legacy bucket and the run that
+ * asks gets an honest empty list rather than a mystery — but `savePath` is
+ * absent, because where Chromium put it is Chromium's business.
+ */
+function legacyDownloadRecord(item, downloadId, suggested) {
+  return {
+    id: downloadId,
+    downloadId,
+    ownerKey: LEGACY_OWNER.key,
+    filename: suggested,
+    url: typeof item.getURL === 'function' ? item.getURL() : '',
+    state: item.getState(),
+    time: clock.now(),
+    savePath: null,
+    size: typeof item.getTotalBytes === 'function' ? item.getTotalBytes() : 0,
+    mime: typeof item.getMimeType === 'function' ? item.getMimeType() : '',
+  };
+}
+
+/** Newest-first list plus the id index, with the cap applied to both. */
+function trackDownloadRecord(record) {
+  recentDownloads.unshift(record);
+  downloadsById.set(record.downloadId, record);
+  if (recentDownloads.length > MAX_RECENT_DOWNLOADS) {
+    for (const dropped of recentDownloads.splice(MAX_RECENT_DOWNLOADS)) {
+      downloadsById.delete(dropped.downloadId);
+    }
+  }
+}
+
+/** Keep one record in step with its `DownloadItem` until a terminal state. */
+function watchDownloadItem(item, record) {
+  downloadItemsById.set(record.downloadId, item);
   item.on('updated', () => {
     record.state = item.getState();
     if (typeof item.getReceivedBytes === 'function') {
@@ -2713,6 +2774,7 @@ function handleWillDownload(item, contents) {
     }
   });
   item.once('done', (_doneEvent, state) => {
+    downloadItemsById.delete(record.downloadId);
     record.state = state;
     if (typeof item.getTotalBytes === 'function') {
       const total = item.getTotalBytes();
@@ -2728,9 +2790,8 @@ function handleWillDownload(item, contents) {
         ? 'the download was cancelled'
         : 'the download was interrupted before it finished';
     }
-    notifyDownloadDone(downloadId);
+    notifyDownloadDone(record.downloadId);
   });
-  return record;
 }
 
 function isTerminalDownloadState(state) {
@@ -3694,6 +3755,7 @@ module.exports = {
     resetDownloads() {
       recentDownloads.length = 0;
       downloadsById.clear();
+      downloadItemsById.clear();
       downloadWaitersByOwner.clear();
       downloadDoneWaiters.clear();
     },

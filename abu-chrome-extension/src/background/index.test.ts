@@ -880,7 +880,8 @@ describe('actions the service worker answers itself', () => {
     browserState.onContentMessage = (action) => {
       if (action !== 'click') return;
       fire('downloads.onCreated', {
-        id: 31, filename: '', url: 'https://x.example/排班表.xlsx', state: 'in_progress',
+        id: 31, filename: '', url: 'https://a.example/排班表.xlsx',
+        referrer: 'https://a.example/', state: 'in_progress',
       });
       fire('downloads.onChanged', {
         id: 31,
@@ -911,9 +912,12 @@ describe('actions the service worker answers itself', () => {
       if (action !== 'click') return;
       // Chrome asks the extension where to put it, before or after onCreated.
       fire('downloads.onDeterminingFilename',
-        { id: 32, filename: '排班表.xlsx' },
+        { id: 32, filename: '排班表.xlsx', referrer: 'https://a.example/' },
         (s: unknown) => suggested.push(s));
-      fire('downloads.onCreated', { id: 32, filename: '', url: 'https://x/a', state: 'in_progress' });
+      fire('downloads.onCreated', {
+        id: 32, filename: '', url: 'https://a.example/a',
+        referrer: 'https://a.example/', state: 'in_progress',
+      });
       fire('downloads.onChanged', { id: 32, state: { current: 'complete' } });
     };
 
@@ -923,7 +927,7 @@ describe('actions the service worker answers itself', () => {
     // A download nobody armed for: the user's own, and untouched.
     const before = suggested.length;
     fire('downloads.onDeterminingFilename',
-      { id: 33, filename: 'mine.pdf' },
+      { id: 33, filename: 'mine.pdf', referrer: 'https://bank.example/statements' },
       (s: unknown) => suggested.push(s));
 
     // One folder per OWNER — conversation plus subagent run, flattened into a
@@ -931,6 +935,50 @@ describe('actions the service worker answers itself', () => {
     // lets an extension file anything.
     expect(suggested).toEqual([{ filename: 'Abu/conv-a_main/排班表.xlsx', conflictAction: 'uniquify' }]);
     expect(suggested).toHaveLength(before);
+  });
+
+  /**
+   * Review F2. The export produced nothing, so the waiter stays armed for its
+   * whole budget — and the user downloads their own file in that window.
+   * Before the site check it was claimed: renamed into the task's folder and
+   * reported to the model as what the click produced.
+   */
+  it('does not adopt the user\'s own download while its waiter is still armed', async () => {
+    twoTabWindow();
+    const suggested: unknown[] = [];
+    vi.useFakeTimers();
+    try {
+      browserState.onContentMessage = (action) => {
+        if (action !== 'click') return;
+        // The click did nothing. The user, meanwhile, saves a bank statement.
+        fire('downloads.onDeterminingFilename',
+          { id: 41, filename: 'my-tax-return.pdf', referrer: 'https://bank.example/statements' },
+          (s: unknown) => suggested.push(s));
+        fire('downloads.onCreated', {
+          id: 41,
+          filename: '/Users/me/Downloads/my-tax-return.pdf',
+          url: 'https://cdn.bank.example/2026.pdf',
+          referrer: 'https://bank.example/statements',
+          state: 'in_progress',
+        });
+        fire('downloads.onChanged', { id: 41, state: { current: 'complete' } });
+      };
+
+      const response = await request('download', {
+        ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 50,
+      }, { pumpMs: 200 });
+
+      expect(response.data).toMatchObject({ started: false });
+      // Not renamed, not moved, and not in the task's list either. (The
+      // service worker is a module singleton, so earlier cases' downloads are
+      // still in this owner's list — the claim is about THIS file.)
+      expect(suggested).toEqual([]);
+      const listed = (await request('get_downloads', { ownerId: 'conv-a' })).data as
+        Array<{ filename: string }>;
+      expect(listed.map((d) => d.filename)).not.toContain('my-tax-return.pdf');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says the click produced no download rather than adopting another task\'s file', async () => {
@@ -953,7 +1001,10 @@ describe('actions the service worker answers itself', () => {
     twoTabWindow();
     browserState.onContentMessage = (action) => {
       if (action !== 'click') return;
-      fire('downloads.onCreated', { id: 34, filename: '/d/a.csv', url: 'https://x/a', state: 'in_progress' });
+      fire('downloads.onCreated', {
+        id: 34, filename: '/d/a.csv', url: 'https://a.example/a',
+        referrer: 'https://a.example/', state: 'in_progress',
+      });
       fire('downloads.onChanged', { id: 34, state: { current: 'complete' } });
     };
     const started = await request('download', {

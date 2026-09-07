@@ -23,7 +23,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { lstat } from '@tauri-apps/plugin-fs';
-import { checkToolApproval } from './registry';
+import { checkToolApproval, executeAnyTool } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
@@ -485,6 +485,58 @@ describe('upload_file at the real gate', () => {
     expect(asks[0].browserOrigin).toBe(ALLOWED_SITE);
     // And it says WHY, in the sentence written for uploads.
     expect(asks[0].reason).toContain('file');
+  });
+
+  // ── The seam the gate's decision travels down (review F4) ───────────────
+
+  /**
+   * `checkToolApproval` freezing a list is only half the chain: the list has
+   * to reach the runtime, and it does so over MCP `_meta` — the same channel
+   * `expectedOrigin` uses, for the same reason (the model can neither read nor
+   * forge it). Nothing pinned that hop. Deleting the stamping in `client.ts`
+   * left five files and 74 tests green, and only the Electron e2e on CI would
+   * have noticed: every upload would silently become "carried no approved
+   * file list" — the bridge's fail-closed refusal, firing on legitimate calls.
+   *
+   * So this enters through `executeAnyTool`, the shipped executor, and reads
+   * what actually reached `callTool`. Mirrors
+   * `registry.browserOriginPin.test.ts`, which pins the origin half.
+   */
+  it('carries the frozen file list down to callTool over _meta, field for field', async () => {
+    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+    fsMocks.checkReadPath.mockResolvedValue({ allowed: true, resolvedPath: FILE_PATH });
+
+    await executeAnyTool(
+      'abu-browser__upload_file', uploadInput(), (async () => true) as never,
+      undefined, attended,
+    );
+
+    const call = mockCallTool.mock.calls.find(
+      (c) => (c[0] as { name: string }).name === 'upload_file',
+    );
+    expect(call).toBeDefined();
+    const meta = (call?.[0] as { _meta?: Record<string, unknown> })._meta;
+    expect(meta?.['abu/approvedUploadFiles']).toEqual([
+      {
+        path: FILE_PATH, name: '排班表.xlsx', size: FILE_SIZE,
+        mtimeMs: FILE_MTIME_MS, ino: FILE_INO, dev: FILE_DEV,
+      },
+    ]);
+    // And NOT in the arguments, where the model could read or forge it.
+    const args = (call?.[0] as { arguments: Record<string, unknown> }).arguments;
+    expect(args).not.toHaveProperty('approvedUploadFiles');
+  });
+
+  it('stamps the list on nothing but an upload', async () => {
+    await executeAnyTool(
+      'abu-browser__click', clickInput, (async () => true) as never, undefined, attended,
+    );
+
+    const call = mockCallTool.mock.calls.find(
+      (c) => (c[0] as { name: string }).name === 'click',
+    );
+    const meta = (call?.[0] as { _meta?: Record<string, unknown> })._meta;
+    expect(meta?.['abu/approvedUploadFiles']).toBeUndefined();
   });
 
   it('leaves every other browser tool\'s approval without an upload list', async () => {

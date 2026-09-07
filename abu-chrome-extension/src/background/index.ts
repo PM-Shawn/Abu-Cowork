@@ -14,6 +14,7 @@ import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
 import {
   createDownloadTracker,
   downloadResultFor,
+  hostOf,
   type DownloadItemLike,
 } from './downloads.js';
 import {
@@ -508,6 +509,23 @@ export async function assertTabOriginPin(
   );
 }
 
+/**
+ * The address of a tab, or `''` when Chrome will not say.
+ *
+ * Its own function because the caller must not care WHY it failed: a tab that
+ * closed, a page the extension has no host permission for and a `chrome://`
+ * URL all mean the same thing to a download waiter — nothing to match against,
+ * so claim nothing (review F2).
+ */
+async function tabUrl(tabId: number): Promise<string> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return typeof tab.url === 'string' ? tab.url : '';
+  } catch {
+    return '';
+  }
+}
+
 // --- Request Handler ---
 
 async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
@@ -721,7 +739,15 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         // The waiter is armed BEFORE the click: a small file can finish before
         // `sendToContentScript` returns, and a waiter armed afterwards would
         // miss the download its own click produced.
-        const expectation = downloadTracker.expect(owner.key);
+        //
+        // It is armed for ONE SITE — the one this tab is on (review F2).
+        // `chrome.downloads` is browser-wide, so a waiter that claims anything
+        // claims the user's own downloads too: an export that produced nothing
+        // left this armed for up to 120 s, and whatever the user downloaded in
+        // that window was renamed into the task's folder and reported to the
+        // model as its product. An unreadable tab address claims nothing.
+        const clickedSite = hostOf(await tabUrl(tabId));
+        const expectation = downloadTracker.expect(owner.key, clickedSite);
         let claimed;
         try {
           await sendToContentScript(tabId, 'click', {

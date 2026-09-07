@@ -377,6 +377,44 @@ test('gives the second copy of a name its own file rather than overwriting the f
   } finally { restore(); }
 });
 
+/**
+ * Review F3. `will-download` is a SESSION event and the pane tabs the user
+ * browses in share that session with the automation views, so redirecting on
+ * the legacy owner took the user's own downloads too: a PDF they clicked in
+ * Abu's browser panel vanished into app-data with no dialog and no notice.
+ */
+test('leaves a download from a tab this host does not own where Chromium would put it', async () => {
+  const { host, root, deliver, restore } = loadHost();
+  try {
+    await openTab(host, OWNER_A);
+    // A contents no automation view owns — the user's own pane tab.
+    const usersOwnTab = new FakeWebContents();
+    const item = deliver(new FakeDownloadItem({ filename: 'my-tax-return.pdf' }), usersOwnTab);
+
+    assert.equal(item.savePath, null, 'the user\'s own download was redirected');
+    assert.equal(item.cancelled, false);
+    assert.equal(fs.existsSync(path.join(root, 'legacy')), false, 'a folder was made for it anyway');
+    // It is still RECORDED, in its own bucket, so no task can see it.
+    const forA = await host.performBrowserAutomation('get_downloads', { ownerId: OWNER_A });
+    assert.deepEqual(forA, []);
+    noOsDialogs();
+  } finally { restore(); }
+});
+
+test('still follows a legacy download to its terminal state without inventing a path for it', async () => {
+  const { host, deliver, restore } = loadHost();
+  try {
+    await openTab(host, OWNER_A);
+    const usersOwnTab = new FakeWebContents();
+    const item = deliver(new FakeDownloadItem({ filename: 'notes.pdf' }), usersOwnTab);
+    item.finish('interrupted');
+
+    const forA = await host.performBrowserAutomation('get_downloads', { ownerId: OWNER_A });
+    assert.deepEqual(forA, []);
+    assert.equal(item.savePath, null);
+  } finally { restore(); }
+});
+
 test('cancels a download it has nowhere to put, rather than letting Chromium choose', async () => {
   const { host, deliver, restore } = loadHost();
   try {

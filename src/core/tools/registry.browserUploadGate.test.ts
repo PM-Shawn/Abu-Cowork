@@ -72,6 +72,22 @@ const OWNED_TAB_ID = 77;
 
 const FILE_PATH = '/ws/reports/排班表.xlsx';
 const FILE_SIZE = 2048;
+/**
+ * What `lstat` reports about the approved file, and therefore what the gate
+ * freezes (review F1): the identity has to cross the confirmation, not just
+ * the length. `mtime` is a `Date` because that is `FileInfo`'s shape.
+ */
+const FILE_MTIME_MS = 1_757_000_000_123;
+const FILE_INO = 4242;
+const FILE_DEV = 66;
+const DISK_INFO = {
+  isFile: true,
+  isSymlink: false,
+  size: FILE_SIZE,
+  mtime: new Date(FILE_MTIME_MS),
+  ino: FILE_INO,
+  dev: FILE_DEV,
+};
 
 const uploadInput = (path = FILE_PATH) => ({
   tabId: OWNED_TAB_ID,
@@ -133,7 +149,7 @@ describe('upload_file at the real gate', () => {
       allowed: true, resolvedPath: candidate,
     }));
     vi.mocked(lstat).mockResolvedValue(
-      { isFile: true, isSymlink: false, size: FILE_SIZE } as unknown as Awaited<ReturnType<typeof lstat>>,
+      DISK_INFO as unknown as Awaited<ReturnType<typeof lstat>>,
     );
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
@@ -370,7 +386,7 @@ describe('upload_file at the real gate', () => {
 
     it('refuses a symbolic link', async () => {
       vi.mocked(lstat).mockResolvedValue(
-        { isFile: true, isSymlink: true, size: 10 } as unknown as Awaited<ReturnType<typeof lstat>>,
+        { ...DISK_INFO, isSymlink: true, size: 10 } as unknown as Awaited<ReturnType<typeof lstat>>,
       );
 
       const decision = await checkToolApproval(
@@ -383,7 +399,7 @@ describe('upload_file at the real gate', () => {
 
     it('refuses a file over the ceiling', async () => {
       vi.mocked(lstat).mockResolvedValue(
-        { isFile: true, isSymlink: false, size: MAX_UPLOAD_FILE_BYTES + 1 } as unknown as Awaited<ReturnType<typeof lstat>>,
+        { ...DISK_INFO, size: MAX_UPLOAD_FILE_BYTES + 1 } as unknown as Awaited<ReturnType<typeof lstat>>,
       );
 
       const decision = await checkToolApproval(
@@ -448,7 +464,11 @@ describe('upload_file at the real gate', () => {
     );
 
     expect(decision.browserExecution?.approvedUploadFiles).toEqual([
-      { path: FILE_PATH, name: '排班表.xlsx', size: FILE_SIZE },
+      {
+        path: FILE_PATH, name: '排班表.xlsx', size: FILE_SIZE,
+        // Review F1 — the pin the senders re-check before they read a byte.
+        mtimeMs: FILE_MTIME_MS, ino: FILE_INO, dev: FILE_DEV,
+      },
     ]);
   });
 

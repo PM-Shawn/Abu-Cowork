@@ -2911,6 +2911,9 @@ export interface TranslationDict {
     browserUploadSymlink: string;
     /** Over the per-file or per-call size ceiling. `{name}` `{max}` */
     browserUploadTooLarge: string;
+    /** The filesystem reported neither an mtime nor an inode for the file, so
+     *  nothing could be frozen that identifies it later (review F1). */
+    browserUploadUnidentifiable: string;
     browserEnterprisePolicyDenied: string;
     /** Unattended run on a site that carries no standing "allowed" verdict —
      *  the cross-origin fail-closed baseline. */

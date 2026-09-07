@@ -73,7 +73,13 @@ export type BrowserUploadRefusalCode =
   /** The final component is a symbolic link. */
   | 'symlink'
   /** Over `MAX_UPLOAD_FILE_BYTES`, or the call is over the total. */
-  | 'too-large';
+  | 'too-large'
+  /**
+   * The filesystem gave back neither an mtime nor an inode, so nothing about
+   * this file could be frozen except its length — and a length is not an
+   * identity. Refused rather than approved with a pin that cannot be checked.
+   */
+  | 'unidentifiable';
 
 export interface ApprovedUploadFile {
   /** The CANONICAL path `pathSafety` resolved — what actually gets read. */
@@ -81,6 +87,47 @@ export interface ApprovedUploadFile {
   /** Its base name, for the confirmation and for the page's file input. */
   name: string;
   size: number;
+  /**
+   * Modification time in whole milliseconds, or `0` when the platform did not
+   * report one.
+   *
+   * ## Why size alone was not a pin (2026-09-07 review F1)
+   *
+   * Everything above happens BEFORE the user answers, and the file is read
+   * AFTER. In that window anything with write access to the workspace — a
+   * background script the model started earlier, a sync client, any local
+   * process — can put a different file at the approved path. `size` was the
+   * only thing carried across it, so a same-size swap (a symbolic link to
+   * `~/.ssh/id_rsa`, a rewritten spreadsheet) sailed through both senders.
+   *
+   * Identity, not just length, is what has to survive the wait. `mtimeMs`
+   * changes on any in-place rewrite; `ino` changes when the path is made to
+   * point at a different file at all, which is what a swap or a planted link
+   * does. Whole milliseconds because that is the resolution the shell's
+   * `FileInfo` carries (`Date` → `toISOString`), while `fstat` on the sending
+   * side reports sub-millisecond — the two must be comparable.
+   */
+  mtimeMs: number;
+  /** Inode, where the platform has one (`null` on Windows → omitted). */
+  ino?: number;
+  /** Device id, paired with `ino`: an inode number is only unique per device. */
+  dev?: number;
+}
+
+/**
+ * Is this frozen entry actually identifiable on disk later?
+ *
+ * A pin carrying nothing but a size cannot answer «是不是同一个文件», so a
+ * sender that gets one must refuse rather than fall back to comparing lengths
+ * — which is precisely the state F1 found. Exported so both senders spell the
+ * rule the same way.
+ */
+export function hasUploadIdentityPin(file: {
+  mtimeMs?: number;
+  ino?: number;
+}): boolean {
+  return (typeof file.mtimeMs === 'number' && file.mtimeMs > 0)
+    || (typeof file.ino === 'number' && Number.isFinite(file.ino));
 }
 
 export type BrowserUploadResolution =
@@ -103,7 +150,16 @@ export interface BrowserUploadDeps {
    * workspace becomes a file outside it in the window between the check and
    * the read. Refusing links outright is cheaper than closing that race.
    */
-  lstat: (path: string) => Promise<{ isFile: boolean; isSymlink: boolean; size: number }>;
+  lstat: (path: string) => Promise<{
+    isFile: boolean;
+    isSymlink: boolean;
+    size: number;
+    /** Whole milliseconds, or 0 when the platform reported no mtime. */
+    mtimeMs?: number;
+    /** `null`/absent on Windows, where there is no inode. */
+    ino?: number | null;
+    dev?: number | null;
+  }>;
 }
 
 /**
@@ -174,8 +230,8 @@ export async function resolveUploadFiles(
       return { ok: false, code: 'not-authorized', detail: displayName(raw) };
     }
     const resolved = check.resolvedPath;
-    let named: { isFile: boolean; isSymlink: boolean; size: number };
-    let info: { isFile: boolean; isSymlink: boolean; size: number };
+    let named: Awaited<ReturnType<BrowserUploadDeps['lstat']>>;
+    let info: Awaited<ReturnType<BrowserUploadDeps['lstat']>>;
     try {
       // TWO lstats, and the first one is the security-relevant one: the path
       // AS THE CALLER WROTE IT. `check.resolvedPath` is already canonical, so
@@ -199,7 +255,25 @@ export async function resolveUploadFiles(
     if (total > MAX_UPLOAD_TOTAL_BYTES) {
       return { ok: false, code: 'too-large', detail: displayName(resolved) };
     }
-    files.push({ path: resolved, name: displayName(resolved), size });
+    // The identity pin travels with the entry, and the senders refuse an entry
+    // that carries none (`hasUploadIdentityPin`) rather than degrading to the
+    // size-only comparison F1 walked through.
+    const mtimeMs = Number.isFinite(info.mtimeMs) && (info.mtimeMs as number) > 0
+      ? Math.floor(info.mtimeMs as number)
+      : 0;
+    const identified = mtimeMs > 0
+      || (typeof info.ino === 'number' && Number.isFinite(info.ino));
+    if (!identified) {
+      return { ok: false, code: 'unidentifiable', detail: displayName(resolved) };
+    }
+    files.push({
+      path: resolved,
+      name: displayName(resolved),
+      size,
+      mtimeMs,
+      ...(typeof info.ino === 'number' && Number.isFinite(info.ino) ? { ino: info.ino } : {}),
+      ...(typeof info.dev === 'number' && Number.isFinite(info.dev) ? { dev: info.dev } : {}),
+    });
   }
   return { ok: true, files };
 }

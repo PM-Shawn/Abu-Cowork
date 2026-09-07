@@ -133,6 +133,25 @@ export interface ApprovedUploadFile {
   /** Base name, which is what the page's `<input>` will report. */
   name: string;
   size: number;
+  /**
+   * The identity the gate froze, so the sender can tell «同一个文件» from
+   * «同样大小的另一个文件» (2026-09-07 review F1).
+   *
+   * Mirrors `ApprovedUploadFile` in
+   * `src/core/permissions/browserUploadFiles.ts`; the shell fills it from the
+   * same `lstat` it uses to refuse links, and every sender re-checks it
+   * against an `fstat` of the descriptor it is actually reading from. An
+   * entry that carries neither `mtimeMs` nor `ino` is REFUSED rather than
+   * compared by length — a length is not an identity.
+   */
+  mtimeMs: number;
+  ino?: number;
+  dev?: number;
+}
+
+/** True iff this entry carries something a sender can actually re-check. */
+export function hasUploadIdentityPin(file: ApprovedUploadFile): boolean {
+  return file.mtimeMs > 0 || (typeof file.ino === 'number' && Number.isFinite(file.ino));
 }
 
 /**
@@ -150,11 +169,19 @@ export function parseApprovedUploadFiles(raw: unknown): ApprovedUploadFile[] | n
   const out: ApprovedUploadFile[] = [];
   for (const entry of decoded) {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
-    const { path, name, size } = entry as Record<string, unknown>;
+    const { path, name, size, mtimeMs, ino, dev } = entry as Record<string, unknown>;
     if (typeof path !== 'string' || path === '') return null;
     if (typeof name !== 'string' || name === '') return null;
     if (typeof size !== 'number' || !Number.isFinite(size) || size < 0) return null;
-    out.push({ path, name, size });
+    // The identity pin is REQUIRED, and a stamp missing it reads as no stamp
+    // at all: an upload approved by a build that froze only a size cannot be
+    // re-checked here, and refusing is the fail-closed half of F1.
+    if (typeof mtimeMs !== 'number' || !Number.isFinite(mtimeMs) || mtimeMs < 0) return null;
+    const entryOut: ApprovedUploadFile = { path, name, size, mtimeMs: Math.floor(mtimeMs) };
+    if (typeof ino === 'number' && Number.isFinite(ino)) entryOut.ino = ino;
+    if (typeof dev === 'number' && Number.isFinite(dev)) entryOut.dev = dev;
+    if (!hasUploadIdentityPin(entryOut)) return null;
+    out.push(entryOut);
   }
   return out;
 }

@@ -286,6 +286,26 @@ function loadHost() {
   };
 }
 
+/**
+ * The approved-file entry the gate would have frozen for `file`.
+ *
+ * Identity, not just length (review F1): `uploadAutomation` opens the file
+ * with `O_NOFOLLOW` and compares an `fstat` of that descriptor against this,
+ * so a fixture that carries only a size is refused — which several cases below
+ * rely on.
+ */
+function approvedEntry(file, name, sizeOverride) {
+  const stat = fs.lstatSync(file);
+  return {
+    path: file,
+    name: name || path.basename(file),
+    size: sizeOverride === undefined ? stat.size : sizeOverride,
+    mtimeMs: Math.floor(stat.mtimeMs),
+    ino: stat.ino,
+    dev: stat.dev,
+  };
+}
+
 /** Provision one automation tab for an owner and hand back its ids. */
 async function openTab(host, ownerId) {
   const tabs = await host.performBrowserAutomation('get_tabs', { ownerId });
@@ -538,7 +558,7 @@ test('opens the approved file itself and hands the CONTENT to the DOM runtime �
       ownerId: OWNER_A,
       tabId,
       locator: { css: 'input[type=file]' },
-      files: [{ path: file, name: '排班表.xlsx', size: 5 }],
+      files: [approvedEntry(file, '排班表.xlsx')],
     });
 
     const call = contents.domCalls.find((c) => c.action === 'upload_file');
@@ -565,7 +585,7 @@ test('refuses a file that changed on disk since the confirmation named its size'
         ownerId: OWNER_A,
         tabId,
         locator: { css: 'input[type=file]' },
-        files: [{ path: file, name: 'swapped.txt', size: 5 }],
+        files: [{ ...approvedEntry(file, 'swapped.txt'), size: 5 }],
       }),
       /changed on disk/,
     );
@@ -580,7 +600,15 @@ test('refuses an upload whose approved list is missing or unreadable', async () 
     const file = path.join(root, 'ok.txt');
     fs.writeFileSync(file, 'x');
 
-    for (const files of [undefined, [], [{ path: file }], [{ name: 'ok.txt', size: 1 }]]) {
+    for (const files of [
+      undefined,
+      [],
+      [{ path: file }],
+      [{ name: 'ok.txt', size: 1 }],
+      // Review F1 — a stamp with no identity in it is refused rather than
+      // compared by length, which is the comparison a same-size swap defeats.
+      [{ path: file, name: 'ok.txt', size: 1 }],
+    ]) {
       await assert.rejects(
         host.performBrowserAutomation('upload_file', {
           ownerId: OWNER_A, tabId, locator: { css: 'input' }, ...(files ? { files } : {}),
@@ -602,10 +630,84 @@ test('refuses to upload a directory even if the approved list names one', async 
     await assert.rejects(
       host.performBrowserAutomation('upload_file', {
         ownerId: OWNER_A, tabId, locator: { css: 'input' },
-        files: [{ path: dir, name: 'folder', size: 0 }],
+        files: [approvedEntry(dir, 'folder')],
       }),
       /not an ordinary file/,
     );
+  } finally { restore(); }
+});
+
+/**
+ * ## The identity pin (2026-09-07 review F1)
+ *
+ * The three cases below are the ones `size` alone could not tell apart. The
+ * first is the probe that produced the finding: an 8-byte file is approved,
+ * and while the user reads the dialog the path becomes a symbolic link to an
+ * 8-byte secret. `statSync` follows links, so the old sender read the secret
+ * and the page received it — with `{"success":true}`.
+ */
+test('refuses a file replaced by a same-size symbolic link after the confirmation', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const approvedPath = path.join(root, 'report.txt');
+    const secret = path.join(root, 'secret.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    fs.writeFileSync(secret, 'SECRET!!');
+    const approved = approvedEntry(approvedPath, 'report.txt');
+    fs.unlinkSync(approvedPath);
+    fs.symlinkSync(secret, approvedPath);
+
+    await assert.rejects(
+      host.performBrowserAutomation('upload_file', {
+        ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+      }),
+      /symbolic link now|changed on disk/,
+    );
+    assert.equal(contents.domCalls.filter((c) => c.action === 'upload_file').length, 0);
+    noOsDialogs();
+  } finally { restore(); }
+});
+
+test('refuses a same-size DIFFERENT file moved into the approved path', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const approvedPath = path.join(root, 'report.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    const approved = approvedEntry(approvedPath, 'report.txt');
+    const other = path.join(root, 'other.txt');
+    fs.writeFileSync(other, 'SECRET!!');
+    fs.renameSync(other, approvedPath);
+
+    await assert.rejects(
+      host.performBrowserAutomation('upload_file', {
+        ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+      }),
+      /changed on disk/,
+    );
+    assert.equal(contents.domCalls.filter((c) => c.action === 'upload_file').length, 0);
+  } finally { restore(); }
+});
+
+test('refuses a same-size rewrite in place, which keeps the inode', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const approvedPath = path.join(root, 'report.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    const approved = approvedEntry(approvedPath, 'report.txt');
+    fs.writeFileSync(approvedPath, 'SECRET!!');
+    const moved = new Date(approved.mtimeMs + 5000);
+    fs.utimesSync(approvedPath, moved, moved);
+
+    await assert.rejects(
+      host.performBrowserAutomation('upload_file', {
+        ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+      }),
+      /changed on disk/,
+    );
+    assert.equal(contents.domCalls.filter((c) => c.action === 'upload_file').length, 0);
   } finally { restore(); }
 });
 

@@ -101,7 +101,10 @@ const EXTRA_BY_TOOL: Record<string, Record<string, unknown>> = {
   upload_file: {
     _meta: {
       'abu/approvedUploadFiles': [
-        { path: '/tmp/abu-probe.txt', name: 'abu-probe.txt', size: 4 },
+        // The identity pin is part of the stamp (review F1) — an entry
+        // without one is refused before the tool reaches the wire, which
+        // would silently drop `upload_file` out of this routing assertion.
+        { path: '/tmp/abu-probe.txt', name: 'abu-probe.txt', size: 4, mtimeMs: 1, ino: 2, dev: 3 },
       ],
     },
   },

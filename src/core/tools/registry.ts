@@ -1832,10 +1832,17 @@ export async function checkToolApproval(
             checkReadPath(candidate, toolContext?.authorizationScopeId),
           lstat: async (candidate) => {
             const info = await lstat(candidate);
+            // `mtime`/`ino`/`dev` are the identity pin (review F1): size alone
+            // does not survive the window between this check and the read the
+            // runtime does after the user has answered.
+            const mtime = info.mtime instanceof Date ? info.mtime.getTime() : NaN;
             return {
               isFile: info.isFile === true,
               isSymlink: info.isSymlink === true,
               size: typeof info.size === 'number' ? info.size : 0,
+              mtimeMs: Number.isFinite(mtime) ? Math.floor(mtime) : 0,
+              ino: typeof info.ino === 'number' ? info.ino : null,
+              dev: typeof info.dev === 'number' ? info.dev : null,
             };
           },
         });

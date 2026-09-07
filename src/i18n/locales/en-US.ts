@@ -2456,6 +2456,7 @@ const enUS: TranslationDict = {
     browserUploadNotAFile: '"{name}" does not exist, or is not an ordinary file.',
     browserUploadSymlink: '"{name}" is a symbolic link. Abu does not follow links when uploading — give the path of the file itself.',
     browserUploadTooLarge: '"{name}" is over the upload ceiling (at most {max} per file). Upload this one by hand in the browser.',
+    browserUploadUnidentifiable: 'Abu could not identify which file "{name}" is (the system reported neither a modification time nor a file id), so nothing was uploaded. Copy the file into an authorized folder and try again.',
     browserEnterprisePolicyDenied: 'An enterprise policy blocked this browser action — ask your administrator',
     browserUnattendedSiteNotAllowed: 'An unattended run may only act on sites you explicitly allowed, and this site has no such grant',
     browserUnattendedConfirmUnavailable: 'This action needs confirmation, and an unattended run has no confirmation channel',

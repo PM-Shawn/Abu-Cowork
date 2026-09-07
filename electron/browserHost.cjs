@@ -2838,6 +2838,88 @@ async function downloadAutomation(view, payload, owner, signal) {
 }
 
 /**
+ * Open ONE approved file and hand back its bytes, or refuse.
+ *
+ * ## Why this is not `statSync` + `readFileSync` any more (review F1)
+ *
+ * It used to be, and the only thing carried across the confirmation was the
+ * file's SIZE. `statSync` follows symbolic links, so anything with write
+ * access to the workspace during the window the user spends reading the
+ * dialog could replace the approved path with a link to a same-size file —
+ * `~/.ssh/id_rsa`, a colleague's export — and the page received that instead.
+ * A probe walked exactly that: 8-byte `report.txt` approved, swapped for a
+ * link to an 8-byte `secret.txt`, and the DOM runtime got `SECRET!!`.
+ *
+ * So: one `open` with `O_NOFOLLOW` (a link fails to open at all on POSIX),
+ * then `fstatSync` on that DESCRIPTOR — which no rename can race — checked
+ * against the identity the gate froze (`mtimeMs`, and `ino`/`dev` where the
+ * platform has them), and the bytes read from the same handle. Refusing costs
+ * the upload; sending the wrong file costs the file.
+ */
+function readApprovedUploadFile(entry) {
+  const filePath = entry && typeof entry.path === 'string' ? entry.path : '';
+  const name = entry && typeof entry.name === 'string' ? entry.name : '';
+  const size = entry && typeof entry.size === 'number' ? entry.size : -1;
+  const mtimeMs = entry && typeof entry.mtimeMs === 'number' && Number.isFinite(entry.mtimeMs)
+    ? Math.floor(entry.mtimeMs)
+    : 0;
+  const ino = entry && typeof entry.ino === 'number' && Number.isFinite(entry.ino)
+    ? entry.ino
+    : null;
+  const dev = entry && typeof entry.dev === 'number' && Number.isFinite(entry.dev)
+    ? entry.dev
+    : null;
+  if (!filePath || !name || size < 0) {
+    throw new Error('Refused: the approved file list for this upload was not readable.');
+  }
+  // Fail closed on a stamp with no identity in it: comparing lengths is what
+  // this whole function stopped doing.
+  if (mtimeMs <= 0 && ino === null) {
+    throw new Error(
+      `Refused: "${name}" was approved without anything that identifies it, so it could `
+      + 'not be checked before sending. Nothing was uploaded.',
+    );
+  }
+
+  const noFollow = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+  let fd;
+  try {
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | noFollow);
+  } catch (error) {
+    if (error && error.code === 'ELOOP') {
+      throw new Error(
+        `Refused: "${name}" is a symbolic link now, and it was not when it was approved. `
+        + 'Nothing was uploaded.',
+      );
+    }
+    throw new Error(
+      `Refused: "${name}" could not be opened for upload (${(error && error.code) || 'unknown error'}). `
+      + 'Nothing was uploaded.',
+    );
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    // A directory opens fine on POSIX; it is the `fstat` that says so.
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Refused: "${name}" is not an ordinary file.`);
+    }
+    const changed = stat.size !== size
+      || (mtimeMs > 0 && Math.floor(stat.mtimeMs) !== mtimeMs)
+      || (ino !== null && stat.ino !== ino)
+      || (dev !== null && stat.dev !== dev);
+    if (changed) {
+      throw new Error(
+        `Refused: "${name}" changed on disk between the confirmation and this upload. `
+        + 'Nothing was uploaded — the file the user approved is not the file at that path any more.',
+      );
+    }
+    return { name, size, base64: fs.readFileSync(fd).toString('base64') };
+  } finally {
+    try { fs.closeSync(fd); } catch { /* already gone */ }
+  }
+}
+
+/**
  * The `upload_file` tool, built-in-browser half.
  *
  * The file is opened HERE — the main process is the only tier in this channel
@@ -2856,26 +2938,7 @@ async function uploadAutomation(view, payload) {
   }
   const files = [];
   for (const entry of declared) {
-    const filePath = entry && typeof entry.path === 'string' ? entry.path : '';
-    const name = entry && typeof entry.name === 'string' ? entry.name : '';
-    const size = entry && typeof entry.size === 'number' ? entry.size : -1;
-    if (!filePath || !name || size < 0) {
-      throw new Error('Refused: the approved file list for this upload was not readable.');
-    }
-    // The file-side half of the TOCTOU check (the bridge does the same on the
-    // Chrome channel): the confirmation the user answered named a size, and a
-    // file that changed since then is not the file they approved.
-    const stat = fs.statSync(filePath);
-    if (!stat.isFile()) {
-      throw new Error(`Refused: "${name}" is not an ordinary file.`);
-    }
-    if (stat.size !== size) {
-      throw new Error(
-        `Refused: "${name}" changed on disk between the confirmation and this upload `
-        + `(${size} bytes then, ${stat.size} now). Nothing was uploaded.`,
-      );
-    }
-    files.push({ name, size, base64: fs.readFileSync(filePath).toString('base64') });
+    files.push(readApprovedUploadFile(entry));
   }
   return runDomAutomation(view, 'upload_file', {
     locator: payload.locator,

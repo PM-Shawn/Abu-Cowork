@@ -210,7 +210,13 @@ describe('browser gate — preview and the real gate agree', () => {
     // The gate lstat's a path it was told about twice (as written, and
     // canonical). One ordinary 4-byte file answers both.
     vi.mocked(lstat).mockResolvedValue(
-      { isFile: true, isSymlink: false, size: 4 } as unknown as Awaited<ReturnType<typeof lstat>>,
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
     );
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
@@ -322,7 +328,13 @@ describe('browser gate — a call that names a region agrees too', () => {
     // The gate lstat's a path it was told about twice (as written, and
     // canonical). One ordinary 4-byte file answers both.
     vi.mocked(lstat).mockResolvedValue(
-      { isFile: true, isSymlink: false, size: 4 } as unknown as Awaited<ReturnType<typeof lstat>>,
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
     );
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],

@@ -70,6 +70,20 @@ const APPROVED_META = (files: unknown) => ({
   _meta: { [ABU_APPROVED_UPLOAD_FILES_META_KEY]: files },
 });
 
+/**
+ * The identity the gate freezes alongside path/name/size (review F1).
+ *
+ * A stamp without it is refused, so every fixture here carries one — and the
+ * ones that go near a real file take it from the file, because the sender
+ * compares against an `fstat` of the descriptor it reads from.
+ */
+const PIN = { mtimeMs: 1_757_000_000_123, ino: 4242, dev: 66 };
+
+function pinOf(file: string): { mtimeMs: number; ino: number; dev: number } {
+  const stat = fs.lstatSync(file);
+  return { mtimeMs: Math.floor(stat.mtimeMs), ino: stat.ino, dev: stat.dev };
+}
+
 const UPLOAD_ARGS = {
   tabId: 1,
   target: '{"css":"input[type=file]"}',
@@ -78,7 +92,7 @@ const UPLOAD_ARGS = {
 
 describe('parseApprovedUploadFiles', () => {
   it('reads the gate\'s list, as an array or as the JSON string a transport may carry', () => {
-    const one = [{ path: '/ws/a.txt', name: 'a.txt', size: 4 }];
+    const one = [{ path: '/ws/a.txt', name: 'a.txt', size: 4, ...PIN }];
     expect(parseApprovedUploadFiles(one)).toEqual(one);
     expect(parseApprovedUploadFiles(JSON.stringify(one))).toEqual(one);
   });
@@ -100,7 +114,12 @@ describe('parseApprovedUploadFiles', () => {
     ['an entry with no name', [{ path: '/ws/a.txt', size: 4 }]],
     ['an entry with a non-numeric size', [{ path: '/ws/a.txt', name: 'a.txt', size: '4' }]],
     ['an entry with a negative size', [{ path: '/ws/a.txt', name: 'a.txt', size: -1 }]],
-    ['one good entry and one bad', [{ path: '/ws/a.txt', name: 'a.txt', size: 1 }, { path: '/ws/b' }]],
+    ['one good entry and one bad', [{ path: '/ws/a.txt', name: 'a.txt', size: 1, ...PIN }, { path: '/ws/b' }]],
+    // Review F1 — a stamp with no identity in it reads as no stamp at all:
+    // the only comparison it leaves is the one a same-size swap defeats.
+    ['an entry with no identity pin', [{ path: '/ws/a.txt', name: 'a.txt', size: 4 }]],
+    ['an entry whose mtime is not a number', [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 'x' }]],
+    ['an entry pinned by nothing but a zero mtime', [{ path: '/ws/a.txt', name: 'a.txt', size: 4, mtimeMs: 0 }]],
   ])('returns null for %s', (_label, raw) => {
     expect(parseApprovedUploadFiles(raw)).toBeNull();
   });
@@ -152,6 +171,7 @@ describe('upload_file', () => {
     ['a forged empty list', []],
     ['a list of bare paths', ['/etc/shadow']],
     ['a list with a missing size', [{ path: '/etc/shadow', name: 'shadow' }]],
+    ['a list whose entry carries no identity pin', [{ path: '/etc/shadow', name: 'shadow', size: 1 }]],
   ])('sends nothing when the stamp is %s', async (_label, files) => {
     const { tool, sent } = harness('path');
 
@@ -166,12 +186,14 @@ describe('upload_file', () => {
 
     await tool('upload_file')(
       { ...UPLOAD_ARGS, files: '[{"path":"/etc/shadow"}]' },
-      APPROVED_META([{ path: '/ws/report.xlsx', name: 'report.xlsx', size: 5 }]),
+      APPROVED_META([{ path: '/ws/report.xlsx', name: 'report.xlsx', size: 5, ...PIN }]),
     );
 
     expect(sent).toHaveLength(1);
+    // The pin travels with the paths: on this channel the tier that OPENS the
+    // file is the runtime, so it is the tier that has to re-check the identity.
     expect(sent[0].payload.files).toEqual([
-      { path: '/ws/report.xlsx', name: 'report.xlsx', size: 5 },
+      { path: '/ws/report.xlsx', name: 'report.xlsx', size: 5, ...PIN },
     ]);
     expect(JSON.stringify(sent[0].payload)).not.toContain('/etc/shadow');
   });
@@ -181,7 +203,7 @@ describe('upload_file', () => {
 
     await expect(tool('upload_file')(
       { ...UPLOAD_ARGS, files: 'not json' },
-      APPROVED_META([{ path: '/ws/a.txt', name: 'a.txt', size: 1 }]),
+      APPROVED_META([{ path: '/ws/a.txt', name: 'a.txt', size: 1, ...PIN }]),
     )).rejects.toThrow(/non-empty JSON array/);
     expect(sent).toHaveLength(0);
   });
@@ -196,7 +218,7 @@ describe('upload_file', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-upload-'));
     const file = path.join(dir, 'report.xlsx');
     fs.writeFileSync(file, 'hello');
-    const approved = APPROVED_META([{ path: file, name: 'report.xlsx', size: 5 }]);
+    const approved = APPROVED_META([{ path: file, name: 'report.xlsx', size: 5, ...pinOf(file) }]);
 
     try {
       const bytes = harness('bytes');
@@ -208,7 +230,7 @@ describe('upload_file', () => {
       const paths = harness('path');
       await paths.tool('upload_file')(UPLOAD_ARGS, approved);
       expect(paths.sent[0].payload.files).toEqual([
-        { path: file, name: 'report.xlsx', size: 5 },
+        { path: file, name: 'report.xlsx', size: 5, ...pinOf(file) },
       ]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -221,7 +243,7 @@ describe('upload_file', () => {
     fs.writeFileSync(file, 'x');
     try {
       const { tool, sent } = harness();
-      await tool('upload_file')(UPLOAD_ARGS, APPROVED_META([{ path: file, name: 'a.txt', size: 1 }]));
+      await tool('upload_file')(UPLOAD_ARGS, APPROVED_META([{ path: file, name: 'a.txt', size: 1, ...pinOf(file) }]));
       expect(Object.keys((sent[0].payload.files as Array<Record<string, unknown>>)[0]))
         .toEqual(['name', 'size', 'base64']);
     } finally {
@@ -242,8 +264,79 @@ describe('upload_file', () => {
       const { tool, sent } = harness('bytes');
       await expect(tool('upload_file')(
         UPLOAD_ARGS,
-        APPROVED_META([{ path: file, name: 'swapped.txt', size: 5 }]),
+        APPROVED_META([{ path: file, name: 'swapped.txt', size: 5, ...pinOf(file) }]),
       )).rejects.toThrow(/changed on disk/);
+      expect(sent).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // ── The identity pin across the confirmation (review F1) ────────────────
+
+  /**
+   * The probe that produced F1, as a test: an 8-byte `report.txt` is approved,
+   * and before the bytes are read the path is made a symbolic link to an
+   * 8-byte `secret.txt`. Size alone said nothing had changed, and the page got
+   * the secret.
+   */
+  it('refuses a file replaced by a same-size symbolic link after the confirmation', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-upload-'));
+    const approvedPath = path.join(dir, 'report.txt');
+    const secret = path.join(dir, 'secret.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    fs.writeFileSync(secret, 'SECRET!!');
+    const stamp = APPROVED_META([
+      { path: approvedPath, name: 'report.txt', size: 8, ...pinOf(approvedPath) },
+    ]);
+    fs.unlinkSync(approvedPath);
+    fs.symlinkSync(secret, approvedPath);
+
+    try {
+      const { tool, sent } = harness('bytes');
+      await expect(tool('upload_file')(UPLOAD_ARGS, stamp))
+        .rejects.toThrow(/symbolic link now|changed on disk/);
+      expect(sent).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a same-size DIFFERENT file put at the approved path', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-upload-'));
+    const approvedPath = path.join(dir, 'report.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    const stamp = APPROVED_META([
+      { path: approvedPath, name: 'report.txt', size: 8, ...pinOf(approvedPath) },
+    ]);
+    // A new inode at the same path, the same length, different bytes.
+    const other = path.join(dir, 'other.txt');
+    fs.writeFileSync(other, 'SECRET!!');
+    fs.renameSync(other, approvedPath);
+
+    try {
+      const { tool, sent } = harness('bytes');
+      await expect(tool('upload_file')(UPLOAD_ARGS, stamp)).rejects.toThrow(/changed on disk/);
+      expect(sent).toHaveLength(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a same-size in-place rewrite, which keeps the inode and moves the clock', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-upload-'));
+    const approvedPath = path.join(dir, 'report.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    const pin = pinOf(approvedPath);
+    const stamp = APPROVED_META([
+      { path: approvedPath, name: 'report.txt', size: 8, ...pin },
+    ]);
+    fs.writeFileSync(approvedPath, 'SECRET!!');
+    fs.utimesSync(approvedPath, new Date(pin.mtimeMs + 5_000), new Date(pin.mtimeMs + 5_000));
+
+    try {
+      const { tool, sent } = harness('bytes');
+      await expect(tool('upload_file')(UPLOAD_ARGS, stamp)).rejects.toThrow(/changed on disk/);
       expect(sent).toHaveLength(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -255,7 +348,7 @@ describe('upload_file', () => {
 
     await tool('upload_file')(
       { ...UPLOAD_ARGS, frameId: 'f3' },
-      APPROVED_META([{ path: '/ws/a.txt', name: 'a.txt', size: 1 }]),
+      APPROVED_META([{ path: '/ws/a.txt', name: 'a.txt', size: 1, ...PIN }]),
     );
 
     expect(sent[0].payload.frameId).toBe('f3');

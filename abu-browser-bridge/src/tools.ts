@@ -17,6 +17,7 @@ import {
   parseLocator,
   validateFrameId,
   validateUploadFilesArgument,
+  hasUploadIdentityPin,
   type ApprovedUploadFile,
 } from './locators.js';
 import { evaluateQueryJsOnHtml } from './queryJs.js';
@@ -362,33 +363,122 @@ function approvedUploadFilesFromExtra(extra: unknown): ApprovedUploadFile[] | nu
 /**
  * What the runtime is told to upload, in the shape ITS channel can use.
  *
- * `'path'` channels get the canonical paths and open the files themselves.
- * `'bytes'` channels get the content, read HERE — with the size the gate
- * recorded as a hard second check, so a file that grew between the
- * confirmation and this moment (the classic TOCTOU on the file rather than on
- * the page) is refused instead of silently sent at its new size.
+ * `'path'` channels get the canonical paths — AND the identity pin, because
+ * the tier that opens the file is the tier that has to re-check it.
+ * `'bytes'` channels get the content, read HERE.
+ *
+ * ## Reading it, not just stat'ing it (2026-09-07 review F1)
+ *
+ * The old check was `readFile(path)` then `bytes.length === size`, which
+ * catches a file that GREW and nothing else: a symbolic link planted at the
+ * approved path between the confirmation and this moment was followed, and a
+ * same-size replacement was sent as if it were the file the user read in the
+ * dialog. So the file is opened ONCE, with `O_NOFOLLOW`, and everything is
+ * decided about that descriptor — `fstat` cannot be raced by a rename the way
+ * a second `stat(path)` can, and the bytes come out of the same handle.
  */
 async function uploadPayloadFiles(
   files: ApprovedUploadFile[],
   delivery: UploadDelivery,
 ): Promise<Array<Record<string, unknown>>> {
-  if (delivery === 'path') {
-    return files.map((file) => ({ path: file.path, name: file.name, size: file.size }));
-  }
-  const { readFile } = await import('node:fs/promises');
-  const out: Array<Record<string, unknown>> = [];
   for (const file of files) {
-    const bytes = await readFile(file.path);
-    if (bytes.byteLength !== file.size) {
+    if (!hasUploadIdentityPin(file)) {
       throw new Error(
-        `"${file.name}" changed on disk between the confirmation and this upload `
-        + `(${file.size} bytes then, ${bytes.byteLength} now). Nothing was uploaded — `
-        + 'read the file again and re-issue the upload if it is still the one you meant.',
+        `"${file.name}" was approved without anything that identifies it (no modification `
+        + 'time, no file id), so it could not be checked before sending. Nothing was uploaded.',
       );
     }
-    out.push({ name: file.name, size: file.size, base64: bytes.toString('base64') });
+  }
+  if (delivery === 'path') {
+    return files.map((file) => ({
+      path: file.path,
+      name: file.name,
+      size: file.size,
+      mtimeMs: file.mtimeMs,
+      ...(file.ino !== undefined ? { ino: file.ino } : {}),
+      ...(file.dev !== undefined ? { dev: file.dev } : {}),
+    }));
+  }
+  const [{ open }, { constants }] = await Promise.all([
+    import('node:fs/promises'),
+    import('node:fs'),
+  ]);
+  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  const out: Array<Record<string, unknown>> = [];
+  for (const file of files) {
+    let handle;
+    try {
+      handle = await open(file.path, constants.O_RDONLY | noFollow);
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code;
+      // ELOOP is `O_NOFOLLOW` refusing a symlink; on a platform without the
+      // flag a link would open, which is why the `fstat` below still runs.
+      throw new Error(
+        code === 'ELOOP'
+          ? `"${file.name}" is a symbolic link now, and it was not when it was approved. `
+            + 'Nothing was uploaded.'
+          : `"${file.name}" could not be opened for upload (${code ?? 'unknown error'}). `
+            + 'Nothing was uploaded.',
+      );
+    }
+    try {
+      const stat = await handle.stat();
+      assertApprovedFileUnchanged(file, {
+        isFile: stat.isFile(),
+        isSymbolicLink: stat.isSymbolicLink(),
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        ino: stat.ino,
+        dev: stat.dev,
+      });
+      const bytes = await handle.readFile();
+      if (bytes.byteLength !== file.size) {
+        throw new Error(
+          `"${file.name}" changed on disk between the confirmation and this upload `
+          + `(${file.size} bytes then, ${bytes.byteLength} now). Nothing was uploaded — `
+          + 'read the file again and re-issue the upload if it is still the one you meant.',
+        );
+      }
+      out.push({ name: file.name, size: file.size, base64: bytes.toString('base64') });
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
   }
   return out;
+}
+
+/**
+ * The frozen identity against what the descriptor actually is.
+ *
+ * Shared shape rather than a `Stats`, so the built-in host (plain CommonJS,
+ * `electron/browserHost.cjs`) and this file can be read side by side and be
+ * seen to enforce the same rule. Both refuse with the same sentence, and the
+ * sentence names the fact — «确认之后被改动过» — rather than the field, because
+ * which field changed is not the user's problem.
+ */
+export function assertApprovedFileUnchanged(
+  file: ApprovedUploadFile,
+  actual: {
+    isFile: boolean;
+    isSymbolicLink: boolean;
+    size: number;
+    mtimeMs: number;
+    ino: number;
+    dev: number;
+  },
+): void {
+  const refuse = (): never => {
+    throw new Error(
+      `"${file.name}" changed on disk between the confirmation and this upload. `
+      + 'Nothing was uploaded — the file the user approved is not the file at that path '
+      + 'any more. Re-issue the upload if it is still the one you meant.',
+    );
+  };
+  if (!actual.isFile || actual.isSymbolicLink) refuse();
+  if (actual.size !== file.size) refuse();
+  if (file.mtimeMs > 0 && Math.floor(actual.mtimeMs) !== file.mtimeMs) refuse();
+  if (file.ino !== undefined && actual.ino !== file.ino) refuse();
+  if (file.dev !== undefined && actual.dev !== file.dev) refuse();
 }
 
 /**

@@ -75,5 +75,7 @@ export function browserUploadRefusalText(
         name,
         max: formatBytes(MAX_UPLOAD_FILE_BYTES),
       });
+    case 'unidentifiable':
+      return format(t.commandConfirm.browserUploadUnidentifiable, { name });
   }
 }

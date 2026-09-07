@@ -928,7 +928,15 @@ export class MCPClientManager {
        * Browser servers' `upload_file` only: the files the gate approved.
        * See `ABU_APPROVED_UPLOAD_FILES_META_KEY`.
        */
-      approvedUploadFiles?: Array<{ path: string; name: string; size: number }>;
+      approvedUploadFiles?: Array<{
+        path: string;
+        name: string;
+        size: number;
+        /** Identity pin (review F1) — the runtime refuses an entry without one. */
+        mtimeMs: number;
+        ino?: number;
+        dev?: number;
+      }>;
     }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {

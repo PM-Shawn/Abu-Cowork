@@ -24,11 +24,22 @@ import {
   type BrowserUploadDeps,
 } from './browserUploadFiles';
 
+/**
+ * The identity every `lstat` below reports, and every frozen entry carries.
+ *
+ * Its own constant because it is the point of review F1: what the gate freezes
+ * has to be enough for a sender to tell the approved file apart from a
+ * same-size impostor later. Size alone was not.
+ */
+const DISK = { mtimeMs: 1_757_000_000_123, ino: 4242, dev: 66 };
+/** The same three fields as they appear on an `ApprovedUploadFile`. */
+const PIN = { mtimeMs: DISK.mtimeMs, ino: DISK.ino, dev: DISK.dev };
+
 /** An authorized workspace that canonicalizes `~`-free absolute paths to themselves. */
 function deps(overrides: Partial<BrowserUploadDeps> = {}): BrowserUploadDeps {
   return {
     checkReadPath: vi.fn(async (path: string) => ({ allowed: true, resolvedPath: path })),
-    lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: 1024 })),
+    lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: 1024, ...DISK })),
     ...overrides,
   };
 }
@@ -83,12 +94,12 @@ describe('resolveUploadFiles', () => {
       { files: '[{"path":"/ws/../ws/报表 2026.xlsx"}]' },
       deps({
         checkReadPath: vi.fn(async () => ({ allowed: true, resolvedPath: '/ws/报表 2026.xlsx' })),
-        lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: 2048 })),
+        lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: 2048, ...DISK })),
       }),
     );
     expect(resolved).toEqual({
       ok: true,
-      files: [{ path: '/ws/报表 2026.xlsx', name: '报表 2026.xlsx', size: 2048 }],
+      files: [{ path: '/ws/报表 2026.xlsx', name: '报表 2026.xlsx', size: 2048, ...PIN }],
     });
   });
 
@@ -149,8 +160,8 @@ describe('resolveUploadFiles', () => {
   it('refuses a link the CALLER named, even though it canonicalizes into the workspace', async () => {
     const lstat = vi.fn(async (path: string) => (
       path === '/ws/link.txt'
-        ? { isFile: true, isSymlink: true, size: 10 }
-        : { isFile: true, isSymlink: false, size: 10 }
+        ? { isFile: true, isSymlink: true, size: 10, ...DISK }
+        : { isFile: true, isSymlink: false, size: 10, ...DISK }
     ));
     const resolved = await resolveUploadFiles(
       { files: '["/ws/link.txt"]' },
@@ -165,8 +176,8 @@ describe('resolveUploadFiles', () => {
   it('refuses a link at the CANONICAL path too', async () => {
     const lstat = vi.fn(async (path: string) => (
       path === '/ws/real.txt'
-        ? { isFile: true, isSymlink: true, size: 10 }
-        : { isFile: true, isSymlink: false, size: 10 }
+        ? { isFile: true, isSymlink: true, size: 10, ...DISK }
+        : { isFile: true, isSymlink: false, size: 10, ...DISK }
     ));
     const resolved = await resolveUploadFiles(
       { files: '["/ws/link.txt"]' },
@@ -181,7 +192,7 @@ describe('resolveUploadFiles', () => {
   it('refuses a directory, and anything else that is not an ordinary file', async () => {
     const resolved = await resolveUploadFiles(
       { files: '["/ws/folder"]' },
-      deps({ lstat: vi.fn(async () => ({ isFile: false, isSymlink: false, size: 0 })) }),
+      deps({ lstat: vi.fn(async () => ({ isFile: false, isSymlink: false, size: 0, ...DISK })) }),
     );
     expect(resolved).toEqual({ ok: false, code: 'not-a-file', detail: 'folder' });
   });
@@ -197,15 +208,15 @@ describe('resolveUploadFiles', () => {
   it('accepts an empty file — zero bytes is a file, not an error', async () => {
     const resolved = await resolveUploadFiles(
       { files: '["/ws/empty.txt"]' },
-      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: 0 })) }),
+      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: 0, ...DISK })) }),
     );
-    expect(resolved).toEqual({ ok: true, files: [{ path: '/ws/empty.txt', name: 'empty.txt', size: 0 }] });
+    expect(resolved).toEqual({ ok: true, files: [{ path: '/ws/empty.txt', name: 'empty.txt', size: 0, ...PIN }] });
   });
 
   it('refuses one file over the per-file ceiling', async () => {
     const resolved = await resolveUploadFiles(
       { files: '["/ws/huge.zip"]' },
-      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: MAX_UPLOAD_FILE_BYTES + 1 })) }),
+      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: MAX_UPLOAD_FILE_BYTES + 1, ...DISK })) }),
     );
     expect(resolved).toEqual({ ok: false, code: 'too-large', detail: 'huge.zip' });
   });
@@ -213,7 +224,7 @@ describe('resolveUploadFiles', () => {
   it('accepts a file exactly at the per-file ceiling — the bound is inclusive', async () => {
     const resolved = await resolveUploadFiles(
       { files: '["/ws/exact.zip"]' },
-      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: MAX_UPLOAD_FILE_BYTES })) }),
+      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: MAX_UPLOAD_FILE_BYTES, ...DISK })) }),
     );
     expect(resolved.ok).toBe(true);
   });
@@ -229,7 +240,7 @@ describe('resolveUploadFiles', () => {
     expect(each).toBeLessThanOrEqual(MAX_UPLOAD_FILE_BYTES);
     const resolved = await resolveUploadFiles(
       { files: '[{"path":"/ws/a.bin"},{"path":"/ws/b.bin"},{"path":"/ws/c.bin"}]' },
-      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: each })) }),
+      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: each, ...DISK })) }),
     );
     expect(resolved).toEqual({ ok: false, code: 'too-large', detail: 'c.bin' });
   });
@@ -237,9 +248,9 @@ describe('resolveUploadFiles', () => {
   it('treats a nonsense size from the filesystem as zero rather than propagating NaN', async () => {
     const resolved = await resolveUploadFiles(
       { files: '["/ws/odd.txt"]' },
-      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: Number.NaN })) }),
+      deps({ lstat: vi.fn(async () => ({ isFile: true, isSymlink: false, size: Number.NaN, ...DISK })) }),
     );
-    expect(resolved).toEqual({ ok: true, files: [{ path: '/ws/odd.txt', name: 'odd.txt', size: 0 }] });
+    expect(resolved).toEqual({ ok: true, files: [{ path: '/ws/odd.txt', name: 'odd.txt', size: 0, ...PIN }] });
   });
 
   it('stops at the FIRST bad file and never checks the ones after it', async () => {
@@ -260,6 +271,79 @@ describe('resolveUploadFiles', () => {
       deps(),
     );
     expect(resolved.ok && resolved.files.map((f) => f.name)).toEqual(['1.txt', '2.txt', '3.txt']);
+  });
+
+  // ── The identity pin (review F1) ─────────────────────────────────────────
+
+  /**
+   * Everything above happens before the user answers; the bytes are read
+   * after. `size` was the only fact that crossed that gap, so a same-size
+   * swap crossed it too. The pin is what the senders re-check.
+   */
+  it('freezes the file\'s identity, not just its length', async () => {
+    const resolved = await resolveUploadFiles({ files: '["/ws/report.txt"]' }, deps());
+    expect(resolved.ok && resolved.files[0]).toEqual({
+      path: '/ws/report.txt', name: 'report.txt', size: 1024,
+      mtimeMs: DISK.mtimeMs, ino: DISK.ino, dev: DISK.dev,
+    });
+  });
+
+  it('takes the identity from the CANONICAL path, which is the one that gets read', async () => {
+    const lstat = vi.fn(async (path: string) => (
+      path === '/ws/link-free.txt'
+        ? { isFile: true, isSymlink: false, size: 1024, mtimeMs: 1, ino: 1, dev: 1 }
+        : { isFile: true, isSymlink: false, size: 1024, ...DISK }
+    ));
+    const resolved = await resolveUploadFiles(
+      { files: '["/ws/link-free.txt"]' },
+      deps({
+        checkReadPath: vi.fn(async () => ({ allowed: true, resolvedPath: '/ws/canonical.txt' })),
+        lstat,
+      }),
+    );
+    expect(resolved.ok && resolved.files[0].ino).toBe(DISK.ino);
+  });
+
+  it('keeps the pin usable on a platform with no inode, where mtime is all there is', async () => {
+    const resolved = await resolveUploadFiles(
+      { files: '["/ws/win.txt"]' },
+      deps({
+        lstat: vi.fn(async () => ({
+          isFile: true, isSymlink: false, size: 1024, mtimeMs: 1_757_000_000_123, ino: null, dev: null,
+        })),
+      }),
+    );
+    expect(resolved.ok && resolved.files[0]).toEqual({
+      path: '/ws/win.txt', name: 'win.txt', size: 1024, mtimeMs: 1_757_000_000_123,
+    });
+  });
+
+  /**
+   * Fail closed: an entry the senders cannot re-check is worse than no
+   * upload, because the only comparison left is the one F1 defeated.
+   */
+  it('refuses a file the filesystem gives neither an mtime nor an inode for', async () => {
+    const resolved = await resolveUploadFiles(
+      { files: '["/ws/ghost.txt"]' },
+      deps({
+        lstat: vi.fn(async () => ({
+          isFile: true, isSymlink: false, size: 1024, mtimeMs: 0, ino: null, dev: null,
+        })),
+      }),
+    );
+    expect(resolved).toEqual({ ok: false, code: 'unidentifiable', detail: 'ghost.txt' });
+  });
+
+  it('truncates a sub-millisecond mtime to whole milliseconds so both sides compare equal', async () => {
+    const resolved = await resolveUploadFiles(
+      { files: '["/ws/precise.txt"]' },
+      deps({
+        lstat: vi.fn(async () => ({
+          isFile: true, isSymlink: false, size: 1, mtimeMs: 1_757_000_000_123.987, ino: 7, dev: 1,
+        })),
+      }),
+    );
+    expect(resolved.ok && resolved.files[0].mtimeMs).toBe(1_757_000_000_123);
   });
 });
 
@@ -302,7 +386,7 @@ describe('displayName', () => {
 });
 
 describe('summarizeUploadFiles', () => {
-  const file = (name: string, size: number) => ({ path: `/ws/${name}`, name, size });
+  const file = (name: string, size: number) => ({ path: `/ws/${name}`, name, size, ...PIN });
 
   it('names the files and their sizes, and never a directory', () => {
     const summary = summarizeUploadFiles([file('report.xlsx', 1_258_291)]);

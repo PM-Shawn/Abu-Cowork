@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { exists, mkdir, writeFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, writeFile, remove, rename } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
 // ── Mocks ──────────────────────────────────────────────────────────
@@ -13,6 +13,8 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
     exists: vi.fn().mockResolvedValue(false),
     mkdir: vi.fn().mockResolvedValue(undefined),
     writeFile: vi.fn().mockResolvedValue(undefined),
+    remove: vi.fn().mockResolvedValue(undefined),
+    rename: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -39,12 +41,72 @@ import { detectSourceType, installSkillFromUrl } from './urlInstaller';
 const mockExists = vi.mocked(exists);
 const mockMkdir = vi.mocked(mkdir);
 const mockWriteFile = vi.mocked(writeFile);
+const mockRemove = vi.mocked(remove);
+const mockRename = vi.mocked(rename);
 const mockHomeDir = vi.mocked(homeDir);
+
 const mockDownloadTarball = vi.mocked(downloadTarball);
 const mockExtractTarball = vi.mocked(extractTarball);
 const mockFindSkillEntries = vi.mocked(findSkillEntries);
 const mockUnzipSync = vi.mocked(unzipSync);
 const mockStrFromU8 = vi.mocked(strFromU8);
+
+// ── A disk small enough to assert against ──────────────────────────
+//
+// The claim under test is about WHERE bytes land and WHEN, so the mocks have
+// to remember: `exists` must see what a previous call wrote, and a rename must
+// move it. A per-call `toHaveBeenCalledWith` cannot express "the live skills
+// directory was never touched".
+
+const SKILLS_ROOT = '/Users/test/.abu/skills';
+
+const disk = { dirs: new Set<string>(), files: new Map<string, Uint8Array>() };
+
+function underPrefix(prefix: string): string[] {
+  const inside = (p: string) => p === prefix || p.startsWith(`${prefix}/`);
+  return [...disk.dirs, ...disk.files.keys()].filter(inside).sort();
+}
+
+/** Everything that currently exists inside `~/.abu/skills`. */
+function liveEntries(): string[] {
+  return underPrefix(SKILLS_ROOT).filter((p) => p !== SKILLS_ROOT);
+}
+
+function useFakeDisk() {
+  disk.dirs.clear();
+  disk.files.clear();
+  mockMkdir.mockImplementation(async (p: string | URL) => {
+    disk.dirs.add(String(p));
+    return undefined as never;
+  });
+  mockWriteFile.mockImplementation(async (p: string | URL, data) => {
+    disk.files.set(String(p), data as Uint8Array);
+    return undefined as never;
+  });
+  mockExists.mockImplementation(async (p: string | URL) => underPrefix(String(p)).length > 0);
+  mockRemove.mockImplementation(async (p: string | URL) => {
+    for (const gone of underPrefix(String(p))) {
+      disk.dirs.delete(gone);
+      disk.files.delete(gone);
+    }
+    return undefined as never;
+  });
+  mockRename.mockImplementation(async (from: string | URL, to: string | URL) => {
+    const [a, b] = [String(from), String(to)];
+    for (const p of underPrefix(a)) {
+      const moved = b + p.slice(a.length);
+      const bytes = disk.files.get(p);
+      if (bytes) {
+        disk.files.set(moved, bytes);
+        disk.files.delete(p);
+      } else {
+        disk.dirs.delete(p);
+        disk.dirs.add(moved);
+      }
+    }
+    return undefined as never;
+  });
+}
 
 const SKILL_MD = '---\nname: my-skill\ndescription: a skill\n---\n# body';
 const SKILL_MD_BYTES = new Uint8Array([1, 2, 3]);
@@ -127,10 +189,15 @@ describe('installSkillFromUrl', () => {
     });
 
     it('creates target directory and writes files', async () => {
+      useFakeDisk();
+
       await installSkillFromUrl('https://github.com/user/my-skill');
 
-      expect(mockMkdir).toHaveBeenCalledWith('/Users/test/.abu/skills/my-skill', { recursive: true });
-      expect(mockWriteFile).toHaveBeenCalled();
+      expect(liveEntries()).toEqual([
+        `${SKILLS_ROOT}/my-skill`,
+        `${SKILLS_ROOT}/my-skill/README.md`,
+        `${SKILLS_ROOT}/my-skill/SKILL.md`,
+      ]);
     });
 
     it('uses extractTarball for .tgz URL', async () => {
@@ -185,6 +252,21 @@ describe('installSkillFromUrl', () => {
       });
     });
 
+    it('rejects a frontmatter name that escapes the skills directory', async () => {
+      // `~/.abu/skills/../../.ssh` resolves to `~/.ssh`, which the host's scope
+      // guard allows: it only asks whether the resolved path is under an
+      // allowed root. The entry-path check below does not see this — the name
+      // is the segment those paths are written UNDER.
+      mockStrFromU8.mockReturnValue('---\nname: ../../.ssh\n---\n# body');
+      mockUnzipSync.mockReturnValue({ 'root/SKILL.md': SKILL_MD_BYTES });
+
+      await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+        code: 'PATH_TRAVERSAL',
+      });
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
     it('rejects path traversal in zip entries', async () => {
       // findSkillEntries returns valid location, but one entry has .. in path
       mockUnzipSync.mockReturnValue({
@@ -202,5 +284,50 @@ describe('installSkillFromUrl', () => {
         code: 'PATH_TRAVERSAL',
       });
     });
+  });
+});
+
+/**
+ * A refusal must leave nothing behind — the URL twin of the npm case.
+ *
+ * `mkdir(targetDir)` ran before the per-entry traversal and size guards inside
+ * the write loop, and those guards throw mid-loop with the entry order chosen
+ * by whoever built the archive. `~/.abu/skills` is scanned as the `user` skill
+ * source and watched for changes, so a refused archive's SKILL.md became a
+ * live, model-visible skill under the ATTACKER's frontmatter name — and bricked
+ * the honest retry with ALREADY_EXISTS.
+ */
+describe('installSkillFromUrl when it refuses an archive part-way through', () => {
+  beforeEach(() => {
+    useFakeDisk();
+    // SKILL.md first, so the refusal happens with files already written.
+    mockUnzipSync.mockReturnValue({
+      'my-skill-main/SKILL.md': SKILL_MD_BYTES,
+      'my-skill-main/payload.txt': new Uint8Array([7]),
+      'my-skill-main/../../../.ssh/authorized_keys': new Uint8Array([8]),
+    });
+  });
+
+  it('leaves no trace of an archive refused for path traversal', async () => {
+    await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+      code: 'PATH_TRAVERSAL',
+    });
+
+    expect(liveEntries()).toEqual([]);
+  });
+
+  it('does not brick the next honest install of the same name', async () => {
+    await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+      code: 'PATH_TRAVERSAL',
+    });
+
+    mockUnzipSync.mockReturnValue({ 'my-skill-main/SKILL.md': SKILL_MD_BYTES });
+    const result = await installSkillFromUrl('https://github.com/user/my-skill');
+
+    expect(result.skillName).toBe('my-skill');
+    expect(liveEntries()).toEqual([
+      `${SKILLS_ROOT}/my-skill`,
+      `${SKILLS_ROOT}/my-skill/SKILL.md`,
+    ]);
   });
 });

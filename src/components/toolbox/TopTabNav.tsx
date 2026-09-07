@@ -7,6 +7,9 @@ export interface TopTabNavItem<T extends string = string> {
   id: T;
   label: string;
   icon: LucideIcon;
+  /** Optional trailing adornment (e.g. an update-count badge). Rendered after
+   *  the label, inside the tab button, so it moves with the tab. */
+  badge?: ReactNode;
 }
 
 interface TopTabNavProps<T extends string> {
@@ -63,6 +66,7 @@ export default function TopTabNav<T extends string>({
                 isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
               )} />
               <span>{item.label}</span>
+              {item.badge}
             </button>
           );
         })}

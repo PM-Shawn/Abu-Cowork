@@ -19,6 +19,7 @@ interface FakeConnectedServer {
   client: { callTool: ReturnType<typeof vi.fn> };
   transport: unknown;
   tools: Map<string, ToolDefinition>;
+  appTools: Map<string, ToolDefinition>;
 }
 
 describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)', () => {
@@ -31,6 +32,7 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
       config: { name: 'test-server' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(

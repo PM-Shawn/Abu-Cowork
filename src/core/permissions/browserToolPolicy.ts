@@ -20,6 +20,14 @@ import { parseNamespacedToolName } from '../mcp/toolName';
 const BROWSER_SERVER_NAMES = new Set(['abu-browser', 'abu-browser-bridge']);
 
 /**
+ * Read-only view of the browser server names, for policies that must not
+ * shadow this one. `pluginToolPolicy` uses it so a plugin manifest cannot
+ * claim the name `abu-browser` and thereby bypass the richer browser gate
+ * (site verdicts + scripting carve-out) with its own weaker one.
+ */
+export const BROWSER_SERVER_NAMES_FOR_POLICY: ReadonlySet<string> = BROWSER_SERVER_NAMES;
+
+/**
  * Actions that change page state by driving the UI — clicking, typing,
  * navigating — as opposed to running arbitrary code in the page's origin
  * (see `SCRIPTING_TOOLS` below, a stronger and separately-gated capability).

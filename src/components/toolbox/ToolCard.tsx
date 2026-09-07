@@ -59,18 +59,32 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
         'transition-all duration-150'
       )}
     >
-      {/* Row 1: avatar + name (centered so they align), optional badge + toggle */}
+      {/* Row 1: avatar + name (centered so they align), optional badge + toggle.
+          The row has a WIDTH PRIORITY, because a grid column is only ~240px
+          wide and a caller can legitimately fill it: the action (`toggle`) is
+          never squeezed, the name keeps a floor so it truncates rather than
+          disappearing, and the badge — the one purely decorative slot — is what
+          yields. A badge that carries several chips should let them wrap
+          (`flex-wrap`) so narrowing its box costs a line, not a chip.
+
+          It used to be the other way round: the name was the ONLY flexible item
+          (`flex-1 min-w-0`, i.e. flex-basis 0) between two `shrink-0` groups,
+          so a card whose badge + action added up to the row's full width
+          rendered its title at exactly 0px — gone from the screen, and reported
+          `hidden` by Playwright. That is what the organization plugin catalog
+          hit once its console stopped advertising a signing key and every row
+          grew a second 未签名 chip. */}
       <div className="flex items-center gap-3 w-full shrink-0">
         <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[var(--abu-bg-active)] text-h-md select-none shrink-0 overflow-hidden">
           {item.avatar ?? '🤖'}
         </div>
         <p
-          className="flex-1 min-w-0 text-body font-semibold leading-snug truncate text-[var(--abu-text-primary)]"
+          className="flex-1 min-w-10 text-body font-semibold leading-snug truncate text-[var(--abu-text-primary)]"
           title={item.name}
         >
           {item.name}
         </p>
-        {item.badge && <div className="shrink-0">{item.badge}</div>}
+        {item.badge && <div className="min-w-0 shrink overflow-hidden">{item.badge}</div>}
         {item.toggle && <div className="shrink-0">{item.toggle}</div>}
       </div>
 

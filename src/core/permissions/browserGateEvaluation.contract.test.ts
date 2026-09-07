@@ -183,6 +183,7 @@ describe('browser gate — preview and the real gate agree', () => {
       config: { name: 'abu-browser' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
@@ -286,6 +287,7 @@ describe('browser gate — a call that names a region agrees too', () => {
       config: { name: 'abu-browser' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });

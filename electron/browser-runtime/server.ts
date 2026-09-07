@@ -67,6 +67,14 @@ function isBridgeResponse(value: unknown): value is BrowserTransportResponse & {
 }
 
 class HttpBrowserTransport implements BrowserTransport {
+  /**
+   * The Electron main process is on the other end of this transport and can
+   * open a file itself, so an upload sends PATHS. It also has to: this
+   * transport POSTs JSON to `browserAutomationHost.cjs`, which caps a request
+   * at 1 MiB, so a file's bytes could not travel this way at all.
+   */
+  readonly uploadDelivery = 'path' as const;
+
   constructor(private readonly config: RuntimeConfig) {}
 
   isConnected(): boolean {

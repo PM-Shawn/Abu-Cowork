@@ -108,7 +108,7 @@ const enUS: TranslationDict = {
     automation: 'Automation',
     scheduledTasks: 'Scheduled Tasks',
     triggers: 'Triggers',
-    toolbox: 'Plugins',
+    toolbox: 'Toolbox',
     team: 'Teams',
     recents: 'Recents',
     searchPlaceholder: 'Search chats...',
@@ -672,7 +672,7 @@ const enUS: TranslationDict = {
   settings: {
     labsExpTeamTitle: 'Agent Teams',
     labsExpTeamDesc: 'Build a leader-led team of agents: @ the team in a conversation, the leader splits the work, runs members in parallel, reviews and reports back.',
-    labsExpTeamWhere: 'Shows above Plugins in the left navigation when enabled.',
+    labsExpTeamWhere: 'Shows above Toolbox in the left navigation when enabled.',
     title: 'Settings',
     labs: 'Labs',
     labsDescription: 'Features still in the works — off by default, turn on to try early; may change or be removed anytime.',

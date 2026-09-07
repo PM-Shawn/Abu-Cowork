@@ -127,12 +127,18 @@ test.describe('composer @ popup geometry', () => {
       // the @, then reopen — the stale selection index from the first open
       // must not leave the list scrolled past its header. (Escape is not used
       // here: it deliberately suppresses the same token until it changes.)
-      // Six steps: with the builtin roster the list is ~2x its viewport, so the
-      // selection has to travel below the fold for the list to actually scroll.
-      for (let i = 0; i < 6; i += 1) await textbox.press('ArrowDown');
-      const scrolledBeforeClose = await page.evaluate(() => document.querySelector<HTMLElement>('[role="listbox"]')?.scrollTop ?? -1);
-      console.log('[popup-geometry:scrolled-before-close]', scrolledBeforeClose);
-      expect(scrolledBeforeClose).toBeGreaterThan(0); // the scenario requires a real scroll
+      // Walk the selection to the last option. Whether the list scrolls
+      // depends on the builtin roster size vs. the popup's max height, which
+      // dev changes over time — so the scroll itself is asserted only when the
+      // list overflows; the reopen-unscrolled check below holds either way.
+      const optionCount = await page.getByRole('option').count();
+      for (let i = 0; i < optionCount; i += 1) await textbox.press('ArrowDown');
+      const beforeClose = await page.evaluate(() => {
+        const box = document.querySelector<HTMLElement>('[role="listbox"]');
+        return box ? { scrollTop: box.scrollTop, overflows: box.scrollHeight > box.clientHeight } : { scrollTop: -1, overflows: false };
+      });
+      console.log('[popup-geometry:scrolled-before-close]', JSON.stringify(beforeClose));
+      if (beforeClose.overflows) expect(beforeClose.scrollTop).toBeGreaterThan(0);
       await textbox.press('Backspace');
       await expect(listbox).toHaveCount(0);
       await textbox.type('@');

@@ -397,6 +397,46 @@ describe('upload_file at the real gate', () => {
       expect(decision.reason).toContain('link.txt');
     });
 
+    /**
+     * Acceptance F2. The link SITS in an authorized workspace and POINTS
+     * outside it, so `checkReadPath` — which canonicalizes — says 「未授权」
+     * about it. Answering with that sends the user off to authorize a
+     * directory that has nothing to do with the problem. The reason the user
+     * is given has to be the one that is actually true about the file they
+     * named.
+     */
+    it('says a link is a link, even when what it points at is what is unauthorized', async () => {
+      vi.mocked(lstat).mockImplementation((async (candidate: string) => (
+        candidate === '/ws/link.txt'
+          ? { ...DISK_INFO, isSymlink: true, size: 10 }
+          : DISK_INFO
+      )) as unknown as typeof lstat);
+      // Exactly what a realpath'ing authorization check answers for a link out
+      // of the workspace: not allowed, no resolved path.
+      fsMocks.checkReadPath.mockResolvedValue({ allowed: false, resolvedPath: undefined });
+
+      const decision = await checkToolApproval(
+        'abu-browser__upload_file', uploadInput('/ws/link.txt'), attended, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(decision.reason).toContain('symbolic link');
+      expect(decision.reason).not.toContain('authorized');
+    });
+
+    it('still says 未授权 for an ordinary file outside the workspace — the link case did not swallow it', async () => {
+      fsMocks.checkReadPath.mockResolvedValue({ allowed: false, resolvedPath: undefined });
+
+      const decision = await checkToolApproval(
+        'abu-browser__upload_file', uploadInput('/elsewhere/plain.txt'), attended,
+        (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(decision.reason).toContain('authorized');
+      expect(decision.reason).not.toContain('symbolic link');
+    });
+
     it('refuses a file over the ceiling', async () => {
       vi.mocked(lstat).mockResolvedValue(
         { ...DISK_INFO, size: MAX_UPLOAD_FILE_BYTES + 1 } as unknown as Awaited<ReturnType<typeof lstat>>,

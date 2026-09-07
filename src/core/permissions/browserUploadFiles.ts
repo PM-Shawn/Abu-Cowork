@@ -221,6 +221,35 @@ export async function resolveUploadFiles(
   const files: ApprovedUploadFile[] = [];
   let total = 0;
   for (const raw of paths) {
+    /**
+     * The path AS THE CALLER WROTE IT, lstat'ed before anything canonicalizes
+     * it — and the security-relevant one of the two lstats here. A link
+     * inside an authorized workspace pointing at `~/.ssh/id_rsa` is the whole
+     * attack, and it is invisible from the canonical path alone, which is the
+     * link's destination.
+     *
+     * It also has to come before `checkReadPath`, which realpaths: a link that
+     * SITS in an authorized workspace and POINTS outside it canonicalizes to
+     * an unauthorized target, so asking about authorization first answered
+     * 「未授权目录」 — sending the user off to authorize a directory that is
+     * not the problem, about a file whose actual problem is that it is a link
+     * (acceptance F2). Reaching the link verdict first widens nothing:
+     * `lstat` does not follow the link, the path is still confined to the fs
+     * host's own capability scope or the call throws, and either way the
+     * upload is refused — only the sentence changes.
+     */
+    let named: Awaited<ReturnType<BrowserUploadDeps['lstat']>> | null = null;
+    try {
+      named = await deps.lstat(raw);
+    } catch {
+      // Out of the fs host's scope, or simply not there. `checkReadPath` below
+      // has the better sentence for the first and `not-a-file` for the second,
+      // so say nothing yet.
+    }
+    if (named !== null && named.isSymlink) {
+      return { ok: false, code: 'symlink', detail: displayName(raw) };
+    }
+
     const check = await deps.checkReadPath(raw);
     // `needsPermission` is an ALLOWED: false too, and it is deliberately not
     // turned into a permission prompt here. That prompt authorizes a whole
@@ -230,15 +259,9 @@ export async function resolveUploadFiles(
       return { ok: false, code: 'not-authorized', detail: displayName(raw) };
     }
     const resolved = check.resolvedPath;
-    let named: Awaited<ReturnType<BrowserUploadDeps['lstat']>>;
     let info: Awaited<ReturnType<BrowserUploadDeps['lstat']>>;
     try {
-      // TWO lstats, and the first one is the security-relevant one: the path
-      // AS THE CALLER WROTE IT. `check.resolvedPath` is already canonical, so
-      // lstat'ing only that could never see a link — it is the destination.
-      // A link inside an authorized workspace pointing at ~/.ssh/id_rsa is
-      // the whole attack, and it is invisible from the canonical path alone.
-      named = await deps.lstat(raw);
+      if (named === null) named = await deps.lstat(raw);
       info = await deps.lstat(resolved);
     } catch {
       return { ok: false, code: 'not-a-file', detail: displayName(raw) };

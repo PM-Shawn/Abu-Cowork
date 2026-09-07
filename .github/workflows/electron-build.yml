@@ -124,10 +124,19 @@ jobs:
 
       - name: Install dependencies
         # Root deps + abu-browser-bridge (own package: query_js worker tests
-        # resolve linkedom/ses from the bridge's local node_modules).
+        # resolve linkedom/ses from the bridge's local node_modules) +
+        # abu-chrome-extension, built: browserHost.cjs loads
+        # abu-chrome-extension/dist/content.js with no fallback (b2cc8e34), the
+        # DOM-action tests in `electron:host-ui-test` go through that loader,
+        # and dist/ is gitignored — this workflow is the only CI surface that
+        # runs that gate. `shell: bash` on purpose: the Windows default is pwsh,
+        # where `(cd X && …)` is not a subshell, so the third line would run
+        # from inside abu-browser-bridge.
+        shell: bash
         run: |
           npm ci
           (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci && npm run build)
 
       - name: Require diagnostic upload target
         if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}
@@ -430,10 +439,19 @@ jobs:
 
       - name: Install dependencies
         # Root deps + abu-browser-bridge (own package: query_js worker tests
-        # resolve linkedom/ses from the bridge's local node_modules).
+        # resolve linkedom/ses from the bridge's local node_modules) +
+        # abu-chrome-extension, built: browserHost.cjs loads
+        # abu-chrome-extension/dist/content.js with no fallback (b2cc8e34), the
+        # DOM-action tests in `electron:host-ui-test` go through that loader,
+        # and dist/ is gitignored — this workflow is the only CI surface that
+        # runs that gate. `shell: bash` on purpose: the Windows default is pwsh,
+        # where `(cd X && …)` is not a subshell, so the third line would run
+        # from inside abu-browser-bridge.
+        shell: bash
         run: |
           npm ci
           (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci && npm run build)
 
       - name: Require diagnostic upload target
         if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}

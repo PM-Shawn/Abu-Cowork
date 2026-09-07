@@ -87,6 +87,11 @@ Rules:
 - Before blaming cross-file pollution for this shape of failure, check per-test durations with
   `npx vitest run --reporter=verbose` and look for a body near 5000 ms. As of this writing the
   slowest body in the whole suite is 1946 ms; anything approaching 5 s is the bug.
+- The one sanctioned exception is a **synchronous** body doing real disk I/O whose slow tail is
+  measured on CI, not guessed. Give *those tests* an explicit `it(name, { timeout }, fn)` and put
+  the evidence in a comment (see `NOTICE_SQLITE_TEST_TIMEOUT_MS` in `electron/tauriMigration.test.ts`).
+  No timeout can interrupt a sync body anyway — vitest only checks elapsed time after it returns —
+  so that ceiling is a slowness threshold, not hang protection. Never raise `testTimeout` globally.
 
 **Flaky test quarantine:** If a test is found to be flaky (non-deterministic failure), open a
 GitHub issue tagged `flaky-test` and move the test into `src/__tests__/quarantine/` with a
@@ -262,6 +267,18 @@ E2E is the **outer gate** — heavier than unit tests, independent from `verify:
 ```
 npm run test:e2e       # run all Playwright specs (headless Chromium)
 ```
+
+### Real-Electron suite (`tests/e2e/`, `playwright.electron.config.ts`)
+
+`npm run test:e2e:electron` launches the actual `electron/main.cjs` once per test (~40 launches for the full suite). CI runs the whole suite on every PR to `dev` (`e2e-electron` job, macOS runner, a **required** check), so the full run is CI's job — locally, run only what your change touches:
+
+```
+npm run test:e2e:electron -- tests/e2e/smoke.spec.ts tests/e2e/<feature>.spec.ts
+```
+
+Run the full suite locally only for shell-wide changes (`electron/main.cjs`, `preload.cjs`, `tests/e2e/electronHelpers.ts`, global components, **zh-CN copy changes** — specs locate elements by Chinese text). Playwright's `--only-changed` does not help here: it diffs test files and their imports, and these specs do not import app source.
+
+Electron has no headless mode, so every launch shows a real window. The launcher sets `ABU_E2E_QUIET_WINDOW=1`, which makes `main.cjs` reveal windows with `showInactive()` and hide the macOS Dock icon (`electron/windowShowPolicy.cjs`), so a run no longer steals keyboard focus from the developer. Windows stay real and rendered — drag-region and browser-view specs depend on that.
 
 ### Strategy: Web Mode + LLM mock
 

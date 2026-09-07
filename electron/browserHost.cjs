@@ -420,6 +420,11 @@ const TAKEOVER_GATED_ACTIONS = new Set([
   'execute_js',
   'scroll',
   'start_recording',
+  // T5/T6. Both drive the page — `upload_file` writes into a form control,
+  // `download` presses a button — so both wait out a quiet window like every
+  // other action that could collide with what the user is doing.
+  'upload_file',
+  'download',
 ]);
 
 /**
@@ -490,6 +495,12 @@ const ORIGIN_PINNED_ACTIONS = new Set([
   'select',
   'keyboard',
   'execute_js',
+  // T5. An upload approved for one site must never land on another: this is
+  // the one action whose drift sends a LOCAL FILE somewhere the user never
+  // agreed to, which is strictly worse than a misplaced click.
+  'upload_file',
+  // T6. Its click half is an ordinary pinned click.
+  'download',
 ]);
 
 /**
@@ -1339,24 +1350,12 @@ function browserSessionForViews() {
     callback({ cancel: false });
   });
 
-  browserSession.on('will-download', (_event, item) => {
-    const record = {
-      id: `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
-      filename: item.getFilename(),
-      url: item.getURL(),
-      state: item.getState(),
-      time: Date.now(),
-    };
-    recentDownloads.unshift(record);
-    if (recentDownloads.length > 20) recentDownloads.length = 20;
-    item.on('updated', () => {
-      record.filename = item.getFilename();
-      record.state = item.getState();
-    });
-    item.once('done', (_doneEvent, state) => {
-      record.filename = item.getFilename();
-      record.state = state;
-    });
+  // T6. Every automation download is redirected into Abu's own per-task
+  // folder and answered for by the run that asked for it — see
+  // `handleWillDownload`, which also explains why `setSavePath` being
+  // synchronous here is what keeps a "Save as" window from ever appearing.
+  browserSession.on('will-download', (_event, item, contents) => {
+    handleWillDownload(item, contents);
   });
 
   return browserSession;
@@ -2157,6 +2156,19 @@ async function ensureDialogWatcher(id, view) {
     dialogListenersBound.add(contents);
     dbg.on('message', (_event, method, params) => {
       if (method === 'Page.javascriptDialogOpening') noteDialogOpened(id, params);
+      // T5 — the OS file picker, refused before it can appear.
+      //
+      // This is not how `upload_file` works (that writes the file into the
+      // input directly); it is the guard for the OTHER way a picker opens:
+      // the model clicks a 「选择文件」 button, or the page calls
+      // `input.click()` on its own while automation is driving. Without
+      // interception Chromium raises a NATIVE modal that nothing in this
+      // process can dismiss and no automated run can answer — the PRD's
+      // 「弹出即死锁」. With it, the chooser never renders and we answer it
+      // with an empty selection, which is exactly "the user pressed Cancel".
+      else if (method === 'Page.fileChooserOpened') {
+        cancelInterceptedFileChooser(dbg, id, params);
+      }
       // Also fired for a dialog that ended some other way (the frame went away
       // under it), so it is what keeps a stale "pending" from outliving one.
       else if (method === 'Page.javascriptDialogClosed') {
@@ -2186,6 +2198,23 @@ async function ensureDialogWatcher(id, view) {
   try {
     if (!dbg.isAttached()) dbg.attach('1.3');
     await dbg.sendCommand('Page.enable');
+    // T5 — arm the file-chooser interception on the same lease, so it lives
+    // exactly as long as automation is touching this tab. A tab the user is
+    // browsing on their own keeps its native picker, for the same reason F1
+    // gave it back its native dialogs.
+    //
+    // Best-effort and SEPARATE from the `Page.enable` above: an Electron/
+    // Chromium build without this CDP method must not cost the tab its dialog
+    // interception, which is the older and more load-bearing of the two.
+    try {
+      await dbg.sendCommand('DOM.enable');
+      await dbg.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true });
+    } catch (chooserError) {
+      console.log(
+        `[browserHost] file-chooser interception unavailable on view ${id}: `
+          + (chooserError instanceof Error ? chooserError.message : String(chooserError))
+      );
+    }
   } catch (error) {
     dialogWatched.delete(contents);
     console.log(
@@ -2193,6 +2222,27 @@ async function ensureDialogWatcher(id, view) {
         + (error instanceof Error ? error.message : String(error))
     );
   }
+}
+
+/**
+ * Answer an intercepted file chooser with "nothing selected".
+ *
+ * `DOM.setFileInputFiles` with an empty list is how CDP says Cancel. Doing
+ * nothing at all would also avoid the modal, but would leave the page waiting
+ * on a chooser that never resolves; this way the page's own
+ * `input.onchange`/promise settles and the model sees an empty input, which
+ * is a state it can act on (「用 upload_file，别点选择文件」).
+ */
+function cancelInterceptedFileChooser(dbg, id, params) {
+  const backendNodeId = params && params.backendNodeId;
+  if (typeof backendNodeId !== 'number') return;
+  Promise.resolve(dbg.sendCommand('DOM.setFileInputFiles', { files: [], backendNodeId }))
+    .catch((error) => {
+      console.log(
+        `[browserHost] could not cancel an intercepted file chooser on view ${id}: `
+          + (error instanceof Error ? error.message : String(error))
+      );
+    });
 }
 
 function holdDialogWatch(id) {
@@ -2398,6 +2448,444 @@ async function handleDialogAction(tabId, id, payload) {
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Downloads (batch-三 T6) and uploads (T5)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ## Where a downloaded file goes, and why not where the browser would put it
+ *
+ * Before this, `will-download` was watched only to keep a list of names: the
+ * file itself went wherever Chromium's default download path pointed, under
+ * whatever name the SERVER chose, with no record of which run had asked for
+ * it. Three things were wrong with that at once — the run could not tell the
+ * user where the file was, one task's exports sat in the same folder as
+ * another's, and the name came from a header.
+ *
+ * So every automation download is redirected into a folder Abu owns, split
+ * per owner (`conversationId` + subagent `runKey`), with a name this file
+ * derives rather than accepts. `setSavePath` also has a second effect that is
+ * the point rather than a side effect: it suppresses the "Save as" window.
+ * An OS-modal save dialog in an automation run is not a prompt, it is a
+ * deadlock — nobody is looking at it and the run cannot dismiss it.
+ */
+let downloadRootOverride = null;
+
+function browserDownloadRoot() {
+  if (downloadRootOverride) return downloadRootOverride;
+  // Required lazily: `browserHost.cjs` is loaded by unit tests with a fake
+  // `electron` module that has no `app`, and those tests set the override.
+  const { app } = require('electron');
+  const { abuAppDataDir } = require('./appEnv.cjs');
+  return path.join(abuAppDataDir(app), 'browser-downloads');
+}
+
+/** Newest-first cap on `recentDownloads`, unchanged from before T6. */
+const MAX_RECENT_DOWNLOADS = 20;
+
+/** One path segment that is safe on both platforms and still recognizable. */
+function safePathSegment(value, fallback) {
+  const cleaned = String(value == null ? '' : value)
+    .replace(/[^A-Za-z0-9._-]/g, '_')
+    .replace(/^\.+/, '')
+    .slice(0, 64);
+  return cleaned || fallback;
+}
+
+/**
+ * The file name Abu writes, derived from the one the server suggested.
+ *
+ * Path separators, leading dots, control characters and the Windows-reserved
+ * punctuation are removed rather than escaped: a download name is
+ * attacker-controlled (it comes from a `Content-Disposition` header) and the
+ * only reason it exists here is so a person recognizes their own export.
+ * Non-ASCII is deliberately KEPT — 「排班表.xlsx」 is the normal case in this
+ * product, and stripping it would leave a folder full of `download`.
+ */
+function safeDownloadFileName(raw) {
+  const base = String(raw == null ? '' : raw).split(/[\\/]/).pop() || '';
+  const cleaned = base
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/[:*?"<>|]/g, '_')
+    .replace(/^\.+/, '')
+    .trim();
+  if (!cleaned) return 'download';
+  return cleaned.length > 120 ? cleaned.slice(0, 120) : cleaned;
+}
+
+/** `report.xlsx` becomes `report (2).xlsx` when the first one is already there. */
+function uniqueDownloadPath(dir, fileName) {
+  const ext = path.extname(fileName);
+  const stem = ext ? fileName.slice(0, -ext.length) : fileName;
+  let candidate = path.join(dir, fileName);
+  for (let n = 2; n < 1000 && fs.existsSync(candidate); n += 1) {
+    candidate = path.join(dir, `${stem} (${n})${ext}`);
+  }
+  return candidate;
+}
+
+/**
+ * Downloads this owner may see.
+ *
+ * The legacy owner (the user's own pane tabs, and any caller that sent no id)
+ * is deliberately its own bucket rather than a wildcard: «A 看不到 B 的文件»
+ * has to hold for the shared pool too, or a second conversation could read the
+ * first one's exports by simply not sending an owner.
+ */
+function downloadsForOwner(ownerKey) {
+  return recentDownloads.filter((item) => item.ownerKey === ownerKey);
+}
+
+/** What a download looks like to the model — never the internal owner key. */
+function publicDownload(record) {
+  return {
+    downloadId: record.downloadId,
+    filename: record.filename,
+    url: record.url,
+    state: record.state,
+    time: record.time,
+    ...(record.savePath ? { path: record.savePath } : {}),
+    ...(typeof record.size === 'number' ? { size: record.size } : {}),
+    ...(record.mime ? { mime: record.mime } : {}),
+    ...(record.interruptReason ? { interruptReason: record.interruptReason } : {}),
+  };
+}
+
+/**
+ * Runs waiting for the download their own click is about to start.
+ *
+ * Keyed by owner and consumed FIFO, which is the whole of the "认不出就说认不
+ * 出" rule: a waiter claims the next download that arrives for its owner, and
+ * if none arrives inside its budget it reports that instead of adopting some
+ * other file that happened to land. Two tasks downloading at once never see
+ * each other's waiters because the key carries both halves of the owner.
+ */
+const downloadWaitersByOwner = new Map();
+
+function pushDownloadWaiter(ownerKey, waiter) {
+  const queue = downloadWaitersByOwner.get(ownerKey) || [];
+  queue.push(waiter);
+  downloadWaitersByOwner.set(ownerKey, queue);
+}
+
+function dropDownloadWaiter(ownerKey, waiter) {
+  const queue = downloadWaitersByOwner.get(ownerKey);
+  if (!queue) return;
+  const at = queue.indexOf(waiter);
+  if (at >= 0) queue.splice(at, 1);
+  if (queue.length === 0) downloadWaitersByOwner.delete(ownerKey);
+}
+
+function takeDownloadWaiter(ownerKey) {
+  const queue = downloadWaitersByOwner.get(ownerKey);
+  if (!queue || queue.length === 0) return null;
+  const waiter = queue.shift();
+  if (queue.length === 0) downloadWaitersByOwner.delete(ownerKey);
+  return waiter;
+}
+
+/** downloadId -> the record, so a `wait` call can find one it did not start. */
+const downloadsById = new Map();
+
+/** downloadId -> resolvers waiting for it to reach a terminal state. */
+const downloadDoneWaiters = new Map();
+
+function notifyDownloadDone(downloadId) {
+  const waiters = downloadDoneWaiters.get(downloadId);
+  if (!waiters) return;
+  downloadDoneWaiters.delete(downloadId);
+  for (const resolve of waiters.slice()) resolve();
+}
+
+function awaitDownloadDone(downloadId, timeoutMs, signal) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      disarmTimer(timer);
+      if (signal) signal.removeEventListener('abort', done);
+      const list = downloadDoneWaiters.get(downloadId);
+      if (list) {
+        const at = list.indexOf(done);
+        if (at >= 0) list.splice(at, 1);
+        if (list.length === 0) downloadDoneWaiters.delete(downloadId);
+      }
+      resolve();
+    };
+    const timer = armTimer(done, timeoutMs);
+    if (signal) {
+      if (signal.aborted) { done(); return; }
+      signal.addEventListener('abort', done, { once: true });
+    }
+    const list = downloadDoneWaiters.get(downloadId) || [];
+    list.push(done);
+    downloadDoneWaiters.set(downloadId, list);
+  });
+}
+
+/**
+ * Which owner a `will-download` belongs to.
+ *
+ * Chromium hands the event the `webContents` that started it, which is the
+ * automation view — and every automation view already records its owner
+ * (`viewMeta`). A download from a contents this host does not know (the user's
+ * own pane tab, an extension page) falls back to the legacy owner, which is
+ * its own bucket rather than everyone's.
+ */
+function ownerKeyForDownloadContents(contents) {
+  if (!contents || typeof contents.id !== 'number') return LEGACY_OWNER.key;
+  for (const [id, view] of views) {
+    if (view && view.webContents && view.webContents.id === contents.id) {
+      return ownerKeyOf(id);
+    }
+  }
+  return LEGACY_OWNER.key;
+}
+
+/**
+ * The `will-download` handler, split out of `browserSessionForViews` so a test
+ * can drive it with a fake item.
+ *
+ * Everything that must be synchronous IS synchronous: `setSavePath` has to be
+ * called before this returns or Chromium falls back to asking the user, which
+ * is the OS-modal deadlock this whole path exists to avoid.
+ */
+function handleWillDownload(item, contents) {
+  const ownerKey = ownerKeyForDownloadContents(contents);
+  const { conversationId, runKey } = parseOwnerKey(ownerKey);
+  const downloadId = `dl_${clock.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`;
+  const suggested = safeDownloadFileName(item.getFilename());
+
+  let savePath = null;
+  let saveError = null;
+  try {
+    const dir = path.join(
+      browserDownloadRoot(),
+      safePathSegment(conversationId, 'shared'),
+      safePathSegment(runKey, 'main'),
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    savePath = uniqueDownloadPath(dir, suggested);
+    item.setSavePath(savePath);
+  } catch (error) {
+    // Nowhere to put it. Cancel rather than let Chromium fall back to its own
+    // folder (which nothing here could then find) or to a save dialog.
+    saveError = error instanceof Error ? error.message : String(error);
+    savePath = null;
+    try { item.cancel(); } catch { /* already gone */ }
+  }
+
+  const record = {
+    id: downloadId,
+    downloadId,
+    ownerKey,
+    filename: savePath ? path.basename(savePath) : suggested,
+    url: typeof item.getURL === 'function' ? item.getURL() : '',
+    state: saveError ? 'interrupted' : item.getState(),
+    time: clock.now(),
+    savePath,
+    size: typeof item.getTotalBytes === 'function' ? item.getTotalBytes() : 0,
+    mime: typeof item.getMimeType === 'function' ? item.getMimeType() : '',
+    ...(saveError ? { interruptReason: `could not create the download folder: ${saveError}` } : {}),
+  };
+  recentDownloads.unshift(record);
+  downloadsById.set(downloadId, record);
+  if (recentDownloads.length > MAX_RECENT_DOWNLOADS) {
+    for (const dropped of recentDownloads.splice(MAX_RECENT_DOWNLOADS)) {
+      downloadsById.delete(dropped.downloadId);
+    }
+  }
+
+  // Hand it to whoever pressed the button, before anything can await.
+  const waiter = takeDownloadWaiter(ownerKey);
+  if (waiter) waiter.claim(record);
+
+  if (saveError) {
+    notifyDownloadDone(downloadId);
+    return record;
+  }
+
+  item.on('updated', () => {
+    record.state = item.getState();
+    if (typeof item.getReceivedBytes === 'function') {
+      record.received = item.getReceivedBytes();
+    }
+  });
+  item.once('done', (_doneEvent, state) => {
+    record.state = state;
+    if (typeof item.getTotalBytes === 'function') {
+      const total = item.getTotalBytes();
+      if (total > 0) record.size = total;
+    }
+    if (state === 'completed' && record.savePath) {
+      try {
+        record.size = fs.statSync(record.savePath).size;
+      } catch { /* keep the size the item reported */ }
+    }
+    if (state !== 'completed') {
+      record.interruptReason = state === 'cancelled'
+        ? 'the download was cancelled'
+        : 'the download was interrupted before it finished';
+    }
+    notifyDownloadDone(downloadId);
+  });
+  return record;
+}
+
+function isTerminalDownloadState(state) {
+  return state === 'completed' || state === 'cancelled' || state === 'interrupted';
+}
+
+/** Mirrors `MAX_DOWNLOAD_WAIT_MS` / the default in the bridge's `locators.ts`. */
+function clampHostDownloadWait(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 30000;
+  return Math.min(Math.floor(n), 120000);
+}
+
+/** One download, plus the sentence that keeps the model from guessing. */
+function downloadResult(record) {
+  const done = record.state === 'completed';
+  return {
+    started: true,
+    complete: done,
+    download: publicDownload(record),
+    message: done
+      ? `Saved to ${record.savePath}. The file is complete.`
+      : record.state === 'progressing'
+        ? 'Still downloading. Call download again with action "wait" and this downloadId; '
+          + 'the file is not usable until it reports complete.'
+        : `The download did not finish (${record.state}). Nothing usable was saved.`,
+  };
+}
+
+/** The `download` tool, built-in-browser half. */
+async function downloadAutomation(view, payload, owner, signal) {
+  const timeoutMs = clampHostDownloadWait(payload.timeoutMs);
+
+  if (payload.action === 'wait') {
+    const record = downloadsById.get(String(payload.downloadId || ''));
+    // Ownership is checked before existence is admitted: answering "that id is
+    // not yours" and "that id does not exist" with different sentences would
+    // let one task probe for another's downloads.
+    if (!record || record.ownerKey !== owner.key) {
+      throw new Error(
+        `No download with id ${String(payload.downloadId)} belongs to this task. `
+        + 'Call get_downloads to see the ones it has, or start a new one with action "click".',
+      );
+    }
+    if (!isTerminalDownloadState(record.state)) {
+      await awaitDownloadDone(record.downloadId, timeoutMs, signal);
+    }
+    return downloadResult(record);
+  }
+
+  // CLICK. The waiter is registered BEFORE the click, never after: a small
+  // file can finish before `runDomAutomation` has even returned, and a waiter
+  // armed afterwards would miss the download its own click produced and then
+  // report "no download" for one already sitting on disk.
+  let claimed = null;
+  let onClaim = null;
+  const waiter = {
+    claim: (record) => {
+      claimed = record;
+      if (onClaim) onClaim();
+    },
+  };
+  pushDownloadWaiter(owner.key, waiter);
+  try {
+    await runDomAutomation(view, 'click', {
+      locator: payload.locator,
+      ...(payload.frameId ? { frameId: payload.frameId } : {}),
+      ...(payload.expectedOrigin ? { expectedOrigin: payload.expectedOrigin } : {}),
+      ...(payload.unattended ? { unattended: true } : {}),
+    });
+    if (!claimed) {
+      await new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          disarmTimer(timer);
+          onClaim = null;
+          if (signal) signal.removeEventListener('abort', finish);
+          resolve();
+        };
+        onClaim = finish;
+        const timer = armTimer(finish, timeoutMs);
+        if (signal) {
+          if (signal.aborted) finish();
+          else signal.addEventListener('abort', finish, { once: true });
+        }
+      });
+    }
+  } finally {
+    dropDownloadWaiter(owner.key, waiter);
+  }
+  if (!claimed) {
+    return {
+      started: false,
+      message: 'That click produced no download. Nothing was saved, and no other file was '
+        + 'adopted in its place. Check the page — the export may have opened a dialog, '
+        + 'failed, or rendered inline instead of downloading.',
+    };
+  }
+  if (!isTerminalDownloadState(claimed.state)) {
+    await awaitDownloadDone(claimed.downloadId, timeoutMs, signal);
+  }
+  return downloadResult(claimed);
+}
+
+/**
+ * The `upload_file` tool, built-in-browser half.
+ *
+ * The file is opened HERE — the main process is the only tier in this channel
+ * that can — and its bytes go to the same content-script routine the Chrome
+ * extension drives. One implementation of the DOM write, two ways of getting
+ * the bytes to it.
+ *
+ * No OS file picker is involved at any point: nothing in this file calls
+ * `showOpenDialog`, and the page's own picker is intercepted for as long as
+ * automation is touching the tab (see `ensureDialogWatcher`).
+ */
+async function uploadAutomation(view, payload) {
+  const declared = Array.isArray(payload.files) ? payload.files : [];
+  if (declared.length === 0) {
+    throw new Error('Refused: this upload named no approved file, so nothing was sent.');
+  }
+  const files = [];
+  for (const entry of declared) {
+    const filePath = entry && typeof entry.path === 'string' ? entry.path : '';
+    const name = entry && typeof entry.name === 'string' ? entry.name : '';
+    const size = entry && typeof entry.size === 'number' ? entry.size : -1;
+    if (!filePath || !name || size < 0) {
+      throw new Error('Refused: the approved file list for this upload was not readable.');
+    }
+    // The file-side half of the TOCTOU check (the bridge does the same on the
+    // Chrome channel): the confirmation the user answered named a size, and a
+    // file that changed since then is not the file they approved.
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) {
+      throw new Error(`Refused: "${name}" is not an ordinary file.`);
+    }
+    if (stat.size !== size) {
+      throw new Error(
+        `Refused: "${name}" changed on disk between the confirmation and this upload `
+        + `(${size} bytes then, ${stat.size} now). Nothing was uploaded.`,
+      );
+    }
+    files.push({ name, size, base64: fs.readFileSync(filePath).toString('base64') });
+  }
+  return runDomAutomation(view, 'upload_file', {
+    locator: payload.locator,
+    files,
+    ...(payload.frameId ? { frameId: payload.frameId } : {}),
+    ...(payload.expectedOrigin ? { expectedOrigin: payload.expectedOrigin } : {}),
+    ...(payload.unattended ? { unattended: true } : {}),
+  });
+}
+
 /**
  * @param {string} action
  * @param {Record<string, unknown>} [payload]
@@ -2524,7 +3012,11 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     };
   }
 
-  if (action === 'get_downloads') return recentDownloads.map((item) => ({ ...item }));
+  // T6 — this run's own downloads, and nobody else's. `recentDownloads` is
+  // one list for the whole browser session, so the isolation has to be applied
+  // where it is read: a conversation that never downloaded anything gets an
+  // empty list, not the neighbouring task's exports.
+  if (action === 'get_downloads') return downloadsForOwner(ownerKey).map(publicDownload);
 
   const targetTabId = payload.tabId === undefined && action === 'get_html'
     ? activeTabIdByOwner.get(ownerKey)
@@ -2682,6 +3174,12 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     if (action === 'execute_js') {
       return view.webContents.executeJavaScript(String(payload.code || ''), true);
     }
+    // T5/T6 — answered natively rather than by the DOM runtime, because both
+    // need the main process: one opens a file, the other owns the session's
+    // download stream. `upload_file` then hands the bytes to the SAME content
+    // runtime the Chrome extension drives.
+    if (action === 'upload_file') return uploadAutomation(view, payload);
+    if (action === 'download') return downloadAutomation(view, payload, owner, signal);
     if (action === 'screenshot') return screenshotAutomation(view, false);
     if (action === 'screenshot_full_page') return screenshotAutomation(view, true);
     if (action === 'keyboard') return keyboardAutomation(view, payload);
@@ -3120,5 +3618,21 @@ module.exports = {
   __testing: {
     /** Swap the takeover backoff's clock; pass nothing to restore wall time. */
     setClock(next) { clock = next || REAL_CLOCK; },
+    /**
+     * Point downloads at a scratch directory.
+     *
+     * Production resolves the root from `app.getPath('appData')`, which a unit
+     * test's fake `electron` module does not have — and a test that wrote into
+     * the real per-user app-data dir would be a test that litters the machine
+     * it runs on. Pass nothing to restore the production resolution.
+     */
+    setDownloadRoot(dir) { downloadRootOverride = dir || null; },
+    /** Forget every download record between tests. */
+    resetDownloads() {
+      recentDownloads.length = 0;
+      downloadsById.clear();
+      downloadWaitersByOwner.clear();
+      downloadDoneWaiters.clear();
+    },
   },
 };

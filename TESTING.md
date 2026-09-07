@@ -268,6 +268,18 @@ E2E is the **outer gate** — heavier than unit tests, independent from `verify:
 npm run test:e2e       # run all Playwright specs (headless Chromium)
 ```
 
+### Real-Electron suite (`tests/e2e/`, `playwright.electron.config.ts`)
+
+`npm run test:e2e:electron` launches the actual `electron/main.cjs` once per test (~40 launches for the full suite). CI runs the whole suite on every PR to `dev` (`e2e-electron` job, macOS runner, a **required** check), so the full run is CI's job — locally, run only what your change touches:
+
+```
+npm run test:e2e:electron -- tests/e2e/smoke.spec.ts tests/e2e/<feature>.spec.ts
+```
+
+Run the full suite locally only for shell-wide changes (`electron/main.cjs`, `preload.cjs`, `tests/e2e/electronHelpers.ts`, global components, **zh-CN copy changes** — specs locate elements by Chinese text). Playwright's `--only-changed` does not help here: it diffs test files and their imports, and these specs do not import app source.
+
+Electron has no headless mode, so every launch shows a real window. The launcher sets `ABU_E2E_QUIET_WINDOW=1`, which makes `main.cjs` reveal windows with `showInactive()` and hide the macOS Dock icon (`electron/windowShowPolicy.cjs`), so a run no longer steals keyboard focus from the developer. Windows stay real and rendered — drag-region and browser-view specs depend on that.
+
 ### Strategy: Web Mode + LLM mock
 
 The app runs under `npm run dev` (Vite dev server on `:5173`). Tauri IPC is absent in this mode, so:

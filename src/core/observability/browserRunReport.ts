@@ -67,8 +67,13 @@ export const MAX_REPORT_SITES = 8;
 export const MAX_REPORT_PROBLEMS = 5;
 /** Files listed on the card and in the IM summary before it says "and N more". */
 export const MAX_REPORT_ARTIFACTS = 5;
-/** A download's name/path are header-derived; clamp them like an origin. */
+/** A download's NAME is header-derived; clamp it like an origin. */
 export const MAX_REPORT_ARTIFACT_NAME_LENGTH = 120;
+/**
+ * How long a path may be and still be carried. NOT a truncation length — a
+ * path past this drops the whole artifact into `omitted` (see the
+ * `download_saved` case below).
+ */
 export const MAX_REPORT_ARTIFACT_PATH_LENGTH = 240;
 export const MAX_REPORT_ORIGINS_PER_ROW = 3;
 
@@ -134,9 +139,13 @@ export interface BrowserRunReportProblem {
  * `complete`, because a path to a file that is not finished is worse than no
  * path at all.
  *
- * `name`/`path` come from a `Content-Disposition` header by way of the host's
- * own sanitizer, so they are clamped here like every other untrusted string
- * on this card.
+ * `name` comes from a `Content-Disposition` header by way of the host's own
+ * sanitizer, so it is clamped here like every other untrusted string on this
+ * card. `path` is NOT: it is a path this app itself composed under its own
+ * download root, and the card hands it straight to `openPreview` /
+ * `revealItemInDir`. Flattening or truncating it produces a path that opens
+ * nothing (round-2 review N3) — so it travels byte for byte, and a path too
+ * long to carry drops the whole artifact into `omitted` instead.
  */
 export interface BrowserRunReportArtifact {
   downloadId: string;
@@ -380,6 +389,9 @@ export function buildBrowserRunReport(
   let blockedPages = 0;
   /** downloadId -> the file, so a click and its later `wait` count once. */
   const artifacts = new Map<string, BrowserRunReportArtifact>();
+  /** Downloads whose path is too long to carry intact — counted as omitted
+   *  rather than listed with a truncated path that opens nothing. */
+  const unlistableArtifacts = new Set<string>();
   /** Feeds `outcomeWithRefusals`. Counted off the gate's own signals only. */
   let refusedStateChangingActions = false;
 
@@ -440,18 +452,37 @@ export function buildBrowserRunReport(
       case 'blocked_page':
         blockedPages++;
         break;
-      case 'download_saved':
+      case 'download_saved': {
+        // N3 (round-2 review). `path` used to go through `clampUntrusted`
+        // like every page-derived string on this card, and that broke the two
+        // buttons the artifact row exists for: `\s+`→' ' collapsed the double
+        // space in `a  b.pdf` that the host's own sanitizer deliberately
+        // keeps, and >240 characters came back truncated with an ellipsis, so
+        // 「点开」/「在文件夹中显示」 addressed a file that does not exist and
+        // failed silently. The path is ours — composed by the host under
+        // Abu's own download root, never echoed from the page — so it is
+        // carried verbatim; only `name` is display text. A path we cannot
+        // carry intact is reported as OMITTED, because a card is allowed to
+        // say "and 1 more" and is not allowed to hand out a path that opens
+        // nothing.
+        if (signal.path.length > MAX_REPORT_ARTIFACT_PATH_LENGTH) {
+          artifacts.delete(signal.downloadId);
+          unlistableArtifacts.add(signal.downloadId);
+          break;
+        }
+        if (unlistableArtifacts.has(signal.downloadId)) break;
         // Keyed by downloadId: a big export is reported once by the click that
         // started it and again by the `wait` that saw it finish, and the user
         // downloaded one file.
         artifacts.set(signal.downloadId, {
           downloadId: signal.downloadId,
           name: clampUntrusted(signal.name, MAX_REPORT_ARTIFACT_NAME_LENGTH),
-          path: clampUntrusted(signal.path, MAX_REPORT_ARTIFACT_PATH_LENGTH),
+          path: signal.path,
           bytes: signal.bytes,
           ...(signal.mime ? { mime: clampUntrusted(signal.mime, MAX_REPORT_ERROR_CLASS_LENGTH) } : {}),
         });
         break;
+      }
       default:
         // fallback_to_script / repeat_action / confirm_prompt / tab_lifetime /
         // task_end / site_check_unresolved carry no row of their own in this
@@ -475,6 +506,7 @@ export function buildBrowserRunReport(
   const hasSomethingToSay =
     total > 0
     || artifacts.size > 0
+    || unlistableArtifacts.size > 0
     || denialRows.length > 0
     || blockedPages > 0
     || approvals.approved > 0
@@ -543,7 +575,8 @@ export function buildBrowserRunReport(
     omitted: {
       sites: Math.max(0, allSites.length - MAX_REPORT_SITES),
       problems: Math.max(0, allProblems.length - MAX_REPORT_PROBLEMS),
-      artifacts: Math.max(0, artifacts.size - MAX_REPORT_ARTIFACTS),
+      artifacts:
+        Math.max(0, artifacts.size - MAX_REPORT_ARTIFACTS) + unlistableArtifacts.size,
     },
   };
 }

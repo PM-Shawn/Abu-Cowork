@@ -321,7 +321,11 @@ export default function BrowserRunReportCard({ message }: { message: Message }) 
         </Section>
       )}
 
-      {(report.artifacts?.length ?? 0) > 0 && (
+      {/* Also shown when the list itself is empty but something was dropped:
+          a run that produced one file whose path was too long to carry
+          (`browserRunReport.ts`, N3) must still say a file exists, not look
+          like a run that downloaded nothing. */}
+      {((report.artifacts?.length ?? 0) > 0 || (report.omitted.artifacts ?? 0) > 0) && (
         <Section title={tr.artifactsTitle}>
           <ul className="space-y-0.5">
             {report.artifacts?.map((artifact) => (

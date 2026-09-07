@@ -202,6 +202,45 @@ describe('a download this run produced reaches the card and the IM summary', () 
    * A big export is reported twice — once by the click that started it, once
    * by the `wait` that saw it finish — and the user downloaded one file.
    */
+  /**
+   * N3 (round-2 review). The path used to be run through the card's
+   * untrusted-text clamp, which collapses `\s+` to a single space — so the
+   * `a  b.pdf` that the host's own sanitizer deliberately keeps arrived as
+   * `a b.pdf`, and 「点开」/「在文件夹中显示」 addressed a file that is not
+   * there. The path is composed by the host under Abu's own download root; it
+   * is not page text and must travel byte for byte.
+   */
+  it('carries a path with a double space in it exactly as it is on disk', async () => {
+    const onDisk = '/Users/me/Library/Application Support/abu/browser-downloads/conv/main/a  b.pdf';
+    const { report, outcome } = await runOneDownload({
+      ...COMPLETED,
+      download: { ...COMPLETED.download, filename: 'a  b.pdf', path: onDisk },
+    });
+
+    expect(report?.artifacts?.[0]?.path).toBe(onDisk);
+    expect(outcome.artifacts[0]?.path).toBe(onDisk);
+    expect(formatUnattendedOutcomeSummary(outcome, getI18n())).toContain(onDisk);
+  });
+
+  /**
+   * The other half of N3: a path we cannot carry intact is reported as
+   * omitted, never truncated. A 240-character cap plus an ellipsis produced a
+   * path that opens nothing, and the failure was silent.
+   */
+  it('omits a file whose path is too long to carry, rather than listing a truncated one', async () => {
+    const tooLong = `/Users/me/Library/Application Support/abu/browser-downloads/${'x'.repeat(300)}.xlsx`;
+    const { report, outcome } = await runOneDownload({
+      ...COMPLETED,
+      download: { ...COMPLETED.download, path: tooLong },
+    });
+
+    expect(report?.artifacts).toEqual([]);
+    expect(report?.omitted.artifacts).toBe(1);
+    expect(outcome.artifacts).toEqual([]);
+    // Nothing that LOOKS like the path may reach the reader either.
+    expect(formatUnattendedOutcomeSummary(outcome, getI18n())).not.toContain('…');
+  });
+
   it('counts one file once, however many calls reported it', async () => {
     const since = getBrowserSignalCursor();
     serveDownload(COMPLETED);

@@ -331,13 +331,21 @@ describe('upload_file', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-upload-'));
     const approvedPath = path.join(dir, 'report.txt');
     fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    const pin = pinOf(approvedPath);
     const stamp = APPROVED_META([
-      { path: approvedPath, name: 'report.txt', size: 8, ...pinOf(approvedPath) },
+      { path: approvedPath, name: 'report.txt', size: 8, ...pin },
     ]);
     // A new inode at the same path, the same length, different bytes.
     const other = path.join(dir, 'other.txt');
     fs.writeFileSync(other, 'SECRET!!');
     fs.renameSync(other, approvedPath);
+    // Round-2 review N5: put the clock back so the INODE is the only thing
+    // that differs. Two writes usually land in different milliseconds, and
+    // then the mtime check rejects this before the identity pin is consulted
+    // — which made a mutation that deletes that pin go red only by luck.
+    fs.utimesSync(approvedPath, new Date(pin.mtimeMs), new Date(pin.mtimeMs));
+    expect(pinOf(approvedPath).mtimeMs).toBe(pin.mtimeMs);
+    expect(pinOf(approvedPath).ino).not.toBe(pin.ino);
 
     try {
       const { tool, sent } = harness('bytes');

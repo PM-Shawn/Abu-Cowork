@@ -857,6 +857,18 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
     const other = path.join(root, 'other.txt');
     fs.writeFileSync(other, 'SECRET!!');
     fs.renameSync(other, approvedPath);
+    // Round-2 review N5. Both writes are the same length, so the ONLY thing
+    // that should reject this is the inode — but two `writeFileSync` calls
+    // usually land in different milliseconds, and the mtime check got there
+    // first. The test then passed for a reason it was not testing: a mutation
+    // that deletes the `ino`/`dev` comparison went red only when the clock
+    // happened to disagree. Freeze the clock onto the approved value and the
+    // identity pin is the one thing left standing.
+    const frozen = new Date(approved.mtimeMs);
+    fs.utimesSync(approvedPath, frozen, frozen);
+    assert.equal(Math.floor(fs.lstatSync(approvedPath).mtimeMs), approved.mtimeMs);
+    assert.equal(fs.lstatSync(approvedPath).size, approved.size);
+    assert.notEqual(fs.lstatSync(approvedPath).ino, approved.ino);
 
     await assert.rejects(
       host.performBrowserAutomation('upload_file', {

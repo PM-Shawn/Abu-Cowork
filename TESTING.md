@@ -51,7 +51,7 @@ under `scripts/`). E2E (`e2e/*.spec.ts`) is handled by Playwright and runs as a 
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Web E2E (`e2e/*.spec.ts`, Playwright) | 8 |
 | Real-Electron E2E (`tests/e2e/*.spec.ts`) | 21 |
-| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 46 |
+| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 47 |
 <!-- test-inventory:end -->
 
 ---

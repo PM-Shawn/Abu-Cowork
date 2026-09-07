@@ -19,6 +19,34 @@ test('vitest emits junit + machine-readable coverage for CI reports', () => {
   }
 });
 
+test('CI checks changed-line coverage against the pull request base with full history', () => {
+  assert.match(
+    ci,
+    /pull_request:\n\s+branches: \[main, dev\]\n(?:\s+#[^\n]*\n)*\s+types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]/,
+    'body and label edits must re-evaluate gate exemptions',
+  );
+  const checkoutStart = ci.indexOf('- uses: actions/checkout@v7');
+  assert.ok(checkoutStart > -1, 'checkout step missing');
+  const checkoutEnd = ci.indexOf('\n      - name:', checkoutStart);
+  const checkout = ci.slice(checkoutStart, checkoutEnd);
+  assert.match(checkout, /with:\n\s+fetch-depth: 0/);
+
+  const coverageStart = ci.indexOf('- name: Test with coverage');
+  const changedStart = ci.indexOf('- name: Changed-lines coverage (80%)');
+  const infraStart = ci.indexOf('- name: Test-infra scripts (node:test)');
+  assert.ok(coverageStart > -1 && changedStart > coverageStart, 'changed-lines gate must follow coverage');
+  assert.ok(infraStart > changedStart, 'changed-lines gate must precede test-infra scripts');
+
+  const changed = ci.slice(changedStart, infraStart);
+  assert.ok(
+    changed.includes("if: ${{ github.event_name == 'pull_request' && !cancelled() && steps.install.outcome == 'success' }}"),
+    'changed-lines gate must run on pull requests after a successful install',
+  );
+  assert.match(changed, /DIFF_BASE: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/);
+  assert.match(changed, /npm run coverage:changed -- --base "\$DIFF_BASE"/);
+  assert.doesNotMatch(changed, /dependabot/i, 'Dependabot must use the same changed-lines rule');
+});
+
 test('CI uploads coverage and test-results artifacts even when tests fail', () => {
   assert.match(ci, /name: coverage-report[\s\S]*?path: coverage\//);
   assert.match(ci, /name: test-results[\s\S]*?path: test-results\//);

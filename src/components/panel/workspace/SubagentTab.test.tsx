@@ -99,8 +99,8 @@ describe('SubagentTab', () => {
     expect(screen.getByText('writer')).toBeInTheDocument();
     expect(screen.getByText('Finished · recorded process')).toBeInTheDocument();
     const steps = screen.getByTestId('subagent-persisted-steps');
-    // Labels are re-derived from toolName on replay (toolInput is not persisted).
-    expect(steps).toHaveTextContent('Write file');
+    // The stored label survives replay (toolInput is stripped from snapshots, so recomputing would degrade it).
+    expect(steps).toHaveTextContent('Write report.md');
     expect(steps).not.toHaveTextContent('Read file');
     expect(screen.queryByText('The full subagent process is only retained during this app run.')).toBeNull();
   });

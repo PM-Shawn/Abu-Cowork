@@ -201,6 +201,11 @@ function resolveStepLabel(
   locale: string
 ): string {
   if (!toolName) return fallback;
+  // A persisted snapshot carries the label but not the input it was derived
+  // from (executionSnapshot.ts strips toolInput); recomputing from an empty
+  // input degrades "执行 sleep 180" to the generic "执行命令". Keep the label.
+  const hasInput = !!toolInput && Object.keys(toolInput).length > 0;
+  if (!hasInput && fallback) return fallback;
   return getToolLabel(toolName, toolInput ?? {}, locale).label;
 }
 

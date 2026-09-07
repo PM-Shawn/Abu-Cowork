@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useChatStore } from '@/stores/chatStore';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import { resolveRoleId } from '@/core/team/roleIdentity';
 import type { SubagentDefinition } from '@/types';
@@ -34,5 +35,7 @@ export function teamLeaderFromTeam(team: Team | null | undefined): ConversationT
 export function useConversationTeamLeader(conversationId: string | null | undefined): ConversationTeamLeader | null {
   const teamId = useChatStore((s) => (conversationId ? s.conversations[conversationId]?.teamId : undefined));
   const team = useTeamStore((s) => (teamId ? s.teams.find((entry) => entry.id === teamId) ?? null : null));
-  return useMemo(() => teamLeaderFromTeam(team), [team]);
+  // The leader resolves through the agent registry, which fills in after launch.
+  const agents = useDiscoveryStore((s) => s.agents);
+  return useMemo(() => teamLeaderFromTeam(team), [team, agents]); // eslint-disable-line react-hooks/exhaustive-deps
 }

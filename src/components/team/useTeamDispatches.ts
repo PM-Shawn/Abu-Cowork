@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
 import type { TeamRouteContext } from '@/core/team/leaderRoute';
 import { collectMemberDispatches, summarizeByMember, type MemberDispatch, type MemberSummary } from './teamDispatches';
@@ -15,8 +16,12 @@ export function memberDefByName(team: TeamRouteContext, name: string): { name: s
 export function useConversationTeam(conversationId: string): TeamRouteContext | null {
   const teamId = useChatStore((s) => s.conversations[conversationId]?.teamId);
   const teams = useTeamStore((s) => s.teams);
-  // `teams` is the reactive dependency; resolveTeamRouteContext reads it through the store.
-  return useMemo(() => resolveTeamRouteContext(teamId), [teamId, teams]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Roles resolve through the agent registry, which fills in asynchronously
+  // after launch/reopen; without this dependency a reopened team conversation
+  // stayed at "队员 · 0" (retest G1, 2026-09-07).
+  const agents = useDiscoveryStore((s) => s.agents);
+  // `teams` / `agents` are the reactive dependencies; resolveTeamRouteContext reads through the stores.
+  return useMemo(() => resolveTeamRouteContext(teamId), [teamId, teams, agents]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /**

@@ -29,7 +29,10 @@ import {
   getBrowserSignalCursor,
   getRecentBrowserSignals,
 } from '../observability/browserSignals';
-import { buildBrowserRunReport } from '../observability/browserRunReport';
+import {
+  buildBrowserDownloadsReport,
+  buildBrowserRunReport,
+} from '../observability/browserRunReport';
 import {
   deriveUnattendedRunOutcome,
   formatUnattendedOutcomeSummary,
@@ -258,5 +261,127 @@ describe('a download this run produced reaches the card and the IM summary', () 
     });
 
     expect(report?.artifacts).toHaveLength(1);
+  });
+});
+
+/**
+ * The ORDINARY-conversation half of the same chain (acceptance F3).
+ *
+ * The report card above only ever existed for runs nobody watched — the
+ * scheduler, a trigger, the file watcher. A person who typed 「导出月度报表」
+ * into the chat window got the file onto disk and then nothing: no row, no
+ * 「打开」, no 「在文件夹中显示」. The real model in acceptance went and
+ * `read_file`'d the file back just to have something clickable to show.
+ *
+ * So the same signals feed a second, downloads-only form of the snapshot, and
+ * this pins it from the same real tool gate: `executeAnyTool('…download')` in
+ * an attended run → `buildBrowserDownloadsReport` → the rows the card renders.
+ * What it must NOT carry matters as much as what it does: an attended card
+ * that quietly persisted a site list or an approval tally would be an
+ * unattended run report wearing a different renderer.
+ */
+describe('a download in an ordinary conversation becomes the downloads-only card', () => {
+  beforeEach(() => {
+    clearBrowserSignals();
+    mockCallTool = vi.fn();
+    serveDownload(COMPLETED);
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.set('abu-browser', {
+      config: { name: 'abu-browser' },
+      client: { callTool: mockCallTool },
+      transport: {},
+      tools: new Map(),
+    });
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({
+      permissionMode: 'standard',
+      browserSitePermissions: testSiteVerdicts({ [SITE]: 'allowed' }),
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: true,
+      browserSiteGrantViaEmbed: {},
+    });
+    __resetBrowserGrantsForTests();
+  });
+
+  afterEach(() => {
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
+    __resetBrowserGrantsForTests();
+    clearBrowserSignals();
+  });
+
+  /** One attended `download` through the shipped executor, then the chat card. */
+  async function runAttendedDownload(result: unknown = COMPLETED) {
+    const since = getBrowserSignalCursor();
+    serveDownload(result);
+    await executeAnyTool(
+      'abu-browser__download',
+      { tabId: TAB, action: 'click', locator: '{"css":"a#export"}' },
+      (async () => true) as never,
+      undefined,
+      { conversationId: OWNER, interactionMode: 'foreground' } as never,
+    );
+    return buildBrowserDownloadsReport({
+      signals: getRecentBrowserSignals(), conversationId: OWNER, sinceSeq: since,
+    });
+  }
+
+  it('hands back the file the run downloaded', async () => {
+    const report = await runAttendedDownload();
+
+    expect(report?.variant).toBe('downloads');
+    expect(report?.artifacts).toEqual([{
+      downloadId: 'dl_abc',
+      name: '排班表.xlsx',
+      path: COMPLETED.download.path,
+      bytes: 1_258_291,
+      mime: 'application/vnd.ms-excel',
+    }]);
+  });
+
+  it('carries the files and nothing else — no sites, no approvals, no next steps', async () => {
+    const report = await runAttendedDownload();
+
+    expect(report?.sites).toEqual([]);
+    expect(report?.denials).toEqual([]);
+    expect(report?.problems).toEqual([]);
+    expect(report?.nextSteps).toEqual([]);
+    expect(report?.actions).toEqual({ total: 0, failed: 0 });
+    expect(report?.scriptRuns).toBe(0);
+    expect(report?.approvals).toEqual({ approved: 0, declined: 0, timedOut: 0, unreachable: 0 });
+    expect(report?.blockedPages).toBe(0);
+    expect(report?.skippedByMasterSwitch).toBe(false);
+  });
+
+  /** A chat run that fetched nothing gets no card at all, not an empty one. */
+  it('produces no card for a run that downloaded nothing', async () => {
+    expect(await runAttendedDownload({
+      started: false,
+      message: 'That click produced no download.',
+    })).toBeNull();
+  });
+
+  it('produces no card for a download that never finished', async () => {
+    expect(await runAttendedDownload({
+      started: true,
+      complete: false,
+      download: { ...COMPLETED.download, state: 'progressing' },
+      message: 'Still downloading.',
+    })).toBeNull();
+  });
+
+  /**
+   * The file exists even when its path was too long to carry (N3 above). The
+   * card must still say so — "downloaded nothing" is the one wrong answer.
+   */
+  it('still produces a card when the only file was dropped for an unusable path', async () => {
+    const report = await runAttendedDownload({
+      ...COMPLETED,
+      download: {
+        ...COMPLETED.download,
+        path: `/Users/me/Library/Application Support/abu/browser-downloads/${'x'.repeat(300)}.xlsx`,
+      },
+    });
+
+    expect(report?.artifacts).toEqual([]);
+    expect(report?.omitted.artifacts).toBe(1);
   });
 });

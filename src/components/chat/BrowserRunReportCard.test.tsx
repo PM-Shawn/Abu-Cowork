@@ -488,6 +488,106 @@ describe('BrowserRunReportCard', () => {
     });
   });
 
+  /**
+   * Acceptance F3 — the same card, in an ORDINARY conversation.
+   *
+   * A person who watched the run does not need an account of it; they need
+   * the file. So the chat form renders the artifact rows and nothing else —
+   * no outcome badge, no action count, no approval tally — while the two
+   * buttons on each row stay exactly the ones the unattended card has.
+   */
+  describe('the downloads-only form an ordinary conversation ends with', () => {
+    function downloadsSnapshot(overrides?: Partial<BrowserRunReportSnapshot>): BrowserRunReportSnapshot {
+      const full = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10, origin: 'https://oa.example.com' });
+        record({ kind: 'download_saved', downloadId: 'dl_1', name: '月度报表.csv', path: '/data/abu/月度报表.csv', bytes: 18 });
+      });
+      return {
+        ...full,
+        variant: 'downloads',
+        actions: { total: 0, failed: 0 },
+        scriptRuns: 0,
+        sites: [],
+        approvals: { approved: 0, declined: 0, timedOut: 0, unreachable: 0 },
+        ...overrides,
+      };
+    }
+
+    it('shows the file and its size', () => {
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.getByText('下载到的文件')).toBeInTheDocument();
+      expect(screen.getByText('月度报表.csv')).toBeInTheDocument();
+      expect(screen.getByText('18 B')).toBeInTheDocument();
+    });
+
+    it('does not turn into a run report: no title, no badge, no action count', () => {
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.queryByText('浏览器任务报告')).toBeNull();
+      expect(screen.queryByText('已完成')).toBeNull();
+      expect(screen.queryByText('访问过的网站')).toBeNull();
+    });
+
+    it('keeps both buttons on the row', async () => {
+      const openPreview = vi.fn();
+      const original = usePreviewStore.getState().openPreview;
+      usePreviewStore.setState({ openPreview });
+      initLanguage('zh-CN');
+
+      try {
+        render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+        fireEvent.click(screen.getByText('月度报表.csv'));
+        expect(openPreview).toHaveBeenCalledWith('/data/abu/月度报表.csv');
+
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        fireEvent.click(screen.getByLabelText('在文件夹中显示'));
+        await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith('/data/abu/月度报表.csv'));
+      } finally {
+        usePreviewStore.setState({ openPreview: original });
+      }
+    });
+
+    /**
+     * Defence in depth against a snapshot that should never have been built:
+     * an empty chat card would be a card that says a run downloaded nothing.
+     */
+    it('renders nothing at all when there is no file to hand back', () => {
+      const { container } = render(
+        <BrowserRunReportCard
+          message={messageFor(downloadsSnapshot({ artifacts: [], omitted: { sites: 0, problems: 0, artifacts: 0 } }))}
+        />,
+      );
+
+      expect(container.firstChild).toBeNull();
+    });
+
+    it('still says a file exists when its path was too long to carry', () => {
+      initLanguage('zh-CN');
+
+      render(
+        <BrowserRunReportCard
+          message={messageFor(downloadsSnapshot({ artifacts: [], omitted: { sites: 0, problems: 0, artifacts: 1 } }))}
+        />,
+      );
+
+      expect(screen.getByText('另有 1 个文件未列出')).toBeInTheDocument();
+    });
+
+    it('renders in the other locale too', () => {
+      initLanguage('en-US');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.getByText('Files it downloaded')).toBeInTheDocument();
+      expect(screen.queryByText('Browser task report')).toBeNull();
+    });
+  });
+
   it('renders the same snapshot in the other locale', () => {
     const report = snapshotOf(() => {
       record({

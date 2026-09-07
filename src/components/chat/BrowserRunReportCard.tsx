@@ -136,6 +136,37 @@ function errorClassLabel(errorClass: string, t: TranslationDict): string {
   }
 }
 
+/**
+ * The rows themselves, shared by both forms of the card.
+ *
+ * Also rendered when the list is empty but something was dropped: a run that
+ * produced one file whose path was too long to carry (`browserRunReport.ts`,
+ * N3) must still say a file exists, not look like a run that downloaded
+ * nothing.
+ */
+function ArtifactList({ report }: { report: BrowserRunReportSnapshot }) {
+  const { t } = useI18n();
+  const tr = t.browserRunReport;
+  return (
+    <>
+      <ul className="space-y-0.5">
+        {report.artifacts?.map((artifact) => (
+          <ArtifactRow key={artifact.downloadId} artifact={artifact} />
+        ))}
+      </ul>
+      {(report.omitted.artifacts ?? 0) > 0 && (
+        <div className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
+          {format(tr.moreArtifacts, { count: String(report.omitted.artifacts) })}
+        </div>
+      )}
+    </>
+  );
+}
+
+function hasArtifacts(report: BrowserRunReportSnapshot): boolean {
+  return (report.artifacts?.length ?? 0) > 0 || (report.omitted.artifacts ?? 0) > 0;
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="px-3 py-2 border-t border-[var(--abu-border-subtle)]">
@@ -164,6 +195,33 @@ export default function BrowserRunReportCard({ message }: { message: Message }) 
   if (!report) return null;
 
   const tr = t.browserRunReport;
+
+  /**
+   * The ordinary-conversation form (acceptance F3): the files, and nothing
+   * else. No outcome badge, no action count, no approval tally — the person
+   * was sitting here while it happened, and everything this card would
+   * otherwise say they already watched. The snapshot itself carries nothing
+   * else either (`buildBrowserDownloadsReport`), so this is a rendering of
+   * everything it has rather than a filtered view of more.
+   */
+  if (report.variant === 'downloads') {
+    if (!hasArtifacts(report)) return null;
+    return (
+      <section
+        className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden"
+        aria-label={tr.artifactsTitle}
+      >
+        <header className="flex items-center gap-2 px-3 pt-2">
+          <FolderOpen aria-hidden="true" className="h-3.5 w-3.5 flex-shrink-0 text-[var(--abu-text-muted)]" />
+          <span className="text-h-xs text-[var(--abu-text-primary)]">{tr.artifactsTitle}</span>
+        </header>
+        <div className="px-3 py-2">
+          <ArtifactList report={report} />
+        </div>
+      </section>
+    );
+  }
+
   const { approvals } = report;
   const humanDecisions = approvals.approved + approvals.declined;
   const showApprovals =
@@ -321,22 +379,9 @@ export default function BrowserRunReportCard({ message }: { message: Message }) 
         </Section>
       )}
 
-      {/* Also shown when the list itself is empty but something was dropped:
-          a run that produced one file whose path was too long to carry
-          (`browserRunReport.ts`, N3) must still say a file exists, not look
-          like a run that downloaded nothing. */}
-      {((report.artifacts?.length ?? 0) > 0 || (report.omitted.artifacts ?? 0) > 0) && (
+      {hasArtifacts(report) && (
         <Section title={tr.artifactsTitle}>
-          <ul className="space-y-0.5">
-            {report.artifacts?.map((artifact) => (
-              <ArtifactRow key={artifact.downloadId} artifact={artifact} />
-            ))}
-          </ul>
-          {(report.omitted.artifacts ?? 0) > 0 && (
-            <div className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
-              {format(tr.moreArtifacts, { count: String(report.omitted.artifacts) })}
-            </div>
-          )}
+          <ArtifactList report={report} />
         </Section>
       )}
 

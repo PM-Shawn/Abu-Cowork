@@ -198,6 +198,24 @@ export type BrowserRunReportNextStep =
 
 export interface BrowserRunReportSnapshot {
   v: typeof BROWSER_RUN_REPORT_SNAPSHOT_VERSION;
+  /**
+   * Which FORM of this card the snapshot is.
+   *
+   * Absent — the default, and every snapshot written before this field
+   * existed — is the full run report an unattended run ends with: what it
+   * did, what was refused, what you approved, what to do next.
+   *
+   * `'downloads'` is the form an ORDINARY conversation ends with when the run
+   * downloaded something (acceptance F3). A person who asked Abu to export a
+   * report in the chat window does not need a run report — they were watching
+   * the run — but the file still has to come back to them as something they
+   * can open, which is what the card's artifact rows are. So the same card
+   * renders just those rows, and the snapshot is built with everything else
+   * ZEROED rather than merely hidden: a chat card must not carry an
+   * unattended run's site list or approval tally in the persisted history on
+   * the strength of a renderer remembering not to show it.
+   */
+  variant?: 'downloads';
   outcome: BrowserRunReportOutcome;
   actions: { total: number; failed: number };
   /**
@@ -578,6 +596,48 @@ export function buildBrowserRunReport(
       artifacts:
         Math.max(0, artifacts.size - MAX_REPORT_ARTIFACTS) + unlistableArtifacts.size,
     },
+  };
+}
+
+/**
+ * The downloads-only form of the card, for a run in an ordinary conversation.
+ *
+ * Deliberately a PROJECTION of `buildBrowserRunReport` rather than a second
+ * pass over the signals: the artifact rules — one row per `downloadId`
+ * however many signals mention it, a name clamped, a path carried byte for
+ * byte or dropped into `omitted` — are subtle enough that two
+ * implementations would drift, and the chat card would be the one that drifts
+ * unnoticed. Everything the projection does not keep is set to its empty
+ * value, so what is persisted really is only the files.
+ *
+ * `null` when the run downloaded nothing: an ordinary conversation gets a
+ * card only when there is a file to hand back, never an empty one.
+ */
+export function buildBrowserDownloadsReport(
+  input: Omit<BuildBrowserRunReportInput, 'outcome'>,
+): BrowserRunReportSnapshot | null {
+  // The outcome is not rendered in this form; `completed` is the only honest
+  // placeholder, since a run that saved a file did save it.
+  const full = buildBrowserRunReport({ ...input, outcome: 'completed' });
+  if (!full) return null;
+  const artifacts = full.artifacts ?? [];
+  const omittedArtifacts = full.omitted.artifacts ?? 0;
+  if (artifacts.length === 0 && omittedArtifacts === 0) return null;
+  return {
+    v: full.v,
+    variant: 'downloads',
+    outcome: 'completed',
+    actions: { total: 0, failed: 0 },
+    scriptRuns: 0,
+    sites: [],
+    denials: [],
+    problems: [],
+    approvals: { approved: 0, declined: 0, timedOut: 0, unreachable: 0 },
+    blockedPages: 0,
+    skippedByMasterSwitch: false,
+    nextSteps: [],
+    artifacts,
+    omitted: { sites: 0, problems: 0, artifacts: omittedArtifacts },
   };
 }
 

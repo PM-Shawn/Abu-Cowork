@@ -50,12 +50,9 @@
   }
   function downloadMatchesSite(item, site) {
     if (site === null) return false;
-    const candidates = [item.referrer, item.finalUrl, item.url];
-    for (const candidate of candidates) {
-      const host = hostOf(candidate);
-      if (host !== null && isSameSiteHost(host, site)) return true;
-    }
-    return false;
+    const referrerHost = hostOf(item.referrer);
+    if (referrerHost !== null) return isSameSiteHost(referrerHost, site);
+    return isSameSiteHost(hostOf(item.finalUrl), site);
   }
   function isTerminal(state2) {
     return state2 === "complete" || state2 === "interrupted";

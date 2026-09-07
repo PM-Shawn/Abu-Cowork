@@ -36,6 +36,8 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
+const { toFileInfo } = require('./fsHost.cjs');
+
 const electronId = require.resolve('electron');
 const tauriHostId = require.resolve('./tauriHost.cjs');
 const browserHostId = require.resolve('./browserHost.cjs');
@@ -303,6 +305,34 @@ function approvedEntry(file, name, sizeOverride) {
     mtimeMs: Math.floor(stat.mtimeMs),
     ino: stat.ino,
     dev: stat.dev,
+  };
+}
+
+/**
+ * The approved entry the RENDERER GATE would freeze for this file — built
+ * through the two hops that actually separate the gate from this process,
+ * instead of `approvedEntry`'s shortcut:
+ *
+ *   1. `fsHost.toFileInfo` puts the timestamp on the wire as an ISO string;
+ *   2. plugin-fs's `parseFileInfo` turns it back into a `Date`
+ *      (`@tauri-apps/plugin-fs/dist-js/index.js`, `mtime: new Date(r.mtime)`);
+ *   3. `registry.ts` freezes `Math.floor(info.mtime.getTime())`.
+ *
+ * `approvedEntry` reads `Math.floor(stat.mtimeMs)` straight off the disk — the
+ * same derivation the sender uses — so it can never catch the two tiers
+ * disagreeing. That disagreement is what refused roughly half of all uploads
+ * of an UNCHANGED file with 「changed on disk」 (acceptance F1).
+ */
+function gateApprovedEntry(file, name) {
+  const wire = toFileInfo(fs.lstatSync(file));
+  const asPluginFsParsesIt = wire.mtime === null ? null : new Date(wire.mtime);
+  return {
+    path: file,
+    name: name || path.basename(file),
+    size: wire.size,
+    mtimeMs: asPluginFsParsesIt === null ? 0 : Math.floor(asPluginFsParsesIt.getTime()),
+    ino: wire.ino,
+    dev: wire.dev,
   };
 }
 
@@ -747,6 +777,35 @@ test('opens the approved file itself and hands the CONTENT to the DOM runtime �
     // The page-side runtime is told a name and bytes. Where the file lives on
     // the user's disk is not the page's business.
     assert.ok(!JSON.stringify(call.payload).includes(root));
+    noOsDialogs();
+  } finally { restore(); }
+});
+
+test('sends a file the gate pinned through the real fs wire, sub-millisecond mtime and all', async (t) => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const file = path.join(root, '月度报表.csv');
+    fs.writeFileSync(file, 'a,b\n1,2\n');
+    // A modification time whose sub-millisecond remainder is .73 — the half of
+    // all files that `Math.round` (Node's `Stats.mtime`) and `Math.floor` (the
+    // sender) disagree about.
+    fs.utimesSync(file, 1_700_000_000.73073, 1_700_000_000.73073);
+    if (fs.lstatSync(file).mtimeMs % 1 === 0) {
+      t.skip('this filesystem stores whole milliseconds, so there is nothing to disagree about');
+      return;
+    }
+
+    await host.performBrowserAutomation('upload_file', {
+      ownerId: OWNER_A,
+      tabId,
+      locator: { css: 'input[type=file]' },
+      files: [gateApprovedEntry(file, '月度报表.csv')],
+    });
+
+    const call = contents.domCalls.find((c) => c.action === 'upload_file');
+    assert.ok(call, 'an unchanged file was refused as 「changed on disk」');
+    assert.equal(call.payload.files[0].name, '月度报表.csv');
     noOsDialogs();
   } finally { restore(); }
 });

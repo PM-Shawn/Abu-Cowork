@@ -70,6 +70,29 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
+/**
+ * Ceiling for the undrained composer-append buffer (UTF-8 bytes). Matches the
+ * per-message cap an MCP App interface is held to (`MAX_APP_MESSAGE_BYTES`),
+ * so a sender that queues messages faster than `ChatInput` drains them cannot
+ * grow the draft without bound.
+ */
+const MAX_PENDING_INPUT_APPEND_BYTES = 4 * 1024;
+
+/** Cut `text` to `maxBytes` of UTF-8 without splitting a code point. */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).length <= maxBytes) return text;
+  let used = 0;
+  let out = '';
+  for (const char of text) {
+    const size = encoder.encode(char).length;
+    if (used + size > maxBytes) break;
+    used += size;
+    out += char;
+  }
+  return out;
+}
+
 const ACTIVE_RUN_STATES = new Set<Message['runState']>(['pending', 'accepted', 'running', 'recovering']);
 const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'completed',
@@ -661,6 +684,20 @@ interface ChatActions {
    * through to disk via replaceMessageById so reload keeps the state.
    */
   setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
+  /**
+   * Record the MCP Apps interface a tool step turned out to have
+   * (`ToolCall.ui`). Written once by `ToolCallsGroup` the first time the step
+   * renders, because `ToolDefinition.ui` lives only in the renderer's MCP
+   * client — it never reaches the sidecar loop that creates the tool call.
+   * No-op when the step already carries the same `ui`.
+   */
+  setToolCallAppUi: (convId: string, messageId: string, toolCallId: string, ui: NonNullable<ToolCall['ui']>) => void;
+  /**
+   * Persist the MCP App interface's `ui/update-model-context` text on a step.
+   * Overwrite semantics (spec §4.3: each update replaces the last), capped by
+   * the caller. No-op when the step already carries the same text.
+   */
+  setToolCallModelContext: (convId: string, messageId: string, toolCallId: string, modelContext: string) => void;
   setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
@@ -1509,6 +1546,49 @@ export const useChatStore = create<ChatStore>()(
         }
       },
 
+      setToolCallAppUi: (convId, messageId, toolCallId, ui) => {
+        let changed = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (tc.ui?.server === ui.server && tc.ui?.resourceUri === ui.resourceUri) return;
+          tc.ui = ui;
+          changed = true;
+        });
+        if (!changed) return;
+        // Persist so a reopened conversation still knows this step had an
+        // interface even if the server is gone. Same write-through as
+        // setToolCallNoticeCardAction above.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      setToolCallModelContext: (convId, messageId, toolCallId, modelContext) => {
+        let changed = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (tc.modelContext === modelContext) return;
+          tc.modelContext = modelContext;
+          changed = true;
+        });
+        if (!changed) return;
+        // Write-through so the appendix survives a reload — the model only
+        // sees it on the next turn, which may be after a restart.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
       setToolCallSandboxRecoveryAction: async (convId, messageId, toolCallId, action) => {
         const currentMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         const currentToolCall = currentMsg?.toolCalls?.find((t) => t.id === toolCallId);
@@ -1723,7 +1803,28 @@ export const useChatStore = create<ChatStore>()(
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           if (msg) {
-            msg.toolCalls = toolCalls;
+            // Wholesale replacement, with one exception: fields the sender
+            // cannot know about. This frame is built in the sidecar from the
+            // model's tool calls, so it never carries `ui` (resolved from the
+            // renderer's MCP client at render time) or `modelContext` (written
+            // by an MCP App through the bridge). Assigning it verbatim would
+            // blank an interface that is already on screen — the same class of
+            // regression `sandboxRecoveryAction` had on the disk side, see
+            // `preservePersistedSandboxRecoveryActions` in conversationStorage.
+            // An incoming value still wins; only absence falls back.
+            const previousById = new Map((msg.toolCalls ?? []).map((tc) => [tc.id, tc]));
+            msg.toolCalls = toolCalls.map((tc) => {
+              const previous = previousById.get(tc.id);
+              if (!previous) return tc;
+              const ui = tc.ui ?? previous.ui;
+              const modelContext = tc.modelContext ?? previous.modelContext;
+              if (ui === tc.ui && modelContext === tc.modelContext) return tc;
+              return {
+                ...tc,
+                ...(ui ? { ui } : {}),
+                ...(modelContext !== undefined ? { modelContext } : {}),
+              };
+            });
             msg.isStreaming = false;
           }
         });
@@ -2139,7 +2240,19 @@ export const useChatStore = create<ChatStore>()(
 
       appendPendingInput: (text) => {
         set((state) => {
-          state.pendingInputAppend = text;
+          if (text === null) {
+            state.pendingInputAppend = null;
+            return;
+          }
+          // APPEND, not overwrite. `ChatInput` drains this buffer in an effect,
+          // so two writes can land before the first is consumed — an MCP App
+          // interface sending two `ui/message` calls in a row, or a widget and
+          // an app writing at once. Clobbering there would silently swallow the
+          // first message. Capped so a busy sender cannot grow the buffer
+          // without bound before the composer gets a chance to drain it.
+          const previous = state.pendingInputAppend;
+          const merged = previous ? `${previous}\n${text}` : text;
+          state.pendingInputAppend = truncateUtf8(merged, MAX_PENDING_INPUT_APPEND_BYTES);
         });
       },
 

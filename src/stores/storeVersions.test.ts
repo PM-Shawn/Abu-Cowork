@@ -21,6 +21,7 @@ const PERSISTED_STORES = [
   { key: 'abu-inbox', minVersion: 2 },
   { key: 'abu-composer-drafts', minVersion: 2 },
   { key: 'abu-team', minVersion: 6 },
+  { key: 'abu-plugins', minVersion: 2 },
 ] as const;
 
 // Import all stores to trigger persist initialization
@@ -43,6 +44,7 @@ beforeAll(async () => {
   await import('./todosStore');
   await import('./inboxStore');
   await import('./composerDraftStore');
+  await import('./pluginStore');
 }, 120_000); // Store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
 
 describe('Store version compliance', () => {

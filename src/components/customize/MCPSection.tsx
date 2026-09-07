@@ -1,12 +1,17 @@
-import { useState, useMemo, useEffect } from 'react';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import { useExtensionsSearchQuery } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
+import { usePluginStore } from '@/stores/pluginStore';
+import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
 import { useChatStore } from '@/stores/chatStore';
 import { useProjectStore } from '@/stores/projectStore';
 import { useI18n, format } from '@/i18n';
-import { getMCPTemplatesForHost, mcpTemplates } from '@/data/marketplace/mcp';
+import { toolCountLabel } from './toolCountLabel';
+import { getMCPTemplates, getMCPTemplatesForHost } from '@/data/marketplace/mcp';
 import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/client';
 import { parseArgs } from '@/utils/argsParser';
+import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
+import type { MCPTemplate } from '@/types/marketplace';
 import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Pencil } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
@@ -39,6 +44,26 @@ function pickLocale(locale: string, zh: string, en?: string): string {
   return locale.startsWith('zh') ? zh : (en ?? zh);
 }
 
+/** The form key a template's configurable slot / secret is typed under. */
+const templateArgKey = (template: MCPTemplate, index: number) => `${template.id}-${index}`;
+const templateEnvKey = (template: MCPTemplate, name: string) => `${template.id}-env-${name}`;
+
+/**
+ * Whether every field the template asks for has been typed. A template's
+ * configurable slots and required env vars are not optional: the agent-side
+ * install (`installMCPServer`) refuses to write a config with an empty slot,
+ * and the UI must not be laxer. A blank slot would be written as `args: […, '']`
+ * — a server that cannot start — and a blank secret would be dropped by the
+ * `Object.keys(env).length > 0` guard, so even the editor would show no field
+ * left to fix it in. Whitespace counts as blank: it is what a stray space in a
+ * pasted key looks like, and neither the args array nor the env map wants it.
+ */
+function templateRequiredFilled(template: MCPTemplate, templateArgs: Record<string, string>): boolean {
+  const filled = (key: string) => (templateArgs[key] ?? '').trim().length > 0;
+  return (template.configurableArgs ?? []).every((arg) => filled(templateArgKey(template, arg.index)))
+    && (template.requiredEnvVars ?? []).every((envVar) => filled(templateEnvKey(template, envVar.name)));
+}
+
 /** Shared tool details list */
 function ToolDetailsList({ tools }: { tools: { name: string; description?: string }[] }) {
   return (
@@ -66,10 +91,29 @@ type SelectedItem =
 interface MCPSectionProps {
   showAddForm?: boolean;
   onAddFormChange?: (open: boolean) => void;
+  /** `'mine'` narrows the list to the servers the user configured by hand — the
+   *  「我的」 half of the Extensions source sub-nav. A plugin's server belongs to
+   *  the package that brought it, and un-installed catalog cards are offers
+   *  「市场」 (ConnectorCatalog) makes, so both are absent here. What is left is
+   *  rendered as ONE ungrouped list: the 我的/市场 split describes where a config
+   *  came from, and here the answer is always "the user". Omitted = every
+   *  source, grouped as before. */
+  sourceFilter?: 'mine';
+  /** A connector to pre-fill the add-server form with, applied when the form
+   *  is open. 「市场」's 「添加」 routes through here rather than adding a server
+   *  itself: a catalog entry's `env` carries key names with empty values, so a
+   *  silent add would persist a config that cannot connect. The user fills in
+   *  the secrets and saves. An offer is spent once: it is ignored while the form
+   *  is editing a server, and a re-open of the form does not re-apply it. Pass
+   *  `null` to withdraw the offer — the same name may then be offered again. */
+  prefill?: ConnectorPrefill | null;
+  /** Open this server's detail on mount/prop change — how 「市场」's 「管理」 lands
+   *  in the editor that lives here. Ignored when no such server is configured. */
+  focusServer?: string | null;
 }
 
-export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange }: MCPSectionProps = {}) {
-  const toolboxSearchQuery = useSettingsStore((s) => s.toolboxSearchQuery);
+export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange, sourceFilter, prefill, focusServer }: MCPSectionProps = {}) {
+  const extensionsSearchQuery = useExtensionsSearchQuery('mcp');
   const servers = useMCPStore((s) => s.servers);
   const addServer = useMCPStore((s) => s.addServer);
   const removeServer = useMCPStore((s) => s.removeServer);
@@ -81,6 +125,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const { t, locale } = useI18n();
 
   const mcpServers = useMemo(() => Object.values(servers), [servers]);
+  const installedPlugins = usePluginStore((s) => s.installed);
+  // server name → owning plugin, so a plugin-contributed connector is
+  // distinguishable from one the user configured by hand.
+  const serverOwners = useMemo(() => pluginServerOwners(installedPlugins), [installedPlugins]);
   const availableTemplates = useMemo(() => getMCPTemplatesForHost(), []);
 
   // Selection
@@ -159,8 +207,8 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const [templateArgs, setTemplateArgs] = useState<Record<string, string>>({});
 
   // Categorize: "我的" = custom (not from templates), "示例" = template-based (installed + uninstalled)
-  const searchLower = toolboxSearchQuery.toLowerCase();
-  const templateNames = useMemo(() => new Set(mcpTemplates.map((t) => t.name)), []);
+  const searchLower = extensionsSearchQuery.toLowerCase();
+  const templateNames = useMemo(() => new Set(getMCPTemplates().map((t) => t.name)), []);
   const editingNameLocked = !!editingServerName && templateNames.has(editingServerName);
 
   const validateServerName = (requestedName: string, oldName?: string): string | null => {
@@ -222,6 +270,26 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     return true;
   }
 
+  // 「我的」 = every configured server no plugin owns. Scope by source first,
+  // search second — the two answer different questions, and the empty state
+  // needs them apart: nothing of the user's own at all ("还没有你添加的连接器")
+  // reads differently from "your servers, none matching".
+  const scopedServers = useMemo(
+    () => mcpServers.filter((s) => !serverOwners[s.config.name]),
+    [mcpServers, serverOwners],
+  );
+
+  // One ungrouped list. The custom/template split is a statement about where a
+  // config *came from*, and under 「我的」 the answer is always "the user" — so
+  // filing a configured `github` under 「市场」 would contradict the tab it sits
+  // in. It also silently lost `abu-browser-bridge`, which is a template name
+  // (never "custom") that the Electron host drops from the template list
+  // (never an "example") — a server in neither group at all.
+  const mineServers = useMemo(() => {
+    if (!searchLower) return scopedServers;
+    return scopedServers.filter((s) => s.config.name.toLowerCase().includes(searchLower));
+  }, [scopedServers, searchLower]);
+
   // "我的": user-added custom servers (not matching any template)
   const customServers = useMemo(() => {
     const list = mcpServers.filter((s) => !templateNames.has(s.config.name));
@@ -230,17 +298,13 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   }, [mcpServers, templateNames, searchLower]);
 
   // "示例": all templates — installed ones first, then uninstalled
-  type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: typeof mcpTemplates[0] };
+  type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: MCPTemplate };
   const exampleItems = useMemo(() => {
     const items: ExampleItem[] = [];
     for (const tmpl of availableTemplates) {
       if (searchLower && !tmpl.name.toLowerCase().includes(searchLower) && !tmpl.description.toLowerCase().includes(searchLower)) continue;
       const entry = servers[tmpl.name];
-      if (entry) {
-        items.push({ kind: 'installed', entry });
-      } else {
-        items.push({ kind: 'template', template: tmpl });
-      }
+      items.push(entry ? { kind: 'installed', entry } : { kind: 'template', template: tmpl });
     }
     return items;
   }, [availableTemplates, servers, searchLower]);
@@ -393,8 +457,86 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setAddMode('form'); setJsonInput(''); setJsonError(''); setServerNameError('');
   };
 
+  // 「市场」's 「添加」 lands here. The form opens describing the catalog entry, with
+  // every env var reduced to its key and an empty value: a registry entry ships
+  // slots, not secrets, so the user supplies those and saves. Adding the server
+  // outright instead would persist a config that cannot connect.
+  const prefillRef = useRef(prefill);
+  prefillRef.current = prefill;
+  // The name of the prefill already spent on this form. An offer applies exactly
+  // once: the add form is also the *edit* form, so an offer left armed would
+  // re-fire on the next false→true of `showAddForm` and rewrite 「编辑 postgres」
+  // into 「添加 github」 — dropping the edit target with it.
+  const consumedPrefillRef = useRef<string | null>(null);
+  useEffect(() => {
+    const entry = prefillRef.current;
+    // The host withdrew the offer: a later re-offer of the same name is new.
+    if (!entry) { consumedPrefillRef.current = null; return; }
+    // Never overwrite an edit in progress, and never apply the same offer twice.
+    if (!showAddForm || editingServerName) return;
+    if (consumedPrefillRef.current === entry.name) return;
+    consumedPrefillRef.current = entry.name;
+    // A template-sourced connector goes through the template's own install
+    // flow — the one 「安装」 has always used — because the plain form has
+    // nowhere to put what a template knows: a labeled secret field with a hint,
+    // a configurable argument with a placeholder, a setup note, a longer
+    // default timeout. Prefilling the raw arg and an env JSON blob would strip
+    // every one of those and leave the user guessing what to type where.
+    // A template the host filtered out resolves to nothing; the plain form is
+    // then still better than no way to add the connector at all.
+    const template = entry.templateId
+      ? availableTemplates.find((tmpl) => tmpl.id === entry.templateId)
+      : undefined;
+    if (template) {
+      setTemplateArgs({});
+      setSelected({ kind: 'template', id: template.id });
+      // The add form was opened for a connector that does not use it.
+      setShowAddForm(false);
+      return;
+    }
+    const env: Record<string, string> = {};
+    for (const key of Object.keys(entry.env)) env[key] = '';
+    // The catalog produces only stdio connectors today; the HTTP branch is
+    // reserved for the remote entries deferred until Abu can carry OAuth and
+    // request headers. The offer says which transport it wants, so a future
+    // remote row cannot open the form on the wrong one.
+    const isHttp = entry.transport === 'http';
+    setEditingServerName(null);
+    setNewServerName(entry.name);
+    setNewTransportType(isHttp ? 'http' : 'stdio');
+    setNewServerCommand(isHttp ? '' : entry.command);
+    setNewServerArgs(isHttp ? '' : entry.args.join(' '));
+    setNewServerUrl(isHttp ? (entry.url ?? '') : '');
+    setNewServerHeaders('');
+    setNewServerEnv(!isHttp && Object.keys(env).length > 0 ? JSON.stringify(env) : '');
+    setJsonInput(JSON.stringify({
+      [entry.name]: isHttp
+        ? { url: entry.url ?? '' }
+        : { command: entry.command, args: entry.args, env },
+    }, null, 2));
+    setAddMode('form');
+    setJsonError('');
+    setServerNameError('');
+  // Keyed on the entry's identity (its name) via the ref, not the object
+  // reference: a host that rebuilds the entry object each render would otherwise
+  // wipe a form the user has already started editing.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- setShowAddForm is recreated each render (it wraps the onAddFormChange prop); availableTemplates is a mount-time memo
+  }, [prefill?.name, showAddForm, editingServerName, availableTemplates]);
+
+  // 「市场」's 「管理」 lands here — the per-server editor lives in this section, so
+  // the host only has to name the server. A server that is not configured is
+  // ignored rather than opening an empty detail.
+  useEffect(() => {
+    if (!focusServer || !servers[focusServer]) return;
+    setSelected({ kind: 'server', name: focusServer });
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- servers omitted: an object ref that changes on every store update, and re-opening a detail the user just closed would fight them
+  }, [focusServer]);
+
   // Install from template
-  const handleInstallTemplate = async (template: typeof mcpTemplates[0]) => {
+  const handleInstallTemplate = async (template: MCPTemplate) => {
+    // The button is disabled in this state; this guards the paths that never
+    // consult it (Enter on the form, a keyboard activation racing a change).
+    if (!templateRequiredFilled(template, templateArgs)) return;
     setInstallingTemplate(template.id);
     try {
       let config: MCPServerConfig;
@@ -404,14 +546,14 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         const args = [...(template.defaultArgs ?? [])];
         if (template.configurableArgs) {
           for (const configArg of template.configurableArgs) {
-            const value = templateArgs[`${template.id}-${configArg.index}`];
+            const value = templateArgs[templateArgKey(template, configArg.index)];
             if (value) args[configArg.index] = value;
           }
         }
         const env: Record<string, string> = {};
         if (template.requiredEnvVars) {
           for (const envVar of template.requiredEnvVars) {
-            const value = templateArgs[`${template.id}-env-${envVar.name}`];
+            const value = templateArgs[templateEnvKey(template, envVar.name)];
             if (value) env[envVar.name] = value;
           }
         }
@@ -438,9 +580,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       if (tmpl) {
         setSelected({ kind: 'template', id: tmpl.id });
       } else {
-        // Custom server: select adjacent item
-        const idx = customServers.findIndex((s) => s.config.name === name);
-        const nextName = customServers[idx - 1]?.config.name ?? customServers[idx + 1]?.config.name;
+        // Custom server: select adjacent item in whichever list is on screen
+        const siblings = sourceFilter === 'mine' ? mineServers : customServers;
+        const idx = siblings.findIndex((s) => s.config.name === name);
+        const nextName = siblings[idx - 1]?.config.name ?? siblings[idx + 1]?.config.name;
         setSelected(nextName ? { kind: 'server', name: nextName } : null);
       }
     }
@@ -475,7 +618,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     try {
       const result = await mcpManager.testConnection(entry.config);
       const message = result.success
-        ? `${t.toolbox.testSuccess} (${result.toolCount ?? 0} tools)`
+        ? `${t.toolbox.testSuccess} · ${toolCountLabel(t, result.toolCount, result.appToolCount)}`
         : (result.error ?? t.toolbox.testFailed);
       setTestResults((prev) => ({ ...prev, [name]: { success: result.success, message } }));
       // A successful test invalidates any prior connect-time error.
@@ -513,7 +656,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const renderServerCard = (entry: MCPServerEntry) => {
     const c = entry.config;
     const isHttp = !!(c.url || c.transport === 'http');
-    const description = isHttp ? c.url : [c.command, ...(c.args ?? [])].filter(Boolean).join(' ');
+    const baseDescription = isHttp ? c.url : [c.command, ...(c.args ?? [])].filter(Boolean).join(' ');
+    const owner = serverOwners[c.name];
+    const description = owner
+      ? `${format(t.toolbox.mcpFromPlugin, { name: owner })} · ${baseDescription ?? ''}`
+      : baseDescription;
     return (
       <ToolCard
         key={c.name}
@@ -529,7 +676,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     );
   };
 
-  const renderTemplateCard = (tmpl: typeof mcpTemplates[0]) => (
+  const renderTemplateCard = (tmpl: MCPTemplate) => (
     <ToolCard
       key={tmpl.id}
       item={{
@@ -547,7 +694,21 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {customServers.length === 0 && exampleItems.length === 0 ? (
+        {sourceFilter === 'mine' ? (
+          mineServers.length === 0 ? (
+            scopedServers.length === 0 ? (
+              <div className="py-16 text-center">
+                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.connectorsMineEmptyTitle}</p>
+              </div>
+            ) : (
+              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
+            )
+          ) : (
+            <div className="max-w-5xl mx-auto">
+              <ToolGrid>{mineServers.map((entry) => renderServerCard(entry))}</ToolGrid>
+            </div>
+          )
+        ) : customServers.length === 0 && exampleItems.length === 0 ? (
           <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
         ) : (
           <div className="max-w-5xl mx-auto space-y-6">
@@ -607,7 +768,8 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
               onEdit={() => handleEditServer(selectedServer)}
             />
           ) : selectedTemplate ? (
-            <button onClick={() => handleInstallTemplate(selectedTemplate)} disabled={installingTemplate === selectedTemplate.id}
+            <button onClick={() => handleInstallTemplate(selectedTemplate)}
+              disabled={installingTemplate === selectedTemplate.id || !templateRequiredFilled(selectedTemplate, templateArgs)}
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 transition-colors">
               {installingTemplate === selectedTemplate.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
               {t.toolbox.install}
@@ -811,6 +973,8 @@ function ServerHeaderActions({
         {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
       </button>
       <button onClick={onToggleConnection} disabled={isConnecting}
+        data-testid="mcp-server-toggle-connection"
+        data-connected={isConnected ? 'true' : 'false'}
         className={cn('p-1.5 rounded-lg transition-colors',
           isConnecting ? 'text-[var(--abu-warning)] cursor-wait' : isConnected ? 'text-[var(--abu-success)] hover:text-[var(--abu-success)] hover:bg-[var(--abu-success-bg)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)]'
         )} title={isConnecting ? t.toolbox.connecting : isConnected ? t.toolbox.disconnect : t.toolbox.connect}>
@@ -906,7 +1070,7 @@ function ServerDetail({
 function TemplateDetail({
   template, templateArgs, setTemplateArgs,
 }: {
-  template: typeof mcpTemplates[0];
+  template: MCPTemplate;
   templateArgs: Record<string, string>;
   setTemplateArgs: React.Dispatch<React.SetStateAction<Record<string, string>>>;
 }) {
@@ -937,10 +1101,16 @@ function TemplateDetail({
         <div className="space-y-3">
           <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.serverArgs}</span>
           {template.configurableArgs?.map((arg) => (
-            <input key={arg.index} type="text" placeholder={pickLocale(locale, arg.placeholder, arg.placeholderEn)}
-              value={templateArgs[`${template.id}-${arg.index}`] || ''}
-              onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-${arg.index}`]: e.target.value }))}
-              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
+            // Labeled like the secret below it: the placeholder is the only
+            // thing naming this field, and it vanishes the moment the user
+            // types — leaving a bare box next to a labeled one.
+            <div key={arg.index}>
+              <label htmlFor={`${template.id}-arg-${arg.index}`} className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{pickLocale(locale, arg.label, arg.labelEn)}</label>
+              <input id={`${template.id}-arg-${arg.index}`} type="text" placeholder={pickLocale(locale, arg.placeholder, arg.placeholderEn)}
+                value={templateArgs[`${template.id}-${arg.index}`] || ''}
+                onChange={(e) => setTemplateArgs((prev) => ({ ...prev, [`${template.id}-${arg.index}`]: e.target.value }))}
+                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all" />
+            </div>
           ))}
           {template.requiredEnvVars?.map((envVar) => (
             <div key={envVar.name}>

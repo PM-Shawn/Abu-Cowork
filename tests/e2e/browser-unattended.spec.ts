@@ -1,5 +1,5 @@
 /**
- * The four unattended-browser journeys, end to end, in a real Electron app.
+ * The unattended-browser journeys, end to end, in a real Electron app.
  *
  * ## Why these exist
  *
@@ -8,7 +8,7 @@
  * green while the CHAIN was broken (U6's detectors silently missing real
  * login pages; U7's audit fields silently dropped at a whitelist boundary).
  * Nothing in the repo ran from "a scheduled task fires" all the way to "a card
- * appears in the conversation". These four specs are that witness:
+ * appears in the conversation". These specs are that witness:
  *
  *   1. master switch on + site allowed  → a scheduled run really fills a form,
  *      with NO confirmation dialog anywhere.
@@ -19,6 +19,14 @@
  *      the same refusal badge on the card.
  *   4. two refusals in a row → the run stops itself and the third browser tool
  *      call never reaches the model endpoint.
+ *   5. an OVERDUE task caught up by the scheduler's own start-up tick — no
+ *      "Run Now", nobody at the keyboard → the tool roster frozen for that run
+ *      carries the browser tools, so its first browser call is answered by the
+ *      browser and not refused by the ceiling (issue #389).
+ *   6. a form living in embedded regions → a same-origin region is covered by
+ *      the page's grant (single fill and multi-region batch both land in the
+ *      live child document); a cross-origin one the user never authorized is
+ *      refused, and the built-in browser says it cannot reach inside it.
  *
  * ## Conventions (inherited from tests/e2e/browser-view-lifecycle.spec.ts)
  *
@@ -60,7 +68,11 @@
  *
  * - The run is driven the way `tests/e2e/infra-hygiene.spec.ts` drives one:
  *   a `frequency: 'manual'` scheduled task seeded into `abu-schedule`, fired
- *   with "Run Now". No cron, no wall clock.
+ *   with "Run Now". No cron, no wall clock. Journey ⑤ is the one exception:
+ *   it seeds a `daily` task whose `lastRunAt` is years stale, so the store's
+ *   own cold-start catch-up marks it due on rehydrate and the scheduler's
+ *   start-up tick fires it. Still no wall clock — the missed slot is in 2023
+ *   whatever today is (see `UnattendedFiring`).
  * - Every fixture page is a local loopback server started per test, so an
  *   "origin" in these specs is a real origin (scheme + host + PORT) and two
  *   fixtures on two ports are genuinely two sites.
@@ -871,6 +883,28 @@ async function expectNoConfirmationDialogEverAppeared(page: Page): Promise<void>
 
 type BrowserOperationState = 'allow' | 'deny' | 'ask';
 
+/**
+ * How the seeded task gets fired.
+ *
+ * - `run-now` (default): a `frequency: 'manual'` task the journey fires by
+ *   clicking "Run Now" once it has finished setting the app up.
+ * - `overdue-at-start`: a `daily` task whose `lastRunAt` is years stale.
+ *   `applyCatchupOnRehydrate` (src/stores/scheduleStore.ts) turns that into
+ *   `nextRunAt = now` the moment the store rehydrates from the seed, and
+ *   `schedulerEngine.start()`'s immediate tick fires it — by itself, during
+ *   the reload, before any harness code gets to act on the page. This is the
+ *   9am task of a laptop that was shut through 9am: the path of issue #389.
+ */
+type UnattendedFiring = 'run-now' | 'overdue-at-start';
+
+/**
+ * The last run of an `overdue-at-start` task: 2023-11-14T22:13:20Z. The daily
+ * slot after it is 2023-11-15 09:00 local, which is in the past in every
+ * time zone on every day this suite can run, so the catch-up is decided by
+ * the seed alone and never by the clock.
+ */
+const OVERDUE_LAST_RUN_AT = 1_700_000_000_000;
+
 interface UnattendedSeed {
   allowUnattendedBrowser: boolean;
   sitePermissions: Record<string, 'allowed' | 'denied'>;
@@ -881,12 +915,18 @@ interface UnattendedSeed {
   scheduleId: string;
   scheduleName: string;
   prompt: string;
+  /** Defaults to `run-now`. */
+  firing?: UnattendedFiring;
 }
 
 /**
- * Inject the unattended settings and the manual scheduled task in ONE write,
- * then reload once. Runs AFTER `configureLocalMockProvider` (which writes its
- * own settings snapshot and reloads), so this is the last writer.
+ * Inject the unattended settings and the scheduled task in ONE write, then
+ * reload once. Runs AFTER `configureLocalMockProvider` (which writes its own
+ * settings snapshot and reloads), so this is the last writer.
+ *
+ * For an `overdue-at-start` seed that reload IS the app start under test:
+ * by the time this returns, the scheduler's start-up tick has already
+ * dispatched the task.
  */
 async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void> {
   await page.evaluate((payload) => {
@@ -912,6 +952,7 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
     // `allowUnattendedBrowser` / `browserOperationPolicy`.
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
 
+    const overdue = payload.firing === 'overdue-at-start';
     window.localStorage.setItem('abu-schedule', JSON.stringify({
       state: {
         tasks: {
@@ -919,12 +960,18 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
             id: payload.scheduleId,
             name: payload.scheduleName,
             prompt: payload.prompt,
-            schedule: { frequency: 'manual' },
+            schedule: overdue
+              ? { frequency: 'daily', time: { hour: 9, minute: 0 } }
+              : { frequency: 'manual' },
             status: 'active',
-            createdAt: 1_800_000_000_000,
-            updatedAt: 1_800_000_000_000,
+            createdAt: overdue ? payload.overdueLastRunAt : 1_800_000_000_000,
+            updatedAt: overdue ? payload.overdueLastRunAt : 1_800_000_000_000,
+            // `lastRunAt` is the ONLY field the catch-up reads. `nextRunAt`
+            // is recomputed from it on every rehydrate, so a seed that only
+            // back-dated nextRunAt would be silently reset to the next 09:00.
+            ...(overdue ? { lastRunAt: payload.overdueLastRunAt } : {}),
             runs: [],
-            totalRuns: 0,
+            totalRuns: overdue ? 1 : 0,
           },
         },
       },
@@ -932,6 +979,8 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
     }));
   }, {
     allowUnattendedBrowser: seed.allowUnattendedBrowser,
+    firing: seed.firing ?? 'run-now',
+    overdueLastRunAt: OVERDUE_LAST_RUN_AT,
     prompt: seed.prompt,
     scheduleId: seed.scheduleId,
     scheduleName: seed.scheduleName,
@@ -941,6 +990,26 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
   });
   await page.reload();
   await waitForApp(page);
+}
+
+interface PersistedScheduledTask {
+  totalRuns: number;
+  nextRunAt?: number;
+  runs: Array<{ status: string; completedAt?: number; error?: string }>;
+}
+
+/** The seeded task as the schedule store last persisted it — the run history
+ *  behind the task page, read from the store rather than from the page. */
+function persistedScheduledTask(
+  page: Page,
+  scheduleId: string,
+): Promise<PersistedScheduledTask | undefined> {
+  return page.evaluate((id) => {
+    const raw = window.localStorage.getItem('abu-schedule');
+    if (!raw) return undefined;
+    const persisted = JSON.parse(raw) as { state: { tasks: Record<string, PersistedScheduledTask> } };
+    return persisted.state.tasks[id];
+  }, scheduleId);
 }
 
 /** Settings › Capabilities, and the built-in browser row's accessible name —
@@ -958,20 +1027,39 @@ const SETTINGS_DIALOG = '[data-abu-settings-dialog]';
 const SETTINGS_DIALOG_CLOSE = '[data-abu-settings-close]';
 
 /**
- * Do not fire the run until the bundled browser runtime is really connected.
+ * Do not fire "Run Now" until the bundled browser runtime is really connected.
  *
- * ## Why this has to happen BEFORE "Run Now"
+ * ## What this is, since #394
  *
- * `scheduler.runNow` freezes the run's tool roster at dispatch:
- * `buildScheduledRunPermissionCeiling(getToolInvoker().getAllTools())`. The
- * bundled browser MCP server (`abu-browser`) connects asynchronously after each
- * renderer load, and `seedUnattendedRun` reloads. On a loaded machine the click
- * can win that race — and then EVERY browser tool in the run is refused with
- * `is not allowed for this agent run`, permanently, for the whole run. That is
- * a deliberate fail-closed reachability snapshot, not a bug; but a spec that
- * fires into it is measuring MCP connect latency, not the authorization chain.
- * It was the single largest source of this file's flake (10/10 reds under
- * load, spread over all five journeys — issue #362).
+ * `scheduler.runNow` freezes the run's tool roster at dispatch
+ * (`buildScheduledRunPermissionCeiling(getToolInvoker().getAllTools())`), and
+ * the bundled browser MCP server (`abu-browser`) connects asynchronously after
+ * each renderer load — which `seedUnattendedRun` does. Before #394 a click
+ * that won that race had EVERY browser tool of the run refused with
+ * `is not allowed for this agent run`, for the whole run: this file's single
+ * largest source of flake (10/10 reds under load, issue #362) and, as it
+ * turned out, a product bug for any overdue task at app start (issue #389).
+ * #394 fixed the product: the scheduler now waits up to
+ * `BUILTIN_BROWSER_READY_TIMEOUT_MS` (15s) for the built-in runtime before
+ * taking the snapshot. Journey ⑤ is the witness for that wait and fires with
+ * no gate at all — never add this call there.
+ *
+ * ## Why journeys ①–④ still gate (evaluated 2026-09-06, not assumed)
+ *
+ * Measured on an 8-core macOS box with the fix in place: `abu-browser`
+ * connects 100–300ms after its connect starts, idle and under four busy-loop
+ * CPU hogs alike; this gate reports ready on its first attempt (0.3–0.9s);
+ * journey ① with the gate deleted was 3/3 green under that load. So here the
+ * gate is not needed for correctness. It stays because these four journeys
+ * are about AUTHORIZATION, and the product's 15s budget is a fact about the
+ * runtime, not about the gate under test: a runner slow enough to connect in
+ * more than 15s would turn all four red with a refusal that reads like a
+ * broken gate, whereas this loop gives them `READY_TIMEOUT` (45s) and, if
+ * even that runs out, a message naming the runtime. Journey ⑤ carries that
+ * 15s exposure alone, so a slow runner shows as one red journey with an
+ * explicit cause instead of five. Remove this once a measured target runner
+ * shows the 15s budget holds there too; until then it costs about a second
+ * per journey.
  *
  * ## Why it re-opens the page instead of waiting on a live locator
  *
@@ -1633,6 +1721,60 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     await expect(page.getByText(neverReached, { exact: true })).toHaveCount(0);
 
     await expectNoConfirmationDialogEverAppeared(page);
+  });
+
+  // ⑤ an overdue task fires by itself at app start ⇒ the roster frozen for
+  //   that run carries the browser tools (issue #389)
+  test('hands an overdue task caught up at app start its browser tools', async () => {
+    const finalAnswer = `abu-e2e-catchup-done-${randomUUID()}`;
+
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: `call-tabs-${randomUUID()}`, toolName: 'abu-browser__get_tabs' },
+      async (body) => {
+        // Rule 1 of this file: the next turn is scripted only on a get_tabs
+        // the BROWSER answered. A ceiling refusal fails right here, quoting
+        // its text, instead of surfacing as a request count 45s later.
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        // ...and the tab it named is a live native view, so the run's roster
+        // demonstrably reached the runtime, not a stale registry entry.
+        await currentTab(app!, body);
+        return { kind: 'complete', responseText: finalAnswer };
+      },
+    ]);
+
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const scheduleId = `schedule-u8-catchup-${randomUUID()}`;
+    await seedUnattendedRun(page, {
+      allowUnattendedBrowser: true,
+      sitePermissions: {},
+      scheduleId,
+      scheduleName: `U8 catch-up ${randomUUID().slice(0, 8)}`,
+      prompt: 'list the open browser tabs',
+      firing: 'overdue-at-start',
+    });
+    // Deliberately NO waitForBuiltinBrowserRuntime and NO "Run Now". The
+    // reload inside seedUnattendedRun is the app start; the scheduler's
+    // start-up tick dispatched the task while abu-browser was still
+    // connecting, and the product — not the harness — has to wait for it.
+    await waitForTaskTurns(mock, 2);
+
+    const listing = toolResultFor(taskRequests(mock!)[1]!.body, 'abu-browser__get_tabs');
+    // THE regression: before #394 the roster was frozen mid-handshake, and
+    // this — not a tab listing — is what the model was told, for the whole
+    // run, with no retry.
+    expect(listing).not.toMatch(/is not allowed for this agent run/);
+    expect(listing).not.toMatch(/^Error:/);
+    expect(listing).toMatch(/"currentTabId":\s*\d+/);
+
+    // Exactly one catch-up run (the seed already counted one earlier run),
+    // completed, and the task is back on its cadence: the next slot is later
+    // than the run's own end, so a caught-up task does not fire twice.
+    await expect
+      .poll(() => persistedScheduledTask(page, scheduleId), { timeout: READY_TIMEOUT })
+      .toMatchObject({ totalRuns: 2, runs: [{ status: 'completed' }] });
+    const task = await persistedScheduledTask(page, scheduleId);
+    expect(task?.nextRunAt).toBeGreaterThan(task?.runs[0]?.completedAt ?? Number.POSITIVE_INFINITY);
+    expect(mock!.consumedPlans()).toBe(2);
   });
 
   // ⑥ embedded regions: a same-origin one is covered by the page's grant, a

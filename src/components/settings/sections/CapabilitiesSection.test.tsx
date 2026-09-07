@@ -234,7 +234,7 @@ describe('CapabilitiesSection', () => {
       disabledSkills: ['disabled-skill'],
       systemSettingsOpen: true,
       viewMode: 'chat',
-      activeToolboxTab: 'skills',
+      activeExtensionsTab: 'skills',
       // `setState` MERGES, so a case that marks a grant would otherwise leave
       // the mark standing for every case after it.
       browserSiteGrantViaEmbed: {},

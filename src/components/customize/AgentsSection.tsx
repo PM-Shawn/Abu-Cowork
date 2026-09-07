@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
@@ -9,10 +9,14 @@ import { Toggle } from '@/components/ui/toggle';
 import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check } from 'lucide-react';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { remove } from '@tauri-apps/plugin-fs';
+import { homeDir } from '@tauri-apps/api/path';
 import { getParentDir } from '@/utils/pathUtils';
 import type { SubagentDefinition } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import { getAgentToolSummary } from '@/utils/agentToolPresentation';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
+import { pluginDisplayName } from '@/core/plugin/installedStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { getAllTools } from '@/core/tools/registry';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
@@ -47,11 +51,20 @@ function localizedSamplePrompts(agent: SubagentDefinition, locale: 'zh-CN' | 'en
 }
 interface AgentsSectionProps {
   manualCreateTrigger?: number;
+  /** Overrides the Extensions store query when a host view owns the search box. */
+  searchQuery?: string;
 }
 
-export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProps) {
+export default function AgentsSection({ manualCreateTrigger, searchQuery }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
-  const { toolboxSearchQuery, disabledAgents, toggleAgentEnabled, closeToolbox } = useSettingsStore();
+  const installedPlugins = usePluginStore((s) => s.installed);
+  const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
+  const { disabledAgents, toggleAgentEnabled, closeExtensions } = useSettingsStore();
+  // Inside Extensions there is no 代理 tab, so the store query follows whichever
+  // tab is active. A host that owns its own search box (the 团队 view's 队员 tab)
+  // passes it instead, rather than writing into another view's state.
+  const storeSearchQuery = useExtensionsSearchQuery();
+  const extensionsSearchQuery = searchQuery ?? storeSearchQuery;
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const setPendingAgent = useChatStore((s) => s.setPendingAgent);
@@ -71,6 +84,24 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
     }
   }, [manualCreateTrigger]);
 
+  // Hydrate the installed-plugin set. `pluginDisplayName` needs the record to
+  // turn `weather@official` into 「Weather Pack」; the only other hydrate today
+  // is the 插件 tab's mount, so without this the provenance row shows the raw
+  // key unless the user happened to open that tab first. Idempotent — mirrors
+  // PluginsTab's mount-time hydrate (it also re-arms the MCP approval gate).
+  useEffect(() => {
+    let cancelled = false;
+    homeDir()
+      .then((dir) => {
+        if (cancelled) return undefined;
+        return refreshInstalled(dir);
+      })
+      .catch((err) => console.error('Agents: failed to hydrate installed plugins', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshInstalled]);
+
   // Load full agent details. No auto-selection: the detail is a modal now, so
   // it stays closed until the user clicks a card.
   useEffect(() => {
@@ -78,7 +109,18 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
       const fullAgents: SubagentDefinition[] = [];
       for (const meta of agents) {
         const full = agentRegistry.getAgent(meta.name);
-        if (full) fullAgents.push(full);
+        if (!full) continue;
+        // The store's `meta.source` is the only authority on provenance, so it
+        // replaces the registry's copy outright rather than merely filling a
+        // gap. The registry echoes back whatever the AGENT.md frontmatter said;
+        // `applyPluginAgentSources` is what turns that into a fact — it drops a
+        // `source:` no `installed.json` record backs and overwrites a claimed
+        // one with the owning record's key. Preferring the raw value whenever
+        // it exists would hand a forged `source: plugin:x` (writable via the
+        // `save_agent` tool or a hand edit) the read-only treatment, locking
+        // the user out of editing and deleting their own agent.
+        const { source: _rawSource, ...withoutSource } = full;
+        fullAgents.push(meta.source ? { ...withoutSource, source: meta.source } : withoutSource);
       }
       setInstalledAgents(fullAgents);
     };
@@ -91,8 +133,8 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   // Excludes the 'abu' default agent — it's the fallback, not a selectable agent.
   const filteredAgents = useMemo(() => {
     const visible = installedAgents.filter((a) => a.name !== 'abu' && !a.managed);
-    if (!toolboxSearchQuery) return visible;
-    const q = toolboxSearchQuery.toLowerCase();
+    if (!extensionsSearchQuery) return visible;
+    const q = extensionsSearchQuery.toLowerCase();
     return visible.filter((a) => {
       const haystack = [
         a.name,
@@ -104,7 +146,7 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
       ];
       return haystack.some((s) => s && s.toLowerCase().includes(q));
     });
-  }, [installedAgents, toolboxSearchQuery]);
+  }, [installedAgents, extensionsSearchQuery]);
 
   // Split into user-defined vs builtin/system agents. Builtins go under the
   // "Examples" section, user agents under "My agents".
@@ -116,10 +158,18 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
   const systemAgents = filteredAgents.filter(isSystemAgent);
 
   const selected = installedAgents.find((a) => a.name === selectedAgent) ?? null;
+  // A plugin owns this agent's file: editing it would be overwritten by the
+  // next plugin update, and removing it belongs to uninstalling the plugin.
+  const selectedPluginSource = selected && isPluginOwnedAgent(selected) ? selected.source : undefined;
 
   // Delete a user-installed agent
   const handleDelete = async (agent: SubagentDefinition) => {
     if (agent.filePath === '__builtin__' || agent.filePath.includes('builtin-agents')) return;
+    // A plugin owns this file: removing it belongs to uninstalling the plugin,
+    // and the next refresh would bring it back anyway. The menu entry is
+    // disabled for the same reason — this keeps the invariant local to the
+    // handler rather than resting on the button's `disabled` alone.
+    if (isPluginOwnedAgent(agent)) return;
     try {
       const agentDir = getParentDir(agent.filePath);
       await remove(agentDir, { recursive: true });
@@ -188,7 +238,7 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
     startNewConversation();
     setPendingInput(input);
     setPendingAgent(agent.name);
-    closeToolbox();
+    closeExtensions();
   };
 
   // If editor is open, show editor full-width
@@ -266,14 +316,18 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
                 {menuAgent === selected.name && (
                   <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                      disabled={!!selectedPluginSource}
+                      title={selectedPluginSource ? t.toolbox.agentFromPluginEditDisabled : undefined}
                       onClick={() => { setEditorAgent(selected); setMenuAgent(null); setSelectedAgent(null); }}
                     >
                       <Pencil className="h-3 w-3" />
                       {t.toolbox.agentEdit}
                     </button>
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                      disabled={!!selectedPluginSource}
+                      title={selectedPluginSource ? t.toolbox.agentFromPluginDeleteDisabled : undefined}
                       onClick={() => { handleDelete(selected); setMenuAgent(null); }}
                     >
                       <Trash2 className="h-3 w-3" />
@@ -291,7 +345,11 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
             {/* Added by */}
             <div>
               <div className="text-minor text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
-              <div className="text-body font-medium text-[var(--abu-text-primary)]">{isSystemAgent(selected) ? 'System' : 'User'}</div>
+              <div className="text-body font-medium text-[var(--abu-text-primary)]" data-testid="agent-added-by">
+                {selectedPluginSource
+                  ? format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
+                  : isSystemAgent(selected) ? 'System' : 'User'}
+              </div>
             </div>
 
             {/* Description */}

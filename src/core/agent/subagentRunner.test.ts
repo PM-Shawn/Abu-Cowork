@@ -159,6 +159,18 @@ vi.mock('../tools/registry', () => ({
   checkToolApproval: (...a: unknown[]) => checkToolApprovalMock(...a),
 }));
 
+const resolvePreloadedSkillsMock = vi.fn();
+vi.mock('./prompts/preloadedSkills', () => ({
+  resolvePreloadedSkills: (...a: unknown[]) => resolvePreloadedSkillsMock(...a),
+}));
+
+const PRELOADED_SECTION = {
+  text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nbody',
+  resolved: ['weekly-report'],
+  missing: [],
+  truncated: [],
+};
+
 const delegatedMediaStoreMocks = vi.hoisted(() => ({
   persistDelegatedMedia: vi.fn(),
   readDelegatedMedia: vi.fn(),
@@ -283,6 +295,8 @@ describe('subagentRunner', () => {
     executeAnyToolMock.mockResolvedValue('tool result');
     checkToolApprovalMock.mockReset();
     checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+    resolvePreloadedSkillsMock.mockReset();
+    resolvePreloadedSkillsMock.mockResolvedValue(null);
     delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
     delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValue(TEST_MEDIA_REF);
     delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
@@ -331,6 +345,7 @@ describe('subagentRunner', () => {
         | 'runPermissionCeiling'
         | 'triggerId'
         | 'scheduledTaskId'
+        | 'preloadedSkills'
         | 'initiatedBy'
         | 'dispatchKey';
       type CoveredOptionField = WireOptionField | LocalOnlyField;
@@ -356,6 +371,7 @@ describe('subagentRunner', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'preloadedSkills',
         'initiatedBy',
         'dispatchKey',
         'locale',
@@ -433,6 +449,47 @@ describe('subagentRunner', () => {
       for (const localField of SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS) {
         expect(wireParams).not.toHaveProperty(localField);
       }
+    });
+
+    it('resolves declared skills shell-side and hands the section to the in-process loop', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      resolvePreloadedSkillsMock.mockResolvedValue(PRELOADED_SECTION);
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent: { ...agent, skills: ['weekly-report'] }, task: 'preload me' });
+
+      expect(resolvePreloadedSkillsMock).toHaveBeenCalledTimes(1);
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+    });
+
+    it('carries the resolved section across the sidecar wire', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      resolvePreloadedSkillsMock.mockResolvedValue(PRELOADED_SECTION);
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed',
+      });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent: { ...agent, skills: ['weekly-report'] }, task: 'preload me' });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(wireParams.preloadedSkills).toEqual(PRELOADED_SECTION);
+    });
+
+    it('keeps a caller-supplied section instead of resolving a second time', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({
+        agent: { ...agent, skills: ['weekly-report'] },
+        task: 'preload me',
+        preloadedSkills: PRELOADED_SECTION,
+      });
+
+      expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
     });
 
     it('sends only opaque delegated image metadata across the sidecar boundary', async () => {
@@ -1917,6 +1974,49 @@ describe('subagentRunner', () => {
 
       expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
       expect(result.text).toBe('in-process result');
+    });
+
+    // The transport-failure fallback re-runs the WHOLE agent in-process, so it
+    // must re-run it with the same prompt — including the section resolved
+    // shell-side before dispatch. This path is live in dev: `electron:dev`
+    // does not rebuild the sidecar, and a stale sidecar rejects the
+    // `preloadedSkills` wire field through its unknown-key guard, which lands
+    // exactly here. Dropping the section here silently runs the agent without
+    // its declared skills.
+    it('re-runs the transport fallback WITH the shell-resolved preloaded skills', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      resolvePreloadedSkillsMock.mockResolvedValue(PRELOADED_SECTION);
+      sidecarRequestMock.mockRejectedValue(new Error('unknown key: preloadedSkills'));
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, skills: ['weekly-report'] },
+        task: 'preload me',
+      });
+
+      expect(result.text).toBe('in-process result');
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+      // Resolved once, before dispatch — the fallback reuses that section
+      // rather than paying for a second resolution.
+      expect(resolvePreloadedSkillsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a caller-supplied section on the transport fallback', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({
+        agent: { ...agent, skills: ['weekly-report'] },
+        task: 'preload me',
+        preloadedSkills: PRELOADED_SECTION,
+      });
+
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+      expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
     });
 
     it('drops pre-invoke sidecar progress and gives the local fallback a fresh scope', async () => {

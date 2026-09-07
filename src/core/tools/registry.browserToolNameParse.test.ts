@@ -46,6 +46,7 @@ interface FakeConnectedServer {
   client: { callTool: ReturnType<typeof vi.fn> };
   transport: unknown;
   tools: Map<string, never>;
+  appTools: Map<string, never>;
 }
 
 let mockCallTool: ReturnType<typeof vi.fn>;
@@ -97,6 +98,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
         config: { name: server },
         client: { callTool: mockCallTool },
         transport: {},
+        appTools: new Map(),
         tools: new Map(),
       };
       (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
@@ -163,6 +165,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
         config: { name: 'other-server' },
         client: { callTool: mockCallTool },
         transport: {},
+        appTools: new Map(),
         tools: new Map(),
       };
       (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(

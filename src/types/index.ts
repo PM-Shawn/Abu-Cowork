@@ -267,6 +267,30 @@ export interface ToolCall {
   subagentStopReason?: SubagentStopReason;
   /** Minimal persisted terminal summary for run_agent_batch. */
   batchTerminalSummary?: BatchTerminalSummary;
+  /**
+   * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
+   *
+   * Resolved in the RENDERER when the step first renders — `ToolDefinition.ui`
+   * never crosses the sidecar wire (the loop only sees name/description/schema),
+   * so it cannot be filled in where the tool call is created. Persisting it
+   * means a reopened conversation still knows the step had an interface, and
+   * which server to name in the placeholder, even when that server is offline.
+   *
+   * Optional and additive: ledgers written before MCP Apps simply lack it.
+   */
+  ui?: { server: string; resourceUri: string };
+  /**
+   * Extra model-visible context the MCP App interface attached to this step
+   * (`ui/update-model-context`, spec §4.3).
+   *
+   * Written by the host from the sandboxed view, capped at 8 KB, OVERWRITTEN
+   * (never appended) by each update. `messageNormalizer` appends it to this
+   * step's tool result when the history is next sent to the model, so it
+   * reaches the model on the NEXT turn — never as system-prompt bytes. The
+   * tool card renders it in an expander so the user can see what the interface
+   * told the model.
+   */
+  modelContext?: string;
 }
 
 // Multimodal content types for messages
@@ -723,6 +747,15 @@ export interface ToolDefinition {
    * checks if the command is read-only).
    */
   isConcurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean);
+  /**
+   * MCP Apps interface declared by the tool's `_meta.ui`
+   * (extension `io.modelcontextprotocol/ui`). Present only for MCP tools whose
+   * server declares a `ui://` resource to render alongside the tool result.
+   * `visibility` decides who may call the tool: without `'model'` the tool is
+   * kept out of the model's tool table and is reachable only from the app
+   * bridge (see MCPClientManager.getAppTool).
+   */
+  ui?: { resourceUri: string; visibility: ReadonlyArray<'model' | 'app'> };
 }
 
 // --- LLM ---
@@ -811,7 +844,9 @@ export type SkillSource =
   | 'project-standard'
   | 'workspace-auto'
   | 'draft'
-  | 'enterprise';
+  | 'enterprise'
+  /** Shipped inside an installed plugin package. Ranked below the user's own. */
+  | 'plugin';
 
 /**
  * User-facing skill categories surfaced in the Toolbox. This is a
@@ -896,10 +931,31 @@ export interface SubagentMetadata {
   maxTurns?: number;          // Optional cap on subagent loop turns. Falls back to global settings; ultimate fallback is 200 for safety.
   tools?: string[];
   disallowedTools?: string[];
+  /**
+   * Skill names preloaded into the agent's context at start — NOT a
+   * restriction. Each listed skill's full SKILL.md body is injected into the
+   * prompt that starts this agent's loop (see
+   * `core/agent/prompts/preloadedSkills.ts`); every other discovered skill
+   * stays available on demand exactly as it is for an agent that lists none.
+   */
   skills?: string[];
   memory?: 'session' | 'project' | 'user';
   background?: boolean;
   managed?: ManagedAgentMetadata;
+  /**
+   * Where this agent came from, when it did not come from the user.
+   *
+   * Only `plugin` exists: a plugin-contributed agent is read-only (a plugin
+   * update rewrites its AGENT.md), so the UI has to be able to say so. Agents
+   * the user wrote and the built-ins leave this `undefined` — there is no
+   * enumeration of every origin (the ecosystem has one; Abu has one thing to
+   * say, and says it).
+   *
+   * On disk it round-trips as the single frontmatter key `source:
+   * plugin:<pluginKey>`; in memory a plugin agent installed before that key
+   * existed gets it back from `installed.json` (see `discoveryStore.refresh`).
+   */
+  source?: { kind: 'plugin'; plugin: string };
 
   // ── Display-only fields (rendered by toolbox AgentsSection / chat welcome banner)
   //   All optional. User-defined agents can fill any subset; builtins ship full data.

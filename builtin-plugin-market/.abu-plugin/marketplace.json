@@ -1,0 +1,15 @@
+{
+  "name": "abu-official",
+  "owner": { "name": "Abu", "email": "hello@abu.example" },
+  "description": "阿布官方内置插件市场 —— 随应用附带，开箱即可浏览安装",
+  "plugins": [
+    {
+      "name": "abu-prd-doctor",
+      "description": "PRD 体检：按流程完整性 / 异常路径 / 文案一致性三条线快速过一遍产品需求文档",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "productivity",
+      "source": "./plugins/abu-prd-doctor"
+    }
+  ]
+}

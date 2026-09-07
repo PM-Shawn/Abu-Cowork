@@ -40,6 +40,7 @@ interface FakeConnectedServer {
   client: { callTool: ReturnType<typeof vi.fn> };
   transport: unknown;
   tools: Map<string, never>;
+  appTools: Map<string, never>;
 }
 
 let mockCallTool: ReturnType<typeof vi.fn>;
@@ -81,6 +82,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
       config: { name: 'abu-browser' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(

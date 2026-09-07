@@ -2,16 +2,17 @@ import { useState } from 'react';
 import { ArrowLeft, Save, Play } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { serializeAgentMd } from '@/core/agent/registry';
+import { getAllTools } from '@/core/tools/registry';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import { useSettingsStore, getActiveProvider } from '@/stores/settingsStore';
 import { navigateToChatWithInput } from '@/utils/navigation';
 import { useItemName } from '@/hooks/useItemName';
-import { MultiSearchSelect } from '@/components/ui/search-select';
-import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
+import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 
 interface AgentEditorProps {
@@ -26,7 +27,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const [showPreview, setShowPreview] = useState(false);
 
   // Name validation via shared hook
-  const { name, setName, nameValid, nameChanged } = useItemName(agent?.name ?? null, 'agent');
+  const { name, setName, nameValid, nameChanged } = useItemName(agent?.name ?? null);
   const [description, setDescription] = useState(agent?.description ?? '');
   const [avatar, setAvatar] = useState(agent?.avatar ?? '');
   const [model, setModel] = useState(() => {
@@ -38,12 +39,14 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
     return '';
   });
   const [maxTurns, setMaxTurns] = useState(agent?.maxTurns?.toString() ?? '');
-  const [skillNames, setSkillNames] = useState<string[]>(agent?.skills ?? []);
+  const [toolsStr, setToolsStr] = useState((agent?.tools ?? []).join(', '));
+  const [disallowedToolsStr, setDisallowedToolsStr] = useState((agent?.disallowedTools ?? []).join(', '));
+  const [skillsStr, setSkillsStr] = useState((agent?.skills ?? []).join(', '));
   const [memory, setMemory] = useState<'session' | 'project' | 'user'>(agent?.memory ?? 'session');
   const [background, setBackground] = useState(agent?.background ?? false);
-  // Installed skills feed the 关联技能 dropdown (user feedback 2026-08-31:
-  // searchable select, not free text).
-  const installedSkills = useDiscoveryStore((store) => store.skills);
+  const knownToolNames = getAllTools().map((tool) => tool.name);
+  const unmatchedTools = getUnmatchedAgentToolPatterns(toolsStr, knownToolNames);
+  const unmatchedDisallowedTools = getUnmatchedAgentToolPatterns(disallowedToolsStr, knownToolNames);
 
   // Display-only fields rendered in toolbox detail panel + chat welcome.
   // All optional; users can leave them blank and the agent still works.
@@ -57,12 +60,9 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const [systemPrompt, setSystemPrompt] = useState(agent?.systemPrompt ?? '');
 
   const buildMetadata = (): Partial<SubagentMetadata> => {
-    // Tool boundaries have no UI (user decision 2026-08-31: members run with
-    // the main agent's toolset; safety lives in runtime approval gates) — but
-    // existing frontmatter values round-trip untouched.
-    const tools = agent?.tools ?? [];
-    const disallowedTools = agent?.disallowedTools ?? [];
-    const skills = skillNames;
+    const tools = toolsStr.split(',').map((s) => s.trim()).filter(Boolean);
+    const disallowedTools = disallowedToolsStr.split(',').map((s) => s.trim()).filter(Boolean);
+    const skills = skillsStr.split(',').map((s) => s.trim()).filter(Boolean);
     // Display fields are line-separated (intro is single paragraph, expertise
     // and samplePrompts are bullet-per-line). Tags use comma separator to match
     // the existing toolsStr convention.
@@ -71,9 +71,6 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
     const tags = tagsStr.split(',').map((s) => s.trim()).filter(Boolean);
     return {
       name: name.trim(),
-      // Write-once creation stamp: preserved on edit, set for new agents so
-      // the 队员 list can order newest-first.
-      createdAt: agent?.createdAt ?? Date.now(),
       description: description.trim(),
       avatar: avatar.trim() || undefined,
       model: model.trim() || 'inherit',
@@ -88,11 +85,20 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       samplePrompts: samplePrompts.length > 0 ? samplePrompts : undefined,
       category: category.trim() || undefined,
       tags: tags.length > 0 ? tags : undefined,
+      // Provenance is not an editable field: carried over verbatim so a save
+      // cannot quietly launder a plugin's agent into a user-authored one. A new
+      // agent has none. (The detail views disable Edit for plugin agents, so
+      // this is the invariant behind that gate, not a second entry point.)
+      source: agent?.source,
     };
   };
 
   const handleSave = async (): Promise<boolean> => {
     if (!name.trim()) return false;
+    // A plugin owns this AGENT.md — the next plugin update overwrites whatever
+    // is saved here. The only entry point (AgentsSection's Edit) is disabled
+    // for plugin agents; this keeps the invariant local to the save itself.
+    if (agent && isPluginOwnedAgent(agent)) return false;
     setSaving(true);
     try {
       const metadata = buildMetadata();
@@ -164,14 +170,14 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder={t.toolbox.agentNamePlaceholder}
+                placeholder="my-agent"
                 className={cn(
                   'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
                   name.trim() && !nameValid ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
                 )}
               />
               {name.trim() && !nameValid && (
-                <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.agentNameFormatHint}</p>
+                <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
               )}
             </div>
             <div className="w-20">
@@ -197,39 +203,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
             />
           </div>
 
-        {/* Content Section */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <h3 className="text-minor font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
-              {t.toolbox.agentInstructionsLabel}
-            </h3>
-            <button
-              onClick={() => setShowPreview(!showPreview)}
-              className={`text-caption px-2 py-0.5 rounded-full transition-colors ${
-                showPreview
-                  ? 'bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)]'
-                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-border)]'
-              }`}
-            >
-              {t.toolbox.agentEditorPreview}
-            </button>
-          </div>
-
-          {showPreview ? (
-            <div className="border border-[var(--abu-border)] rounded-lg p-4 bg-[var(--abu-bg-base)] min-h-[200px] max-h-[400px] overflow-y-auto">
-              <MarkdownRenderer content={systemPrompt || '*No content yet*'} />
-            </div>
-          ) : (
-            <textarea
-              value={systemPrompt}
-              onChange={(e) => setSystemPrompt(e.target.value)}
-              placeholder="Write agent system prompt in Markdown..."
-              className="w-full min-h-[200px] max-h-[400px] px-3 py-2 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] font-mono focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
-            />
-          )}
-        </div>
-
-          {/* Model */}
+          {/* Model + Max Turns row */}
           <div className="flex gap-3">
             <div className="flex-1">
               <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentModel}</label>
@@ -245,34 +219,6 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 ]}
               />
             </div>
-          </div>
-
-          {/* Skills — searchable multi-select from installed skills */}
-          <div>
-            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentSkills}</label>
-            <MultiSearchSelect
-              values={skillNames}
-              onChange={setSkillNames}
-              options={installedSkills.map((skill) => ({ value: skill.name, label: skill.name, description: skill.description }))}
-              placeholder={t.toolbox.agentSkillsPlaceholder}
-              searchPlaceholder={t.toolbox.searchPlaceholder}
-              emptyText={t.toolbox.agentSkillsEmpty}
-              testId="agent-skills-select"
-            />
-          </div>
-
-
-        </div>
-
-
-        {/* 高级（可选）— power knobs collapsed by default so the everyday
-            surface stays 名称/职责/指令/模型/技能 (user feedback 2026-08-31). */}
-        <details className="rounded-xl border border-[var(--abu-border)] px-3 py-2">
-          <summary className="cursor-pointer text-minor font-medium text-[var(--abu-text-secondary)] select-none">
-            {t.toolbox.agentAdvancedSection}
-          </summary>
-          <div className="space-y-3 pt-3">
-          <div className="flex gap-3">
             <div className="w-32">
               <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentMaxTurns}</label>
               <input
@@ -290,6 +236,55 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               />
             </div>
           </div>
+
+          {/* Tools */}
+          <div>
+            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentTools}</label>
+            <input
+              type="text"
+              value={toolsStr}
+              onChange={(e) => setToolsStr(e.target.value)}
+              placeholder="web_search, read_file, abu-browser__*"
+              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
+            />
+            <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.toolbox.agentToolPatternsHint}</p>
+            {unmatchedTools.length > 0 && (
+              <p className="text-caption text-[var(--abu-warning)] mt-1" role="alert">
+                {format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedTools.join(', ') })}
+              </p>
+            )}
+          </div>
+
+          {/* Disallowed Tools */}
+          <div>
+            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentDisallowedTools}</label>
+            <input
+              type="text"
+              value={disallowedToolsStr}
+              onChange={(e) => setDisallowedToolsStr(e.target.value)}
+              placeholder="execute_command, abu-browser__*"
+              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
+            />
+            <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.toolbox.agentToolPatternsHint}</p>
+            {unmatchedDisallowedTools.length > 0 && (
+              <p className="text-caption text-[var(--abu-warning)] mt-1" role="alert">
+                {format(t.toolbox.agentUnknownToolsWarning, { tools: unmatchedDisallowedTools.join(', ') })}
+              </p>
+            )}
+          </div>
+
+          {/* Skills */}
+          <div>
+            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentSkills}</label>
+            <input
+              type="text"
+              value={skillsStr}
+              onChange={(e) => setSkillsStr(e.target.value)}
+              placeholder="deep-research, code-review"
+              className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all"
+            />
+          </div>
+
           {/* Memory + Background row */}
           <div className="flex gap-3 items-end">
             <div className="flex-1">
@@ -369,8 +364,39 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               />
             </div>
           </div>
+        </div>
+
+        {/* Content Section */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-minor font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
+              {t.toolbox.agentEditorContent}
+            </h3>
+            <button
+              onClick={() => setShowPreview(!showPreview)}
+              className={`text-caption px-2 py-0.5 rounded-full transition-colors ${
+                showPreview
+                  ? 'bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)]'
+                  : 'bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-border)]'
+              }`}
+            >
+              {t.toolbox.agentEditorPreview}
+            </button>
           </div>
-        </details>
+
+          {showPreview ? (
+            <div className="border border-[var(--abu-border)] rounded-lg p-4 bg-[var(--abu-bg-base)] min-h-[200px] max-h-[400px] overflow-y-auto">
+              <MarkdownRenderer content={systemPrompt || '*No content yet*'} />
+            </div>
+          ) : (
+            <textarea
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              placeholder="Write agent system prompt in Markdown..."
+              className="w-full min-h-[200px] max-h-[400px] px-3 py-2 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] font-mono focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all resize-y"
+            />
+          )}
+        </div>
       </div>
     </div>
   );

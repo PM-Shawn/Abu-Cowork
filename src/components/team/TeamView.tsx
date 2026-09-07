@@ -328,15 +328,14 @@ export default function TeamView() {
     closeTeam();
   };
 
+  // One local box for both tabs. It used to write into the toolbox's shared
+  // query so AgentsSection would filter; that surface is now Extensions, whose
+  // query belongs to another view — AgentsSection takes ours as a prop instead.
   const [search, setSearch] = useState('');
-  // AgentsSection filters by the shared toolbox query — bind the members-tab
-  // search box to it so typing actually filters (bug: local state was ignored).
-  const toolboxSearchQuery = useSettingsStore((s) => s.toolboxSearchQuery);
-  const setToolboxSearchQuery = useSettingsStore((s) => s.setToolboxSearchQuery);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
   const [teamDialog, setTeamDialog] = useState<{ open: boolean; team: Team | null }>({ open: false, team: null });
 
-  useEffect(() => { setSearch(''); setToolboxSearchQuery(''); }, [activeTeamTab, setToolboxSearchQuery]);
+  useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
   const activeTeams = useMemo(() => teams.filter((tm) => !tm.archivedAt), [teams]);
   const agents = useMemberPool();
@@ -361,8 +360,8 @@ export default function TeamView() {
         <Input
           type="text"
           placeholder={t.team.searchPlaceholder}
-          value={isMembers ? toolboxSearchQuery : search}
-          onChange={(e) => (isMembers ? setToolboxSearchQuery(e.target.value) : setSearch(e.target.value))}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
           className="h-8 pl-8 pr-3 text-body"
         />
       </div>
@@ -387,7 +386,7 @@ export default function TeamView() {
     switch (activeTeamTab) {
       case 'members':
         // Single identity source: this IS the toolbox agents surface.
-        return <AgentsSection manualCreateTrigger={manualCreateTrigger} />;
+        return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} />;
       case 'teams': {
         const archivedTeams = teams.filter((tm) => tm.archivedAt);
         if (activeTeams.length === 0) {

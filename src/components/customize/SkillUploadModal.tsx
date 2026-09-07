@@ -3,7 +3,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { unpackSkill, validateArchive, ConflictError } from '@/core/skill/packager';
-import { installSkillFromFolder } from '@/core/skill/installer';
+import { installSkillFromFolder, type InstallResult } from '@/core/skill/installer';
 import { useFileDragDrop } from '@/hooks/useFileDragDrop';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -52,7 +52,20 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
 
     const validationError = validateArchive(archiveBytes);
     if (validationError) {
-      addToast({ type: 'error', title: t.toolbox.importFailed, message: validationError.message });
+      addToast({
+        type: 'error',
+        title: t.toolbox.importFailed,
+        // A traversing name is a refusal we can explain, and the remedy is the
+        // user's, not a developer's. `validateArchive` has no locale of its own
+        // and short-circuits before `unpackSkill`, whose UnsafeSkillNameError
+        // carries the same localized sentence for the path nothing reaches — so
+        // this branch is where the user meets the rule. Every other code has no
+        // locale text and falls back to the developer message.
+        message:
+          validationError.code === 'UNSAFE_NAME'
+            ? format(t.toolbox.importUnsafeName, { name: validationError.skillName ?? '' })
+            : validationError.message,
+      });
       return false;
     }
 
@@ -75,6 +88,32 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
   };
 
   /**
+   * Toast suffix naming the symlinks the copy refused, or '' when there were
+   * none. Both install paths append it: the user approved a folder, and the
+   * skill that landed is missing exactly these entries.
+   */
+  const linksNote = (links: string[]): string =>
+    links.length > 0
+      ? ` · ${format(t.toolbox.importSkippedLinks, {
+          n: String(links.length),
+          names: links.join(t.toolbox.importSkippedLinksSeparator),
+        })}`
+      : '';
+
+  /**
+   * A failed folder install in the user's language where we have one.
+   * `message` is developer-facing English; SYMLINK_ROOT is a refusal we can
+   * explain, so it gets the locale's text and an actionable next step.
+   */
+  const installErrorMessage = (
+    result: Extract<InstallResult, { ok: false }>,
+    folderPath: string,
+  ): string =>
+    result.code === 'SYMLINK_ROOT'
+      ? format(t.toolbox.importSymlinkRootRefused, { path: folderPath })
+      : result.message;
+
+  /**
    * Install a skill from a local folder (copies into ~/.abu/skills/).
    * Calls installSkillFromFolder WITHOUT overwrite first; on ALREADY_EXISTS
    * pops a ConfirmDialog instead of silently clobbering.
@@ -92,7 +131,7 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
         setImportConflict({ kind: 'folder', folderPath, skillName });
         return false; // ConfirmDialog takes over
       }
-      addToast({ type: 'error', title: t.toolbox.importFailed, message: result.message });
+      addToast({ type: 'error', title: t.toolbox.importFailed, message: installErrorMessage(result, folderPath) });
       return false;
     }
 
@@ -101,7 +140,11 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
     const skippedNote = result.skipped.length > 0
       ? ` · ${format(t.toolbox.importSkippedFiles, { n: String(result.skipped.length), names: result.skipped.join('、') })}`
       : '';
-    addToast({ type: 'success', title: t.toolbox.importSuccess, message: `"${result.name}"${skippedNote}` });
+    addToast({
+      type: 'success',
+      title: t.toolbox.importSuccess,
+      message: `"${result.name}"${skippedNote}${linksNote(result.skippedSymlinks)}`,
+    });
     return true;
   };
 
@@ -174,14 +217,22 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
       } else {
         const result = await installSkillFromFolder(conflict.folderPath, { overwrite: true });
         if (!result.ok) {
-          addToast({ type: 'error', title: t.toolbox.importFailed, message: result.message });
+          addToast({
+            type: 'error',
+            title: t.toolbox.importFailed,
+            message: installErrorMessage(result, conflict.folderPath),
+          });
           return;
         }
         name = result.name;
         const skippedNote = result.skipped.length > 0
           ? ` · ${format(t.toolbox.importSkippedFiles, { n: String(result.skipped.length), names: result.skipped.join('、') })}`
           : '';
-        addToast({ type: 'success', title: t.toolbox.importSuccess, message: `"${name}"${skippedNote}` });
+        addToast({
+          type: 'success',
+          title: t.toolbox.importSuccess,
+          message: `"${name}"${skippedNote}${linksNote(result.skippedSymlinks)}`,
+        });
       }
       await useDiscoveryStore.getState().refresh();
       onInstalled(name);

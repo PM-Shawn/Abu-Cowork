@@ -135,7 +135,8 @@ export interface TranslationDict {
     automation: string;
     scheduledTasks: string;
     triggers: string;
-    toolbox: string;
+    /** Sidebar entry for the Extensions view (插件 / 技能 / 连接器). */
+    extensions: string;
     team: string;
     recents: string;
     searchPlaceholder: string;
@@ -315,6 +316,55 @@ export interface TranslationDict {
     htmlWidgetDownload: string;
     htmlWidgetViewCode: string;
     htmlWidgetViewPreview: string;
+    // ── MCP Apps (connector-provided interfaces, spec io.modelcontextprotocol/ui) ──
+    /** Muted line while the connector's ui:// resource is being fetched. */
+    mcpAppLoading: string;
+    /** Muted line under the plain tool result when the interface could not be
+     *  fetched, was not an MCP App resource, or never completed its handshake. */
+    mcpAppLoadFailed: string;
+    /** Muted line on replay when the connector that owns the interface is
+     *  offline. `{server}` is the MCP server name. */
+    mcpAppNotConnected: string;
+    /** Button on a collapsed placeholder past the concurrent-app cap. */
+    mcpAppLoadPlaceholder: string;
+    /** One-line disclosure that the resource asked for capabilities Abu does
+     *  not grant (a dedicated sandbox `domain`, device `permissions`). */
+    mcpAppUnsupportedMeta: string;
+    /** Same line, for domains the host refused to put in the CSP.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppIgnoredDomains: string;
+    /** Suffix appended to that list when it was truncated. */
+    mcpAppIgnoredDomainsMore: string;
+    /** Same line, for the third-party origins the host DID put in the CSP —
+     *  with `connect-src 'none'` an `img-src` origin is still an outbound
+     *  channel, so who the interface may reach is worth showing.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppAllowedDomains: string;
+    /** Collapsed audit row under the tool card: the app called a tool of its
+     *  own server. `{tool}` is the tool name. */
+    mcpAppAuditRow: string;
+    /** Label above the arguments the app passed in that audit row. */
+    mcpAppAuditArgs: string;
+    /** Label above the result summary in that audit row. */
+    mcpAppAuditResult: string;
+    /** Muted status line once the app hit the per-minute call budget. */
+    mcpAppRateLimited: string;
+    /** Expander title for the text the app added to the model's context. */
+    mcpAppModelContext: string;
+    /** Accessible label / tooltip for the button that leaves fullscreen. */
+    mcpAppExitFullscreen: string;
+    /** Title of the consent dialog an app-initiated `ui/open-link` must pass. */
+    mcpAppOpenLinkTitle: string;
+    /** Confirm button of that dialog. */
+    mcpAppOpenLinkConfirm: string;
+    /** Audit-row label for an `ui/open-link` attempt (whatever the outcome). */
+    mcpAppAuditOpenLink: string;
+    /** Audit outcome: the user agreed and the link went to the browser. */
+    mcpAppOutcomeOpened: string;
+    /** Audit outcome: the user said no. */
+    mcpAppOutcomeDeclined: string;
+    /** Audit outcome: the host refused it (bad scheme, or too long). */
+    mcpAppOutcomeRejected: string;
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;
@@ -361,6 +411,8 @@ export interface TranslationDict {
     pickAgent: string;
     pickAgentEmpty: string;
     pickAgentClear: string;
+    /** Trailing tag on a plugin-contributed agent's row in the @ picker. */
+    pickAgentPluginTag: string;
     // Conversation ID badge
     copyConvIdTooltip: string;
     copyConvIdCopied: string;
@@ -1806,6 +1858,104 @@ export interface TranslationDict {
     mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
+    // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
+    plugins: string;
+    pluginsEmptyState: string;
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
+     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
+     *  literally "MCP", not a Connectors-flavored label. */
+    connectors: string;
+    // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
+    pluginsMarketplaceTab: string;
+    // Extensions 「市场 | 我的」 source sub-nav + the `···` menu on an installed item
+    sourceMarket: string;
+    sourceMine: string;
+    /** "{name} 的操作" — accessible name of an installed item's `···` trigger. */
+    itemMenuLabel: string;
+    menuTrial: string;
+    menuManage: string;
+    menuUninstall: string;
+    menuEdit: string;
+    menuView: string;
+    menuDelete: string;
+    menuRemove: string;
+    menuManagedByOrg: string;
+    /** 「立即试用」prefilled prompt — `{name}` = item name, `{hint}` = its description. */
+    trialPrompt: string;
+    /** Hint used when an item has no description. */
+    trialPromptFallback: string;
+    pluginsAddMarketplace: string;
+    pluginsAddMarketplaceTitle: string;
+    pluginsMarketplaceDirLabel: string;
+    pluginsMarketplaceDirPlaceholder: string;
+    pluginsMarketplaceDirHint: string;
+    pluginsBrowseDir: string;
+    pluginsMarketplaceReadFailed: string;
+    pluginsNoMarketplaces: string;
+    pluginsNoMarketplacesHint: string;
+    pluginsRemoveMarketplace: string;
+    pluginsRemoveMarketplaceTitle: string;
+    pluginsRemoveMarketplaceMessage: string;
+    pluginsCategoryAll: string;
+    pluginsNoMatches: string;
+    pluginsEntryCount: string;
+    pluginsInstall: string;
+    pluginsUpdate: string;
+    pluginsUpdateSucceeded: string;
+    pluginsUpdateReloadHint: string;
+    /** Sidebar red-dot a11y label / Plugins-tab badge — "{count} updates available". */
+    pluginsUpdatesAvailable: string;
+    /** Singular form: English needs it, Chinese reuses the same wording. */
+    pluginsUpdatesAvailableOne: string;
+    pluginsUninstall: string;
+    pluginsUninstallTitle: string;
+    pluginsUninstallMessage: string;
+    pluginsUninstallFailed: string;
+    pluginsSkillCount: string;
+    pluginsServerCount: string;
+    pluginsFromMarketplace: string;
+    pluginsGoToMarketplace: string;
+    /** 「我的」 empty state — the user has authored no plugins yet. */
+    pluginsMineEmptyTitle: string;
+    pluginsMineEmptyHint: string;
+    /** Heading of the group for installs whose marketplace is gone. */
+    pluginsOrphanGroup: string;
+    /** Title of the installed-plugin detail dialog opened from 「管理」. */
+    pluginsManageTitle: string;
+    /** Install disclosure — the screen that shows what executable code is coming in. */
+    pluginsDisclosureTitle: string;
+    pluginsDisclosureSubtitle: string;
+    pluginsDisclosureSource: string;
+    pluginsDisclosureSkills: string;
+    pluginsDisclosureServers: string;
+    pluginsDisclosureServersHint: string;
+    /** Heading of the agents group — also reused by the manage dialog. */
+    pluginsDisclosureAgents: string;
+    /** Why one agent in the group will be skipped; one short tag per row. */
+    pluginsDisclosureAgentExists: string;
+    pluginsDisclosureAgentUnsafeName: string;
+    pluginsDisclosureAgentEmptyPrompt: string;
+    pluginsDisclosureCapabilities: string;
+    pluginsDisclosureIgnoredTitle: string;
+    pluginsDisclosureIgnoredHint: string;
+    pluginsDisclosureSymlinkTitle: string;
+    pluginsDisclosureSymlinkHint: string;
+    /** List punctuation for the refused-link paths — `, ` reads wrong in zh. */
+    pluginsDisclosureSymlinkSeparator: string;
+    /** Shown when the artifact carried no verifiable signature. */
+    pluginsDisclosureUnsigned: string;
+    pluginsDisclosureNone: string;
+    pluginsDisclosureLoading: string;
+    pluginsInstalling: string;
+    pluginsInstallFailed: string;
+    pluginsInstallSucceeded: string;
+    pluginsRemoteSourceBadge: string;
+    pluginsUnsupportedTitle: string;
+    pluginsUnsupportedRemote: string;
+    pluginsPlanFailed: string;
+    /** The package's own directory is a symlink, so nothing about it is trustworthy. */
+    pluginsSymlinkRootRefused: string;
+    pluginsPlanDenied: string;
     // Skills Section
     installedSkills: string;
     noInstalledSkills: string;
@@ -1941,6 +2091,16 @@ export interface TranslationDict {
     pickFolder: string;              // "选择文件夹"
     pickFile: string;                // "选择文件 (.askill/.zip)"
     importSkippedFiles: string;      // "跳过 {n} 个隐藏文件：{names}"
+    /** {n}, {names} — symlinks the copy refused, NOT hidden files. */
+    importSkippedLinks: string;
+    /** Joins the link paths in {@link importSkippedLinks}. */
+    importSkippedLinksSeparator: string;
+    /** {path} — the chosen folder is itself a symlink. */
+    importSymlinkRootRefused: string;
+    /** {name} — the .askill's frontmatter name is not one directory segment. */
+    importUnsafeName: string;
+    /** {n}, {names} — entries packSkill will not put in an exported archive. */
+    exportSymlinkRefused: string;
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;
@@ -1992,9 +2152,24 @@ export interface TranslationDict {
     categoryBuiltin: string;           // "市场" (ships-with-Abu / catalog, vs "我的")
     skillSourceBuiltin: string;
     skillSourceUser: string;
+    skillSourcePlugin: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;
+    /** Skills 「市场」 hint card — outside skills arrive with plugins. */
+    skillsMarketHintTitle: string;
+    skillsMarketHintBody: string;
+    skillsMarketGoPlugins: string;
+    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
+    skillsMineEmptyTitle: string;
+    /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
+    connectorsMarketTitle: string;
+    connectorsFromPlugins: string;
+    connectorsAdd: string;
+    /** Accessible name of one catalog row's 添加 button — `{name}` is the connector. */
+    connectorAddLabel: string;
+    /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
+    connectorsMineEmptyTitle: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;
@@ -2027,6 +2202,10 @@ export interface TranslationDict {
     agentAvatar: string;
     agentSystemPrompt: string;
     agentEdit: string;
+    /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
+    agentFromPlugin: string;
+    agentFromPluginEditDisabled: string;
+    agentFromPluginDeleteDisabled: string;
     agentSave: string;
     agentSaveAndTest: string;
     agentEditorTitle: string;
@@ -2059,10 +2238,12 @@ export interface TranslationDict {
     // Connection test
     testConnection: string;
     testSuccess: string;
+    mcpFromPlugin: string;
     testFailed: string;
     testing: string;
     // Tool count
     toolCount: string;
+    toolCountWithApp: string;
     noTools: string;
     // Server logs
     viewLogs: string;
@@ -2157,10 +2338,9 @@ export interface TranslationDict {
     categoryBlocksUnblock: string;      // button label
     categoryBlocksUnblockError: string; // toast title on delete failure
     categoryBlocksHint: string;         // subtitle describing what these are
-    // Enterprise capability source (shown inside Skill / MCP when bound)
+    // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
-    personalSource: string;
     organizationSource: string;
   };
 
@@ -3105,6 +3285,9 @@ export interface TranslationDict {
      *  refuses the pending action. Offered whenever the origin is known,
      *  including for requests that may not be granted permanently. */
     browserBlockSite: string;
+    pluginToolAction: string;
+    pluginToolReason: string;
+    pluginToolDenied: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };
@@ -3743,7 +3926,11 @@ export interface TranslationDict {
       installFailed: string;
       /** {count}, {files} */
       skippedNote: string;
-      /** {name}, {count}, {skippedNote} */
+      /** {count}, {files} — symlinks the copy refused, NOT hidden files. */
+      skippedLinksNote: string;
+      /** {path} — the folder at `source` is itself a symlink. */
+      symlinkRootRefused: string;
+      /** {name}, {count}, {skippedNote}, {linksNote} */
       installed: string;
       /** {name}, {path} */
       draftProposed: string;
@@ -3758,6 +3945,8 @@ export interface TranslationDict {
       searchNoResults: string;
       /** Env-var needed note fragment. {envList} */
       searchEnvNote: string;
+      /** Configurable-argument needed note fragment. {argList} */
+      searchArgNote: string;
       /** Search results header. {count}, {lines} */
       searchResults: string;
       /** Error: action=install requires name. */
@@ -3791,6 +3980,10 @@ export interface TranslationDict {
       mcpCatalog: Record<string, string>;
       /** MCP env-var config hints keyed by env-var name. */
       mcpEnvHints: Record<string, string>;
+      /** Labels for configurable positional args, keyed by `${serverName}.${argIndex}`. */
+      mcpArgLabels: Record<string, string>;
+      /** Out-of-app setup notes keyed by server name (e.g. install a Chrome extension). */
+      mcpSetupHints: Record<string, string>;
       /** Generic unknown-error fallback for MCP connect failures. */
       mcpUnknownError: string;
       /** Server connected. {name}, {count} */
@@ -3801,6 +3994,8 @@ export interface TranslationDict {
       mcpConnectFailed: string;
       /** Install needs env vars. {name}, {hints} */
       mcpNeedsEnvVars: string;
+      /** Install is missing a configurable positional argument. {name}, {label} */
+      mcpMissingArg: string;
       /** Installed and connected. {name}, {count} */
       mcpInstalledConnected: string;
       /** Installed but connect failed. {name}, {error} */

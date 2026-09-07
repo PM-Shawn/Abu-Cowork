@@ -73,6 +73,8 @@ export interface EnterpriseMounts {
   kbModule?: ComponentType<KbModuleProps>
   policyEnforcer?: ComponentType<PolicyEnforcerProps>
   agentMarket?: ComponentType<AgentMarketProps>
+  /** Organization plugin catalog (Toolbox → Plugins under the 组织 scope). Optional like agentMarket. */
+  pluginTab?: ComponentType<TabSlotProps>
   imConnector?: ComponentType<ImConnectorProps>
   crossUserTasks?: ComponentType<CrossUserTaskProps>
 }

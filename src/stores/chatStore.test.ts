@@ -1664,6 +1664,58 @@ describe('chatStore', () => {
       expect(msg.toolCalls).toBeUndefined();
       expect(msg.isStreaming).toBe(true);
     });
+
+    // Renderer-only fields must survive a wholesale replacement. The frame that
+    // carries `collectedToolCalls` comes from the sidecar, which has never seen
+    // `ui` (resolved from the renderer's MCP client) or `modelContext` (written
+    // by the app bridge) — so a replay/late frame for a message that already has
+    // an interface would blank it, exactly the way `sandboxRecoveryAction` had
+    // to be preserved on the disk side (conversationStorage.ts).
+    it('preserves renderer-only ui / modelContext when the incoming frame has none', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [
+        { id: 't1', name: 'weather__forecast', input: {} },
+        { id: 't2', name: 'read_file', input: {} },
+      ]);
+      useChatStore.getState().setToolCallAppUi(id, 'a1', 't1', {
+        server: 'weather', resourceUri: 'ui://weather/view.html',
+      });
+      useChatStore.getState().setToolCallModelContext(id, 'a1', 't1', 'rows: 3');
+
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [
+        { id: 't1', name: 'weather__forecast', input: {} },
+        { id: 't2', name: 'read_file', input: {} },
+      ]);
+
+      const [first, second] = useChatStore.getState().conversations[id].messages[0].toolCalls!;
+      expect(first.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/view.html' });
+      expect(first.modelContext).toBe('rows: 3');
+      expect(second.ui).toBeUndefined();
+    });
+
+    it('lets an incoming frame that DOES carry ui / modelContext win', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [{ id: 't1', name: 'weather__forecast', input: {} }]);
+      useChatStore.getState().setToolCallAppUi(id, 'a1', 't1', {
+        server: 'weather', resourceUri: 'ui://weather/old.html',
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [{
+        id: 't1',
+        name: 'weather__forecast',
+        input: {},
+        ui: { server: 'weather', resourceUri: 'ui://weather/new.html' },
+        modelContext: 'fresh',
+      }]);
+      const [only] = useChatStore.getState().conversations[id].messages[0].toolCalls!;
+      expect(only.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/new.html' });
+      expect(only.modelContext).toBe('fresh');
+    });
   });
 
   // ── appendMessageToolCall (subagent image persistence) ──
@@ -2612,6 +2664,24 @@ describe('chatStore', () => {
     it('sets and clears the append buffer independently of pendingInput', () => {
       useChatStore.getState().appendPendingInput('widget follow-up');
       expect(useChatStore.getState().pendingInputAppend).toBe('widget follow-up');
+    });
+
+    it('APPENDS a second write instead of clobbering an undrained first', () => {
+      // ChatInput drains this buffer in an effect, so two senders (or one app
+      // sending twice) can write before it is consumed. Overwriting there would
+      // silently swallow the first message.
+      useChatStore.setState({ pendingInputAppend: null });
+      useChatStore.getState().appendPendingInput('first');
+      useChatStore.getState().appendPendingInput('second');
+      expect(useChatStore.getState().pendingInputAppend).toBe('first\nsecond');
+    });
+
+    it('caps the undrained buffer at 4 KB without splitting a code point', () => {
+      useChatStore.setState({ pendingInputAppend: null });
+      for (let i = 0; i < 10; i++) useChatStore.getState().appendPendingInput('中'.repeat(1000));
+      const buffer = useChatStore.getState().pendingInputAppend!;
+      expect(new TextEncoder().encode(buffer).length).toBeLessThanOrEqual(4096);
+      expect(buffer).not.toContain('\ufffd');
       // Does not touch the replace-semantics pendingInput buffer.
       expect(useChatStore.getState().pendingInput).toBeNull();
       useChatStore.getState().appendPendingInput(null);
@@ -3100,6 +3170,48 @@ describe('chatStore', () => {
           { answers: [{ header: 'x', question: 'q', selected: ['a'] }] },
         );
       }).not.toThrow();
+    });
+  });
+
+  describe('setToolCallModelContext', () => {
+    function seedStep() {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.setState((state) => {
+        state.conversations[convId]?.messages.push({
+          id: 'msg-1',
+          role: 'assistant',
+          content: '',
+          timestamp: FIXED_TIMESTAMP,
+          toolCalls: [{ id: 'tc-1', name: 'weather__board', input: {} }],
+        });
+      });
+      return convId;
+    }
+    const readBack = (convId: string) => useChatStore
+      .getState()
+      .conversations[convId]?.messages.find((m) => m.id === 'msg-1')
+      ?.toolCalls?.find((t) => t.id === 'tc-1');
+
+    it('writes the app-supplied context onto the step', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'row 4 selected');
+      expect(readBack(convId)?.modelContext).toBe('row 4 selected');
+    });
+
+    it('overwrites rather than appending', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'first');
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'second');
+      expect(readBack(convId)?.modelContext).toBe('second');
+    });
+
+    it('is a no-op for the same value and for a missing step', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'same');
+      const before = useChatStore.getState().conversations[convId]?.messages[0];
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'same');
+      expect(useChatStore.getState().conversations[convId]?.messages[0]).toBe(before);
+      expect(() => useChatStore.getState().setToolCallModelContext(convId, 'nope', 'nope', 'x')).not.toThrow();
     });
   });
 

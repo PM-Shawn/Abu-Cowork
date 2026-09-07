@@ -18,6 +18,7 @@ import {
   type ElectronUserAttachmentToken,
 } from '@/utils/electronHost';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
@@ -156,6 +157,8 @@ interface SuggestionItem {
   teamId?: string;
   /** Team emoji avatar (user-set); absent = default group mark. */
   avatar?: string;
+  /** True when the agent's AGENT.md was installed by a plugin (provenance tag). */
+  fromPlugin?: boolean;
 }
 
 interface FileAttachmentItem {
@@ -370,13 +373,15 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
 const SUGGESTION_MAX_HEIGHT = 320;
 const SUGGESTION_TOP_MARGIN = 16;
 
-function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, optionId, onApply, anchorRef }: {
+function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, pluginTagLabel, optionId, onApply, anchorRef }: {
   listboxId: string;
   ariaLabel: string;
   suggestions: SuggestionItem[];
   selectedIndex: number;
   suggestionType: 'skill' | 'agent' | null;
   sectionLabels: { teams: string; agents: string; skills: string };
+  /** Provenance tag shown on an agent installed by a plugin. */
+  pluginTagLabel: string;
   optionId: (index: number) => string;
   onApply: (item: SuggestionItem) => void;
   /** The composer card the popup opens above. */
@@ -463,6 +468,14 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
                 {suggestionType === 'agent' ? (item.team ? <TeamAvatar avatar={item.avatar} size="xs" round className="mx-auto" /> : '@') : '/'}
               </span>
               <span className="font-medium text-[var(--abu-text-primary)] truncate">{item.name}</span>
+              {item.fromPlugin && (
+                <span
+                  data-testid="agent-source-plugin"
+                  className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                >
+                  {pluginTagLabel}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -1098,6 +1111,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           .map((a) => ({
             name: a.name,
             description: a.description,
+            fromPlugin: isPluginOwnedAgent(a),
           })),
       ];
     }
@@ -1755,6 +1769,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             selectedIndex={selectedIndex}
             suggestionType={suggestionType}
             sectionLabels={{ teams: t.chat.suggestionSectionTeams, agents: t.chat.suggestionSectionAgents, skills: t.chat.suggestionSectionSkills }}
+            pluginTagLabel={t.chat.pickAgentPluginTag}
             optionId={suggestionOptionId}
             onApply={applySuggestion}
           />

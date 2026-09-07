@@ -29,6 +29,7 @@ interface FakeConnectedServer {
   client: { callTool: ReturnType<typeof vi.fn> };
   transport: unknown;
   tools: Map<string, ToolDefinition>;
+  appTools: Map<string, ToolDefinition>;
 }
 
 interface ConfirmInfo {
@@ -77,6 +78,7 @@ describe('browser permission gate — batch', () => {
       config: { name: 'abu-browser' },
       client: { callTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set('abu-browser', fakeServer);

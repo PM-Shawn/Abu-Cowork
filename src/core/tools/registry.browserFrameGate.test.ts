@@ -119,6 +119,7 @@ beforeEach(() => {
     config: { name: 'abu-browser' },
     client: { callTool: mockCallTool },
     transport: {},
+    appTools: new Map(),
     tools: new Map(),
   });
   useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });

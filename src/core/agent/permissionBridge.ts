@@ -224,6 +224,47 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
   });
 }
 
+/**
+ * Same queue, same dialog, but addressed by conversation instead of by loop.
+ *
+ * An MCP App interface (`src/core/mcp/appBridgeHandlers.ts`) calls a connector
+ * tool from a sandboxed iframe, not from inside an agent loop — there is no
+ * loopId to resolve a conversation from, and `getCurrentLoopContext()` would
+ * hand back an unrelated loop's conversation (or none), which `ChatView`'s
+ * `conversationId === activeConvId` filter then hides. The approval would sit
+ * in the queue forever behind a dialog nobody can see.
+ *
+ * Deliberately NOT a widening of `requestCommandConfirmation`: the loop-bound
+ * form must keep failing the same way it does today rather than silently
+ * accepting an ambient conversation id.
+ */
+export async function requestCommandConfirmationForConversation(
+  info: ConfirmationInfo,
+  conversationId: string,
+  /** Caller-owned id so the request can be cancelled again by
+   *  {@link cancelCommandConfirmation} if the requester goes away. */
+  requestId?: string,
+): Promise<boolean> {
+  return approvalBridge.request('command', {
+    ...(requestId ? { id: requestId } : {}),
+    conversationId,
+    payload: { info },
+  });
+}
+
+/**
+ * Withdraw one confirmation request the caller no longer wants an answer to,
+ * resolving it as "not confirmed".
+ *
+ * Needed because the command queue is single-active + FIFO: a request nobody
+ * can answer any more (the MCP App iframe that asked was torn down, evicted or
+ * disconnected) would otherwise occupy the active slot forever and every later
+ * confirmation — in any conversation — would queue behind it, invisible.
+ */
+export function cancelCommandConfirmation(requestId: string): void {
+  approvalBridge.cancelById('command', requestId);
+}
+
 // ── File Permission Request Infrastructure ──
 
 export interface FilePermissionRequest {

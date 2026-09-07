@@ -98,6 +98,10 @@ export interface SubagentHostRunParams {
   runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Shell-resolved `## Preloaded Skills` section for the agent's `skills:`
+   *  field. It can only be resolved shell-side — this process hosts the loop
+   *  with an empty skill loader — so it arrives as rendered text. */
+  preloadedSkills?: SubagentLoopOptions['preloadedSkills'];
   initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
   dispatchKey?: string;
   locale: string;
@@ -184,6 +188,26 @@ function failClosedProgressEvent(event: SubagentProgressEvent): SubagentProgress
     error: true,
     resultContent: undefined,
   };
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+/** The rendered section is prompt text, so validate its shape rather than
+ *  passing an arbitrary object into the system prompt. */
+function assertPreloadedSkills(value: unknown): void {
+  if (!isRecord(value)) {
+    throw new RpcError(-32602, 'Invalid params: preloadedSkills must be an object');
+  }
+  if (typeof value.text !== 'string' || !value.text) {
+    throw new RpcError(-32602, 'Invalid params: preloadedSkills.text must be a non-empty string');
+  }
+  for (const field of ['resolved', 'missing', 'truncated'] as const) {
+    if (!isStringArray(value[field])) {
+      throw new RpcError(-32602, `Invalid params: preloadedSkills.${field} must be a string array`);
+    }
+  }
 }
 
 function assertDelegatedUserTurn(value: unknown): asserts value is DelegatedUserTurn {
@@ -278,6 +302,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   }
   if (params.delegatedMediaFallback !== undefined && params.delegatedMediaFallback !== 'text-only') {
     throw new RpcError(-32602, 'Invalid params: delegatedMediaFallback must be text-only');
+  }
+  if (params.preloadedSkills !== undefined) {
+    assertPreloadedSkills(params.preloadedSkills);
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -503,6 +530,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     runPermissionCeiling: params.runPermissionCeiling,
     triggerId: params.triggerId,
     scheduledTaskId: params.scheduledTaskId,
+    preloadedSkills: params.preloadedSkills,
     initiatedBy: params.initiatedBy,
     dispatchKey: params.dispatchKey,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>

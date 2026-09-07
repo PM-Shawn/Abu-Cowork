@@ -1,4 +1,5 @@
 import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { create } from 'zustand';
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
@@ -175,13 +176,17 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox' | 'team';
+export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
-// 'agents' shows in the toolbox only while the 团队 lab is off (then it is the
-// only place custom agents can be managed); with the lab on, 队员 live on the
-// 团队 page and the toolbox is the plugin surface (插件): skills + MCP.
-export type ToolboxTab = 'skills' | 'agents' | 'mcp';
+/** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
+export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
+
+/** A fresh, empty per-tab search map — a factory, so no two states share one object. */
+function emptyExtensionsSearchQueries(): Record<ExtensionsTab, string> {
+  return { plugins: '', skills: '', mcp: '' };
+}
+/** Tabs of the 团队 view. 队员 (agents) live here, not in Extensions. */
 export type TeamTab = 'members' | 'teams';
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
@@ -227,8 +232,25 @@ export interface SettingsState {
   labs: Record<string, boolean>;
   activeSystemTab: SystemSettingsTab;
   activeAutomationTab: AutomationTab;
-  activeToolboxTab: ToolboxTab;
-  toolboxSearchQuery: string;
+  activeExtensionsTab: ExtensionsTab;
+  /**
+   * The Extensions header search box, remembered **per tab**. Typing in 插件
+   * and stepping over to 技能 used to clear the box (a single shared string,
+   * reset on every tab/source change); each tab now keeps its own words, the
+   * way VS Code's extension views and the Chrome Web Store do, so coming back
+   * resumes where the user left off.
+   *
+   * Session-scoped: not persisted (deliberately absent from `partialize`) and
+   * reset on rehydrate, so a fresh launch always opens on an unfiltered list.
+   *  Do NOT add to partialize. */
+  extensionsSearchQueries: Record<ExtensionsTab, string>;
+  /** Which half of the landing tab (市场 | 我的) a deep link is aiming at, when
+   *  it knows — `openExtensions('skills', 'mine')` for a jump to a skill the
+   *  user authored, which the 市场 panel structurally cannot list. The
+   *  Extensions view seeds that tab's source from it once and then clears it,
+   *  so it can never hijack a later open. Ephemeral, one-shot.
+   *  Do NOT add to partialize. */
+  pendingExtensionsSource: ExtensionSource | null;
   installingItem: string | null;
   viewMode: ViewMode;
   /** System settings render as an overlay dialog on top of the current view,
@@ -474,14 +496,19 @@ interface SettingsActions {
   openAutomation: (tab?: AutomationTab) => void;
   closeAutomation: () => void;
   setActiveAutomationTab: (tab: AutomationTab) => void;
-  openToolbox: (tab?: ToolboxTab) => void;
+  /** Open the Extensions view. `source` names the half of `tab` to land on —
+   *  omit it to land on 「市场」, the default for every tab. */
+  openExtensions: (tab?: ExtensionsTab, source?: ExtensionSource) => void;
+  closeExtensions: () => void;
+  /** Spend the one-shot `pendingExtensionsSource` once the view has applied it. */
+  clearPendingExtensionsSource: () => void;
+  setActiveExtensionsTab: (tab: ExtensionsTab) => void;
+  /** Set one tab's remembered query; the other tabs keep theirs. */
+  setExtensionsSearchQuery: (tab: ExtensionsTab, query: string) => void;
   activeTeamTab: TeamTab;
   openTeam: (tab?: TeamTab) => void;
   closeTeam: () => void;
   setActiveTeamTab: (tab: TeamTab) => void;
-  closeToolbox: () => void;
-  setActiveToolboxTab: (tab: ToolboxTab) => void;
-  setToolboxSearchQuery: (query: string) => void;
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
@@ -978,6 +1005,17 @@ function beginBrowserFieldWrite(
 
 const defaultProviders = createDefaultProviders();
 
+/**
+ * The Extensions search words for one tab — the active tab when none is named.
+ *
+ * A hook rather than a raw `s.extensionsSearchQueries[tab]` at each call site
+ * so consumers subscribe to their own string and re-render only when it
+ * changes, not on every keystroke in a sibling tab.
+ */
+export function useExtensionsSearchQuery(tab?: ExtensionsTab): string {
+  return useSettingsStore((s) => s.extensionsSearchQueries[tab ?? s.activeExtensionsTab] ?? '');
+}
+
 export const useSettingsStore = create<SettingsStore>()(
   persist(
     (set) => ({
@@ -1005,8 +1043,9 @@ export const useSettingsStore = create<SettingsStore>()(
       labs: {},
       activeSystemTab: 'usage' as SystemSettingsTab,
       activeAutomationTab: 'schedule' as AutomationTab,
-      activeToolboxTab: 'skills' as ToolboxTab,
-      toolboxSearchQuery: '',
+      activeExtensionsTab: 'plugins' as ExtensionsTab,
+      extensionsSearchQueries: emptyExtensionsSearchQueries(),
+      pendingExtensionsSource: null,
       installingItem: null,
       viewMode: 'chat' as ViewMode,
       activeTeamTab: 'members' as TeamTab,
@@ -1338,24 +1377,33 @@ export const useSettingsStore = create<SettingsStore>()(
       closeAutomation: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveAutomationTab: (tab) => set({ activeAutomationTab: tab }),
-      openToolbox: (tab) =>
+      // Neither opening nor closing the view clears the search words: they are
+      // remembered per tab for the whole session, so re-entering Extensions
+      // resumes the list the user had narrowed to.
+      openExtensions: (tab, source) =>
         set(() => ({
-          viewMode: 'toolbox' as ViewMode,
-          activeToolboxTab: tab ?? 'skills',
-          toolboxSearchQuery: '',
+          viewMode: 'extensions' as ViewMode,
+          activeExtensionsTab: tab ?? 'plugins',
+          // Always written, so a source left over from an unconsumed open
+          // cannot leak into this one.
+          pendingExtensionsSource: source ?? null,
         })),
-      closeToolbox: () =>
+      closeExtensions: () =>
         set({
           viewMode: 'chat' as ViewMode,
           installingItem: null,
-          toolboxSearchQuery: '',
+          pendingExtensionsSource: null,
         }),
-      setActiveToolboxTab: (tab) => set({ activeToolboxTab: tab, toolboxSearchQuery: '' }),
+      clearPendingExtensionsSource: () => set({ pendingExtensionsSource: null }),
+      setActiveExtensionsTab: (tab) => set({ activeExtensionsTab: tab }),
+      setExtensionsSearchQuery: (tab, query) =>
+        set((state) => ({
+          extensionsSearchQueries: { ...state.extensionsSearchQueries, [tab]: query },
+        })),
       openTeam: (tab) =>
         set((s) => ({ viewMode: 'team' as ViewMode, activeTeamTab: tab ?? s.activeTeamTab })),
       closeTeam: () => set({ viewMode: 'chat' as ViewMode }),
       setActiveTeamTab: (tab) => set({ activeTeamTab: tab }),
-      setToolboxSearchQuery: (query) => set({ toolboxSearchQuery: query }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),
       openTodos: () => set({ viewMode: 'todos' as ViewMode }),
@@ -2517,8 +2565,9 @@ export const useSettingsStore = create<SettingsStore>()(
         state.showSettings = false;
         state.activeSystemTab = 'usage';
         state.activeAutomationTab = 'schedule';
-        state.activeToolboxTab = 'skills';
-        state.toolboxSearchQuery = '';
+        state.activeExtensionsTab = 'plugins';
+        state.extensionsSearchQueries = emptyExtensionsSearchQueries();
+        state.pendingExtensionsSource = null;
         state.installingItem = null;
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;

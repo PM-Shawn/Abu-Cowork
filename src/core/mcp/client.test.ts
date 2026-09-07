@@ -21,6 +21,7 @@ interface FakeConnectedServer {
   client: { callTool: ReturnType<typeof vi.fn> };
   transport: unknown;
   tools: Map<string, ToolDefinition>;
+  appTools: Map<string, ToolDefinition>;
 }
 
 describe('conversationId threading into MCP _meta', () => {
@@ -35,6 +36,7 @@ describe('conversationId threading into MCP _meta', () => {
       config: { name: 'test-server' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (manager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
@@ -120,6 +122,7 @@ describe('abort signal propagation into MCP callTool', () => {
       config: { name },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (manager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
@@ -249,6 +252,7 @@ describe('browser bridge run-settled notification', () => {
       config: { name },
       client: { callTool: mockCallTool, notification: mockNotification, close: vi.fn() },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (manager as unknown as { servers: Map<string, unknown> }).servers.set(name, fakeServer);

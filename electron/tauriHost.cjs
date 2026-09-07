@@ -52,6 +52,7 @@ const {
 } = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
+const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const {
   SAVE_IMAGE_ATTACHMENT_CHANNEL,
   saveImageAttachment,
@@ -1265,6 +1266,12 @@ function registerTauriHost(app, options = {}) {
       // just returns the value, so it resolves before reaching the caller.
       const desktopResult = desktopDispatch(app, cmd, { args: a, body, headers, event: e });
       if (desktopResult !== DESKTOP_MISS) return desktopResult;
+      // Plugin remote git fetch (B2-A) — `plugin_git_fetch` clones a remote
+      // plugin source into the plugin-packages root, sha-pinned. Privileged
+      // (spawns git, writes fs); the renderer only names the source + dest,
+      // both re-validated here. Returns a Promise; this handler awaits it.
+      const pluginGitResult = pluginGitDispatch(cmd, { args: a });
+      if (pluginGitResult !== PLUGIN_GIT_MISS) return pluginGitResult;
       // Preview server (slice F13) — get_preview_server_info/register_preview_root/
       // unregister_preview_root, backed by a real loopback Node http server
       // (electron/previewServer.cjs) since the frontend hardcodes the `http://`

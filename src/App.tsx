@@ -13,7 +13,7 @@ import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
-import ToolboxView from '@/components/settings/ToolboxModal';
+import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
@@ -82,6 +82,7 @@ import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
 import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { provisionFirstPartyMCPServers } from '@/core/agent/mcpDiscovery';
+import { bootstrapPluginUpdates } from '@/stores/pluginStore';
 import {
   initBuiltinBrowserRuntime,
   cleanupBuiltinBrowserRuntime,
@@ -474,6 +475,14 @@ function App() {
     registerBuiltinTools();
     refreshDiscovery();
     provisionFirstPartyMCPServers();
+    // Hydrate installed plugins and score every added market once, so the
+    // sidebar 「扩展」 badge is right before the user opens anything. Failure
+    // costs the badge and nothing else. It skips its own discovery scan
+    // because `refreshDiscovery()` above already covers this tick — keep that
+    // call if this one stays.
+    bootstrapPluginUpdates().catch((err) => {
+      console.warn('[App] Plugin update scan failed:', err);
+    });
     initMCPStoreSync();
     initBuiltinBrowserRuntime();
 
@@ -909,7 +918,7 @@ function App() {
                 style={previewSplit ? { width: previewChatWidth } : undefined}
               >
                 {viewMode === 'automation' && <AutomationView />}
-                {viewMode === 'toolbox' && <ToolboxView />}
+                {viewMode === 'extensions' && <ExtensionsView />}
                 {viewMode === 'team' && <TeamView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}

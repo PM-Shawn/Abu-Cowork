@@ -131,6 +131,31 @@ describe('validateUploadFilesArgument', () => {
     expect(() => validateUploadFilesArgument('["/ws/a.txt"]')).not.toThrow();
   });
 
+  /**
+   * Review F13. The gate's `decodeUploadFiles` accepts an already-decoded
+   * array; this refused one. A model that sent an array got the file resolved,
+   * the user asked, the consent given — and then a parameter-validation error,
+   * with the consent spent on nothing.
+   */
+  it('accepts an already-decoded array, the way the approval gate does', () => {
+    expect(() => validateUploadFilesArgument([{ path: '/ws/a.txt' }])).not.toThrow();
+    expect(() => validateUploadFilesArgument(['/ws/a.txt'])).not.toThrow();
+    expect(() => validateUploadFilesArgument([])).toThrow(/non-empty JSON array/);
+    expect(() => validateUploadFilesArgument([{ name: 'a.txt' }])).toThrow(/non-empty `path`/);
+  });
+
+  it('takes an array through the tool, and still sends only the gate\'s paths', async () => {
+    const { tool, sent } = harness('path');
+
+    await tool('upload_file')(
+      { ...UPLOAD_ARGS, files: [{ path: '/etc/shadow' }] },
+      APPROVED_META([{ path: '/ws/report.xlsx', name: 'report.xlsx', size: 5, ...PIN }]),
+    );
+
+    expect(sent).toHaveLength(1);
+    expect(JSON.stringify(sent[0].payload)).not.toContain('/etc/shadow');
+  });
+
   it('rejects a call whose files argument could not have produced a correct confirmation', () => {
     expect(() => validateUploadFilesArgument('[]')).toThrow(/non-empty JSON array/);
     expect(() => validateUploadFilesArgument('nope')).toThrow(/non-empty JSON array/);
@@ -390,6 +415,23 @@ describe('download', () => {
 
     expect(sent[0].payload.timeoutMs).toBe(MAX_DOWNLOAD_WAIT_MS);
     // A legitimate long download must not be reported as a dead browser.
+    expect(sent[0].timeoutMs).toBeGreaterThan(MAX_DOWNLOAD_WAIT_MS);
+  });
+
+  /**
+   * Review F5. The host and the extension now spend ONE budget across both
+   * phases (click wait + completion wait), so the transport's own timeout is
+   * back to being the outer bound it was meant to be.
+   */
+  it('gives the transport more room than the whole download call can use', async () => {
+    const { tool, sent } = harness();
+
+    await tool('download')(
+      { tabId: 1, action: 'click', locator: '{"css":"a#export"}', timeoutMs: MAX_DOWNLOAD_WAIT_MS },
+      {},
+    );
+
+    expect(sent[0].payload.timeoutMs).toBe(MAX_DOWNLOAD_WAIT_MS);
     expect(sent[0].timeoutMs).toBeGreaterThan(MAX_DOWNLOAD_WAIT_MS);
   });
 

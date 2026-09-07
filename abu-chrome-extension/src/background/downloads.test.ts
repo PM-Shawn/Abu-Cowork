@@ -100,8 +100,29 @@ describe('safeDownloadName', () => {
     expect(safeDownloadName('///')).toBe('download');
   });
 
-  it('caps an absurdly long name', () => {
-    expect(safeDownloadName(`${'x'.repeat(400)}.zip`)).toHaveLength(120);
+  /**
+   * Review F8. The cap used to be 120 CHARACTERS: 120 CJK characters is 360
+   * UTF-8 bytes, past every filesystem's 255-byte `NAME_MAX`, and the failure
+   * is silent — Chrome just ends the download `interrupted`.
+   */
+  it('caps an absurdly long name by BYTES, on a character boundary', () => {
+    expect(safeDownloadName(`${'x'.repeat(400)}.zip`)).toHaveLength(200);
+    const cjk = safeDownloadName(`${'排'.repeat(200)}.xlsx`);
+    expect(new TextEncoder().encode(cjk).length).toBeLessThanOrEqual(200);
+    expect(cjk).not.toContain('\ufffd');
+  });
+
+  it('gets a Windows device name out of the way, and only a whole one', () => {
+    expect(safeDownloadName('CON.txt')).toBe('_CON.txt');
+    expect(safeDownloadName('nul')).toBe('_nul');
+    expect(safeDownloadName('com9.csv')).toBe('_com9.csv');
+    expect(safeDownloadName('console.log')).toBe('console.log');
+  });
+
+  it('drops the trailing dot or space Windows would drop for it', () => {
+    expect(safeDownloadName('report.txt.')).toBe('report.txt');
+    expect(safeDownloadName('report.txt   ')).toBe('report.txt');
+    expect(safeDownloadName('...   ')).toBe('download');
   });
 });
 
@@ -343,6 +364,26 @@ describe('attribution', () => {
     expect(tracker.listFor(A)).toHaveLength(20);
     expect(tracker.find(A, ids[0])).toBeNull();
     expect(tracker.find(A, ids[21])).not.toBeNull();
+  });
+
+  /**
+   * Review F9. The cap was global, so a busy task evicted its neighbour's
+   * records and the neighbour's next `wait` was told its own download did not
+   * belong to it.
+   */
+  it('counts that cap per task, so one task cannot evict another\'s records', () => {
+    const tracker = createDownloadTracker(fakeDeps());
+    tracker.expect(B, SITE);
+    const theirs = created(tracker, 900, '/d/theirs.csv')!;
+
+    for (let i = 1; i <= 25; i += 1) {
+      tracker.expect(A, SITE);
+      created(tracker, i, `/d/${i}.csv`);
+    }
+
+    expect(tracker.listFor(B).map((d) => d.filename)).toEqual(['theirs.csv']);
+    expect(tracker.find(B, theirs.downloadId)).not.toBeNull();
+    expect(tracker.listFor(A)).toHaveLength(20);
   });
 });
 

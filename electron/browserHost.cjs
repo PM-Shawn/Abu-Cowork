@@ -2480,7 +2480,15 @@ function browserDownloadRoot() {
   return path.join(abuAppDataDir(app), 'browser-downloads');
 }
 
-/** Newest-first cap on `recentDownloads`, unchanged from before T6. */
+/**
+ * Newest-first cap on `recentDownloads`, counted PER OWNER (review F9).
+ *
+ * It used to be global, which made the list a shared resource two tasks
+ * competed for: a run that downloaded twenty files evicted its neighbour's
+ * records, and the neighbour's next `wait` was told its own download did not
+ * belong to it. A per-owner cap keeps «A 看不到 B» from also meaning «A 可以
+ * 挤掉 B».
+ */
 const MAX_RECENT_DOWNLOADS = 20;
 
 /** One path segment that is safe on both platforms and still recognizable. */
@@ -2502,15 +2510,47 @@ function safePathSegment(value, fallback) {
  * Non-ASCII is deliberately KEPT — 「排班表.xlsx」 is the normal case in this
  * product, and stripping it would leave a folder full of `download`.
  */
+/** Names Windows refuses whatever the extension: `CON.txt` is still `CON`. */
+const WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;
+
+/**
+ * Truncate to at most `maxBytes` UTF-8 bytes without splitting a character.
+ *
+ * Bytes, not characters (review F8): 120 CJK characters is 360 bytes, over
+ * every filesystem's 255-byte `NAME_MAX`, and the failure is silent — the
+ * `setSavePath` call succeeds and the download ends `interrupted` with no
+ * sentence anyone can act on.
+ */
+function truncateUtf8(value, maxBytes) {
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value;
+  let out = '';
+  let used = 0;
+  for (const ch of value) {
+    const size = Buffer.byteLength(ch, 'utf8');
+    if (used + size > maxBytes) break;
+    out += ch;
+    used += size;
+  }
+  return out;
+}
+
 function safeDownloadFileName(raw) {
   const base = String(raw == null ? '' : raw).split(/[\\/]/).pop() || '';
-  const cleaned = base
+  let cleaned = base
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[:*?"<>|]/g, '_')
     .replace(/^\.+/, '')
-    .trim();
+    .trim()
+    // Windows silently drops a trailing dot or space, so `report.txt ` and
+    // `report.txt` become the same file — and a name that is ONLY dots and
+    // spaces becomes nothing at all.
+    .replace(/[. ]+$/, '');
+  if (WINDOWS_RESERVED_NAMES.test(cleaned)) cleaned = `_${cleaned}`;
   if (!cleaned) return 'download';
-  return cleaned.length > 120 ? cleaned.slice(0, 120) : cleaned;
+  // 200 rather than the full 255: `uniqueDownloadPath` may still append
+  // ` (2)`, and a rename that pushes the name over the limit at collision
+  // time would fail for a reason nothing in the result could explain.
+  return truncateUtf8(cleaned, 200);
 }
 
 /** `report.xlsx` becomes `report (2).xlsx` when the first one is already there. */
@@ -2606,6 +2646,25 @@ function notifyDownloadDone(downloadId) {
   for (const resolve of waiters.slice()) resolve();
 }
 
+/**
+ * Stop the file, not just the waiting (review F12).
+ *
+ * A timeout and an abort are NOT the same event here. A timeout means "this is
+ * taking a while" and the answer is a `downloadId` to poll — the download must
+ * keep going. An abort means the user pressed Stop, and abandoning the wait
+ * left the file downloading into the task's folder afterwards, which is
+ * exactly what Stop is supposed to prevent.
+ */
+function cancelLiveDownload(downloadId) {
+  const item = downloadItemsById.get(downloadId);
+  if (!item) return;
+  downloadItemsById.delete(downloadId);
+  try {
+    if (typeof item.getState === 'function' && isTerminalDownloadState(item.getState())) return;
+    item.cancel();
+  } catch { /* already gone */ }
+}
+
 function awaitDownloadDone(downloadId, timeoutMs, signal) {
   return new Promise((resolve) => {
     let settled = false;
@@ -2613,7 +2672,7 @@ function awaitDownloadDone(downloadId, timeoutMs, signal) {
       if (settled) return;
       settled = true;
       disarmTimer(timer);
-      if (signal) signal.removeEventListener('abort', done);
+      if (signal) signal.removeEventListener('abort', onAbort);
       const list = downloadDoneWaiters.get(downloadId);
       if (list) {
         const at = list.indexOf(done);
@@ -2622,10 +2681,14 @@ function awaitDownloadDone(downloadId, timeoutMs, signal) {
       }
       resolve();
     };
+    const onAbort = () => {
+      cancelLiveDownload(downloadId);
+      done();
+    };
     const timer = armTimer(done, timeoutMs);
     if (signal) {
-      if (signal.aborted) { done(); return; }
-      signal.addEventListener('abort', done, { once: true });
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener('abort', onAbort, { once: true });
     }
     const list = downloadDoneWaiters.get(downloadId) || [];
     list.push(done);
@@ -2753,14 +2816,19 @@ function legacyDownloadRecord(item, downloadId, suggested) {
   };
 }
 
-/** Newest-first list plus the id index, with the cap applied to both. */
+/** Newest-first list plus the id index, with the per-owner cap applied. */
 function trackDownloadRecord(record) {
   recentDownloads.unshift(record);
   downloadsById.set(record.downloadId, record);
-  if (recentDownloads.length > MAX_RECENT_DOWNLOADS) {
-    for (const dropped of recentDownloads.splice(MAX_RECENT_DOWNLOADS)) {
-      downloadsById.delete(dropped.downloadId);
-    }
+  let seen = 0;
+  for (let i = 0; i < recentDownloads.length; i += 1) {
+    if (recentDownloads[i].ownerKey !== record.ownerKey) continue;
+    seen += 1;
+    if (seen <= MAX_RECENT_DOWNLOADS) continue;
+    downloadsById.delete(recentDownloads[i].downloadId);
+    downloadItemsById.delete(recentDownloads[i].downloadId);
+    recentDownloads.splice(i, 1);
+    i -= 1;
   }
 }
 
@@ -2824,6 +2892,16 @@ function downloadResult(record) {
 /** The `download` tool, built-in-browser half. */
 async function downloadAutomation(view, payload, owner, signal) {
   const timeoutMs = clampHostDownloadWait(payload.timeoutMs);
+  // ONE deadline for the whole call, not one per phase (review F5).
+  //
+  // Waiting `timeoutMs` for the click to produce a download and then another
+  // `timeoutMs` for it to finish makes the worst case DOUBLE what the bridge
+  // budgeted for: its transport gives up at `waitMs + 15 s`, so a file that
+  // started at 29 s and finished at 55 s was reported to the model as an
+  // unresponsive browser while it was downloading perfectly well — and the
+  // `downloadId` needed to poll for it went down with the error.
+  const deadline = clock.now() + timeoutMs;
+  const remainingMs = () => Math.max(0, deadline - clock.now());
 
   if (payload.action === 'wait') {
     const record = downloadsById.get(String(payload.downloadId || ''));
@@ -2837,7 +2915,7 @@ async function downloadAutomation(view, payload, owner, signal) {
       );
     }
     if (!isTerminalDownloadState(record.state)) {
-      await awaitDownloadDone(record.downloadId, timeoutMs, signal);
+      await awaitDownloadDone(record.downloadId, remainingMs(), signal);
     }
     return downloadResult(record);
   }
@@ -2870,14 +2948,20 @@ async function downloadAutomation(view, payload, owner, signal) {
           settled = true;
           disarmTimer(timer);
           onClaim = null;
-          if (signal) signal.removeEventListener('abort', finish);
+          if (signal) signal.removeEventListener('abort', onAbort);
           resolve();
         };
+        // Same split as `awaitDownloadDone`: a timeout leaves the file
+        // downloading (it comes back as an id to poll), Stop kills it.
+        const onAbort = () => {
+          if (claimed) cancelLiveDownload(claimed.downloadId);
+          finish();
+        };
         onClaim = finish;
-        const timer = armTimer(finish, timeoutMs);
+        const timer = armTimer(finish, remainingMs());
         if (signal) {
-          if (signal.aborted) finish();
-          else signal.addEventListener('abort', finish, { once: true });
+          if (signal.aborted) onAbort();
+          else signal.addEventListener('abort', onAbort, { once: true });
         }
       });
     }
@@ -2893,7 +2977,7 @@ async function downloadAutomation(view, payload, owner, signal) {
     };
   }
   if (!isTerminalDownloadState(claimed.state)) {
-    await awaitDownloadDone(claimed.downloadId, timeoutMs, signal);
+    await awaitDownloadDone(claimed.downloadId, remainingMs(), signal);
   }
   return downloadResult(claimed);
 }

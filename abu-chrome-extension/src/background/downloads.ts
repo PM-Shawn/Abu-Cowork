@@ -167,16 +167,41 @@ export function safeSegment(value: string): string {
  * `safeDownloadFileName` in `electron/browserHost.cjs` — the two channels must
  * not name the same export differently.
  */
+const WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;
+
+/** UTF-8 byte length, without a Buffer (this runs in a service worker). */
+function utf8Length(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/** At most `maxBytes` UTF-8 bytes, never splitting a character. */
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (utf8Length(value) <= maxBytes) return value;
+  let out = '';
+  let used = 0;
+  for (const ch of value) {
+    const size = utf8Length(ch);
+    if (used + size > maxBytes) break;
+    out += ch;
+    used += size;
+  }
+  return out;
+}
+
 export function safeDownloadName(raw: string): string {
   const base = String(raw ?? '').split(/[\\/]/).pop() ?? '';
-  const cleaned = base
+  let cleaned = base
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, '')
     .replace(/[:*?"<>|]/g, '_')
     .replace(/^\.+/, '')
-    .trim();
+    .trim()
+    // Windows drops a trailing dot or space silently (review F8).
+    .replace(/[. ]+$/, '');
+  if (WINDOWS_RESERVED_NAMES.test(cleaned)) cleaned = `_${cleaned}`;
   if (!cleaned) return 'download';
-  return cleaned.length > 120 ? cleaned.slice(0, 120) : cleaned;
+  // BYTES, not characters: 120 CJK characters is 360 bytes, past NAME_MAX.
+  return truncateUtf8(cleaned, 200);
 }
 
 interface Waiter {
@@ -214,6 +239,7 @@ export interface DownloadTracker {
   awaitDone(downloadId: string, ms: number): Promise<void>;
 }
 
+/** Per OWNER, not global (review F9) — see `MAX_RECENT_DOWNLOADS` in the host. */
 const MAX_RECENT = 20;
 
 export function createDownloadTracker(deps: DownloadTrackerDeps): DownloadTracker {
@@ -325,11 +351,15 @@ export function createDownloadTracker(deps: DownloadTrackerDeps): DownloadTracke
       recent.unshift(record);
       byChromeId.set(item.id, record);
       byDownloadId.set(record.downloadId, record);
-      if (recent.length > MAX_RECENT) {
-        for (const dropped of recent.splice(MAX_RECENT)) {
-          byChromeId.delete(dropped.chromeId);
-          byDownloadId.delete(dropped.downloadId);
-        }
+      let seen = 0;
+      for (let i = 0; i < recent.length; i += 1) {
+        if (recent[i].ownerKey !== record.ownerKey) continue;
+        seen += 1;
+        if (seen <= MAX_RECENT) continue;
+        byChromeId.delete(recent[i].chromeId);
+        byDownloadId.delete(recent[i].downloadId);
+        recent.splice(i, 1);
+        i -= 1;
       }
       pendingOwnerByChromeId.delete(item.id);
       const waiter = takeWaiter(ownerKey, item);

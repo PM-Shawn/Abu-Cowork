@@ -748,6 +748,12 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         // model as its product. An unreadable tab address claims nothing.
         const clickedSite = hostOf(await tabUrl(tabId));
         const expectation = downloadTracker.expect(owner.key, clickedSite);
+        // ONE deadline for both phases, not one each (review F5): the bridge's
+        // transport gives up at `waitMs + 15 s`, so waiting `timeoutMs` for
+        // the click and another `timeoutMs` for the file reported a working
+        // download as an unresponsive browser — and lost the id to poll with.
+        const deadline = Date.now() + timeoutMs;
+        const remainingMs = () => Math.max(0, deadline - Date.now());
         let claimed;
         try {
           await sendToContentScript(tabId, 'click', {
@@ -757,11 +763,11 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
               ? { expectedOrigin: payload.expectedOrigin } : {}),
             ...(payload.unattended === true ? { unattended: true } : {}),
           });
-          claimed = await expectation.wait(timeoutMs);
+          claimed = await expectation.wait(remainingMs());
         } finally {
           expectation.cancel();
         }
-        if (claimed) await downloadTracker.awaitDone(claimed.downloadId, timeoutMs);
+        if (claimed) await downloadTracker.awaitDone(claimed.downloadId, remainingMs());
         return { id, success: true, data: downloadResultFor(claimed) };
       }
 

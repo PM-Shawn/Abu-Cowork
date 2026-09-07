@@ -373,9 +373,44 @@ describe('displayName', () => {
     expect(displayName('/ws/a\u2066b\u2069c.txt')).toBe('a b c.txt');
   });
 
-  it('caps a very long name rather than letting it push a dialog off screen', () => {
-    const name = displayName(`/ws/${'x'.repeat(500)}.txt`);
-    expect(name).toHaveLength(80);
+  /**
+   * Review F7. The hand-written range covered the bidi overrides and the
+   * zero-width block and let every one of these through — each renders as
+   * nothing, and each can pad a name in the dialog the user reads.
+   */
+  it('strips the invisible characters the hand-written range missed', () => {
+    expect(displayName('/ws/re\u2060port.txt')).toBe('re port.txt');   // WORD JOINER
+    expect(displayName('/ws/re\u00adport.txt')).toBe('re port.txt');   // SOFT HYPHEN
+    expect(displayName('/ws/re\u061cport.txt')).toBe('re port.txt');   // ARABIC LETTER MARK
+    expect(displayName('/ws/re\u180eport.txt')).toBe('re port.txt');   // MONGOLIAN VOWEL SEP
+    expect(displayName('/ws/re\u{E0041}port.txt')).toBe('re port.txt'); // TAG LATIN A
+  });
+
+  /**
+   * The extension is the one part of a name the user is reading FOR, and
+   * truncating from the right threw it away: `x…` for a `.pdf.exe`.
+   */
+  it('caps a very long name from the middle so the extension survives', () => {
+    const name = displayName(`/ws/${'x'.repeat(500)}.pdf.exe`);
+    expect([...name]).toHaveLength(80);
+    expect(name.endsWith('.exe')).toBe(true);
+    expect(name).toContain('…');
+  });
+
+  it('does not split a character in half when it truncates', () => {
+    const name = displayName(`/ws/${'排'.repeat(200)}.xlsx`);
+    expect([...name]).toHaveLength(80);
+    expect(name).not.toContain('\ufffd');
+    // The astral case, where a UTF-16 slice would leave a lone surrogate.
+    const emoji = displayName(`/ws/${'😀'.repeat(200)}.xlsx`);
+    const loneSurrogate = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+    expect(loneSurrogate.test(emoji)).toBe(false);
+    expect(emoji.endsWith('.xlsx')).toBe(true);
+  });
+
+  it('still caps a name with no usable extension', () => {
+    const name = displayName(`/ws/${'x'.repeat(500)}`);
+    expect([...name]).toHaveLength(80);
     expect(name.endsWith('…')).toBe(true);
   });
 
@@ -394,9 +429,26 @@ describe('summarizeUploadFiles', () => {
     expect(summary).not.toContain('/ws');
   });
 
-  it('shows three and counts the rest, so a ten-file call still fits one line', () => {
+  /**
+   * Review F6. It used to show three and count the rest, so a ten-file call
+   * asked the user to sign for seven files it never named. `MAX_UPLOAD_FILES`
+   * is ten, so the whole list always fits.
+   */
+  it('names every file in the call, not the first three', () => {
     const files = Array.from({ length: 6 }, (_, i) => file(`f${i}.txt`, 1024));
-    expect(summarizeUploadFiles(files)).toBe('f0.txt (1.0 KB), f1.txt (1.0 KB), f2.txt (1.0 KB) +3');
+    const summary = summarizeUploadFiles(files);
+
+    for (let i = 0; i < 6; i += 1) expect(summary).toContain(`f${i}.txt`);
+    expect(summary).not.toContain('+3');
+  });
+
+  it('gives the total as well, so ten files are one number to weigh', () => {
+    const files = Array.from({ length: 3 }, (_, i) => file(`f${i}.txt`, 1024 * 1024));
+    expect(summarizeUploadFiles(files)).toContain('3.0 MB');
+  });
+
+  it('leaves a single file\'s line alone — there is no total to add', () => {
+    expect(summarizeUploadFiles([file('report.xlsx', 1024)])).toBe('report.xlsx (1.0 KB)');
   });
 });
 

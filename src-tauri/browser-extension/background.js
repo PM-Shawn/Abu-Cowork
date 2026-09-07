@@ -67,11 +67,28 @@
     const cleaned = String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 64);
     return cleaned || "shared";
   }
+  var WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;
+  function utf8Length(value) {
+    return new TextEncoder().encode(value).length;
+  }
+  function truncateUtf8(value, maxBytes) {
+    if (utf8Length(value) <= maxBytes) return value;
+    let out = "";
+    let used = 0;
+    for (const ch of value) {
+      const size = utf8Length(ch);
+      if (used + size > maxBytes) break;
+      out += ch;
+      used += size;
+    }
+    return out;
+  }
   function safeDownloadName(raw) {
     const base = String(raw ?? "").split(/[\\/]/).pop() ?? "";
-    const cleaned = base.replace(/[\u0000-\u001f\u007f]/g, "").replace(/[:*?"<>|]/g, "_").replace(/^\.+/, "").trim();
+    let cleaned = base.replace(/[\u0000-\u001f\u007f]/g, "").replace(/[:*?"<>|]/g, "_").replace(/^\.+/, "").trim().replace(/[. ]+$/, "");
+    if (WINDOWS_RESERVED_NAMES.test(cleaned)) cleaned = `_${cleaned}`;
     if (!cleaned) return "download";
-    return cleaned.length > 120 ? cleaned.slice(0, 120) : cleaned;
+    return truncateUtf8(cleaned, 200);
   }
   var MAX_RECENT = 20;
   function createDownloadTracker(deps) {
@@ -167,11 +184,15 @@
         recent.unshift(record);
         byChromeId.set(item.id, record);
         byDownloadId.set(record.downloadId, record);
-        if (recent.length > MAX_RECENT) {
-          for (const dropped of recent.splice(MAX_RECENT)) {
-            byChromeId.delete(dropped.chromeId);
-            byDownloadId.delete(dropped.downloadId);
-          }
+        let seen = 0;
+        for (let i = 0; i < recent.length; i += 1) {
+          if (recent[i].ownerKey !== record.ownerKey) continue;
+          seen += 1;
+          if (seen <= MAX_RECENT) continue;
+          byChromeId.delete(recent[i].chromeId);
+          byDownloadId.delete(recent[i].downloadId);
+          recent.splice(i, 1);
+          i -= 1;
         }
         pendingOwnerByChromeId.delete(item.id);
         const waiter = takeWaiter(ownerKey, item);
@@ -1172,6 +1193,8 @@
           }
           const clickedSite = hostOf(await tabUrl(tabId));
           const expectation = downloadTracker.expect(owner.key, clickedSite);
+          const deadline = Date.now() + timeoutMs;
+          const remainingMs = () => Math.max(0, deadline - Date.now());
           let claimed;
           try {
             await sendToContentScript(tabId, "click", {
@@ -1180,11 +1203,11 @@
               ...payload.expectedOrigin !== void 0 ? { expectedOrigin: payload.expectedOrigin } : {},
               ...payload.unattended === true ? { unattended: true } : {}
             });
-            claimed = await expectation.wait(timeoutMs);
+            claimed = await expectation.wait(remainingMs());
           } finally {
             expectation.cancel();
           }
-          if (claimed) await downloadTracker.awaitDone(claimed.downloadId, timeoutMs);
+          if (claimed) await downloadTracker.awaitDone(claimed.downloadId, remainingMs());
           return { id, success: true, data: downloadResultFor(claimed) };
         }
         // ## Both screenshots are pinned reads (round-3 R3-A)

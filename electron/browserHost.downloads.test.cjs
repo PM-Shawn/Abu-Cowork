@@ -581,6 +581,142 @@ test('hands a slow download back as an id to poll instead of blocking past its b
   } finally { restore(); }
 });
 
+/**
+ * Review F5. The click wait and the completion wait each took the FULL
+ * `timeoutMs`, so the worst case was double what the bridge budgeted for
+ * (`waitMs + 15 s`): a file that started at 29 s and finished at 55 s was
+ * reported to the model as an unresponsive browser, with the `downloadId`
+ * needed to poll for it lost inside the error.
+ */
+test('spends one budget on the whole call, not one on each half', async () => {
+  const { host, deliver, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    let started = null;
+    contents.onClick = () => { started = deliver(new FakeDownloadItem(), contents); };
+
+    const began = Date.now();
+    const result = await host.performBrowserAutomation('download', {
+      ownerId: OWNER_A, tabId, action: 'click', locator: { css: 'a#export' }, timeoutMs: 120,
+    });
+    const spent = Date.now() - began;
+
+    // The click produced a download immediately and it never finished, so the
+    // completion wait got what was LEFT of the 120 ms, not another 120.
+    assert.equal(result.started, true);
+    assert.equal(result.complete, false);
+    assert.ok(spent < 240, `the call spent ${spent}ms of a 120ms budget`);
+    started.finish();
+  } finally { restore(); }
+});
+
+/**
+ * Review F12. Abandoning the wait is not stopping the download: the file kept
+ * arriving in the task's folder after the user pressed Stop.
+ */
+test('cancels the file it is downloading when the run is stopped', async () => {
+  const { host, deliver, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const controller = new AbortController();
+    let started = null;
+    contents.onClick = () => {
+      started = deliver(new FakeDownloadItem(), contents);
+      // The user presses Stop while the file is still coming down.
+      setTimeout(() => controller.abort(), 0);
+    };
+
+    const result = await host.performBrowserAutomation('download', {
+      ownerId: OWNER_A, tabId, action: 'click', locator: { css: 'a#export' }, timeoutMs: 60_000,
+    }, { signal: controller.signal });
+
+    assert.equal(started.cancelled, true, 'the download was left running after Stop');
+    assert.equal(result.complete, false);
+  } finally { restore(); }
+});
+
+test('does NOT cancel a download that merely outlasted its budget — that one is polled', async () => {
+  const { host, deliver, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    let started = null;
+    contents.onClick = () => { started = deliver(new FakeDownloadItem(), contents); };
+
+    const result = await host.performBrowserAutomation('download', {
+      ownerId: OWNER_A, tabId, action: 'click', locator: { css: 'a#export' }, timeoutMs: 5,
+    });
+
+    assert.equal(started.cancelled, false, 'a slow download was killed instead of polled');
+    assert.match(result.message, /Still downloading/);
+    started.finish();
+  } finally { restore(); }
+});
+
+/**
+ * Review F9. The cap used to be global, so a busy task evicted its
+ * neighbour's records and the neighbour's next `wait` was told its own
+ * download did not belong to it.
+ */
+test('one task filling the list does not evict its neighbour\'s downloads', async () => {
+  const { host, deliver, restore } = loadHost();
+  try {
+    const a = await openTab(host, OWNER_A);
+    const b = await openTab(host, OWNER_B);
+
+    deliver(new FakeDownloadItem({ filename: 'b-first.csv' }), b.contents).finish();
+    const [mine] = await host.performBrowserAutomation('get_downloads', { ownerId: OWNER_B });
+    for (let i = 0; i < 25; i += 1) {
+      deliver(new FakeDownloadItem({ filename: `a-${i}.csv` }), a.contents).finish();
+    }
+
+    const forB = await host.performBrowserAutomation('get_downloads', { ownerId: OWNER_B });
+    assert.deepEqual(forB.map((d) => d.filename), ['b-first.csv']);
+    // And it is still waitable by id, which is what the eviction broke.
+    const waited = await host.performBrowserAutomation('download', {
+      ownerId: OWNER_B, tabId: b.tabId, action: 'wait', downloadId: mine.downloadId, timeoutMs: 5,
+    });
+    assert.equal(waited.download.downloadId, mine.downloadId);
+    // A owns 20 — its own cap, applied to its own bucket.
+    const forA = await host.performBrowserAutomation('get_downloads', { ownerId: OWNER_A });
+    assert.equal(forA.length, 20);
+  } finally { restore(); }
+});
+
+/**
+ * Review F8. The old rule capped at 120 CHARACTERS and left the Windows
+ * device names and trailing dots alone: 120 CJK characters is 360 bytes, past
+ * every filesystem's 255-byte limit, and `setSavePath` accepts it silently —
+ * the download just ends `interrupted` with nothing to act on.
+ */
+test('derives a name the filesystem will actually accept', async () => {
+  const { host, deliver, restore } = loadHost();
+  try {
+    const { contents } = await openTab(host, OWNER_A);
+
+    const cases = [
+      // A Windows device name, whatever extension follows it.
+      ['CON.txt', '_CON.txt'],
+      ['nul', '_nul'],
+      ['com9.csv', '_com9.csv'],
+      // Windows drops a trailing dot or space, silently merging two names.
+      ['report.txt.', 'report.txt'],
+      ['report.txt   ', 'report.txt'],
+      // Not reserved — the rule is a whole-name match, not a prefix.
+      ['console.log', 'console.log'],
+    ];
+    for (const [sent, expected] of cases) {
+      const item = deliver(new FakeDownloadItem({ filename: sent }), contents);
+      assert.equal(path.basename(item.savePath), expected, `for ${sent}`);
+    }
+
+    const long = deliver(new FakeDownloadItem({ filename: `${'排'.repeat(200)}.xlsx` }), contents);
+    const name = path.basename(long.savePath);
+    assert.ok(Buffer.byteLength(name, 'utf8') <= 200, `${Buffer.byteLength(name, 'utf8')} bytes`);
+    // Cut on a character boundary, not mid-sequence.
+    assert.equal(name.includes('\ufffd'), false);
+  } finally { restore(); }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Uploads: the bytes, and the picker that never opens
 // ═══════════════════════════════════════════════════════════════════════════

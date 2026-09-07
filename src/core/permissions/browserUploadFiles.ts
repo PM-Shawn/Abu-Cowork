@@ -297,12 +297,41 @@ export async function resolveUploadFiles(
  */
 export function displayName(path: string): string {
   const base = getBaseName(normalizeSeparators(path));
+  // `\p{Cc}` (control) and `\p{Cf}` (format) as CATEGORIES rather than a
+  // hand-written range (review F7). The hand-written one covered the bidi
+  // overrides and the zero-width block and missed U+2060 WORD JOINER, U+00AD
+  // SOFT HYPHEN, U+061C ARABIC LETTER MARK, U+180E and the whole U+E0000
+  // tag-character plane — every one of which renders as nothing and can pad a
+  // name in a confirmation dialog. `\p{Zl}`/`\p{Zp}` are the line and
+  // paragraph separators `\s` does not cover.
   const flattened = base
-    // eslint-disable-next-line no-control-regex -- control characters are exactly what this guard rejects
-    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029\s]+/g, ' ')
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]+/gu, ' ')
     .trim();
   if (flattened === '') return '(unnamed)';
-  return flattened.length > 80 ? `${flattened.slice(0, 79)}…` : flattened;
+  return truncateKeepingExtension(flattened, 80);
+}
+
+/**
+ * Shorten in the MIDDLE, so the extension survives.
+ *
+ * `report<70 more chars>.pdf.exe` truncated from the right becomes
+ * `report<…>…` — the dialog stops naming the very thing that decides what the
+ * file IS. Splitting by code point rather than by UTF-16 unit is the other
+ * half: slicing an emoji or a rare CJK character in half leaves a lone
+ * surrogate, which renders as a replacement box.
+ */
+function truncateKeepingExtension(value: string, max: number): string {
+  const chars = [...value];
+  if (chars.length <= max) return value;
+  const dot = value.lastIndexOf('.');
+  const ext = dot > 0 && dot > value.length - 12 ? value.slice(dot) : '';
+  const extChars = [...ext];
+  // No usable extension, or one so long it leaves no room: plain head + ellipsis.
+  if (extChars.length === 0 || extChars.length + 2 >= max) {
+    return `${chars.slice(0, max - 1).join('')}…`;
+  }
+  const head = chars.slice(0, max - extChars.length - 1).join('');
+  return `${head}…${ext}`;
 }
 
 /**
@@ -315,9 +344,17 @@ export function displayName(path: string): string {
  * of an approval dialog should not carry.
  */
 export function summarizeUploadFiles(files: readonly ApprovedUploadFile[]): string {
-  const shown = files.slice(0, 3).map((f) => `${f.name} (${formatBytes(f.size)})`);
+  // ALL of them (review F6). The old「前三个 +N」 asked a user to sign for
+  // seven files it would not name — and `MAX_UPLOAD_FILES` is 10, so the
+  // whole list is at most ten short lines, which a dialog can show.
+  const shown = files.slice(0, MAX_UPLOAD_FILES)
+    .map((f) => `${f.name} (${formatBytes(f.size)})`);
   const rest = files.length - shown.length;
-  return rest > 0 ? `${shown.join(', ')} +${rest}` : shown.join(', ');
+  const listed = rest > 0 ? `${shown.join(', ')} +${rest}` : shown.join(', ');
+  // The total, so a ten-file call is one number to weigh rather than ten.
+  if (files.length < 2) return listed;
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  return `${listed} — ${formatBytes(total)}`;
 }
 
 /** Sizes a person reads, in the one spelling both locales use. */

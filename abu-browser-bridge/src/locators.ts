@@ -206,8 +206,12 @@ function safeJson(raw: string): unknown {
  * It is still validated, because a call whose `files` will not decode is a
  * call the user was never shown a correct confirmation for.
  */
-export function validateUploadFilesArgument(raw: string): void {
-  const decoded = safeJson(raw);
+export function validateUploadFilesArgument(raw: unknown): void {
+  // A JSON string OR an already-decoded array, exactly as the gate's
+  // `decodeUploadFiles` reads it (review F13). They disagreed: the gate
+  // accepted an array, resolved the files, and asked the user — and then this
+  // schema refused the same call, spending a consent on nothing.
+  const decoded = typeof raw === 'string' ? safeJson(raw) : raw;
   if (!Array.isArray(decoded) || decoded.length === 0) {
     throw new Error('`files` must be a non-empty JSON array like [{"path": "/abs/path/report.xlsx"}]');
   }

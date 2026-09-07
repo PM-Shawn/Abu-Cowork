@@ -683,7 +683,11 @@ A file must live somewhere Abu has been authorized to read; symbolic links are r
       target: z.string().describe(
         `JSON string locating the file input. ${LocatorDescription}`,
       ),
-      files: z.string().describe(
+      // A JSON string or a real array — the approval gate reads both, and a
+      // schema that took only one of them refused calls the user had already
+      // said yes to (review F13). The PATHS are thrown away either way; this
+      // is a shape check, not a source of filenames.
+      files: z.union([z.string(), z.array(z.unknown())]).describe(
         'JSON array of the files to attach, e.g. [{"path": "/Users/me/Documents/report.xlsx"}]. '
         + 'Absolute paths on this computer, at most 10 of them; the page must accept multiple '
         + 'files for more than one to be attached.',

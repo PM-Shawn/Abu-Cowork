@@ -1559,14 +1559,18 @@ export const useSettingsStore = create<SettingsStore>()(
         // V50: `browserOperationPolicy.upload` — the fourth operation class
         // (batch-三 T5). Sending a local file into a page used to have no row
         // of its own because there was no tool that did it; `upload_file` is
-        // that tool, and §5② gives it 「每次询问」 with no 「允许」 tier.
+        // that tool, and under the 2026-09-07 ruling its row is an ORDINARY
+        // one: 允许 / 每次询问 / 拒绝, default 每次询问, read the same way a
+        // click's row is. (An earlier draft of this row had no 「允许」 tier
+        // and refused every automatic run outright; that 口径 is gone —
+        // 「不区分有人无人值守，只要用户授权就算自动，不授权就要申请」.)
         //
         // `normalizeBrowserOperationPolicy` writes the row: a missing key
         // clamps to `STRICTEST_OPERATION_STATE` (`'ask'`), which is also the
         // reviewed default here, so the upgrade and corruption paths agree
-        // without a second literal. Nobody gains a capability by upgrading —
-        // the row's most permissive value asks every time, and an automatic
-        // run is refused outright whatever it says.
+        // without a second literal. Nobody gains a capability by upgrading:
+        // an upgraded store lands on 每次询问, and the site still has to be
+        // authorized before anything runs without a dialog.
         // ════════════════════════════════════════════════
         if (version < 50) {
           state.browserOperationPolicy = state.browserOperationPolicy === undefined

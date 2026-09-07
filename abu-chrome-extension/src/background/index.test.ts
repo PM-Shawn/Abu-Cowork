@@ -828,14 +828,22 @@ describe('actions the service worker answers itself', () => {
     expect(browserState.captured).toEqual([1]);
   });
 
-  it('reports a download and the state it ended in', async () => {
+  /**
+   * T6 — a download nobody armed for belongs to nobody.
+   *
+   * Before T6 `get_downloads` answered with the last 20 downloads Chrome had
+   * seen, whoever started them: one task could read another's exports, and so
+   * could a task read the user's own. Now a download is attributed only to a
+   * run that registered interest before the click, so a bare `onCreated` with
+   * no waiting run is invisible to everybody.
+   */
+  it('does not attribute a download nobody was waiting for', async () => {
     fire('downloads.onCreated', { id: 7, filename: '', url: 'https://x.example/report.xlsx', state: 'in_progress' });
     fire('downloads.onChanged', { id: 7, state: { current: 'complete' }, filename: { current: '/tmp/report.xlsx' } });
 
-    const downloads = (await request('get_downloads', {})).data as
-      { id: number; filename: string; state: string }[];
+    const downloads = (await request('get_downloads', { ownerId: 'conv-a' })).data as unknown[];
 
-    expect(downloads[0]).toMatchObject({ id: 7, filename: '/tmp/report.xlsx', state: 'complete' });
+    expect(downloads).toEqual([]);
   });
 
   it('answers a missing tab with the browser error rather than a silent success', async () => {

@@ -126,8 +126,11 @@ function policyWith(cell: keyof BrowserOperationPolicy, state: 'allow' | 'deny' 
 interface Asked {
   command: string;
   reason?: string;
+  kind?: string;
+  browserUploadFileCount?: number;
   allowPersistentGrant?: boolean;
   browserOrigin?: string;
+  browserPageOrigin?: string;
   deniedNotice?: string;
 }
 
@@ -211,6 +214,75 @@ describe('upload_file at the real gate', () => {
     // And it OFFERS 「以后都允许该网站」 — the 09-05 口径 withheld that from
     // uploads, which is exactly what the ruling reversed.
     expect(asks[0].allowPersistentGrant).toBe(true);
+  });
+
+  /**
+   * Acceptance F5 — WHAT the dialog is handed, from the real gate.
+   *
+   * The box used to read 「浏览器操作: abu-browser__upload_file (https://…)」
+   * over a button that said 「确认执行」. Two separate failures in one line: it
+   * names an identifier that exists only inside this codebase, and it
+   * describes sending files off the machine with the same verb as every other
+   * browser action. Pinned HERE rather than at the dialog, because the dialog
+   * can only say 「上传 2 个文件到 …」 if the gate tells it that this is an
+   * upload and how many files it is — and it is the gate, not the component,
+   * that has the resolved file list.
+   */
+  describe('what the upload confirmation is asked with', () => {
+    it('is an upload ask, carrying the file count, with no tool name in it', async () => {
+      useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+      const { asks, confirm } = dialogRecorder();
+
+      await checkToolApproval('abu-browser__upload_file', uploadInput(), attended, confirm);
+
+      expect(asks).toHaveLength(1);
+      expect(asks[0].kind).toBe('browser-upload');
+      expect(asks[0].browserUploadFileCount).toBe(1);
+      // The one assertion the acceptance screenshot was about.
+      expect(asks[0].command).not.toContain('abu-browser__');
+      expect(asks[0].command).not.toContain('upload_file');
+    });
+
+    /** The names and sizes still travel — that is the body of the question. */
+    it('still carries the file list and its size', async () => {
+      useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+      const { asks, confirm } = dialogRecorder();
+
+      await checkToolApproval('abu-browser__upload_file', uploadInput(), attended, confirm);
+
+      expect(asks[0].command).toContain('排班表.xlsx');
+      expect(asks[0].command).toContain('2.0 KB');
+      // And no directory, in the dialog or anywhere near it.
+      expect(asks[0].command).not.toContain('/ws/reports');
+    });
+
+    /** The target site still reaches the dialog — the title is built from it. */
+    it('still names the site the files are going to', async () => {
+      withTabOrigin(UNKNOWN_URL);
+      useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+      const { asks, confirm } = dialogRecorder();
+
+      await checkToolApproval('abu-browser__upload_file', uploadInput(), attended, confirm);
+
+      expect(asks[0].browserOrigin).toBe('https://unknown.com');
+    });
+
+    /**
+     * The new wording belongs to uploads alone: every other browser action is
+     * still asked with the generic box, and giving it the upload title would
+     * be worse than the tool name it replaced.
+     */
+    it('leaves every other browser action on the generic browser ask', async () => {
+      withTabOrigin(UNKNOWN_URL);
+      const { asks, confirm } = dialogRecorder();
+
+      await checkToolApproval('abu-browser__click', clickInput, attended, confirm);
+
+      expect(asks).toHaveLength(1);
+      expect(asks[0].kind).toBe('browser');
+      expect(asks[0].browserUploadFileCount).toBeUndefined();
+      expect(asks[0].command).toContain('abu-browser__click');
+    });
   });
 
   it('asks every single time under 每次询问, and never offers a standing grant', async () => {

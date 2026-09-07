@@ -2912,6 +2912,29 @@ export interface TranslationDict {
      *  (desktop dialog and IM) shows above the file list and the target
      *  site. */
     browserUploadReason: string;
+    /**
+     * The upload confirmation's own wording (acceptance F5).
+     *
+     * An upload had been asked about with the generic browser-action box, so
+     * the question read 「浏览器操作: abu-browser__upload_file (origin)」 over a
+     * button that said 「确认执行」 — an internal tool name and a verb that
+     * does not say a file is leaving the machine. These say the decision
+     * instead: how many files, to which site, confirmed with 「确认上传」.
+     * `{host}` is a hostname, never a full path.
+     */
+    browserUploadTitle: string;
+    /** Singular of `browserUploadTitle`; both locales read badly with "1 files". */
+    browserUploadTitleOne: string;
+    /** Stands in for `{host}` when the target origin could not be resolved. */
+    browserUploadHostThisSite: string;
+    /** Wraps `{host}` when the upload targets a region embedded in the page. */
+    browserUploadHostEmbedded: string;
+    /** The line under the upload title. */
+    browserUploadDescription: string;
+    /** Primary button of the upload confirmation. */
+    browserUploadConfirm: string;
+    /** Primary button when 「以后都允许该网站」 is offered beside it. */
+    browserUploadConfirmOnce: string;
     /** `files` could not be read as a list of paths. */
     browserUploadMalformed: string;
     /** More files than one submission may carry. `{max}` */

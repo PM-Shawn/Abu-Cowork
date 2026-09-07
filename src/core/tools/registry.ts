@@ -1870,6 +1870,11 @@ export async function checkToolApproval(
        * — the same shape as `refuseBrowserBatch` above, which is also silent.
        */
       let approvedUploadFiles: ApprovedUploadFile[] | undefined;
+      // The desktop dialog's own body and count — see the F5 note below. Unset
+      // for every non-upload call, which is what keeps the generic dialog
+      // generic.
+      let browserUploadDialogLabel: string | undefined;
+      let browserUploadFileCount: number | undefined;
       if (uploadsFile(name) && gate.outcome !== 'deny') {
         const resolved = await resolveUploadFiles(input, {
           checkReadPath: (candidate) =>
@@ -1902,6 +1907,23 @@ export async function checkToolApproval(
         // file to this site, and a full path in a dialog is one screenshot
         // away from being somewhere it should not be.
         browserConfirmLabel = `${browserActionLabel} — ${summarizeUploadFiles(resolved.files)}`;
+        /**
+         * Acceptance F5 — what the DESKTOP dialog puts in its box.
+         *
+         * The label above still leads with `浏览器操作: abu-browser__upload_file
+         * (origin)`, and in front of a person that reads as a stranger's tool
+         * asking to run: it names an identifier only this codebase uses, and
+         * says nothing about the thing that actually happens, which is that
+         * files leave the machine. The dialog now carries the count and the
+         * host in its TITLE and this list in its body, so the internal name
+         * has no job left and is dropped.
+         *
+         * The IM label is deliberately unchanged: it is one line in a chat
+         * message with no title above it to carry the site, so it still needs
+         * `browserActionLabel`'s origin. Same file list, two carriers.
+         */
+        browserUploadDialogLabel = summarizeUploadFiles(resolved.files);
+        browserUploadFileCount = resolved.files.length;
       }
 
       if (gate.ask?.channel === 'im') {
@@ -2054,7 +2076,11 @@ export async function checkToolApproval(
         // Non-null by construction: `evaluateBrowserGate` refuses instead of
         // asking when `confirmationChannelAvailable` is false.
         const confirmed = await onRequireConfirmation?.({
-          command: browserConfirmLabel,
+          // An upload puts only the file list here: its question, its target
+          // site and its verb all live in the dialog's own upload wording
+          // (F5), so the tool name would be the one line on the box that
+          // means nothing to the person reading it.
+          command: browserUploadDialogLabel ?? browserConfirmLabel,
           level: 'warn',
           // Same sentence the unattended round-trip sends — see
           // `browserAskReason`. Two copies of this ternary is how the
@@ -2064,7 +2090,14 @@ export async function checkToolApproval(
           reason: consequence === 'state-changing'
             ? browserAskReason()
             : t.commandConfirm.browserReason,
-          kind: 'browser',
+          // The one browser action whose consequence leaves the machine gets
+          // its own question and its own verb (F5). Everything else about it
+          // stays a browser ask — same origin fields, same site grant, same
+          // block-this-site row.
+          kind: browserUploadFileCount !== undefined ? 'browser-upload' : 'browser',
+          ...(browserUploadFileCount !== undefined
+            ? { browserUploadFileCount }
+            : {}),
           browserOperationClass: opClass,
           ...(consequence === 'state-changing'
             ? { browserOrigin: origin ?? undefined }

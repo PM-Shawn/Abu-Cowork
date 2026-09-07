@@ -1556,6 +1556,39 @@ describe('CapabilitiesSection', () => {
     });
 
     /**
+     * T5 / 2026-09-07 — the upload row offers the SAME three states as every
+     * other row, and ships on the middle one.
+     *
+     * The 09-05 口径 gave this row two states (「每次询问」 / 「拒绝」) because
+     * an upload could never run without being asked about. Shawn overturned
+     * that: 「只要用户授权，就算自动」. A row missing 「允许」 would be a
+     * settings page that cannot express the thing the gate now does, and the
+     * user would have no way to authorize an upload once and for all on a site
+     * they trust.
+     */
+    it('offers the upload row all three states, defaulting to ask, and writes them through', async () => {
+      const user = userEvent.setup();
+      render(<CapabilitiesSection />);
+      await openBuiltinBrowser(user);
+
+      const uploadRow = within(permissionCard('Action permissions'))
+        .getByText('Upload files').closest('li') as HTMLElement;
+      const cell = policySelect(uploadRow);
+      expect(cell).toHaveTextContent('Ask every time');
+
+      await user.click(cell);
+      const menu = openedMenu(cell);
+      expect(within(menu).getAllByRole('button').map((o) => o.getAttribute('data-value')))
+        .toEqual(['allow', 'ask', 'deny']);
+
+      await user.click(openedOption(cell, /^Allow/));
+      expect(useSettingsStore.getState().browserOperationPolicy.upload).toBe('allow');
+      // The neighbouring rows are untouched — the classes stay independent.
+      expect(useSettingsStore.getState().browserOperationPolicy.interactive).toBe('allow');
+      expect(useSettingsStore.getState().browserOperationPolicy.scripting).toBe('ask');
+    });
+
+    /**
      * The zero-semantic-change pin. Pulling scripting out of the grid moved
      * the control to another card; it must still write `scripting` through the
      * same store action, with the same three-state vocabulary.

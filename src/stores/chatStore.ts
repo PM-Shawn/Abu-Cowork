@@ -14,6 +14,24 @@ import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
 import { getMessageText } from '../core/context/contextUtils';
+
+/**
+ * A later execution snapshot that arrives without child steps must not
+ * discard the children an earlier one recorded (the sidecar's mirror never
+ * has the shell-only delegate children). Matched by step id, then tool_use id.
+ */
+export function keepExistingChildSteps(
+  previous: readonly ExecutionStepSnapshot[] | undefined,
+  next: ExecutionStepSnapshot[],
+): ExecutionStepSnapshot[] {
+  if (!previous?.length) return next;
+  return next.map((step) => {
+    if (step.childSteps?.length) return step;
+    const old = previous.find((p) => p.id === step.id)
+      ?? (step.toolCallId ? previous.find((p) => p.toolCallId === step.toolCallId) : undefined);
+    return old?.childSteps?.length ? { ...step, childSteps: old.childSteps } : step;
+  });
+}
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
@@ -1783,7 +1801,7 @@ export const useChatStore = create<ChatStore>()(
           for (let i = conv.messages.length - 1; i >= 0; i--) {
             const m = conv.messages[i];
             if (m.role === 'assistant' && m.loopId === loopId) {
-              m.executionSteps = steps;
+              m.executionSteps = keepExistingChildSteps(m.executionSteps, steps);
               targetMsgId = m.id;
               break;
             }

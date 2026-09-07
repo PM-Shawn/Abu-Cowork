@@ -23,6 +23,7 @@ import { withDispatchController } from '../../agent/subagentAbort';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
+import { createParentStepResolver } from '../../agent/delegateParentStep';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -444,12 +445,15 @@ export const runAgentBatchTool: ToolDefinition = {
     // recording under the (running) run_agent_batch step. The live batch
     // store stays the in-run view; these children are what survives on the
     // message snapshot so a member tab can replay after restart / reopen.
-    const batchParentStepId = loopCtx?.eventRouter && typeof loopCtx.eventRouter.getCurrentStepId === 'function'
-      ? loopCtx.eventRouter.getCurrentStepId(loopCtx.loopId)
+    // Parent step resolved lazily per event (delegateParentStep.ts): over the
+    // reverse channel this tool can start before its own step-start frame
+    // reached the shell mirror, and an eager lookup recorded nothing.
+    const resolveBatchParentStepId = loopCtx?.eventRouter
+      && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function'
+      && typeof loopCtx.eventRouter.completeChildStep === 'function'
+      ? createParentStepResolver(loopCtx, toolExecContext?.toolCallId)
       : null;
-    const canRecordChildSteps = !!batchParentStepId
-      && typeof loopCtx?.eventRouter?.addChildStepToDelegate === 'function'
-      && typeof loopCtx?.eventRouter?.completeChildStep === 'function';
+    const canRecordChildSteps = resolveBatchParentStepId !== null;
 
     // ── 4. Resolve each task's agent ──────────────────────────────────────
     type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string; expectedFiles: string[] };
@@ -601,6 +605,7 @@ export const runAgentBatchTool: ToolDefinition = {
                 try {
                   const store = useBatchProgressStore.getState();
                   if (event.type === 'tool-start') {
+                    const batchParentStepId = resolveBatchParentStepId?.();
                     if (canRecordChildSteps && loopCtx && batchParentStepId) {
                       const childStepId = loopCtx.eventRouter.addChildStepToDelegate(loopCtx.loopId, batchParentStepId, {
                         toolName: event.toolName,
@@ -615,6 +620,7 @@ export const runAgentBatchTool: ToolDefinition = {
                   } else if (event.type === 'tool-end') {
                     const childStepId = childStepIds.get(event.id);
                     childStepIds.delete(event.id);
+                    const batchParentStepId = resolveBatchParentStepId?.();
                     if (childStepId && loopCtx && batchParentStepId) {
                       loopCtx.eventRouter.completeChildStep(
                         loopCtx.loopId, batchParentStepId, childStepId, event.result, event.error, event.resultContent,

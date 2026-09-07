@@ -2,6 +2,7 @@ import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
+import { createParentStepResolver } from '../../agent/delegateParentStep';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
@@ -291,49 +292,40 @@ export const delegateToAgentTool: ToolDefinition = {
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
 
-    if (loopCtx) {
-      // Find the parent delegate step ID from toolCallToStepId
-      // The tool call ID for this execution should be the last entry mapped
-      let parentStepId: string | undefined;
-      for (const [, sId] of loopCtx.toolCallToStepId) {
-        parentStepId = sId; // Will end up as last entry
-      }
-      // More precise: find step with toolName=delegate_to_agent and status=running
-      if (!parentStepId) {
-        const exec = loopCtx.eventRouter.getCurrentStepId(loopCtx.loopId);
-        if (exec) parentStepId = exec;
-      }
+    if (loopCtx?.eventRouter && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function') {
+      // Parent step resolved lazily, by this call's tool_use id — see
+      // delegateParentStep.ts (eager lookup lost the member process when the
+      // leader loop ran in the sidecar).
+      const resolveParentStepId = createParentStepResolver(loopCtx, toolExecContext?.toolCallId);
+      const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
 
-      if (parentStepId) {
-        const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
-        const capturedParentStepId = parentStepId;
-
-        onProgress = (event) => {
-          if (event.type === 'tool-start') {
-            const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
-              loopCtx.loopId,
-              capturedParentStepId,
-              { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
-            );
-            if (childStepId) {
-              childIdMap.set(event.id, childStepId);
-            }
-          } else if (event.type === 'tool-end') {
-            const childStepId = childIdMap.get(event.id);
-            childIdMap.delete(event.id);
-            if (childStepId) {
-              loopCtx.eventRouter.completeChildStep(
-                loopCtx.loopId,
-                capturedParentStepId,
-                childStepId,
-                event.result,
-                event.error,
-                event.resultContent
-              );
-            }
+      onProgress = (event) => {
+        const parentStepId = resolveParentStepId();
+        if (!parentStepId) return;
+        if (event.type === 'tool-start') {
+          const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
+            loopCtx.loopId,
+            parentStepId,
+            { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
+          );
+          if (childStepId) {
+            childIdMap.set(event.id, childStepId);
           }
-        };
-      }
+        } else if (event.type === 'tool-end') {
+          const childStepId = childIdMap.get(event.id);
+          childIdMap.delete(event.id);
+          if (childStepId) {
+            loopCtx.eventRouter.completeChildStep(
+              loopCtx.loopId,
+              parentStepId,
+              childStepId,
+              event.result,
+              event.error,
+              event.resultContent
+            );
+          }
+        }
+      };
     }
 
     // 6. Extract parent conversation summary for context injection

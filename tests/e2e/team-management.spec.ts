@@ -22,6 +22,8 @@ import {
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const TEAM_NAME = 'E2E数据小队';
+const INTRO = '我们负责梳理需求和检查方案';
+const QUESTION = '帮我梳理下个版本的需求';
 
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
@@ -34,7 +36,7 @@ async function openTeamSurface(page: Page): Promise<void> {
 }
 
 test.describe('team management surface', () => {
-  test('entry ships on by default, tab order, create team, no dead ends, restart persistence, archive/restore', async () => {
+  test('creates and edits a team, persists its identity, prefills a chat and deletes it', async () => {
     test.setTimeout(240_000);
     const dataRoot = createElectronDataRoot();
     try {
@@ -64,10 +66,12 @@ test.describe('team management surface', () => {
       await page.getByTestId('team-leader-select').click();
       await page.getByTestId('search-select-query').fill('产品');
       await page.getByTestId('search-select-option-产品经理').click();
+      await page.getByTestId('avatar-option-users-blue').click();
       await expect(save).toBeEnabled();
       await save.click();
 
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
+      await expect(page.getByTestId(`team-row-${TEAM_NAME}`).getByTestId('team-avatar')).toHaveAttribute('data-avatar-kind', 'icon');
 
       // ---- Restart persistence -------------------------------------------
       await closeAbuElectron(launched.app);
@@ -85,6 +89,37 @@ test.describe('team management surface', () => {
       await expect(page.getByTestId('team-detail-start-chat')).toBeVisible();
       await expect(page.getByTestId('team-name-input')).toHaveCount(0);
       await page.getByTestId('team-detail-menu').click();
+      await page.getByTestId('team-detail-edit').click();
+      await page.getByLabel('介绍（可选）', { exact: true }).fill('帮你把需求变成可执行的方案');
+      await page.getByLabel('开场白（可选）', { exact: true }).fill(INTRO);
+      await page.getByLabel('擅长（可选）', { exact: true }).fill('需求分析\n方案检查\n计划整理');
+      await page.getByLabel('推荐提问（可选）', { exact: true }).fill(QUESTION);
+      await page.screenshot({ path: test.info().outputPath('team-editor.png') });
+      await page.getByTestId('team-save').click();
+      await page.getByTestId(`team-row-${TEAM_NAME}`).click();
+      for (const label of ['开场白', '擅长', '推荐提问', INTRO, '需求分析']) {
+        await expect(page.getByText(label, { exact: true })).toBeVisible();
+      }
+      await page.screenshot({ path: test.info().outputPath('team-detail.png') });
+      await page.getByRole('button', { name: QUESTION, exact: true }).click();
+      const welcome = page.getByTestId('team-welcome');
+      await expect(welcome.getByRole('heading', { name: TEAM_NAME })).toBeVisible();
+      await expect(welcome.getByText(INTRO, { exact: true })).toBeVisible();
+      await expect(welcome.getByText('产品经理', { exact: true })).toBeVisible();
+      await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue(QUESTION);
+      // The team pin is durable; the question remains a draft, with no message.
+      const conversations = await page.evaluate(() => {
+        const stored = JSON.parse(localStorage.getItem('abu-chat') ?? '{}');
+        return Object.values(stored.state.conversationIndex) as Array<{ teamId?: string; messageCount: number }>;
+      });
+      expect(conversations.filter((conversation) => conversation.teamId)).toHaveLength(1);
+      expect(conversations.find((conversation) => conversation.teamId)?.messageCount).toBe(0);
+      await page.screenshot({ path: test.info().outputPath('team-welcome.png') });
+
+      await openTeamSurface(page);
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '团队', exact: true }).click();
+      await page.getByTestId(`team-row-${TEAM_NAME}`).click();
+      await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-delete').click();
       // The "…" menu closes on click, so the ConfirmDialog's is the only 删除 left.
       await page.getByRole('button', { name: '删除', exact: true }).last().click();
@@ -93,6 +128,40 @@ test.describe('team management surface', () => {
 
       await closeAbuElectron(launched.app);
     } finally {
+      removeElectronDataRoot(dataRoot);
+    }
+  });
+
+  test('AI creation prefills the explicit shared skill command and the member editor offers the same avatar picker', async () => {
+    const dataRoot = createElectronDataRoot();
+    const launched = await launchAbuElectron(dataRoot);
+    try {
+      const page = await launched.app.firstWindow();
+      await waitForApp(page);
+      await dismissFirstRunOverlays(page);
+      for (const [tab, trigger, prompt] of [
+        ['团队', 'team-create-trigger', '帮我组建一个团队，我的需求是：'],
+        ['队员', 'member-create-trigger', '帮我创建一个队员，我的需求是：'],
+      ]) {
+        await openTeamSurface(page);
+        await page.getByTestId('top-tab-nav').getByRole('button', { name: tab, exact: true }).click();
+        await page.getByTestId(trigger).click();
+        await page.getByText('使用阿布创建', { exact: true }).click();
+        // create-agent is hidden from suggestions by default. The complete
+        // slash command still reaches the explicit skill route on send.
+        await expect(page.getByRole('textbox')).toHaveValue(`/create-agent ${prompt}`);
+      }
+      await page.screenshot({ path: test.info().outputPath('member-ai-create.png') });
+      await openTeamSurface(page);
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '队员', exact: true }).click();
+      await page.getByTestId('member-create-trigger').click();
+      await page.getByText('手动创建', { exact: true }).click();
+      await expect(page.getByTestId('avatar-picker')).toBeVisible();
+      await page.getByTestId('avatar-option-code-purple').click();
+      await expect(page.getByTestId('avatar-option-code-purple')).toHaveAttribute('aria-pressed', 'true');
+      await page.screenshot({ path: test.info().outputPath('agent-avatar-picker.png') });
+    } finally {
+      await closeAbuElectron(launched.app);
       removeElectronDataRoot(dataRoot);
     }
   });

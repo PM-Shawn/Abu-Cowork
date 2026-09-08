@@ -151,6 +151,11 @@ async function clientCatalog(): Promise<CatalogEntry[]> {
   });
   if (!auth.ok) throw new Error(`console client login failed: HTTP ${auth.status}`);
   const { access_token: token } = (await auth.json()) as { access_token: string };
+  const session = await fetch(`${CONSOLE_URL}/api/client/v1/session`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  expect(session.ok).toBe(true);
+  expect((await session.json()).signing.skillPublicKey).toBeNull();
   const res = await fetch(`${CONSOLE_URL}/api/skills/catalog?kinds=plugin`, {
     headers: { authorization: `Bearer ${token}` },
   });
@@ -366,6 +371,9 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     await publishOwnedVersion(OWNED_V1);
 
     const catalog = await clientCatalog();
+    // Keep this suite on the supported unsigned deployment shape. Signed
+    // installs and tampering have their own opt-in regression suite.
+    expect(catalog.find(entry => entry.name === OWNED_PLUGIN)?.signature).toBeNull();
     const found = catalog.find((e) => e.name === CATALOG_PLUGIN);
     if (!found) throw new Error(`console has no published plugin named ${CATALOG_PLUGIN}`);
     catalogEntry = found;
@@ -425,6 +433,7 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     // what proves the download + verify + plan actually completed — and the
     // 取消 button only replaces 关闭 there too.
     await expect(page.getByTestId('plugin-install-confirm')).toBeVisible({ timeout: INSTALL_TIMEOUT });
+    await expect(page.getByTestId('plugin-disclosure-unsigned')).toBeVisible();
     await expect(disclosure.getByText('prd-doctor', { exact: true })).toBeVisible();
     await disclosure.getByRole('button', { name: CANCEL_BUTTON }).click();
     await expect(disclosure).toBeHidden({ timeout: READY_TIMEOUT });
@@ -450,6 +459,7 @@ test.describe.serial('organization plugin install loop (real shell + real consol
     await expect(page.getByTestId('plugin-install-confirm')).toBeVisible({ timeout: INSTALL_TIMEOUT });
     // The disclosure names the skill the package will contribute, and declares
     // no connector — the same two facts the catalog row summarised as counts.
+    await expect(page.getByTestId('plugin-disclosure-unsigned')).toBeVisible();
     await expect(disclosure.getByText('prd-doctor', { exact: true })).toBeVisible();
     await expect(page.getByTestId('plugin-disclosure-server')).toHaveCount(0);
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-enterprise-plugin-disclosure.png') });

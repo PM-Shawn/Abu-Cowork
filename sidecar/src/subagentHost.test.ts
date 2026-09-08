@@ -39,6 +39,7 @@ import {
   handleSubagentRun,
   handleSubagentAbort,
   __getActiveSubagentRunCount,
+  isSubagentDispatchActive,
   SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS,
   SUBAGENT_HOST_RUN_WIRE_FIELDS,
 } from './subagentHost';
@@ -140,6 +141,7 @@ describe('subagentHost', () => {
         'scheduledTaskId',
         'preloadedSkills',
         'initiatedBy',
+        'dispatchKey',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -1013,6 +1015,23 @@ describe('subagentHost', () => {
 
     it('subagent.abort with an unknown runId is a silent no-op', () => {
       expect(() => handleSubagentAbort({ runId: 'no-such-run' })).not.toThrow();
+    });
+  });
+});
+
+describe('instruction receipts across the subagent host (F5)', () => {
+  it('accepts input only for an active dispatch and forwards exact receipt ids', async () => {
+    const params = baseParams({ dispatchKey: 'host-receipt:0' });
+    runSubagentLoopMock.mockImplementationOnce(async (options: { onProgress: (event: SubagentProgressEvent) => void }) => {
+      expect(isSubagentDispatchActive('host-receipt:0')).toBe(true);
+      expect(isSubagentDispatchActive('another:0')).toBe(false);
+      options.onProgress({ type: 'instruction-consumed', instructionId: 'issued-id' });
+      return resultShape('ok');
+    });
+    await handleSubagentRun(params);
+    expect(isSubagentDispatchActive('host-receipt:0')).toBe(false);
+    expect(sendNotificationMock).toHaveBeenCalledWith('subagent.progress', {
+      runId: params.runId, event: { type: 'instruction-consumed', instructionId: 'issued-id' },
     });
   });
 });

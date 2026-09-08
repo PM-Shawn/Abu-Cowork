@@ -4,12 +4,12 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // When adding a new persist store, add it to this list — otherwise this test fails.
 const PERSISTED_STORES = [
   { key: 'abu-settings', minVersion: 51 },
-  { key: 'abu-chat', minVersion: 8 },
+  { key: 'abu-chat', minVersion: 11 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
   { key: 'abu-permissions', minVersion: 1 },
   { key: 'abu-workspace', minVersion: 1 },
   { key: 'abu-mcp-store', minVersion: 1 },
-  { key: 'abu-schedule', minVersion: 5 },
+  { key: 'abu-schedule', minVersion: 6 },
   { key: 'abu-triggers', minVersion: 4 },
   { key: 'abu-im-channel', minVersion: 2 },
   { key: 'abu-projects', minVersion: 1 },
@@ -20,11 +20,15 @@ const PERSISTED_STORES = [
   { key: 'abu-todos', minVersion: 1 },
   { key: 'abu-inbox', minVersion: 2 },
   { key: 'abu-composer-drafts', minVersion: 2 },
+  { key: 'abu-team', minVersion: 6 },
+  { key: 'abu-team-confirmations', minVersion: 1 },
   { key: 'abu-plugins', minVersion: 2 },
 ] as const;
 
 // Import all stores to trigger persist initialization
 beforeAll(async () => {
+  await import('./teamConfirmationStore');
+  await import('./teamStore');
   await import('./settingsStore');
   await import('./chatStore');
   await import('./scratchpadStore');

@@ -159,6 +159,14 @@ describe('browser automation approval gate', () => {
     expect(asked[0]).toContain('abu-browser__click');
   });
 
+  it('a team browser approval never silently becomes a broader conversation grant (F1)', async () => {
+    const confirm = vi.fn(async () => true);
+    const context = { conversationId: 'team-browser', teamRoster: ['A'], agentName: 'A', loopId: 'l', toolCallId: 't' };
+    await checkToolApproval('abu-browser__click', { ref: 'e1' }, context, confirm);
+    await checkToolApproval('abu-browser__fill', { ref: 'e2', value: 'other action' }, context, confirm);
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
   it('denies the action when the user declines', async () => {
     const decision = await checkToolApproval(
       'abu-browser__execute_js', { code: 'fetch("/transfer")' },
@@ -680,6 +688,14 @@ describe('plugin tool approval gate', () => {
     expect(decision.decision).toBe('deny');
   });
 
+  it('a team plugin approval cannot become a server-wide conversation grant (F1)', async () => {
+    const asked: string[] = [];
+    const context = { conversationId: 'team-plugin', teamRoster: ['A'], agentName: 'A', loopId: 'l', toolCallId: 't' };
+    await checkToolApproval('weather__get_forecast', {}, context, collectingConfirm(asked));
+    await checkToolApproval('weather__list_stations', {}, context, collectingConfirm(asked));
+    expect(asked).toHaveLength(2);
+  });
+
   it('only asks once per conversation for the same plugin', async () => {
     const asked: string[] = [];
     const confirm = collectingConfirm(asked);
@@ -713,5 +729,51 @@ describe('plugin tool approval gate', () => {
       (async () => true) as never,
     );
     expect(decision.decision).toBe('deny');
+  });
+});
+
+describe('team file retry boundary (F1/F2)', () => {
+  it('approves exact write+overwrite-read parameters in a call scope and disposes it', async () => {
+    const { requestFilePermission, setLoopContext, clearLoopContext } = await import('../agent/permissionBridge');
+    const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+    const { usePermissionStore } = await import('../../stores/permissionStore');
+    const { isInScopedAuthorizedWorkspace } = await import('./pathSafety');
+    useChatStore.setState({ conversations: { 'file-team': { id: 'file-team', teamId: 't', title: 't', createdAt: 1, updatedAt: 1, status: 'running', messages: [] } } });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+    useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
+    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (path) => String(path));
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+    const path = '/Users/testuser/ExternalReview/exact.txt';
+    const input = { path, content: 'approved contents' };
+    const context = { conversationId: 'file-team', loopId: 'original-file', toolCallId: 'call-1', agentName: 'A', teamRoster: ['A'],
+      teamApprovalDispatch: { id: 'dispatch-1', fingerprint: 'task' } };
+    const makeLoop = (loopId: string) => ({ loopId, conversationId: 'file-team', signal: new AbortController().signal,
+      commandConfirmCallback: async () => false, filePermissionCallback: requestFilePermission, eventRouter: {} as never, toolCallToStepId: new Map() });
+    setLoopContext('original-file', makeLoop('original-file'));
+    setLoopContext('retry-file', makeLoop('retry-file'));
+    let scope: string | undefined;
+    const callback: typeof requestFilePermission = async (request, loopId) => {
+      scope = request.teamAuthorizationScopeId;
+      return requestFilePermission(request, loopId);
+    };
+    try {
+      expect((await checkToolApproval('write_file', input, context, undefined, callback)).decision).toBe('deny');
+      const pending = Object.values(useTeamConfirmationStore.getState().pending)[0];
+      expect(pending).toMatchObject({ capability: 'write', additionalCapabilities: ['read'] });
+      const selected = useTeamConfirmationStore.getState().selectRetry(pending.id, 'once');
+      useTeamConfirmationStore.getState().beginRetry('file-team', 'retry-file', selected);
+      useTeamConfirmationStore.getState().claimDispatch('file-team', 'retry-file', 'retry-dispatch', 'task', 'A');
+      const retryContext = { ...context, loopId: 'retry-file', toolCallId: 'call-2', teamApprovalDispatch: { id: 'retry-dispatch', fingerprint: 'task' } };
+      expect((await checkToolApproval('write_file', { ...input, content: 'different contents' }, retryContext, undefined, callback)).decision).toBe('deny');
+      const outcome = await checkToolApproval('write_file', input, retryContext, undefined, callback);
+      expect(outcome, JSON.stringify(outcome)).toMatchObject({ decision: 'allow' });
+      expect(scope).toBeDefined();
+      expect(isInScopedAuthorizedWorkspace(path, 'write', scope)).toBe(false);
+      expect(isInScopedAuthorizedWorkspace(path, 'read', scope)).toBe(false);
+      expect(usePermissionStore.getState().hasPermission(path, 'write')).toBe(false);
+      expect((await checkToolApproval('write_file', input, retryContext, undefined, callback)).decision).toBe('deny');
+    } finally { clearLoopContext('original-file'); clearLoopContext('retry-file'); useTeamConfirmationStore.getState().clearConversation('file-team'); }
   });
 });

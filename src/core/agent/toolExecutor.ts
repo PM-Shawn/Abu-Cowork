@@ -261,6 +261,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       toolName: tc.name,
       toolReadOnly: undefined,
       planMode: getPlanMode(conversationId),
+      requirePlanApproval: toolContext?.teamRequirePlanApproval && toolContext.interactionMode !== 'background',
     });
     if (!planGate.allow) {
       return { id: tc.id, result: planGate.reason ?? '计划模式:已拦截写操作', resultContent: undefined, error: true, duration: 0 };

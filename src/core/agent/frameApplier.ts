@@ -21,6 +21,8 @@
  */
 import { getChatDelta } from './ports/chatDelta';
 import { getExecutionPort, applyExecutionWithId } from './ports/executionPort';
+import { getConversationReader } from './ports/conversationReader';
+import type { Message } from '../../types';
 import { applyScratchpadEntryWithId } from './ports/scratchpadPort';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import type { ExecutionStepSnapshot } from '../../types/execution';
@@ -151,7 +153,10 @@ async function applyChatFrame(m: string, a: unknown[]): Promise<void> {
     if (shellExec && Array.isArray(steps)) {
       grafted = steps.map((snap) => {
         if (snap.childSteps?.length) return snap;
-        const shellStep = shellExec.steps.find((s) => s.id === snap.id);
+        // Match by id, then by the LLM tool_use id (the two mirrors may mint
+        // different step ids for the same call).
+        const shellStep = shellExec.steps.find((s) => s.id === snap.id)
+          ?? (snap.toolCallId ? shellExec.steps.find((s) => s.toolCallId === snap.toolCallId) : undefined);
         if (!shellStep?.childSteps?.length) return snap;
         return { ...snap, childSteps: snapshotExecutionSteps(shellStep.childSteps) };
       });
@@ -212,8 +217,33 @@ async function applySessionFrame(m: string, a: unknown[]): Promise<void> {
   // would silently discard a snapshot revision applied while the older write
   // was in flight.
   await waitForConversationPersistence(convId);
-  if (m === 'snapshotMessageRevision') await storage.snapshotMessageRevision(convId, message);
-  else await storage.replaceMessageById(convId, message);
+  // The sidecar's mirror copy of a message never carries the shell-grafted
+  // execution steps (delegate child steps are shell-only, see the
+  // setExecutionStepsSnapshot graft above). Persisting it verbatim
+  // overwrote the grafted snapshot on disk (retest G1, 2026-09-07): the
+  // shell-owned projection wins.
+  const preserved = preserveShellExecutionProjection(convId, message);
+  if (m === 'snapshotMessageRevision') await storage.snapshotMessageRevision(convId, preserved);
+  else await storage.replaceMessageById(convId, preserved);
+}
+
+function countChildSteps(steps: readonly ExecutionStepSnapshot[] | undefined): number {
+  return (steps ?? []).reduce((n, step) => n + (step.childSteps?.length ?? 0), 0);
+}
+
+/** Shell-owned fields (executionSteps / plannedSteps) survive a sidecar-sourced message write. */
+export function preserveShellExecutionProjection(convId: string, message: Message): Message {
+  const shellMsg = getConversationReader().getConversation(convId)?.messages.find((m) => m.id === message.id);
+  if (!shellMsg) return message;
+  let out = message;
+  if (shellMsg.executionSteps?.length
+    && (!message.executionSteps?.length || countChildSteps(message.executionSteps) < countChildSteps(shellMsg.executionSteps))) {
+    out = { ...out, executionSteps: shellMsg.executionSteps };
+  }
+  if (!message.plannedSteps?.length && shellMsg.plannedSteps?.length) {
+    out = { ...out, plannedSteps: shellMsg.plannedSteps };
+  }
+  return out;
 }
 
 /**

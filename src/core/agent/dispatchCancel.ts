@@ -1,0 +1,35 @@
+import { cancelDispatch, isDispatchActive } from './subagentAbort';
+import { enqueueDispatchInput, notePendingInstruction } from './dispatchInput';
+import { notifySidecar } from '@/core/sidecar/sidecarManager';
+
+/**
+ * Stop one team member's hand-off from the UI. The member may run in this
+ * process (in-process fallback) or in the sidecar, so both are told; each
+ * side ignores a key it does not own.
+ */
+export function requestDispatchCancel(dispatchKey: string, reason?: string): void {
+  cancelDispatch(dispatchKey, reason);
+  try {
+    notifySidecar('state.cancelDispatch', { key: dispatchKey, ...(reason ? { reason } : {}) });
+  } catch {
+    // The sidecar may not be up (in-process run) — the local cancel above covered it.
+  }
+}
+
+/**
+ * Hand a user instruction to ONE running member. Same two-process fan-out as
+ * the stop: whichever process runs the member's loop owns the key and queues
+ * it; the other ignores it.
+ */
+export function requestDispatchInput(dispatchKey: string, text: string): boolean {
+  if (!isDispatchActive(dispatchKey)) return false;
+  const id = enqueueDispatchInput(dispatchKey, text);
+  if (!id) return false;
+  notePendingInstruction(dispatchKey, id, text);
+  try {
+    notifySidecar('state.dispatchInput', { key: dispatchKey, text, id });
+  } catch {
+    // Sidecar not up — the in-process queue above is the only one that matters.
+  }
+  return true;
+}

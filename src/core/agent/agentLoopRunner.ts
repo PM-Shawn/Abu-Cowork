@@ -151,6 +151,8 @@ import {
   startRuntimeRun,
   traceRuntimeEvent,
 } from '../observability/runtimeTrace';
+import { getBrowserSignalCursor } from '../observability/browserSignals';
+import { emitBrowserDownloadsCard } from '../observability/browserRunReportEmitter';
 import { getElectronSidecarRunFact } from '../../utils/electronHost';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
@@ -3622,6 +3624,48 @@ async function runSingleAgentLoopDispatched(
  * run performs the FIFO handoff once its session has been fully unregistered.
  */
 export async function runAgentLoopDispatched(
+  conversationId: string,
+  userMessage: string,
+  options?: AgentLoopOptions,
+): Promise<AgentLoopDispatchResult> {
+  /**
+   * Acceptance F3 — where a file downloaded in an ORDINARY conversation comes
+   * back to the person who asked for it.
+   *
+   * The scheduler, the trigger engine and the file watcher each end their run
+   * by emitting the full report card, and that is the only place the card was
+   * ever emitted from — so a download in the chat window had no exit at all.
+   * Here is the one seam every user-initiated run passes through, whichever
+   * surface started it (the composer, a retry, a queued follow-up, the
+   * recovery card, the setup dialog), so the cursor is taken here and the
+   * downloads card is appended once when the whole dispatch — the initial turn
+   * and every queued handoff after it — is finished.
+   *
+   * Only `'user'`: the three automation entry points above stamp
+   * `'automation'` and emit their own, fuller card, and two cards for one run
+   * would be worse than none.
+   */
+  const downloadsSinceSeq = options?.initiatedBy === 'user' ? getBrowserSignalCursor() : null;
+  let result: AgentLoopDispatchResult | undefined;
+  try {
+    result = await runDispatchedTurns(conversationId, userMessage, options);
+    return result;
+  } finally {
+    // In `finally` on purpose: a run that was stopped or failed halfway may
+    // still have finished a download before it stopped, and that file is the
+    // user's whether or not the turn that fetched it ended well.
+    //
+    // `'enqueued'` is the exception, and the only one: that call ran nothing —
+    // it handed its text to the run already in flight and returned. The owner
+    // of that run is inside its own `finally` here and will report the files.
+    // Emitting from both would put two cards on one download.
+    if (downloadsSinceSeq !== null && result?.reason !== 'enqueued') {
+      emitBrowserDownloadsCard({ conversationId, sinceSeq: downloadsSinceSeq });
+    }
+  }
+}
+
+async function runDispatchedTurns(
   conversationId: string,
   userMessage: string,
   options?: AgentLoopOptions,

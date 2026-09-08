@@ -33,6 +33,7 @@ import {
   refuseBrowserBatch,
   summarizeBrowserBatch,
   toLegacyBrowserToolConsequence,
+  uploadsFile,
   DEFAULT_BROWSER_OPERATION_POLICY,
   type BrowserDenialReasonCode,
   type DecideBrowserOperationSiteVerdict,
@@ -45,7 +46,15 @@ import {
   pluginServerOf,
 } from '../permissions/pluginToolPolicy';
 import { evaluateBrowserGate } from '../permissions/browserGateEvaluation';
-import { browserDenialReasonText as sharedBrowserDenialReasonText } from '../permissions/browserDenialReasonText';
+import {
+  browserDenialReasonText as sharedBrowserDenialReasonText,
+  browserUploadRefusalText,
+} from '../permissions/browserDenialReasonText';
+import {
+  resolveUploadFiles,
+  summarizeUploadFiles,
+  type ApprovedUploadFile,
+} from '../permissions/browserUploadFiles';
 import { isHighRiskUrl } from '../permissions/highRiskSites';
 import {
   notifyUnattendedDenial,
@@ -62,6 +71,7 @@ import { commandWritableDirectories, isInsideWorkingDirs } from '../permissions/
 import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
+import { lstat } from '@tauri-apps/plugin-fs';
 import { TOOL_NAMES } from './toolNames';
 import { applyOSPermissionGuideIfNeeded } from './osPermissionGuide';
 import { isLabsFlagOn } from '../labs/resolve';
@@ -88,6 +98,7 @@ import {
   noteBrowserToolOutcome,
   noteTabOrigin,
   safeRecordBrowserSignal,
+  type BrowserSignalEvent,
 } from '../observability/browserSignals';
 import { toolResultToString as browserSignalToolResultToString } from './toolResultToString';
 
@@ -403,6 +414,18 @@ export interface BrowserExecutionPin {
    * make a page-observable field look like an instruction to the host.
    */
   loginRequired?: true;
+  /**
+   * T5 — the files the gate resolved and the user confirmed for an
+   * `upload_file` call: canonical path, base name, size.
+   *
+   * It travels for the same reason `expectedOrigin` does, one step further
+   * along the same argument. The origin pin stops an approved action landing
+   * on a page that moved; this stops an approved upload sending a FILE other
+   * than the one the confirmation named. Both are facts the gate learned and
+   * the model must not be able to restate: the runtime reads only this list,
+   * and refuses outright when it is absent (`abu-browser-bridge/src/tools.ts`).
+   */
+  approvedUploadFiles?: ApprovedUploadFile[];
 }
 
 export interface ToolApprovalDecision {
@@ -907,6 +930,42 @@ function batchStepSignals(
   return events.length > 0 ? events : null;
 }
 
+/**
+ * The file a finished `download` left on disk, as a signal — or null.
+ *
+ * Read from the tool's OWN result envelope (the same technique
+ * `batchStepSignals` uses), and only when it says `complete`: a download still
+ * in flight has a path nothing is at yet, and reporting it as a product of the
+ * run would be a link to a file that is not there.
+ */
+function downloadSignal(
+  bareToolName: string,
+  resultText: string,
+): Extract<BrowserSignalEvent, { kind: 'download_saved' }> | null {
+  if (bareToolName !== 'download') return null;
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resultText);
+  } catch {
+    return null;
+  }
+  const { complete, download } = (envelope ?? {}) as { complete?: unknown; download?: unknown };
+  if (complete !== true || typeof download !== 'object' || download === null) return null;
+  const d = download as Record<string, unknown>;
+  const path = typeof d.path === 'string' ? d.path : '';
+  const name = typeof d.filename === 'string' ? d.filename : '';
+  const downloadId = typeof d.downloadId === 'string' ? d.downloadId : '';
+  if (path === '' || name === '' || downloadId === '') return null;
+  return {
+    kind: 'download_saved',
+    downloadId,
+    name,
+    path,
+    bytes: typeof d.size === 'number' && Number.isFinite(d.size) && d.size >= 0 ? d.size : 0,
+    ...(typeof d.mime === 'string' && d.mime !== '' ? { mime: d.mime } : {}),
+  };
+}
+
 function recordBrowserToolCallSignal(
   namespacedName: string,
   toolContext: ToolExecutionContext | undefined,
@@ -978,6 +1037,13 @@ function recordBrowserToolCallSignal(
       },
       context,
     ));
+  }
+
+  // What the run PRODUCED, when it produced a file. Recorded next to the tool
+  // call rather than instead of it: the call is still an action.
+  const downloaded = ok ? downloadSignal(bareToolName, resultText) : null;
+  if (downloaded) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(downloaded, context));
   }
 
   // A dialog freezing a tab is its own failure mode: without this it shows up
@@ -1633,7 +1699,11 @@ export async function checkToolApproval(
        * cannot approve it can act on.
        */
       const batchSummary = summarizeBrowserBatch(name, input);
-      const browserConfirmLabel = batchSummary
+      // `let`, because an upload's own summary — the file names and sizes —
+      // can only be added once the gate has decided the call is worth asking
+      // about and the paths have actually been resolved against the disk
+      // (T5, below). A confirmation for an upload is not consent without it.
+      let browserConfirmLabel = batchSummary
         ? `${browserActionLabel} — ${batchSummary}`
         : browserActionLabel;
       /**
@@ -1658,7 +1728,13 @@ export async function checkToolApproval(
        */
       const browserAskReason = (): string => {
         if (isScriptingBrowserTool(name)) return t.commandConfirm.browserScriptReason;
+        // AFTER the high-risk sentence (2026-09-07): an upload to a bank or a
+        // government page is now asked about rather than refused outright, and
+        // when both apply the page is the sharper warning — the file names and
+        // sizes are in `browserConfirmLabel` either way, so nothing about the
+        // file is lost by letting 「资金 / 政务」 have the sentence.
         if (highRisk) return t.commandConfirm.browserHighRiskReason;
+        if (uploadsFile(name)) return t.commandConfirm.browserUploadReason;
         if (answersPageDialog(name)) {
           // Named, because "browser action: …__handle_dialog" tells a user
           // nothing about what they are agreeing to. The question the dialog
@@ -1835,6 +1911,78 @@ export async function checkToolApproval(
         return gate.ceilingDecision;
       }
 
+      /**
+       * T5 — WHICH files this upload sends, resolved once and frozen.
+       *
+       * Placed here on purpose: after the gate has said an upload may be asked
+       * about at all, and before anybody is asked. Earlier would touch the
+       * filesystem for a call that is going to be refused anyway (unattended,
+       * high-risk, the row set to 拒绝); later would mean asking the user to
+       * approve 「上传文件」 with no idea what.
+       *
+       * The refusals it can produce are NOT `BrowserDenialReasonCode`s and do
+       * not record a `gate_denied` signal: nothing about the SITE was decided
+       * here. A path outside the authorized workspaces, a symlink, a missing
+       * file or one over the ceiling is an argument that could not be honoured
+       * — the same shape as `refuseBrowserBatch` above, which is also silent.
+       */
+      let approvedUploadFiles: ApprovedUploadFile[] | undefined;
+      // The desktop dialog's own body and count — see the F5 note below. Unset
+      // for every non-upload call, which is what keeps the generic dialog
+      // generic.
+      let browserUploadDialogLabel: string | undefined;
+      let browserUploadFileCount: number | undefined;
+      if (uploadsFile(name) && gate.outcome !== 'deny') {
+        const resolved = await resolveUploadFiles(input, {
+          checkReadPath: (candidate) =>
+            checkReadPath(candidate, toolContext?.authorizationScopeId),
+          lstat: async (candidate) => {
+            const info = await lstat(candidate);
+            // `mtime`/`ino`/`dev` are the identity pin (review F1): size alone
+            // does not survive the window between this check and the read the
+            // runtime does after the user has answered.
+            const mtime = info.mtime instanceof Date ? info.mtime.getTime() : NaN;
+            return {
+              isFile: info.isFile === true,
+              isSymlink: info.isSymlink === true,
+              size: typeof info.size === 'number' ? info.size : 0,
+              mtimeMs: Number.isFinite(mtime) ? Math.floor(mtime) : 0,
+              ino: typeof info.ino === 'number' ? info.ino : null,
+              dev: typeof info.dev === 'number' ? info.dev : null,
+            };
+          },
+        });
+        if (!resolved.ok) {
+          return {
+            decision: 'deny',
+            reason: `Error: ${browserUploadRefusalText(t, resolved.code, resolved.detail)}`,
+          };
+        }
+        approvedUploadFiles = resolved.files;
+        // The names and sizes go INTO the question. `summarizeUploadFiles`
+        // carries no directory: the confirmation asks whether to send this
+        // file to this site, and a full path in a dialog is one screenshot
+        // away from being somewhere it should not be.
+        browserConfirmLabel = `${browserActionLabel} — ${summarizeUploadFiles(resolved.files)}`;
+        /**
+         * Acceptance F5 — what the DESKTOP dialog puts in its box.
+         *
+         * The label above still leads with `浏览器操作: abu-browser__upload_file
+         * (origin)`, and in front of a person that reads as a stranger's tool
+         * asking to run: it names an identifier only this codebase uses, and
+         * says nothing about the thing that actually happens, which is that
+         * files leave the machine. The dialog now carries the count and the
+         * host in its TITLE and this list in its body, so the internal name
+         * has no job left and is dropped.
+         *
+         * The IM label is deliberately unchanged: it is one line in a chat
+         * message with no title above it to carry the site, so it still needs
+         * `browserActionLabel`'s origin. Same file list, two carriers.
+         */
+        browserUploadDialogLabel = summarizeUploadFiles(resolved.files);
+        browserUploadFileCount = resolved.files.length;
+      }
+
       if (gate.ask?.channel === 'im') {
         // Nobody is in front of the screen: `onRequireConfirmation` here is the
         // entry point's own auto-deny, never a dialog. Route 'ask' through the
@@ -1986,7 +2134,11 @@ export async function checkToolApproval(
         // Non-null by construction: `evaluateBrowserGate` refuses instead of
         // asking when `confirmationChannelAvailable` is false.
         const confirmed = await onRequireConfirmation?.({
-          command: browserConfirmLabel,
+          // An upload puts only the file list here: its question, its target
+          // site and its verb all live in the dialog's own upload wording
+          // (F5), so the tool name would be the one line on the box that
+          // means nothing to the person reading it.
+          command: browserUploadDialogLabel ?? browserConfirmLabel,
           level: 'warn',
           // Same sentence the unattended round-trip sends — see
           // `browserAskReason`. Two copies of this ternary is how the
@@ -1996,7 +2148,16 @@ export async function checkToolApproval(
           reason: consequence === 'state-changing'
             ? browserAskReason()
             : t.commandConfirm.browserReason,
-          kind: 'browser',
+          // The one browser action whose consequence leaves the machine gets
+          // its own question and its own verb (F5). Everything else about it
+          // stays a browser ask — same origin fields, same site grant, same
+          // block-this-site row.
+          kind: browserUploadFileCount !== undefined ? 'browser-upload' : 'browser',
+          ...(browserUploadFileCount !== undefined
+            ? { browserUploadFileCount }
+            : {}),
+          // Team runs record WHICH member asked; the strip shows it and the
+          // approval key binds it (F1).
           agentName: toolContext?.agentName,
           browserOperationClass: opClass,
           ...(consequence === 'state-changing'
@@ -2118,6 +2279,10 @@ export async function checkToolApproval(
       browserExecutionPin = {
         runMode,
         ...(origin !== null ? { expectedOrigin: origin } : {}),
+        // T5 — the files the user just confirmed, on their way to the runtime
+        // (which uses this list and nothing else). Set only for an upload;
+        // every other call's pin keeps its exact shape.
+        ...(approvedUploadFiles !== undefined ? { approvedUploadFiles } : {}),
         // A batch's steps may each target a different region, and the page's
         // own pin says nothing about what a third-party region is showing —
         // so each region's approved origin goes to the run to be re-checked
@@ -2559,6 +2724,12 @@ export async function executeAnyTool(
             : {}),
           ...(approval.browserExecution?.expectedFrameOrigins !== undefined
             ? { expectedFrameOrigins: approval.browserExecution.expectedFrameOrigins }
+            : {}),
+          // T5 — the approved file list. Absent for every tool but
+          // `upload_file`, and its absence THERE is what makes the bridge
+          // refuse rather than fall back to the model's own paths.
+          ...(approval.browserExecution?.approvedUploadFiles !== undefined
+            ? { approvedUploadFiles: approval.browserExecution.approvedUploadFiles }
             : {}),
           ...(approval.browserExecution?.runMode === 'unattended'
             ? { unattended: true }

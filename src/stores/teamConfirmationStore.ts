@@ -4,7 +4,11 @@ import { immer } from 'zustand/middleware/immer';
 import { generateId } from '@/lib/utils';
 import { clearTeamConfirmationIdentities, isRetryableTeamIdentity, type TeamConfirmationIdentity } from '@/core/agent/teamConfirmationIdentity';
 
-export type TeamConfirmationKind = 'command' | 'browser' | 'self-extension' | 'file';
+// 'browser-upload' stays distinct from 'browser' (dev #416): an upload is the
+// one browser action whose consequence leaves the machine, so an approval for
+// it must never be consumable by an ordinary browser action with the same
+// parameters — the kind is part of the authorization key.
+export type TeamConfirmationKind = 'command' | 'browser' | 'browser-upload' | 'self-extension' | 'file';
 export interface TeamConfirmation {
   id: string;
   conversationId: string;

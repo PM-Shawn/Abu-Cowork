@@ -300,14 +300,16 @@ test.describe.serial('Electron capability overview', () => {
     await scriptCell.click();
 
     /*
-      One setting, two execution contexts — so 「每次询问」 has to say both, on
-      one line: a dialog while the user is here, and the IM channel the task
-      itself named when it is running alone (`core/im/approvalTarget.ts`),
-      refused when none is bound. The two withdrawn per-column strings must
-      not survive anywhere on this surface.
+      One setting, one intent (acceptance F4). This row answers 「这个权限档
+      位是什么意思」, and the answer is a promise about what Abu will do —
+      「每次执行前先征得你的同意」 — not a tour of the two places the question
+      can appear. Where it is asked is the approval channel's business, and
+      「你在场 / 自动任务 / IM」 left a reader wondering whether one upload
+      permission secretly has a second set of rules. The two withdrawn
+      per-column strings must still not survive anywhere on this surface.
     */
     const askOption = page.getByText(
-      /你在场时弹窗确认，自动任务发到 IM 审批|Asks you here, and over IM in automatic tasks/,
+      /每次执行前先征得你的同意|Asks for your go-ahead before each one/,
     );
     await expect(askOption).toBeVisible();
     await expect(page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/))

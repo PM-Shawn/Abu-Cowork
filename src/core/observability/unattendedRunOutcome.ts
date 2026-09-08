@@ -38,14 +38,24 @@
  *   ONLY carrier of "hit the turn cap"). This taxonomy answers the question a
  *   person asks in IM — did it work, and if not, what do I do — and the card
  *   answers "what exactly happened". Both read the one snapshot.
- * - **No artifact links.** Nothing in the run produces an addressable
- *   artifact today (a run's output is conversation text and, for browser
- *   work, the card). A field nobody can populate is schema debt that looks
- *   like a feature; add it with its first producer.
+ * - **No RAW artifact content.** `artifacts` below carries a file's name,
+ *   size and path — never its bytes. The IM channel says what was produced
+ *   and where it is; it does not attach the file. (This field arrived with
+ *   its first producer, `download` — see `BrowserRunReportArtifact`. The
+ *   older note here said nothing in a run produced an addressable artifact,
+ *   which stopped being true with batch-三 T6.)
  */
 import { format, type TranslationDict } from '../../i18n';
 import { normalizeBrowserOrigin, type BrowserDenialReasonCode } from '../permissions/browserToolPolicy';
-import type { BrowserRunReportNextStep, BrowserRunReportSnapshot } from './browserRunReport';
+// The same spelling the upload confirmation uses, so 「1.2 MB」 means the same
+// thing wherever a person meets a file size in this product.
+import { formatBytes } from '../permissions/browserUploadFiles';
+import {
+  MAX_REPORT_ARTIFACTS,
+  type BrowserRunReportArtifact,
+  type BrowserRunReportNextStep,
+  type BrowserRunReportSnapshot,
+} from './browserRunReport';
 import { reasonLabel, rawCode, stepLabel } from './browserRunReportCopy';
 
 /**
@@ -127,6 +137,15 @@ export interface UnattendedRunOutcome {
   blockedOrigins: string[];
   /** The card's「接下来可以做什么」list, verbatim — same codes, same order. */
   nextSteps: BrowserRunReportNextStep[];
+  /**
+   * Files this run produced — name, size, path. Empty for every run that
+   * downloaded nothing, which is most of them.
+   *
+   * Read off the same snapshot the card renders, so «卡片上有的文件，IM 里也
+   * 有» is structural rather than a promise. A snapshot persisted before the
+   * field existed reads back as an empty list.
+   */
+  artifacts: BrowserRunReportArtifact[];
 }
 
 export interface DeriveUnattendedRunOutcomeInput {
@@ -265,6 +284,7 @@ export function deriveUnattendedRunOutcome(
     ...(runtimeGap ? { runtimeGap } : {}),
     blockedOrigins: originsForExport(lead?.origins ?? []),
     nextSteps: report?.nextSteps ?? [],
+    artifacts: (report?.artifacts ?? []).slice(0, MAX_REPORT_ARTIFACTS),
   };
 }
 
@@ -314,6 +334,12 @@ export interface UnattendedRunOutcomeMetadata {
   sites: string[];
   blockedOrigins: string[];
   nextSteps: BrowserRunReportNextStep[];
+  /**
+   * Files the run produced. Additive to `v: 1` for the same reason
+   * `runtimeGap` is: a consumer that has never seen this key reads the same
+   * object it always did, and one that has can act on the paths.
+   */
+  artifacts?: BrowserRunReportArtifact[];
 }
 
 /** `AbuMessage.metadata` carrying this run's ending, ready to merge. */
@@ -335,8 +361,29 @@ export function unattendedRunOutcomeMetadata(
       sites: outcome.did.sites,
       blockedOrigins: outcome.blockedOrigins,
       nextSteps: outcome.nextSteps,
+      ...(outcome.artifacts.length > 0 ? { artifacts: outcome.artifacts } : {}),
     },
   };
+}
+
+/**
+ * 「产物：报表.xlsx（1.2 MB）· /path/to/it」 — one line per file.
+ *
+ * Names and SIZES and PATHS, never bytes: IM tells the user what came out and
+ * where to find it, and the file itself stays on their machine. Kept out of
+ * `formatUnattendedOutcomeLine` because that one feeds `$RUN_OUTCOME`, which
+ * is usually pasted into a JSON body where a newline is a syntax error.
+ */
+function formatArtifactLines(
+  artifacts: readonly BrowserRunReportArtifact[],
+  t: TranslationDict,
+): string[] {
+  if (artifacts.length === 0) return [];
+  return artifacts.map((artifact) => format(t.unattendedRun.artifactLine, {
+    name: artifact.name,
+    size: formatBytes(artifact.bytes),
+    path: artifact.path,
+  }));
 }
 
 function outcomeLabel(code: UnattendedOutcomeCode, blockedByMasterSwitch: boolean, t: TranslationDict): string {
@@ -454,6 +501,11 @@ export function formatUnattendedOutcomeSummary(
   t: TranslationDict,
 ): string {
   const first = formatUnattendedOutcomeLine(outcome, t);
+  const lines = [first];
   const step = outcome.code === 'succeeded' ? undefined : outcome.nextSteps[0];
-  return step ? `${first}\n${format(t.unattendedRun.nextStep, { step: stepLabel(step, t) })}` : first;
+  if (step) lines.push(format(t.unattendedRun.nextStep, { step: stepLabel(step, t) }));
+  // Files come last, after the verdict and the next step: they are the thing
+  // the user goes and opens, and a run that produced one has earned the lines.
+  lines.push(...formatArtifactLines(outcome.artifacts, t));
+  return lines.join('\n');
 }

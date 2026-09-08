@@ -59,6 +59,13 @@ const INTERACTIVE_TOOLS = new Set([
   // what is on it. `get_dialog` reads the same dialog and stays read-only —
   // that split is the whole reason the pair is two tools.
   'handle_dialog',
+  // T6. `download` is a CLICK plus bookkeeping: it presses the page's export
+  // button and then waits for the file the click produced. The click is the
+  // consequential half and it is exactly an `interactive` one, so the tool
+  // rides the same row rather than inventing a class for the waiting. What it
+  // brings IN lands only in Abu's own per-run download directory, never
+  // anywhere the page or the model chose — see `browserHost.cjs`.
+  'download',
 ]);
 
 /**
@@ -138,8 +145,20 @@ export type BrowserToolConsequence = 'read-only' | 'state-changing';
  *   default, and a user who sets it to `allow` still buys nothing for an
  *   automatic run beyond what the master switch and the standing site grant
  *   already permit (`decideBrowserOperation`).
+ * - `upload`: sends a file OFF this machine into a web page (batch-三 T5,
+ *   `docs/abu-browser-batch3-brief-2026-09-05.md` §5②). Its own class rather
+ *   than a heavier `interactive`, because the axis it moves on is different:
+ *   every other class acts INSIDE the browser, and this one takes something
+ *   that was only ever on the user's disk and puts it on somebody else's
+ *   server, where no later decision can take it back. Codex's public
+ *   commons — inbound permissive, outbound strict — is the same split.
+ *
+ *   Its own ROW, not its own rulebook: since the 2026-09-07 ruling the three
+ *   states mean exactly what they mean for `interactive`, and the class exists
+ *   so the user can answer 「上传文件」 separately from 「点击和填写」 rather
+ *   than so the gate can treat it specially.
  */
-export type BrowserOperationClass = 'read-only' | 'interactive' | 'scripting';
+export type BrowserOperationClass = 'read-only' | 'interactive' | 'scripting' | 'upload';
 
 /** Map the three-state class down to the legacy two-state shape, for callers
  *  that have not migrated (see `BrowserToolConsequence`'s deprecation note). */
@@ -162,6 +181,37 @@ export function toLegacyBrowserToolConsequence(
  * rather than forbidding it.
  */
 const SCRIPTING_TOOLS = new Set(['execute_js']);
+
+/**
+ * Tools that put a file from THIS machine into a web page (batch-三 T5).
+ *
+ * One member today. A set rather than an equality check because the two
+ * channels will grow a second spelling long before this rule changes, and the
+ * failure mode of forgetting to add it there is silent: an unlisted upload
+ * tool falls through to `classifyBrowserTool`'s `'interactive'` fallback,
+ * where it would ride the 「点击和填写」 row instead of the one the user set
+ * for uploads — and, worse, would never reach the file resolution in
+ * `registry.ts` that is keyed off this same predicate. The row would be wrong;
+ * the missing path/symlink/size check would be a hole.
+ */
+const UPLOAD_TOOLS = new Set(['upload_file']);
+
+/**
+ * Does this tool send a local file to the page?
+ *
+ * Its own predicate alongside `isScriptingBrowserTool` / `answersPageDialog`,
+ * and consulted for the same reason: `registry.ts` has to know, by NAME and
+ * not by inference from `opClass`, which calls must have their file list
+ * resolved and frozen before anything is sent. `opClass` would nearly do —
+ * `'upload'` is exactly this set — but "nearly" is how `execute_js__x` got in
+ * (U9/C1), and a batch's class is computed from its arguments rather than its
+ * name, so the two are not interchangeable in general.
+ */
+export function uploadsFile(namespacedName: string): boolean {
+  const toolName = browserToolNameOf(namespacedName);
+  if (toolName === null) return false;
+  return UPLOAD_TOOLS.has(toolName);
+}
 
 /**
  * Split a namespaced name and keep it only if it names a browser tool.
@@ -512,6 +562,7 @@ export function classifyBrowserTool(
   const toolName = browserToolNameOf(namespacedName);
   if (toolName === null) return null;
   if (toolName === 'batch') return classifyBrowserBatch(input);
+  if (UPLOAD_TOOLS.has(toolName)) return 'upload';
   if (SCRIPTING_TOOLS.has(toolName)) return 'scripting';
   if (INTERACTIVE_TOOLS.has(toolName)) return 'interactive';
   if (READ_ONLY_TOOLS.has(toolName)) return 'read-only';
@@ -636,6 +687,14 @@ export interface BrowserOperationPolicy {
   readOnly: BrowserOperationState;
   interactive: BrowserOperationState;
   scripting: BrowserOperationState;
+  /**
+   * Sending a local file into a page (batch-三 T5). Three states like every
+   * other row (2026-09-07 ruling); it differs from `interactive` only in its
+   * DEFAULT, which is 「每次询问」 rather than 「允许」 — an upload leaves the
+   * machine, so the shipped setting asks once and the user may then set it to
+   * 「允许」 for the sites they trust.
+   */
+  upload: BrowserOperationState;
 }
 
 /**
@@ -682,6 +741,12 @@ export const DEFAULT_BROWSER_OPERATION_POLICY: BrowserOperationPolicy = {
   readOnly: 'allow',
   interactive: 'allow',
   scripting: 'ask',
+  // 2026-09-07 ruling — 「默认每次询问」. The row can be set to 「允许」 like
+  // any other (and then behaves exactly like `interactive`); what ships is the
+  // asking one, because an upload is the one action whose effect leaves this
+  // machine and the user should authorize it deliberately rather than
+  // discover it happened.
+  upload: 'ask',
 };
 
 const OPERATION_CLASS_TO_POLICY_KEY: Record<
@@ -691,6 +756,7 @@ const OPERATION_CLASS_TO_POLICY_KEY: Record<
   'read-only': 'readOnly',
   interactive: 'interactive',
   scripting: 'scripting',
+  upload: 'upload',
 };
 
 /**
@@ -810,6 +876,10 @@ function normalizeClassPolicy(raw: unknown): BrowserOperationPolicy {
     readOnly: normalizeStateLeaf(row.readOnly, STRICTEST_OPERATION_STATE),
     interactive: normalizeStateLeaf(row.interactive, STRICTEST_OPERATION_STATE),
     scripting: normalizeStateLeaf(row.scripting, STRICTEST_OPERATION_STATE),
+    // A store written before this row existed has no `upload` key at all, and
+    // the clamp gives it `'ask'` — which is also the reviewed default, so the
+    // upgrade path and the corruption path agree here without special-casing.
+    upload: normalizeStateLeaf(row.upload, STRICTEST_OPERATION_STATE),
   };
 }
 
@@ -909,6 +979,25 @@ export function decideBrowserOperation(
   // act OR to read there. See `highRiskSites.ts`.
   if (siteVerdict === 'high-risk' && runMode === 'unattended') return 'deny';
   const state = policy[OPERATION_CLASS_TO_POLICY_KEY[opClass]];
+  /**
+   * NOTE (2026-09-07 ruling, Shawn) — `upload` has NO branch here.
+   *
+   * The 09-05 口径 gave it two refusals nothing configurable could lift
+   * (unattended → deny, high-risk → deny in both run modes) and no `'allow'`
+   * tier at all. That is gone. 「不区分什么有人无人值守，只要用户授权，就算
+   * 自动，不授权就要申请」: an upload is authorized exactly the way a click
+   * is — the row's three states mean the same three things, the site grant
+   * and the conversation grant apply, high-risk is handled by the shared
+   * precedence below, and an unattended 「每次询问」 goes to the IM approval
+   * target instead of refusing itself.
+   *
+   * What did NOT move is the file: path canonicalization, the outside-the-
+   * workspace refusal, the symlink refusal and the size ceiling run on EVERY
+   * release path including the silent one (`registry.ts` resolves the file
+   * list whenever the gate is not a deny). That is a fact about the file, not
+   * a decision about the site, which is why it lives in
+   * `browserUploadFiles.ts` and not here.
+   */
   /**
    * Automatic-task scripting — the one row whose configured `'allow'` is not
    * taken at face value here.

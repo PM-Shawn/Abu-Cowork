@@ -733,7 +733,7 @@ describe('settingsStore labs flags', () => {
     it('adds the default operation-class policy for pre-v46 state that lacks it', () => {
       const migrated = getMigrate()({ theme: 'light' }, 45);
       expect(migrated.browserOperationPolicy).toEqual({
-        readOnly: 'allow', interactive: 'allow', scripting: 'ask',
+        readOnly: 'allow', interactive: 'allow', scripting: 'ask', upload: 'ask',
       });
     });
 
@@ -761,7 +761,7 @@ describe('settingsStore labs flags', () => {
         46,
       );
       expect(migrated.browserOperationPolicy).toEqual({
-        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask', upload: 'ask',
       });
       expect(migrated.allowUnattendedBrowser).toBe(true);
     });
@@ -777,7 +777,7 @@ describe('settingsStore labs flags', () => {
         46,
       );
       expect(migrated.browserOperationPolicy).toEqual({
-        readOnly: 'ask', interactive: 'deny', scripting: 'deny',
+        readOnly: 'ask', interactive: 'deny', scripting: 'deny', upload: 'ask',
       });
     });
 
@@ -787,18 +787,38 @@ describe('settingsStore labs flags', () => {
         { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
         45,
       );
-      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      // V50 adds the upload row and nothing else: the three the user set are
+      // untouched, and the new one arrives at its reviewed default.
+      expect(migrated.browserOperationPolicy).toEqual({ ...customPolicy, upload: 'ask' });
       expect(migrated.allowUnattendedBrowser).toBe(true);
     });
 
-    it('does NOT re-run for users already at v47', () => {
+    it('does NOT re-run the v47 collapse for users already at v47 — but does add the v50 upload row', () => {
       const customPolicy = { readOnly: 'allow', interactive: 'deny', scripting: 'deny' };
       const migrated = getMigrate()(
         { browserOperationPolicy: customPolicy, allowUnattendedBrowser: true },
         47,
       );
-      expect(migrated.browserOperationPolicy).toEqual(customPolicy);
+      expect(migrated.browserOperationPolicy).toEqual({ ...customPolicy, upload: 'ask' });
       expect(migrated.allowUnattendedBrowser).toBe(true);
+    });
+
+    /**
+     * T5 — the upgrade path a real install takes. Nobody gains a capability:
+     * the row's most permissive reachable value is 「每次询问」, and an
+     * automatic run is refused whatever it says.
+     */
+    it('adds the upload row as ask for a v49 store that predates it, leaving the others alone', () => {
+      const migrated = getMigrate()(
+        {
+          browserOperationPolicy: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
+          allowUnattendedBrowser: true,
+        },
+        49,
+      );
+      expect(migrated.browserOperationPolicy).toEqual({
+        readOnly: 'allow', interactive: 'allow', scripting: 'allow', upload: 'ask',
+      });
     });
 
     // I3 (runtime shape validation): a PRESENT-but-malformed policy — e.g.
@@ -814,7 +834,7 @@ describe('settingsStore labs flags', () => {
         },
       }, 45);
       expect(migrated.browserOperationPolicy).toEqual({
-        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask', upload: 'ask',
       });
     });
 

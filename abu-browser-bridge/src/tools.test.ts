@@ -69,6 +69,7 @@ describe('tool surface', () => {
       'batch',
       'click',
       'connection_status',
+      'download',
       'execute_js',
       'extract_table',
       'extract_text',
@@ -88,6 +89,7 @@ describe('tool surface', () => {
       'snapshot',
       'start_recording',
       'stop_recording',
+      'upload_file',
       'wait_for',
     ]);
   });
@@ -95,7 +97,13 @@ describe('tool surface', () => {
   it('keeps every state-changing tool named exactly as browserToolPolicy expects', () => {
     // Mirror of STATE_CHANGING_TOOLS in src/core/permissions/browserToolPolicy.ts.
     // If this fails, the permission gate has stopped covering an action.
-    const gated = ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate', 'handle_dialog'];
+    const gated = [
+      'click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate', 'handle_dialog',
+      // T5/T6 — the gate keys off these exact names too (`UPLOAD_TOOLS` and
+      // `INTERACTIVE_TOOLS` in browserToolPolicy.ts). A rename here without a
+      // rename there would drop an upload into the unclassified fallback.
+      'upload_file', 'download',
+    ];
     const names = new Set(collectTools().registered.map((t) => t.name));
     for (const name of gated) expect(names).toContain(name);
   });

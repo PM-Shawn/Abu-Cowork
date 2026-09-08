@@ -662,7 +662,10 @@ function closedShadowNote(count: number): string {
  * itself — the Electron channel's `execute_js` never reaches this file either.
  * `navigate` is exempt in both places: its target IS what was approved.
  */
-const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard']);
+// `upload_file` (T5) is pinned like every other page-driving action, and for a
+// sharper reason than most: it is the one whose drift sends a file off THIS
+// MACHINE to a site the user never approved.
+const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard', 'upload_file']);
 
 /**
  * Actions that copy the page's CONTENTS into the conversation, and must
@@ -865,6 +868,10 @@ function frameServicesAction(action: string, payload: Record<string, unknown>, s
  */
 const FRAME_SCOPED_ACTIONS = new Set([
   'snapshot', 'find', 'locate', 'click', 'fill', 'select', 'wait_for', 'extract_text', 'extract_table',
+  // T5 — an OA attachment field is usually inside the form's own iframe, and
+  // an upload that could only reach the main document would send the model
+  // straight back to scripting the page.
+  'upload_file',
 ]);
 
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
@@ -921,6 +928,7 @@ async function dispatchAction(
     case 'click': return clickElement(scope, payload.locator as ElementLocator);
     case 'fill': return fillElement(scope, payload.locator as ElementLocator, payload.value as string);
     case 'select': return selectOption(scope, payload.locator as ElementLocator, payload.value as string);
+    case 'upload_file': return uploadFiles(scope, payload.locator as ElementLocator, payload.files);
     case 'wait_for': return waitFor(scope, payload.condition as Record<string, unknown>, payload.timeout as number | undefined);
     case 'get_html': return getHtml(payload.selector as string | undefined);
     case 'extract_text': return extractText(scope, payload.selector as string | undefined);
@@ -2765,6 +2773,158 @@ function fillElement(scope: DomScope, locator: ElementLocator, value: string): {
     success: true,
     message: `Filled field with "${value.slice(0, 50)}"`,
     previousValue,
+  };
+}
+
+// =============================================================================
+// 4b. UPLOAD FILE (batch-三 T5)
+// =============================================================================
+
+/**
+ * One file, already opened by a privileged tier and carried here as base64.
+ *
+ * The content script never touches the filesystem — it cannot, on either
+ * channel — so "which file" was decided long before this code runs: Abu's
+ * approval gate resolved the path against the workspaces the user authorized,
+ * the user confirmed the name and the size, and only then did the bytes get
+ * read (by the Electron main process for the built-in browser, by the Node
+ * bridge for the Chrome extension). What arrives here is the RESULT of that
+ * decision, not an instruction to go and find a file.
+ */
+interface UploadPayloadFile {
+  name: string;
+  size: number;
+  base64: string;
+}
+
+/** The largest an upload may be, mirroring `MAX_UPLOAD_FILE_BYTES` in
+ *  `src/core/permissions/browserUploadFiles.ts`. A second, dumber check: the
+ *  gate is the one that refuses politely, this one refuses at all. */
+const UPLOAD_FILE_BYTES_MAX = 20 * 1024 * 1024;
+
+function isUploadPayloadFile(value: unknown): value is UploadPayloadFile {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const file = value as Record<string, unknown>;
+  return typeof file.name === 'string' && file.name !== ''
+    && typeof file.size === 'number' && Number.isFinite(file.size) && file.size >= 0
+    && typeof file.base64 === 'string';
+}
+
+function decodeBase64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Put files into a page's `<input type="file">` without an operating-system
+ * file picker ever being drawn.
+ *
+ * There is no other way to do it. `input.files` is read-only to assignment of
+ * anything but a `FileList`, and the only `FileList` a script can build is
+ * `DataTransfer`'s — so the file is reconstructed here as a `File` and handed
+ * over through a `DataTransfer`. That is also what makes it work identically
+ * on both channels: an isolated world (the built-in browser) and a content
+ * script (the extension) share the page's DOM, so the input the page sees is
+ * the input this writes to.
+ *
+ * The alternative — clicking the page's own 「选择文件」 button — is exactly
+ * what this exists to avoid: it raises a native modal that no automated run
+ * can answer and that Chromium keeps up until a human clicks it.
+ */
+function uploadFiles(
+  scope: DomScope,
+  locator: ElementLocator,
+  rawFiles: unknown,
+): {
+    success: boolean;
+    message: string;
+    attached: Array<{ name: string; size: number }>;
+  } {
+  const declared = Array.isArray(rawFiles) ? rawFiles : [];
+  if (declared.length === 0) {
+    throw new Error('Refused: this upload carried no file, so nothing was attached.');
+  }
+  const files: UploadPayloadFile[] = [];
+  for (const entry of declared) {
+    if (!isUploadPayloadFile(entry)) {
+      throw new Error('Refused: the file list for this upload was not readable.');
+    }
+    if (entry.size > UPLOAD_FILE_BYTES_MAX) {
+      throw new Error(`Refused: "${entry.name}" is larger than this browser will attach.`);
+    }
+    files.push(entry);
+  }
+
+  const el = findElementOrThrow(scope, locator);
+  const input = el as HTMLInputElement;
+  if (input.tagName !== 'INPUT' || input.type !== 'file') {
+    throw new Error(
+      `That element is a <${el.tagName.toLowerCase()}>, not a file input, so a file cannot be `
+      + 'attached to it. Point the locator at the <input type="file"> itself — pages usually '
+      + 'hide it behind a styled button, so { "css": "input[type=file]" } finds it even when it '
+      + 'is invisible. Do NOT click the visible button: that opens the operating system\'s own '
+      + 'file picker, which nothing here can fill in.',
+    );
+  }
+  if (input.disabled) {
+    throw new Error('That file input is disabled right now, so nothing was attached.');
+  }
+  if (files.length > 1 && !input.multiple) {
+    throw new Error(
+      `This input accepts one file and ${files.length} were offered. Nothing was attached — `
+      + 'send them one call at a time, or find the field that accepts several.',
+    );
+  }
+
+  const transfer = new DataTransfer();
+  for (const file of files) {
+    const bytes = decodeBase64ToBytes(file.base64);
+    if (bytes.byteLength !== file.size) {
+      throw new Error(
+        `Refused: "${file.name}" did not arrive intact (${file.size} bytes expected, `
+        + `${bytes.byteLength} received). Nothing was attached.`,
+      );
+    }
+    // `type` is left to the browser to infer from the name. Guessing a MIME
+    // type here would be guessing at the very field some upload validators
+    // check, and a wrong guess reads to the page as a wrong file.
+    transfer.items.add(new File([bytes as unknown as BlobPart], file.name));
+  }
+
+  highlightElement(input);
+  // The NAMES, never a path: the page can read this status element, and where
+  // a file lives on the user's disk is not the page's business.
+  showStatus(`Upload: ${files.map((f) => f.name).join(', ')}`, 'info');
+
+  input.files = transfer.files;
+  // The events a framework-backed form listens for. Without them React/Vue
+  // never learn the field changed and the submit button stays disabled — the
+  // failure that looks like "the upload silently did nothing".
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  // Read BACK from the input rather than reporting what we sent: the page may
+  // have an `accept` filter, a size check, or an onchange handler that clears
+  // it, and "I attached it" when the field is empty is the single most useless
+  // thing this tool could say.
+  const attached = Array.from(input.files ?? []).map((f) => ({ name: f.name, size: f.size }));
+  if (attached.length === 0) {
+    return {
+      success: false,
+      message: 'The file was handed to the input and the field is empty again — the page '
+        + 'rejected it (an accept filter, a size rule, or its own onchange). Read the page for '
+        + 'the message it showed, and do not retry the same file.',
+      attached,
+    };
+  }
+  return {
+    success: true,
+    message: `Attached ${attached.length} file(s) to the input: `
+      + `${attached.map((f) => f.name).join(', ')}. The field now holds exactly these. `
+      + 'Submit the form as a separate step.',
+    attached,
   };
 }
 

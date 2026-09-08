@@ -9,8 +9,8 @@
 // of a defect this repo has already shipped once (tool-result images that
 // displayed during execution and went blank afterwards, because the snapshot
 // dropped a field). The card must be complete with the signal buffer empty.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { initLanguage } from '@/i18n';
 import type { Message } from '@/types';
 import {
@@ -28,7 +28,17 @@ import {
   recordBrowserSignal,
   type BrowserSignalEvent,
 } from '@/core/observability/browserSignals';
+import { usePreviewStore } from '@/stores/previewStore';
 import BrowserRunReportCard from './BrowserRunReportCard';
+
+// The global setup mock has no `revealItemInDir`, and the card imports it
+// lazily inside a try/catch — so without this the reveal button would
+// "succeed" by swallowing a TypeError and pin nothing.
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  openUrl: vi.fn().mockResolvedValue(undefined),
+  openPath: vi.fn().mockResolvedValue(undefined),
+  revealItemInDir: vi.fn().mockResolvedValue(undefined),
+}));
 
 const T0 = 1_700_000_000_000;
 const CONV = 'conv-report';
@@ -363,6 +373,218 @@ describe('BrowserRunReportCard', () => {
       const items = [...container.querySelectorAll('li')];
       expect(items.length).toBeGreaterThan(0);
       for (const li of items) expect(li.textContent?.trim()).not.toBe('');
+    });
+  });
+
+  /**
+   * R-1. A scheduled export used to end with a green card and no way to reach
+   * the file it produced — the path existed only in the tool output buried in
+   * the transcript.
+   */
+  describe('the files it downloaded', () => {
+    const saved = (name: string, path: string, bytes: number, downloadId: string) => ({
+      kind: 'download_saved' as const, downloadId, name, path, bytes,
+    });
+
+    it('lists each file with its size', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10 });
+        record(saved('排班表.xlsx', '/data/abu/排班表.xlsx', 1_258_291, 'dl_1'));
+      });
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.getByText('下载到的文件')).toBeInTheDocument();
+      expect(screen.getByText('排班表.xlsx')).toBeInTheDocument();
+      expect(screen.getByText('1.2 MB')).toBeInTheDocument();
+    });
+
+    it('has no such section for a run that downloaded nothing', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 5 });
+      });
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.queryByText('下载到的文件')).not.toBeInTheDocument();
+    });
+
+    /**
+     * N3 (round-2 review). Both buttons on this row take a path and hand it
+     * to the OS. The aggregator used to clamp that path like page text —
+     * `\s+`→' ' — so a file the host had deliberately saved as `a  b.pdf`
+     * was opened as `a b.pdf`: no such file, and both buttons failed
+     * silently. Pinned at the two call sites, not at the snapshot, because
+     * the snapshot being right is only half of it.
+     */
+    it('hands both buttons the path exactly as it is on disk, double space and all', async () => {
+      const onDisk = '/data/abu/browser-downloads/conv/main/a  b.pdf';
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10 });
+        record(saved('a  b.pdf', onDisk, 2048, 'dl_ws'));
+      });
+      const openPreview = vi.fn();
+      const original = usePreviewStore.getState().openPreview;
+      usePreviewStore.setState({ openPreview });
+      initLanguage('zh-CN');
+
+      try {
+        render(<BrowserRunReportCard message={messageFor(report)} />);
+        // The NAME is display text and stays clamped — that is the point of
+        // the split: what the row shows is flattened, what the buttons act on
+        // is not.
+        fireEvent.click(screen.getByText('a b.pdf'));
+        expect(openPreview).toHaveBeenCalledWith(onDisk);
+
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        fireEvent.click(screen.getByLabelText('在文件夹中显示'));
+        await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith(onDisk));
+      } finally {
+        usePreviewStore.setState({ openPreview: original });
+      }
+    });
+
+    /**
+     * The other half of N3. A path too long to carry is dropped WHOLE, and
+     * the card still says a file exists — a run that produced something must
+     * never read like a run that produced nothing.
+     */
+    it('says a file was left out rather than showing a truncated path', () => {
+      const tooLong = `/data/abu/browser-downloads/${'x'.repeat(300)}.xlsx`;
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10 });
+        record(saved('big.xlsx', tooLong, 2048, 'dl_long'));
+      });
+      initLanguage('zh-CN');
+
+      expect(report.artifacts).toEqual([]);
+      expect(report.omitted.artifacts).toBe(1);
+
+      const { container } = render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.getByText('另有 1 个文件未列出')).toBeInTheDocument();
+      expect(container.textContent).not.toContain('xxx');
+    });
+
+    /**
+     * A card written before this field existed is read back without it. The
+     * defect shape this repo has already shipped once: a snapshot that
+     * dropped a field and a component that assumed it.
+     */
+    it('renders a snapshot from before artifacts existed without throwing', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 5 });
+      });
+      const legacy = { ...report, omitted: { sites: 0, problems: 0 } };
+      delete (legacy as { artifacts?: unknown }).artifacts;
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(legacy)} />);
+
+      expect(screen.getByText('浏览器任务报告')).toBeInTheDocument();
+      expect(screen.queryByText('下载到的文件')).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Acceptance F3 — the same card, in an ORDINARY conversation.
+   *
+   * A person who watched the run does not need an account of it; they need
+   * the file. So the chat form renders the artifact rows and nothing else —
+   * no outcome badge, no action count, no approval tally — while the two
+   * buttons on each row stay exactly the ones the unattended card has.
+   */
+  describe('the downloads-only form an ordinary conversation ends with', () => {
+    function downloadsSnapshot(overrides?: Partial<BrowserRunReportSnapshot>): BrowserRunReportSnapshot {
+      const full = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10, origin: 'https://oa.example.com' });
+        record({ kind: 'download_saved', downloadId: 'dl_1', name: '月度报表.csv', path: '/data/abu/月度报表.csv', bytes: 18 });
+      });
+      return {
+        ...full,
+        variant: 'downloads',
+        actions: { total: 0, failed: 0 },
+        scriptRuns: 0,
+        sites: [],
+        approvals: { approved: 0, declined: 0, timedOut: 0, unreachable: 0 },
+        ...overrides,
+      };
+    }
+
+    it('shows the file and its size', () => {
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.getByText('下载到的文件')).toBeInTheDocument();
+      expect(screen.getByText('月度报表.csv')).toBeInTheDocument();
+      expect(screen.getByText('18 B')).toBeInTheDocument();
+    });
+
+    it('does not turn into a run report: no title, no badge, no action count', () => {
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.queryByText('浏览器任务报告')).toBeNull();
+      expect(screen.queryByText('已完成')).toBeNull();
+      expect(screen.queryByText('访问过的网站')).toBeNull();
+    });
+
+    it('keeps both buttons on the row', async () => {
+      const openPreview = vi.fn();
+      const original = usePreviewStore.getState().openPreview;
+      usePreviewStore.setState({ openPreview });
+      initLanguage('zh-CN');
+
+      try {
+        render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+        fireEvent.click(screen.getByText('月度报表.csv'));
+        expect(openPreview).toHaveBeenCalledWith('/data/abu/月度报表.csv');
+
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        fireEvent.click(screen.getByLabelText('在文件夹中显示'));
+        await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith('/data/abu/月度报表.csv'));
+      } finally {
+        usePreviewStore.setState({ openPreview: original });
+      }
+    });
+
+    /**
+     * Defence in depth against a snapshot that should never have been built:
+     * an empty chat card would be a card that says a run downloaded nothing.
+     */
+    it('renders nothing at all when there is no file to hand back', () => {
+      const { container } = render(
+        <BrowserRunReportCard
+          message={messageFor(downloadsSnapshot({ artifacts: [], omitted: { sites: 0, problems: 0, artifacts: 0 } }))}
+        />,
+      );
+
+      expect(container.firstChild).toBeNull();
+    });
+
+    it('still says a file exists when its path was too long to carry', () => {
+      initLanguage('zh-CN');
+
+      render(
+        <BrowserRunReportCard
+          message={messageFor(downloadsSnapshot({ artifacts: [], omitted: { sites: 0, problems: 0, artifacts: 1 } }))}
+        />,
+      );
+
+      expect(screen.getByText('另有 1 个文件未列出')).toBeInTheDocument();
+    });
+
+    it('renders in the other locale too', () => {
+      initLanguage('en-US');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.getByText('Files it downloaded')).toBeInTheDocument();
+      expect(screen.queryByText('Browser task report')).toBeNull();
     });
   });
 

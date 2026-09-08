@@ -29,8 +29,20 @@ export interface ConfirmationInfo {
    * the same decision, and describing all three as "命令" leaves the user
    * unable to judge what they are agreeing to. Defaults to 'command' so every
    * existing caller keeps its current wording.
+   *
+   * `'browser-upload'` is a browser action in every other respect — it takes
+   * the same origin fields, offers the same site grant, blocks the same site
+   * — but it is the one whose consequence leaves the machine, so it gets its
+   * own question and its own verb rather than 「浏览器操作: <tool name>」 over
+   * 「确认执行」 (acceptance F5).
    */
-  kind?: 'command' | 'browser' | 'self-extension';
+  kind?: 'command' | 'browser' | 'browser-upload' | 'self-extension';
+  /**
+   * Upload confirmations only: how many files this call would send. The
+   * dialog puts it in the question ("上传 2 个文件到 …"), which is the part a
+   * person reads before the list.
+   */
+  browserUploadFileCount?: number;
   /**
    * Browser confirmations only: the exact origin the action targets, when it
    * could be resolved. Lets the dialog offer "always allow this site".

@@ -509,9 +509,14 @@ function BrowserAutomationOverviewCard() {
 }
 
 /** The three rows of the preview grid, in the order the policy card lists them. */
-const PREVIEW_CLASSES: ReadonlyArray<{ opClass: BrowserOperationClass; labelKey: 'browserOpClassReadOnly' | 'browserOpClassInteractive' | 'browserOpClassScripting' }> = [
+const PREVIEW_CLASSES: ReadonlyArray<{ opClass: BrowserOperationClass; labelKey: 'browserOpClassReadOnly' | 'browserOpClassInteractive' | 'browserOpClassUpload' | 'browserOpClassScripting' }> = [
   { opClass: 'read-only', labelKey: 'browserOpClassReadOnly' },
   { opClass: 'interactive', labelKey: 'browserOpClassInteractive' },
+  // T5. The preview's whole promise is that it is the gate, so the row a user
+  // most needs to see refused («为什么自动任务传不上去») has to be in it — a
+  // preview that silently omits a class teaches a model of the settings that
+  // is wrong by omission rather than by disagreement.
+  { opClass: 'upload', labelKey: 'browserOpClassUpload' },
   { opClass: 'scripting', labelKey: 'browserOpClassScripting' },
 ];
 
@@ -772,6 +777,9 @@ export function BrowserPermissionCards({
           ? t.settings.browserOpStateAllowDesc
           : t.settings.browserOpStateAllowDescSiteScoped;
       case 'ask':
+        // One sentence for every row, uploads included: since the 2026-09-07
+        // ruling an unattended 「每次询问」 upload really does go to the IM
+        // approval target, so the shared sentence is true here too.
         return t.settings.browserOpStateAskDesc;
       case 'deny':
         return t.settings.browserOpStateDenyDesc;
@@ -799,7 +807,7 @@ export function BrowserPermissionCards({
    *  and the split-out scripting card write to the store through the same
    *  call. */
   const policyRow = (
-    key: 'readOnly' | 'interactive' | 'scripting',
+    key: 'readOnly' | 'interactive' | 'scripting' | 'upload',
     opClass: BrowserOperationClass,
     rowLabel: string,
   ) => (
@@ -817,12 +825,18 @@ export function BrowserPermissionCards({
   );
 
   const matrixRows: Array<{
-    key: 'readOnly' | 'interactive';
+    key: 'readOnly' | 'interactive' | 'upload';
     opClass: BrowserOperationClass;
     label: string;
   }> = [
     { key: 'readOnly', opClass: 'read-only', label: t.settings.browserOpClassReadOnly },
     { key: 'interactive', opClass: 'interactive', label: t.settings.browserOpClassInteractive },
+    // T5 — ONE MORE ROW, not one more card. §5② asks for upload to be visible
+    // on its own line rather than folded into 「点击和填写」; it does not ask
+    // for the weight scripting gets, and giving it a card with a warning
+    // paragraph would make the ordinary case (attach a file to an OA form)
+    // read as an advanced risk. Same list, same control, same width.
+    { key: 'upload', opClass: 'upload', label: t.settings.browserOpClassUpload },
   ];
 
   const allowedCount = Object.values(sitePermissions).filter((v) => v === 'allowed').length;

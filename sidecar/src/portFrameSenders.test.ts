@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPort } from './portFrameSenders';
 import type { PortFrame } from './portFrameCoalescer';
-import type { ExecutionStep, DetailBlock } from '@/types/execution';
+import type { ExecutionStep, ExecutionStepSnapshot, DetailBlock } from '@/types/execution';
 import type { ToolCall, ToolResultContent } from '@/types';
 import {
   materializeSidecarMediaRefsForShell,
@@ -461,6 +461,53 @@ describe('createFrameChatDelta', () => {
     expect(safeToolCall.resultContent).toBeUndefined();
   });
 
+  it('collapses an inline base64 data URL inside a media-free frame while keeping paths', () => {
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((f) => frames.push(f));
+    const blob = 'data:image/png;base64,' + 'iVBORw0KGgo='.repeat(64);
+    const toolCalls: ToolCall[] = [{ id: 'tc-1', name: 'fetch_url', input: { url: 'https://a.test' }, result: `saved /Users/me/a.md <img src="${blob}">`, isExecuting: false }];
+    delta.setMessageToolCalls('conv-1', 'm1', toolCalls);
+    const wire = JSON.stringify(frames);
+    expect(wire).toContain('/Users/me/a.md');
+    expect(wire).toContain('[REDACTED:base64]');
+    expect(wire).not.toContain('iVBORw0KGgo=iVBORw0KGgo=');
+  });
+
+  it('sends media-free tool-call and execution-step frames verbatim (absolute paths and `/word` text intact)', () => {
+    // Regression (2026-09-04): the media-free branch used the fail-closed
+    // redactor, so persisted transcripts carried `[REDACTED:path]` in tool
+    // inputs, results and step labels — file cards for existing files showed
+    // "文件已不可访问", and prose like 示例/占位 was rewritten too.
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((f) => frames.push(f));
+    const spacedPath = '/Users/shawn/Abu/[团队] 拆解 · 随便写个周报/团队周报_最终版.md';
+    const prose = '以下数值均为示例/占位口径，2 场景/周';
+    const toolCalls: ToolCall[] = [{
+      id: 'tc-1',
+      name: 'write_file',
+      input: { path: spacedPath, content: prose },
+      result: `Successfully wrote 1480 characters to ${spacedPath}`,
+      isExecuting: false,
+    }];
+    delta.setMessageToolCalls('conv-1', 'm1', toolCalls);
+    const snapshot: ExecutionStepSnapshot[] = [{
+      id: 'step-1',
+      toolCallId: 'tc-1',
+      type: 'file-write',
+      label: `写入 ${spacedPath}`,
+      status: 'completed',
+      toolName: 'write_file',
+      detailBlocks: [{ id: 'd1', title: '结果', type: 'result', content: prose }],
+    }];
+    delta.setExecutionStepsSnapshot('conv-1', 'loop-1', snapshot);
+
+    const wire = JSON.stringify(frames);
+    expect(frames).toHaveLength(2);
+    expect(wire).not.toContain('[REDACTED:path]');
+    expect(frames[0].a[2]).toEqual(toolCalls);
+    expect(frames[1].a[2]).toEqual(snapshot);
+  });
+
   it('every method pushes the correct {p, m, a} frame', () => {
     const frames: PortFrame[] = [];
     const delta = createFrameChatDelta((f) => frames.push(f));
@@ -593,6 +640,17 @@ describe('createFrameExecutionPort', () => {
     port.addStep('loop-1', makeStep({ id: 'step-1' }));
     expect(port.getExecutionByLoopId('loop-1')?.steps).toHaveLength(1);
     expect(frames.at(-1)).toEqual({ p: 'exec', m: 'addStep', a: ['loop-1', makeStep({ id: 'step-1' })] });
+  });
+
+  it('addStep frames keep absolute paths verbatim when they carry no media', () => {
+    const frames: PortFrame[] = [];
+    const port = createFrameExecutionPort((f) => frames.push(f));
+    port.createExecution('conv-1', 'loop-1');
+    const spacedPath = '/Users/shawn/Abu/[团队] 拆解 · 随便写个周报/周报大纲.md';
+    port.addStep('loop-1', makeStep({ id: 'step-1', label: `读取 ${spacedPath}`, toolInput: { path: spacedPath } }));
+    const wire = JSON.stringify(frames.at(-1));
+    expect(wire).toContain(spacedPath);
+    expect(wire).not.toContain('[REDACTED:path]');
   });
 
   it('setStepResult marks the local step completed with the result, and pushes a frame', () => {

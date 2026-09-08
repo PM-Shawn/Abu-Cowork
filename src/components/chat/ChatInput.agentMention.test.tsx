@@ -96,7 +96,7 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(option.tagName).toBe('BUTTON');
   });
 
-  it('keeps the active agent option visible while Arrow navigation wraps a long list', () => {
+  it('keeps the active agent option visible while Arrow navigation moves through a long list (no wrap)', () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
       configurable: true,
@@ -113,11 +113,19 @@ describe('ChatInput inline @mention boundaries', () => {
     typeAtCaret(textarea, '@');
     scrollIntoView.mockClear();
 
+    // ArrowUp at the top clamps (wrapping to the last row used to scroll the
+    // leading rows — teams — out of sight; user feedback 2026-09-01).
     fireEvent.keyDown(textarea, { key: 'ArrowUp' });
+    expect(textarea).toHaveAttribute('aria-activedescendant', screen.getByRole('option', { name: /agent-0/ }).id);
 
-    const active = screen.getByRole('option', { name: /agent-11/ });
-    expect(textarea).toHaveAttribute('aria-activedescendant', active.id);
+    for (let i = 0; i < 11; i += 1) fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+    const last = screen.getByRole('option', { name: /agent-11/ });
+    expect(textarea).toHaveAttribute('aria-activedescendant', last.id);
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+
+    // ...and ArrowDown at the bottom clamps too.
+    fireEvent.keyDown(textarea, { key: 'ArrowDown' });
+    expect(textarea).toHaveAttribute('aria-activedescendant', last.id);
   });
 
   it.each([

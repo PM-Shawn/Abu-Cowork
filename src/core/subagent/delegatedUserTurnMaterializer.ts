@@ -2,7 +2,7 @@ import type { Conversation, DocumentContent, ImageContent, Message, MessageConte
 import { base64ToUint8Array, uint8ArrayToBase64 } from '../../utils/base64';
 import { getConversationReader } from '../agent/ports/conversationReader';
 import { readRecoverableImageBytes } from '../llm/imageRehydration';
-import { redactSensitiveMediaText } from '../security/redaction';
+import { redactSensitiveMediaText, redactInlineMediaPayloads } from '../security/redaction';
 import {
   persistDelegatedMedia,
   readDelegatedMedia,
@@ -396,6 +396,24 @@ function isSafeOutputRefRelPath(value: unknown): value is string {
 
 export function redactAbsoluteMediaPaths(value: string): string {
   return redactSensitiveMediaText(value);
+}
+
+/**
+ * Media-free wire frames travel verbatim (paths are the shell's business), but
+ * an inline `data:…;base64,…` blob inside an ordinary string is still media:
+ * collapse it so a fetched page or a base64 dump never becomes a multi-MB JSON
+ * frame in the transcript.
+ */
+export function collapseInlineMediaForWire<T>(value: T): T {
+  const visit = (entry: unknown): unknown => {
+    if (typeof entry === 'string') return redactInlineMediaPayloads(entry);
+    if (Array.isArray(entry)) return entry.map((child) => visit(child));
+    if (!entry || typeof entry !== 'object') return entry;
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(entry as Record<string, unknown>)) output[key] = visit(child);
+    return output;
+  };
+  return visit(value) as T;
 }
 
 async function prepareMessageContentForSidecarWire(

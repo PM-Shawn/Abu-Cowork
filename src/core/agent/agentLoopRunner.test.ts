@@ -329,6 +329,7 @@ const onPlanModeChangeMock = vi.fn((cb: (conversationId: string, mode: string | 
 });
 const getPlanModeMock = vi.fn().mockReturnValue('off');
 vi.mock('./planMode', () => ({
+  setPlanMode: vi.fn(),
   clearPlanMode: (...a: unknown[]) => clearPlanModeMock(...a),
   onPlanModeChange: (...a: [(conversationId: string, mode: string | null) => void]) => onPlanModeChangeMock(...a),
   getPlanMode: (...a: unknown[]) => getPlanModeMock(...a),
@@ -1493,6 +1494,23 @@ describe('agentLoopRunner', () => {
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
         interactionMode: 'foreground',
       }));
+    });
+
+    it('tool.invoke retains the startup team snapshot despite later store/wire omissions (F4)', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-team', { ...makeSession(),
+        teamSnapshot: { teamRoster: ['A'], teamRequirePlanApproval: true },
+      });
+      // The backing conversation no longer carries a resolvable team pin.
+      // That must not turn this already-running session into ordinary Abu.
+      chatState.conversations['conv-1'] = {};
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-team', toolName: 'read_file', input: {},
+        context: { teamRoster: undefined, teamRequirePlanApproval: false, agentName: 'forged-member' } });
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toMatchObject({
+        teamRoster: ['A'], teamRequirePlanApproval: true, agentName: undefined,
+      });
     });
 
     it('tool.invoke overwrites a sidecar-forged ceiling with the shell session ceiling', async () => {
@@ -3104,6 +3122,28 @@ describe('agentLoopRunner', () => {
       getSettingsSnapshotMock.mockReturnValue(dispatchSettingsSnapshot());
     });
 
+    it('binds the selected retry to its run and retires approvals and bounds on completion (F1/F7)', async () => {
+      getSidecarStatusMock.mockReturnValue('stopped');
+      const { runAgentLoopDispatched } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      const { admitDispatches, getRunBounds } = await import('../team/teamRunBounds');
+      const approvals = useTeamConfirmationStore.getState();
+      approvals.clearConversation('conv-1');
+      const original = { conversationId: 'conv-1', kind: 'command' as const, detail: 'test',
+        identity: { toolName: 'run_command', parametersDigest: 'p', cwd: '/a', loopId: 'original', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
+      const pending = approvals.add(original)!;
+      const id = approvals.selectRetry(pending.id, 'run');
+      const retried = { ...original, identity: { ...original.identity, loopId: 'selected-retry', callId: 'new-call' } };
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        expect(approvals.consumeApproval(retried)).toBe(true);
+        admitDispatches('selected-retry', ['A']);
+        return { reason: 'completed' };
+      });
+      await runAgentLoopDispatched('conv-1', 'retry', { loopId: 'selected-retry', teamConfirmationRetryId: id });
+      expect(approvals.consumeApproval(retried)).toBe(false);
+      expect(getRunBounds('selected-retry').dispatches).toBe(0);
+    });
+
     it('runs in-process (runAgentLoop) when the sidecar is not running', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       getSidecarStatusMock.mockReturnValue('stopped');
@@ -3112,6 +3152,7 @@ describe('agentLoopRunner', () => {
 
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
       expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', {
+        loopId: expect.any(String),
         onMessageTaken: expect.any(Function),
         runtimeEvent: expect.any(Function),
         skillCommandApprovalFactory: expect.any(Function),

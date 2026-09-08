@@ -31,6 +31,7 @@ import type { TokenUsage, ToolResult, ToolResultContent } from '@/types';
 import { redactInlineMediaPayloads } from '@/core/security/redaction';
 import {
   prepareSidecarValueForWire,
+  collapseInlineMediaForWire,
   prepareToolResultForSidecarWire,
   redactAbsoluteMediaPaths,
   redactSidecarValueForWireFailure,
@@ -157,7 +158,13 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     const wireArgs = cloneWireValue(a);
     onLocalApply?.(m, a);
     if (!sidecarValueNeedsMediaEncoding(wireArgs)) {
-      pushWireFrame({ p: 'chat', m, a: redactSidecarValueForWireFailure(wireArgs) });
+      // No media to encode: the frame goes out verbatim. Path redaction is a
+      // media-transport measure (see prepareSidecarValueForWire) and a
+      // fail-closed fallback — applying it here rewrote every absolute path
+      // and every `/word` in tool inputs, results and execution-step labels
+      // to `[REDACTED:path]` in the persisted transcript (file cards then
+      // showed "文件已不可访问" for files that exist).
+      pushWireFrame({ p: 'chat', m, a: collapseInlineMediaForWire(wireArgs) });
       return;
     }
     enqueueTransport(async () => {
@@ -374,7 +381,8 @@ export function createFrameExecutionPort(
   function pushExecFrameForConversation(conversationId: string | undefined, method: string, args: unknown[]): void {
     const wireArgs = cloneWireValue(args);
     if (!sidecarValueNeedsMediaEncoding(wireArgs)) {
-      const frame = { p: 'exec' as const, m: method, a: redactSidecarValueForWireFailure(wireArgs) };
+      // Verbatim for media-free frames — same reasoning as sendPrepared.
+      const frame = { p: 'exec' as const, m: method, a: collapseInlineMediaForWire(wireArgs) };
       pushExecTask(() => push(frame));
       return;
     }

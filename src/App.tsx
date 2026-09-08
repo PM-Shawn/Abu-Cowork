@@ -14,6 +14,7 @@ import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
+import TeamView from '@/components/team/TeamView';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
@@ -67,6 +68,8 @@ import { installNoticeFocusSync } from '@/core/notice/focusSync';
 import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
+import { startTeamStallWatchdog } from '@/core/team/stallWatchdog';
+import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
@@ -588,6 +591,7 @@ function App() {
       schedulerEngine.start();
       triggerEngine.start();
       imChannelRouter.start();
+      startTeamStallWatchdog();
       reconcileIMSessions();
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files),
       // then run the one-shot secret sweep over existing memories — global dir,
@@ -654,6 +658,9 @@ function App() {
             isRecoveryNotice: true,
           });
           await clearCheckpoint(cp.conversationId);
+          // A team run continues on its own from where it stopped (block R);
+          // an ordinary conversation still waits for the user.
+          void resumeTeamRunAfterRestart(cp.conversationId, cp.turnCount);
           // Do NOT auto-navigate — app always starts on welcome screen.
           // The recovery message is visible when user clicks the conversation in sidebar.
         }
@@ -912,6 +919,7 @@ function App() {
               >
                 {viewMode === 'automation' && <AutomationView />}
                 {viewMode === 'extensions' && <ExtensionsView />}
+                {viewMode === 'team' && <TeamView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}
                 {(viewMode === 'chat' || !viewMode) && (

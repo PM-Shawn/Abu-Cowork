@@ -124,6 +124,19 @@ export async function clearCheckpointForLoop(convId: string, loopId: string): Pr
 /** Checkpoints older than this are auto-cleaned (1 hour) */
 const MAX_CHECKPOINT_AGE_MS = 60 * 60 * 1000;
 
+function isRecoverableCheckpoint(value: unknown, directoryId: string, now: number): value is Checkpoint {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const cp = value as Record<string, unknown>;
+  return cp.conversationId === directoryId
+    && typeof cp.loopId === 'string' && cp.loopId.trim().length > 0
+    && typeof cp.lastMessageId === 'string' && cp.lastMessageId.trim().length > 0
+    && typeof cp.turnCount === 'number' && Number.isSafeInteger(cp.turnCount) && cp.turnCount >= 0
+    && (cp.status === 'llm_calling' || cp.status === 'tool_executing')
+    && typeof cp.timestamp === 'number' && Number.isSafeInteger(cp.timestamp)
+    && cp.timestamp >= 0 && cp.timestamp <= now && now - cp.timestamp <= MAX_CHECKPOINT_AGE_MS
+    && ['currentTool', 'model', 'workspacePath'].every((field) => cp[field] === undefined || typeof cp[field] === 'string');
+}
+
 /**
  * Scan for orphaned checkpoints left by crashed sessions.
  * Call once on app startup.
@@ -148,10 +161,11 @@ export async function findOrphanedCheckpoints(): Promise<Checkpoint[]> {
 
       try {
         const raw = await readTextFile(cpPath);
-        const cp = JSON.parse(raw) as Checkpoint;
+        const cp: unknown = JSON.parse(raw);
 
-        if (Date.now() - cp.timestamp > MAX_CHECKPOINT_AGE_MS) {
-          // Too old — clean up silently
+        if (!isRecoverableCheckpoint(cp, entry.name, Date.now())) {
+          // Invalid, mismatched, future or stale: remove the SCANNED file,
+          // never a path derived from untrusted checkpoint contents.
           await remove(cpPath).catch(() => {});
         } else {
           orphans.push(cp);

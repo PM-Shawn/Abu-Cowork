@@ -11,6 +11,7 @@ import {
   buildAppCsp,
   buildAppSrcdoc,
   buildAppStyleVariables,
+  buildAppThemeContext,
   buildHostContext,
   isAppDomainAllowed,
   splitMcpToolName,
@@ -343,6 +344,21 @@ describe('appHost', () => {
       expect(dark['--color-text-primary']).toBe(value('--w-fg', true));
       expect(light['--color-border-primary']).toBe(value('--w-border', false));
       expect(light['--color-ring-primary']).toBe(value('--w-primary', false));
+    });
+
+    it('pairs each theme with its own palette, and never one without the other', () => {
+      // `buildAppThemeContext` exists so a `host-context-changed` patch cannot
+      // announce a theme without the colours it implies — the app is not
+      // re-handshaken on a theme switch, so a bare theme name would leave it
+      // painting the previous palette.
+      const dark = buildAppThemeContext(true);
+      const light = buildAppThemeContext(false);
+      expect(dark.theme).toBe('dark');
+      expect(light.theme).toBe('light');
+      expect(dark.styles?.variables?.['--color-text-primary'])
+        .toBe(buildAppStyleVariables(true)['--color-text-primary']);
+      expect(light.styles?.variables?.['--color-text-primary'])
+        .toBe(buildAppStyleVariables(false)['--color-text-primary']);
     });
 
     it('ships typography and radius scales that do not depend on the theme', () => {

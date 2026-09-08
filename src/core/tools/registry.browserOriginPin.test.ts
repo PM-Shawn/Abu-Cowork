@@ -275,14 +275,20 @@ describe('U5 execution-time controls through executeAnyTool', () => {
 
     /**
      * Round-3 R3-D, through the real entry point. The unit case proves the
-     * filter obeys a mark; this proves the SHELL hands it the marks at all —
+     * filter obeys a scope; this proves the SHELL hands it the scopes at all —
      * the wiring is the half that was missing, and a unit test on a pure
      * function cannot see it (TESTING §13.3).
+     *
+     * A download listing is a question about the browser, not about any one
+     * page, so there is no embedding page for a scoped grant to be inside of:
+     * `getSiteVerdict` answers `'default'` and the unattended tier (which
+     * narrows to `'allowed'`) drops the entry. Unchanged by the 09-08 rescope
+     * — the reason it holds just stopped mentioning who is watching.
      */
     it('an unattended run does not see downloads from a VIA-EMBED granted site', async () => {
       useSettingsStore.setState({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
-        browserSiteGrantViaEmbed: { [ALLOWED_SITE]: true },
+        browserSiteGrantViaEmbed: { [ALLOWED_SITE]: { 'https://oa.example.com': true } },
       });
       serveDownloads([{ url: `${ALLOWED_SITE}/report.pdf`, filename: 'report.pdf' }]);
 
@@ -296,7 +302,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
     it('the same run WITH a human present still sees it', async () => {
       useSettingsStore.setState({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
-        browserSiteGrantViaEmbed: { [ALLOWED_SITE]: true },
+        browserSiteGrantViaEmbed: { [ALLOWED_SITE]: { 'https://oa.example.com': true } },
       });
       serveDownloads([{ url: `${ALLOWED_SITE}/report.pdf`, filename: 'report.pdf' }]);
 

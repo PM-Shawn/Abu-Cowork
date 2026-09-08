@@ -1946,18 +1946,21 @@ describe('CapabilitiesSection', () => {
 
     /**
      * Round-3 R3-C. Three screens answer "where may a scheduled task go?", and
-     * this one is the newest; when via-embed marks were introduced it was the
+     * this one is the newest; when via-embed grants were introduced it was the
      * one that did not get told about them. A user whose only 「始终允许」 came
      * from a merged embedded-region prompt therefore saw no warning here at
      * all, while the gate refused every one of that task's actions with
-     * `site-not-allowed` — the interface and the gate saying opposite things,
-     * which is the exact failure the mark was added to prevent.
+     * `site-not-allowed` — the interface and the gate saying opposite things.
+     *
+     * Still true under the scoped rule, for a reason that no longer mentions
+     * run modes: this card counts sites a run may GO to, and a run goes to
+     * them as a top-level page — the one role a scoped grant never covers.
      */
     it('a via-embed grant is not a site an automatic task can reach', async () => {
       useSettingsStore.setState({
         allowUnattendedBrowser: true,
         browserSitePermissions: testSiteVerdicts({ 'https://example.com': 'allowed' }),
-        browserSiteGrantViaEmbed: { 'https://example.com': true },
+        browserSiteGrantViaEmbed: { 'https://example.com': { 'https://oa.example.com': true } },
       });
       withAutomations({ tasks: [{ id: 't1', name: 'Nightly report' }] });
       const user = userEvent.setup();

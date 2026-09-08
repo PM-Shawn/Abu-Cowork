@@ -4,7 +4,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import type { McpUiHostContext } from '@modelcontextprotocol/ext-apps/app-bridge';
 import { initLanguage } from '@/i18n';
+import { buildAppStyleVariables } from '@/core/mcp/appHost';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useChatStore } from '@/stores/chatStore';
 import { mergeComposerAppend } from './ChatInput';
@@ -25,15 +27,25 @@ function appResource(over: Partial<McpAppResource> = {}): McpAppResource {
 
 function makeSession() {
   const calls: string[] = [];
-  const session: AppBridgeSession & { calls: string[] } = {
+  // Every `host-context-changed` patch, kept whole: `calls` only records THAT
+  // one was sent, and the theme/palette pairing is a property of its contents.
+  const hostContextPatches: Partial<McpUiHostContext>[] = [];
+  const session: AppBridgeSession & {
+    calls: string[];
+    hostContextPatches: Partial<McpUiHostContext>[];
+  } = {
     calls,
+    hostContextPatches,
     bridge: {} as AppBridgeSession['bridge'],
     isInitialized: () => true,
     whenInitialized: async () => true,
     sendToolInput: async (args) => { calls.push(`input:${JSON.stringify(args)}`); },
     sendToolResult: async (r) => { calls.push(`result:${JSON.stringify(r)}`); },
     sendToolCancelled: async () => { calls.push('cancelled'); },
-    sendHostContextChange: async () => { calls.push('host-context'); },
+    sendHostContextChange: async (patch) => {
+      calls.push('host-context');
+      hostContextPatches.push(patch);
+    },
     teardown: async () => { calls.push('teardown'); },
   };
   return session;
@@ -507,6 +519,92 @@ describe('McpAppBlock', () => {
       const last = sink.sessions![sink.sessions!.length - 1];
       expect(last.calls.some((c) => c.startsWith('input:'))).toBe(true);
       expect(last.calls.some((c) => c.startsWith('result:'))).toBe(true);
+    });
+  });
+
+  describe('theme changes', () => {
+    /**
+     * Flip Abu's own theme the way `App.tsx` does — the `dark` class on
+     * `<html>` — and let the block's MutationObserver deliver.
+     */
+    async function flipTheme(dark: boolean) {
+      await act(async () => {
+        document.documentElement.classList.toggle('dark', dark);
+        // happy-dom delivers mutation records on a microtask.
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    }
+
+    /** Read the host palette off the real theme, not a copied hex. */
+    const textPrimary = (dark: boolean) =>
+      buildAppStyleVariables(dark)['--color-text-primary'];
+
+    function renderThemeBlock(sink: SessionSink) {
+      renderBlock(
+        { deps: { isDark: () => document.documentElement.classList.contains('dark') } },
+        sink,
+      );
+    }
+
+    /** Only the patches that announce a theme — the size/display-mode ones
+     *  deliberately carry no palette. */
+    function themePatches(sink: SessionSink) {
+      return sink.session!.hostContextPatches.filter((p) => p.theme !== undefined);
+    }
+
+    afterEach(() => {
+      document.documentElement.classList.remove('dark');
+    });
+
+    /**
+     * 🔴 REGRESSION: the theme patch used to be `{ theme }` alone. The iframe
+     * is not re-navigated on a theme switch, so that patch was the app's only
+     * chance to learn the new colours — an app that adopted
+     * `hostContext.styles.variables` at handshake time kept painting the OLD
+     * theme's palette (dark text on Abu's dark surface). The demo fixture only
+     * survived it by dropping the stale palette and falling back to its own
+     * `light-dark()` colours; a spec-conformant app that trusts the host does
+     * not have that escape hatch.
+     */
+    it('sends the DARK palette along with the dark theme', async () => {
+      const sink: SessionSink = {};
+      renderThemeBlock(sink);
+      await settle();
+
+      await flipTheme(true);
+
+      const patch = themePatches(sink).at(-1);
+      expect(patch?.theme).toBe('dark');
+      expect(patch?.styles?.variables?.['--color-text-primary']).toBe(textPrimary(true));
+      expect(patch?.styles?.variables?.['--color-background-primary'])
+        .toBe(buildAppStyleVariables(true)['--color-background-primary']);
+    });
+
+    it('sends the LIGHT palette on the way back', async () => {
+      const sink: SessionSink = {};
+      renderThemeBlock(sink);
+      await settle();
+
+      await flipTheme(true);
+      await flipTheme(false);
+
+      const patch = themePatches(sink).at(-1);
+      expect(patch?.theme).toBe('light');
+      expect(patch?.styles?.variables?.['--color-text-primary']).toBe(textPrimary(false));
+      // The two directions must actually differ — a palette that never moved
+      // would satisfy both assertions above on its own.
+      expect(textPrimary(true)).not.toBe(textPrimary(false));
+    });
+
+    it('leaves the palette out of a container-resize patch', async () => {
+      const sink: SessionSink = {};
+      renderThemeBlock(sink);
+      await settle();
+      // Whatever the block sent for size/display-mode carries no colours: only
+      // a theme change invalidates the palette.
+      const sizeOnly = sink.session!.hostContextPatches.filter((p) => p.theme === undefined);
+      sizeOnly.forEach((patch) => expect(patch.styles).toBeUndefined());
     });
   });
 

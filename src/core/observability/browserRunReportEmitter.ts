@@ -13,6 +13,7 @@ import { generateId } from '../../lib/utils';
 import { createLogger } from '../logging/logger';
 import { useChatStore } from '../../stores/chatStore';
 import {
+  buildBrowserDownloadsReport,
   buildBrowserRunReport,
   createBrowserRunReportMessage,
   type BrowserRunReportOutcome,
@@ -102,6 +103,50 @@ export function appendBrowserRunReportMessage(options: {
     });
     return null;
   }
+}
+
+/**
+ * Hand back the files an ORDINARY conversation's run downloaded, as the card's
+ * downloads-only form (acceptance F3).
+ *
+ * The full report belongs to runs nobody watched. A person who typed 「导出月度
+ * 报表」 in the chat window watched the whole thing — what they are missing is
+ * not an account of the run, it is the file: somewhere to click that opens it
+ * and somewhere to click that shows it in Finder. Until this existed the
+ * downloaded file had no exit from an ordinary conversation at all, and the
+ * model had to go and `read_file` it back to produce anything clickable.
+ *
+ * Appends nothing when the run downloaded nothing, which is almost every run.
+ *
+ * Never throws, for the same reason nothing else in this file does.
+ */
+export function emitBrowserDownloadsCard(options: {
+  conversationId: string;
+  /** `getBrowserSignalCursor()` captured immediately BEFORE the run started. */
+  sinceSeq: number;
+  now?: number;
+  id?: string;
+}): BrowserRunReportSnapshot | null {
+  let report: BrowserRunReportSnapshot | null;
+  try {
+    report = buildBrowserDownloadsReport({
+      signals: getRecentBrowserSignals(),
+      conversationId: options.conversationId,
+      sinceSeq: options.sinceSeq,
+    });
+  } catch (error) {
+    logger.warn('failed to build the downloads card', {
+      conversationId: options.conversationId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+  return appendBrowserRunReportMessage({
+    conversationId: options.conversationId,
+    report,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+    ...(options.id !== undefined ? { id: options.id } : {}),
+  });
 }
 
 /**

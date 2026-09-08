@@ -34,6 +34,31 @@ test('normal files stay readable and stat returns the Tauri FileInfo shape', (t)
   assert.equal(typeof info.mtime, 'string');
 });
 
+test('a FileInfo timestamp truncates to whole milliseconds, the way the Rust plugin does', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'fractional.txt');
+  fs.writeFileSync(file, 'x');
+  // Sub-millisecond remainder of .73, i.e. the half of all files where
+  // `Math.round` and `Math.floor` part company.
+  fs.utimesSync(file, 1_700_000_000.73073, 1_700_000_000.73073);
+  const raw = fs.lstatSync(file);
+  if (raw.mtimeMs % 1 === 0) {
+    t.skip('this filesystem stores whole milliseconds, so there is nothing to truncate');
+    return;
+  }
+
+  const info = fsDispatch(app, 'plugin:fs|lstat', { args: { path: file } });
+
+  // Tauri's own plugin builds this with `as_millis()`, which truncates
+  // (`tauri-plugin-fs/src/commands.rs` `to_msec`). Node's `Stats.mtime`
+  // rounds, so shimming the plugin with it hands the frontend a stamp one
+  // millisecond later than every other tier derives — which is what refused
+  // unchanged uploads as 「changed on disk」 (acceptance F1).
+  assert.equal(new Date(info.mtime).getTime(), Math.floor(raw.mtimeMs));
+  assert.equal(new Date(info.atime).getTime(), Math.floor(raw.atimeMs));
+  assert.notEqual(new Date(info.mtime).getTime(), raw.mtime.getTime());
+});
+
 test(
   'stat/read/write reject a symlink that escapes an allowed root while lstat can inspect the link',
   { skip: process.platform === 'win32' },

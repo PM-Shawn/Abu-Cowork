@@ -3255,6 +3255,158 @@ describe('agentLoopRunner', () => {
       });
     });
 
+    /**
+     * Acceptance F3 — handing back a file downloaded in an ORDINARY
+     * conversation.
+     *
+     * The run report card had exactly three emitters, all of them unattended
+     * (scheduler, trigger engine, file watcher), so a `download` in the chat
+     * window put the file on disk and told the user nothing: no row, no
+     * 「打开」, no 「在文件夹中显示」. This dispatch seam is the one place
+     * every human-initiated run passes through, whichever surface started it,
+     * so the card is emitted from here — and the interesting assertions are
+     * the negative ones, since an emitter that fires on the wrong runs would
+     * double up the unattended card or announce a file nobody fetched.
+     *
+     * The signal buffer is REAL here (only the store is a mock), so this
+     * exercises the same aggregation the tool gate feeds in
+     * `registry.browserDownloadArtifacts.test.ts`.
+     */
+    describe('the downloads card at the end of an ordinary conversation run', () => {
+      /**
+       * Record a finished download the way the browser tool does, from INSIDE
+       * the run — a card built from signals recorded before the run started
+       * would prove nothing about the cursor.
+       */
+      async function downloadDuringRun(): Promise<void> {
+        const signals = await import('../observability/browserSignals');
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          signals.recordBrowserSignal(
+            signals.buildBrowserSignalRecord(
+              {
+                kind: 'download_saved',
+                downloadId: 'dl_f3',
+                name: '月度报表.csv',
+                path: '/Users/me/Library/Application Support/abu/browser-downloads/conv-1/main/月度报表.csv',
+                bytes: 18,
+                mime: 'text/csv',
+              },
+              signals.buildBrowserSignalContext('builtin', 'conv-1', 1_700_000_000_000),
+            ),
+          );
+          return { reason: 'completed' };
+        });
+      }
+
+      /** The report snapshots appended to the conversation by this dispatch. */
+      function appendedReports(): { variant?: string; artifacts?: { name: string }[] }[] {
+        return chatStoreAddMessageMock.mock.calls
+          .map((call) => (call[1] as { browserRunReport?: unknown }).browserRunReport)
+          .filter(Boolean) as { variant?: string; artifacts?: { name: string }[] }[];
+      }
+
+      beforeEach(async () => {
+        getSidecarStatusMock.mockReturnValue('stopped');
+        const signals = await import('../observability/browserSignals');
+        signals.clearBrowserSignals();
+      });
+
+      it('appends one card listing the file the run downloaded', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        await downloadDuringRun();
+
+        await runAgentLoopDispatched('conv-1', '把月度报表导出来', { initiatedBy: 'user' });
+
+        const reports = appendedReports();
+        expect(reports).toHaveLength(1);
+        expect(reports[0].variant).toBe('downloads');
+        expect(reports[0].artifacts?.map((a) => a.name)).toEqual(['月度报表.csv']);
+      });
+
+      it('appends nothing when the run downloaded nothing', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+
+        await runAgentLoopDispatched('conv-1', '今天天气怎么样', { initiatedBy: 'user' });
+
+        expect(appendedReports()).toEqual([]);
+      });
+
+      /**
+       * A file that arrived before the user hit Stop is still the user's.
+       */
+      it('still hands back a file the run fetched before it was stopped', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const signals = await import('../observability/browserSignals');
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          signals.recordBrowserSignal(
+            signals.buildBrowserSignalRecord(
+              {
+                kind: 'download_saved',
+                downloadId: 'dl_f3',
+                name: '月度报表.csv',
+                path: '/Users/me/abu/browser-downloads/conv-1/main/月度报表.csv',
+                bytes: 18,
+              },
+              signals.buildBrowserSignalContext('builtin', 'conv-1', 1_700_000_000_000),
+            ),
+          );
+          return { reason: 'aborted' };
+        });
+
+        await runAgentLoopDispatched('conv-1', '导出报表', { initiatedBy: 'user' });
+
+        expect(appendedReports()).toHaveLength(1);
+      });
+
+      /**
+       * The scheduler, the trigger engine and the file watcher each end their
+       * run by emitting the FULL report, which already lists the same files.
+       * Two cards for one run would be worse than the gap this closes.
+       */
+      it('leaves an automation run to emit its own, fuller card', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        await downloadDuringRun();
+
+        await runAgentLoopDispatched('conv-1', 'scheduled export', { initiatedBy: 'automation' });
+
+        expect(appendedReports()).toEqual([]);
+      });
+
+      /**
+       * A message merely staged into a conversation whose run is still going
+       * ran nothing. The owner of that run is inside its own `finally` and
+       * will report the files; emitting from both would put two cards on one
+       * download.
+       */
+      it('stays silent for a send that was only staged into a running conversation', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        const signals = await import('../observability/browserSignals');
+        registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+        // The run in flight finishes a download WHILE the staged send is being
+        // parked — i.e. after this call took its cursor, which is the only
+        // moment at which the staged send could steal the other run's file.
+        enqueueUserInputMock.mockImplementationOnce(() => {
+          signals.recordBrowserSignal(
+            signals.buildBrowserSignalRecord(
+              {
+                kind: 'download_saved',
+                downloadId: 'dl_owner',
+                name: '别人的文件.csv',
+                path: '/Users/me/abu/browser-downloads/conv-1/main/别人的文件.csv',
+                bytes: 18,
+              },
+              signals.buildBrowserSignalContext('builtin', 'conv-1', 1_700_000_000_000),
+            ),
+          );
+        });
+
+        const result = await runAgentLoopDispatched('conv-1', '再导一份', { initiatedBy: 'user' });
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        expect(appendedReports()).toEqual([]);
+      });
+    });
+
     it('persists structured failure details for the startup in-process path', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       getSidecarStatusMock.mockReturnValue('stopped');

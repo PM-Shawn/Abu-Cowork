@@ -1,5 +1,12 @@
+import { format } from '@/i18n';
 import type { TranslationDict } from '@/i18n/types';
 import type { BrowserDenialReasonCode } from './browserToolPolicy';
+import {
+  formatBytes,
+  MAX_UPLOAD_FILE_BYTES,
+  MAX_UPLOAD_FILES,
+  type BrowserUploadRefusalCode,
+} from './browserUploadFiles';
 
 /**
  * The one place a browser denial code becomes words.
@@ -32,5 +39,43 @@ export function browserDenialReasonText(
     case 'site-not-allowed': return t.commandConfirm.browserUnattendedSiteNotAllowed;
     case 'approval-refused': return t.commandConfirm.browserUnattendedConfirmUnavailable;
     case 'user-cancelled': return t.commandConfirm.userCancelled;
+  }
+}
+
+/**
+ * The same seam for an upload's OWN refusals (T5).
+ *
+ * These are not `BrowserDenialReasonCode`s and deliberately do not become
+ * ones: every member of that union is a decision about whether Abu may act on
+ * a SITE, and the next step it implies ("authorize the site", "loosen the
+ * policy", "run it while watching") is wrong for all six of these. They are
+ * facts about a FILE — it is not there, it is a link, it is too big, it is
+ * outside what the user authorized — and each carries its own next step.
+ *
+ * Exhaustive by construction, same as above.
+ */
+export function browserUploadRefusalText(
+  t: TranslationDict,
+  code: BrowserUploadRefusalCode,
+  detail?: string,
+): string {
+  const name = detail ?? '';
+  switch (code) {
+    case 'malformed': return t.commandConfirm.browserUploadMalformed;
+    case 'too-many-files':
+      return format(t.commandConfirm.browserUploadTooManyFiles, { max: MAX_UPLOAD_FILES });
+    case 'not-authorized':
+      return format(t.commandConfirm.browserUploadNotAuthorized, { name });
+    case 'not-a-file':
+      return format(t.commandConfirm.browserUploadNotAFile, { name });
+    case 'symlink':
+      return format(t.commandConfirm.browserUploadSymlink, { name });
+    case 'too-large':
+      return format(t.commandConfirm.browserUploadTooLarge, {
+        name,
+        max: formatBytes(MAX_UPLOAD_FILE_BYTES),
+      });
+    case 'unidentifiable':
+      return format(t.commandConfirm.browserUploadUnidentifiable, { name });
   }
 }

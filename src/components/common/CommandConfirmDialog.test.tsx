@@ -426,4 +426,107 @@ describe('CommandConfirmDialog', () => {
       expect(screen.queryByRole('button', { name: '禁止此网站' })).not.toBeInTheDocument();
     });
   });
+
+  /**
+   * Acceptance F5 — the upload question.
+   *
+   * It used to be asked with the generic browser box: the heading said
+   * 「浏览器操作确认」, the line under it named `abu-browser__upload_file`, and
+   * the button said 「确认执行」. A person reading that is told the name of an
+   * identifier only this codebase uses, and is not told the one thing that
+   * matters — that files are about to leave their machine, and for where.
+   *
+   * The site-scoped affordances are asserted alongside the wording on
+   * purpose: an upload is a browser action, and the way this could go wrong
+   * is by giving it its own heading and silently dropping its 「禁止此网站」
+   * row along with the kind check that offered it.
+   */
+  describe('an upload asks its own question', () => {
+    function renderUpload(overrides: Partial<CommandConfirmRequest> = {}) {
+      return renderDialog({
+        kind: 'browser-upload',
+        command: '报价.csv (18 B), 明细.xlsx (1.2 MB) — 1.2 MB',
+        browserUploadFileCount: 2,
+        browserOrigin: 'https://oa.example.com',
+        allowPersistentGrant: false,
+        ...overrides,
+      });
+    }
+
+    it('says how many files are going where, and confirms with 「确认上传」', () => {
+      renderUpload();
+
+      expect(screen.getByText('上传 2 个文件到 oa.example.com')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '确认上传' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: '确认执行' })).not.toBeInTheDocument();
+    });
+
+    it('never shows the internal tool name', () => {
+      renderUpload();
+
+      expect(document.body.textContent).not.toContain('abu-browser__');
+      expect(screen.queryByText('浏览器操作确认')).toBeNull();
+    });
+
+    it('lists the files, their sizes and the total', () => {
+      renderUpload();
+
+      expect(screen.getByText('报价.csv (18 B), 明细.xlsx (1.2 MB) — 1.2 MB')).toBeInTheDocument();
+    });
+
+    it('counts one file in the singular', () => {
+      renderUpload({ browserUploadFileCount: 1, command: '报价.csv (18 B)' });
+
+      expect(screen.getByText('上传 1 个文件到 oa.example.com')).toBeInTheDocument();
+    });
+
+    /**
+     * The files are going to a region the page merely hosts, not to the site
+     * the user is looking at — the one distinction that changes whether this
+     * upload is what they meant.
+     */
+    it('says so when the target is a region embedded in the page', () => {
+      renderUpload({
+        browserOrigin: 'https://vendor.example.net',
+        browserPageOrigin: 'https://oa.example.com',
+      });
+
+      expect(
+        screen.getByText('上传 2 个文件到 vendor.example.net（页面内嵌区域）'),
+      ).toBeInTheDocument();
+    });
+
+    it('names the site generically when the origin could not be resolved', () => {
+      renderUpload({ browserOrigin: undefined });
+
+      expect(screen.getByText('上传 2 个文件到 这个网站')).toBeInTheDocument();
+    });
+
+    it('keeps the site grant and the block row an upload is entitled to', () => {
+      renderUpload({ allowPersistentGrant: true });
+
+      // The once/always split survives, in the upload's own verb.
+      expect(screen.getByRole('button', { name: '仅本次上传' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '此网站以后都允许' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: '禁止此网站' })).toBeInTheDocument();
+    });
+
+    it('reads the same way in the other locale', () => {
+      initLanguage('en-US');
+      renderUpload();
+
+      expect(screen.getByText('Upload 2 files to oa.example.com')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Confirm upload' })).toBeInTheDocument();
+      initLanguage('zh-CN');
+    });
+
+    it('reads the same way in the other locale for one file', () => {
+      initLanguage('en-US');
+      renderUpload({ browserUploadFileCount: 1, command: 'quote.csv (18 B)' });
+
+      expect(screen.getByText('Upload 1 file to oa.example.com')).toBeInTheDocument();
+      initLanguage('zh-CN');
+    });
+  });
 });

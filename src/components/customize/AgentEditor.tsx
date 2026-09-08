@@ -15,6 +15,7 @@ import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import AvatarPicker from '@/components/common/AvatarPicker';
+import AgentAvatar from '@/components/common/AgentAvatar';
 
 interface AgentEditorProps {
   agent: SubagentDefinition | null;  // null = creating new agent
@@ -182,7 +183,10 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
               )}
             </div>
             <div>
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentAvatar}</label>
+              <div className="flex items-center gap-2 mb-1" data-testid="agent-editor-avatar-preview">
+                <AgentAvatar agent={{ name: agent?.name ?? name, filePath: agent?.filePath, avatar }} size="lg" />
+                <label className="text-minor font-medium text-[var(--abu-text-secondary)]">{t.toolbox.agentAvatar}</label>
+              </div>
               <AvatarPicker value={avatar} onChange={setAvatar} />
             </div>
           </div>

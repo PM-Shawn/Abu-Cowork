@@ -1416,8 +1416,6 @@ const zhCN: TranslationDict = {
     detailExpertise: '擅长',
     detailSamplePrompts: '推荐提问',
     fieldAvatar: '头像',
-    fieldAvatarPlaceholder: '头像',
-    fieldAvatarHint: '填一个 emoji 当头像；留空用默认图标',
     fieldMembers: '成员',
     fieldMembersHint: '点选加入团队，点右侧皇冠设为队长。队长负责拆解任务并分派给成员。',
     noMembersYet: '还没有队员。',

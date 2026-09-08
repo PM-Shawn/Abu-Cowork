@@ -1826,8 +1826,6 @@ export interface TranslationDict {
     detailExpertise: string;
     detailSamplePrompts: string;
     fieldAvatar: string;
-    fieldAvatarPlaceholder: string;
-    fieldAvatarHint: string;
     fieldMembers: string;
     fieldMembersHint: string;
     noMembersYet: string;

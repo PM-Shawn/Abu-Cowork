@@ -1415,8 +1415,6 @@ const enUS: TranslationDict = {
     detailExpertise: 'Expertise',
     detailSamplePrompts: 'Try asking',
     fieldAvatar: 'Avatar',
-    fieldAvatarPlaceholder: 'Avatar',
-    fieldAvatarHint: 'Type one emoji to use as the avatar; leave empty for the default mark',
     fieldMembers: 'Members',
     fieldMembersHint: 'Click to add members; use the crown to pick the leader. The leader breaks tasks down and delegates.',
     noMembersYet: 'No members yet.',

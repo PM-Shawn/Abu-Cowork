@@ -4,24 +4,59 @@
     <meta charset="utf-8" />
     <title>MCP App demo table</title>
     <style>
+      /*
+       * Every colour and font below reads a variable the HOST actually sends in
+       * `hostContext.styles.variables` (the MCP Apps SDK's documented names) and
+       * that the script applies onto <html>. The fallbacks are what an app gets
+       * from a host that ships no variables at all, so they must be readable in
+       * BOTH themes on their own — hence `color-scheme: light dark` plus
+       * `light-dark()` rather than a single hard-coded light-theme colour.
+       */
       :root { color-scheme: light dark; }
       body {
         margin: 0;
         padding: 12px;
-        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        color: var(--mcp-color-text, #29261b);
-        background: var(--mcp-color-background, transparent);
+        font-family: var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+        font-size: var(--font-text-md-size, 14px);
+        line-height: var(--font-text-md-line-height, 22px);
+        color: var(--color-text-primary, light-dark(#141413, #f0ede8));
+        background: var(--color-background-primary, light-dark(#faf9f5, #1a1917));
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: var(--font-heading-xs-size, 14px);
+        line-height: var(--font-heading-xs-line-height, 22px);
+        font-weight: var(--font-weight-semibold, 600);
       }
       table { border-collapse: collapse; width: 100%; }
-      td { padding: 4px 8px; border-bottom: 1px solid rgba(128, 128, 128, 0.3); }
+      td {
+        padding: 4px 8px;
+        border-bottom: var(--border-width-regular, 1px) solid
+          var(--color-border-primary, light-dark(#e8e4dd, #302e2b));
+      }
       td.value { text-align: right; font-variant-numeric: tabular-nums; }
       .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-      button { padding: 4px 10px; cursor: pointer; }
-      pre { margin: 8px 0 0; font-size: 11px; opacity: 0.7; }
+      button {
+        padding: 4px 10px;
+        cursor: pointer;
+        font: inherit;
+        color: var(--color-text-primary, light-dark(#141413, #f0ede8));
+        background: var(--color-background-secondary, light-dark(#ffffff, #201f1d));
+        border: var(--border-width-regular, 1px) solid
+          var(--color-border-primary, light-dark(#e8e4dd, #302e2b));
+        border-radius: var(--border-radius-sm, 6px);
+      }
+      pre {
+        margin: 8px 0 0;
+        font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+        font-size: var(--font-text-xs-size, 11px);
+        line-height: var(--font-text-xs-line-height, 16px);
+        color: var(--color-text-secondary, light-dark(#656358, #8a8479));
+      }
     </style>
   </head>
   <body>
-    <h1 style="font-size: 14px; margin: 0 0 8px">演示表格</h1>
+    <h1>演示表格</h1>
     <table>
       <tbody id="rows"></tbody>
     </table>
@@ -71,6 +106,37 @@
           document.getElementById('status').textContent = text;
         }
 
+        var currentTheme = null;
+        var appliedVariables = [];
+
+        /**
+         * THE way an app is supposed to look native: the host hands over a full
+         * palette in `hostContext.styles.variables` (SDK names — `--color-*`,
+         * `--font-*`, `--border-*`), and the app puts them on its own root so
+         * every rule above resolves to the host's colours. Called with the
+         * `ui/initialize` result's hostContext and again with every
+         * `host-context-changed` that carries styles.
+         *
+         * Passing nothing REMOVES the previous set, which matters: a patch
+         * carries only what changed, so a host that announces a new theme
+         * without a new palette has just made the one we hold stale — keeping
+         * it would paint light-theme text on a dark surface. Dropping it lets
+         * the stylesheet's own `light-dark()` fallbacks take over.
+         */
+        function applyStyleVariables(styles) {
+          var root = document.documentElement;
+          appliedVariables.forEach(function (name) { root.style.removeProperty(name); });
+          appliedVariables = [];
+          var variables = styles && styles.variables;
+          if (!variables || typeof variables !== 'object') return;
+          Object.keys(variables).forEach(function (name) {
+            var value = variables[name];
+            if (name.indexOf('--') !== 0 || typeof value !== 'string') return;
+            root.style.setProperty(name, value);
+            appliedVariables.push(name);
+          });
+        }
+
         /**
          * Repaint probe. `data-theme` on <html> is what the demo styles itself
          * with; the `theme:<value>` marker on <body> is what the host-side E2E
@@ -81,8 +147,20 @@
          */
         function applyTheme(theme) {
           if (theme !== 'light' && theme !== 'dark') return;
+          currentTheme = theme;
           document.documentElement.setAttribute('data-theme', theme);
           document.body.setAttribute('data-theme', 'theme:' + theme);
+        }
+
+        /** Handshake result + every later patch go through one path. */
+        function applyHostContext(context) {
+          if (!context) return;
+          if (context.styles) applyStyleVariables(context.styles);
+          else if (context.theme && currentTheme && context.theme !== currentTheme) {
+            // Theme changed, palette did not follow it — see applyStyleVariables.
+            applyStyleVariables(null);
+          }
+          if (context.theme) applyTheme(context.theme);
         }
 
         window.addEventListener('message', function (event) {
@@ -125,8 +203,9 @@
             setStatus('tool-cancelled');
           } else if (method === 'ui/notifications/host-context-changed') {
             // A patch carries only what changed, so a container-size or
-            // display-mode notification must not clear the theme marker.
-            if (params && params.theme) applyTheme(params.theme);
+            // display-mode notification must not clear the theme marker or the
+            // palette — `applyHostContext` only touches what the patch names.
+            applyHostContext(params);
           }
         }
 
@@ -250,9 +329,10 @@
               .then(function (result) {
                 if (initialized) return;
                 initialized = true;
-                // The host states the theme in the handshake result; the app
-                // must start in it, not wait for the first change notification.
-                if (result && result.hostContext) applyTheme(result.hostContext.theme);
+                // The host states the theme AND hands over its palette in the
+                // handshake result; the app must start in both, not wait for
+                // the first change notification.
+                if (result && result.hostContext) applyHostContext(result.hostContext);
                 notify('ui/notifications/initialized', {});
                 setStatus('initialized');
                 reportSize();

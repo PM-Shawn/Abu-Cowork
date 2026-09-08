@@ -360,6 +360,31 @@ async function clickInApp(content: ReturnType<typeof appFrameContent>, testId: s
   await control.dispatchEvent('click');
 }
 
+/**
+ * WCAG relative luminance of a computed `rgb()` / `rgba()` string, so a theme
+ * assertion can say "light text on a dark surface" instead of hard-coding the
+ * host palette's hex values into the test.
+ */
+function relativeLuminance(color: string): number {
+  const parts = color.match(/-?[\d.]+/g);
+  if (!parts || parts.length < 3) throw new Error(`unparseable colour: ${color}`);
+  const [r, g, b] = parts.slice(0, 3).map((part) => {
+    const channel = Number(part) / 255;
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** What the interface actually PAINTS, read from inside the sandbox. */
+async function readAppColours(
+  content: ReturnType<typeof appFrameContent>,
+): Promise<{ text: string; background: string }> {
+  return content.getByTestId('demo-value-alpha').evaluate((element) => ({
+    text: window.getComputedStyle(element).color,
+    background: window.getComputedStyle(document.body).backgroundColor,
+  }));
+}
+
 let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 let mock: OpenAiMock | undefined;
@@ -465,6 +490,18 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(frameBody).toHaveAttribute('data-theme', 'theme:light', {
       timeout: READY_TIMEOUT,
     });
+    // The marker only proves the app was TOLD. What follows proves it ACTED:
+    // the 2026-09-08 walkthrough found a sample that flipped the marker while
+    // painting hard-coded light-theme text onto Abu's dark surface, and every
+    // marker assertion in this block passed. So read the colours the sandbox
+    // really computes — the text of a table cell and the surface behind it —
+    // and require the pair to stay readable in both themes.
+    const lightColours = await readAppColours(content);
+    // An unpainted (transparent) body would make the comparison meaningless.
+    expect(lightColours.background).not.toMatch(/rgba\([^)]*,\s*0\)/);
+    expect(relativeLuminance(lightColours.text)).toBeLessThan(
+      relativeLuminance(lightColours.background),
+    );
     await page.emulateMedia({ colorScheme: 'dark' });
     // Two separate claims, asserted separately so a failure says which one
     // broke: (1) the emulated OS preference reached the renderer at all,
@@ -480,11 +517,30 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(frameBody).toHaveAttribute('data-theme', 'theme:dark', {
       timeout: READY_TIMEOUT,
     });
+    // Repaint, not just re-marking: the text colour has to move, and it has to
+    // land light-on-dark. (Polled — the repaint follows the notification.)
+    await expect
+      .poll(async () => (await readAppColours(content)).text, { timeout: READY_TIMEOUT })
+      .not.toBe(lightColours.text);
+    const darkColours = await readAppColours(content);
+    expect(darkColours.background).not.toBe(lightColours.background);
+    expect(relativeLuminance(darkColours.text)).toBeGreaterThan(
+      relativeLuminance(darkColours.background),
+    );
     // And back — a one-way notification would look identical above.
     await page.emulateMedia({ colorScheme: 'light' });
     await expect(frameBody).toHaveAttribute('data-theme', 'theme:light', {
       timeout: READY_TIMEOUT,
     });
+    await expect
+      .poll(
+        async () => {
+          const colours = await readAppColours(content);
+          return relativeLuminance(colours.text) < relativeLuminance(colours.background);
+        },
+        { timeout: READY_TIMEOUT },
+      )
+      .toBe(true);
 
     const requestsBeforeDraft = mock.requestCount();
     await clickInApp(content, 'demo-send');

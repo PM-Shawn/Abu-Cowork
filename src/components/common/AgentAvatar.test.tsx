@@ -28,4 +28,14 @@ describe('AgentAvatar', () => {
     render(<AgentAvatar agent={{ name: 'abu' }} />);
     expect(screen.getByAltText('Abu')).toBeInTheDocument();
   });
+
+  it.each([
+    ['icon:code/purple', 'icon'],
+    ['icon:code/missing', 'default'],
+    ['icon:constructor/blue', 'default'],
+  ])('renders a user avatar %s as %s', (avatar, kind) => {
+    render(<AgentAvatar agent={{ name: 'coder', avatar, filePath: '/agents/coder/AGENT.md' }} />);
+    expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', kind);
+    expect(screen.getByTestId('agent-avatar').textContent).not.toContain('icon:');
+  });
 });

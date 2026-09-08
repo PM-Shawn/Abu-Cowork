@@ -49,6 +49,34 @@ describe('save_team', () => {
     expect(String(out)).toContain('Review sales');
   });
 
+  it('preserves omitted display and approval fields when replacing a roster', async () => {
+    const display = { description: 'Data insights', intro: 'We investigate', expertise: ['Queries'], samplePrompts: ['Review sales'], avatar: 'icon:chart-bar/blue', leaderNote: 'Check sources', requirePlanApproval: true };
+    await saveTeamTool.execute({ ...input, members: [], ...display }, {});
+    const out = await saveTeamTool.execute(input, {});
+    expect(useTeamStore.getState().teams[0]).toMatchObject({ ...display, memberRoleIds: ['builtin:Analyst', 'role-fetch'] });
+    expect(String(out)).toContain('Review sales');
+    expect(String(out)).toContain('"requirePlanApproval":true');
+  });
+
+  it('clears optional fields only when explicitly requested', async () => {
+    await saveTeamTool.execute({ ...input, description: 'Before', intro: 'Before', expertise: ['Before'], samplePrompts: ['Before'], avatar: '📊', leaderNote: 'Before', requirePlanApproval: true }, {});
+    await saveTeamTool.execute({ ...input, description: '', intro: ' ', expertise: [], samplePrompts: [' '], avatar: '', leaderNote: '', requirePlanApproval: false }, {});
+    expect(useTeamStore.getState().teams[0]).toMatchObject({ description: undefined, intro: undefined, expertise: undefined, samplePrompts: undefined, avatar: undefined, leaderNote: undefined, requirePlanApproval: false });
+  });
+
+  it.each(['chart-bar', '一个数据小队的图标', 'icon:unknown/blue', '📊📊', '👩‍'.repeat(40) + '💻'])('rejects malformed newly authored avatars before writing: %s', async (avatar) => {
+    delete agents.Fetcher.roleId;
+    const out = await saveTeamTool.execute({ ...input, avatar }, {});
+    expect(String(out)).toContain('Error:');
+    expect(useTeamStore.getState().teams).toEqual([]);
+    expect(saveItem).not.toHaveBeenCalled();
+  });
+
+  it.each(['📊', '👩🏽‍💻', '👨‍👩‍👧‍👦', '🇨🇳', '1️⃣'])('accepts a single legacy emoji including joined sequences: %s', async (avatar) => {
+    await saveTeamTool.execute({ ...input, avatar }, {});
+    expect(useTeamStore.getState().teams[0].avatar).toBe(avatar);
+  });
+
   it.each([
     { leader: 'Missing leader', members: [] },
     { leader: 'Analyst', members: ['Missing member', 'Another missing member'] },

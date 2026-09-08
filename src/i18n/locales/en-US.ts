@@ -1404,6 +1404,19 @@ const enUS: TranslationDict = {
     uploadAutoIncludedHint: 'Rechecked at submission and automatically included: manifest · environment self-check · logs · error snapshots',
   },
 
+  avatarPicker: {
+    defaultAvatar: 'Use default avatar',
+    optionLabel: '{icon} · {tint}',
+    icons: {
+      'chart-bar': 'Bar chart', code: 'Code', flask: 'Experiment', pen: 'Writing',
+      shield: 'Security', users: 'Teamwork', search: 'Search', database: 'Data',
+      palette: 'Design', compass: 'Explore', wrench: 'Tools', book: 'Reading',
+      megaphone: 'Communication', scale: 'Judgment', sparkles: 'Ideas', cpu: 'Technology',
+      globe: 'World', camera: 'Photography', calculator: 'Calculation', bot: 'Assistant',
+    },
+    tints: { blue: 'Blue', purple: 'Purple', teal: 'Teal', coral: 'Coral', amber: 'Amber', pink: 'Pink' },
+  },
+
   team: {
     tabMembers: 'Members',
     tabTeams: 'Teams',
@@ -1416,6 +1429,16 @@ const enUS: TranslationDict = {
     teamSaveFailed: 'Failed to save team',
     fieldName: 'Name',
     fieldNamePlaceholder: 'e.g. Data Squad',
+    fieldDescription: 'Description (optional)',
+    fieldDescriptionPlaceholder: 'One sentence about what this team can help with',
+    fieldIntro: 'Introduction (optional)',
+    fieldExpertise: 'Expertise (optional)',
+    fieldSamplePrompts: 'Suggested questions (optional)',
+    fieldLinesHint: 'One per line',
+    fieldSamplePromptsHint: 'One per line; clicking only prefills a new conversation without sending',
+    detailIntro: 'Introduction',
+    detailExpertise: 'Expertise',
+    detailSamplePrompts: 'Try asking',
     fieldAvatar: 'Avatar',
     fieldAvatarPlaceholder: 'Avatar',
     fieldAvatarHint: 'Type one emoji to use as the avatar; leave empty for the default mark',
@@ -1440,7 +1463,7 @@ const enUS: TranslationDict = {
     detailSkillsHint: 'Skills the members bring, merged and deduplicated',
     detailNoSkills: 'Members bring no skills — built-in abilities only',
     detailEdit: 'Edit',
-    aiCreateTeamPrompt: 'Help me put together a team. My requirements are:',
+    aiCreateTeamPrompt: '/create-agent Help me put together a team. My requirements are:',
     unknownMember: 'Unknown member',
     memberInvalid: 'Unavailable · the expert was deleted or changed, or its plugin is disabled',
     memberInvalidShort: 'Unavailable',
@@ -1919,7 +1942,7 @@ const enUS: TranslationDict = {
     noLogs: 'No logs',
     // MarketplaceCard i18n
     installing: 'Installing',
-    aiCreateAgentPrompt: 'Help me create an Agent. My requirements are:',
+    aiCreateAgentPrompt: '/create-agent Help me create a team member. My requirements are:',
     aiCreateSkillPrompt: 'Help me create a Skill. My requirements are:',
     agentTestPrompt: 'Use the {name} agent to help me with a simple task to test if it works correctly.',
     // JSON config import
@@ -3158,6 +3181,14 @@ const enUS: TranslationDict = {
   },
 
   toolResult: {
+    team: {
+      invalidInput: 'Error: Provide a team name, leader name and member list, and check the format of the display fields.',
+      unavailableAgents: 'Error: These agents do not exist or are unavailable: {names}. Check their names; the team has not been saved.',
+      saved: 'Team "{name}" saved. Leader: {leader}, {count} members. Plan approval: {approval}.',
+      approvalOn: 'on',
+      approvalOff: 'off',
+      saveFailed: 'Error: The team was not saved: {reason}',
+    },
     valueNone: 'none',
     valueNever: 'never',
     statusActive: 'active',

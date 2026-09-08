@@ -60,4 +60,12 @@ describe('AgentEditor — plugin-owned agents are not writable', () => {
     await waitFor(() => expect(vi.mocked(saveItemToAbuDir)).toHaveBeenCalledTimes(1));
     expect(onSave).toHaveBeenCalledTimes(1);
   });
+
+  it('saves the avatar selected from the shared picker', async () => {
+    render(<AgentEditor agent={base} onClose={vi.fn()} onSave={vi.fn(async () => undefined)} />);
+    fireEvent.click(screen.getByTestId('avatar-option-code-purple'));
+    clickSave();
+    await waitFor(() => expect(vi.mocked(saveItemToAbuDir)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(saveItemToAbuDir).mock.calls[0][3]).toContain('avatar: icon:code/purple');
+  });
 });

@@ -1405,6 +1405,19 @@ const zhCN: TranslationDict = {
     uploadAutoIncludedHint: '提交时会实时重检，并自动附带：诊断清单 · 环境自检 · 日志 · 报错快照',
   },
 
+  avatarPicker: {
+    defaultAvatar: '使用默认头像',
+    optionLabel: '{icon} · {tint}',
+    icons: {
+      'chart-bar': '图表', code: '代码', flask: '实验', pen: '写作',
+      shield: '安全', users: '协作', search: '搜索', database: '数据',
+      palette: '设计', compass: '探索', wrench: '工具', book: '阅读',
+      megaphone: '传播', scale: '判断', sparkles: '创意', cpu: '技术',
+      globe: '世界', camera: '影像', calculator: '计算', bot: '助手',
+    },
+    tints: { blue: '蓝色', purple: '紫色', teal: '青绿', coral: '珊瑚', amber: '琥珀', pink: '粉色' },
+  },
+
   team: {
     tabMembers: '队员',
     tabTeams: '团队',
@@ -1417,6 +1430,16 @@ const zhCN: TranslationDict = {
     teamSaveFailed: '保存团队失败',
     fieldName: '名字',
     fieldNamePlaceholder: '例如：数据小队',
+    fieldDescription: '介绍（可选）',
+    fieldDescriptionPlaceholder: '一句话说说这个团队能帮你做什么',
+    fieldIntro: '开场白（可选）',
+    fieldExpertise: '擅长（可选）',
+    fieldSamplePrompts: '推荐提问（可选）',
+    fieldLinesHint: '每行一条',
+    fieldSamplePromptsHint: '每行一条；点击只会填入新对话，不会发送',
+    detailIntro: '开场白',
+    detailExpertise: '擅长',
+    detailSamplePrompts: '推荐提问',
     fieldAvatar: '头像',
     fieldAvatarPlaceholder: '头像',
     fieldAvatarHint: '填一个 emoji 当头像；留空用默认图标',
@@ -1441,7 +1464,7 @@ const zhCN: TranslationDict = {
     detailSkillsHint: '成员各自带的技能，汇总去重',
     detailNoSkills: '成员没有带技能，只用内置能力',
     detailEdit: '编辑',
-    aiCreateTeamPrompt: '帮我组建一个团队，我的需求是：',
+    aiCreateTeamPrompt: '/create-agent 帮我组建一个团队，我的需求是：',
     unknownMember: '未知队员',
     memberInvalid: '已失效 · 专家已删除、修改，或所属插件已停用',
     memberInvalidShort: '已失效',
@@ -1921,7 +1944,7 @@ const zhCN: TranslationDict = {
     noLogs: '暂无日志',
     // MarketplaceCard i18n
     installing: '安装中',
-    aiCreateAgentPrompt: '帮我创建一个 Agent，我的需求是：',
+    aiCreateAgentPrompt: '/create-agent 帮我创建一个队员，我的需求是：',
     aiCreateSkillPrompt: '帮我创建一个 Skill，我的需求是：',
     agentTestPrompt: '请使用 {name} 代理来帮我完成一个简单任务，测试一下它是否正常工作。',
     // JSON config import
@@ -3160,6 +3183,14 @@ const zhCN: TranslationDict = {
   },
 
   toolResult: {
+    team: {
+      invalidInput: 'Error: 请提供团队名、队长名和成员名单，并检查展示内容的格式。',
+      unavailableAgents: 'Error: 这些队员不存在或目前不可用：{names}。请检查名字，团队尚未保存。',
+      saved: '团队「{name}」已保存。队长：{leader}，{count} 名成员。分工先经我确认：{approval}。',
+      approvalOn: '开启',
+      approvalOff: '关闭',
+      saveFailed: 'Error: 团队未保存：{reason}',
+    },
     valueNone: '无',
     valueNever: '从未',
     statusActive: '活跃',

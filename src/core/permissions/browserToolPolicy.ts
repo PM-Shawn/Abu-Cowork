@@ -363,17 +363,94 @@ export type BrowserSiteVerdicts = Record<string, 'allowed' | 'denied'> & {
  * is what restores ask-every-time). So the precedence above is what makes a
  * block actually stick, and it is pinned by tests.
  */
+/**
+ * A grant minted through the merged embedded-region prompt, keyed by the
+ * embedded origin, and holding the top-level PAGES the user gave it on.
+ *
+ * Two shapes, one meaning, one reader (`viaEmbedScopeCovers`):
+ *
+ * - `{ 'https://oa.example.com': true }` — given while that page was in front
+ *   of the user. Valid inside that page's embedded regions, nowhere else.
+ * - `{}` — the LEGACY shape (pre-v51 marks carried no page). "Only as an
+ *   embedded region, page unknown": valid inside any page's embedded regions,
+ *   and never as a top-level visit. Migrating it to a full grant would widen
+ *   what the user gave; migrating it to nothing would silently revoke it.
+ *
+ * The map holds several pages when the user granted the same region on
+ * several pages — each of those was its own human act, so each is kept.
+ */
+export type BrowserSiteGrantScopes = Record<string, Record<string, true>>;
+
+/**
+ * Does a scoped grant reach the context this call happens in?
+ *
+ * `embeddedIn` is the TOP-LEVEL page the target origin is being operated
+ * inside as an embedded region — `null` when the origin is itself the page
+ * being driven. A scoped grant never covers that case: what the user read in
+ * the merged prompt was "this page also contains regions from X", which is
+ * consent to touch those regions on that page, not consent to go to X later
+ * and drive it directly.
+ */
+export function viaEmbedScopeCovers(
+  scope: Record<string, true>,
+  embeddedIn: string | null | undefined,
+): boolean {
+  // The origin is the page itself, or the page is unknown — either way this is
+  // not "inside the page the grant was given on".
+  if (embeddedIn === null || embeddedIn === undefined) return false;
+  // Legacy, page unknown: valid as a region anywhere, never as the page.
+  if (Object.keys(scope).length === 0) return true;
+  return scope[embeddedIn] === true;
+}
+
+/**
+ * Coerce a persisted / cross-window value into {@link BrowserSiteGrantScopes}.
+ *
+ * Both the pre-v51 shape (`true`) and a blob written by an older build that
+ * reaches this one through `restoreBrowserConfigField` land here, so the
+ * widening conversion lives in ONE function rather than in the migration only
+ * — a v50 blob adopted from another window never passes through `migrate`.
+ *
+ * An entry whose scope cannot be read at all is dropped, which drops the
+ * QUALIFICATION and leaves the grant behind it full. That is the widening
+ * direction, and it is the same trade `BROWSER_CONFIG_COMPANION_FIELDS`
+ * already documents for a companion map an older build never wrote: an
+ * unreadable scope is not evidence of a narrower one. Every shape this app has
+ * ever written is recognized above, so reaching that branch means hand-edited
+ * or corrupted storage.
+ */
+export function normalizeBrowserSiteGrantScopes(value: unknown): BrowserSiteGrantScopes {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  const out: BrowserSiteGrantScopes = {};
+  for (const [origin, scope] of Object.entries(value as Record<string, unknown>)) {
+    // v50 and earlier: a bare `true`, with no page recorded.
+    if (scope === true) {
+      out[origin] = {};
+      continue;
+    }
+    if (typeof scope !== 'object' || scope === null || Array.isArray(scope)) continue;
+    const pages: Record<string, true> = {};
+    for (const [page, on] of Object.entries(scope as Record<string, unknown>)) {
+      if (on === true) pages[page] = true;
+    }
+    out[origin] = pages;
+  }
+  return out;
+}
+
 export interface SiteVerdictOptions {
   /**
-   * Which `'allowed'` verdicts were minted through the merged embedded-region
-   * prompt — `settingsStore`'s `browserSiteGrantViaEmbed`.
+   * The scoped grants — `settingsStore`'s `browserSiteGrantViaEmbed`. See
+   * {@link BrowserSiteGrantScopes}.
    */
-  viaEmbed?: Record<string, true>;
+  viaEmbed?: BrowserSiteGrantScopes;
   /**
-   * The run this verdict is being read for. Only `'unattended'` changes the
-   * answer, and only for a marked grant.
+   * The top-level page `origin` is being operated inside, as one of its
+   * embedded regions. `null`/absent means `origin` IS the page being driven
+   * (or no page context is available, e.g. a download listing), which no
+   * scoped grant covers.
    */
-  runMode?: 'attended' | 'unattended';
+  embeddedIn?: string | null;
 }
 
 export function getSiteVerdict(
@@ -386,21 +463,30 @@ export function getSiteVerdict(
   if (verdict === 'denied') return 'denied';
   if (verdict === 'allowed') {
     /**
-     * Round-2 R2-C-②. A grant the user gave through the merged prompt covers
-     * origins the PAGE chose to embed, and in the order the page laid them
-     * out. That is informed consent for work the user is watching — they read
-     * the list before clicking — but it is not the premise the unattended path
-     * is built on, which is "the user went to this site and allowed it"
-     * (Settings › 网站授权, or a prompt raised while that site was the page in
-     * front of them). So a marked grant is a full grant with a human present,
-     * and no standing grant at all for an automatic run: it falls back to
-     * `'default'`, which `decideBrowserOperation` and `registry.ts`'s
-     * `site-not-allowed` refusal both read as "nothing standing here".
+     * A grant the user gave through the merged prompt is SCOPED, not tiered.
+     *
+     * What they read was "this page also contains regions from X", and what
+     * they agreed to was letting Abu work on those regions while on that
+     * page. So the grant is valid exactly there — in that page's embedded
+     * regions — and nowhere else: opening X directly, or meeting X inside
+     * some other page, is a situation they were never asked about, and falls
+     * back to `'default'` ("nothing standing here"), which
+     * `decideBrowserOperation` and `registry.ts`'s `site-not-allowed` refusal
+     * both read as ask-or-apply.
+     *
+     * WHO IS WATCHING DOES NOT ENTER INTO IT (2026-09-07 ruling, the fourth
+     * restatement of the same principle): an authorization the user gave is
+     * theirs in both run modes, and `runMode` only decides HOW a missing one
+     * is asked for (in-app dialog vs IM approval). The rule this replaced
+     * ("full grant attended, no grant unattended") protected a real thing —
+     * the page-bound nature of the consent — by the one means the principle
+     * forbids. Scoping protects the same thing directly.
      *
      * Never applied to `'denied'`: a block is a block in every direction, and
      * a mark can only ever take authorization away.
      */
-    if (options?.runMode === 'unattended' && options.viaEmbed?.[origin] === true) return 'default';
+    const scope = options?.viaEmbed?.[origin];
+    if (scope !== undefined && !viaEmbedScopeCovers(scope, options?.embeddedIn)) return 'default';
     return 'allowed';
   }
   return 'default';

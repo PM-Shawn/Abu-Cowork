@@ -161,23 +161,28 @@ export default function CommandConfirmDialog({
   const handleAlwaysAllowSite = useCallback(() => {
     const store = useSettingsStore.getState();
     /**
-     * R2-C-② — which of these grants the user gave DIRECTLY.
+     * Which of these grants the user gave DIRECTLY, and — for the rest — WHICH
+     * PAGE they gave it on.
      *
      * `browserPageOrigin` is set only when the action's own target is a region
      * inside some other page, so its presence is exactly the question "is the
-     * origin this dialog is about the page the user is on?". A grant given
-     * while that origin WAS the page is a direct one; every region grant —
-     * the action's target when it is a region, and every merged one — is the
-     * user allowing a site because another site embeds it, which is consent
-     * for work they are watching and not the standing premise an unattended
-     * run needs. See `settingsStore`'s `browserSiteGrantViaEmbed`.
+     * origin this dialog is about the page the user is on?". Absent, the
+     * dialog's own origin IS the page — which makes it both the direct grant
+     * above and the page every merged region grant below is scoped to.
+     *
+     * A region grant is the user allowing a site because the page in front of
+     * them embeds it. That is real consent, and it is consent for THIS page:
+     * it stays valid inside this page's embedded regions whoever is watching,
+     * and is not a standing grant for visiting that site on its own. See
+     * `settingsStore`'s `browserSiteGrantViaEmbed`.
      */
-    const viaEmbed = { viaEmbed: true } as const;
+    const pageOrigin = request.browserPageOrigin ?? request.browserOrigin;
+    const viaEmbedPage = pageOrigin !== undefined ? { viaEmbedPage: pageOrigin } : undefined;
     if (request.browserOrigin) {
       store.setBrowserSitePermission(
         request.browserOrigin,
         'allowed',
-        request.browserPageOrigin !== undefined ? viaEmbed : undefined,
+        request.browserPageOrigin !== undefined ? viaEmbedPage : undefined,
       );
     }
     // One click, one grant per origin — written individually, never as a
@@ -185,8 +190,12 @@ export default function CommandConfirmDialog({
     // cap is applied HERE as well as in the list, from the same array: a grant
     // that reached past what the dialog printed would be a wildcard wearing a
     // count.
-    for (const embedded of embeddedOrigins) {
-      store.setBrowserSitePermission(embedded, 'allowed', viaEmbed);
+    // With no page origin to scope them to there is nothing honest to write:
+    // an unscoped grant would be wider than the click, and a made-up page
+    // narrower. Unreachable from the UI (the button only appears once
+    // `request.browserOrigin` is known), and fail-closed if it ever is not.
+    for (const embedded of viaEmbedPage === undefined ? [] : embeddedOrigins) {
+      store.setBrowserSitePermission(embedded, 'allowed', viaEmbedPage);
     }
     onConfirm();
   // `embeddedOrigins` is derived from the same request fields each render.

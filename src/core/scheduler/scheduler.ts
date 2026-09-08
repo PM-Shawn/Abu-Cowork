@@ -7,7 +7,9 @@ import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
 import {
   notifyScheduledTaskCompleted,
   notifyScheduledTaskError,
+  notifyScheduledTeamRunUnconfirmed,
 } from '../../utils/notifications';
+import { useTeamStore } from '../../stores/teamStore';
 import { getI18n, format } from '../../i18n';
 import type { ScheduledTask } from '../../types/schedule';
 import type { PermissionMode } from '../permissions/permissionMode';
@@ -207,6 +209,20 @@ function describeDenials(denials: string[], mode: PermissionMode): string {
 const TICK_INTERVAL_MS = 60_000; // 60 seconds
 
 /**
+ * Consecutive most-recent failed runs (runs are unshifted, newest first).
+ * Drives the fail-loud auto-pause for unattended team dispatch.
+ */
+export function countLeadingErrorRuns(runs: Array<{ status: string }>): number {
+  let count = 0;
+  for (const run of runs) {
+    if (run.status === 'error') count += 1;
+    else if (run.status === 'running') continue; // an unrelated in-flight run doesn't break the streak
+    else break;
+  }
+  return count;
+}
+
+/**
  * How long a dispatch waits for the BUILT-IN browser runtime before freezing
  * this run's tool roster (issue #389).
  *
@@ -257,6 +273,29 @@ class SchedulerEngine {
     }
   }
 
+  /** Team schedules fail loud: two consecutive failed runs pause the schedule
+   *  instead of quietly burning money (product decision 2026-09-01). */
+  private autoPauseTeamScheduleAfterRepeatedFailures(task: ScheduledTask): void {
+    if (!task.teamId) return;
+    const fresh = useScheduleStore.getState().tasks[task.id];
+    if (fresh && countLeadingErrorRuns(fresh.runs) >= 2) {
+      useScheduleStore.getState().pauseTask(task.id);
+      notifyScheduledTaskError(format(getI18n().schedule.teamAutoPaused, { name: task.name }));
+    }
+  }
+
+  /** A strict team ("confirm the split first") has nobody to confirm during a
+   *  scheduled run, so report_plan auto-approves (memoryTools.ts). Say so once
+   *  the run delivers, instead of letting the skipped confirmation pass silently. */
+  private notifyStrictTeamSkippedConfirmation(task: ScheduledTask): void {
+    if (!task.teamId) return;
+    const team = useTeamStore.getState().teams.find((entry) => entry.id === task.teamId);
+    if (!team || team.requirePlanApproval !== true) return;
+    const message = format(getI18n().schedule.teamPlanUnconfirmed, { name: task.name, team: team.name });
+    notifyScheduledTeamRunUnconfirmed(message);
+    useToastStore.getState().addToast({ type: 'info', title: message });
+  }
+
   private async executeTask(task: ScheduledTask) {
     console.log(`[Scheduler] Executing task: ${task.name} (${task.id})`);
 
@@ -279,9 +318,12 @@ class SchedulerEngine {
     const scheduleStore = useScheduleStore.getState();
 
     // Create a new conversation for this run (skipActivate to avoid disturbing user)
+    // 交给团队 (design §2.7): the run is an ordinary scheduled conversation
+    // pinned to the team, so its leader takes the prompt with the same
+    // unattended envelope every scheduled run gets.
     const conversationId = chatStore.createConversation(
       task.workspacePath ?? null,
-      { scheduledTaskId: task.id, projectId: task.projectId, skipActivate: true }
+      { scheduledTaskId: task.id, projectId: task.projectId, skipActivate: true, ...(task.teamId ? { teamId: task.teamId } : {}) }
     );
     // Selects the standard/smart/autonomous strategy `registry.ts` applies to
     // every tool call in this run. `task.permissionMode` is undefined for a
@@ -444,6 +486,7 @@ class SchedulerEngine {
           await this.pushToIMChannel(task, conversationId, runOutcome);
           outcomePushed = true;
         }
+        this.notifyStrictTeamSkippedConfirmation(task);
 
         const t = getI18n();
         if (incomplete) {
@@ -505,6 +548,7 @@ class SchedulerEngine {
         if (result.reason === 'error' || isIncompleteReason(result.reason)) {
           notifyScheduledTaskError(task.name);
         }
+        this.autoPauseTeamScheduleAfterRepeatedFailures(task);
         const t = getI18n();
         useToastStore.getState().addToast({
           type: result.reason === 'aborted' ? 'info' : 'error',
@@ -536,6 +580,7 @@ class SchedulerEngine {
         // No latch here: this IS the last statement that can push.
       }
       notifyScheduledTaskError(task.name);
+      this.autoPauseTeamScheduleAfterRepeatedFailures(task);
       const t = getI18n();
       useToastStore.getState().addToast({
         type: 'error',

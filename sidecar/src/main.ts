@@ -124,7 +124,7 @@
 import { createInterface } from 'node:readline';
 import { createLlmHost } from './llmHost';
 import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
-import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns } from './subagentHost';
+import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns, isSubagentDispatchActive } from './subagentHost';
 import {
   handleAgentRun,
   handleAgentStart,
@@ -140,6 +140,8 @@ import {
 import { resolvePendingResponse, rejectAllPendingRequests } from './rpcClient';
 import { isAuthorizedE2ECrash } from './e2eCrashGate';
 import { applyEnterpriseEntitlementSnapshot } from './enterpriseEntitlementMirror';
+import { cancelDispatch } from '@/core/agent/subagentAbort';
+import { enqueueDispatchInput } from '@/core/agent/dispatchInput';
 import {
   writeLine,
   makeError,
@@ -420,6 +422,34 @@ function handleMessage(raw: string): void {
     } catch (err) {
       applyEnterpriseEntitlementSnapshot(undefined);
       log('state.enterpriseEntitlement handler threw; access revoked', err);
+    }
+    return;
+  }
+
+  if (method === 'state.cancelDispatch') {
+    // Notification only — stop ONE team member's hand-off (`${toolCallId}:${taskIndex}`);
+    // the leader loop and sibling members keep running.
+    try {
+      const p = typeof params === 'object' && params !== null ? (params as { key?: unknown; reason?: unknown }) : {};
+      if (typeof p.key === 'string') cancelDispatch(p.key, typeof p.reason === 'string' ? p.reason : undefined);
+    } catch (err) {
+      log('state.cancelDispatch handler threw (ignored — notifications get no response)', err);
+    }
+    return;
+  }
+
+  if (method === 'state.dispatchInput') {
+    // Notification only — a direct user instruction to ONE running team member
+    // (`${toolCallId}:${taskIndex}`); queued only when this process owns the run.
+    try {
+      // Not gated on subagentAbort's registry: a member dispatched over
+      // subagent.run is registered SHELL-side (agentTools.ts) while its loop
+      // runs here, so the key is unknown to this process's registry. The
+      // host clears the queue when the run settles (subagentHost.ts).
+      const p = typeof params === 'object' && params !== null ? (params as { key?: unknown; text?: unknown; id?: unknown }) : {};
+      if (typeof p.key === 'string' && typeof p.text === 'string' && typeof p.id === 'string' && isSubagentDispatchActive(p.key)) enqueueDispatchInput(p.key, p.text, p.id);
+    } catch (err) {
+      log('state.dispatchInput handler threw (ignored — notifications get no response)', err);
     }
     return;
   }

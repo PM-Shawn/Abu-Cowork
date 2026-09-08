@@ -76,6 +76,35 @@ describe('SubagentTab', () => {
     );
   });
 
+  it('replays a member process from the message snapshot when the live batch is gone', async () => {
+    const { useChatStore } = await import('@/stores/chatStore');
+    const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
+    useChatStore.getState().addMessage(convId, {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 1,
+      executionSteps: [{
+        id: 'batch-step', toolCallId: 'batch-persisted', type: 'delegate', label: 'batch', status: 'completed', toolName: 'run_agent_batch',
+        childSteps: [
+          { id: 'c0', toolCallId: 's0', type: 'tool', label: 'Read a.md', status: 'completed', toolName: 'read_file', batchTask: { index: 0, label: 'analyst' } },
+          { id: 'c1', toolCallId: 's1', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file', batchTask: { index: 1, label: 'writer' } },
+        ],
+      }],
+    } as never);
+    const persistedIdentity: BatchIdentity = { conversationId: convId, assistantMessageId: 'assistant-1', batchToolCallId: 'batch-persisted' };
+
+    render(<SubagentTab identity={persistedIdentity} taskIndex={1} title="writer" />);
+
+    expect(screen.getByText('writer')).toBeInTheDocument();
+    expect(screen.getByText('Finished · recorded process')).toBeInTheDocument();
+    const steps = screen.getByTestId('subagent-persisted-steps');
+    // The stored label survives replay (toolInput is stripped from snapshots, so recomputing would degrade it).
+    expect(steps).toHaveTextContent('Write report.md');
+    expect(steps).not.toHaveTextContent('Read file');
+    expect(screen.queryByText('The full subagent process is only retained during this app run.')).toBeNull();
+  });
+
   it('renders queued status with a static icon instead of a spinner', () => {
     useBatchProgressStore.getState().initBatch(identity, ['Worker']);
 

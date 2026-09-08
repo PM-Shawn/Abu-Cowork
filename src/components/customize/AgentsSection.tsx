@@ -6,7 +6,8 @@ import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
 import { Toggle } from '@/components/ui/toggle';
-import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check, Bot } from 'lucide-react';
+import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check } from 'lucide-react';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { remove } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { getParentDir } from '@/utils/pathUtils';
@@ -20,7 +21,6 @@ import { getAllTools } from '@/core/tools/registry';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
-import abuAvatar from '@/assets/abu-avatar.png';
 
 function isSystemAgent(agent: SubagentDefinition): boolean {
   // System / builtin agents ship with the app (registered in registry.ts) —
@@ -29,16 +29,6 @@ function isSystemAgent(agent: SubagentDefinition): boolean {
   return agent.filePath === '__builtin__';
 }
 
-/** Render agent avatar: real image for abu (brand mascot), otherwise a single
- *  uniform robot icon — keeps the agent grid clean and tidy (matches the
- *  connectors' Server-icon style). */
-function AgentAvatar({ agent, size = 'md' }: { agent: SubagentDefinition; size?: 'sm' | 'md' }) {
-  const cls = size === 'sm' ? 'h-5 w-5' : 'h-6 w-6';
-  if (agent.name === 'abu') {
-    return <img src={abuAvatar} alt="Abu" className={`${cls} rounded-full object-cover`} />;
-  }
-  return <Bot className={`${cls} text-[var(--abu-text-muted)]`} />;
-}
 
 /** Display name: locale-aware. Falls back to canonical `name` if no override. */
 function displayName(agent: SubagentDefinition, locale: 'zh-CN' | 'en-US'): string {
@@ -61,16 +51,20 @@ function localizedSamplePrompts(agent: SubagentDefinition, locale: 'zh-CN' | 'en
 }
 interface AgentsSectionProps {
   manualCreateTrigger?: number;
+  /** Overrides the Extensions store query when a host view owns the search box. */
+  searchQuery?: string;
 }
 
-export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProps) {
+export default function AgentsSection({ manualCreateTrigger, searchQuery }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
   const installedPlugins = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const { disabledAgents, toggleAgentEnabled, closeExtensions } = useSettingsStore();
-  // No 代理 tab exists in Extensions, so this follows whichever tab is active
-  // — the same string it read back when there was a single shared query.
-  const extensionsSearchQuery = useExtensionsSearchQuery();
+  // Inside Extensions there is no 代理 tab, so the store query follows whichever
+  // tab is active. A host that owns its own search box (the 团队 view's 队员 tab)
+  // passes it instead, rather than writing into another view's state.
+  const storeSearchQuery = useExtensionsSearchQuery();
+  const extensionsSearchQuery = searchQuery ?? storeSearchQuery;
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const setPendingAgent = useChatStore((s) => s.setPendingAgent);
@@ -156,7 +150,11 @@ export default function AgentsSection({ manualCreateTrigger }: AgentsSectionProp
 
   // Split into user-defined vs builtin/system agents. Builtins go under the
   // "Examples" section, user agents under "My agents".
-  const userAgents = filteredAgents.filter((a) => !isSystemAgent(a));
+  const userAgents = filteredAgents
+    .filter((a) => !isSystemAgent(a))
+    // Newest first (user feedback 2026-08-31); agents predating the created
+    // stamp sort after dated ones, alphabetically.
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || a.name.localeCompare(b.name));
   const systemAgents = filteredAgents.filter(isSystemAgent);
 
   const selected = installedAgents.find((a) => a.name === selectedAgent) ?? null;

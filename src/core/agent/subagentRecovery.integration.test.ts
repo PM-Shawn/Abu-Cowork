@@ -155,6 +155,47 @@ describe('subagent max_tokens recovery (integration)', () => {
     mockCompressContextIfNeeded.mockResolvedValue({ compressed: false, messages: [] });
   });
 
+  it('consumes an instruction arriving during the final streamed answer before terminating (F5)', async () => {
+    const { enqueueDispatchInput, clearDispatchInputs } = await import('./dispatchInput');
+    const progress = vi.fn();
+    mockClaudeChat.mockImplementationOnce(async (_messages, _options, onEvent) => {
+      onEvent({ type: 'text', text: 'original conclusion' });
+      enqueueDispatchInput('late-input:0', 'Include the user correction');
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'updated conclusion' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    try {
+      const result = await runSubagentLoop({ agent, task: 'task', dispatchKey: 'late-input:0', onProgress: progress });
+      expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(mockClaudeChat.mock.calls[1][0])).toContain('Include the user correction');
+      expect(result.text).toContain('updated conclusion');
+      expect(progress.mock.calls.some(([event]) => event.type === 'instruction-consumed')).toBe(true);
+    } finally { clearDispatchInputs('late-input:0'); }
+  });
+
+  it('does not claim delivery when a late instruction cannot fit another bounded turn (F5)', async () => {
+    const { requestDispatchInput } = await import('./dispatchCancel');
+    const { createSubagentController } = await import('./subagentAbort');
+    const { takeDeliveredInstructions, takeUnconfirmedInstructions } = await import('./dispatchInput');
+    const owner = createSubagentController('tester', undefined, 'last-turn:0');
+    mockClaudeChat.mockImplementationOnce(async (_messages, _options, onEvent) => {
+      onEvent({ type: 'text', text: 'final' });
+      requestDispatchInput('last-turn:0', 'late user requirement');
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    try {
+      await runSubagentLoop({ agent: { name: 'tester', systemPrompt: 'sys', tools: [], maxTurns: 1 } as never,
+        task: 'task', dispatchKey: 'last-turn:0' });
+      owner.cleanup();
+      expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+      expect(takeDeliveredInstructions('last-turn:0')).toEqual([]);
+      expect(takeUnconfirmedInstructions('last-turn:0')).toEqual(['late user requirement']);
+    } finally { owner.cleanup(); }
+  });
+
   it('injects the preloaded-skills section after the agent prompt and before the safety rules', async () => {
     mockClaudeChat.mockImplementationOnce(emits([
       { type: 'text', text: 'ok' } as StreamEvent,

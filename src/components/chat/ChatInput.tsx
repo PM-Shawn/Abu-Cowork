@@ -508,7 +508,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
   const allTeams = useTeamStore((store) => store.teams);
-  const activeTeams = useMemo(() => allTeams.filter((team) => !team.archivedAt), [allTeams]);
+  const activeTeams = allTeams;
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -791,7 +791,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Selector rather than `activeTeams.find` on the per-render filtered array:
   // that form makes the React Compiler drop the component's memoization.
   const pinnedTeam = useTeamStore((store) => (
-    pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId && !team.archivedAt) ?? null : null
+    pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId) ?? null : null
   ));
   const pinTeam = useCallback((teamId: string | undefined) => {
     if (activeConvId) setConversationTeamId(activeConvId, teamId);

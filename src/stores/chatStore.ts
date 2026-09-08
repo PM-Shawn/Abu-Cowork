@@ -935,6 +935,7 @@ export const useChatStore = create<ChatStore>()(
         set((state) => {
           state.activeConversationId = null;
           state.pendingAgentName = null;
+          state.pendingTeamId = undefined;
         });
         // Top-level "新建任务" is semantically "step out of the current
         // project context" — clear the global workspace so the welcome

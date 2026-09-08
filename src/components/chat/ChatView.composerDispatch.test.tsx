@@ -1,12 +1,17 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatView from './ChatView';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useToastStore } from '@/stores/toastStore';
+import { useTeamStore } from '@/stores/teamStore';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { agentRegistry } from '@/core/agent/registry';
+import { getI18n } from '@/i18n';
+import type { SubagentDefinition } from '@/types';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import {
   clearAllComposerDrafts,
@@ -215,6 +220,59 @@ describe('ChatView welcome composer dispatch ownership', () => {
     expect(useSettingsStore.getState()).toMatchObject({
       systemSettingsOpen: true,
       activeSystemTab: 'ai-services',
+    });
+  });
+
+  describe('team welcome identity', () => {
+    const leader: SubagentDefinition = { name: '分析师', description: '分析数据', intro: '队员开场白', avatar: 'icon:code/purple', roleId: 'role-lead', filePath: '/agents/analyst/AGENT.md', systemPrompt: '' };
+    const member: SubagentDefinition = { name: '取数员', description: '负责取数', roleId: 'role-fetch', filePath: '/agents/fetch/AGENT.md', systemPrompt: '' };
+    let restoreRegistry: () => void;
+
+    beforeEach(() => {
+      const original = agentRegistry.getAgent.bind(agentRegistry);
+      const spy = vi.spyOn(agentRegistry, 'getAgent').mockImplementation((name) => [leader, member].find((agent) => agent.name === name) ?? original(name));
+      restoreRegistry = () => spy.mockRestore();
+      useDiscoveryStore.setState({ agents: [leader, member] });
+      useTeamStore.setState({ teams: [{ id: 'tm-welcome', name: '数据小队', leaderRoleId: 'role-lead', memberRoleIds: ['role-lead', 'role-fetch', 'missing'], createdAt: 1, avatar: 'icon:chart-bar/blue', description: '看数据的小队', intro: '我们负责取数和出图' }] });
+    });
+
+    afterEach(() => {
+      restoreRegistry();
+      useTeamStore.setState({ teams: [] });
+      useDiscoveryStore.setState({ agents: [] });
+    });
+
+    it('renders a pending team, its members and a fallback for a missing member', () => {
+      useChatStore.setState({ pendingTeamId: 'tm-welcome' });
+      render(<ChatView />);
+      const welcome = within(screen.getByTestId('team-welcome'));
+      expect(welcome.getByRole('heading', { name: '数据小队' })).toBeTruthy();
+      expect(welcome.getByText('看数据的小队')).toBeTruthy();
+      expect(welcome.getByText('我们负责取数和出图')).toBeTruthy();
+      expect(welcome.getByText('分析师')).toBeTruthy();
+      expect(welcome.getByText('取数员')).toBeTruthy();
+      expect(welcome.getByText(getI18n().team.unknownMember)).toBeTruthy();
+      expect(welcome.getByTestId('team-avatar')).toHaveAttribute('data-avatar-kind', 'icon');
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('prefers an explicitly pending agent and renders its icon reference as an avatar', () => {
+      useChatStore.setState({ pendingTeamId: 'tm-welcome', pendingAgentName: leader.name });
+      render(<ChatView />);
+      expect(screen.getByRole('heading', { name: leader.name })).toBeTruthy();
+      expect(screen.queryByTestId('team-welcome')).toBeNull();
+      expect(screen.queryByText('icon:code/purple')).toBeNull();
+      expect(screen.getAllByTestId('agent-avatar').some((avatar) => avatar.dataset.avatarKind === 'icon')).toBe(true);
+    });
+
+    it('uses the active empty conversation pin and hides the team when the pin is removed', () => {
+      const id = useChatStore.getState().createConversation(null, { teamId: 'tm-welcome' });
+      useChatStore.setState({ pendingTeamId: 'stale-team' });
+      render(<ChatView />);
+      expect(within(screen.getByTestId('team-welcome')).getByRole('heading', { name: '数据小队' })).toBeTruthy();
+      act(() => useChatStore.getState().setConversationTeamId(id, undefined));
+      expect(screen.queryByTestId('team-welcome')).toBeNull();
+      expect(screen.getByRole('heading', { name: getI18n().chat.welcomeTitle })).toBeTruthy();
     });
   });
 });

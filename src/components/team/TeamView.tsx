@@ -9,7 +9,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X } from 'lucide-react';
+import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X, Check } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
@@ -134,6 +134,10 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const [leaderNote, setLeaderNote] = useState('');
   const [requireApproval, setRequireApproval] = useState(false);
   const [avatar, setAvatar] = useState('');
+  const [description, setDescription] = useState('');
+  const [intro, setIntro] = useState('');
+  const [expertiseStr, setExpertiseStr] = useState('');
+  const [samplePromptsStr, setSamplePromptsStr] = useState('');
   const [saving, setSaving] = useState(false);
   // Members not offered by the picker fall into two very different buckets:
   // - hidden: the agent exists but is disabled / managed — still a real member,
@@ -172,8 +176,13 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
       setLeaderNote(team.leaderNote ?? '');
       setRequireApproval(team.requirePlanApproval === true);
       setAvatar(team.avatar ?? '');
+      setDescription(team.description ?? '');
+      setIntro(team.intro ?? '');
+      setExpertiseStr((team.expertise ?? []).join('\n'));
+      setSamplePromptsStr((team.samplePrompts ?? []).join('\n'));
     } else {
       setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setInvalidMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
+      setDescription(''); setIntro(''); setExpertiseStr(''); setSamplePromptsStr('');
     }
   }, [open, team, pluginRecordsReady]);
 
@@ -197,11 +206,19 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         if (n === leaderName) continue;
         memberRoleIds.push(await resolve(n));
       }
+      const expertise = expertiseStr.split('\n').map((line) => line.trim()).filter(Boolean);
+      const samplePrompts = samplePromptsStr.split('\n').map((line) => line.trim()).filter(Boolean);
+      const display = {
+        description: description.trim() || undefined,
+        intro: intro.trim() || undefined,
+        expertise: expertise.length ? expertise : undefined,
+        samplePrompts: samplePrompts.length ? samplePrompts : undefined,
+      };
       if (team) {
-        updateTeam(team.id, { name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined });
+        updateTeam(team.id, { name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined, ...display });
         addToast({ type: 'success', title: t.team.teamSaved });
       } else {
-        createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined });
+        createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined, ...display });
         addToast({ type: 'success', title: t.team.teamCreated });
       }
       onClose();
@@ -309,6 +326,23 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
           <Textarea value={leaderNote} onChange={(e) => setLeaderNote(e.target.value)} rows={2} className="mt-1" placeholder={t.team.fieldLeaderNotePlaceholder} />
         </div>
 
+        <div>
+          <label htmlFor="team-description" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldDescription}</label>
+          <Input id="team-description" value={description} onChange={(e) => setDescription(e.target.value)} className="mt-1" placeholder={t.team.fieldDescriptionPlaceholder} />
+        </div>
+        <div>
+          <label htmlFor="team-intro" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldIntro}</label>
+          <Textarea id="team-intro" value={intro} onChange={(e) => setIntro(e.target.value)} rows={3} className="mt-1" />
+        </div>
+        <div>
+          <label htmlFor="team-expertise" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldExpertise}</label>
+          <Textarea id="team-expertise" value={expertiseStr} onChange={(e) => setExpertiseStr(e.target.value)} rows={3} className="mt-1" placeholder={t.team.fieldLinesHint} />
+        </div>
+        <div>
+          <label htmlFor="team-sample-prompts" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldSamplePrompts}</label>
+          <Textarea id="team-sample-prompts" value={samplePromptsStr} onChange={(e) => setSamplePromptsStr(e.target.value)} rows={3} className="mt-1" placeholder={t.team.fieldSamplePromptsHint} />
+        </div>
+
         <div className="flex items-center gap-2 pt-1">
           <div className="flex-1" />
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
@@ -340,13 +374,17 @@ export default function TeamView() {
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const createConversation = useChatStore((s) => s.createConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
+  const setPendingAgent = useChatStore((s) => s.setPendingAgent);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
 
-  // Primary action of the detail: a fresh conversation already pinned to this
-  // team, nothing prefilled — the user says what they want in their own words.
-  const startChatWithTeam = (team: Team) => {
+  // Both detail actions create a fresh team conversation. A suggested prompt
+  // only prefills it; sending always belongs to the user.
+  const startChatWithTeam = (team: Team, prompt?: string) => {
+    setPendingAgent(null);
     createConversation(null, { teamId: team.id });
+    if (prompt) setPendingInput(prompt);
     setDetailTeam(null);
+    setDetailMenuOpen(false);
     closeTeam();
   };
 
@@ -477,7 +515,7 @@ export default function TeamView() {
                       id: team.id,
                       testId: `team-row-${team.name}`,
                       name: team.name,
-                      description: cardSummary(team, discoveredAgents, pluginRecordsReady),
+                      description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
                       avatar: <TeamAvatar avatar={team.avatar} />,
                     }}
                     onClick={() => setDetailTeam(team)}
@@ -620,6 +658,39 @@ export default function TeamView() {
                 <div>
                   <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeaderNote}</div>
                   <div className="whitespace-pre-wrap text-body text-[var(--abu-text-secondary)]">{detailTeam.leaderNote.trim()}</div>
+                </div>
+              )}
+              {detailTeam.intro?.trim() && (
+                <div>
+                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailIntro}</div>
+                  <div className="whitespace-pre-wrap text-body text-[var(--abu-text-secondary)]">{detailTeam.intro}</div>
+                </div>
+              )}
+              {!!detailTeam.expertise?.length && (
+                <div>
+                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailExpertise}</div>
+                  <ul className="space-y-1.5 mt-1.5">
+                    {detailTeam.expertise.map((item, index) => (
+                      <li key={index} className="flex items-start gap-2 text-body text-[var(--abu-text-primary)] leading-relaxed">
+                        <Check className="h-3.5 w-3.5 text-[var(--abu-clay)] shrink-0 mt-0.5" />
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {!!detailTeam.samplePrompts?.length && (
+                <div>
+                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailSamplePrompts}</div>
+                  <ul className="space-y-1.5 mt-1.5">
+                    {detailTeam.samplePrompts.map((prompt, index) => (
+                      <li key={index}>
+                        <Button type="button" variant="ghost" onClick={() => startChatWithTeam(detailTeam, prompt)} className="w-full h-auto justify-start whitespace-normal text-left text-body font-normal text-[var(--abu-text-secondary)] bg-[var(--abu-bg-subtle)] hover:bg-[var(--abu-bg-active)] border border-[var(--abu-border)] rounded-lg px-3 py-2">
+                          {prompt}
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
               )}
               <div>

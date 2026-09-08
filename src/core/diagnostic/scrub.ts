@@ -19,10 +19,13 @@
  * 3. **Text scrubbing** (default on, opt-out via `includeRawText`): user/
  *    assistant message text and thinking content get replaced with size
  *    placeholders. tool_use input/result are preserved fully because that's
- *    where 95% of debugging signal lives.
+ *    where 95% of debugging signal lives — with one structural exception:
+ *    browser fill values (see the fill section below), which are always
+ *    redacted because a filled password has no detectable shape.
  */
 
 import type { Message, MessageContent, ToolCall } from '@/types';
+import { sanitizeMemoryText } from '@/core/memdir/sanitize';
 
 // ════════════════════════════════════════════════════════════════════════
 // Secret redaction
@@ -92,6 +95,115 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
 const SERIALIZED_SECRET_VALUE_PATTERN =
   /\b(api[_-]?key|access[_-]?token|token|password|secret|authorization)(["']?\s*[:=]\s*["']?)([^"',}\s]+)/gi;
 
+// ════════════════════════════════════════════════════════════════════════
+// Browser fill values (v0.42.0 incident: a login password left the machine
+// in a diagnostic bundle via the abu-browser fill tool's echoed result)
+// ════════════════════════════════════════════════════════════════════════
+//
+// A filled value is an arbitrary user string — passwords have no detectable
+// shape — so this redaction is STRUCTURAL, keyed off the tool name: the
+// `value` input of a fill-shaped tool IS the filled value, and that exact
+// string is erased wherever the same call's result echoes it. The two regex
+// backstops below catch echoes in conversations recorded before the
+// extension itself stopped echoing sensitive values (≤ v0.42.x).
+
+/** fill (abu-browser / bridge-local) and form_input (external browser MCPs). */
+const FILL_TOOL_NAME_RE = /(^|__)(fill|form_input)$/;
+/** The abu-browser batch tool — its `steps` JSON string carries fill values. */
+const BROWSER_BATCH_TOOL_NAME_RE = /(^|__)batch$/;
+const FILL_VALUE_REDACTED = '[REDACTED:fill-value]';
+
+/**
+ * `Filled field with "<value>"` — the ≤ v0.42.x echo shape, in both raw and
+ * JSON-escaped (`\"`) forms. `(?!\[)` skips values already replaced by an
+ * upstream marker (`[value redacted]`, `[REDACTED…]`) so the pass is
+ * idempotent and never hides that redaction happened at the source.
+ */
+const FILLED_ECHO_RE = /(Filled field with \\?")(?!\[)((?:[^"\\]|\\.)*?)(\\?")/g;
+
+/**
+ * `"previousValue":"<value>"` in serialized fill results — what the field
+ * held BEFORE the fill (a browser-autofilled password, a saved card), which
+ * exact-value erasure cannot know.
+ */
+const PREVIOUS_VALUE_RE = /(\\?"previousValue\\?"\s*:\s*\\?")(?!\[)((?:[^"\\]|\\.)*?)(\\?")/g;
+
+/**
+ * Exact-erasing values shorter than this from result text is skipped — a 1–3
+ * char value ("1", "ok") would mangle unrelated result text. The structural
+ * input redaction above has no such floor.
+ */
+const MIN_FILL_VALUE_ERASE_LENGTH = 4;
+
+/** Erase each filled value — and its JSON-escaped form — from a string. */
+function eraseFillValues(s: string, values: string[]): string {
+  let out = s;
+  for (const v of values) {
+    out = out.split(v).join(FILL_VALUE_REDACTED);
+    const escaped = JSON.stringify(v).slice(1, -1);
+    if (escaped !== v) out = out.split(escaped).join(FILL_VALUE_REDACTED);
+  }
+  return out;
+}
+
+/**
+ * Deep-walk a JSON-shaped value, applying `fn` to every string. Pure; guards
+ * against cycles the same way scrubSecrets does (inputs are tree-shaped in
+ * practice, but a cycle must degrade, not hang).
+ */
+function mapStrings(
+  value: unknown,
+  fn: (s: string) => string,
+  seen: WeakSet<object> = new WeakSet(),
+): unknown {
+  if (typeof value === 'string') return fn(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (seen.has(value as object)) return '[circular]';
+  seen.add(value as object);
+  if (Array.isArray(value)) return value.map((v) => mapStrings(v, fn, seen));
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    out[k] = mapStrings(v, fn, seen);
+  }
+  return out;
+}
+
+/**
+ * Redact fill-step values inside a batch tool's `steps` JSON string, and
+ * report them so the caller can erase their echoes from the result. Select /
+ * click steps stay readable — a dropdown option is debugging signal, not a
+ * secret. An unparseable payload gets every `"value"` redacted instead:
+ * over-redacting a malformed input beats letting one slip through.
+ */
+function redactBatchStepsInput(steps: string): { steps: string; fillValues: string[] } {
+  try {
+    const parsed: unknown = JSON.parse(steps);
+    if (!Array.isArray(parsed)) throw new Error('steps is not an array');
+    const fillValues: string[] = [];
+    const redacted = parsed.map((step) => {
+      if (
+        step && typeof step === 'object' && !Array.isArray(step) &&
+        (step as Record<string, unknown>).action === 'fill' &&
+        typeof (step as Record<string, unknown>).value === 'string' &&
+        (step as Record<string, unknown>).value !== ''
+      ) {
+        fillValues.push((step as Record<string, unknown>).value as string);
+        return { ...(step as Record<string, unknown>), value: FILL_VALUE_REDACTED };
+      }
+      return step;
+    });
+    return { steps: JSON.stringify(redacted), fillValues };
+  } catch {
+    return {
+      steps: steps.replace(
+        /(\\?"value\\?"\s*:\s*\\?")(?!\[)((?:[^"\\]|\\.)*?)(\\?")/g,
+        `$1${FILL_VALUE_REDACTED}$3`,
+      ),
+      fillValues: [],
+    };
+  }
+}
+
 function isSecretField(key: string): boolean {
   const lower = key.toLowerCase();
   if (SECRET_FIELD_ALLOWLIST.has(lower)) return false;
@@ -106,6 +218,14 @@ function redactStringValue(s: string): string {
   for (const re of SECRET_VALUE_PATTERNS) {
     out = out.replace(re, REDACTED);
   }
+  // Browser-fill echo backstops — see the fill section above.
+  out = out.replace(FILLED_ECHO_RE, `$1${REDACTED}$3`);
+  out = out.replace(PREVIOUS_VALUE_RE, `$1${REDACTED}$3`);
+  // M1 parity: the memory write funnel's credential detector (vendor-prefixed
+  // shapes via shareRedactor + keyword-context bare credentials) knows shapes
+  // this file's own regexes miss. Reusing it keeps the two channels from
+  // drifting: what the memory gate redacts must not sail through a bundle.
+  out = sanitizeMemoryText(out).text;
   return out;
 }
 
@@ -200,17 +320,32 @@ function scrubText(s: string, opts: ScrubMessageOpts): string {
  * content gets secret-scanned but never truncated.
  */
 function scrubToolCall(tc: ToolCall): unknown {
+  // Structural fill-value redaction — see the fill section at the top.
+  let input = tc.input;
+  let fillValues: string[] = [];
+  if (FILL_TOOL_NAME_RE.test(tc.name) && typeof input?.value === 'string' && input.value !== '') {
+    fillValues = [input.value];
+    input = { ...input, value: FILL_VALUE_REDACTED };
+  } else if (BROWSER_BATCH_TOOL_NAME_RE.test(tc.name) && typeof input?.steps === 'string') {
+    const redacted = redactBatchStepsInput(input.steps);
+    input = { ...input, steps: redacted.steps };
+    fillValues = redacted.fillValues;
+  }
+  fillValues = fillValues.filter((v) => v.length >= MIN_FILL_VALUE_ERASE_LENGTH);
+  const erase = (s: string) => eraseFillValues(s, fillValues);
+
   const out: Record<string, unknown> = {
     id: tc.id,
     name: tc.name,
-    input: scrubSecrets(tc.input),
+    input: scrubSecrets(input),
     isExecuting: tc.isExecuting ?? false,
   };
   if (tc.result !== undefined) {
-    out.result = redactStringValue(tc.result);
+    out.result = redactStringValue(fillValues.length > 0 ? erase(tc.result) : tc.result);
   }
   if (tc.resultContent !== undefined) {
-    out.resultContent = scrubSecrets(tc.resultContent);
+    const content = fillValues.length > 0 ? mapStrings(tc.resultContent, erase) : tc.resultContent;
+    out.resultContent = scrubSecrets(content);
   }
   if (tc.hidden) out.hidden = true;
   return out;

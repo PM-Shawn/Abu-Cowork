@@ -670,6 +670,38 @@ describe('a grant minted through the merged ask is valid only where it was given
     });
   });
 
+  /**
+   * The embedding PAGE is judged as a page, never as a region of itself.
+   *
+   * Surfaced by a surviving mutant: passing `embeddedIn: topOrigin` for the
+   * page itself looks harmless (a page is not usually its own region), but a
+   * pre-v51 scope covers ANY page, so a site that carries one would authorize
+   * itself the moment a call named any region inside it — the fold's whole job
+   * being to make the page pass on its own account.
+   */
+  it('judges the embedding page AS the page, not as a region of itself', async () => {
+    useSettingsStore.setState({
+      // The VENDOR site is now the page, and its only grant is a migrated,
+      // page-unknown one. It embeds an ordinary allowed region.
+      browserSitePermissions: { [VENDOR]: 'allowed', [OTHER_PAGE]: 'allowed' },
+      browserSiteGrantViaEmbed: { [VENDOR]: {} },
+    });
+    servePage(VENDOR_URL, [
+      { frameId: 'f0', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: true, accessible: true },
+      {
+        frameId: 'f4',
+        origin: OTHER_PAGE,
+        url: OTHER_PAGE_URL,
+        sameOriginAsTop: false,
+        accessible: true,
+      },
+    ]);
+
+    const decision = await checkToolApproval('abu-browser__fill', fillTheRegion, unattended);
+
+    expect(decision.decision).toBe('deny');
+  });
+
   it('leaves an unmarked grant on the same site working everywhere', async () => {
     useSettingsStore.setState({ browserSiteGrantViaEmbed: {} });
     servePage(VENDOR_URL, []);
@@ -677,6 +709,29 @@ describe('a grant minted through the merged ask is valid only where it was given
     const decision = await checkToolApproval('abu-browser__fill', fillThePage, unattended);
 
     expect(decision.decision).toBe('allow');
+  });
+
+  /**
+   * ④, the arm that a scope-before-block edit actually reaches. In the case
+   * below the scope COVERS the call, so a rule that let it win still lands on
+   * the block by accident; here it does not cover, so a scope evaluated ahead
+   * of the block would turn 「一律不操作」 into an ordinary confirmation.
+   */
+  it('never turns a BLOCK into an ask, not even where the scope does not reach', async () => {
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
+      browserSiteGrantViaEmbed: { [VENDOR]: { [OTHER_PAGE]: true } },
+    });
+    servePage(VENDOR_URL, []);
+    const { cb, asks } = recordingConfirm();
+
+    const decision = await checkToolApproval(
+      'abu-browser__fill', fillThePage, attended, cb as never,
+    );
+
+    expect({ decision: decision.decision, asked: asks.length }).toEqual({
+      decision: 'deny', asked: 0,
+    });
   });
 
   // ④ A scope can only ever take authorization away.

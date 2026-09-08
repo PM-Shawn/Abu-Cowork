@@ -697,9 +697,6 @@ const enUS: TranslationDict = {
   },
 
   settings: {
-    labsExpTeamTitle: 'Agent Teams',
-    labsExpTeamDesc: 'Build a leader-led team of agents: @ the team in a conversation, the leader splits the work, runs members in parallel, reviews and reports back.',
-    labsExpTeamWhere: 'Shows above Toolbox in the left navigation when enabled.',
     title: 'Settings',
     labs: 'Labs',
     labsDescription: 'Features still in the works — off by default, turn on to try early; may change or be removed anytime.',

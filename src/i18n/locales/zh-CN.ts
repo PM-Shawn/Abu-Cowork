@@ -698,9 +698,6 @@ const zhCN: TranslationDict = {
   },
 
   settings: {
-    labsExpTeamTitle: 'Agent 团队',
-    labsExpTeamDesc: '组建由队长带队的数字团队：在对话里 @团队 派活，队长拆解分工、并行拉起队员、复核后汇报。',
-    labsExpTeamWhere: '开启后显示在左侧导航「工具箱」上方。',
     title: '设置',
     labs: '实验',
     labsDescription: '还在打磨中的新功能，默认关闭、按需开启，可能随时调整或移除。',

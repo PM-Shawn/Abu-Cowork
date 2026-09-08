@@ -1,10 +1,10 @@
 /**
- * Real-Electron smoke for the 团队 (Agent Team) management surface — labs-gated
+ * Real-Electron smoke for the 团队 (Agent Team) management surface — shipped by
  * MVP (docs/abu-team-prd-v2.md). Deterministic per TESTING.md: no LLM provider
  * is configured and nothing here triggers a model run — this covers the
  * management journeys only (execution paths live in orchestrator unit tests).
  *
- * Journey: enable the labs flag → sidebar entry appears → tab order
+ * Journey: sidebar entry is there out of the box → tab order
  * 队员·团队 (task board shelved) → create a team with a builtin leader →
  * team survives an app restart → archive
  * moves it to the 已归档 section and 恢复 brings it back.
@@ -28,38 +28,21 @@ async function waitForApp(page: Page): Promise<void> {
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
-/** Flip the labs.team flag in the persisted settings store, then reload. */
-async function enableTeamLab(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    const labs = (persisted.state.labs ?? {}) as Record<string, boolean>;
-    persisted.state.labs = { ...labs, team: true };
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await page.reload();
-  await waitForApp(page);
-}
-
 async function openTeamSurface(page: Page): Promise<void> {
   await expect(page.getByTestId('sidebar-team')).toBeVisible();
   await page.getByTestId('sidebar-team').click();
 }
 
-test.describe('team management surface (labs)', () => {
-  test('labs gate, tab order, create team, no dead ends, restart persistence, archive/restore', async () => {
+test.describe('team management surface', () => {
+  test('entry ships on by default, tab order, create team, no dead ends, restart persistence, archive/restore', async () => {
     test.setTimeout(240_000);
     const dataRoot = createElectronDataRoot();
     try {
-      // ---- First launch: gate off by default ------------------------------
+      // ---- First launch: the entry is reachable out of the box ------------
       let launched = await launchAbuElectron(dataRoot);
       let page = await launched.app.firstWindow();
       await waitForApp(page);
       await dismissFirstRunOverlays(page);
-      await expect(page.getByTestId('sidebar-team')).toHaveCount(0);
-
-      await enableTeamLab(page);
       await openTeamSurface(page);
 
       // ---- Tab order (user-pinned 2026-08-31) -----------------------------

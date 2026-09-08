@@ -941,9 +941,6 @@ export interface TranslationDict {
 
   // Settings Modal
   settings: {
-    labsExpTeamTitle: string;
-    labsExpTeamDesc: string;
-    labsExpTeamWhere: string;
     title: string;
     apiConfig: string;
     modelSelect: string;

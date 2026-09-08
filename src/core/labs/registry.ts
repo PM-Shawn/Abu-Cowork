@@ -49,22 +49,7 @@ export const LABS_TODOS_INBOX = 'todos-inbox';
  */
 export const LABS_PET = 'pet';
 
-/**
- * Stable id for the Agent Team experiment (PRD: docs/abu-team-prd-v2.md).
- * Gates the sidebar 团队 entry + TeamView. Management surface only in R1;
- * execution ships in a later batch behind the same flag.
- */
-export const LABS_TEAM = 'team';
-
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
-  {
-    id: LABS_TEAM,
-    title: () => getI18n().settings.labsExpTeamTitle,
-    description: () => getI18n().settings.labsExpTeamDesc,
-    locationHint: () => getI18n().settings.labsExpTeamWhere,
-    defaultEnabled: false,
-    expiresAfter: '2026-12-01',
-  },
   {
     id: LABS_PET,
     title: () => getI18n().settings.petEnable,

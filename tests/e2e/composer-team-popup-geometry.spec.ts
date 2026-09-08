@@ -20,13 +20,11 @@ import {
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
-async function seedTeamAndLab(page: Page): Promise<void> {
+async function seedTeam(page: Page): Promise<void> {
   await page.evaluate(() => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    const labs = (persisted.state.labs ?? {}) as Record<string, boolean>;
-    persisted.state.labs = { ...labs, team: true };
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
     window.localStorage.setItem('abu-team', JSON.stringify({
       state: {
@@ -51,7 +49,7 @@ test.describe('composer @ popup geometry', () => {
       await page.waitForLoadState('domcontentloaded');
       await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
       await dismissFirstRunOverlays(page);
-      await seedTeamAndLab(page);
+      await seedTeam(page);
 
       const textbox = page.getByRole('textbox').first();
       await textbox.click();

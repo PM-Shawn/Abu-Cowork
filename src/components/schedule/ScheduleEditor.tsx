@@ -1,8 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useTeamStore } from '@/stores/teamStore';
 import TeamAvatar from '@/components/team/TeamAvatar';
-import { useLabsFlag } from '@/core/labs/resolve';
-import { LABS_TEAM } from '@/core/labs/registry';
 import { SearchSelect } from '@/components/ui/search-select';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
@@ -56,7 +54,6 @@ export default function ScheduleEditor() {
   // Team executor (labs-gated): when set, the prompt is handed to this team
   // as a task goal instead of running a plain conversation.
   const [teamId, setTeamId] = useState('');
-  const teamEnabled = useLabsFlag(LABS_TEAM);
   const teams = useTeamStore((store) => store.teams).filter((team) => !team.archivedAt);
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectId, setProjectId] = useState('');
@@ -241,8 +238,8 @@ export default function ScheduleEditor() {
             />
           </div>
 
-          {/* Team executor (labs-gated): the run becomes a scheduled conversation pinned to the team */}
-          {teamEnabled && teams.length > 0 && (
+          {/* Team executor: the run becomes a scheduled conversation pinned to the team */}
+          {teams.length > 0 && (
             <div>
               <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
                 {t.schedule.teamExecutor}

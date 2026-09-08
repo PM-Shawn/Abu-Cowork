@@ -7,7 +7,7 @@ import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
 import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import { useLabsFlag } from '@/core/labs/resolve';
-import { LABS_TODOS_INBOX, LABS_TEAM } from '@/core/labs/registry';
+import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { Plus, Workflow, UsersRound, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
@@ -96,7 +96,6 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const pendingInboxCount = useInboxStore((s) => s.getPendingCount());
   const { t } = useI18n();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
-  const showTeam = useLabsFlag(LABS_TEAM);
 
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; convId: string } | null>(null);
@@ -367,21 +366,19 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
             </button>
           </>
         )}
-        {showTeam && (
-          <button
-            onClick={() => { openTeam(); setShowFileTree(false); }}
-            className={cn(
-              'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-              viewMode === 'team'
-                ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-            )}
-            data-testid="sidebar-team"
-          >
-            <UsersRound className={cn('h-[18px] w-[18px]', viewMode === 'team' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-            <span>{t.sidebar.team}</span>
-          </button>
-        )}
+        <button
+          onClick={() => { openTeam(); setShowFileTree(false); }}
+          className={cn(
+            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
+            viewMode === 'team'
+              ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+          )}
+          data-testid="sidebar-team"
+        >
+          <UsersRound className={cn('h-[18px] w-[18px]', viewMode === 'team' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+          <span>{t.sidebar.team}</span>
+        </button>
         <button
           onClick={() => { openExtensions(); setShowFileTree(false); }}
           className={cn(

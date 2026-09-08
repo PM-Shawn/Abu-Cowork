@@ -78,10 +78,16 @@ test.describe('team management surface', () => {
       await page.getByTestId('top-tab-nav').getByRole('button', { name: '团队' }).click();
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
 
-      // ---- Archive → 已归档 section → 恢复 --------------------------------
+      // ---- Detail (not the edit form) → archive → 已归档 → 恢复 -----------
+      // A row opens the read-only detail; 编辑 and 归档 live behind "…",
+      // matching the 队员 detail.
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
-      await page.getByTestId('team-archive').click();
-      await page.getByRole('button', { name: '归档', exact: true }).nth(1).click(); // ConfirmDialog's solid confirm
+      await expect(page.getByTestId('team-detail-start-chat')).toBeVisible();
+      await expect(page.getByTestId('team-name-input')).toHaveCount(0);
+      await page.getByTestId('team-detail-menu').click();
+      await page.getByTestId('team-detail-archive').click();
+      // The "…" menu closes on click, so the ConfirmDialog's is the only 归档 left.
+      await page.getByRole('button', { name: '归档', exact: true }).last().click();
       await expect(page.getByText('已归档（1）')).toBeVisible();
       // Zero active teams → the archived <details> renders open by default.
       await page.getByRole('button', { name: '恢复' }).click();

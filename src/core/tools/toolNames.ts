@@ -39,6 +39,7 @@ export const TOOL_NAMES = {
    *  bespoke implementation. */
   SAVE_SKILL: 'save_skill',
   SAVE_AGENT: 'save_agent',
+  SAVE_TEAM: 'save_team',
   TEST_SKILL_TRIGGER: 'test_skill_trigger',
   IMPROVE_SKILL_DESCRIPTION: 'improve_skill_description',
 

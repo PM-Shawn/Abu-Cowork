@@ -379,6 +379,33 @@ describe('sensitive values are redacted, but the fields stay fillable (U5)', () 
     expect(result.previousValue).toBe('EQ-001');
   });
 
+  /**
+   * v0.42.0 incident: `message` echoed the value being WRITTEN — "the
+   * caller's own value" — but that echo lands in the model context and from
+   * there in diagnostic bundles, which is exactly where a user's login
+   * password surfaced in plaintext. The echo now goes through the same
+   * sensitivity gate as everything else.
+   */
+  it('fill does not echo a sensitive value in its message', async () => {
+    document.body.innerHTML = '<input id="pw" type="password" />';
+    const result = await fill({ css: '#pw' }, 'Szzj#0322?*pass');
+    expect(result.success).toBe(true);
+    expect(result.message).toContain(REDACTED);
+    expect(JSON.stringify(result)).not.toContain('Szzj#0322?*pass');
+  });
+
+  it('fill does not echo into the message of an autocomplete=cc-* field', async () => {
+    document.body.innerHTML = '<input id="num" autocomplete="cc-number" />';
+    const result = await fill({ css: '#num' }, '4111111111111111');
+    expect(JSON.stringify(result)).not.toContain('4111111111111111');
+  });
+
+  it('fill still echoes an ordinary value in its message', async () => {
+    document.body.innerHTML = '<input id="code" type="text" />';
+    const result = await fill({ css: '#code' }, 'EQ-002');
+    expect(result.message).toContain('EQ-002');
+  });
+
   it('an empty sensitive field reports nothing rather than a redaction marker', async () => {
     document.body.innerHTML = '<input id="pw" type="password" />';
     expect(valueOf(await snapshot(), 'pw')).toBeUndefined();

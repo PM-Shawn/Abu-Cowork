@@ -1329,7 +1329,11 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     el.dispatchEvent(new Event("blur", { bubbles: true }));
     return {
       success: true,
-      message: `Filled field with "${value.slice(0, 50)}"`,
+      // The value being written is the caller's own, but the echo still rides
+      // into the model context, logs, and diagnostic bundles — the exact channel
+      // a login password left the machine through in v0.42.0. For a field that
+      // declares itself sensitive, confirm the fill without the content.
+      message: hasSensitiveValue(el) ? `Filled field with ${REDACTED_VALUE}` : `Filled field with "${value.slice(0, 50)}"`,
       previousValue
     };
   }

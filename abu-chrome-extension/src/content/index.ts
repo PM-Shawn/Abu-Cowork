@@ -2736,8 +2736,7 @@ function fillElement(scope: DomScope, locator: ElementLocator, value: string): {
   // Same rule as the snapshot: what was ALREADY in the field is the user's
   // secret (a browser-autofilled password, a saved card), and handing it back
   // in the result would put it in the model's context, the logs, and any
-  // approval message quoting the result. The value being written is the
-  // caller's own and is echoed in `message` unchanged.
+  // approval message quoting the result.
   const previousValue = reportableValue(el, el.value, 100);
 
   highlightElement(el);
@@ -2763,7 +2762,13 @@ function fillElement(scope: DomScope, locator: ElementLocator, value: string): {
 
   return {
     success: true,
-    message: `Filled field with "${value.slice(0, 50)}"`,
+    // The value being written is the caller's own, but the echo still rides
+    // into the model context, logs, and diagnostic bundles — the exact channel
+    // a login password left the machine through in v0.42.0. For a field that
+    // declares itself sensitive, confirm the fill without the content.
+    message: hasSensitiveValue(el)
+      ? `Filled field with ${REDACTED_VALUE}`
+      : `Filled field with "${value.slice(0, 50)}"`,
     previousValue,
   };
 }

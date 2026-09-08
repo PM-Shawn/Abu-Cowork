@@ -14,6 +14,7 @@ import {
   browserToolTargetsPage,
   normalizeBrowserOperationPolicy,
   normalizeBrowserOrigin,
+  normalizeBrowserSiteGrantScopes,
   refuseBrowserBatch,
   revokeBrowserGrant,
   summarizeBrowserBatch,
@@ -390,6 +391,101 @@ describe('browser tool policy', () => {
 
     it('does not let an allowed parent domain cover a subdomain', () => {
       expect(getSiteVerdict('https://sub.example.com', { 'https://example.com': 'allowed' })).toBe('default');
+    });
+
+    /**
+     * The scoped via-embed grant, at the unit. The real gate's own pins live in
+     * `registry.browserFrameGate.test.ts` (TESTING §13.3 — this file cannot see
+     * whether the gate passes `embeddedIn` at all); what is checked here is the
+     * rule itself, on every combination of stored scope and call context.
+     */
+    describe('a via-embed grant is scoped to the page it was given on', () => {
+      const REGION = 'https://vendor.example.net';
+      const PAGE = 'https://oa.example.com';
+      const OTHER = 'https://portal.example.org';
+      const perms = { [REGION]: 'allowed' } as const;
+
+      const verdict = (
+        scope: Record<string, true>,
+        embeddedIn: string | null,
+      ) => getSiteVerdict(REGION, perms, { viaEmbed: { [REGION]: scope }, embeddedIn });
+
+      it('holds inside the page it names', () => {
+        expect(verdict({ [PAGE]: true }, PAGE)).toBe('allowed');
+      });
+
+      it('does not reach that site as a page of its own', () => {
+        expect(verdict({ [PAGE]: true }, null)).toBe('default');
+      });
+
+      it('does not reach it inside a different page', () => {
+        expect(verdict({ [PAGE]: true }, OTHER)).toBe('default');
+      });
+
+      it('holds inside any of several pages it was granted on', () => {
+        expect(verdict({ [PAGE]: true, [OTHER]: true }, OTHER)).toBe('allowed');
+      });
+
+      // The migrated shape: page unknown, so any page's regions — never the page.
+      it('reads a pre-v51 empty scope as "any page, as a region"', () => {
+        expect(verdict({}, OTHER)).toBe('allowed');
+        expect(verdict({}, null)).toBe('default');
+      });
+
+      it('leaves a grant with no scope at all alone in every context', () => {
+        expect(getSiteVerdict(REGION, perms, { viaEmbed: {}, embeddedIn: null })).toBe('allowed');
+        expect(getSiteVerdict(REGION, perms, { viaEmbed: {}, embeddedIn: OTHER })).toBe('allowed');
+      });
+
+      /**
+       * A scope can only ever take authorization AWAY. If it could soften a
+       * block, "always allow this site's regions" would be a way to undo one.
+       */
+      it('never softens a block, in the granted context or out of it', () => {
+        const blocked = { [REGION]: 'denied' } as const;
+        const scoped = { viaEmbed: { [REGION]: { [PAGE]: true } } };
+        expect(getSiteVerdict(REGION, blocked, { ...scoped, embeddedIn: PAGE })).toBe('denied');
+        expect(getSiteVerdict(REGION, blocked, { ...scoped, embeddedIn: null })).toBe('denied');
+      });
+
+      /**
+       * Who is watching is not an input. There is no `runMode` on
+       * `SiteVerdictOptions` any more — this pins that the answer is a
+       * function of the stored scope and the call's page context alone, which
+       * is what the 2026-09-07 ruling requires.
+       */
+      it('takes no run-mode input at all', () => {
+        const options = { viaEmbed: { [REGION]: { [PAGE]: true } }, embeddedIn: PAGE };
+        expect(getSiteVerdict(REGION, perms, { ...options, runMode: 'unattended' } as never))
+          .toBe(getSiteVerdict(REGION, perms, options));
+      });
+    });
+
+    describe('normalizeBrowserSiteGrantScopes', () => {
+      it('widens a pre-v51 bare mark into the page-unknown scope', () => {
+        expect(normalizeBrowserSiteGrantScopes({ 'https://a.example': true }))
+          .toEqual({ 'https://a.example': {} });
+      });
+
+      it('keeps a scope that already names pages', () => {
+        expect(normalizeBrowserSiteGrantScopes({
+          'https://a.example': { 'https://oa.example.com': true },
+        })).toEqual({ 'https://a.example': { 'https://oa.example.com': true } });
+      });
+
+      it('drops entries and page flags it cannot read, rather than guessing', () => {
+        expect(normalizeBrowserSiteGrantScopes({
+          'https://a.example': 'yes',
+          'https://b.example': { 'https://oa.example.com': true, 'https://x.example': 'no' },
+          'https://c.example': null,
+        })).toEqual({ 'https://b.example': { 'https://oa.example.com': true } });
+      });
+
+      it('answers with an empty map for anything that is not a map', () => {
+        expect(normalizeBrowserSiteGrantScopes(undefined)).toEqual({});
+        expect(normalizeBrowserSiteGrantScopes([1, 2])).toEqual({});
+        expect(normalizeBrowserSiteGrantScopes('nope')).toEqual({});
+      });
     });
   });
 

@@ -45,13 +45,13 @@ export type BrowserConfigField = (typeof BROWSER_CONFIG_FIELDS)[number];
  * does (round-2 R2-C-②).
  *
  * `browserSiteGrantViaEmbed` qualifies the `'allowed'` entries in
- * `browserSitePermissions`: a marked grant is a full grant with a human
- * present and no standing grant at all for an automatic run. The two are
- * always written in the same `set`, so giving the mark its own counter would
- * only invent a way for them to disagree. What it must NOT do is stay behind
- * when its owner is adopted from disk — that would strip the mark off a grant
- * the other window still holds, silently promoting a region grant into one an
- * unattended run may act on.
+ * `browserSitePermissions`: a scoped grant is valid inside the embedded
+ * regions of the page it was given on and nowhere else. The two are always
+ * written in the same `set`, so giving the scope its own counter would only
+ * invent a way for them to disagree. What it must NOT do is stay behind when
+ * its owner is adopted from disk — that would strip the scope off a grant the
+ * other window still holds, silently promoting a one-page region grant into a
+ * standing one.
  *
  * A companion the disk copy does not have is REMOVED rather than kept.
  *
@@ -59,8 +59,8 @@ export type BrowserConfigField = (typeof BROWSER_CONFIG_FIELDS)[number];
  *
  * Everything else in this module fails CLOSED — an unreadable revision counts
  * as 0, a `setItem` that returns proves nothing, a blob that will not parse is
- * not merged. This one rule fails OPEN: dropping a mark promotes a region
- * grant into one an automatic run may act on.
+ * not merged. This one rule fails OPEN: dropping a scope promotes a one-page
+ * region grant into a standing one.
  *
  * It is deliberate anyway, and the honest reason is narrower than "its own
  * account": a disk copy with no `browserSiteGrantViaEmbed` key was written by
@@ -71,10 +71,12 @@ export type BrowserConfigField = (typeof BROWSER_CONFIG_FIELDS)[number];
  * included" — one store wins, not a splice of two.
  *
  * The trigger is another window running an OLDER build (or a downgrade, whose
- * v48 blob comes back through migrate unmarked). v48/v49 are unreleased and
+ * v48 blob comes back through migrate unscoped). v48-v51 are unreleased and
  * shipped builds stop at v45, so in practice this is a development machine.
  * Both halves of the rule are pinned: `mergeBrowserConfigForWrite` below, and
- * `restoreBrowserConfigField` in `settingsStore.ts`.
+ * `restoreBrowserConfigField` in `settingsStore.ts` — which additionally
+ * NORMALIZES what it adopts, because a v50 window writes the pre-scope shape
+ * (a bare `true`) and that blob never passes through `migrate`.
  */
 export const BROWSER_CONFIG_COMPANION_FIELDS: Readonly<
   Partial<Record<BrowserConfigField, readonly string[]>>

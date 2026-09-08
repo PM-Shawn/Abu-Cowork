@@ -3,6 +3,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets, __resetBrowserConfigPersistenceForTests } from './settingsStore';
 import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
+import {
+  getSiteVerdict,
+  type BrowserSiteGrantScopes,
+} from '@/core/permissions/browserToolPolicy';
 
 // ─── Test fixture helpers ─────────────────────────────────────
 
@@ -449,27 +453,65 @@ describe('settingsStore partialize', () => {
   });
 });
 
+const OA = 'https://oa.example.com';
+const PORTAL = 'https://portal.example.org';
+
 /**
- * Round-2 R2-C-②. The mark and the verdict are two fields, so the ONE thing
- * that can go wrong is drift — a mark outliving the grant it qualifies, or a
- * direct authorization leaving an old mark in place and staying invisible to
- * automatic tasks forever. Both directions are pinned here, because the setter
- * is the only thing standing between them.
+ * Round-2 R2-C-②, rescoped 2026-09-08. The scope and the verdict are two
+ * fields, so the ONE thing that can go wrong is drift — a scope outliving the
+ * grant it qualifies, or a direct authorization leaving an old scope in place
+ * and narrowing a grant the user later gave in full. Both directions are
+ * pinned here, because the setter is the only thing standing between them.
  */
-describe('settingsStore browser site grants — the via-embed mark', () => {
+describe('settingsStore browser site grants — the via-embed scope', () => {
   beforeEach(() => {
     useSettingsStore.setState({ browserSitePermissions: {}, browserSiteGrantViaEmbed: {} });
   });
 
-  it('marks a grant taken through the merged embedded-region prompt', () => {
+  it('records the PAGE a merged embedded-region grant was taken on', () => {
     useSettingsStore.getState()
-      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbedPage: OA });
 
     expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
-      .toEqual({ 'https://vendor.example.net': true });
+      .toEqual({ 'https://vendor.example.net': { [OA]: true } });
   });
 
-  it('leaves an ordinary grant unmarked', () => {
+  /**
+   * The same region granted on a second page. Each click was its own human
+   * act, so the second one ADDS rather than replaces: overwriting would revoke
+   * a grant nobody took back, and the user would find the first page asking
+   * again for no reason they can see.
+   */
+  it('adds a second page rather than replacing the first', () => {
+    const store = useSettingsStore.getState();
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbedPage: OA });
+    store.setBrowserSitePermission(
+      'https://vendor.example.net', 'allowed', { viaEmbedPage: PORTAL },
+    );
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': { [OA]: true, [PORTAL]: true } });
+  });
+
+  /**
+   * A migrated grant already covers every page's embedded regions ("page
+   * unknown"). Naming one would NARROW it — a write meant to add reach taking
+   * reach away — so the legacy scope is left exactly as it is.
+   */
+  it('does not narrow a pre-v51 scope by naming a page on it', () => {
+    useSettingsStore.setState({
+      browserSitePermissions: { 'https://vendor.example.net': 'allowed' } as never,
+      browserSiteGrantViaEmbed: { 'https://vendor.example.net': {} },
+    });
+
+    useSettingsStore.getState()
+      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbedPage: OA });
+
+    expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': {} });
+  });
+
+  it('leaves an ordinary grant unscoped', () => {
     useSettingsStore.getState().setBrowserSitePermission('https://example.com', 'allowed');
 
     expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
@@ -477,7 +519,7 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
 
   it('clears the mark when the user authorizes the same origin directly', () => {
     const store = useSettingsStore.getState();
-    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbedPage: OA });
     // Settings › 网站授权, or a prompt raised while that site WAS the page.
     store.setBrowserSitePermission('https://vendor.example.net', 'allowed');
 
@@ -488,7 +530,7 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
 
   it('clears the mark when the origin is blocked instead', () => {
     const store = useSettingsStore.getState();
-    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbedPage: OA });
     store.setBrowserSitePermission('https://vendor.example.net', 'denied');
 
     expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
@@ -496,7 +538,7 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
 
   it('clears the mark when the verdict is removed', () => {
     const store = useSettingsStore.getState();
-    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+    store.setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbedPage: OA });
     store.removeBrowserSitePermission('https://vendor.example.net');
 
     expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({});
@@ -507,10 +549,10 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
       persist: { getOptions: () => { partialize?: (state: unknown) => Record<string, unknown> } };
     }).persist.getOptions().partialize!;
     useSettingsStore.getState()
-      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbed: true });
+      .setBrowserSitePermission('https://vendor.example.net', 'allowed', { viaEmbedPage: OA });
 
     expect(partialize(useSettingsStore.getState()).browserSiteGrantViaEmbed)
-      .toEqual({ 'https://vendor.example.net': true });
+      .toEqual({ 'https://vendor.example.net': { [OA]: true } });
   });
 
   /**
@@ -546,7 +588,7 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
     function seedMarkedGrant(): void {
       useSettingsStore.setState({
         browserSitePermissions: { 'https://a.example.com': 'allowed' } as never,
-        browserSiteGrantViaEmbed: { 'https://a.example.com': true },
+        browserSiteGrantViaEmbed: { 'https://a.example.com': { [OA]: true } },
         browserConfigRevisions: {
           browserSitePermissions: 1, browserOperationPolicy: 0, allowUnattendedBrowser: 0,
         },
@@ -560,11 +602,11 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
         'browserSitePermissions',
         { 'https://b.example.com': 'allowed' },
         7,
-        { browserSiteGrantViaEmbed: { 'https://b.example.com': true } },
+        { browserSiteGrantViaEmbed: { 'https://b.example.com': { [OA]: true } } },
       );
 
       expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
-        .toEqual({ 'https://b.example.com': true });
+        .toEqual({ 'https://b.example.com': { [OA]: true } });
     });
 
     it('drops this window\'s marks when the adopted store carries none', () => {
@@ -604,23 +646,93 @@ describe('settingsStore browser site grants — the via-embed mark', () => {
       useSettingsStore.getState().restoreBrowserConfigField('allowUnattendedBrowser', true, 3);
 
       expect(useSettingsStore.getState().browserSiteGrantViaEmbed)
-        .toEqual({ 'https://a.example.com': true });
+        .toEqual({ 'https://a.example.com': { [OA]: true } });
     });
   });
 
-  it('v49 migration gives pre-existing installs an empty map, not a marked one', () => {
+  function migrateFrom(state: unknown, version: number): Record<string, unknown> {
     const migrate = (useSettingsStore as unknown as {
       persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
     }).persist.getOptions().migrate;
+    return migrate(state, version);
+  }
 
-    // Every grant that already exists was minted before the mark could be
+  it('v49 migration gives pre-existing installs an empty map, not a scoped one', () => {
+    // Every grant that already exists was minted before a scope could be
     // written, so none of them is known to have come in that way — and an
-    // unmarked grant is a full one.
-    const migrated = migrate(
+    // unscoped grant is a full one.
+    const migrated = migrateFrom(
       { browserSitePermissions: { 'https://example.com': 'allowed' } },
       48,
     );
     expect(migrated.browserSiteGrantViaEmbed).toEqual({});
+  });
+
+  /**
+   * v51 — the marks stored between v49 and v50 are bare `true`s that carried
+   * their qualification in the GATE ("no standing grant unattended") rather
+   * than in the value. The gate no longer does that, so the value has to say
+   * what it means, and the only honest reading of an old mark is "only as an
+   * embedded region, page unknown".
+   *
+   * The two failure modes this pins are the two ends of the migration: reading
+   * it as a full grant hands an automatic task a site the user never gave it,
+   * and dropping it revokes something the user did give. `{}` is neither.
+   */
+  it('v51 migration turns a page-less mark into the page-unknown scope', () => {
+    const migrated = migrateFrom(
+      {
+        browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+      },
+      50,
+    );
+
+    expect(migrated.browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': {} });
+  });
+
+  it('v51 migration leaves an already-scoped map alone', () => {
+    const migrated = migrateFrom(
+      {
+        browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': { [OA]: true } },
+      },
+      50,
+    );
+
+    expect(migrated.browserSiteGrantViaEmbed)
+      .toEqual({ 'https://vendor.example.net': { [OA]: true } });
+  });
+
+  /**
+   * The read-back the migration exists for: a migrated store must answer the
+   * gate's questions the way the口径 says. Read through `getSiteVerdict`, the
+   * one function both shapes go through, so this cannot pass by agreeing with
+   * a second implementation.
+   */
+  it('a migrated grant reads as a region grant anywhere, and never as a page grant', () => {
+    const migrated = migrateFrom(
+      {
+        browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+      },
+      50,
+    );
+    const perms = migrated.browserSitePermissions as Record<string, 'allowed' | 'denied'>;
+    const scopes = migrated.browserSiteGrantViaEmbed as BrowserSiteGrantScopes;
+    const verdictIn = (embeddedIn: string | null) =>
+      getSiteVerdict('https://vendor.example.net', perms, { viaEmbed: scopes, embeddedIn });
+
+    expect({
+      insideSomePage: verdictIn(OA),
+      insideAnotherPage: verdictIn(PORTAL),
+      asThePage: verdictIn(null),
+    }).toEqual({
+      insideSomePage: 'allowed',
+      insideAnotherPage: 'allowed',
+      asThePage: 'default',
+    });
   });
 });
 

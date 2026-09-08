@@ -27,7 +27,7 @@
  */
 
 import { useCallback, useMemo } from 'react';
-import { Server } from 'lucide-react';
+import ConnectorRow from './ConnectorRow';
 import { format, useI18n } from '@/i18n';
 import { buildConnectorCatalog, type ConnectorPrefill } from './connectorPrefill';
 import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
@@ -137,28 +137,13 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
   }, [tb, launchTrial, onManage, handleRemove]);
 
   const row = (name: string, description: string, trailing: React.ReactNode, provenance?: string) => (
-    <li
-      key={name}
-      data-testid="connector-row"
-      className="flex items-center gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
-    >
-      <Server className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" />
-      <div className="min-w-0 flex-1">
-        <span className="block truncate text-h-xs text-[var(--abu-text-primary)]">{name}</span>
-        <p className="truncate text-minor text-[var(--abu-text-tertiary)]">{description}</p>
-        {provenance && (
-          <p className="truncate text-caption text-[var(--abu-text-muted)]">{provenance}</p>
-        )}
-      </div>
-      {trailing}
-    </li>
+    <ConnectorRow key={name} name={name} description={description} trailing={trailing} provenance={provenance} />
   );
 
   return (
     <div className="h-full overflow-y-auto overlay-scroll px-8 py-3">
       <div className="mx-auto max-w-5xl space-y-6">
         <div>
-          <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{tb.connectorsMarketTitle}</div>
           {visibleCatalog.length === 0 ? (
             <p className="py-8 text-center text-body text-[var(--abu-text-tertiary)]">{tb.noServersConfigured}</p>
           ) : (
@@ -179,7 +164,7 @@ export default function ConnectorCatalog({ searchQuery, onPrefillAdd, onManage }
                     />
                   ) : (
                     <Button
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
                       data-testid="connector-add-button"
                       aria-label={format(tb.connectorAddLabel, { name: entry.name })}

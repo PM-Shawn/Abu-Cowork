@@ -16,6 +16,7 @@ import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRig
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
 import ToolCard from '@/components/toolbox/ToolCard';
+import ConnectorRow from '@/components/toolbox/connectors/ConnectorRow';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 
@@ -628,7 +629,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     } finally { setTestingServer(null); }
   };
 
-  // Connection-status indicator dot (card top-right) — the icon itself stays a
+  // Connection-status indicator — the icon itself stays a
   // neutral colour so it doesn't flicker green/red as the connection changes.
   const statusDotClass = (entry: MCPServerEntry) => {
     const { status } = entry;
@@ -691,9 +692,8 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
-      {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
-          TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
-      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
+      {/* Shared connector rows for My items; standalone views retain their template grid. */}
+      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 py-3">
         {sourceFilter === 'mine' ? (
           mineServers.length === 0 ? (
             scopedServers.length === 0 ? (
@@ -705,7 +705,17 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
             )
           ) : (
             <div className="max-w-5xl mx-auto">
-              <ToolGrid>{mineServers.map((entry) => renderServerCard(entry))}</ToolGrid>
+              <ul className="space-y-1.5">
+                {mineServers.map((entry) => (
+                  <ConnectorRow
+                    key={entry.config.name}
+                    name={entry.config.name}
+                    description={entry.config.url ?? [entry.config.command, ...(entry.config.args ?? [])].filter(Boolean).join(' ')}
+                    onOpen={() => setSelected({ kind: 'server', name: entry.config.name })}
+                    trailing={<span className={cn('block w-2 h-2 rounded-full shrink-0', statusDotClass(entry))} title={entry.status} />}
+                  />
+                ))}
+              </ul>
             </div>
           )
         ) : customServers.length === 0 && exampleItems.length === 0 ? (

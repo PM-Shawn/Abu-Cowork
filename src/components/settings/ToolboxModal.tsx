@@ -125,6 +125,7 @@ export default function ExtensionsView() {
 
   // Handler for manual create (opens blank editor in SkillsSection)
   const handleManualCreate = () => {
+    setSource('skills', 'mine');
     setManualCreateTrigger((c) => c + 1);
   };
 
@@ -214,8 +215,7 @@ export default function ExtensionsView() {
   };
 
   // Header-right control: always a search box, plus a per-tab create control.
-  // 「市场」 is somebody else's catalog on every tab — Abu's or the
-  // organization's — so 创建/导入 belongs to 「我的」 and only there.
+  // Creation is available from either source; local forms open in My items.
   const renderHeaderRight = () => {
     const searchBox = (
       <div className="relative w-52 shrink-0">
@@ -231,19 +231,19 @@ export default function ExtensionsView() {
     );
 
     let createControl: ReactNode = null;
-    if (source === 'mine' && activeTab === 'skills') {
+    if (activeTab === 'skills') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}
           onManualCreate={handleManualCreate}
-          onUploadFile={() => setSkillUploadModalOpen(true)}
+          onUploadFile={() => { setSource('skills', 'mine'); setSkillUploadModalOpen(true); }}
           uploadLabel={t.toolbox.importEntry}
           triggerTestId="skill-create-trigger"
           menuTestId="skill-create-menu"
         />
       );
-    } else if (source === 'mine' && activeTab === 'mcp') {
-      createControl = <ToolboxCreateMenu onClick={() => setMcpAddFormOpen(true)} />;
+    } else if (activeTab === 'mcp') {
+      createControl = <ToolboxCreateMenu onClick={() => { setMcpPrefill(null); setSource('mcp', 'mine'); setMcpAddFormOpen(true); }} />;
     }
     // activeTab === 'plugins' → no header create control: what you add there is
     // a marketplace, not a plugin, and that entry lives inside 「市场」 (and in

@@ -52,7 +52,7 @@ vi.mock('@/core/enterprise/mounts-registry', () => ({
 }));
 
 vi.mock('../customize/SkillsSection', () => ({ default: () => <div>Personal skills</div> }));
-vi.mock('../customize/MCPSection', () => ({ default: () => <div>Personal MCP</div> }));
+vi.mock('../customize/MCPSection', () => ({ default: ({ showAddForm }: { showAddForm: boolean }) => <div>Personal MCP{showAddForm && <div role="dialog">Add connector</div>}</div> }));
 vi.mock('@/components/toolbox/skills/ExternalSkillsPanel', () => ({
   default: ({ searchQuery }: { searchQuery: string }) => (
     <div data-testid="skills-market">skills market:{searchQuery}</div>
@@ -83,7 +83,7 @@ vi.mock('@/components/toolbox/TopTabNav', () => ({
   ),
 }));
 vi.mock('@/components/toolbox/ToolboxCreateMenu', () => ({
-  default: () => <button data-testid="create-control">Add</button>,
+  default: ({ onClick }: { onClick?: () => void }) => <button data-testid="create-control" onClick={onClick}>Add</button>,
 }));
 // The plugins panel owns its own filesystem/store plumbing (home resolution,
 // installed.json hydration, marketplace reads). Stub it here so this file
@@ -254,22 +254,30 @@ describe('Extensions view — 插件 / 技能 / 连接器', () => {
   });
 
   describe('the create control', () => {
-    it('is withheld on 市场 and offered on 我的 for 技能', () => {
+    it('is available on both 市场 and 我的 for 技能', () => {
       useSettingsStore.setState({ activeExtensionsTab: 'skills' });
       render(<ExtensionsView />);
 
-      expect(screen.queryByTestId('create-control')).not.toBeInTheDocument();
+      expect(screen.getByTestId('create-control')).toBeInTheDocument();
       fireEvent.click(mine());
       expect(screen.getByTestId('create-control')).toBeInTheDocument();
     });
 
-    it('is withheld on 市场 and offered on 我的 for 连接器', () => {
+    it('is available on both 市场 and 我的 for 连接器', () => {
       useSettingsStore.setState({ activeExtensionsTab: 'mcp' });
       render(<ExtensionsView />);
 
-      expect(screen.queryByTestId('create-control')).not.toBeInTheDocument();
+      expect(screen.getByTestId('create-control')).toBeInTheDocument();
       fireEvent.click(mine());
       expect(screen.getByTestId('create-control')).toBeInTheDocument();
+    });
+
+    it('opens the connector add form directly from the market', () => {
+      useSettingsStore.setState({ activeExtensionsTab: 'mcp' });
+      render(<ExtensionsView />);
+      fireEvent.click(screen.getByTestId('create-control'));
+      expect(mine()).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByRole('dialog')).toHaveTextContent('Add connector');
     });
 
     it('never appears on 插件 — a market is added from inside the panel', () => {

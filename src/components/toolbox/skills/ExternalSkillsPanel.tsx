@@ -10,15 +10,12 @@
  * that are gone. Organization skills are managed in the 组织 view for the same
  * reason. So the `···` offers exactly what is true here: try it, or read it.
  *
- * The hint card stays at the top even when the list is empty — with nothing
- * installed, "how do skills get here" is the only question worth answering.
  */
 
 import { useMemo, useState } from 'react';
-import { FileText, Puzzle } from 'lucide-react';
+import { FileText } from 'lucide-react';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { skillLoader } from '@/core/skill/loader';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -65,11 +62,6 @@ export default function ExternalSkillsPanel({ searchQuery }: { searchQuery: stri
   const { t } = useI18n();
   const tb = t.toolbox;
   const skills = useDiscoveryStore((s) => s.skills);
-  // `openExtensions`, not `setActiveExtensionsTab`: 插件 remembers its own
-  // 市场 | 我的 choice, and 「去插件市场」 promises the market — a user who last
-  // left 插件 on 我的 would otherwise land on their own plugins, the one place
-  // the skill they came looking for is not.
-  const openExtensions = useSettingsStore((s) => s.openExtensions);
   // Same switch, same store action as a 「我的」 card (customize/SkillsSection.tsx
   // renderSkillCard) — a skill is enabled or not, and which half of the tab it
   // is looked at from must not change that. Read-only here means "you cannot
@@ -100,23 +92,6 @@ export default function ExternalSkillsPanel({ searchQuery }: { searchQuery: stri
   return (
     <div className="h-full overflow-y-auto overlay-scroll px-8 py-3">
       <div className="mx-auto max-w-5xl">
-        {/* Where skills come from — kept above the list, empty or not. */}
-        <div className="mb-4 flex items-start gap-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] px-4 py-3">
-          <Puzzle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" />
-          <div className="min-w-0 flex-1">
-            <p className="text-h-xs text-[var(--abu-text-primary)]">{tb.skillsMarketHintTitle}</p>
-            <p className="mt-0.5 text-minor text-[var(--abu-text-tertiary)]">{tb.skillsMarketHintBody}</p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="skills-market-go-plugins"
-            onClick={() => openExtensions('plugins', 'market')}
-          >
-            {tb.skillsMarketGoPlugins}
-          </Button>
-        </div>
-
         {visible.length === 0 ? (
           <p className="py-8 text-center text-body text-[var(--abu-text-tertiary)]">
             {tb.noSkillsFound}

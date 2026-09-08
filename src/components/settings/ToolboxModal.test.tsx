@@ -128,11 +128,11 @@ describe('Extensions capability sources (bound enterprise client)', () => {
     expect(screen.queryByTestId('organization-catalog')).not.toBeInTheDocument();
   });
 
-  it('keeps personal create actions off the organization catalog, and feeds it the search box', async () => {
+  it('offers local creation alongside the organization catalog and preserves search', async () => {
     const { rerender } = render(<ExtensionsView />);
 
     expect(screen.getByTestId('organization-catalog')).toBeInTheDocument();
-    expect(screen.queryByTestId('create-control')).not.toBeInTheDocument();
+    expect(screen.getByTestId('create-control')).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText('Search'), { target: { value: 'finance' } });
     rerender(<ExtensionsView />);

@@ -69,9 +69,9 @@ beforeEach(() => {
 });
 
 describe('ConnectorCatalog · 精选连接器', () => {
-  it('lists every catalog entry under its heading, with the localized description', () => {
+  it('lists catalog entries directly with localized descriptions', () => {
     render(<ConnectorCatalog searchQuery="" onPrefillAdd={noop} onManage={noop} />);
-    expect(screen.getByText(tb().connectorsMarketTitle)).toBeTruthy();
+    expect(screen.queryByText(tb().connectorsMarketTitle)).toBeNull();
     expect(screen.getAllByTestId('connector-row')).toHaveLength(BUILTIN_REGISTRY.length);
     expect(buildConnectorCatalog('zh-CN')).toHaveLength(BUILTIN_REGISTRY.length);
     for (const entry of BUILTIN_REGISTRY) {

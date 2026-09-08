@@ -72,27 +72,18 @@ beforeEach(() => {
 });
 
 describe('ExternalSkillsPanel', () => {
-  it('shows the hint card and sends the user to the plugins MARKET', () => {
-    // Naming the tab alone is not enough: 插件 has its own 市场 | 我的 memory,
-    // so a user who last left it on 我的 would land on their own plugins —
-    // the one place the skill they are looking for provably is not.
-    const openExtensions = vi.fn(useSettingsStore.getState().openExtensions);
-    useSettingsStore.setState({ openExtensions });
-
+  it('shows skills without the plugin-market promotion', () => {
     render(<ExternalSkillsPanel searchQuery="" />);
-    expect(screen.getByText(tb().skillsMarketHintTitle)).toBeTruthy();
-    expect(screen.getByText(tb().skillsMarketHintBody)).toBeTruthy();
-    fireEvent.click(screen.getByTestId('skills-market-go-plugins'));
-
-    expect(openExtensions).toHaveBeenCalledWith('plugins', 'market');
-    expect(useSettingsStore.getState().activeExtensionsTab).toBe('plugins');
-    expect(useSettingsStore.getState().pendingExtensionsSource).toBe('market');
+    expect(screen.queryByText(tb().skillsMarketHintTitle)).toBeNull();
+    expect(screen.queryByTestId('skills-market-go-plugins')).toBeNull();
+    expect(screen.getAllByTestId('external-skill-row')).toHaveLength(3);
   });
 
-  it('keeps the hint card even with nothing installed from outside', () => {
+  it('shows only the empty state when no external skills are installed', () => {
     useDiscoveryStore.setState({ skills: [meta('my-notes', 'user')] });
     render(<ExternalSkillsPanel searchQuery="" />);
-    expect(screen.getByTestId('skills-market-go-plugins')).toBeTruthy();
+    expect(screen.queryByTestId('skills-market-go-plugins')).toBeNull();
+    expect(screen.getByText(tb().noSkillsFound)).toBeTruthy();
     expect(screen.queryAllByTestId('external-skill-row')).toHaveLength(0);
   });
 

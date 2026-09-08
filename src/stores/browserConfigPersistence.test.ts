@@ -152,7 +152,7 @@ describe('mergeBrowserConfigForWrite', () => {
     const onDisk = blob(
       {
         browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
-        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': { 'https://oa.example.com': true } },
       },
       { browserSitePermissions: 4 },
     );
@@ -162,14 +162,14 @@ describe('mergeBrowserConfigForWrite', () => {
     expect(merged.state.browserSitePermissions)
       .toEqual({ 'https://vendor.example.net': 'allowed' });
     expect(merged.state.browserSiteGrantViaEmbed)
-      .toEqual({ 'https://vendor.example.net': true });
+      .toEqual({ 'https://vendor.example.net': { 'https://oa.example.com': true } });
   });
 
   it('drops a mark the adopted copy does not carry, rather than keeping a stale one', () => {
     const windowB = blob(
       {
         browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
-        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': { 'https://oa.example.com': true } },
       },
       {},
     );
@@ -189,7 +189,7 @@ describe('mergeBrowserConfigForWrite', () => {
     const windowB = blob(
       {
         browserSitePermissions: { 'https://vendor.example.net': 'allowed' },
-        browserSiteGrantViaEmbed: { 'https://vendor.example.net': true },
+        browserSiteGrantViaEmbed: { 'https://vendor.example.net': { 'https://oa.example.com': true } },
       },
       { browserSitePermissions: 9 },
     );
@@ -201,7 +201,7 @@ describe('mergeBrowserConfigForWrite', () => {
     const { merged } = mergeBrowserConfigForWrite(windowB, onDisk);
 
     expect(merged.state.browserSiteGrantViaEmbed)
-      .toEqual({ 'https://vendor.example.net': true });
+      .toEqual({ 'https://vendor.example.net': { 'https://oa.example.com': true } });
   });
 
   it('reports each field it had to adopt, so the loser can be corrected on screen', () => {
@@ -294,7 +294,7 @@ describe('browserConfigWasStored', () => {
   it('refuses to confirm when the via-embed marks did not land with the verdicts', () => {
     const marked = blob({
       ...intended.state,
-      browserSiteGrantViaEmbed: { 'https://a.example.com': true },
+      browserSiteGrantViaEmbed: { 'https://a.example.com': { 'https://oa.example.com': true } },
     });
     // The verdicts stored; the mark did not. A grant that reads as unmarked is
     // wider than the one that was meant to be saved, so this is not a success.

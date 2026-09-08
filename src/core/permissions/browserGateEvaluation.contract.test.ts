@@ -363,14 +363,34 @@ describe('browser gate — a call that names a region agrees too', () => {
   const REGION = 'https://region.example.net';
   const REGION_URL = `${REGION}/widget`;
 
-  /** What the user's settings say about the region's own site. */
+  /** A page the grant was NOT given on — the "somewhere else" scope. */
+  const ELSEWHERE = 'https://elsewhere.example.com';
+
+  /**
+   * What the user's settings say about the region's own site.
+   *
+   * `scope` is the via-embed qualification, and replaces the old boolean
+   * `marked` (2026-09-08): the axis a scoped grant varies on is WHICH PAGE it
+   * was given on, not who is watching. `undefined` = no via-embed grant at all.
+   */
   const REGION_STATES = {
-    none: { stored: undefined, marked: false, present: false },
-    default: { stored: undefined, marked: false, present: true },
-    allowed: { stored: 'allowed' as const, marked: false, present: true },
-    'via-embed': { stored: 'allowed' as const, marked: true, present: true },
-    denied: { stored: 'denied' as const, marked: false, present: true },
-  } satisfies Record<string, { stored?: 'allowed' | 'denied'; marked: boolean; present: boolean }>;
+    none: { stored: undefined, scope: undefined, present: false },
+    default: { stored: undefined, scope: undefined, present: true },
+    allowed: { stored: 'allowed' as const, scope: undefined, present: true },
+    // Given on THIS page — the grant covers exactly this situation.
+    'via-embed-here': { stored: 'allowed' as const, scope: { [PAGE]: true }, present: true },
+    // Given on some other page — no authorization here.
+    'via-embed-elsewhere': {
+      stored: 'allowed' as const, scope: { [ELSEWHERE]: true }, present: true,
+    },
+    // Pre-v51, page never recorded: valid as a region on any page.
+    'via-embed-legacy': { stored: 'allowed' as const, scope: {}, present: true },
+    denied: { stored: 'denied' as const, scope: undefined, present: true },
+  } satisfies Record<string, {
+    stored?: 'allowed' | 'denied';
+    scope?: Record<string, true>;
+    present: boolean;
+  }>;
 
   type RegionState = keyof typeof REGION_STATES;
 
@@ -424,13 +444,19 @@ describe('browser gate — a call that names a region agrees too', () => {
     );
   }
 
-  /** The strictest of the sites this call touches — what the gate folds to. */
+  /**
+   * The strictest of the sites this call touches — what the gate folds to.
+   *
+   * No `runMode` parameter, and that absence is the assertion: the stored
+   * verdict is the same for both contexts, so the matrix below runs every row
+   * against BOTH and the real gate has to agree each time.
+   */
   function foldedVerdict(
     page: PageState,
     region: RegionState,
-    runMode: 'attended' | 'unattended',
   ): DecideBrowserOperationSiteVerdict {
     const each: Array<'allowed' | 'denied' | 'default'> = [
+      // The page is judged AS the page, so no via-embed scope reaches it.
       PAGE_STATES[page] ?? 'default',
     ];
     const spec = REGION_STATES[region];
@@ -439,8 +465,13 @@ describe('browser gate — a call that names a region agrees too', () => {
         ? 'default'
         : spec.stored === 'denied'
           ? 'denied'
-          // The mark is what an automatic run does not get to use.
-          : (spec.marked && runMode === 'unattended') ? 'default' : 'allowed';
+          // A scoped grant reaches this call only if it was given on THIS
+          // page (or predates pages being recorded at all).
+          : spec.scope === undefined
+            || Object.keys(spec.scope).length === 0
+            || spec.scope[PAGE] === true
+            ? 'allowed'
+            : 'default';
       each.push(regionVerdict);
     }
     if (each.includes('denied')) return 'denied';
@@ -458,8 +489,8 @@ describe('browser gate — a call that names a region agrees too', () => {
     }
   }
 
-  it('covers the whole region matrix (3 page states x 5 region states x 2 contexts)', () => {
-    expect(matrix).toHaveLength(3 * 5 * 2);
+  it('covers the whole region matrix (3 page states x 7 region states x 2 contexts)', () => {
+    expect(matrix).toHaveLength(3 * 7 * 2);
   });
 
   it.each(matrix)('page=%s region=%s %s', async (page, region, runMode) => {
@@ -473,7 +504,7 @@ describe('browser gate — a call that names a region agrees too', () => {
         ...(PAGE_STATES[page] !== undefined ? { [PAGE]: PAGE_STATES[page] } : {}),
         ...(spec.present && spec.stored !== undefined ? { [REGION]: spec.stored } : {}),
       }),
-      browserSiteGrantViaEmbed: spec.marked ? { [REGION]: true } : {},
+      browserSiteGrantViaEmbed: spec.scope !== undefined ? { [REGION]: spec.scope } : {},
     });
 
     let askChannel: 'dialog' | 'im' | null = null;
@@ -507,7 +538,7 @@ describe('browser gate — a call that names a region agrees too', () => {
       runMode,
       policy: DEFAULT_BROWSER_OPERATION_POLICY,
       masterSwitchUnattended: true,
-      siteVerdict: foldedVerdict(page, region, runMode),
+      siteVerdict: foldedVerdict(page, region),
       permissionMode: 'standard',
       runPermissionCeiling: null,
       toolTargetsPage: true,

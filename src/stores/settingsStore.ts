@@ -178,7 +178,7 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox';
+export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
@@ -188,6 +188,8 @@ export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
 function emptyExtensionsSearchQueries(): Record<ExtensionsTab, string> {
   return { plugins: '', skills: '', mcp: '' };
 }
+/** Tabs of the 团队 view. 队员 (agents) live here, not in Extensions. */
+export type TeamTab = 'members' | 'teams';
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
 // ============================================================
@@ -512,6 +514,10 @@ interface SettingsActions {
   setActiveExtensionsTab: (tab: ExtensionsTab) => void;
   /** Set one tab's remembered query; the other tabs keep theirs. */
   setExtensionsSearchQuery: (tab: ExtensionsTab, query: string) => void;
+  activeTeamTab: TeamTab;
+  openTeam: (tab?: TeamTab) => void;
+  closeTeam: () => void;
+  setActiveTeamTab: (tab: TeamTab) => void;
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
@@ -1052,6 +1058,7 @@ export const useSettingsStore = create<SettingsStore>()(
       pendingExtensionsSource: null,
       installingItem: null,
       viewMode: 'chat' as ViewMode,
+      activeTeamTab: 'members' as TeamTab,
       systemSettingsOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [
@@ -1403,6 +1410,10 @@ export const useSettingsStore = create<SettingsStore>()(
         set((state) => ({
           extensionsSearchQueries: { ...state.extensionsSearchQueries, [tab]: query },
         })),
+      openTeam: (tab) =>
+        set((s) => ({ viewMode: 'team' as ViewMode, activeTeamTab: tab ?? s.activeTeamTab })),
+      closeTeam: () => set({ viewMode: 'chat' as ViewMode }),
+      setActiveTeamTab: (tab) => set({ activeTeamTab: tab }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),
       openTodos: () => set({ viewMode: 'todos' as ViewMode }),

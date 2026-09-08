@@ -19,6 +19,7 @@ export interface CommandAnalysis {
 }
 
 export interface ConfirmationInfo {
+  teamIdentity?: import('../agent/teamConfirmationIdentity').TeamConfirmationIdentity;
   command: string;
   level: DangerLevel;
   reason: string;
@@ -104,6 +105,8 @@ export interface ConfirmationInfo {
    * Holds the user-facing reason for the refusal.
    */
   deniedNotice?: string;
+  /** Sub-agent that raised the request (display only), when known. */
+  agentName?: string;
 }
 
 /**

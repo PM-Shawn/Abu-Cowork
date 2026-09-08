@@ -38,6 +38,8 @@ import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
+import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import {
@@ -531,6 +533,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
   const activeConv = useActiveConversation();
   const activeConversationId = activeConv?.id ?? null;
+  const teamLeader = useConversationTeamLeader(conversationId);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).status);
   const home = useHomeDir();
 
@@ -1176,11 +1179,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       {/* Multiple assistant messages grouped with single avatar */}
       {(assistantMsgs.length > 0 || isStopped) && (
         <div className="flex gap-3 w-full overflow-hidden group">
-          {/* ABU Avatar - only shown once for the group */}
-          <AssistantRowAvatar />
+          {/* ABU Avatar - only shown once for the group (the leader's in a team conversation) */}
+          <AssistantRowAvatar avatar={teamLeader ? <AgentAvatar agent={teamLeader.leader} size="md" round /> : undefined} name={teamLeader?.leaderName} />
 
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
+            {teamLeader && (
+              <div data-testid="team-leader-caption" className="mb-1 text-caption text-[var(--abu-text-tertiary)] truncate">
+                {teamLeader.leaderName} · {teamLeader.teamName}
+              </div>
+            )}
             {/* A stopped run is a turn terminal, not assistant-authored text.
                 Render it even when Stop arrived before the first model token
                 and the empty assistant placeholder was durably deleted. */}

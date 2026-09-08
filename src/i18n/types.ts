@@ -137,6 +137,7 @@ export interface TranslationDict {
     triggers: string;
     /** Sidebar entry for the Extensions view (插件 / 技能 / 连接器). */
     extensions: string;
+    team: string;
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
@@ -404,6 +405,8 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
+    composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
     // Agent selector in toolbar
     pickAgent: string;
     pickAgentEmpty: string;
@@ -493,14 +496,23 @@ export interface TranslationDict {
     attachmentAdmissionPending: string;
     /** Composer has an in-flight initial send for this draft. */
     sendAlreadyPending: string;
+    /** Toast after a direct instruction was queued for a running team member. */
+    memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;
+    suggestionSectionTeams: string;
+    suggestionSectionAgents: string;
+    suggestionSectionSkills: string;
     /** Subagent (subagentLoop.ts) result/status strings. */
     subagent: {
       /** Subagent task was cancelled. */
       taskCancelled: string;
+      /** User content wrapping a direct instruction to a running team member. */
+      memberInstruction: string;
+      /** Abort reason attached when the stall watchdog stops a hand-off. */
+      stalledStopped: string;
       /** Output repeatedly hit the token limit; result may be incomplete. */
       outputLimitIncomplete: string;
       /** Subagent stopped: repeated incomplete tool calls / truncated output. */
@@ -685,6 +697,7 @@ export interface TranslationDict {
     skillDraftReady: string;
     imInbound: string;
     updateAvailable: string;
+    stuckDetection: string;
   };
 
   // Scratchpad entry titles (scratchpadStore.ts)
@@ -1783,7 +1796,94 @@ export interface TranslationDict {
   };
 
   // Toolbox Modal
+  team: {
+    tabMembers: string;
+    tabTeams: string;
+    searchPlaceholder: string;
+    newTeam: string;
+    editTeam: string;
+    createTeamAction: string;
+    teamCreated: string;
+    teamSaved: string;
+    teamSaveFailed: string;
+    fieldName: string;
+    fieldNamePlaceholder: string;
+    fieldAvatar: string;
+    fieldAvatarPlaceholder: string;
+    fieldAvatarHint: string;
+    fieldMembers: string;
+    fieldMembersHint: string;
+    noMembersYet: string;
+    createMemberNow: string;
+    fieldLeaderNote: string;
+    fieldLeaderNoteHint: string;
+    fieldLeaderNotePlaceholder: string;
+    teamRowSummary: string;
+    detailStartChat: string;
+    detailLeader: string;
+    detailMembers: string;
+    detailNoMembers: string;
+    detailPlanApproval: string;
+    detailPlanApprovalOn: string;
+    detailPlanApprovalOff: string;
+    detailLeaderNote: string;
+    detailSkills: string;
+    detailSkillsHint: string;
+    detailNoSkills: string;
+    detailEdit: string;
+    aiCreateTeamPrompt: string;
+    unknownMember: string;
+    teamsEmpty: string;
+    teamsEmptyHint: string;
+    /** Follow-up chips under a finished team turn. */
+    followUpRedoStep: string;
+    followUpMemberRevise: string;
+    followUpMemberAppend: string;
+    confirmationStripTitle: string;
+    confirmationSeparator: string;
+    confirmationLeader: string;
+    confirmationApproveRun: string;
+    confirmationWriteRead: string;
+    confirmationWrite: string;
+    confirmationRead: string;
+    confirmationCwd: string;
+    confirmationRequestOrdinal: string;
+    confirmationDefaultCwd: string;
+    confirmationLegacy: string;
+    confirmationRunRule: string;
+    confirmationRevoke: string;
+    confirmationApprove: string;
+    confirmationReject: string;
+    confirmationNotice: string;
+    confirmationApprovedFollowUp: string;
+    confirmationRejectedFollowUp: string;
+    stallStoppedNotice: string;
+    resumeAfterRestart: string;
+    resumeAfterRestartFailed: string;
+    followUpHint: string;
+    fieldPlanApproval: string;
+    fieldPlanApprovalHint: string;
+    chatReceiptEmptyGoal: string;
+    chatReceiptOtherTeam: string;
+    fieldLeader: string;
+    fieldLeaderHint: string;
+    leaderPlaceholder: string;
+    membersPlaceholder: string;
+    pickerEmpty: string;
+    suggestionTeamHint: string;
+    deleteTeamAction: string;
+    deleteTeamTitle: string;
+    deleteTeamMessage: string;
+    teamArchived: string;
+  };
+
   toolbox: {
+    agentNamePlaceholder: string;
+    agentNameFormatHint: string;
+    agentInstructionsLabel: string;
+    agentAdvancedSection: string;
+    agentSkillsPlaceholder: string;
+    agentSkillsEmpty: string;
     title: string;
     skills: string;
     agents: string;
@@ -2526,6 +2626,33 @@ export interface TranslationDict {
     agentTokens: string;
     agentNoSteps: string;
     agentFullProcessUnavailable: string;
+    /** Member tab header note when the process is replayed from the message snapshot. */
+    agentPersistedProcess: string;
+    /** Member tab header note while the dispatch is still running (live execution source). */
+    teamLiveProcess: string;
+    /** Team overview tab (in-conversation team). */
+    teamTitle: string;
+    teamNotPinned: string;
+    teamLeaderBadge: string;
+    teamLeaderIdle: string;
+    teamMembersHeader: string;
+    teamNoMembers: string;
+    teamMemberIdle: string;
+    teamDispatchCount: string;
+    teamNoDispatchYet: string;
+    teamDispatchOrdinal: string;
+    teamOpenDispatch: string;
+    teamOpenOverview: string;
+    teamStopDispatch: string;
+    teamStopDispatchShort: string;
+    teamStopDispatchShortNamed: string;
+    teamAppendInstruction: string;
+    teamStalledFor: string;
+    teamDispatchInterrupted: string;
+    teamDispatchNoToolCalls: string;
+    teamMemberBarCollapse: string;
+    teamMemberBarExpand: string;
+    teamMemberBarCollapsed: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;
@@ -2560,6 +2687,13 @@ export interface TranslationDict {
 
   // Scheduled Tasks
   schedule: {
+    teamExecutor: string;
+    teamExecutorNone: string;
+    teamExecutorSearch: string;
+    teamExecutorEmpty: string;
+    teamExecutorHint: string;
+    teamAutoPaused: string;
+    teamPlanUnconfirmed: string;
     title: string;
     newTask: string;
     editTask: string;
@@ -3057,6 +3191,8 @@ export interface TranslationDict {
     confirm: string;
     blocked: string;
     userCancelled: string;
+    /** Team run: action refused pending the user's confirmation (never blocks). */
+    teamPendingConfirmation: string;
     aiDenied: string;
     browserAction: string;
     browserReason: string;
@@ -3546,6 +3682,12 @@ export interface TranslationDict {
       planImApprovalNeeded: string;
       /** Plan-approval card header. */
       planApprovalHeader: string;
+      /** Strict-team variants of the approval card (先确认分工). */
+      planApprovalHeaderTeam: string;
+      planApprovalQuestionTeam: string;
+      planApproveLabelTeam: string;
+      planRejectLabelTeam: string;
+      planApprovedTeam: string;
       /** Plan-approval card question (rendered after step list). */
       planApprovalQuestion: string;
       /** Approve option label. */
@@ -3747,6 +3889,17 @@ export interface TranslationDict {
       errAgentNotFound: string;
       /** Error: agent disabled. {agentName} */
       errAgentDisabled: string;
+      errNotTeamMember: string;
+      /** Team run hit its hand-off cap (teamRunBounds). */
+      errDispatchCapReached: string;
+      /** Member blocked after consecutive failed hand-offs. */
+      errMemberBlocked: string;
+      /** Declared artifacts missing after the member finished (define-done check). */
+      errExpectedFilesMissing: string;
+      delegateNoToolCallsNote: string;
+      /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
+      delegateUnconfirmedInstructionsNote: string;
+      delegateUserInstructionsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
       // save_skill / save_agent (createSaveItemTool)
@@ -3782,6 +3935,10 @@ export interface TranslationDict {
       errBatchAgentNotFound: string;
       /** Error: agent disabled in batch task. {i}, {agentName} */
       errBatchAgentDisabled: string;
+      errBatchNotTeamMember: string;
+      errBatchDispatchCapReached: string;
+      errBatchMemberBlocked: string;
+      errBatchExpectedFilesMissing: string;
       /** Activity label when a sub-agent calls a tool. {toolName} */
       activityCalling: string;
       /** Timeout error message for runWithTimeout. */
@@ -3794,6 +3951,9 @@ export interface TranslationDict {
       batchSectionTitle: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
+      /** Appended to a member result that made zero tool calls (team leader review). */
+      batchNoToolCallsNote: string;
+      batchUserInstructionsNote: string;
       /** Structured path: could not parse JSON. */
       errJsonParseFailed: string;
       /** Structured path: missing required fields. {fields} */

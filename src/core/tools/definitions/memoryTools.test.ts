@@ -247,6 +247,16 @@ describe('updateMemoryTool — clear', () => {
 
 describe('reportPlanTool — plan-mode approval (B1)', () => {
   describe('buildPlanApprovalPayload', () => {
+    it('uses the 分工确认 wording for strict teams', () => {
+      const t = getI18n().toolResult.memory;
+      const payload = buildPlanApprovalPayload(['整理数据 @zz取数员', '成文 @zz撰写员'], { team: true });
+      const q = payload.questions[0];
+      expect(q.header).toBe(t.planApprovalHeaderTeam);
+      expect(q.question).toContain(t.planApprovalQuestionTeam);
+      expect(q.question).toContain('@zz取数员');
+      expect(q.options.map((o) => o.label)).toEqual([t.planApproveLabelTeam, t.planRejectLabelTeam]);
+    });
+
     it('builds a single approve/reject question listing the steps', () => {
       const t = getI18n().toolResult.memory;
       const payload = buildPlanApprovalPayload(['扫描文件', '移动发票']);
@@ -363,6 +373,39 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
       expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
       expect(result).toContain('approved');
+    });
+
+    it('strict team (先确认分工): a SAFE plan still goes through the approval card', async () => {
+      const t = getI18n().toolResult.memory;
+      mockGetPlanMode.mockReturnValue('off');
+      // The strict-team card carries its own option labels; the answer echoes them back.
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeaderTeam, question: 'q', selected: [t.planApproveLabelTeam] }] });
+      const result = await reportPlanTool.execute(input, { ...ctx, teamRequirePlanApproval: true });
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
+      expect(mockRequestUserQuestion).toHaveBeenCalledOnce();
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
+      expect(result).toContain('approved');
+    });
+
+    it('strict team in an unattended (background) run lands the plan without a card', async () => {
+      mockGetPlanMode.mockReturnValue('off');
+      seedExecution();
+      const result = await reportPlanTool.execute({ ...input }, { ...ctx, loopId: 'loop-1', teamRequirePlanApproval: true, interactionMode: 'background' });
+      expect(mockRequestUserQuestion).not.toHaveBeenCalled();
+      expect(mockSetPlanMode).not.toHaveBeenCalled();
+      expect(useTaskExecutionStore.getState().executions['exec-1'].plannedSteps).toHaveLength(2);
+      expect(result).toContain('Execution plan recorded');
+    });
+
+    it('strict team: a rejected plan stays in planning and does not land', async () => {
+      const t = getI18n().toolResult.memory;
+      mockGetPlanMode.mockReturnValue('off');
+      seedExecution();
+      mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeaderTeam, question: 'q', selected: [t.planRejectLabelTeam] }] });
+      await reportPlanTool.execute({ ...input }, { ...ctx, loopId: 'loop-1', teamRequirePlanApproval: true });
+      expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'planning');
+      expect(mockSetPlanMode).not.toHaveBeenCalledWith('c1', 'approved');
+      expect(useTaskExecutionStore.getState().executions['exec-1'].plannedSteps).toEqual([]);
     });
 
     it('IM run: records the plan and asks for text approval instead of blocking on a card', async () => {
@@ -501,6 +544,21 @@ describe('reportPlanTool — declarative full-replace', () => {
     const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
     expect(landed).toHaveLength(3);
     expect(landed[0].description).toBe('a');
+  });
+
+  it('lands a per-step owner (team leader plans) and drops blank owners', async () => {
+    const store = useTaskExecutionStore.getState();
+    const exec = store.createExecution('conv-1', 'loop-1');
+    await reportPlanTool.execute(
+      { steps: [
+        { content: 'Pull the numbers', owner: 'analyst' },
+        { content: 'Draft the report', owner: '  writer ' },
+        { content: 'Review', owner: '' },
+      ] },
+      { conversationId: 'conv-1', loopId: 'loop-1', toolCallId: 'tc-1' } as never,
+    );
+    const landed = useTaskExecutionStore.getState().executions[exec.id].plannedSteps;
+    expect(landed.map((s) => s.owner)).toEqual(['analyst', 'writer', undefined]);
   });
 
   it('defaults a missing status to pending', async () => {

@@ -1,3 +1,5 @@
+import { evaluatePlanGate, getPlanMode } from '../agent/planMode';
+import { buildTeamConfirmationIdentity } from '../agent/teamConfirmationIdentity';
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
 import { parseNamespacedToolName } from '../mcp/toolName';
@@ -8,6 +10,8 @@ import {
   checkListPath,
   authorizeWorkspace,
   scopedAuthorizeWorkspace,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
   hasFullShellAuthorizationScope,
   isInScopedAuthorizedWorkspace,
   type AuthorizationScopeId,
@@ -323,9 +327,14 @@ export type CommandConfirmCallback = (info: ConfirmationInfo, loopId?: string) =
  * Callback type for file permission requests
  */
 export type FilePermissionCallback = (request: {
+  teamIdentity?: import('../agent/teamConfirmationIdentity').TeamConfirmationIdentity;
+  teamAuthorizationScopeId?: string;
+  additionalCapabilities?: Array<'read' | 'write'>;
   path: string;
   capability: 'read' | 'write';
   toolName: string;
+  /** Sub-agent stamped by the trusted executor, when known. */
+  agentName?: string;
 }, loopId?: string) => Promise<boolean>;
 
 /**
@@ -1144,10 +1153,33 @@ export async function checkToolApproval(
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
 ): Promise<ToolApprovalDecision> {
+  let teamFileScope: string | undefined;
+  try {
   const t = getI18n();
   const conversation = toolContext?.conversationId
     ? useChatStore.getState().conversations[toolContext.conversationId]
     : undefined;
+  const isTeam = Boolean(conversation?.teamId || toolContext?.teamRoster);
+  // The shell execution boundary repeats the strict-team gate: a sidecar
+  // reset or a reverse request cannot turn a mandatory plan into prompt text.
+  if (toolContext?.teamRequirePlanApproval && toolContext.interactionMode !== 'background') {
+    const gate = evaluatePlanGate({ toolName: name, toolReadOnly: undefined,
+      planMode: getPlanMode(toolContext.conversationId ?? ''), requirePlanApproval: true });
+    if (!gate.allow) return { decision: 'deny', reason: gate.reason };
+  }
+  // Capture parameters at the execution boundary, after tool hooks have run.
+  // Neither a display label nor sidecar-supplied approval metadata is trusted.
+  if (isTeam && onRequireConfirmation) {
+    const confirm = onRequireConfirmation;
+    onRequireConfirmation = async (info, loopId) => confirm({
+      ...info,
+      agentName: toolContext?.agentName,
+      teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, {
+        origin: info.browserOrigin, pageOrigin: info.browserPageOrigin,
+        embeddedOrigins: info.browserEmbeddedOrigins,
+      }),
+    }, loopId);
+  }
   const convPermissionMode = conversation?.permissionMode;
   const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
@@ -1289,9 +1321,10 @@ export async function checkToolApproval(
           command,
           level: analysis.level,
           reason: reviewReason || analysis.reason,
+          agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -1346,16 +1379,32 @@ export async function checkToolApproval(
           if (fileDecision === 'confirm') {
             // Needs user permission — ask via callback
             if (onRequireFilePermission) {
+              // The approved path exists only in this call's scope. A run rule
+              // is re-evaluated on the next call; no path grant leaks to another
+              // member, operation or conversation through the global store.
+              if (isTeam) teamFileScope ??= createAuthorizationScope();
+              const additionalCapabilities: Array<'read' | 'write'> = name === TOOL_NAMES.WRITE_FILE && cap === 'write' ? ['read'] : [];
               const granted = await onRequireFilePermission({
-                path: pathCheck.permissionPath,
-                capability: cap,
-                toolName: name,
-              }, toolContext?.loopId);
+                  path: pathCheck.permissionPath,
+                  capability: cap,
+                  toolName: name,
+                  agentName: toolContext?.agentName,
+                  ...(isTeam ? {
+                    teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: pathCheck.permissionPath, capabilities: [cap, ...additionalCapabilities] }),
+                    teamAuthorizationScopeId: teamFileScope,
+                    additionalCapabilities,
+                  } : {}),
+                }, toolContext?.loopId);
+              if (granted) pathCheck = await checkFn(pathInfo.path, teamFileScope ?? scopeId);
               if (!granted) {
-                return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
+                return {
+                  decision: 'deny',
+                  reason: toolContext?.teamRoster
+                    ? `${t.commandConfirm.teamPendingConfirmation} (${pathCheck.permissionPath})`
+                    : `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`,
+                };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
-              pathCheck = await checkFn(pathInfo.path, scopeId);
               if (!pathCheck.allowed) {
                 return { decision: 'deny', reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}` };
               }
@@ -1799,6 +1848,7 @@ export async function checkToolApproval(
           level: 'warn',
           reason: userFacingReason,
           kind: 'browser',
+          agentName: toolContext?.agentName,
           browserOperationClass: opClass,
           ...(origin !== null ? { browserOrigin: origin } : {}),
           allowPersistentGrant: false,
@@ -1845,7 +1895,7 @@ export async function checkToolApproval(
         originResolved: origin !== null,
         answersPageDialog: answersPageDialog(name),
         loginRequired,
-        conversationGrant: hasBrowserGrant(toolContext?.conversationId),
+        conversationGrant: !isTeam && hasBrowserGrant(toolContext?.conversationId),
         confirmationChannelAvailable: Boolean(onRequireConfirmation),
         originKnown: origin !== null,
       });
@@ -1864,7 +1914,7 @@ export async function checkToolApproval(
         if (runMode === 'unattended') return await denyUnattendedBrowser(reason);
         recordGateDenial(reason);
         if (reason === 'user-cancelled') {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
         const text = reason === 'approval-refused'
           ? t.commandConfirm.browserDenied
@@ -1885,6 +1935,7 @@ export async function checkToolApproval(
             level: 'warn',
             reason: noticeReason,
             kind: 'browser',
+          agentName: toolContext?.agentName,
             browserOperationClass: opClass,
             ...(origin !== null ? { browserOrigin: origin } : {}),
             allowPersistentGrant: false,
@@ -2006,6 +2057,7 @@ export async function checkToolApproval(
             level: 'warn',
             reason: browserAskReason(),
             kind: 'browser',
+          agentName: toolContext?.agentName,
             browserOperationClass: opClass,
             ...(origin !== null ? { browserOrigin: origin } : {}),
             // R2-D — the page this is happening ON, from the SAME source the
@@ -2138,6 +2190,9 @@ export async function checkToolApproval(
           ...(browserUploadFileCount !== undefined
             ? { browserUploadFileCount }
             : {}),
+          // Team runs record WHICH member asked; the strip shows it and the
+          // approval key binds it (F1).
+          agentName: toolContext?.agentName,
           browserOperationClass: opClass,
           ...(consequence === 'state-changing'
             ? { browserOrigin: origin ?? undefined }
@@ -2181,6 +2236,7 @@ export async function checkToolApproval(
         // hour of clicking, any more than a click buys the next dialog.
         if (
           consequence === 'state-changing'
+          && !isTeam
           && !isScriptingBrowserTool(name)
           && !answersPageDialog(name)
           && siteVerdict !== 'high-risk'
@@ -2287,7 +2343,7 @@ export async function checkToolApproval(
         return pluginCeilingDecision;
       }
       const serverName = pluginServerOf(name) ?? '';
-      const granted = hasPluginGrant(toolContext?.conversationId, serverName);
+      const granted = !isTeam && hasPluginGrant(toolContext?.conversationId, serverName);
       const decision = strategy.decideOtherTool(consequence, granted);
       if (decision !== 'allow') {
         if (!onRequireConfirmation) {
@@ -2303,7 +2359,7 @@ export async function checkToolApproval(
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
-        grantPluginServer(toolContext?.conversationId, serverName);
+        if (!isTeam) grantPluginServer(toolContext?.conversationId, serverName);
       }
     }
   }
@@ -2332,9 +2388,10 @@ export async function checkToolApproval(
           level: 'warn',
           reason: t.commandConfirm.selfExtensionReason,
           kind: 'self-extension',
+          agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -2379,7 +2436,7 @@ export async function checkToolApproval(
     // closed if the run has only write authority.
     let readCheck = await checkReadPath(
       largeWritePathAfterApproval,
-      toolContext?.authorizationScopeId,
+      teamFileScope ?? toolContext?.authorizationScopeId,
     );
     if (
       !readCheck.allowed
@@ -2387,15 +2444,21 @@ export async function checkToolApproval(
       && readCheck.permissionPath
       && onRequireFilePermission
     ) {
+      if (isTeam) teamFileScope ??= createAuthorizationScope();
       const granted = await onRequireFilePermission({
+        ...(isTeam ? {
+          teamAuthorizationScopeId: teamFileScope,
+          teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: readCheck.permissionPath, capabilities: ['read'] }),
+        } : {}),
         path: readCheck.permissionPath,
         capability: 'read',
         toolName: TOOL_NAMES.WRITE_FILE,
+        agentName: toolContext?.agentName,
       }, toolContext?.loopId);
       if (granted) {
         readCheck = await checkReadPath(
           largeWritePathAfterApproval,
-          toolContext?.authorizationScopeId,
+          teamFileScope ?? toolContext?.authorizationScopeId,
         );
       }
     }
@@ -2416,6 +2479,9 @@ export async function checkToolApproval(
     ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
     ...(browserExecutionPin ? { browserExecution: browserExecutionPin } : {}),
   };
+  } finally {
+    if (teamFileScope) disposeAuthorizationScope(teamFileScope);
+  }
 }
 
 /**

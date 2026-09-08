@@ -27,6 +27,7 @@ export const SUBAGENT_RUN_WIRE_FIELDS = [
   'scheduledTaskId',
   'preloadedSkills',
   'initiatedBy',
+  'dispatchKey',
   'locale',
   'uiStrings',
   'settingsSnapshot',

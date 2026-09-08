@@ -8,6 +8,7 @@
 
 /** Queued user input entry */
 export interface QueuedInput {
+  teamConfirmationRetryId?: string;
   id: string;
   text: string;
   timestamp: number;
@@ -40,7 +41,7 @@ function notifyListeners(): void {
 /**
  * Enqueue a staged message for a running conversation.
  */
-export function enqueueUserInput(conversationId: string, text: string, isSystem?: boolean): void {
+export function enqueueUserInput(conversationId: string, text: string, isSystem?: boolean, teamConfirmationRetryId?: string): void {
   if (!text.trim()) return;
 
   const queue = inputQueues.get(conversationId) ?? [];
@@ -51,6 +52,7 @@ export function enqueueUserInput(conversationId: string, text: string, isSystem?
       text: text.trim(),
       timestamp: Date.now(),
       isSystem,
+      ...(teamConfirmationRetryId ? { teamConfirmationRetryId } : {}),
     },
   ]);
   notifyListeners();

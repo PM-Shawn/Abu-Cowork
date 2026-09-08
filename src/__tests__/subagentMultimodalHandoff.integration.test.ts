@@ -264,8 +264,13 @@ describe('multimodal delegation route × runtime matrix', () => {
       { type: 'writer', task: 'Summarize it.' },
     ] }, { conversationId, loopId, toolCallId: `batch-${runtime}` } as never);
     expect(state.chats).toHaveLength(2);
-    expectOrderedChildContent('Describe it.', 0);
-    expectOrderedChildContent('Summarize it.', 1);
+    // Parallel children may reach the adapter in either order. Match each
+    // task first, then still require its exact internal text/image sequence.
+    for (const task of ['Describe it.', 'Summarize it.']) {
+      const index = state.chats.findIndex((_, i) => childUserContent(i).at(-1)?.text === task);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expectOrderedChildContent(task, index);
+    }
     clearLoopContext(loopId);
   });
 

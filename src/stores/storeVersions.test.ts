@@ -20,7 +20,7 @@ const PERSISTED_STORES = [
   { key: 'abu-todos', minVersion: 1 },
   { key: 'abu-inbox', minVersion: 2 },
   { key: 'abu-composer-drafts', minVersion: 2 },
-  { key: 'abu-team', minVersion: 6 },
+  { key: 'abu-team', minVersion: 8 },
   { key: 'abu-team-confirmations', minVersion: 1 },
   { key: 'abu-plugins', minVersion: 2 },
 ] as const;

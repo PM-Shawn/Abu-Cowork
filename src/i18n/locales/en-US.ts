@@ -1453,12 +1453,10 @@ const enUS: TranslationDict = {
     membersPlaceholder: 'Add members (optional)',
     pickerEmpty: 'No matching members',
     suggestionTeamHint: 'Hand to the whole team — the leader plans the split',
-    archiveTeamAction: 'Archive',
-    archiveTeamTitle: 'Archive this team?',
-    archiveTeamMessage: '"{name}" will be archived — no new tasks, history kept. Restore anytime.',
+    deleteTeamAction: 'Delete',
+    deleteTeamTitle: 'Delete this team?',
+    deleteTeamMessage: '"{name}" will be deleted and cannot be restored. Conversations that used it stay, but they can no longer hand out work. The members themselves are untouched.',
     teamArchived: 'Team archived',
-    archivedSection: 'Archived ({count})',
-    restoreTeamAction: 'Restore',
   },
 
   toolbox: {

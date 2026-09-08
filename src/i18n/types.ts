@@ -1871,12 +1871,10 @@ export interface TranslationDict {
     membersPlaceholder: string;
     pickerEmpty: string;
     suggestionTeamHint: string;
-    archiveTeamAction: string;
-    archiveTeamTitle: string;
-    archiveTeamMessage: string;
+    deleteTeamAction: string;
+    deleteTeamTitle: string;
+    deleteTeamMessage: string;
     teamArchived: string;
-    archivedSection: string;
-    restoreTeamAction: string;
   };
 
   toolbox: {

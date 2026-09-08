@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
@@ -8,7 +8,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Archive } from 'lucide-react';
+import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
@@ -16,6 +16,8 @@ import AgentAvatar from '@/components/common/AgentAvatar';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import ToolCard from '@/components/toolbox/ToolCard';
+import ToolGrid from '@/components/toolbox/ToolGrid';
 import AgentsSection from '@/components/customize/AgentsSection';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -94,8 +96,6 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
-  const archiveTeam = useTeamStore((s) => s.archiveTeam);
-  const [confirmArchive, setConfirmArchive] = useState(false);
   const agents = useMemberPool();
 
   const [name, setName] = useState('');
@@ -247,59 +247,18 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         </div>
 
         <div className="flex items-center gap-2 pt-1">
-          {team && (
-            <Button variant="ghost" className="text-[var(--abu-danger)]" onClick={() => setConfirmArchive(true)} data-testid="team-archive">
-              {t.team.archiveTeamAction}
-            </Button>
-          )}
           <div className="flex-1" />
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
           <Button onClick={handleSave} disabled={!name.trim() || (!leaderName && !leaderKept) || saving} data-testid="team-save">
             {team ? t.common.save : t.team.createTeamAction}
           </Button>
         </div>
-        <ConfirmDialog
-          open={confirmArchive}
-          title={t.team.archiveTeamTitle}
-          message={format(t.team.archiveTeamMessage, { name: team?.name ?? '' })}
-          confirmText={t.team.archiveTeamAction}
-          cancelText={t.common.cancel}
-          variant="danger"
-          onCancel={() => setConfirmArchive(false)}
-          onConfirm={() => {
-            if (team) archiveTeam(team.id);
-            setConfirmArchive(false);
-            addToast({ type: 'success', title: t.team.teamArchived });
-            onClose();
-          }}
-        />
       </div>
     </DialogShell>
   );
 }
 
 // ---------------------------------------------------------------- Task dialog
-
-function ArchivedTeams({ teams, open = false, className }: { teams: Team[]; open?: boolean; className?: string }) {
-  const { t } = useI18n();
-  if (teams.length === 0) return null;
-  return (
-    <details open={open} className={className}>
-      <summary className="cursor-pointer text-caption text-[var(--abu-text-tertiary)] select-none px-1">
-        {format(t.team.archivedSection, { count: String(teams.length) })}
-      </summary>
-      <div className="mt-2 space-y-2">
-        {teams.map((team) => (
-          <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
-            <TeamAvatar avatar={team.avatar} size="lg" className="opacity-70" />
-            <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
-            <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
-          </div>
-        ))}
-      </div>
-    </details>
-  );
-}
 
 export default function TeamView() {
   const { activeTeamTab: persistedTeamTab, setActiveTeamTab } = useSettingsStore();
@@ -329,11 +288,11 @@ export default function TeamView() {
   const [teamDialog, setTeamDialog] = useState<{ open: boolean; team: Team | null }>({ open: false, team: null });
   const [detailTeam, setDetailTeam] = useState<Team | null>(null);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
-  const [confirmArchiveTeam, setConfirmArchiveTeam] = useState<Team | null>(null);
+  const [confirmDeleteTeam, setConfirmDeleteTeam] = useState<Team | null>(null);
 
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
-  const activeTeams = useMemo(() => teams.filter((tm) => !tm.archivedAt), [teams]);
+  const activeTeams = teams;
   const agents = useMemberPool();
 
   const navItems = [
@@ -397,7 +356,6 @@ export default function TeamView() {
         // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} />;
       case 'teams': {
-        const archivedTeams = teams.filter((tm) => tm.archivedAt);
         if (activeTeams.length === 0) {
           return (
             <div className="h-full flex flex-col">
@@ -409,34 +367,32 @@ export default function TeamView() {
                   action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
                 />
               </div>
-              {/* Archived teams must stay reachable even with zero active ones
-                  (real-machine bug 2026-08-31: the section vanished). */}
-              <ArchivedTeams teams={archivedTeams} open className="p-4 pt-0" />
             </div>
           );
         }
         return (
-          <div className="p-4 space-y-2 overflow-y-auto h-full">
-            {activeTeams.map((team) => (
-              <div
-                key={team.id}
-                className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 cursor-pointer hover:bg-[var(--abu-bg-hover)]"
-                onClick={() => setDetailTeam(team)}
-                data-testid={`team-row-${team.name}`}
-              >
-                <TeamAvatar avatar={team.avatar} size="lg" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-body text-[var(--abu-text-primary)] truncate">{team.name}</div>
-                  <div className="text-caption text-[var(--abu-text-tertiary)] truncate">
-                    {format(t.team.teamRowSummary, {
-                      leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
-                      count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId).length),
-                    })}
-                  </div>
-                </div>
-              </div>
-            ))}
-            <ArchivedTeams teams={archivedTeams} className="pt-2" />
+          // Same grid + card the 队员 tab uses (ToolGrid/ToolCard), not a
+          // hand-rolled row: a team and a member are peers in this surface, so
+          // they must look and behave alike.
+          <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6 h-full">
+            <ToolGrid>
+              {activeTeams.map((team) => (
+                <ToolCard
+                    key={team.id}
+                    item={{
+                      id: team.id,
+                      testId: `team-row-${team.name}`,
+                      name: team.name,
+                      description: format(t.team.teamRowSummary, {
+                        leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
+                        count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId).length),
+                      }),
+                      avatar: <TeamAvatar avatar={team.avatar} />,
+                    }}
+                    onClick={() => setDetailTeam(team)}
+                  />
+              ))}
+            </ToolGrid>
           </div>
         );
       }
@@ -487,11 +443,11 @@ export default function TeamView() {
                   </button>
                   <button
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-                    onClick={() => { setConfirmArchiveTeam(detailTeam); setDetailMenuOpen(false); }}
-                    data-testid="team-detail-archive"
+                    onClick={() => { setConfirmDeleteTeam(detailTeam); setDetailMenuOpen(false); }}
+                    data-testid="team-detail-delete"
                   >
-                    <Archive className="h-3 w-3" />
-                    {t.team.archiveTeamAction}
+                    <Trash2 className="h-3 w-3" />
+                    {t.team.deleteTeamAction}
                   </button>
                 </div>
               )}
@@ -559,16 +515,16 @@ export default function TeamView() {
         })()}
       </ToolDetailModal>
       <ConfirmDialog
-        open={!!confirmArchiveTeam}
-        title={t.team.archiveTeamTitle}
-        message={format(t.team.archiveTeamMessage, { name: confirmArchiveTeam?.name ?? '' })}
-        confirmText={t.team.archiveTeamAction}
+        open={!!confirmDeleteTeam}
+        title={t.team.deleteTeamTitle}
+        message={format(t.team.deleteTeamMessage, { name: confirmDeleteTeam?.name ?? '' })}
+        confirmText={t.team.deleteTeamAction}
         cancelText={t.common.cancel}
         variant="danger"
-        onCancel={() => setConfirmArchiveTeam(null)}
+        onCancel={() => setConfirmDeleteTeam(null)}
         onConfirm={() => {
-          if (confirmArchiveTeam) useTeamStore.getState().archiveTeam(confirmArchiveTeam.id);
-          setConfirmArchiveTeam(null);
+          if (confirmDeleteTeam) useTeamStore.getState().deleteTeam(confirmDeleteTeam.id);
+          setConfirmDeleteTeam(null);
           setDetailTeam(null);
         }}
       />

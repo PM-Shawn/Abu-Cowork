@@ -36,9 +36,9 @@ describe('matchTeamMention (composer fallback for a typed @团队)', () => {
     expect(matchTeamMention('@数据小队')).toMatchObject({ teamName: '数据小队', rest: '' });
   });
 
-  it('ignores archived teams', () => {
+  it('ignores a team that has been deleted', () => {
     const team = seedTeam();
-    useTeamStore.getState().archiveTeam(team.id);
+    useTeamStore.getState().deleteTeam(team.id);
     expect(matchTeamMention('@数据小队 干活')).toBeNull();
   });
 

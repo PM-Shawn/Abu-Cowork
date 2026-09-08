@@ -1454,12 +1454,10 @@ const zhCN: TranslationDict = {
     membersPlaceholder: '添加成员（可选）',
     pickerEmpty: '没有匹配的队员',
     suggestionTeamHint: '交给整个团队，队长拆解分工',
-    archiveTeamAction: '归档',
-    archiveTeamTitle: '归档这个团队？',
-    archiveTeamMessage: '「{name}」将被归档，不能再派活，但它做过的事都会保留。可以随时恢复。',
+    deleteTeamAction: '删除',
+    deleteTeamTitle: '删除这个团队？',
+    deleteTeamMessage: '「{name}」会被删掉，无法恢复。已经用它跑过的对话还在，但那些对话不能再继续派活。队员本身不受影响。',
     teamArchived: '团队已归档',
-    archivedSection: '已归档（{count}）',
-    restoreTeamAction: '恢复',
   },
 
   toolbox: {

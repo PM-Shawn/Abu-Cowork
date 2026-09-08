@@ -34,9 +34,10 @@ describe('resolveTeamRouteContext', () => {
     defs['r-b'] = def('b');
   });
 
-  it('returns null without a pin, for archived teams, or when the leader is gone', () => {
+  it('returns null without a pin, for a deleted team, or when the leader is gone', () => {
     expect(resolveTeamRouteContext(undefined)).toBeNull();
-    teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a'], archivedAt: 1 }];
+    // Deleted: the pin outlives the team, so the id simply is not there.
+    teamsRef.teams = [];
     expect(resolveTeamRouteContext('t1')).toBeNull();
     teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-missing', memberRoleIds: ['r-missing', 'r-a'] }];
     expect(resolveTeamRouteContext('t1')).toBeNull();
@@ -73,9 +74,9 @@ describe('resolveTeamRouteContextAsync', () => {
     expect(ctx?.leader.name).toBe('lead');
   });
 
-  it('rejects an archived team while an absent pin remains ordinary', async () => {
+  it('rejects a pin whose team was deleted, while an absent pin remains ordinary', async () => {
     discoveryRefreshed.count = 0;
-    teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], archivedAt: 1 }];
+    teamsRef.teams = [];
     expect(await resolveTeamRouteContextAsync(undefined)).toBeNull();
     await expect(resolveTeamRouteContextAsync('t1')).rejects.toThrow();
     expect(discoveryRefreshed.count).toBe(0);

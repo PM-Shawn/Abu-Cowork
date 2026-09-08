@@ -37,7 +37,7 @@ export function matchTeamMention(rawText: string): TeamMentionMatch | null {
   if (!line.startsWith('@')) return null;
   const candidate = line.slice(1);
 
-  const teams = useTeamStore.getState().teams.filter((t) => !t.archivedAt);
+  const teams = useTeamStore.getState().teams;
   let best: { id: string; name: string } | null = null;
   for (const team of teams) {
     const after = candidate.slice(team.name.length);

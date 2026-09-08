@@ -42,7 +42,6 @@ export interface Team {
   /** The split the leader used last time (reference input for the next run, never a skip). */
   lastPlan?: TeamLastPlan;
   createdAt: number;
-  archivedAt?: number;
 }
 
 interface TeamState {
@@ -52,8 +51,7 @@ interface TeamState {
 interface TeamActions {
   createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean; avatar?: string }) => Team;
   updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar' | 'lastPlan'>>) => void;
-  archiveTeam: (id: string) => void;
-  restoreTeam: (id: string) => void;
+  deleteTeam: (id: string) => void;
 
 }
 
@@ -61,6 +59,31 @@ type TeamStore = TeamState & TeamActions;
 
 function genId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Persisted-state migration. Exported so it can be tested as the pure function
+ * it is — reaching into the persist middleware's options from a test couples
+ * the test to zustand's internals.
+ *
+ * v1 → v2: additive optional fields (memberRoleId, requirePlanApproval).
+ * v2 → v3: pipelines array added; v3 → v4: pipelines removed again.
+ * v4 → v5: TeamTask.permissionMode added.
+ * v5 → v6: the task board is gone (in-conversation team, 2026-09-05) — the
+ *   persisted `tasks` slice is dropped; teams are all that remains.
+ * v6 → v7: archive is gone; a team is deleted outright, like an agent.
+ *   Previously-archived teams come BACK to the list rather than being dropped:
+ *   the user archived them, they never asked for them to be erased, and
+ *   silently deleting their data on an upgrade is not ours to do. They can
+ *   delete them explicitly now.
+ */
+export function migrateTeamState(persisted: unknown): { teams: Team[] } {
+  const state = (persisted ?? {}) as { teams?: Array<Team & { archivedAt?: number }>; tasks?: unknown; pipelines?: unknown; focusTaskId?: unknown };
+  const { pipelines: _pipelines, tasks: _tasks, focusTaskId: _focus, ...rest } = state;
+  return {
+    ...rest,
+    teams: (state.teams ?? []).map(({ archivedAt: _archivedAt, ...team }) => team),
+  };
 }
 
 export const useTeamStore = create<TeamStore>()(
@@ -71,7 +94,7 @@ export const useTeamStore = create<TeamStore>()(
       createTeam: (input) => {
         const name = input.name.trim();
         if (!name) throw new Error('team name required');
-        if (get().teams.some((t) => !t.archivedAt && t.name === name)) {
+        if (get().teams.some((t) => t.name === name)) {
           throw new Error('duplicate team name');
         }
         if (!input.leaderRoleId) throw new Error('leader required');
@@ -102,29 +125,12 @@ export const useTeamStore = create<TeamStore>()(
           }),
         })),
 
-      archiveTeam: (id) =>
-        set((s) => ({
-          teams: s.teams.map((t) => (t.id === id ? { ...t, archivedAt: Date.now() } : t)),
-        })),
-
-      restoreTeam: (id) =>
-        set((s) => ({
-          teams: s.teams.map((t) => (t.id === id ? { ...t, archivedAt: undefined } : t)),
-        })),
+      deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id) })),
     }),
     {
       name: 'abu-team',
-      version: 6,
-      // v1 → v2: additive optional fields (memberRoleId, requirePlanApproval).
-      // v2 → v3: pipelines array added; v3 → v4: pipelines removed again.
-      // v4 → v5: TeamTask.permissionMode added.
-      // v5 → v6: the task board is gone (in-conversation team, 2026-09-05) —
-      // the persisted `tasks` slice is dropped; teams are all that remains.
-      migrate: (persisted: unknown) => {
-        const state = persisted as { teams: Team[]; tasks?: unknown; pipelines?: unknown; focusTaskId?: unknown };
-        const { pipelines: _pipelines, tasks: _tasks, focusTaskId: _focus, ...rest } = state;
-        return rest;
-      },
+      version: 7,
+      migrate: migrateTeamState,
       partialize: (s) => ({ teams: s.teams }),
     },
   ),

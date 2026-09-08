@@ -35,6 +35,7 @@ import {
   createAuthorizationScope,
   disposeAuthorizationScope,
   revokeWorkspace,
+  isInScopedAuthorizedWorkspace,
 } from '../tools/pathSafety';
 
 const MINIMAL_PAYLOAD: UserQuestionPayload = {
@@ -187,7 +188,7 @@ describe('permissionBridge — UserQuestion queue', () => {
     beforeEach(async () => {
       const { useChatStore } = await import('../../stores/chatStore');
       const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
-      useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {} });
+      useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
       useChatStore.setState({
         conversations: {
           'conv-team': { id: 'conv-team', title: 't', teamId: 'team-1', createdAt: 1, updatedAt: 1, status: 'running', messages: [] },
@@ -205,8 +206,8 @@ describe('permissionBridge — UserQuestion queue', () => {
     });
 
     it('refuses a command now, records it as pending, and lets an approved identical request through once', async () => {
-      const { useTeamConfirmationStore, pendingFor, confirmationKey } = await import('../../stores/teamConfirmationStore');
-      const info = { command: 'npm publish', level: 'danger' as const, reason: '发布到公网' };
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      const info = { command: 'npm publish', level: 'danger' as const, reason: '发布到公网', teamIdentity: { toolName: 'run_command', parametersDigest: 'p', cwd: '/a', loopId: 'loop-team', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
       await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
       const pending = pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team');
       expect(pending).toHaveLength(1);
@@ -216,7 +217,8 @@ describe('permissionBridge — UserQuestion queue', () => {
       await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
       expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')).toHaveLength(1);
 
-      useTeamConfirmationStore.getState().approveOnce('conv-team', confirmationKey({ kind: 'command', detail: 'npm publish' }));
+      const id = useTeamConfirmationStore.getState().selectRetry(pending[0].id, 'once');
+      useTeamConfirmationStore.getState().beginRetry('conv-team', 'loop-team', id);
       await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(true);
       await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
     });
@@ -231,6 +233,36 @@ describe('permissionBridge — UserQuestion queue', () => {
         expect(pending.map((item) => item.member)).toEqual(['zz发布员', 'zz撰写员']);
       } finally {
         clearLoopContext('loop-parent');
+      }
+    });
+
+    it('file retry grants only its call scope, never another member or conversation (F2)', async () => {
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      const { useChatStore } = await import('../../stores/chatStore');
+      useChatStore.setState({ conversations: { ...useChatStore.getState().conversations,
+        'conv-other': { id: 'conv-other', title: 'other', teamId: 'team-1', createdAt: 1, updatedAt: 1, status: 'running', messages: [] },
+      } });
+      setLoopContext('loop-other', makeTeamCtx('loop-other', 'conv-other', 'zz发布员') as never);
+      const scopeA = createAuthorizationScope();
+      const scopeB = createAuthorizationScope();
+      const path = '/external-team-review/report.md';
+      const request = { path, capability: 'write' as const, toolName: 'write_file',
+        teamAuthorizationScopeId: scopeA,
+        teamIdentity: { toolName: 'write_file', parametersDigest: 'write-report-content', cwd: '/project', loopId: 'loop-team', callId: 'file-call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
+      try {
+        expect(await requestFilePermission(request, 'loop-team')).toBe(false);
+        const pending = Object.values(useTeamConfirmationStore.getState().pending)[0];
+        const selection = useTeamConfirmationStore.getState().selectRetry(pending.id, 'once');
+        useTeamConfirmationStore.getState().beginRetry('conv-team', 'loop-team', selection);
+        expect(await requestFilePermission({ ...request, agentName: 'other-member' }, 'loop-team')).toBe(false);
+        expect(await requestFilePermission({ ...request, teamAuthorizationScopeId: scopeB }, 'loop-other')).toBe(false);
+        expect(await requestFilePermission(request, 'loop-team')).toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'write', scopeA)).toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'write', scopeB)).toBe(false);
+        expect(usePermissionStore.getState().hasPermission(path, 'write')).toBe(false);
+        expect(await requestFilePermission(request, 'loop-team')).toBe(false);
+      } finally {
+        disposeAuthorizationScope(scopeA); disposeAuthorizationScope(scopeB); clearLoopContext('loop-other');
       }
     });
 

@@ -1,3 +1,4 @@
+import { useTeamConfirmationStore } from './teamConfirmationStore';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
@@ -1099,6 +1100,7 @@ export const useChatStore = create<ChatStore>()(
         }
         // Clean up per-conversation state in external modules
         clearInputQueue(id);
+        useTeamConfirmationStore.getState().clearConversation(id);
         clearSkillHooksByConversation(id);
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);

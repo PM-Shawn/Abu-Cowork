@@ -1818,6 +1818,16 @@ export interface TranslationDict {
     confirmationStripTitle: string;
     confirmationSeparator: string;
     confirmationLeader: string;
+    confirmationApproveRun: string;
+    confirmationWriteRead: string;
+    confirmationWrite: string;
+    confirmationRead: string;
+    confirmationCwd: string;
+    confirmationRequestOrdinal: string;
+    confirmationDefaultCwd: string;
+    confirmationLegacy: string;
+    confirmationRunRule: string;
+    confirmationRevoke: string;
     confirmationApprove: string;
     confirmationReject: string;
     confirmationNotice: string;
@@ -3824,6 +3834,7 @@ export interface TranslationDict {
       errExpectedFilesMissing: string;
       delegateNoToolCallsNote: string;
       /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
+      delegateUnconfirmedInstructionsNote: string;
       delegateUserInstructionsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;

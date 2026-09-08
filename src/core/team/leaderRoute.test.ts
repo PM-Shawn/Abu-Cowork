@@ -4,6 +4,7 @@ import type { RouteResult } from '@/core/agent/orchestrator';
 
 import {
   applyTeamLeaderRoute,
+  captureTeamExecutionSnapshot,
   isTeamRosterMember,
   buildTeamRoleBlock,
   buildTeamAvailableAgentsText,
@@ -88,5 +89,19 @@ describe('roster guard + prompt blocks', () => {
     expect(text).not.toContain('lead:');
     expect(text).toContain('ONLY these names');
     expect(buildTeamAvailableAgentsText({ teamId: 't', teamName: 'x', leader: def('lead'), members: [] }, () => '')).toBeNull();
+  });
+});
+
+describe('team run identity snapshot (F4)', () => {
+  it('keeps the original roster and strict mode when the source changes', () => {
+    const team = { teamId: 't1', teamName: 't', leader: def('leader'), members: [def('A')], requirePlanApproval: true };
+    const snapshot = captureTeamExecutionSnapshot('t1', team);
+    team.members.splice(0, 1, def('outsider'));
+    team.requirePlanApproval = false;
+    expect(snapshot).toEqual({ teamRoster: ['A'], teamRequirePlanApproval: true });
+    expect(isTeamRosterMember(snapshot.teamRoster!, 'outsider')).toBe(false);
+    expect(() => captureTeamExecutionSnapshot('t1', null)).toThrow();
+    expect(() => captureTeamExecutionSnapshot('another-conversation-team', team)).toThrow();
+    expect(captureTeamExecutionSnapshot(undefined, null).teamRoster).toBeUndefined();
   });
 });

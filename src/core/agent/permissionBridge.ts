@@ -215,6 +215,7 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
     detail: info.command,
     reason: info.reason,
     member: agentName,
+    identity: info.teamIdentity,
   });
   if (teamDecision !== 'ask') return teamDecision === 'approved';
   return approvalBridge.request('command', {
@@ -325,16 +326,11 @@ export function drainFilePermissionQueue() {
  *
  * @param loopId - Optional loopId for multi-agent context lookup.
  */
-export async function requestFilePermission(request: {
-  path: string;
-  capability: 'read' | 'write';
-  toolName: string;
-  agentName?: string;
-}, loopId?: string): Promise<boolean> {
+export async function requestFilePermission(request: Parameters<FilePermissionCallback>[0], loopId?: string): Promise<boolean> {
   const permStore = usePermissionStore.getState();
 
   // Already has permission → auto-allow
-  if (permStore.hasPermission(request.path, request.capability)) {
+  if (!request.teamAuthorizationScopeId && permStore.hasPermission(request.path, request.capability)) {
     // Also sync to pathSafety in case it wasn't already
     const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
     if (ctx?.authorizationScopeId !== undefined) {
@@ -348,17 +344,22 @@ export async function requestFilePermission(request: {
   const ctx = loopId ? getLoopContext(loopId) : getCurrentLoopContext();
   const convId = ctx?.conversationId ?? '';
   const agentName = request.agentName ?? ctx?.agentName;
-  // Team conversations never block on a dialog; approving the item grants the
-  // path through permissionStore, so the retry passes the check above.
+  // Team retries authorize only the ephemeral scope created by this tool's gate.
   const teamDecision = decideTeamConfirmation(convId, {
     kind: 'file',
     detail: request.path,
     reason: request.toolName,
     path: request.path,
     capability: request.capability,
+    additionalCapabilities: request.additionalCapabilities,
     member: agentName,
+    identity: request.teamIdentity,
   });
-  if (teamDecision !== 'ask') return teamDecision === 'approved';
+  if (teamDecision !== 'ask') {
+    if (teamDecision !== 'approved' || !request.teamAuthorizationScopeId) return false;
+    scopedAuthorizeWorkspace(request.teamAuthorizationScopeId, request.path, [request.capability, ...(request.additionalCapabilities ?? [])]);
+    return true;
+  }
   return approvalBridge.request('file-permission', {
     loopId,
     conversationId: convId,

@@ -7,14 +7,13 @@
  * dispatch tools and refuses loudly so the leader must stop and report.
  *
  * Pure module (no stores): the dispatch tools run inside the sidecar.
- * Keyed by the leader loop id; entries are pruned by size, never by clock.
+ * Keyed by the leader loop id; only the owning run can retire its entry.
  */
 
 /** Hand-offs (delegate calls + batch tasks) one leader run may make. */
 export const TEAM_MAX_DISPATCHES_PER_RUN = 40;
 /** A member that fails this many hand-offs in a row is blocked for the run. */
 export const TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER = 3;
-const MAX_TRACKED_RUNS = 64;
 
 interface RunBounds {
   dispatches: number;
@@ -28,10 +27,6 @@ function boundsFor(loopId: string): RunBounds {
   if (!entry) {
     entry = { dispatches: 0, consecutiveFailures: new Map() };
     runs.set(loopId, entry);
-    if (runs.size > MAX_TRACKED_RUNS) {
-      const oldest = runs.keys().next().value;
-      if (oldest !== undefined) runs.delete(oldest);
-    }
   }
   return entry;
 }

@@ -48,7 +48,7 @@ import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 import { format, getI18n } from '../../i18n';
-import { appendInstructionToHistory, drainDispatchInputs, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
+import { appendInstructionToHistory, drainDispatchInstructionEntries, hasDispatchInput, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
 import { matchesToolName } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
@@ -212,6 +212,7 @@ export function appendTurnText(buffer: string, text: string, seamless: boolean):
 }
 
 export type SubagentProgressEvent =
+  | { type: 'instruction-consumed'; instructionId: string }
   | { type: 'tool-start'; id: string; toolName: string; toolInput: Record<string, unknown> }
   /**
    * `resultContent` carries the raw rich blocks (screenshots / read_file
@@ -441,6 +442,7 @@ export function buildSubagentMcpPreflightFailure(
 }
 
 export interface SubagentLoopOptions {
+  teamApprovalDispatch?: { id: string; fingerprint: string };
   agent: SubagentDefinition;
   task: string;
   context?: string;
@@ -843,15 +845,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // A direct user instruction to THIS member while it runs (block M):
       // show it in the member's process as a step, then put it in front of the
       // model as user content before this turn's request.
-      if (options.dispatchKey) {
-        const notes = drainDispatchInputs(options.dispatchKey);
-        notes.forEach((note, noteIndex) => {
-          const noteId = `note-${turn}-${noteIndex}`;
-          onProgress?.({ type: 'tool-start', id: noteId, toolName: MEMBER_INSTRUCTION_STEP, toolInput: { text: note } });
-          onProgress?.({ type: 'tool-end', id: noteId, toolName: MEMBER_INSTRUCTION_STEP, result: note, error: false });
-          appendInstructionToHistory(messages, format(getI18n().chat.subagent.memberInstruction, { text: note }), `sub-note-${turn}-${noteIndex}`);
-        });
-      }
+      const turnInstructions = options.dispatchKey ? drainDispatchInstructionEntries(options.dispatchKey) : [];
+      turnInstructions.forEach((note, noteIndex) => {
+        appendInstructionToHistory(messages, format(getI18n().chat.subagent.memberInstruction, { text: note.text }), `sub-note-${turn}-${noteIndex}`);
+        onProgress?.({ type: 'tool-start', id: `note-${turn}-${noteIndex}`, toolName: MEMBER_INSTRUCTION_STEP, toolInput: { text: note.text } });
+      });
 
       const collectedToolCalls: Array<{
         id: string;
@@ -1037,6 +1035,20 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         signal,
       );
 
+      // A successful request carrying the full instruction is the receipt.
+      // If budget trimming dropped it, or the request failed, the shell outbox
+      // retains it as unconfirmed and hands it back to the leader at settle.
+      turnInstructions.forEach((note, noteIndex) => {
+        const included = preparedMessages.some((message) => {
+          const content = typeof message.content === 'string' ? message.content
+            : message.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+          return content.includes(note.text);
+        });
+        if (included) onProgress?.({ type: 'instruction-consumed', instructionId: note.id });
+        onProgress?.({ type: 'tool-end', id: `note-${turn}-${noteIndex}`, toolName: MEMBER_INSTRUCTION_STEP,
+          result: note.text, error: !included });
+      });
+
       // L4: learn that a statically-non-reasoning model actually reasons, so future
       // runs bound it (treated as 'uncontrollable' → full budget + reactive net).
       if (sawThinking && baseCaps.thinking === false && provider) {
@@ -1116,6 +1128,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         consecutiveNoProgress = 0;
       }
 
+      if (!shouldContinue && options.dispatchKey && hasDispatchInput(options.dispatchKey) && turn + 1 < maxTurns) {
+        messages.push({ id: `sub-final-before-input-${turn}`, role: 'assistant', content: turnText, timestamp: Date.now() });
+        // Drain at the next iteration, then submit another model request.
+        continue;
+      }
       if (!shouldContinue) {
         if (terminalStopReason !== 'error') {
           terminalStopReason = noProgressTurn ? 'error' : 'completed';
@@ -1173,6 +1190,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             // {conversation, run}: without this, sibling delegations of one
             // conversation share one pool and steal each other's tabs.
             agentRunId: options.agentRunId,
+            teamApprovalDispatch: options.teamApprovalDispatch,
+            toolCallId: tc.id,
             loopId: options.parentLoopId,
             agentName: agent.name,
             interactionMode: resolveSubagentInteractionMode(options),

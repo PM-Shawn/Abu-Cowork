@@ -1,3 +1,4 @@
+import { clearRunBounds } from '../team/teamRunBounds';
 import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, Message, MessageContent, SubagentStopReason, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
 import { teamRosterNames } from '../team/leaderRoute';
 import type { ToolCallContext } from '../../types/execution';
@@ -253,7 +254,7 @@ import {
   drainWorkspaceRequest,
   drainUserQuestions,
 } from './permissionBridge';
-import { clearPlanMode } from './planMode';
+import { clearPlanMode, setPlanMode, evaluatePlanGate, getPlanMode } from './planMode';
 import { drainCapabilitySetupRequests } from '../capabilityPlugins/setupBridge';
 
 /** Persist execution steps onto the last assistant message for the given loop, then evict from memory */
@@ -516,6 +517,8 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 }
 
 export interface AgentLoopOptions {
+  /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
+  teamConfirmationRetryId?: string;
   /** Override the command confirmation callback (e.g. auto-deny for scheduled tasks) */
   commandConfirmCallback?: (info: ConfirmationInfo) => Promise<boolean>;
   /** Override the file permission callback (e.g. auto-deny for scheduled tasks) */
@@ -1022,6 +1025,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     return { reason: 'error', error: detail, messageTaken: true };
   }
   const { route, systemPromptSections } = orchestration;
+  if (route.team?.requirePlanApproval && precomputeToolContext.interactionMode !== 'background') {
+    setPlanMode(conversationId, 'planning');
+  }
   options?.runtimeEvent?.('agent_route_selected', {
     conversationId,
     loopId,
@@ -1300,6 +1306,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // This route is entered only after the triggering user message has been
       // persisted above. Bind the envelope to shell-owned ids; never let a
       // route/tool argument choose an arbitrary source message or file.
+      if (toolContext.teamRoster && !toolContext.teamRoster.includes(delegateAgent.name)) {
+        throw new Error('Requested agent is outside the pinned team roster');
+      }
+      const planGate = evaluatePlanGate({ toolName: TOOL_NAMES.DELEGATE_TO_AGENT, toolReadOnly: false,
+        planMode: getPlanMode(conversationId),
+        requirePlanApproval: toolContext.teamRequirePlanApproval && toolContext.interactionMode !== 'background' });
+      if (!planGate.allow) throw new Error(planGate.reason);
       const delegatedUserTurn = await materializeDelegatedUserTurn({ conversationId, loopId, signal: subagentSignal });
       const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
@@ -3102,6 +3115,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
+  clearRunBounds(loopId);
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
   if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {
     abortController.abort(new Error('Scoped agent run finished'));

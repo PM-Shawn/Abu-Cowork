@@ -124,7 +124,7 @@
 import { createInterface } from 'node:readline';
 import { createLlmHost } from './llmHost';
 import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
-import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns } from './subagentHost';
+import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns, isSubagentDispatchActive } from './subagentHost';
 import {
   handleAgentRun,
   handleAgentStart,
@@ -446,8 +446,8 @@ function handleMessage(raw: string): void {
       // subagent.run is registered SHELL-side (agentTools.ts) while its loop
       // runs here, so the key is unknown to this process's registry. The
       // host clears the queue when the run settles (subagentHost.ts).
-      const p = typeof params === 'object' && params !== null ? (params as { key?: unknown; text?: unknown }) : {};
-      if (typeof p.key === 'string' && typeof p.text === 'string') enqueueDispatchInput(p.key, p.text);
+      const p = typeof params === 'object' && params !== null ? (params as { key?: unknown; text?: unknown; id?: unknown }) : {};
+      if (typeof p.key === 'string' && typeof p.text === 'string' && typeof p.id === 'string' && isSubagentDispatchActive(p.key)) enqueueDispatchInput(p.key, p.text, p.id);
     } catch (err) {
       log('state.dispatchInput handler threw (ignored — notifications get no response)', err);
     }

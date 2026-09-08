@@ -410,7 +410,11 @@ function createReverseToolInvoker(
   };
 }
 
-const activeRuns = new Map<string, { controller: AbortController }>();
+const activeRuns = new Map<string, { controller: AbortController; dispatchKey?: string }>();
+
+export function isSubagentDispatchActive(key: string): boolean {
+  return Array.from(activeRuns.values()).some((run) => run.dispatchKey === key && !run.controller.signal.aborted);
+}
 
 export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   const params = parseSubagentRunParams(rawParams);
@@ -421,7 +425,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   }
 
   const controller = new AbortController();
-  activeRuns.set(runId, { controller });
+  activeRuns.set(runId, { controller, dispatchKey: params.dispatchKey });
 
   /**
    * Read settings through the sidecar's SHARED mirror, not through this run's

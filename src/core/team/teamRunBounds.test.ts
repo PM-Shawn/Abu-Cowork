@@ -39,3 +39,15 @@ describe('teamRunBounds (hard bounds for one team run)', () => {
     clearRunBounds('loop-2');
   });
 });
+
+it('never evicts an active run when more than 64 other runs arrive (F7)', () => {
+  clearRunBounds('long-running');
+  admitDispatches('long-running', Array.from({ length: TEAM_MAX_DISPATCHES_PER_RUN }, () => 'member'));
+  for (let i = 0; i < 65; i++) admitDispatches(`other-${i}`, ['member']);
+  try {
+    expect(admitDispatches('long-running', ['member'])).toMatchObject({ ok: false, reason: 'run_cap' });
+  } finally {
+    clearRunBounds('long-running');
+    for (let i = 0; i < 65; i++) clearRunBounds(`other-${i}`);
+  }
+});

@@ -20,7 +20,7 @@ import type {
 } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { withDispatchController } from '../../agent/subagentAbort';
-import { takeDeliveredInstructions } from '../../agent/dispatchInput';
+import { takeDispatchInstructionReport } from '../../agent/dispatchInstructionReport';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
@@ -712,17 +712,23 @@ export const runAgentBatchTool: ToolDefinition = {
     }
 
     // ── 6. Aggregate results ───────────────────────────────────────────────
+    const instructionReports = resolvedTasks.map((task, idx) =>
+      takeDispatchInstructionReport(`${batchIdentity.batchToolCallId}:${idx}`, task.agent.name));
     if (structuredEntries !== undefined) {
-      return aggregateStructuredResults(structuredEntries);
+      // Keep valid JSON and the existing result schema; receipt metadata is
+      // outside each member's schema-validated data object.
+      return aggregateStructuredResults(structuredEntries.map((entry, idx) => ({ ...entry,
+        ...(instructionReports[idx] ? { userInstructionReport: instructionReports[idx] } : {}),
+      })));
     }
 
     // Text aggregation path (behavior-preserving, schema absent)
     // Team leaders must not trust a member that never checked anything; an
     // ordinary batch keeps the plain report.
-    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label), {
+    const report = aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label), {
       flagNoToolCalls: !!toolExecContext?.teamRoster,
-      userInstructions: resolvedTasks.map((_task, idx) => takeDeliveredInstructions(`${batchIdentity.batchToolCallId}:${idx}`)),
     });
+    return [report, ...instructionReports.filter(Boolean)].join('\n\n');
   },
 
   // Already parallelizes internally — parent must not double-parallelize this tool.

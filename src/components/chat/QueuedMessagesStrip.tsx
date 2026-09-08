@@ -1,3 +1,4 @@
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 import { useState, useSyncExternalStore } from 'react';
 import { CornerDownRight, X } from 'lucide-react';
 import {
@@ -41,7 +42,9 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
     try {
       if (next) {
         announceChatTurnScrollIntent({ conversationId, source: 'queue-resume' });
-        const result = await runAgentLoopDispatched(conversationId, next.text, { initiatedBy: 'user' });
+        const result = await runAgentLoopDispatched(conversationId, next.text, { initiatedBy: 'user',
+          ...(next.teamConfirmationRetryId ? { teamConfirmationRetryId: next.teamConfirmationRetryId } : {}),
+        });
         if (result.reason === 'error' && !result.messageTaken) {
           restoreDequeuedUserInput(conversationId, next);
         }
@@ -74,7 +77,10 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
           <button
             aria-label={t.queueStrip.cancel}
             title={t.queueStrip.cancel}
-            onClick={() => removeQueuedInput(conversationId, qi.id)}
+            onClick={() => {
+              if (qi.teamConfirmationRetryId) useTeamConfirmationStore.getState().revoke(qi.teamConfirmationRetryId);
+              removeQueuedInput(conversationId, qi.id);
+            }}
             className="btn-ghost shrink-0 rounded-full p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
           >
             <X className="h-3 w-3" />

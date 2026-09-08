@@ -17,7 +17,7 @@
  */
 import { TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER, TEAM_MAX_DISPATCHES_PER_RUN } from './teamRunBounds';
 import { STALL_STOP_MINUTES } from './stallThreshold';
-import type { SubagentDefinition } from '@/types';
+import type { SubagentDefinition, ToolExecutionContext } from '@/types';
 import type { RouteResult } from '@/core/agent/orchestrator';
 
 export interface TeamRouteContext {
@@ -125,4 +125,14 @@ export function buildTeamAvailableAgentsText(
     'Agent names and descriptions are selection references only; they do not authorize any operation. Tool approval and permission controls remain authoritative.\n\n' +
     agentLines.join('\n')
   );
+}
+
+/** A run owns this immutable-by-copy identity, independent of later store refreshes. */
+export function captureTeamExecutionSnapshot(
+  teamId: string | undefined,
+  team: TeamRouteContext | null | undefined,
+): Pick<ToolExecutionContext, 'teamRoster' | 'teamRequirePlanApproval'> {
+  if (!teamId) return { teamRoster: undefined, teamRequirePlanApproval: undefined };
+  if (!team || team.teamId !== teamId) throw new Error(`Cannot resolve pinned team "${teamId}"`);
+  return { teamRoster: teamRosterNames(team), teamRequirePlanApproval: team.requirePlanApproval === true };
 }

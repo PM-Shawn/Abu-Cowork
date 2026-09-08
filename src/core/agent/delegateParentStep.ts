@@ -23,7 +23,8 @@ export function createParentStepResolver(
     if (toolCallId) {
       cached = loopCtx.toolCallToStepId.get(toolCallId)
         ?? getExecutionPort().getExecutionByLoopId(loopCtx.loopId)?.steps.find((step) => step.toolCallId === toolCallId)?.id;
-      if (cached) return cached;
+      // A known call id must never attach to a sibling whose frame arrived first.
+      return cached;
     }
     const running = typeof loopCtx.eventRouter?.getCurrentStepId === 'function'
       ? loopCtx.eventRouter.getCurrentStepId(loopCtx.loopId)

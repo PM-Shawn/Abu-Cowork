@@ -373,3 +373,14 @@ describe('READONLY_FALLBACK_TOOLS', () => {
     expect(READONLY_FALLBACK_TOOLS.has(TOOL_NAMES.EDIT_FILE)).toBe(false);
   });
 });
+
+describe('strict team startup regression (F3)', () => {
+  it('cannot bypass plan approval by dispatching before report_plan or after a reset', () => {
+    clearPlanMode('strict-team');
+    const request = { toolName: TOOL_NAMES.DELEGATE_TO_AGENT, toolReadOnly: false, planMode: getPlanMode('strict-team'), requirePlanApproval: true };
+    expect(evaluatePlanGate(request).allow).toBe(false);
+    expect(evaluatePlanGate({ ...request, toolName: TOOL_NAMES.WRITE_FILE }).allow).toBe(false);
+    expect(evaluatePlanGate({ ...request, toolName: TOOL_NAMES.REPORT_PLAN }).allow).toBe(true);
+    expect(evaluatePlanGate({ ...request, planMode: 'approved' }).allow).toBe(true);
+  });
+});

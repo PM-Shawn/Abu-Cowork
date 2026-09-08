@@ -73,11 +73,21 @@ describe('resolveTeamRouteContextAsync', () => {
     expect(ctx?.leader.name).toBe('lead');
   });
 
-  it('is null for a missing pin or an archived team without touching discovery', async () => {
+  it('rejects an archived team while an absent pin remains ordinary', async () => {
     discoveryRefreshed.count = 0;
     teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], archivedAt: 1 }];
     expect(await resolveTeamRouteContextAsync(undefined)).toBeNull();
-    expect(await resolveTeamRouteContextAsync('t1')).toBeNull();
+    await expect(resolveTeamRouteContextAsync('t1')).rejects.toThrow();
     expect(discoveryRefreshed.count).toBe(0);
+  });
+});
+
+describe('unresolvable team pins fail closed (F4)', () => {
+  it('rejects missing teams and missing leaders rather than returning an unrestricted route', async () => {
+    teamsRef.teams = [];
+    await expect(resolveTeamRouteContextAsync('missing')).rejects.toThrow();
+    teamsRef.teams = [{ id: 't', name: 'team', leaderRoleId: 'gone', memberRoleIds: ['r-a'] }];
+    registryAgents.list = [{}];
+    await expect(resolveTeamRouteContextAsync('t')).rejects.toThrow();
   });
 });

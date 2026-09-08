@@ -398,6 +398,7 @@ describe('subagentRunner', () => {
         // N6: run identity is shell-stamped into the trusted tool context, so
         // sending it would create a second, forgeable source of the same fact.
         'agentRunId',
+        'teamApprovalDispatch',
       ]);
     });
 
@@ -1665,6 +1666,27 @@ describe('subagentRunner', () => {
   });
 
   describe('subagent.progress reverse-channel handler', () => {
+    it('acknowledges only issued instruction ids for the owning sidecar dispatch (F5)', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const done = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(done.promise);
+      const { runSubagent } = await importFresh();
+      const { notePendingInstruction, takeDeliveredInstructions, takeUnconfirmedInstructions } = await import('./dispatchInput');
+      notePendingInstruction('wire-receipt:0', 'issued-a', 'user instruction A');
+      notePendingInstruction('wire-receipt:0', 'issued-b', 'user instruction B');
+      const run = runSubagent({ agent, task: 'task', dispatchKey: 'wire-receipt:0', parentConversationId: 'conv-1', parentLoopId: 'loop-1' });
+      await vi.waitFor(() => expect(sidecarRequestMock).toHaveBeenCalled());
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      progressHandler({ runId: 'unknown-run', event: { type: 'instruction-consumed', instructionId: 'issued-b' } });
+      progressHandler({ runId, event: { type: 'instruction-consumed', instructionId: 'unknown-id' } });
+      progressHandler({ runId, event: { type: 'instruction-consumed', instructionId: 'issued-a' } });
+      done.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await run;
+      expect(takeDeliveredInstructions('wire-receipt:0')).toEqual(['user instruction A']);
+      expect(takeUnconfirmedInstructions('wire-receipt:0')).toEqual(['user instruction B']);
+    });
+
     it('gives parallel runs distinct parent-visible ids when providers both emit call_1', async () => {
       getSidecarStatus.mockReturnValue('running');
       const firstDone = deferred<unknown>();

@@ -1,5 +1,5 @@
 import { cancelDispatch, isDispatchActive } from './subagentAbort';
-import { enqueueDispatchInput, noteDeliveredInstruction } from './dispatchInput';
+import { enqueueDispatchInput, notePendingInstruction } from './dispatchInput';
 import { notifySidecar } from '@/core/sidecar/sidecarManager';
 
 /**
@@ -21,12 +21,15 @@ export function requestDispatchCancel(dispatchKey: string, reason?: string): voi
  * the stop: whichever process runs the member's loop owns the key and queues
  * it; the other ignores it.
  */
-export function requestDispatchInput(dispatchKey: string, text: string): void {
-  noteDeliveredInstruction(dispatchKey, text);
-  if (isDispatchActive(dispatchKey)) enqueueDispatchInput(dispatchKey, text);
+export function requestDispatchInput(dispatchKey: string, text: string): boolean {
+  if (!isDispatchActive(dispatchKey)) return false;
+  const id = enqueueDispatchInput(dispatchKey, text);
+  if (!id) return false;
+  notePendingInstruction(dispatchKey, id, text);
   try {
-    notifySidecar('state.dispatchInput', { key: dispatchKey, text });
+    notifySidecar('state.dispatchInput', { key: dispatchKey, text, id });
   } catch {
     // Sidecar not up — the in-process queue above is the only one that matters.
   }
+  return true;
 }

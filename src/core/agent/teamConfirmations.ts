@@ -1,4 +1,4 @@
-import { confirmationKey, useTeamConfirmationStore, type TeamConfirmationInput } from '@/stores/teamConfirmationStore';
+import { useTeamConfirmationStore, type TeamConfirmationInput } from '@/stores/teamConfirmationStore';
 import { notifyTeamConfirmationPending } from '@/utils/notifications';
 import { getI18n, format } from '@/i18n';
 import { getConversationReader } from './ports/conversationReader';
@@ -24,7 +24,7 @@ export function decideTeamConfirmation(
   if (!getConversationReader().getConversation(conversationId)?.teamId) return 'ask';
 
   const store = useTeamConfirmationStore.getState();
-  if (store.consumeApproval(conversationId, confirmationKey(item))) return 'approved';
+  if (store.consumeApproval({ ...item, conversationId })) return 'approved';
   const added = store.add({ ...item, conversationId });
   if (added) {
     const t = getI18n().team;

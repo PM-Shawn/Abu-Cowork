@@ -1,3 +1,5 @@
+import { clearRunBounds } from '../team/teamRunBounds';
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Shell-side channel handler module for the main agent loop's sidecar run —
  * the main-loop twin of `subagentRunner.ts` (P1-3a). Built up in two
@@ -45,7 +47,7 @@ import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
 import { resolveTeamRouteContext } from '../team/teamRouteResolver';
-import { teamRosterNames } from '../team/leaderRoute';
+import { captureTeamExecutionSnapshot } from '../team/leaderRoute';
 import { getScratchpadPort } from './ports/scratchpadPort';
 import { getCapsPort } from './ports/capsPort';
 import { getAbortRegistry } from './ports/abortRegistry';
@@ -67,7 +69,7 @@ import {
   drainWorkspaceRequest,
   drainUserQuestions,
 } from './permissionBridge';
-import { clearPlanMode, onPlanModeChange, getPlanMode } from './planMode';
+import { clearPlanMode, setPlanMode, onPlanModeChange, getPlanMode } from './planMode';
 import {
   setComputerUseActive,
   setCurrentAction,
@@ -286,11 +288,15 @@ export interface AgentLoopRunOptions {
    * then publishes `undefined` and the gate refuses with `no_binding`.
    */
   unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext | undefined;
+  /** Explicit @member route identity, resolved by shell entry orchestration. */
+  directDelegateAgentName?: string;
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
 
 export interface RunSession {
+  /** Captured exactly once, before any reverse request can execute. */
+  teamSnapshot?: Pick<ToolExecutionContext, 'teamRoster' | 'teamRequirePlanApproval'>;
   conversationId: string;
   loopId: string;
   options: AgentLoopRunOptions;
@@ -409,6 +415,10 @@ export function registerRunSession(runId: string, session: RunSession): void {
   if (previous?.resourceSettlement && previous !== session) {
     previous.resourceSettlement.seal();
     unregisterRunResourceSettlement(runId, previous.resourceSettlement);
+  }
+  session.teamSnapshot ??= trustedTeamContext(session.conversationId);
+  if (session.teamSnapshot.teamRequirePlanApproval && session.interactionMode !== 'background') {
+    setPlanMode(session.conversationId, 'planning');
   }
   session.runId = runId;
   session.resourceSettlement ??= createRunResourceSettlement(
@@ -1047,6 +1057,9 @@ function handleApprovalDrain(rawParams: unknown): void {
 function handlePlanClear(rawParams: unknown): void {
   const params = rawParams as { conversationId?: unknown } | null;
   if (!params || typeof params.conversationId !== 'string') return;
+  // The sidecar's entry reset must not remove the shell's strict-team gate.
+  const session = findJoinableRunSessionForConversation(params.conversationId);
+  if (session?.teamSnapshot?.teamRequirePlanApproval && session.interactionMode !== 'background') return;
   clearPlanMode(params.conversationId);
 }
 
@@ -1227,11 +1240,8 @@ async function handleWorkspaceAuthorizedPaths(rawParams: unknown): Promise<unkno
 }
 
 function trustedTeamContext(conversationId: string): Pick<ToolExecutionContext, 'teamRoster' | 'teamRequirePlanApproval'> {
-  const team = resolveTeamRouteContext(getConversationReader().getConversation(conversationId)?.teamId);
-  return {
-    teamRoster: team ? teamRosterNames(team) : undefined,
-    teamRequirePlanApproval: team?.requirePlanApproval === true ? true : undefined,
-  };
+  const teamId = getConversationReader().getConversation(conversationId)?.teamId;
+  return captureTeamExecutionSnapshot(teamId, resolveTeamRouteContext(teamId));
 }
 
 /**
@@ -1315,14 +1325,16 @@ function contextForSession(
     // `main` puts them back where the conversation delete cascade reaps them
     // and the parent can see them.
     agentRunId: undefined,
+    agentName: session.options.directDelegateAgentName,
+    teamApprovalDispatch: undefined,
     ...(Object.prototype.hasOwnProperty.call(session.options, 'workspacePathSnapshot')
       ? { workspacePath: session.options.workspacePathSnapshot ?? null }
       : {}),
     abortSignal: session.shellAbortController.signal,
     // Security boundary: the team roster restricts whom the leader may
-    // dispatch to. Re-derived from the shell-owned conversation pin rather
-    // than trusted from the wire (an omitted field would disable the check).
-    ...trustedTeamContext(session.conversationId),
+    // dispatch to. Frozen at run entry; neither a wire omission nor a later
+    // registry refresh/archive can broaden this roster.
+    ...session.teamSnapshot,
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
     commandConfirmCallback: session.options.requestCommandConfirmation ?? requestCommandConfirmation,
@@ -2575,6 +2587,9 @@ async function buildAgentRunParams(
     abortSignal,
     precomputeToolContext,
   );
+  if (orchestration.route.team?.requirePlanApproval && precomputeToolContext.interactionMode !== 'background') {
+    setPlanMode(conversationId, 'planning');
+  }
   const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settingsForModel);
 
   // May throw (EnterpriseLlmUnavailableError) — propagates to the caller,
@@ -2758,7 +2773,8 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             messageTaken: false,
           };
         }
-        enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
+        else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
@@ -2778,12 +2794,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
         // calls (userInputQueue.ts, unchanged).
-        enqueueUserInput(conversationId, userMessage);
+        if (options?.teamConfirmationRetryId) enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId);
+        else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
     }
   }
 
+  const ownedLoopId = options?.loopId ?? generateRunId();
+  options = { ...options, loopId: ownedLoopId };
+  useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
+  try {
   if (!sidecarRunning) {
     await ensureBuiltinBrowserRuntime();
     let localUserMessageId: string | undefined;
@@ -2857,7 +2878,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
 
   ensureHandlersRegistered();
 
-  const runId = generateRunId();
+  const runId = ownedLoopId;
   const clientMessageId = `msg-${runId}`;
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
   const runtimeStartedAt = Date.now();
@@ -3014,6 +3035,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     resolveTerminal = resolve;
   });
   const session: RunSession = {
+    teamSnapshot: captureTeamExecutionSnapshot(params.conversationSnapshot.teamId, params.orchestration.route.team),
     conversationId,
     loopId: runId, // same id as runId by convention — see agentLoop.ts's AgentLoopOptions.loopId doc.
     interactionMode: deriveRunInteractionMode({
@@ -3047,6 +3069,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         : undefined,
       unattendedApproval: options?.unattendedApproval,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },
+      directDelegateAgentName: params.orchestration.route.type === 'delegate' ? params.orchestration.route.delegateAgent?.name : undefined,
     },
     shellAbortController,
     transportAbortController: new AbortController(),
@@ -3564,6 +3587,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // the conversation's own pool, nested subagents included.
     releaseRunBrowserTabClaims(conversationId);
   }
+  } finally {
+    useTeamConfirmationStore.getState().clearRun(conversationId, ownedLoopId);
+    clearRunBounds(ownedLoopId);
+  }
 }
 
 async function runSingleAgentLoopDispatched(
@@ -3624,7 +3651,7 @@ export async function runAgentLoopDispatched(
         // or incorrectly retain a lower ceiling. System-authored wake-ups never
         // reach this dequeue path (`dequeueNextUserInput` skips them). What
         // they ARE is human-typed, so the handoff run is user-initiated.
-        { initiatedBy: 'user' },
+        { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId },
       );
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);

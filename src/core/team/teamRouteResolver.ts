@@ -39,14 +39,14 @@ export function resolveTeamRouteContext(teamId: string | undefined): TeamRouteCo
  * Async variant for the run entry: the registry is filled by the fire-and-forget
  * discovery, so a team-pinned conversation dispatched right after launch (or by
  * the scheduler's first tick) must wait for it instead of silently running as
- * plain Abu. Still null when the team/leader is really gone — and that is logged.
+ * plain Abu. A missing team/leader fails closed at run entry.
  */
 export async function resolveTeamRouteContextAsync(teamId: string | undefined): Promise<TeamRouteContext | null> {
   if (!teamId) return null;
   const first = resolveTeamRouteContext(teamId);
   if (first) return first;
   const team = useTeamStore.getState().teams.find((t) => t.id === teamId);
-  if (!team || team.archivedAt) return null;
+  if (!team || team.archivedAt) throw new Error(`Team "${teamId}" is unavailable; cannot start this team run`);
   const discovery = useDiscoveryStore.getState();
   if (discovery.isLoading) {
     await new Promise<void>((done) => {
@@ -59,7 +59,7 @@ export async function resolveTeamRouteContextAsync(teamId: string | undefined): 
   }
   const second = resolveTeamRouteContext(teamId);
   if (!second) {
-    console.warn(`[team] conversation is pinned to team "${team.name}" but its leader (role ${team.leaderRoleId}) cannot be resolved — running as Abu`);
+    throw new Error(`Team "${team.name}" has no resolvable leader; cannot start this team run`);
   }
   return second;
 }

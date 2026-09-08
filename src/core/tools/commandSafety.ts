@@ -19,6 +19,7 @@ export interface CommandAnalysis {
 }
 
 export interface ConfirmationInfo {
+  teamIdentity?: import('../agent/teamConfirmationIdentity').TeamConfirmationIdentity;
   command: string;
   level: DangerLevel;
   reason: string;

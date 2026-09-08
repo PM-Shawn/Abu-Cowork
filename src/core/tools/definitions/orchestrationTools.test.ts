@@ -179,11 +179,11 @@ describe('runAgentBatchTool progress wiring', () => {
       filePermissionCallback: async () => true,
       eventRouter: {
         route: vi.fn(),
-        getCurrentStepId: () => 'batch-step',
+        getCurrentStepId: () => 'unrelated-sibling-step',
         addChildStepToDelegate,
         completeChildStep,
       } as never,
-      toolCallToStepId: new Map(),
+      toolCallToStepId: new Map([['batch-children', 'batch-step']]),
     });
     vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
       options.onProgress?.({ type: 'tool-start', id: 'sub-tool-1', toolName: 'read_file', toolInput: { path: 'a.md' } });

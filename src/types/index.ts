@@ -626,13 +626,14 @@ export interface ToolExecutionContext {
    * every tab, "current tab" and takeover record on `{conversationId, runKey}`).
    */
   agentRunId?: string;
+  /** Shell-owned originating dispatch; never accepted from model/wire input. */
+  teamApprovalDispatch?: { id: string; fingerprint: string };
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
   /**
-   * Name of the sub-agent running this tool call (display only — never an
-   * authority signal). Lets a confirmation raised by a team member say WHO
-   * asked when the request crosses the sidecar boundary, where the loop
-   * context lookup only sees the parent run.
+   * Member identity stamped by the trusted runner (the shell session's agent
+   * definition across RPC, never the incoming context). Team approval keys
+   * bind it alongside the run, dispatch and exact tool parameters.
    */
   agentName?: string;
   /** Assistant message ID owning this tool call; injected by toolExecutor for trusted metadata checkpoints. */

@@ -28,7 +28,16 @@ describe('createParentStepResolver', () => {
   it('prefers the mapped step, then the running step, then the last mapped step', () => {
     executions.clear();
     expect(createParentStepResolver(ctx({ toolCallToStepId: new Map([['call-1', 'mapped']]) }), 'call-1')()).toBe('mapped');
-    expect(createParentStepResolver(ctx({ running: 'running-step' }), 'call-9')()).toBe('running-step');
+    expect(createParentStepResolver(ctx({ running: 'running-step' }), undefined)()).toBe('running-step');
     expect(createParentStepResolver(ctx({ toolCallToStepId: new Map([['a', 's1'], ['b', 's2']]) }), undefined)()).toBe('s2');
   });
+});
+
+it('does not cache a sibling while its explicit parent frame is delayed (F6)', () => {
+  executions.clear();
+  const mapping = new Map([['sibling-call', 'sibling-step']]);
+  const resolve = createParentStepResolver(ctx({ toolCallToStepId: mapping, running: 'sibling-step' }), 'own-call');
+  expect(resolve()).toBeUndefined();
+  mapping.set('own-call', 'own-step');
+  expect(resolve()).toBe('own-step');
 });

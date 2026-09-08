@@ -8,25 +8,54 @@ import type { Message } from '../../types';
  * of the process it runs in; the renderer tells both processes and each side
  * only accepts a key it currently owns (isDispatchActive).
  */
-const queues = new Map<string, string[]>();
+export interface DispatchInstruction { id: string; text: string }
+let instructionSequence = 0;
+const queues = new Map<string, DispatchInstruction[]>();
 
 /** Step name the member's process shows for an injected instruction. */
 export const MEMBER_INSTRUCTION_STEP = 'member_instruction';
 
-export function enqueueDispatchInput(dispatchKey: string, text: string): void {
+export function enqueueDispatchInput(dispatchKey: string, text: string, id?: string): string | undefined {
   const trimmed = text.trim();
-  if (!trimmed) return;
-  const queue = queues.get(dispatchKey);
-  if (queue) queue.push(trimmed);
-  else queues.set(dispatchKey, [trimmed]);
+  if (!trimmed) return undefined;
+  const instructionId = id ?? `instruction-${++instructionSequence}`;
+  const queue = queues.get(dispatchKey) ?? [];
+  if (!queue.some((item) => item.id === instructionId)) queue.push({ id: instructionId, text: trimmed });
+  queues.set(dispatchKey, queue);
+  return instructionId;
 }
 
-/** Take (and remove) everything queued for this hand-off, oldest first. */
-export function drainDispatchInputs(dispatchKey: string): string[] {
-  const queue = queues.get(dispatchKey);
-  if (!queue) return [];
+export function drainDispatchInstructionEntries(dispatchKey: string): DispatchInstruction[] {
+  const queue = queues.get(dispatchKey) ?? [];
   queues.delete(dispatchKey);
   return queue;
+}
+
+/** Legacy text-only consumer. Receipt-bearing loops drain entries instead. */
+export function drainDispatchInputs(dispatchKey: string): string[] {
+  return drainDispatchInstructionEntries(dispatchKey).map((item) => item.text);
+}
+
+// Shell outbox survives queue drains and process shutdown. Only a receipt for
+// an exact issued id changes its status; sending is never called delivery.
+const unconfirmed = new Map<string, Map<string, string>>();
+export function notePendingInstruction(dispatchKey: string, id: string, text: string): void {
+  const pending = unconfirmed.get(dispatchKey) ?? new Map<string, string>();
+  pending.set(id, text.trim());
+  unconfirmed.set(dispatchKey, pending);
+}
+export function acknowledgeDispatchInstruction(dispatchKey: string, id: string): void {
+  const pending = unconfirmed.get(dispatchKey);
+  const text = pending?.get(id);
+  if (text === undefined) return;
+  pending!.delete(id);
+  if (pending!.size === 0) unconfirmed.delete(dispatchKey);
+  noteDeliveredInstruction(dispatchKey, text);
+}
+export function takeUnconfirmedInstructions(dispatchKey: string): string[] {
+  const pending = unconfirmed.get(dispatchKey);
+  unconfirmed.delete(dispatchKey);
+  return Array.from(pending?.values() ?? []);
 }
 
 export function hasDispatchInput(dispatchKey: string): boolean {

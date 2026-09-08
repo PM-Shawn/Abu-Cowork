@@ -1433,8 +1433,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           address.member,
         )
         : null;
-      if (address && running) {
-        requestDispatchInput(running.key, address.body);
+      if (address && running && requestDispatchInput(running.key, address.body)) {
         useToastStore.getState().addToast({ type: 'success', title: format(t.chat.memberInstructionSent, { member: running.agent }) });
         resetInput();
         return;

@@ -102,10 +102,11 @@ export async function precomputeOrchestration(
   // In-conversation team: a conversation pinned to a team runs its leader as
   // the root agent (general → agent route rewrite; prompt + roster are derived
   // from route.team by the orchestrator and the loop).
-  const route = applyTeamLeaderRoute(
-    routeInput(userMessage),
-    await resolveTeamRouteContextAsync(getConversationReader().getConversation(conversationId)?.teamId),
-  );
+  const team = await resolveTeamRouteContextAsync(getConversationReader().getConversation(conversationId)?.teamId);
+  const route = applyTeamLeaderRoute(routeInput(userMessage), team);
+  // Explicit /skill and @member routing keeps its meaning, but never drops
+  // the pinned team's execution constraints.
+  if (team) route.team = team;
 
   // Refresh skill content from disk to ensure latest version.
   if (route.type === 'skill' && route.skill?.filePath) {

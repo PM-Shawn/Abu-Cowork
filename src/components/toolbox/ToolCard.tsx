@@ -15,6 +15,9 @@ export interface ToolItem {
   avatar?: ReactNode;
   /** Optional top-right corner adornment (source badge, connection status dot, …). */
   badge?: ReactNode;
+  /** Optional test hook — the card IS the click target, so a wrapper testid
+   *  around it would not receive the card's click. */
+  testId?: string;
   /** Optional top-right interactive control (e.g. an enable/disable switch).
    *  Rendered after `badge`; its own click must stopPropagation so toggling
    *  doesn't also open the card's detail view. */
@@ -38,6 +41,7 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
     // the role and tab stop while keeping the same visual structure.
     <div
       onClick={onClick}
+      data-testid={item.testId}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? 0 : undefined}
       onKeyDown={(e) => {

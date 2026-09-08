@@ -92,8 +92,9 @@ vi.mock('@/components/customize/AgentsSection', () => ({
 
 import TeamView from './TeamView';
 
-function seedAgent(name: string, roleId?: string) {
-  const agent = { name, description: `${name} desc`, roleId, filePath: `/agents/${name}/AGENT.md`, systemPrompt: '' };
+function seedAgent(name: string, extra?: string | { roleId?: string; skills?: string[] }) {
+  const { roleId, skills } = typeof extra === 'string' ? { roleId: extra, skills: undefined } : (extra ?? {});
+  const agent = { name, description: `${name} desc`, roleId, skills, filePath: `/agents/${name}/AGENT.md`, systemPrompt: '' };
   registryAgents[name] = agent;
   return agent;
 }
@@ -122,27 +123,52 @@ describe('TeamView', () => {
     expect(screen.getAllByText('新建团队').length).toBeGreaterThan(0);
   });
 
-  it('teams tab: "再来一次" opens a new conversation pinned to the team with the first request prefilled', async () => {
+  it('teams tab: a row opens the detail, not the edit form — and shows leader, members and the merged skills', () => {
     settingsState.activeTeamTab = 'teams';
-    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
-    chatState.conversationIndex = { c1: { id: 'c1', title: '出周报', updatedAt: 5, teamId: 't1', workspacePath: '/ws' } };
-    loadMessages.mockResolvedValueOnce([{ id: 'u1', role: 'user', content: '出一版本周周报', timestamp: 1 }]);
+    seedAgent('分析师', { roleId: 'r-lead', skills: ['取数', '画图'] });
+    seedAgent('校对', { roleId: 'r-mem', skills: ['画图', '核对'] });
+    discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem'], createdAt: 1 }] });
     render(<TeamView />);
-    fireEvent.click(screen.getByRole('button', { name: '再来一次: 出周报' }));
-    await waitFor(() => expect(chatState.createConversation).toHaveBeenCalledWith('/ws', { teamId: 't1' }));
-    expect(chatState.setPendingInput).toHaveBeenCalledWith('出一版本周周报');
-    expect(chatState.switchConversation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    // Detail, not the edit form: the primary action is starting work, and the
+    // name field only exists behind "…" → 编辑.
+    expect(screen.getByTestId('team-detail-start-chat')).toBeTruthy();
+    expect(screen.queryByTestId('team-name-input')).toBeNull();
+    expect(screen.getByText('队长')).toBeTruthy();
+    expect(screen.getByText('成员（1）')).toBeTruthy();
+    // Skills live on members; the union is deduplicated and sorted.
+    for (const skill of ['取数', '画图', '核对']) expect(screen.getByText(skill)).toBeTruthy();
   });
 
-  it('teams tab: "再来一次" without a first user message explains instead of opening an empty conversation', async () => {
+  it('teams tab: the detail\'s primary action opens a conversation already pinned to the team', () => {
     settingsState.activeTeamTab = 'teams';
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
-    chatState.conversationIndex = { c1: { id: 'c1', title: '空对话', updatedAt: 5, teamId: 't1' } };
-    loadMessages.mockResolvedValueOnce([]);
     render(<TeamView />);
-    fireEvent.click(screen.getByRole('button', { name: '再来一次: 空对话' }));
-    await waitFor(() => expect(addToast).toHaveBeenCalled());
-    expect(chatState.createConversation).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-start-chat'));
+    expect(chatState.createConversation).toHaveBeenCalledWith(null, { teamId: 't1' });
+    // Nothing prefilled: the user says what they want in their own words.
+    expect(chatState.setPendingInput).not.toHaveBeenCalled();
+  });
+
+  it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 队员 detail', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByTestId('team-name-input')).toBeTruthy();
+  });
+
+  it('teams tab: creating offers 使用阿布创建 alongside 手动创建 (parity with 队员)', () => {
+    settingsState.activeTeamTab = 'teams';
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-create-trigger'));
+    const menu = screen.getByTestId('team-create-menu');
+    expect(menu.textContent).toContain('使用阿布创建');
+    expect(menu.textContent).toContain('手动创建');
   });
 
   it('team dialog: create button stays disabled until name + leader are set', async () => {

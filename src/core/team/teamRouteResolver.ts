@@ -15,7 +15,7 @@ import type { TeamRouteContext } from './leaderRoute';
 export function resolveTeamRouteContext(teamId: string | undefined): TeamRouteContext | null {
   if (!teamId) return null;
   const team = useTeamStore.getState().teams.find((t) => t.id === teamId);
-  if (!team || team.archivedAt) return null;
+  if (!team) return null;
   const leader = resolveRoleId(team.leaderRoleId);
   if (!leader) return null;
   const members: SubagentDefinition[] = [];
@@ -46,7 +46,7 @@ export async function resolveTeamRouteContextAsync(teamId: string | undefined): 
   const first = resolveTeamRouteContext(teamId);
   if (first) return first;
   const team = useTeamStore.getState().teams.find((t) => t.id === teamId);
-  if (!team || team.archivedAt) throw new Error(`Team "${teamId}" is unavailable; cannot start this team run`);
+  if (!team) throw new Error(`Team "${teamId}" is unavailable; cannot start this team run`);
   const discovery = useDiscoveryStore.getState();
   if (discovery.isLoading) {
     await new Promise<void>((done) => {

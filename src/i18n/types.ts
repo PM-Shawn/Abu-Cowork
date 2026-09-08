@@ -1819,6 +1819,19 @@ export interface TranslationDict {
     fieldLeaderNoteHint: string;
     fieldLeaderNotePlaceholder: string;
     teamRowSummary: string;
+    detailStartChat: string;
+    detailLeader: string;
+    detailMembers: string;
+    detailNoMembers: string;
+    detailPlanApproval: string;
+    detailPlanApprovalOn: string;
+    detailPlanApprovalOff: string;
+    detailLeaderNote: string;
+    detailSkills: string;
+    detailSkillsHint: string;
+    detailNoSkills: string;
+    detailEdit: string;
+    aiCreateTeamPrompt: string;
     unknownMember: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
@@ -1826,11 +1839,6 @@ export interface TranslationDict {
     followUpRedoStep: string;
     followUpMemberRevise: string;
     followUpMemberAppend: string;
-    recentConversations: string;
-    noConversationsYet: string;
-    rerunConversation: string;
-    rerunConversationTitle: string;
-    rerunConversationEmpty: string;
     confirmationStripTitle: string;
     confirmationSeparator: string;
     confirmationLeader: string;
@@ -1863,12 +1871,10 @@ export interface TranslationDict {
     membersPlaceholder: string;
     pickerEmpty: string;
     suggestionTeamHint: string;
-    archiveTeamAction: string;
-    archiveTeamTitle: string;
-    archiveTeamMessage: string;
+    deleteTeamAction: string;
+    deleteTeamTitle: string;
+    deleteTeamMessage: string;
     teamArchived: string;
-    archivedSection: string;
-    restoreTeamAction: string;
   };
 
   toolbox: {

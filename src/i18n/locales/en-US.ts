@@ -3171,6 +3171,14 @@ const enUS: TranslationDict = {
   },
 
   toolResult: {
+    team: {
+      invalidInput: 'Error: Provide a team name, leader name and member list, and check the format of the display fields.',
+      unavailableAgents: 'Error: These members do not exist or are unavailable: {names}. Check their names; the team has not been saved.',
+      saved: 'Team "{name}" saved. Leader: {leader}, {count} members. Plan approval: {approval}.',
+      approvalOn: 'on',
+      approvalOff: 'off',
+      saveFailed: 'Error: The team was not saved: {reason}',
+    },
     valueNone: 'none',
     valueNever: 'never',
     statusActive: 'active',

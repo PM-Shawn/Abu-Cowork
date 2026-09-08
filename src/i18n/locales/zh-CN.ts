@@ -3173,6 +3173,14 @@ const zhCN: TranslationDict = {
   },
 
   toolResult: {
+    team: {
+      invalidInput: 'Error: 请提供团队名、队长名和成员名单，并检查展示内容的格式。',
+      unavailableAgents: 'Error: 这些队员不存在或目前不可用：{names}。请检查名字，团队尚未保存。',
+      saved: '团队「{name}」已保存。队长：{leader}，{count} 名成员。分工先经我确认：{approval}。',
+      approvalOn: '开启',
+      approvalOff: '关闭',
+      saveFailed: 'Error: 团队未保存：{reason}',
+    },
     valueNone: '无',
     valueNever: '从未',
     statusActive: '活跃',

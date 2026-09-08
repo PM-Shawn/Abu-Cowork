@@ -3827,6 +3827,14 @@ export interface TranslationDict {
   // LLM, so they go through i18n (resolved at execution time by the current
   // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
   toolResult: {
+    team: {
+      invalidInput: string;
+      unavailableAgents: string;
+      saved: string;
+      approvalOn: string;
+      approvalOff: string;
+      saveFailed: string;
+    };
     // Shared value fragments reused across tools.
     valueNone: string;
     valueNever: string;

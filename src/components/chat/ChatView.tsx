@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore, useMemo } from 'react';
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
@@ -37,6 +37,8 @@ import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
 import { useTeamStore } from '@/stores/teamStore';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
@@ -238,10 +240,22 @@ export default function ChatView({
     ? {
         name: pendingAgent.displayNames?.[locale] ?? pendingAgent.name,
         description: pendingAgent.descriptions?.[locale] ?? pendingAgent.description,
-        avatar: pendingAgent.avatar ?? '🤖',
         intro: pendingAgent.intros?.[locale] ?? pendingAgent.intro,
       }
     : null;
+
+  // The composer already owns the pending team pin. After creation the
+  // conversation owns it instead, so welcome identity follows the same source.
+  const pendingTeamId = useChatStore((s) => s.pendingTeamId);
+  const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
+  const welcomeTeam = useTeamStore((s) => s.teams.find((team) => team.id === welcomeTeamId));
+  const discoveredAgents = useDiscoveryStore((s) => s.agents);
+  const welcomeAgents = useMemo(() => discoveredAgents.map((meta) => agentRegistry.getAgent(meta.name)).filter((agent) => agent !== undefined), [discoveredAgents]);
+  const welcomeRole = (roleId: string) => welcomeAgents.find((agent) => effectiveRoleId(agent) === roleId);
+  const welcomeRoleLabel = (roleId: string) => {
+    const agent = welcomeRole(roleId);
+    return agent?.displayNames?.[locale] ?? agent?.name ?? t.team.unknownMember;
+  };
 
   // Subscribe to command confirmation state using useSyncExternalStore
   const commandConfirmRequest = useSyncExternalStore(
@@ -1293,10 +1307,7 @@ export default function ChatView({
             <div className="text-center mb-8">
               {pendingAgentDisplay ? (
                 <>
-                  {/* Agent avatar (emoji in tinted circle) */}
-                  <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-[var(--abu-bg-active)] flex items-center justify-center text-5xl select-none">
-                    {pendingAgentDisplay.avatar}
-                  </div>
+                  <AgentAvatar agent={pendingAgent!} size="lg" round className="h-20 w-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-h-xl" />
 
                   <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
                     {pendingAgentDisplay.name}
@@ -1310,6 +1321,32 @@ export default function ChatView({
                     </p>
                   )}
                 </>
+              ) : welcomeTeam ? (
+                <div data-testid="team-welcome">
+                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="h-20 w-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-h-xl" />
+                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">{welcomeTeam.name}</h1>
+                  {welcomeTeam.description && <p className="text-body text-[var(--abu-text-tertiary)] mb-3">{welcomeTeam.description}</p>}
+                  {welcomeTeam.intro && <p className="whitespace-pre-wrap text-body text-[var(--abu-text-secondary)] leading-relaxed max-w-lg mx-auto">{welcomeTeam.intro}</p>}
+                  <div data-testid="team-welcome-members" className="flex flex-wrap items-center justify-center gap-2 mt-3 text-minor text-[var(--abu-text-secondary)]">
+                    <span>{t.team.detailLeader}</span>
+                    <span className="inline-flex items-center gap-1">
+                      <AgentAvatar agent={welcomeRole(welcomeTeam.leaderRoleId) ?? { name: t.team.unknownMember }} size="sm" />
+                      <span>{welcomeRoleLabel(welcomeTeam.leaderRoleId)}</span>
+                    </span>
+                    <span>·</span>
+                    {welcomeTeam.memberRoleIds.some((id) => id !== welcomeTeam.leaderRoleId) ? (
+                      <>
+                        <span>{t.team.fieldMembers}</span>
+                        {welcomeTeam.memberRoleIds.filter((id) => id !== welcomeTeam.leaderRoleId).map((id) => (
+                          <span key={id} className="inline-flex items-center gap-1">
+                            <AgentAvatar agent={welcomeRole(id) ?? { name: t.team.unknownMember }} size="sm" />
+                            <span>{welcomeRoleLabel(id)}</span>
+                          </span>
+                        ))}
+                      </>
+                    ) : <span>{t.team.detailNoMembers}</span>}
+                  </div>
+                </div>
               ) : (
                 <>
                   {/* Mascot */}

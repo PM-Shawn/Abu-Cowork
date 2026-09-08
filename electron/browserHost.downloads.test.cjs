@@ -42,6 +42,14 @@ const electronId = require.resolve('electron');
 const tauriHostId = require.resolve('./tauriHost.cjs');
 const browserHostId = require.resolve('./browserHost.cjs');
 
+/**
+ * A modification time to freeze a file onto, in the seconds `utimesSync`
+ * takes. A WHOLE second: the syscall carries the time as float seconds, and
+ * only a value with no sub-second remainder survives that conversion exactly
+ * enough to read back as the same integer millisecond.
+ */
+const FROZEN_MTIME_SEC = 1_700_000_000;
+
 const OWNER_A = 'conversation-a';
 const OWNER_B = 'conversation-b';
 
@@ -912,19 +920,33 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
     const { tabId, contents } = await openTab(host, OWNER_A);
     const approvedPath = path.join(root, 'report.txt');
     fs.writeFileSync(approvedPath, 'PUBLIC!!');
-    const approved = approvedEntry(approvedPath, 'report.txt');
-    const other = path.join(root, 'other.txt');
-    fs.writeFileSync(other, 'SECRET!!');
-    fs.renameSync(other, approvedPath);
     // Round-2 review N5. Both writes are the same length, so the ONLY thing
     // that should reject this is the inode — but two `writeFileSync` calls
     // usually land in different milliseconds, and the mtime check got there
     // first. The test then passed for a reason it was not testing: a mutation
     // that deletes the `ino`/`dev` comparison went red only when the clock
-    // happened to disagree. Freeze the clock onto the approved value and the
+    // happened to disagree. Freeze both files onto one instant and the
     // identity pin is the one thing left standing.
-    const frozen = new Date(approved.mtimeMs);
-    fs.utimesSync(approvedPath, frozen, frozen);
+    //
+    // The instant is a WHOLE second on purpose, and the approved file is
+    // stamped with it BEFORE it is approved. `utimesSync` puts the time on the
+    // syscall as float seconds, so an instant carrying a millisecond fraction
+    // is not exactly representable: freezing onto `approved.mtimeMs` and
+    // reading it back landed a nanosecond BELOW the integer that was asked
+    // for about half the time, and `Math.floor` — the rule `approvedEntry`
+    // and `readApprovedUploadFile` (browserHost.cjs) both apply — then
+    // reported one millisecond less than was frozen. That is not a rounding
+    // nit to assert around: it means the freeze did not hold, and production
+    // compares with the very same expression, so the mtime branch would be
+    // what rejects this upload and the `ino`/`dev` mutation would stay green
+    // again. A whole second survives the conversion exactly, so the freeze
+    // really holds and the precondition below stays as strict as production.
+    fs.utimesSync(approvedPath, FROZEN_MTIME_SEC, FROZEN_MTIME_SEC);
+    const approved = approvedEntry(approvedPath, 'report.txt');
+    const other = path.join(root, 'other.txt');
+    fs.writeFileSync(other, 'SECRET!!');
+    fs.renameSync(other, approvedPath);
+    fs.utimesSync(approvedPath, FROZEN_MTIME_SEC, FROZEN_MTIME_SEC);
     assert.equal(Math.floor(fs.lstatSync(approvedPath).mtimeMs), approved.mtimeMs);
     assert.equal(fs.lstatSync(approvedPath).size, approved.size);
     assert.notEqual(fs.lstatSync(approvedPath).ino, approved.ino);

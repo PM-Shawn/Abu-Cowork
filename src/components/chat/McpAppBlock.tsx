@@ -15,6 +15,7 @@ import {
   MAX_APP_IFRAME_HEIGHT,
   buildAppCsp,
   buildAppSrcdoc,
+  buildAppThemeContext,
   buildHostContext,
   type McpAppResourceMeta,
 } from '@/core/mcp/appHost';
@@ -704,6 +705,10 @@ export default function McpAppBlock({
   // ---- 3b. Display mode ----------------------------------------------------
   // Tell the app which mode it ended up in — both on the way into fullscreen
   // and on the way back — so a view that lays itself out per mode can react.
+  //
+  // No palette here on purpose: Abu's colours do not depend on the display
+  // mode, so re-sending them would be noise. Only a patch that changes the
+  // THEME has to carry `styles.variables` (see the MutationObserver below).
   useEffect(() => {
     void sessionRef.current?.sendHostContextChange({ displayMode });
   }, [displayMode]);
@@ -736,7 +741,13 @@ export default function McpAppBlock({
   useEffect(() => {
     if (!active || status !== 'ready') return;
     const observer = new MutationObserver(() => {
-      void sessionRef.current?.sendHostContextChange({ theme: readIsDark() ? 'dark' : 'light' });
+      // Theme AND palette, never one without the other: the iframe is not
+      // re-navigated here (`srcdoc` does not depend on the theme), so this
+      // patch is the app's only chance to learn the new colours. Sending the
+      // bare theme name leaves an app that adopted `styles.variables` at
+      // handshake time painting the previous theme — see
+      // `buildAppThemeContext`.
+      void sessionRef.current?.sendHostContextChange(buildAppThemeContext(readIsDark()));
     });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
     return () => observer.disconnect();
@@ -753,6 +764,8 @@ export default function McpAppBlock({
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         frame = undefined;
+        // Size only — a resize changes no colour, and a palette on every
+        // frame of a drag would be pure traffic.
         void sessionRef.current?.sendHostContextChange({
           containerDimensions: { width: container.clientWidth, maxHeight: MAX_APP_IFRAME_HEIGHT },
         });

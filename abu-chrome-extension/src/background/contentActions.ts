@@ -34,4 +34,8 @@ export const CONTENT_SCRIPT_ACTIONS: ReadonlySet<string> = new Set([
   'keyboard',
   'start_recording',
   'stop_recording',
+  // T5 — the DOM write lives in the content script and is the SAME routine
+  // the built-in browser drives (`electron/browserHost.cjs` hands it the same
+  // payload). What differs between the channels is only who opened the file.
+  'upload_file',
 ]);

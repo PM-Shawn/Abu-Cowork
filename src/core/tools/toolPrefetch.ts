@@ -26,6 +26,8 @@ export const BROWSER_TOOL_SUFFIXES = [
   'find',
   'batch',
   'click',
+  'upload_file',
+  'download',
   'fill',
   'select',
   'wait_for',

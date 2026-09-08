@@ -1,11 +1,14 @@
-import { AlertTriangle, Ban, Check, CircleStop, Globe, ShieldAlert, UserCheck, X } from 'lucide-react';
+import { AlertTriangle, Ban, Check, CircleStop, FolderOpen, Globe, ShieldAlert, UserCheck, X } from 'lucide-react';
 import { useI18n, format, type TranslationDict } from '@/i18n';
 import type { Message } from '@/types';
 import type {
+  BrowserRunReportArtifact,
   BrowserRunReportOutcome,
   BrowserRunReportSnapshot,
 } from '@/core/observability/browserRunReport';
 import { rawCode, reasonLabel, stepLabel } from '@/core/observability/browserRunReportCopy';
+import { formatBytes } from '@/core/permissions/browserUploadFiles';
+import { usePreviewStore } from '@/stores/previewStore';
 
 /**
  * The one thing a person reads after an overnight unattended run.
@@ -29,6 +32,55 @@ import { rawCode, reasonLabel, stepLabel } from '@/core/observability/browserRun
  * run also sends (F7) quotes the very same codes, and one table is the only
  * way the card and that message cannot drift apart.
  */
+
+/**
+ * One downloaded file, opened the way every other file in this app is opened.
+ *
+ * The preview panel and 「在文件夹中显示」 are the mechanisms attachments and
+ * workspace files already use (`FileAttachment.tsx`, `WorkspaceFileTree.tsx`)
+ * — a card that grew its own file viewer would be a second answer to a
+ * question this product has already answered.
+ *
+ * The name is page-influenceable (it comes from a `Content-Disposition`
+ * header, sanitized by the host and clamped by the aggregator), so it is
+ * rendered as PLAIN TEXT like every origin on this card — never as a link.
+ */
+function ArtifactRow({ artifact }: { artifact: BrowserRunReportArtifact }) {
+  const { t } = useI18n();
+  const tr = t.browserRunReport;
+  const openPreview = usePreviewStore((s) => s.openPreview);
+  const reveal = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+      await revealItemInDir(artifact.path);
+    } catch { /* the desktop shell said no; the path is still on the row */ }
+  };
+  return (
+    <li className="group/artifact flex items-baseline gap-2 text-minor">
+      <button
+        type="button"
+        onClick={() => openPreview(artifact.path)}
+        title={`${artifact.path}\n${tr.artifactOpenHint}`}
+        className="min-w-0 flex-1 truncate text-left text-[var(--abu-text-primary)] hover:underline"
+      >
+        {artifact.name}
+      </button>
+      <span className="flex-shrink-0 text-caption text-[var(--abu-text-tertiary)]">
+        {formatBytes(artifact.bytes)}
+      </span>
+      <button
+        type="button"
+        onClick={reveal}
+        title={tr.artifactReveal}
+        aria-label={tr.artifactReveal}
+        className="flex-shrink-0 text-[var(--abu-text-tertiary)] opacity-0 transition-opacity group-hover/artifact:opacity-100 hover:text-[var(--abu-text-secondary)]"
+      >
+        <FolderOpen aria-hidden="true" className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
+}
 
 function outcomeLabel(outcome: BrowserRunReportOutcome, t: TranslationDict): string {
   const o = t.browserRunReport.outcome;
@@ -84,6 +136,37 @@ function errorClassLabel(errorClass: string, t: TranslationDict): string {
   }
 }
 
+/**
+ * The rows themselves, shared by both forms of the card.
+ *
+ * Also rendered when the list is empty but something was dropped: a run that
+ * produced one file whose path was too long to carry (`browserRunReport.ts`,
+ * N3) must still say a file exists, not look like a run that downloaded
+ * nothing.
+ */
+function ArtifactList({ report }: { report: BrowserRunReportSnapshot }) {
+  const { t } = useI18n();
+  const tr = t.browserRunReport;
+  return (
+    <>
+      <ul className="space-y-0.5">
+        {report.artifacts?.map((artifact) => (
+          <ArtifactRow key={artifact.downloadId} artifact={artifact} />
+        ))}
+      </ul>
+      {(report.omitted.artifacts ?? 0) > 0 && (
+        <div className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
+          {format(tr.moreArtifacts, { count: String(report.omitted.artifacts) })}
+        </div>
+      )}
+    </>
+  );
+}
+
+function hasArtifacts(report: BrowserRunReportSnapshot): boolean {
+  return (report.artifacts?.length ?? 0) > 0 || (report.omitted.artifacts ?? 0) > 0;
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="px-3 py-2 border-t border-[var(--abu-border-subtle)]">
@@ -112,6 +195,33 @@ export default function BrowserRunReportCard({ message }: { message: Message }) 
   if (!report) return null;
 
   const tr = t.browserRunReport;
+
+  /**
+   * The ordinary-conversation form (acceptance F3): the files, and nothing
+   * else. No outcome badge, no action count, no approval tally — the person
+   * was sitting here while it happened, and everything this card would
+   * otherwise say they already watched. The snapshot itself carries nothing
+   * else either (`buildBrowserDownloadsReport`), so this is a rendering of
+   * everything it has rather than a filtered view of more.
+   */
+  if (report.variant === 'downloads') {
+    if (!hasArtifacts(report)) return null;
+    return (
+      <section
+        className="my-2 rounded-lg border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] overflow-hidden"
+        aria-label={tr.artifactsTitle}
+      >
+        <header className="flex items-center gap-2 px-3 pt-2">
+          <FolderOpen aria-hidden="true" className="h-3.5 w-3.5 flex-shrink-0 text-[var(--abu-text-muted)]" />
+          <span className="text-h-xs text-[var(--abu-text-primary)]">{tr.artifactsTitle}</span>
+        </header>
+        <div className="px-3 py-2">
+          <ArtifactList report={report} />
+        </div>
+      </section>
+    );
+  }
+
   const { approvals } = report;
   const humanDecisions = approvals.approved + approvals.declined;
   const showApprovals =
@@ -266,6 +376,12 @@ export default function BrowserRunReportCard({ message }: { message: Message }) 
               })}
             </div>
           )}
+        </Section>
+      )}
+
+      {hasArtifacts(report) && (
+        <Section title={tr.artifactsTitle}>
+          <ArtifactList report={report} />
         </Section>
       )}
 

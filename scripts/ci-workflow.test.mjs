@@ -3,10 +3,49 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import YAML from 'yaml';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ci = readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
+const e2e = readFileSync(path.join(repoRoot, '.github/workflows/e2e.yml'), 'utf8');
+const release = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
 const vitestConfig = readFileSync(path.join(repoRoot, 'vitest.config.ts'), 'utf8');
+const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+
+test('E2E required-check job names are stable, blocking, and run on PRs to dev', () => {
+  const workflow = YAML.parse(e2e);
+  assert.ok(workflow.jobs?.e2e, 'e2e job missing');
+  assert.ok(workflow.jobs?.['e2e-electron'], 'e2e-electron job missing');
+  for (const jobName of ['e2e', 'e2e-electron']) {
+    assert.equal(
+      workflow.jobs[jobName].name ?? jobName,
+      jobName,
+      `${jobName} display name must match the required check context`,
+    );
+    assert.equal(
+      workflow.jobs[jobName]['continue-on-error'],
+      undefined,
+      `${jobName} must remain blocking`,
+    );
+  }
+  assert.ok(
+    workflow.on?.pull_request?.branches?.includes('dev'),
+    'E2E workflow must run for pull requests to dev',
+  );
+});
+
+test('release CI explicitly skips the local-only branch-protection read', () => {
+  assert.match(
+    packageJson.scripts['release:check'],
+    /^node scripts\/release-preflight\.mjs$/,
+    'the local release command must keep the branch-protection check enabled',
+  );
+  assert.match(
+    release,
+    /node scripts\/release-preflight\.mjs --tag "\$CANDIDATE_VERSION" --skip-branch-protection/,
+  );
+  assert.doesNotMatch(e2e, /check-branch-protection|skip-branch-protection/);
+});
 
 test('CI injects QUARANTINE_ASOF so the quarantine SLA clock advances', () => {
   assert.match(ci, /QUARANTINE_ASOF=\$\(date -u \+%F\)/);

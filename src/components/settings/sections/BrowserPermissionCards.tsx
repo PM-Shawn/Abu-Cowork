@@ -51,6 +51,34 @@ export type BrowserBackend = 'builtin' | 'chrome';
 const policySelectWidthClass = 'w-52 shrink-0';
 
 /**
+ * The row tag for a grant that came through the merged embedded-region prompt.
+ *
+ * Two stored shapes, two sentences. A grant written since v51 names the page it
+ * was given on, and naming it is the whole point of the tag — "valid inside
+ * embedded regions" is only actionable once the user knows WHICH page. A
+ * pre-v51 grant has no page recorded (the tier it used to carry did not need
+ * one), so it gets the un-named wording rather than a made-up address.
+ *
+ * Several pages show the first plus a count: the tag sits on one line next to a
+ * dropdown, and the hint below already says what the scope means.
+ */
+function viaEmbedScopeLabel(
+  scope: Record<string, true> | undefined,
+  t: ReturnType<typeof useI18n>['t'],
+): string {
+  const pages = Object.keys(scope ?? {}).sort();
+  if (pages.length === 0) return t.settings.browserViaEmbedTag;
+  return format(t.settings.browserViaEmbedTagOnPage, {
+    page: pages.length === 1
+      ? pages[0]
+      : format(t.settings.browserViaEmbedTagPageMore, {
+        page: pages[0],
+        count: pages.length - 1,
+      }),
+  });
+}
+
+/**
  * Persistent per-site browser-automation verdicts, written from the
  * confirmation dialog ("always allow this site" / "block this site"). Its own
  * page, reached from either channel's detail view: it is a record list, and a
@@ -244,10 +272,13 @@ export function BrowserSitePermissionsPage({
                   </span>
                 )}
                 {/*
-                  R2-C-② — the other thing an 「始终允许」 row cannot imply: this
-                  grant was given from another site's page, so an automatic task
-                  will still be refused here. Re-choosing the verdict on this
-                  row (or re-adding the origin above) promotes it to an ordinary
+                  The other thing an 「始终允许」 row cannot imply: this grant was
+                  given for the embedded regions of ONE page, so it is valid
+                  there and nowhere else — not on this site opened directly,
+                  and not inside a different page. The tag names that page when
+                  the stored grant knows it (a pre-v51 grant does not, and gets
+                  the un-named wording). Re-choosing the verdict on this row (or
+                  re-adding the origin above) promotes it to an ordinary
                   standing grant and the tag goes away.
                 */}
                 {sitePermissions[origin] === 'allowed' && viaEmbed.has(origin) && (
@@ -255,7 +286,7 @@ export function BrowserSitePermissionsPage({
                     className="shrink-0 rounded-md bg-[var(--abu-bg-hover)] px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)]"
                     title={t.settings.browserViaEmbedTagHint}
                   >
-                    {t.settings.browserViaEmbedTag}
+                    {viaEmbedScopeLabel(viaEmbedGrants[origin], t)}
                   </span>
                 )}
                 <Select
@@ -581,34 +612,37 @@ function BrowserPermissionPreview() {
       everything and could only be loosened by the substitution).
     */
     /*
-      Per RUN MODE, not once for both (round-2 R2-C-②): a grant minted through
-      the merged embedded-region prompt is a full grant while somebody is
-      watching and no standing grant at all for an automatic run, so the two
-      columns of this table genuinely have different answers. Reading it
-      through `getSiteVerdict` — the same function the gate reads it through —
-      is what keeps that from being a second implementation.
+      The stored verdict is the SAME for both columns — including when the
+      grant came through the merged embedded-region prompt. Such a grant is
+      scoped to the page it was given on, not tiered by who is watching
+      (2026-09-07 ruling), and this box takes a site the user wants to VISIT:
+      that is the top-level role no scoped grant covers, in either column.
+      Reading it through `getSiteVerdict` — the same function the gate reads it
+      through — is what keeps that from being a second implementation.
+
+      What this preview deliberately cannot show is the role a scoped grant
+      DOES cover ("inside page P"), because the box asks for one address and
+      that question needs two. The per-site row names the page instead.
     */
-    const verdictFor = (runMode: 'attended' | 'unattended'): DecideBrowserOperationSiteVerdict => {
-      const stored = getSiteVerdict(origin, sitePermissions, {
-        viaEmbed: viaEmbedGrants,
-        runMode,
-      });
-      return stored === 'denied'
-        ? 'denied'
-        : isHighRiskUrl(targetUrl) ? 'high-risk' : stored;
-    };
+    const stored = getSiteVerdict(origin, sitePermissions, {
+      viaEmbed: viaEmbedGrants,
+      // A typed-in address is a destination, never a region of something else.
+      embeddedIn: null,
+    });
+    const siteVerdictForPreview: DecideBrowserOperationSiteVerdict = stored === 'denied'
+      ? 'denied'
+      : isHighRiskUrl(targetUrl) ? 'high-risk' : stored;
 
     return PREVIEW_CLASSES.map(({ opClass, labelKey }) => ({
       opClass,
       label: t.settings[labelKey],
       cells: (['attended', 'unattended'] as const).map((runMode) => {
-        const siteVerdict = verdictFor(runMode);
         const evaluation = evaluateBrowserGate({
           opClass,
           runMode,
           policy,
           masterSwitchUnattended: allowUnattended,
-          siteVerdict,
+          siteVerdict: siteVerdictForPreview,
           permissionMode,
           // No task is selected, so no ceiling can be read. Named in the
           // caveat line rather than guessed at.

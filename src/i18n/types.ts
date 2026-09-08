@@ -1147,14 +1147,18 @@ export interface TranslationDict {
      *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
     /** Row tag: this 「始终允许」 was minted through the merged prompt a page's
-     *  embedded regions get, so an automatic task is refused when it tries to
-     *  ACT there. Scoped to acting on purpose (round-3 R3-G): the mark takes
-     *  the grant down to `'default'`, and reading a default-verdict site is
-     *  something an unattended run has always been allowed to do — a tag that
-     *  said 「不适用」 promised a wall that is not there. */
+     *  embedded regions get, so it is SCOPED — valid only inside the embedded
+     *  regions of the page it was given on, whoever is watching. Used when the
+     *  stored grant does not say which page that was (a pre-v51 mark). */
     browserViaEmbedTag: string;
-    /** `title` for {@link browserViaEmbedTag} — what is refused, what is not,
-     *  and how to promote it. */
+    /** {@link browserViaEmbedTag} when the page IS known — `{page}` is that
+     *  page's address, or {@link browserViaEmbedTagPageMore}. */
+    browserViaEmbedTagOnPage: string;
+    /** The `{page}` of {@link browserViaEmbedTagOnPage} when the same region was
+     *  granted on several pages: the first address plus how many others. */
+    browserViaEmbedTagPageMore: string;
+    /** `title` for both tags — what the scope covers, what it does not, and how
+     *  to promote it to an ordinary standing grant. */
     browserViaEmbedTagHint: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;

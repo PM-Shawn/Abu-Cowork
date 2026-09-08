@@ -68,4 +68,13 @@ describe('AgentEditor — plugin-owned agents are not writable', () => {
     await waitFor(() => expect(vi.mocked(saveItemToAbuDir)).toHaveBeenCalledTimes(1));
     expect(vi.mocked(saveItemToAbuDir).mock.calls[0][3]).toContain('avatar: icon:code/purple');
   });
+
+  it('shows the existing emoji and updates the avatar preview after choosing a preset', () => {
+    render(<AgentEditor agent={{ ...base, avatar: '📊' }} onClose={vi.fn()} onSave={vi.fn(async () => undefined)} />);
+    const preview = screen.getByTestId('agent-editor-avatar-preview');
+    expect(preview).toHaveTextContent('📊');
+    fireEvent.click(screen.getByTestId('avatar-option-code-purple'));
+    expect(preview.querySelector('[data-avatar-kind="icon"]')).not.toBeNull();
+    expect(preview).not.toHaveTextContent('📊');
+  });
 });

@@ -829,6 +829,14 @@ export interface TranslationDict {
     /** "{count} 次被页面拦住（验证码 / 频率限制等）" */
     blockedPages: string;
     nextStepsTitle: string;
+    /** Section header over the files this run downloaded (T6 / R-1). */
+    artifactsTitle: string;
+    /** "另有 {count} 个文件未列出" */
+    moreArtifacts: string;
+    /** Tooltip on an artifact row — click opens it in the preview panel. */
+    artifactOpenHint: string;
+    /** Label of the reveal-in-folder button on an artifact row. */
+    artifactReveal: string;
     /** Short label per denial reason code. */
     reason: {
       masterSwitchOff: string;
@@ -911,6 +919,11 @@ export interface TranslationDict {
     detailBrowserToolsNotReady: string;
     /** "接下来：{step}" — second line, only when there is something to do. */
     nextStep: string;
+    /**
+     * "产物：{name}（{size}）· {path}" — one line per file the run downloaded.
+     * Name, size and location; never the file itself (T6 / R-1).
+     */
+    artifactLine: string;
   };
 
   // Settings Modal
@@ -1134,14 +1147,18 @@ export interface TranslationDict {
      *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
     /** Row tag: this 「始终允许」 was minted through the merged prompt a page's
-     *  embedded regions get, so an automatic task is refused when it tries to
-     *  ACT there. Scoped to acting on purpose (round-3 R3-G): the mark takes
-     *  the grant down to `'default'`, and reading a default-verdict site is
-     *  something an unattended run has always been allowed to do — a tag that
-     *  said 「不适用」 promised a wall that is not there. */
+     *  embedded regions get, so it is SCOPED — valid only inside the embedded
+     *  regions of the page it was given on, whoever is watching. Used when the
+     *  stored grant does not say which page that was (a pre-v51 mark). */
     browserViaEmbedTag: string;
-    /** `title` for {@link browserViaEmbedTag} — what is refused, what is not,
-     *  and how to promote it. */
+    /** {@link browserViaEmbedTag} when the page IS known — `{page}` is that
+     *  page's address, or {@link browserViaEmbedTagPageMore}. */
+    browserViaEmbedTagOnPage: string;
+    /** The `{page}` of {@link browserViaEmbedTagOnPage} when the same region was
+     *  granted on several pages: the first address plus how many others. */
+    browserViaEmbedTagPageMore: string;
+    /** `title` for both tags — what the scope covers, what it does not, and how
+     *  to promote it to an ordinary standing grant. */
     browserViaEmbedTagHint: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;
@@ -1154,6 +1171,8 @@ export interface TranslationDict {
     browserOpPolicyDesc: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
+    /** T5 — the fourth operation class, one row on the same card. */
+    browserOpClassUpload: string;
     /** Scripting is split out into its own card: it is the one row an ordinary
      *  user should not skim past, and the only one that carries a risk
      *  warning. The class name is that card's title, so it carries a
@@ -3073,6 +3092,48 @@ export interface TranslationDict {
     /** Unattended or attended run whose operation-class policy is set to
      *  'deny' for this kind of browser action. */
     browserPolicyDenied: string;
+    /** Why an upload is being asked about — the sentence every ask channel
+     *  (desktop dialog and IM) shows above the file list and the target
+     *  site. */
+    browserUploadReason: string;
+    /**
+     * The upload confirmation's own wording (acceptance F5).
+     *
+     * An upload had been asked about with the generic browser-action box, so
+     * the question read 「浏览器操作: abu-browser__upload_file (origin)」 over a
+     * button that said 「确认执行」 — an internal tool name and a verb that
+     * does not say a file is leaving the machine. These say the decision
+     * instead: how many files, to which site, confirmed with 「确认上传」.
+     * `{host}` is a hostname, never a full path.
+     */
+    browserUploadTitle: string;
+    /** Singular of `browserUploadTitle`; both locales read badly with "1 files". */
+    browserUploadTitleOne: string;
+    /** Stands in for `{host}` when the target origin could not be resolved. */
+    browserUploadHostThisSite: string;
+    /** Wraps `{host}` when the upload targets a region embedded in the page. */
+    browserUploadHostEmbedded: string;
+    /** The line under the upload title. */
+    browserUploadDescription: string;
+    /** Primary button of the upload confirmation. */
+    browserUploadConfirm: string;
+    /** Primary button when 「以后都允许该网站」 is offered beside it. */
+    browserUploadConfirmOnce: string;
+    /** `files` could not be read as a list of paths. */
+    browserUploadMalformed: string;
+    /** More files than one submission may carry. `{max}` */
+    browserUploadTooManyFiles: string;
+    /** Outside every workspace the user authorized. `{name}` */
+    browserUploadNotAuthorized: string;
+    /** Missing, or not a regular file. `{name}` */
+    browserUploadNotAFile: string;
+    /** A symbolic link — refused rather than followed. `{name}` */
+    browserUploadSymlink: string;
+    /** Over the per-file or per-call size ceiling. `{name}` `{max}` */
+    browserUploadTooLarge: string;
+    /** The filesystem reported neither an mtime nor an inode for the file, so
+     *  nothing could be frozen that identifies it later (review F1). */
+    browserUploadUnidentifiable: string;
     browserEnterprisePolicyDenied: string;
     /** Unattended run on a site that carries no standing "allowed" verdict —
      *  the cross-origin fail-closed baseline. */

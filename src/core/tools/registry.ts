@@ -29,10 +29,11 @@ import {
   refuseBrowserBatch,
   summarizeBrowserBatch,
   toLegacyBrowserToolConsequence,
+  uploadsFile,
   DEFAULT_BROWSER_OPERATION_POLICY,
   type BrowserDenialReasonCode,
   type DecideBrowserOperationSiteVerdict,
-  type SiteVerdictOptions,
+  type BrowserSiteGrantScopes,
 } from '../permissions/browserToolPolicy';
 import {
   classifyPluginTool,
@@ -41,7 +42,15 @@ import {
   pluginServerOf,
 } from '../permissions/pluginToolPolicy';
 import { evaluateBrowserGate } from '../permissions/browserGateEvaluation';
-import { browserDenialReasonText as sharedBrowserDenialReasonText } from '../permissions/browserDenialReasonText';
+import {
+  browserDenialReasonText as sharedBrowserDenialReasonText,
+  browserUploadRefusalText,
+} from '../permissions/browserDenialReasonText';
+import {
+  resolveUploadFiles,
+  summarizeUploadFiles,
+  type ApprovedUploadFile,
+} from '../permissions/browserUploadFiles';
 import { isHighRiskUrl } from '../permissions/highRiskSites';
 import {
   notifyUnattendedDenial,
@@ -58,6 +67,7 @@ import { commandWritableDirectories, isInsideWorkingDirs } from '../permissions/
 import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
+import { lstat } from '@tauri-apps/plugin-fs';
 import { TOOL_NAMES } from './toolNames';
 import { applyOSPermissionGuideIfNeeded } from './osPermissionGuide';
 import { isLabsFlagOn } from '../labs/resolve';
@@ -84,6 +94,7 @@ import {
   noteBrowserToolOutcome,
   noteTabOrigin,
   safeRecordBrowserSignal,
+  type BrowserSignalEvent,
 } from '../observability/browserSignals';
 import { toolResultToString as browserSignalToolResultToString } from './toolResultToString';
 
@@ -394,6 +405,18 @@ export interface BrowserExecutionPin {
    * make a page-observable field look like an instruction to the host.
    */
   loginRequired?: true;
+  /**
+   * T5 — the files the gate resolved and the user confirmed for an
+   * `upload_file` call: canonical path, base name, size.
+   *
+   * It travels for the same reason `expectedOrigin` does, one step further
+   * along the same argument. The origin pin stops an approved action landing
+   * on a page that moved; this stops an approved upload sending a FILE other
+   * than the one the confirmation named. Both are facts the gate learned and
+   * the model must not be able to restate: the runtime reads only this list,
+   * and refuses outright when it is absent (`abu-browser-bridge/src/tools.ts`).
+   */
+  approvedUploadFiles?: ApprovedUploadFile[];
 }
 
 export interface ToolApprovalDecision {
@@ -525,31 +548,50 @@ function strictestVerdict(
 }
 
 /**
+ * One site this call touches, and the role it is touched IN.
+ *
+ * The role is not decoration: a scoped via-embed grant is valid inside the
+ * page it was given on and nowhere else, so "vendor.example.net as a region of
+ * oa.example.com" and "vendor.example.net as the page being driven" are two
+ * different questions with two different answers. Folding a bare origin list
+ * could only ask one of them.
+ */
+interface TouchedSite {
+  origin: string | null;
+  /** The top-level page this origin is a region OF; `null` when it IS the page. */
+  embeddedIn: string | null;
+}
+
+/**
  * The stricter answer across EVERY site one call touches — the page, and each
  * embedded region its steps target.
  *
  * A `batch` can name several regions under one approval, so folding over all
  * of them is what stops one authorized region from carrying the others.
- * Duplicates collapse (the same site named twice is one site), and an absent
- * origin still counts: `getSiteVerdict(null, …)` is `default`, which is
+ * Duplicates collapse (the same site in the same role is one question), and an
+ * absent origin still counts: `getSiteVerdict(null, …)` is `default`, which is
  * "nothing standing here", not "fine".
+ *
+ * A via-embed grant that does not reach the role it is asked about drops that
+ * origin to `'default'` one site at a time, and one such origin is enough to
+ * take the whole fold below `'allowed'` — which is the point: the fold's
+ * `'allowed'` means "every site this call touches is authorized here".
  */
 function strictestVerdictOf(
-  origins: Array<string | null>,
+  sites: TouchedSite[],
   sitePermissions: Record<string, 'allowed' | 'denied'>,
-  /**
-   * Passed straight through to each `getSiteVerdict`, so a grant minted
-   * through the merged embedded-region prompt drops out of an UNATTENDED fold
-   * one origin at a time (R2-C-②). One marked origin is enough to take the
-   * whole fold below `'allowed'` — which is the point: the fold's `'allowed'`
-   * means "every site this call touches is authorized", and a marked one is
-   * not authorized for a run nobody is watching.
-   */
-  options?: SiteVerdictOptions,
+  viaEmbed?: BrowserSiteGrantScopes,
 ): 'allowed' | 'denied' | 'default' {
   let verdict: 'allowed' | 'denied' | 'default' | null = null;
-  for (const origin of [...new Set(origins)]) {
-    const next = getSiteVerdict(origin, sitePermissions, options);
+  const seen = new Set<string>();
+  for (const site of sites) {
+    const key = `${site.origin ?? ''}\u0000${site.embeddedIn ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const next = getSiteVerdict(site.origin, sitePermissions, {
+      viaEmbed,
+      embeddedIn: site.embeddedIn,
+    });
     verdict = verdict === null ? next : strictestVerdict(verdict, next);
   }
   return verdict ?? 'default';
@@ -898,6 +940,42 @@ function batchStepSignals(
   return events.length > 0 ? events : null;
 }
 
+/**
+ * The file a finished `download` left on disk, as a signal — or null.
+ *
+ * Read from the tool's OWN result envelope (the same technique
+ * `batchStepSignals` uses), and only when it says `complete`: a download still
+ * in flight has a path nothing is at yet, and reporting it as a product of the
+ * run would be a link to a file that is not there.
+ */
+function downloadSignal(
+  bareToolName: string,
+  resultText: string,
+): Extract<BrowserSignalEvent, { kind: 'download_saved' }> | null {
+  if (bareToolName !== 'download') return null;
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resultText);
+  } catch {
+    return null;
+  }
+  const { complete, download } = (envelope ?? {}) as { complete?: unknown; download?: unknown };
+  if (complete !== true || typeof download !== 'object' || download === null) return null;
+  const d = download as Record<string, unknown>;
+  const path = typeof d.path === 'string' ? d.path : '';
+  const name = typeof d.filename === 'string' ? d.filename : '';
+  const downloadId = typeof d.downloadId === 'string' ? d.downloadId : '';
+  if (path === '' || name === '' || downloadId === '') return null;
+  return {
+    kind: 'download_saved',
+    downloadId,
+    name,
+    path,
+    bytes: typeof d.size === 'number' && Number.isFinite(d.size) && d.size >= 0 ? d.size : 0,
+    ...(typeof d.mime === 'string' && d.mime !== '' ? { mime: d.mime } : {}),
+  };
+}
+
 function recordBrowserToolCallSignal(
   namespacedName: string,
   toolContext: ToolExecutionContext | undefined,
@@ -969,6 +1047,13 @@ function recordBrowserToolCallSignal(
       },
       context,
     ));
+  }
+
+  // What the run PRODUCED, when it produced a file. Recorded next to the tool
+  // call rather than instead of it: the call is still an action.
+  const downloaded = ok ? downloadSignal(bareToolName, resultText) : null;
+  if (downloaded) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(downloaded, context));
   }
 
   // A dialog freezing a tab is its own failure mode: without this it shows up
@@ -1501,24 +1586,39 @@ export async function checkToolApproval(
        * value, so the full verdict goes in and the narrowing happens in one
        * place rather than two.
        */
+      /**
+       * The page this call happens on, when a region was named. `undefined`
+       * `topOrigin` means the call targets the main document, where the page
+       * and the target are the same site; a null one means the tab's address
+       * did not parse, and an unknown page is no page — a scoped grant does
+       * not reach it, which is the fail-safe direction.
+       */
+      const pageOrigin = target.topOrigin ?? null;
+      /** The page a given origin is a REGION of, or null when it is the page. */
+      const embeddedIn = (site: string | null): string | null =>
+        (pageOrigin !== null && site !== null && site !== pageOrigin ? pageOrigin : null);
       const storedVerdict = resolvesTarget
         ? strictestVerdictOf(
           [
-            origin,
+            { origin, embeddedIn: embeddedIn(origin) },
             // Only when a region was named — otherwise these ARE the same site
-            // and folding it in would say nothing.
-            ...(target.topOrigin !== undefined ? [target.topOrigin] : []),
+            // and folding it in would say nothing. The page is always judged
+            // AS the page, never as a region of itself.
+            ...(target.topOrigin !== undefined
+              ? [{ origin: target.topOrigin, embeddedIn: null }]
+              : []),
             // A `batch` may name several regions, and every one of them is a
             // site this approval would let it act on. Judging only the first
             // (or only the page) is how a step reaches a region the user never
             // authorized on the strength of one it did.
-            ...Object.values(target.frameOrigins ?? {}),
+            ...Object.values(target.frameOrigins ?? {})
+              .map((frameOrigin) => ({
+                origin: frameOrigin,
+                embeddedIn: embeddedIn(frameOrigin),
+              })),
           ],
           settingsSnapshot.browserSitePermissions ?? {},
-          {
-            viaEmbed: settingsSnapshot.browserSiteGrantViaEmbed ?? {},
-            runMode,
-          },
+          settingsSnapshot.browserSiteGrantViaEmbed ?? {},
         )
         : 'default';
       /**
@@ -1584,7 +1684,11 @@ export async function checkToolApproval(
        * cannot approve it can act on.
        */
       const batchSummary = summarizeBrowserBatch(name, input);
-      const browserConfirmLabel = batchSummary
+      // `let`, because an upload's own summary — the file names and sizes —
+      // can only be added once the gate has decided the call is worth asking
+      // about and the paths have actually been resolved against the disk
+      // (T5, below). A confirmation for an upload is not consent without it.
+      let browserConfirmLabel = batchSummary
         ? `${browserActionLabel} — ${batchSummary}`
         : browserActionLabel;
       /**
@@ -1609,7 +1713,13 @@ export async function checkToolApproval(
        */
       const browserAskReason = (): string => {
         if (isScriptingBrowserTool(name)) return t.commandConfirm.browserScriptReason;
+        // AFTER the high-risk sentence (2026-09-07): an upload to a bank or a
+        // government page is now asked about rather than refused outright, and
+        // when both apply the page is the sharper warning — the file names and
+        // sizes are in `browserConfirmLabel` either way, so nothing about the
+        // file is lost by letting 「资金 / 政务」 have the sentence.
         if (highRisk) return t.commandConfirm.browserHighRiskReason;
+        if (uploadsFile(name)) return t.commandConfirm.browserUploadReason;
         if (answersPageDialog(name)) {
           // Named, because "browser action: …__handle_dialog" tells a user
           // nothing about what they are agreeing to. The question the dialog
@@ -1784,6 +1894,78 @@ export async function checkToolApproval(
         return gate.ceilingDecision;
       }
 
+      /**
+       * T5 — WHICH files this upload sends, resolved once and frozen.
+       *
+       * Placed here on purpose: after the gate has said an upload may be asked
+       * about at all, and before anybody is asked. Earlier would touch the
+       * filesystem for a call that is going to be refused anyway (unattended,
+       * high-risk, the row set to 拒绝); later would mean asking the user to
+       * approve 「上传文件」 with no idea what.
+       *
+       * The refusals it can produce are NOT `BrowserDenialReasonCode`s and do
+       * not record a `gate_denied` signal: nothing about the SITE was decided
+       * here. A path outside the authorized workspaces, a symlink, a missing
+       * file or one over the ceiling is an argument that could not be honoured
+       * — the same shape as `refuseBrowserBatch` above, which is also silent.
+       */
+      let approvedUploadFiles: ApprovedUploadFile[] | undefined;
+      // The desktop dialog's own body and count — see the F5 note below. Unset
+      // for every non-upload call, which is what keeps the generic dialog
+      // generic.
+      let browserUploadDialogLabel: string | undefined;
+      let browserUploadFileCount: number | undefined;
+      if (uploadsFile(name) && gate.outcome !== 'deny') {
+        const resolved = await resolveUploadFiles(input, {
+          checkReadPath: (candidate) =>
+            checkReadPath(candidate, toolContext?.authorizationScopeId),
+          lstat: async (candidate) => {
+            const info = await lstat(candidate);
+            // `mtime`/`ino`/`dev` are the identity pin (review F1): size alone
+            // does not survive the window between this check and the read the
+            // runtime does after the user has answered.
+            const mtime = info.mtime instanceof Date ? info.mtime.getTime() : NaN;
+            return {
+              isFile: info.isFile === true,
+              isSymlink: info.isSymlink === true,
+              size: typeof info.size === 'number' ? info.size : 0,
+              mtimeMs: Number.isFinite(mtime) ? Math.floor(mtime) : 0,
+              ino: typeof info.ino === 'number' ? info.ino : null,
+              dev: typeof info.dev === 'number' ? info.dev : null,
+            };
+          },
+        });
+        if (!resolved.ok) {
+          return {
+            decision: 'deny',
+            reason: `Error: ${browserUploadRefusalText(t, resolved.code, resolved.detail)}`,
+          };
+        }
+        approvedUploadFiles = resolved.files;
+        // The names and sizes go INTO the question. `summarizeUploadFiles`
+        // carries no directory: the confirmation asks whether to send this
+        // file to this site, and a full path in a dialog is one screenshot
+        // away from being somewhere it should not be.
+        browserConfirmLabel = `${browserActionLabel} — ${summarizeUploadFiles(resolved.files)}`;
+        /**
+         * Acceptance F5 — what the DESKTOP dialog puts in its box.
+         *
+         * The label above still leads with `浏览器操作: abu-browser__upload_file
+         * (origin)`, and in front of a person that reads as a stranger's tool
+         * asking to run: it names an identifier only this codebase uses, and
+         * says nothing about the thing that actually happens, which is that
+         * files leave the machine. The dialog now carries the count and the
+         * host in its TITLE and this list in its body, so the internal name
+         * has no job left and is dropped.
+         *
+         * The IM label is deliberately unchanged: it is one line in a chat
+         * message with no title above it to carry the site, so it still needs
+         * `browserActionLabel`'s origin. Same file list, two carriers.
+         */
+        browserUploadDialogLabel = summarizeUploadFiles(resolved.files);
+        browserUploadFileCount = resolved.files.length;
+      }
+
       if (gate.ask?.channel === 'im') {
         // Nobody is in front of the screen: `onRequireConfirmation` here is the
         // entry point's own auto-deny, never a dialog. Route 'ask' through the
@@ -1934,7 +2116,11 @@ export async function checkToolApproval(
         // Non-null by construction: `evaluateBrowserGate` refuses instead of
         // asking when `confirmationChannelAvailable` is false.
         const confirmed = await onRequireConfirmation?.({
-          command: browserConfirmLabel,
+          // An upload puts only the file list here: its question, its target
+          // site and its verb all live in the dialog's own upload wording
+          // (F5), so the tool name would be the one line on the box that
+          // means nothing to the person reading it.
+          command: browserUploadDialogLabel ?? browserConfirmLabel,
           level: 'warn',
           // Same sentence the unattended round-trip sends — see
           // `browserAskReason`. Two copies of this ternary is how the
@@ -1944,7 +2130,14 @@ export async function checkToolApproval(
           reason: consequence === 'state-changing'
             ? browserAskReason()
             : t.commandConfirm.browserReason,
-          kind: 'browser',
+          // The one browser action whose consequence leaves the machine gets
+          // its own question and its own verb (F5). Everything else about it
+          // stays a browser ask — same origin fields, same site grant, same
+          // block-this-site row.
+          kind: browserUploadFileCount !== undefined ? 'browser-upload' : 'browser',
+          ...(browserUploadFileCount !== undefined
+            ? { browserUploadFileCount }
+            : {}),
           browserOperationClass: opClass,
           ...(consequence === 'state-changing'
             ? { browserOrigin: origin ?? undefined }
@@ -2064,6 +2257,10 @@ export async function checkToolApproval(
       browserExecutionPin = {
         runMode,
         ...(origin !== null ? { expectedOrigin: origin } : {}),
+        // T5 — the files the user just confirmed, on their way to the runtime
+        // (which uses this list and nothing else). Set only for an upload;
+        // every other call's pin keeps its exact shape.
+        ...(approvedUploadFiles !== undefined ? { approvedUploadFiles } : {}),
         // A batch's steps may each target a different region, and the page's
         // own pin says nothing about what a third-party region is showing —
         // so each region's approved origin goes to the run to be re-checked
@@ -2244,21 +2441,22 @@ export async function checkToolApproval(
  * An entry whose url does not parse is treated as unknown: dropped unattended,
  * kept attended. Fail-safe both ways.
  *
- * ## Via-embed marks apply here (round-3 R3-D)
+ * ## Via-embed scopes apply here (round-3 R3-D)
  *
  * The unattended tier narrows to `'allowed'`, which is exactly the side a
- * via-embed mark takes away: `getSiteVerdict` reads a marked grant as
- * `'default'` for a run nobody is watching. Without the mark this filter kept
- * handing an unattended run the download records of a site the same run cannot
- * so much as click on — the two halves of one gate disagreeing, which is the
- * thing the mark exists to stop. Passing the marks in is not a new rule; it is
- * this filter finally asking the same question everyone else asks.
+ * scoped via-embed grant does not reach: a download listing is a question
+ * about the browser, not about any one page, so there is no embedding page to
+ * be inside of and `getSiteVerdict` answers `'default'`. Without the scopes
+ * this filter kept handing an unattended run the download records of a site
+ * the same run cannot so much as click on — the two halves of one gate
+ * disagreeing. Passing them in is not a new rule; it is this filter asking the
+ * same question everyone else asks.
  */
 export function filterDownloadsByOrigin(
   result: ToolResult,
   runMode: 'attended' | 'unattended',
   sitePermissions: Record<string, 'allowed' | 'denied'>,
-  viaEmbed?: Record<string, true>,
+  viaEmbed?: BrowserSiteGrantScopes,
 ): ToolResult {
   if (typeof result !== 'string') return result;
   // An error string ("Error: ...") is not a listing; leave it alone.
@@ -2280,7 +2478,7 @@ export function filterDownloadsByOrigin(
       ? (entry as { url?: unknown }).url
       : undefined;
     const origin = normalizeBrowserOrigin(typeof url === 'string' ? url : undefined);
-    const verdict = getSiteVerdict(origin, sitePermissions, { runMode, viaEmbed });
+    const verdict = getSiteVerdict(origin, sitePermissions, { viaEmbed });
     if (verdict === 'denied') return false;
     return runMode === 'unattended' ? verdict === 'allowed' : true;
   });
@@ -2340,23 +2538,28 @@ const REDACTED_TAB_FIELD = '[hidden: you blocked this site, and nobody is watchi
  * today), so hiding that same page's title here would be the two halves of
  * one gate disagreeing again.
  *
- * ## Via-embed marks are passed in and change nothing — on purpose (R3-D)
+ * ## Via-embed scopes are NOT consulted here (#402, settled 2026-09-08)
  *
- * They are threaded through so there is ONE verdict rule in this file rather
- * than two spellings of `getSiteVerdict` that can drift. Behaviourally it is a
- * no-op by construction: a mark can only take a grant DOWN to `'default'`,
- * never to `'denied'`, and this filter hides nothing but `'denied'`. Making it
- * hide marked sites too would be a genuinely new rule — and a self-contradictory
- * one, since it would hide a marked site's tab while still showing every
- * never-listed site's tab, i.e. treat a partial grant as worse than no grant
- * at all. If that rule is ever wanted it belongs to the unattended READ policy
- * as a whole, not to this one function.
+ * They used to be threaded in, as a deliberate no-op, so that one verdict rule
+ * covered the file. #402 asked whether they should start MEANING something
+ * here — hide a scoped site's tab title from an automatic task. The answer is
+ * no, and the parameter is gone with it:
+ *
+ * - It could never have had an effect. A via-embed scope can only take a grant
+ *   down to `'default'`; this filter hides nothing but `'denied'`.
+ * - Making it hide them would be self-contradictory: a partly-authorized site
+ *   would be hidden while every never-listed site stayed visible.
+ * - And it would be an in-my-presence-or-not rule, which is exactly what the
+ *   2026-09-07 ruling removed from this grant. Tab visibility does not change
+ *   because of a scoped grant, in either run mode.
+ *
+ * (What this function does with `runMode` at all is a separate, older question
+ * — the unattended READ policy as a whole — and is untouched here.)
  */
 export function filterTabsBySitePermissions(
   result: ToolResult,
   runMode: 'attended' | 'unattended',
   sitePermissions: Record<string, 'allowed' | 'denied'>,
-  viaEmbed?: Record<string, true>,
 ): ToolResult {
   // Attended keeps its exact shipped behavior.
   if (runMode !== 'unattended') return result;
@@ -2378,7 +2581,7 @@ export function filterTabsBySitePermissions(
   let redacted = false;
   const isDenied = (url: unknown): boolean =>
     typeof url === 'string'
-    && getSiteVerdict(normalizeBrowserOrigin(url), sitePermissions, { runMode, viaEmbed }) === 'denied';
+    && getSiteVerdict(normalizeBrowserOrigin(url), sitePermissions) === 'denied';
 
   const windows = doc.windows.map((win) => {
     if (!win || typeof win !== 'object') return win;
@@ -2496,6 +2699,12 @@ export async function executeAnyTool(
           ...(approval.browserExecution?.expectedFrameOrigins !== undefined
             ? { expectedFrameOrigins: approval.browserExecution.expectedFrameOrigins }
             : {}),
+          // T5 — the approved file list. Absent for every tool but
+          // `upload_file`, and its absence THERE is what makes the bridge
+          // refuse rather than fall back to the model's own paths.
+          ...(approval.browserExecution?.approvedUploadFiles !== undefined
+            ? { approvedUploadFiles: approval.browserExecution.approvedUploadFiles }
+            : {}),
           ...(approval.browserExecution?.runMode === 'unattended'
             ? { unattended: true }
             : {}),
@@ -2538,7 +2747,6 @@ export async function executeAnyTool(
           result,
           approval.browserExecution?.runMode ?? 'unattended',
           snapshot.browserSitePermissions ?? {},
-          snapshot.browserSiteGrantViaEmbed,
         );
       }
       // U6 / F2.4, the ATTENDED half of the login-expiry split. The action was

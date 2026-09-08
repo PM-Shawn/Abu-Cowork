@@ -12,6 +12,12 @@ import type { BridgeRequest, BridgeResponse, FrameTree, JsDialogAction } from '.
 import { MAIN_FRAME_REF } from '../shared/types.js';
 import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
 import {
+  createDownloadTracker,
+  downloadResultFor,
+  hostOf,
+  type DownloadItemLike,
+} from './downloads.js';
+import {
   ambiguousFrameMessage,
   createFrameStore,
   hostFrameStamp,
@@ -35,6 +41,19 @@ import {
   type BridgeInbound,
   type TabResolutionDeps,
 } from './tabClaims.js';
+
+/**
+ * Mirrors `clampDownloadWait` in `abu-browser-bridge/src/locators.ts`.
+ *
+ * The bridge already clamps, so this is the second lock rather than the first:
+ * a payload that reached this worker with an unbounded wait would otherwise
+ * hold a service worker open for as long as it liked.
+ */
+function clampDownloadWait(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 30_000;
+  return Math.min(Math.floor(n), 120_000);
+}
 
 // Discovery endpoint (fixed port) and fallback WS ports
 const DISCOVERY_URL = 'http://127.0.0.1:9875/status';
@@ -361,32 +380,50 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
-// --- Download Tracking ---
+// --- Download Tracking (batch-三 T6) ---
 
-// `filename` / `state` mirror `chrome.downloads.StringDelta.current`, which the
-// API typings declare optional — the onChanged handler below copies it verbatim.
-const recentDownloads: { id: number; filename: string | undefined; url: string; state: string | undefined; time: number }[] = [];
+/**
+ * Downloads used to be a browser-wide list of names, shared by every task and
+ * by the user: `get_downloads` returned the last 20 downloads Chrome had seen,
+ * whoever started them. T6 replaces it with per-task ownership — see
+ * `downloads.ts` for how a download is attributed and what this channel
+ * genuinely cannot do about where the file lands.
+ */
+const downloadTracker = createDownloadTracker({
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  randomId: () => Math.random().toString(36).slice(2, 10),
+});
 
 chrome.downloads.onCreated.addListener((item) => {
-  recentDownloads.unshift({
-    id: item.id,
-    filename: item.filename || item.url.split('/').pop() || 'unknown',
-    url: item.url,
-    state: item.state,
-    time: Date.now(),
-  });
-  if (recentDownloads.length > 20) recentDownloads.length = 20;
+  downloadTracker.onCreated(item as DownloadItemLike);
 });
 
 chrome.downloads.onChanged.addListener((delta) => {
-  const dl = recentDownloads.find(d => d.id === delta.id);
-  if (dl && delta.state) {
-    dl.state = delta.state.current;
-  }
-  if (dl && delta.filename) {
-    dl.filename = delta.filename.current;
-  }
+  downloadTracker.onChanged(delta as Parameters<typeof downloadTracker.onChanged>[0]);
 });
+
+/**
+ * Steer a download Abu asked for into a per-task folder.
+ *
+ * `suggest()` takes a path RELATIVE to Chrome's own download directory and
+ * refuses anything that escapes it, so this cannot reach Abu's app-data
+ * folder the way the built-in browser does — `Downloads/Abu/<task>/` is the
+ * furthest an extension may go, and it still gives the user one place to look
+ * and keeps two tasks' exports apart.
+ *
+ * A download nobody armed for is left completely alone: the user's own
+ * downloads must not be renamed or moved because an extension is installed.
+ */
+if (chrome.downloads.onDeterminingFilename) {
+  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    const suggestion = downloadTracker.suggestFilename(item as DownloadItemLike);
+    if (suggestion === null) return false;
+    suggest({ filename: suggestion, conflictAction: 'uniquify' });
+    return true;
+  });
+}
 
 // --- URL Validation ---
 
@@ -470,6 +507,23 @@ export async function assertTabOriginPin(
     + 'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier '
     + 'approval does not carry over to a different site.',
   );
+}
+
+/**
+ * The address of a tab, or `''` when Chrome will not say.
+ *
+ * Its own function because the caller must not care WHY it failed: a tab that
+ * closed, a page the extension has no host permission for and a `chrome://`
+ * URL all mean the same thing to a download waiter — nothing to match against,
+ * so claim nothing (review F2).
+ */
+async function tabUrl(tabId: number): Promise<string> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return typeof tab.url === 'string' ? tab.url : '';
+  } catch {
+    return '';
+  }
 }
 
 // --- Request Handler ---
@@ -655,7 +709,66 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       }
 
       case 'get_downloads': {
-        return { id, success: true, data: recentDownloads };
+        // Owner-scoped, like the built-in host's: a task sees what IT
+        // downloaded and nothing else.
+        return {
+          id,
+          success: true,
+          data: downloadTracker.listFor(ownerFromPayload(payload).key),
+        };
+      }
+
+      // T6 — press an export control and come back with the file.
+      case 'download': {
+        const owner = ownerFromPayload(payload);
+        const timeoutMs = clampDownloadWait(payload.timeoutMs);
+        if (payload.action === 'wait') {
+          const downloadId = String(payload.downloadId ?? '');
+          const known = downloadTracker.find(owner.key, downloadId);
+          if (!known) {
+            return {
+              id,
+              success: false,
+              error: `No download with id ${downloadId} belongs to this task. Call `
+                + 'get_downloads to see the ones it has, or start a new one with action "click".',
+            };
+          }
+          await downloadTracker.awaitDone(downloadId, timeoutMs);
+          return { id, success: true, data: downloadResultFor(known) };
+        }
+        // The waiter is armed BEFORE the click: a small file can finish before
+        // `sendToContentScript` returns, and a waiter armed afterwards would
+        // miss the download its own click produced.
+        //
+        // It is armed for ONE SITE — the one this tab is on (review F2).
+        // `chrome.downloads` is browser-wide, so a waiter that claims anything
+        // claims the user's own downloads too: an export that produced nothing
+        // left this armed for up to 120 s, and whatever the user downloaded in
+        // that window was renamed into the task's folder and reported to the
+        // model as its product. An unreadable tab address claims nothing.
+        const clickedSite = hostOf(await tabUrl(tabId));
+        const expectation = downloadTracker.expect(owner.key, clickedSite);
+        // ONE deadline for both phases, not one each (review F5): the bridge's
+        // transport gives up at `waitMs + 15 s`, so waiting `timeoutMs` for
+        // the click and another `timeoutMs` for the file reported a working
+        // download as an unresponsive browser — and lost the id to poll with.
+        const deadline = Date.now() + timeoutMs;
+        const remainingMs = () => Math.max(0, deadline - Date.now());
+        let claimed;
+        try {
+          await sendToContentScript(tabId, 'click', {
+            locator: payload.locator,
+            ...(payload.frameId !== undefined ? { frameId: payload.frameId } : {}),
+            ...(payload.expectedOrigin !== undefined
+              ? { expectedOrigin: payload.expectedOrigin } : {}),
+            ...(payload.unattended === true ? { unattended: true } : {}),
+          });
+          claimed = await expectation.wait(remainingMs());
+        } finally {
+          expectation.cancel();
+        }
+        if (claimed) await downloadTracker.awaitDone(claimed.downloadId, remainingMs());
+        return { id, success: true, data: downloadResultFor(claimed) };
       }
 
       // ## Both screenshots are pinned reads (round-3 R3-A)

@@ -1,0 +1,10 @@
+{
+  "dev": [
+    "check",
+    "e2e-electron"
+  ],
+  "main": [
+    "check",
+    "promotion-ready"
+  ]
+}

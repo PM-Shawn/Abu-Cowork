@@ -65,6 +65,16 @@ export const MAX_REPORT_ORIGIN_LENGTH = 120;
 export const MAX_REPORT_ERROR_CLASS_LENGTH = 64;
 export const MAX_REPORT_SITES = 8;
 export const MAX_REPORT_PROBLEMS = 5;
+/** Files listed on the card and in the IM summary before it says "and N more". */
+export const MAX_REPORT_ARTIFACTS = 5;
+/** A download's NAME is header-derived; clamp it like an origin. */
+export const MAX_REPORT_ARTIFACT_NAME_LENGTH = 120;
+/**
+ * How long a path may be and still be carried. NOT a truncation length — a
+ * path past this drops the whole artifact into `omitted` (see the
+ * `download_saved` case below).
+ */
+export const MAX_REPORT_ARTIFACT_PATH_LENGTH = 240;
 export const MAX_REPORT_ORIGINS_PER_ROW = 3;
 
 /**
@@ -120,6 +130,31 @@ export interface BrowserRunReportProblem {
   origins: string[];
 }
 
+/**
+ * A file this run actually produced (batch-三 T6 / R-1).
+ *
+ * The module header used to say a run has no addressable artifact and that a
+ * field nobody can populate is schema debt. `download` is its first producer,
+ * so the field exists now — and only for downloads that REACHED a terminal
+ * `complete`, because a path to a file that is not finished is worse than no
+ * path at all.
+ *
+ * `name` comes from a `Content-Disposition` header by way of the host's own
+ * sanitizer, so it is clamped here like every other untrusted string on this
+ * card. `path` is NOT: it is a path this app itself composed under its own
+ * download root, and the card hands it straight to `openPreview` /
+ * `revealItemInDir`. Flattening or truncating it produces a path that opens
+ * nothing (round-2 review N3) — so it travels byte for byte, and a path too
+ * long to carry drops the whole artifact into `omitted` instead.
+ */
+export interface BrowserRunReportArtifact {
+  downloadId: string;
+  name: string;
+  path: string;
+  bytes: number;
+  mime?: string;
+}
+
 export interface BrowserRunReportApprovals {
   approved: number;
   declined: number;
@@ -163,6 +198,24 @@ export type BrowserRunReportNextStep =
 
 export interface BrowserRunReportSnapshot {
   v: typeof BROWSER_RUN_REPORT_SNAPSHOT_VERSION;
+  /**
+   * Which FORM of this card the snapshot is.
+   *
+   * Absent — the default, and every snapshot written before this field
+   * existed — is the full run report an unattended run ends with: what it
+   * did, what was refused, what you approved, what to do next.
+   *
+   * `'downloads'` is the form an ORDINARY conversation ends with when the run
+   * downloaded something (acceptance F3). A person who asked Abu to export a
+   * report in the chat window does not need a run report — they were watching
+   * the run — but the file still has to come back to them as something they
+   * can open, which is what the card's artifact rows are. So the same card
+   * renders just those rows, and the snapshot is built with everything else
+   * ZEROED rather than merely hidden: a chat card must not carry an
+   * unattended run's site list or approval tally in the persisted history on
+   * the strength of a renderer remembering not to show it.
+   */
+  variant?: 'downloads';
   outcome: BrowserRunReportOutcome;
   actions: { total: number; failed: number };
   /**
@@ -193,9 +246,19 @@ export interface BrowserRunReportSnapshot {
    */
   skippedByMasterSwitch: boolean;
   nextSteps: BrowserRunReportNextStep[];
+  /**
+   * The files this run downloaded, newest last, capped at
+   * `MAX_REPORT_ARTIFACTS`.
+   *
+   * OPTIONAL because the snapshot is PERSISTED: a card written before this
+   * field existed is read back without it, and every reader must cope rather
+   * than render an empty list as "no files" for a run that had some. New
+   * snapshots always carry the field (possibly empty).
+   */
+  artifacts?: BrowserRunReportArtifact[];
   /** Rows the caps dropped, so the card can say "and N more" honestly rather
    *  than quietly showing a partial list as if it were the whole list. */
-  omitted: { sites: number; problems: number };
+  omitted: { sites: number; problems: number; artifacts?: number };
 }
 
 export interface BuildBrowserRunReportInput {
@@ -342,6 +405,11 @@ export function buildBrowserRunReport(
   let failed = 0;
   let scriptRuns = 0;
   let blockedPages = 0;
+  /** downloadId -> the file, so a click and its later `wait` count once. */
+  const artifacts = new Map<string, BrowserRunReportArtifact>();
+  /** Downloads whose path is too long to carry intact — counted as omitted
+   *  rather than listed with a truncated path that opens nothing. */
+  const unlistableArtifacts = new Set<string>();
   /** Feeds `outcomeWithRefusals`. Counted off the gate's own signals only. */
   let refusedStateChangingActions = false;
 
@@ -402,6 +470,37 @@ export function buildBrowserRunReport(
       case 'blocked_page':
         blockedPages++;
         break;
+      case 'download_saved': {
+        // N3 (round-2 review). `path` used to go through `clampUntrusted`
+        // like every page-derived string on this card, and that broke the two
+        // buttons the artifact row exists for: `\s+`→' ' collapsed the double
+        // space in `a  b.pdf` that the host's own sanitizer deliberately
+        // keeps, and >240 characters came back truncated with an ellipsis, so
+        // 「点开」/「在文件夹中显示」 addressed a file that does not exist and
+        // failed silently. The path is ours — composed by the host under
+        // Abu's own download root, never echoed from the page — so it is
+        // carried verbatim; only `name` is display text. A path we cannot
+        // carry intact is reported as OMITTED, because a card is allowed to
+        // say "and 1 more" and is not allowed to hand out a path that opens
+        // nothing.
+        if (signal.path.length > MAX_REPORT_ARTIFACT_PATH_LENGTH) {
+          artifacts.delete(signal.downloadId);
+          unlistableArtifacts.add(signal.downloadId);
+          break;
+        }
+        if (unlistableArtifacts.has(signal.downloadId)) break;
+        // Keyed by downloadId: a big export is reported once by the click that
+        // started it and again by the `wait` that saw it finish, and the user
+        // downloaded one file.
+        artifacts.set(signal.downloadId, {
+          downloadId: signal.downloadId,
+          name: clampUntrusted(signal.name, MAX_REPORT_ARTIFACT_NAME_LENGTH),
+          path: signal.path,
+          bytes: signal.bytes,
+          ...(signal.mime ? { mime: clampUntrusted(signal.mime, MAX_REPORT_ERROR_CLASS_LENGTH) } : {}),
+        });
+        break;
+      }
       default:
         // fallback_to_script / repeat_action / confirm_prompt / tab_lifetime /
         // task_end / site_check_unresolved carry no row of their own in this
@@ -424,6 +523,8 @@ export function buildBrowserRunReport(
   // nothing to report — do not manufacture an empty card for it.
   const hasSomethingToSay =
     total > 0
+    || artifacts.size > 0
+    || unlistableArtifacts.size > 0
     || denialRows.length > 0
     || blockedPages > 0
     || approvals.approved > 0
@@ -488,10 +589,55 @@ export function buildBrowserRunReport(
     blockedPages,
     skippedByMasterSwitch: denials.has('master-switch-off'),
     nextSteps: NEXT_STEP_ORDER.filter((step) => steps.has(step)),
+    artifacts: [...artifacts.values()].slice(0, MAX_REPORT_ARTIFACTS),
     omitted: {
       sites: Math.max(0, allSites.length - MAX_REPORT_SITES),
       problems: Math.max(0, allProblems.length - MAX_REPORT_PROBLEMS),
+      artifacts:
+        Math.max(0, artifacts.size - MAX_REPORT_ARTIFACTS) + unlistableArtifacts.size,
     },
+  };
+}
+
+/**
+ * The downloads-only form of the card, for a run in an ordinary conversation.
+ *
+ * Deliberately a PROJECTION of `buildBrowserRunReport` rather than a second
+ * pass over the signals: the artifact rules — one row per `downloadId`
+ * however many signals mention it, a name clamped, a path carried byte for
+ * byte or dropped into `omitted` — are subtle enough that two
+ * implementations would drift, and the chat card would be the one that drifts
+ * unnoticed. Everything the projection does not keep is set to its empty
+ * value, so what is persisted really is only the files.
+ *
+ * `null` when the run downloaded nothing: an ordinary conversation gets a
+ * card only when there is a file to hand back, never an empty one.
+ */
+export function buildBrowserDownloadsReport(
+  input: Omit<BuildBrowserRunReportInput, 'outcome'>,
+): BrowserRunReportSnapshot | null {
+  // The outcome is not rendered in this form; `completed` is the only honest
+  // placeholder, since a run that saved a file did save it.
+  const full = buildBrowserRunReport({ ...input, outcome: 'completed' });
+  if (!full) return null;
+  const artifacts = full.artifacts ?? [];
+  const omittedArtifacts = full.omitted.artifacts ?? 0;
+  if (artifacts.length === 0 && omittedArtifacts === 0) return null;
+  return {
+    v: full.v,
+    variant: 'downloads',
+    outcome: 'completed',
+    actions: { total: 0, failed: 0 },
+    scriptRuns: 0,
+    sites: [],
+    denials: [],
+    problems: [],
+    approvals: { approved: 0, declined: 0, timedOut: 0, unreachable: 0 },
+    blockedPages: 0,
+    skippedByMasterSwitch: false,
+    nextSteps: [],
+    artifacts,
+    omitted: { sites: 0, problems: 0, artifacts: omittedArtifacts },
   };
 }
 

@@ -48,7 +48,9 @@ jobs:
         env:
           CANDIDATE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.transition_version || github.ref_name }}
         run: |
-          node scripts/release-preflight.mjs --tag "$CANDIDATE_VERSION"
+          # GITHUB_TOKEN cannot read branch protection. The release operator's
+          # local `npm run release:check` performs that read-only verification.
+          node scripts/release-preflight.mjs --tag "$CANDIDATE_VERSION" --skip-branch-protection
           npm run test:electron:release-stage
           npm run test:electron:release-workflow
 

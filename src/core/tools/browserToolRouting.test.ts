@@ -59,6 +59,21 @@ const PROBE_TAB = 1;
  * worked, because half the form is already filled in.
  */
 const TOOL_ARGS: Record<string, Record<string, unknown>> = {
+  /**
+   * `upload_file` takes its PATHS from `_meta`, not from `files` — see
+   * `EXTRA_BY_TOOL`. The argument still has to parse, because the handler
+   * validates its shape before it will send anything.
+   */
+  upload_file: {
+    tabId: PROBE_TAB,
+    target: '{"css":"input[type=file]"}',
+    files: '[{"path":"/tmp/abu-probe.txt"}]',
+  },
+  download: {
+    tabId: PROBE_TAB,
+    action: 'click',
+    locator: '{"css":"a#export"}',
+  },
   batch: {
     tabId: PROBE_TAB,
     steps: JSON.stringify([
@@ -70,6 +85,28 @@ const TOOL_ARGS: Record<string, Record<string, unknown>> = {
       { action: 'find', query: { role: 'button' } },
       { action: 'read', selector: 'body' },
     ]),
+  },
+};
+
+/**
+ * Per-tool MCP `_meta`, for the tools whose handler refuses without it.
+ *
+ * `upload_file` is the only one so far, and its refusal is the point: the
+ * paths an upload sends come from the approval gate, never from the model's
+ * argument, so a call that arrives without the gate's stamp sends nothing at
+ * all. Driving it with the stamp is what makes this file's routing assertion
+ * cover the tool rather than skip it.
+ */
+const EXTRA_BY_TOOL: Record<string, Record<string, unknown>> = {
+  upload_file: {
+    _meta: {
+      'abu/approvedUploadFiles': [
+        // The identity pin is part of the stamp (review F1) — an entry
+        // without one is refused before the tool reaches the wire, which
+        // would silently drop `upload_file` out of this routing assertion.
+        { path: '/tmp/abu-probe.txt', name: 'abu-probe.txt', size: 4, mtimeMs: 1, ino: 2, dev: 3 },
+      ],
+    },
   },
 };
 
@@ -98,6 +135,9 @@ async function wireActionsByTool(): Promise<Map<string, string[]>> {
 
   let sent: string[] = [];
   const transport = {
+    // The probe must not touch the filesystem, and the built-in browser's
+    // transport really does declare this — see `UploadDelivery`.
+    uploadDelivery: 'path' as const,
     isConnected: async () => true,
     // Answers are deliberately empty: a handler records its action and then
     // has nothing downstream to do (a query_js worker, a base64 screenshot
@@ -141,7 +181,8 @@ async function wireActionsByTool(): Promise<Map<string, string[]>> {
       args[key] = ANY_ARG;
     }
     try {
-      await (tool.schema ? tool.handler(args, {}) : tool.handler({}));
+      const extra = EXTRA_BY_TOOL[tool.name] ?? {};
+      await (tool.schema ? tool.handler(args, extra) : tool.handler(extra));
     } catch {
       // The stub response makes most handlers throw once they have sent.
     }

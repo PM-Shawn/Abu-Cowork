@@ -311,6 +311,28 @@ export function buildAppStyleVariables(isDark: boolean): Record<string, string> 
   /* eslint-enable no-restricted-syntax */
 }
 
+/**
+ * The theme HALF of a host context: the theme name and the palette that theme
+ * implies, as one inseparable pair.
+ *
+ * 🔴 They must always travel together. `host-context-changed` is a PATCH, and
+ * the iframe is never re-navigated on a theme switch (`srcdoc` depends on the
+ * resource, not the theme), so there is no second handshake to correct a
+ * half-told story. A patch that announces `theme: 'dark'` without the matching
+ * `styles.variables` leaves a spec-conformant app — one that adopted
+ * `hostContext.styles.variables` at `ui/initialize`, which is exactly what the
+ * SDK's `applyHostStyleVariables` does — still painting the LIGHT palette on
+ * Abu's dark surface. Build the pair here so no caller can send one without
+ * the other.
+ */
+export function buildAppThemeContext(isDark: boolean): Pick<McpUiHostContext, 'theme' | 'styles'> {
+  const theme: McpUiTheme = isDark ? 'dark' : 'light';
+  return {
+    theme,
+    styles: { variables: buildAppStyleVariables(isDark) as McpUiStyles },
+  };
+}
+
 /** Container size the app may lay itself out against. */
 export type AppContainerDimensions = McpUiHostContext['containerDimensions'];
 
@@ -330,9 +352,8 @@ export interface HostContextInput {
  * arrives with the display-mode work.
  */
 export function buildHostContext(input: HostContextInput): McpUiHostContext {
-  const theme: McpUiTheme = input.isDark ? 'dark' : 'light';
   return {
-    theme,
+    ...buildAppThemeContext(input.isDark),
     locale: input.locale,
     timeZone: input.timeZone,
     userAgent: `Abu/${input.appVersion}`,
@@ -343,7 +364,6 @@ export function buildHostContext(input: HostContextInput): McpUiHostContext {
     // just make apps request a mode that always fails.
     availableDisplayModes: ['inline', 'fullscreen'],
     deviceCapabilities: { touch: false, hover: true },
-    styles: { variables: buildAppStyleVariables(input.isDark) as McpUiStyles },
     ...(input.containerDimensions ? { containerDimensions: input.containerDimensions } : {}),
   };
 }

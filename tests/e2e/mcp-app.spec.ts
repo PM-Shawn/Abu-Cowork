@@ -50,6 +50,9 @@ import {
   REPO_ROOT,
   type ElectronDataRoot,
 } from './electronHelpers';
+// Zero-import module of plain data — safe to pull into the node-side runner,
+// unlike `appHost.ts` (see `hostTextPrimary`).
+import { WIDGET_THEME_VARS } from '../../src/core/widget/designSystem';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -375,6 +378,41 @@ function relativeLuminance(color: string): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
+/**
+ * A host style variable as the SANDBOX resolves it — i.e. what the app put on
+ * its own root after adopting `hostContext.styles.variables`. Empty string when
+ * the host never sent one.
+ */
+async function readAppHostVariable(
+  content: ReturnType<typeof appFrameContent>,
+  name: string,
+): Promise<string> {
+  return content
+    .getByTestId('demo-value-alpha')
+    .evaluate(
+      (element, variable) =>
+        window
+          .getComputedStyle(element.ownerDocument.documentElement)
+          .getPropertyValue(variable)
+          .trim(),
+      name,
+    );
+}
+
+/**
+ * What `buildAppStyleVariables` puts in `--color-text-primary`, without
+ * importing `src/core/mcp/appHost.ts`: that module pulls in the renderer's MCP
+ * client (Tauri APIs, Zustand stores), which cannot load in Playwright's node
+ * runner. The design tokens it reads have no imports at all, so the value is
+ * taken from the same source — and the mapping between the two names is pinned
+ * by `appHost.test.ts`, not restated here.
+ */
+function hostTextPrimary(dark: boolean): string {
+  const spec = WIDGET_THEME_VARS.find((v) => v.name === '--w-fg');
+  if (!spec) throw new Error('--w-fg is gone from the widget design system');
+  return dark ? spec.dark : spec.light;
+}
+
 /** What the interface actually PAINTS, read from inside the sandbox. */
 async function readAppColours(
   content: ReturnType<typeof appFrameContent>,
@@ -502,6 +540,9 @@ test.describe.serial('MCP Apps host in Electron', () => {
     expect(relativeLuminance(lightColours.text)).toBeLessThan(
       relativeLuminance(lightColours.background),
     );
+    // The handshake handed over the LIGHT palette and the app adopted it.
+    expect(await readAppHostVariable(content, '--color-text-primary'))
+      .toBe(hostTextPrimary(false));
     await page.emulateMedia({ colorScheme: 'dark' });
     // Two separate claims, asserted separately so a failure says which one
     // broke: (1) the emulated OS preference reached the renderer at all,
@@ -527,6 +568,19 @@ test.describe.serial('MCP Apps host in Electron', () => {
     expect(relativeLuminance(darkColours.text)).toBeGreaterThan(
       relativeLuminance(darkColours.background),
     );
+    // 🔴 The one claim the luminance pair CANNOT make: that the app received
+    // the NEW palette rather than merely discarding the stale one. The
+    // fixture's own `light-dark()` fallbacks land on the very same dark
+    // colour, so "host sent the dark palette" and "host sent a bare theme name
+    // and the app fell back" are indistinguishable from the painted pixels.
+    // Reading the custom property separates them: until 2026-09-08 the host's
+    // theme patch was `{ theme }` with no `styles`, the app cleared the stale
+    // set, and this resolved to ''.
+    await expect
+      .poll(() => readAppHostVariable(content, '--color-text-primary'), {
+        timeout: READY_TIMEOUT,
+      })
+      .toBe(hostTextPrimary(true));
     // And back — a one-way notification would look identical above.
     await page.emulateMedia({ colorScheme: 'light' });
     await expect(frameBody).toHaveAttribute('data-theme', 'theme:light', {
@@ -541,6 +595,11 @@ test.describe.serial('MCP Apps host in Electron', () => {
         { timeout: READY_TIMEOUT },
       )
       .toBe(true);
+    await expect
+      .poll(() => readAppHostVariable(content, '--color-text-primary'), {
+        timeout: READY_TIMEOUT,
+      })
+      .toBe(hostTextPrimary(false));
 
     const requestsBeforeDraft = mock.requestCount();
     await clickInApp(content, 'demo-send');

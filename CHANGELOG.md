@@ -9,6 +9,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+### 🐛 Fixes
+
+- **Browser-filled form values no longer leak into diagnostic bundles.** The browser `fill` tool echoed the value it wrote — a login password included — back into its result, and the diagnostic export preserves tool results verbatim, so an exported bundle could carry that password in plaintext (observed in a v0.42.0 bundle). Fixed at both ends: the extension now confirms a fill on a self-declared sensitive field (`type="password"`, password/OTP/`cc-*` autocomplete) without echoing the content, and the diagnostic scrubber structurally redacts fill values — the tool's `value` input, its echoes in results, batch fill steps, `previousValue`, and conversations recorded before this fix. The scrubber also reuses the memory-hygiene credential detector, so vendor-key shapes the memory gate catches can no longer sail through a bundle.
+
 ## v0.42.0 · 2026-08-27
 
 ### ✨ Features

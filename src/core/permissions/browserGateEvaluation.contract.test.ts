@@ -29,6 +29,7 @@
  * breaks when someone edits one side.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { lstat } from '@tauri-apps/plugin-fs';
 import { checkToolApproval } from '../tools/registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
@@ -47,6 +48,27 @@ import {
   setUnattendedConfirmationResolver,
 } from './unattendedConfirmation';
 import { evaluateBrowserGate, browserGatePreviewVerdict } from './browserGateEvaluation';
+
+/**
+ * T5 — the upload row is in the matrix, so the gate has to be able to RESOLVE
+ * a file when it decides an upload may proceed. Both dependencies of that
+ * resolution are faked to "yes, an ordinary 4-byte file inside an authorized
+ * workspace", because what this file measures is the SITE decision and the ask
+ * channel; the file-side refusals (outside the workspace, symlink, too large)
+ * are `browserUploadFiles.test.ts`'s subject and are proved against the real
+ * gate in `registry.browserUploadGate.test.ts`.
+ *
+ * Only `checkReadPath` is replaced — the rest of `pathSafety` stays real, so a
+ * future browser tool that grows a filesystem dependency does not silently get
+ * a stub.
+ */
+vi.mock('../tools/pathSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tools/pathSafety')>()),
+  checkReadPath: vi.fn(async (candidate: string) => ({
+    allowed: true,
+    resolvedPath: candidate,
+  })),
+}));
 
 vi.mock('@/core/enterprise/policy/enforcer', () => ({
   getCurrentPolicy: () => ({ mode: 'test-policy' }),
@@ -75,12 +97,21 @@ const OP_CLASS_TOOLS: Record<BrowserOperationClass, { tool: string; input: Recor
   'read-only': { tool: 'abu-browser__snapshot', input: { tabId: OWNED_TAB_ID } },
   interactive: { tool: 'abu-browser__click', input: { tabId: OWNED_TAB_ID, ref: 'ref_1' } },
   scripting: { tool: 'abu-browser__execute_js', input: { tabId: OWNED_TAB_ID, code: '1' } },
+  upload: {
+    tool: 'abu-browser__upload_file',
+    input: {
+      tabId: OWNED_TAB_ID,
+      target: '{"css":"input[type=file]"}',
+      files: '[{"path":"/ws/report.xlsx"}]',
+    },
+  },
 };
 
 const POLICY_KEY: Record<BrowserOperationClass, keyof BrowserOperationPolicy> = {
   'read-only': 'readOnly',
   interactive: 'interactive',
   scripting: 'scripting',
+  upload: 'upload',
 };
 
 let mockCallTool: ReturnType<typeof vi.fn>;
@@ -176,6 +207,17 @@ function predictedGate(
 
 describe('browser gate — preview and the real gate agree', () => {
   beforeEach(() => {
+    // The gate lstat's a path it was told about twice (as written, and
+    // canonical). One ordinary 4-byte file answers both.
+    vi.mocked(lstat).mockResolvedValue(
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
+    );
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
     }));
@@ -197,7 +239,11 @@ describe('browser gate — preview and the real gate agree', () => {
     __resetUnattendedConfirmationForTests();
   });
 
-  const opClasses: BrowserOperationClass[] = ['read-only', 'interactive', 'scripting'];
+  // T5 — `upload` is a full member here rather than a special case. The whole
+  // point of the 2026-09-07 ruling is that its row means what the other rows
+  // mean, and «means the same thing» is exactly what an exhaustive agreement
+  // sweep can prove: 48 more rows, none of them hand-written.
+  const opClasses: BrowserOperationClass[] = ['read-only', 'interactive', 'scripting', 'upload'];
   const states: BrowserOperationState[] = ['allow', 'ask', 'deny'];
   const sites = Object.keys(SITE_STATES) as SiteState[];
   const runModes: Array<'attended' | 'unattended'> = ['attended', 'unattended'];
@@ -216,8 +262,8 @@ describe('browser gate — preview and the real gate agree', () => {
     }
   }
 
-  it('covers the whole declared matrix (3 classes x 3 states x 4 site states x 2 contexts x 2 switch positions)', () => {
-    expect(matrix).toHaveLength(3 * 3 * 4 * 2 * 2);
+  it('covers the whole declared matrix (4 classes x 3 states x 4 site states x 2 contexts x 2 switch positions)', () => {
+    expect(matrix).toHaveLength(4 * 3 * 4 * 2 * 2);
   });
 
   it.each(matrix)(
@@ -280,6 +326,17 @@ describe('browser gate — preview and the real gate agree', () => {
 describe('browser gate — a call that names a region agrees too', () => {
   // Its own setup: a sibling describe does not inherit the other one's.
   beforeEach(() => {
+    // The gate lstat's a path it was told about twice (as written, and
+    // canonical). One ordinary 4-byte file answers both.
+    vi.mocked(lstat).mockResolvedValue(
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
+    );
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
     }));

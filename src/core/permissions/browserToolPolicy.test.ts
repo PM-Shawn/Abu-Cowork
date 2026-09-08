@@ -52,7 +52,19 @@ const SCRIPTING = ['execute_js'];
  * to run free in the attended flow — see `LEGACY_STATE_CHANGING_TOOLS` below
  * for the pinned regression test.
  */
-const INTERACTIVE = ['click', 'fill', 'select', 'keyboard', 'navigate', 'handle_dialog'];
+const INTERACTIVE = [
+  'click', 'fill', 'select', 'keyboard', 'navigate', 'handle_dialog',
+  // T6 — `download` is a click plus bookkeeping. Where the file lands is
+  // Abu's own per-task folder, so what the gate has to judge is the click.
+  'download',
+];
+
+/**
+ * T5 — sending a local file to a page. Its own class because the axis is
+ * different from everything above: those act inside the browser, this one
+ * takes something off the user's disk and puts it on somebody else's server.
+ */
+const UPLOAD = ['upload_file'];
 
 /**
  * The one tool whose class is not a property of its NAME: a `batch` is
@@ -94,12 +106,13 @@ const LEGACY_STATE_CHANGING_TOOLS = ['click', 'fill', 'select', 'keyboard', 'exe
  * `handle_dialog` presses the page's own OK button; a `batch` called with no
  * arguments falls back to the gated bucket.
  */
-const POST_LEGACY_STATE_CHANGING_TOOLS = ['handle_dialog', 'batch'];
+const POST_LEGACY_STATE_CHANGING_TOOLS = ['handle_dialog', 'batch', 'upload_file', 'download'];
 
 const CLASS_OF: Record<string, BrowserOperationClass> = Object.fromEntries([
   ...READ_ONLY.map((t) => [t, 'read-only'] as const),
   ...INTERACTIVE.map((t) => [t, 'interactive'] as const),
   ...SCRIPTING.map((t) => [t, 'scripting'] as const),
+  ...UPLOAD.map((t) => [t, 'upload'] as const),
   // Called with no arguments — the class a name-only sweep sees.
   ...INPUT_DEPENDENT.map((t) => [t, 'interactive'] as const),
 ]);
@@ -139,9 +152,9 @@ describe('browser tool policy', () => {
       }
     });
 
-    it('the explicit buckets exactly partition the REAL 23-tool list — no gaps, no overlap, no extras', () => {
-      expect(BROWSER_TOOL_SUFFIXES.length).toBe(23);
-      const buckets = [READ_ONLY, INTERACTIVE, SCRIPTING, INPUT_DEPENDENT];
+    it('the explicit buckets exactly partition the REAL 25-tool list — no gaps, no overlap, no extras', () => {
+      expect(BROWSER_TOOL_SUFFIXES.length).toBe(25);
+      const buckets = [READ_ONLY, INTERACTIVE, SCRIPTING, UPLOAD, INPUT_DEPENDENT];
       const union = buckets.flat();
       // No overlap between buckets.
       expect(union.length).toBe(new Set(union).size);
@@ -238,9 +251,10 @@ describe('browser tool policy', () => {
       expect(toLegacyBrowserToolConsequence('read-only')).toBe('read-only');
     });
 
-    it('maps both interactive and scripting to the old state-changing bucket', () => {
+    it('maps interactive, scripting and upload to the old state-changing bucket', () => {
       expect(toLegacyBrowserToolConsequence('interactive')).toBe('state-changing');
       expect(toLegacyBrowserToolConsequence('scripting')).toBe('state-changing');
+      expect(toLegacyBrowserToolConsequence('upload')).toBe('state-changing');
     });
 
     it.each(BROWSER_TOOL_SUFFIXES)(
@@ -484,7 +498,7 @@ describe('browser tool policy', () => {
 
   describe('normalizeBrowserOperationPolicy', () => {
     const VALID_POLICY: BrowserOperationPolicy = {
-      readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+      readOnly: 'allow', interactive: 'ask', scripting: 'ask', upload: 'ask',
     };
 
     it('passes a fully well-formed policy through unchanged', () => {
@@ -504,7 +518,7 @@ describe('browser tool policy', () => {
         expect(normalizeBrowserOperationPolicy({
           attended: { readOnly: 'allow', interactive: 'ask', scripting: 'deny' },
           unattended: { readOnly: 'deny', interactive: 'deny', scripting: 'deny' },
-        })).toEqual({ readOnly: 'allow', interactive: 'ask', scripting: 'deny' });
+        })).toEqual({ readOnly: 'allow', interactive: 'ask', scripting: 'deny', upload: 'ask' });
       });
 
       it('reads the attended column even when the unattended one is the permissive side', () => {
@@ -513,14 +527,14 @@ describe('browser tool policy', () => {
         expect(normalizeBrowserOperationPolicy({
           attended: { readOnly: 'ask', interactive: 'deny', scripting: 'deny' },
           unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-        })).toEqual({ readOnly: 'ask', interactive: 'deny', scripting: 'deny' });
+        })).toEqual({ readOnly: 'ask', interactive: 'deny', scripting: 'deny', upload: 'ask' });
       });
 
       it('clamps a malformed leaf inside the legacy column like any other', () => {
         expect(normalizeBrowserOperationPolicy({
           attended: { readOnly: 'maybe', interactive: 'allow' /* scripting missing */ },
           unattended: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-        })).toEqual({ readOnly: 'ask', interactive: 'allow', scripting: 'ask' });
+        })).toEqual({ readOnly: 'ask', interactive: 'allow', scripting: 'ask', upload: 'ask' });
       });
 
       it('ignores a non-object attended key and reads the top level instead', () => {
@@ -529,7 +543,7 @@ describe('browser tool policy', () => {
         expect(normalizeBrowserOperationPolicy({
           attended: null,
           readOnly: 'deny', interactive: 'deny', scripting: 'deny',
-        })).toEqual({ readOnly: 'deny', interactive: 'deny', scripting: 'deny' });
+        })).toEqual({ readOnly: 'deny', interactive: 'deny', scripting: 'deny', upload: 'ask' });
       });
     });
 
@@ -541,7 +555,7 @@ describe('browser tool policy', () => {
      */
     it('preserves an explicit scripting "allow"', () => {
       const withAllow: BrowserOperationPolicy = {
-        readOnly: 'allow', interactive: 'allow', scripting: 'allow',
+        readOnly: 'allow', interactive: 'allow', scripting: 'allow', upload: 'ask',
       };
       expect(normalizeBrowserOperationPolicy(withAllow)).toEqual(withAllow);
     });
@@ -565,12 +579,12 @@ describe('browser tool policy', () => {
 
     it('clamps a completely missing input to strictest-everywhere (ask)', () => {
       expect(normalizeBrowserOperationPolicy(undefined)).toEqual({
-        readOnly: 'ask', interactive: 'ask', scripting: 'ask',
+        readOnly: 'ask', interactive: 'ask', scripting: 'ask', upload: 'ask',
       });
     });
 
     it('clamps non-object input (string/number/null/array) to strictest-everywhere', () => {
-      const strictest = { readOnly: 'ask', interactive: 'ask', scripting: 'ask' };
+      const strictest = { readOnly: 'ask', interactive: 'ask', scripting: 'ask', upload: 'ask' };
       for (const bad of ['nope', 42, null, [1, 2, 3]]) {
         expect(normalizeBrowserOperationPolicy(bad)).toEqual(strictest);
       }
@@ -578,14 +592,33 @@ describe('browser tool policy', () => {
 
     it('clamps one missing leaf to strictest while preserving valid sibling leaves', () => {
       expect(normalizeBrowserOperationPolicy({ readOnly: 'allow' })).toEqual({
-        readOnly: 'allow', interactive: 'ask', scripting: 'ask',
+        readOnly: 'allow', interactive: 'ask', scripting: 'ask', upload: 'ask',
       });
     });
 
     it('clamps a leaf holding a value outside allow|deny|ask to strictest', () => {
       expect(normalizeBrowserOperationPolicy({
         readOnly: 'maybe', interactive: 'allow', scripting: true,
-      })).toEqual({ readOnly: 'ask', interactive: 'allow', scripting: 'ask' });
+      })).toEqual({ readOnly: 'ask', interactive: 'allow', scripting: 'ask', upload: 'ask' });
+    });
+
+    /**
+     * T5 — a store written before the upload row existed is the ONLY shape a
+     * released install can present, so "the row appears, set to ask" is the
+     * upgrade path itself and not merely a corruption case.
+     */
+    it('adds a missing upload row as ask rather than leaving it undefined', () => {
+      expect(normalizeBrowserOperationPolicy({
+        readOnly: 'allow', interactive: 'allow', scripting: 'ask',
+      }).upload).toBe('ask');
+    });
+
+    it('clamps a MALFORMED upload value to ask', () => {
+      for (const bad of ['allowed', 'ALLOW', 1, true, null, {}]) {
+        expect(normalizeBrowserOperationPolicy({
+          ...VALID_POLICY, upload: bad,
+        }).upload, JSON.stringify(bad)).toBe('ask');
+      }
     });
   });
 

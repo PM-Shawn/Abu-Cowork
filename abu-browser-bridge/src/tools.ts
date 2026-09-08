@@ -7,11 +7,18 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { MAX_BATCH_STEPS, parseBatchSteps, runBatch, type BatchDeps } from './batch.js';
 import {
+  clampDownloadWait,
+  DOWNLOAD_ACTIONS,
   KEYBOARD_MODIFIERS,
+  MAX_DOWNLOAD_WAIT_MS,
+  parseApprovedUploadFiles,
   parseCondition,
   parseFindQuery,
   parseLocator,
   validateFrameId,
+  validateUploadFilesArgument,
+  hasUploadIdentityPin,
+  type ApprovedUploadFile,
 } from './locators.js';
 import { evaluateQueryJsOnHtml } from './queryJs.js';
 import { JS_DIALOG_AUTO_DISMISS_MS } from './types.js';
@@ -93,6 +100,24 @@ export const ABU_FRAMES_FOR_TAB_META_KEY = 'abu/framesForTab';
 export const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
 
 /**
+ * MCP `_meta` key carrying the files Abu's approval gate resolved and the user
+ * confirmed for THIS `upload_file` call — canonical path, base name, size.
+ *
+ * An authorization fact, so it rides `_meta` like `expectedOrigin`: the model
+ * can neither read nor forge it. It is also the ONLY source of paths the
+ * upload handler will use. The tool's own `files` argument is validated for
+ * shape and then discarded, because by the time a call reaches the wire the
+ * gate has already canonicalized those paths, checked them against the
+ * workspaces the user authorized, refused symbolic links and oversize files,
+ * and shown the result in a confirmation. Reading the argument again here
+ * would be a second road to the filesystem that none of that applies to.
+ *
+ * Absent ⇒ refuse. The gate stamps it on every upload it approves, so nothing
+ * legitimate arrives without it.
+ */
+export const ABU_APPROVED_UPLOAD_FILES_META_KEY = 'abu/approvedUploadFiles';
+
+/**
  * What every DOM-scoped tool says about `frameId`.
  *
  * One sentence, everywhere, because the model has to learn the concept once:
@@ -113,7 +138,30 @@ export interface BrowserTransportResponse {
   error?: string;
 }
 
+/**
+ * How a channel wants an upload's bytes delivered — the ONE thing about
+ * `upload_file` the two channels genuinely do not share.
+ *
+ * - `'path'` — the runtime on the other end of this transport can read the
+ *   local filesystem itself, so only paths travel. That is Abu's built-in
+ *   browser: the Electron main process reads the file and hands it to the
+ *   page. Its HTTP transport also caps a request at 1 MiB
+ *   (`electron/browserAutomationHost.cjs`), so bytes could not go this way
+ *   even if we wanted them to.
+ * - `'bytes'` — the runtime is a Chrome extension service worker, which has
+ *   no filesystem at all. This process (the bridge, a Node process) reads the
+ *   file and sends its content over the WebSocket.
+ *
+ * Both ends then run the SAME content-script code to put the file into the
+ * page, so what differs is who opened the file, not what the page receives.
+ * Default `'bytes'`: a transport that does not declare the capability does
+ * not have it.
+ */
+export type UploadDelivery = 'path' | 'bytes';
+
 export interface BrowserTransport {
+  /** See {@link UploadDelivery}. Absent ⇒ `'bytes'`. */
+  uploadDelivery?: UploadDelivery;
   send(
     action: string,
     payload?: Record<string, unknown>,
@@ -129,6 +177,9 @@ const BROWSER_EXTENSION_NOT_CONNECTED =
   'Browser extension is not connected. Please install and enable the Abu Browser Extension, then check the connection status in the extension popup.';
 
 const chromeWsTransport: BrowserTransport = {
+  // A service worker cannot open a file, so this side reads it. See
+  // `UploadDelivery`.
+  uploadDelivery: 'bytes',
   send: async (action, payload = {}, timeoutMs = 30_000, opts) => {
     const { sendToExtension, isExtensionConnected } = await import('./wsServer.js');
     try {
@@ -301,6 +352,136 @@ function safeParse(raw: string): unknown {
   } catch {
     return null;
   }
+}
+
+/** The gate's approved file list for this upload, or null if it never arrived. */
+function approvedUploadFilesFromExtra(extra: unknown): ApprovedUploadFile[] | null {
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  return parseApprovedUploadFiles(meta?.[ABU_APPROVED_UPLOAD_FILES_META_KEY]);
+}
+
+/**
+ * What the runtime is told to upload, in the shape ITS channel can use.
+ *
+ * `'path'` channels get the canonical paths — AND the identity pin, because
+ * the tier that opens the file is the tier that has to re-check it.
+ * `'bytes'` channels get the content, read HERE.
+ *
+ * ## Reading it, not just stat'ing it (2026-09-07 review F1)
+ *
+ * The old check was `readFile(path)` then `bytes.length === size`, which
+ * catches a file that GREW and nothing else: a symbolic link planted at the
+ * approved path between the confirmation and this moment was followed, and a
+ * same-size replacement was sent as if it were the file the user read in the
+ * dialog. So the file is opened ONCE, with `O_NOFOLLOW`, and everything is
+ * decided about that descriptor — `fstat` cannot be raced by a rename the way
+ * a second `stat(path)` can, and the bytes come out of the same handle.
+ */
+async function uploadPayloadFiles(
+  files: ApprovedUploadFile[],
+  delivery: UploadDelivery,
+): Promise<Array<Record<string, unknown>>> {
+  for (const file of files) {
+    if (!hasUploadIdentityPin(file)) {
+      throw new Error(
+        `"${file.name}" was approved without anything that identifies it (no modification `
+        + 'time, no file id), so it could not be checked before sending. Nothing was uploaded.',
+      );
+    }
+  }
+  if (delivery === 'path') {
+    return files.map((file) => ({
+      path: file.path,
+      name: file.name,
+      size: file.size,
+      mtimeMs: file.mtimeMs,
+      ...(file.ino !== undefined ? { ino: file.ino } : {}),
+      ...(file.dev !== undefined ? { dev: file.dev } : {}),
+    }));
+  }
+  const [{ open }, { constants }] = await Promise.all([
+    import('node:fs/promises'),
+    import('node:fs'),
+  ]);
+  const noFollow = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0;
+  const out: Array<Record<string, unknown>> = [];
+  for (const file of files) {
+    let handle;
+    try {
+      handle = await open(file.path, constants.O_RDONLY | noFollow);
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code;
+      // ELOOP is `O_NOFOLLOW` refusing a symlink; on a platform without the
+      // flag a link would open, which is why the `fstat` below still runs.
+      throw new Error(
+        code === 'ELOOP'
+          ? `"${file.name}" is a symbolic link now, and it was not when it was approved. `
+            + 'Nothing was uploaded.'
+          : `"${file.name}" could not be opened for upload (${code ?? 'unknown error'}). `
+            + 'Nothing was uploaded.',
+        // The open error itself is the symptom's cause; the sentence above is
+        // for the model, the cause is for whoever reads a stack.
+        { cause: error },
+      );
+    }
+    try {
+      const stat = await handle.stat();
+      assertApprovedFileUnchanged(file, {
+        isFile: stat.isFile(),
+        isSymbolicLink: stat.isSymbolicLink(),
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        ino: stat.ino,
+        dev: stat.dev,
+      });
+      const bytes = await handle.readFile();
+      if (bytes.byteLength !== file.size) {
+        throw new Error(
+          `"${file.name}" changed on disk between the confirmation and this upload `
+          + `(${file.size} bytes then, ${bytes.byteLength} now). Nothing was uploaded — `
+          + 'read the file again and re-issue the upload if it is still the one you meant.',
+        );
+      }
+      out.push({ name: file.name, size: file.size, base64: bytes.toString('base64') });
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+  return out;
+}
+
+/**
+ * The frozen identity against what the descriptor actually is.
+ *
+ * Shared shape rather than a `Stats`, so the built-in host (plain CommonJS,
+ * `electron/browserHost.cjs`) and this file can be read side by side and be
+ * seen to enforce the same rule. Both refuse with the same sentence, and the
+ * sentence names the fact — «确认之后被改动过» — rather than the field, because
+ * which field changed is not the user's problem.
+ */
+export function assertApprovedFileUnchanged(
+  file: ApprovedUploadFile,
+  actual: {
+    isFile: boolean;
+    isSymbolicLink: boolean;
+    size: number;
+    mtimeMs: number;
+    ino: number;
+    dev: number;
+  },
+): void {
+  const refuse = (): never => {
+    throw new Error(
+      `"${file.name}" changed on disk between the confirmation and this upload. `
+      + 'Nothing was uploaded — the file the user approved is not the file at that path '
+      + 'any more. Re-issue the upload if it is still the one you meant.',
+    );
+  };
+  if (!actual.isFile || actual.isSymbolicLink) refuse();
+  if (actual.size !== file.size) refuse();
+  if (file.mtimeMs > 0 && Math.floor(actual.mtimeMs) !== file.mtimeMs) refuse();
+  if (file.ino !== undefined && actual.ino !== file.ino) refuse();
+  if (file.dev !== undefined && actual.dev !== file.dev) refuse();
 }
 
 /**
@@ -486,6 +667,69 @@ Name/label/placeholder matching takes the strictest tier that matches: exact, th
       const owner = ownerPayloadFromExtra(extra);
       const frame = validateFrameId(frameId);
       const res = await sendWithSignal(transport, 'select', { tabId, locator: parsed, value, ...(frame ? { frameId: frame } : {}), ...owner }, extra);
+      return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+    }
+  );
+
+  // 5a. browser_upload_file — next to fill/select because it is the same job
+  // (put a value into a form control), and the model should find it while it
+  // is looking at them rather than after it has given up and reached for a
+  // script.
+  server.tool(
+    'upload_file',
+    `Attach a file from THIS COMPUTER to a file-upload control on the page. Use this instead of clicking an "选择文件 / Browse" button: clicking one opens the operating system's own file picker, which nothing here can fill in.
+Point \`target\` at the file input itself — \`{ "css": "input[type=file]" }\` finds it even when the page hides it behind a styled button, and \`find\` will show you the ones a page has. Give \`files\` the absolute paths on this computer.
+Uploading follows the user's own setting for it, the same way clicking does: out of the box every upload is confirmed one call at a time, showing the file names and the target site, and a user who set uploads to "allow" on a site they always allow gets no prompt. An automatic task follows the same setting — authorized means it runs, otherwise the approval goes to the user wherever they are.
+A file must live somewhere Abu has been authorized to read; symbolic links are refused; the ceiling is 20 MB per file. The result reports what the page's input actually holds afterwards, so check it before you submit the form.`,
+    {
+      tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      target: z.string().describe(
+        `JSON string locating the file input. ${LocatorDescription}`,
+      ),
+      // A JSON string or a real array — the approval gate reads both, and a
+      // schema that took only one of them refused calls the user had already
+      // said yes to (review F13). The PATHS are thrown away either way; this
+      // is a shape check, not a source of filenames.
+      files: z.union([z.string(), z.array(z.unknown())]).describe(
+        'JSON array of the files to attach, e.g. [{"path": "/Users/me/Documents/report.xlsx"}]. '
+        + 'Absolute paths on this computer, at most 10 of them; the page must accept multiple '
+        + 'files for more than one to be attached.',
+      ),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
+    },
+    async ({ tabId, target, files, frameId }, extra) => {
+      await ensureConnected(transport);
+      const locator = parseLocator(target);
+      // Shape only — the PATHS come from `_meta`. See
+      // `ABU_APPROVED_UPLOAD_FILES_META_KEY`.
+      validateUploadFilesArgument(files);
+      const approved = approvedUploadFilesFromExtra(extra);
+      if (approved === null) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'Error: this upload carried no approved file list, so nothing was sent. '
+              + 'Uploads are confirmed by the user one call at a time and the confirmation is '
+              + 'what names the files; without it there is nothing to upload. Ask the user to '
+              + 'run this while they are at the machine.',
+          }],
+        };
+      }
+      const owner = ownerPayloadFromExtra(extra);
+      const frame = validateFrameId(frameId);
+      const payloadFiles = await uploadPayloadFiles(
+        approved,
+        transport.uploadDelivery ?? 'bytes',
+      );
+      const res = await sendWithSignal(transport, 'upload_file', {
+        tabId,
+        locator,
+        files: payloadFiles,
+        ...(frame ? { frameId: frame } : {}),
+        ...owner,
+      }, extra, 60_000);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
   );
@@ -824,10 +1068,64 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     }
   );
 
+  // 16b. download — the export button, and the file it produces, as ONE call.
+  server.tool(
+    'download',
+    `Press an export / download control and come back with the FILE it produced — where it landed, how big it is, and whether it finished. Use this instead of a plain click whenever the point of the click is to get a file: a click answers "I clicked", which is not the same thing.
+Two shapes:
+- \`{ "action": "click", "locator": {...} }\` — register the wait, press the control, and follow the download that click starts.
+- \`{ "action": "wait", "downloadId": "..." }\` — keep waiting on one an earlier call handed back unfinished. A big file returns its id rather than blocking; poll with this.
+The file is saved into Abu's own download folder for THIS task — never the browser's default folder, never a location the page chose — and no "Save as" window appears. Downloads from one task are not visible to another.
+If the click produced no download inside the wait, the result says exactly that rather than guessing at some other file that happened to arrive. Nothing is retried automatically.`,
+    {
+      tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      action: z.enum(DOWNLOAD_ACTIONS).describe(
+        '"click" to press something and follow the download it starts; "wait" to keep waiting '
+        + 'on a download an earlier call returned unfinished.',
+      ),
+      locator: z.string().optional().describe(
+        `Required for "click". JSON string of the control to press. ${LocatorDescription}`,
+      ),
+      downloadId: z.string().optional().describe('Required for "wait" — from an earlier download result.'),
+      timeoutMs: z.coerce.number().optional().describe(
+        `How long to wait for the file to finish, in milliseconds (default 30000, max ${MAX_DOWNLOAD_WAIT_MS}). `
+        + 'On expiry the call returns the download id and its state so far; it does not fail.',
+      ),
+      frameId: z.string()
+        .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
+        .optional().describe(FrameIdDescription),
+    },
+    async ({ tabId, action, locator, downloadId, timeoutMs, frameId }, extra) => {
+      await ensureConnected(transport);
+      if (action === 'click' && !locator) {
+        throw new Error('download with action "click" needs a `locator` naming the control to press.');
+      }
+      if (action === 'wait' && !downloadId) {
+        throw new Error('download with action "wait" needs the `downloadId` an earlier call returned.');
+      }
+      const parsed = locator ? parseLocator(locator) : undefined;
+      const owner = ownerPayloadFromExtra(extra);
+      const frame = validateFrameId(frameId);
+      const waitMs = clampDownloadWait(timeoutMs);
+      const res = await sendWithSignal(transport, 'download', {
+        tabId,
+        action,
+        ...(parsed ? { locator: parsed } : {}),
+        ...(downloadId ? { downloadId } : {}),
+        timeoutMs: waitMs,
+        ...(frame ? { frameId: frame } : {}),
+        ...owner,
+        // The transport must outlive the wait it is carrying, or a legitimate
+        // 30s download would be reported as a dead browser.
+      }, extra, waitMs + 15_000);
+      return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+    }
+  );
+
   // 17. get_downloads — recent download activity
   server.tool(
     'get_downloads',
-    'Get recent file downloads from the browser. Useful for confirming that a file was downloaded after clicking a download button.',
+    'List the files this task has downloaded — name, size, where each landed, and whether it finished. Downloads made by other tasks are not listed. To START a download and get its file back in one step, use `download`; this tool only reports.',
     async (extra) => {
       await ensureConnected(transport);
       const owner = ownerPayloadFromExtra(extra);

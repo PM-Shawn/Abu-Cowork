@@ -29,7 +29,10 @@
  */
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server, type ServerResponse } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
 import type { ElectronApplication, Page } from 'playwright';
 import {
@@ -313,6 +316,31 @@ function extractFoundRef(body: unknown): string {
   return match[1];
 }
 
+/**
+ * Pull the saved path out of an `abu-browser__download` tool result, so the
+ * journey can open the file the run says it produced. Same regex approach (and
+ * the same reason) as `extractCurrentTabId`: the path is chosen at runtime,
+ * inside Abu's per-task download root.
+ */
+function extractDownloadPath(body: unknown): string {
+  const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages ?? [];
+  const toolMessage = messages.find((message) =>
+    message.role === 'tool'
+    && typeof message.content === 'string'
+    && message.content.includes('"downloadId"')
+  );
+  if (!toolMessage) {
+    throw new Error('Expected an abu-browser__download tool result in the request body');
+  }
+  const parsed = JSON.parse(String(toolMessage.content)) as {
+    complete?: boolean; download?: { path?: string }; message?: string;
+  };
+  if (parsed.complete !== true || typeof parsed.download?.path !== 'string') {
+    throw new Error(`download did not finish: ${String(toolMessage.content).slice(0, 400)}`);
+  }
+  return parsed.download.path;
+}
+
 /** A tiny loopback HTTP fixture the agent can navigate the real browser view to. */
 interface FixturePage {
   url: string;
@@ -320,8 +348,29 @@ interface FixturePage {
   close: () => Promise<void>;
 }
 
-async function startFixturePage(marker: string, bodyHtml?: string): Promise<FixturePage> {
-  const server = createServer((_req, res) => {
+/**
+ * One extra route the fixture serves besides the page itself — how a download
+ * journey gets a real `Content-Disposition` attachment off a real HTTP server
+ * instead of a `data:` URL Chromium would treat differently.
+ */
+interface FixtureRoute {
+  headers: Record<string, string>;
+  body: string;
+}
+
+async function startFixturePage(
+  marker: string,
+  bodyHtml?: string,
+  routes?: Record<string, FixtureRoute>,
+): Promise<FixturePage> {
+  const server = createServer((req, res) => {
+    const pathname = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
+    const route = routes?.[pathname];
+    if (route) {
+      res.writeHead(200, route.headers);
+      res.end(route.body);
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(`<!doctype html><html><head><title>${marker}</title></head><body>`
       + `<h1>${marker}</h1>${bodyHtml ?? ''}</body></html>`);
@@ -455,8 +504,41 @@ function browserConfirmHeading(page: Page) {
   return page.getByRole('heading', { name: /^(浏览器操作确认|Confirm browser action)$/ });
 }
 
+/**
+ * The upload's own heading (acceptance F5).
+ *
+ * An upload is asked with its own wording — how many files, and to which host
+ * — so it does NOT show 「浏览器操作确认」 and must not be found by the helper
+ * above. Matched loosely on the host, since the fixture's loopback port is
+ * assigned per run.
+ */
+function browserUploadHeading(page: Page) {
+  return page.getByRole('heading', { name: /^(上传 \d+ 个文件到 |Upload \d+ files? to )/ });
+}
+
+/** 「确认上传」 — the upload's own verb, in place of the generic 「确认执行」. */
+function browserUploadConfirmButton(page: Page) {
+  return page.getByRole('button', {
+    name: /^(仅本次上传|This upload only|确认上传|Confirm upload)$/,
+  });
+}
+
 function browserAllowOnceButton(page: Page) {
   return page.getByRole('button', { name: /^(仅本次对话|This conversation only)$/ });
+}
+
+/**
+ * The confirm button, whichever of its two spellings this dialog is showing.
+ *
+ * `CommandConfirmDialog` renames its primary button 「仅本次对话」 only when it
+ * is ALSO offering 「以后都允许该网站」 — the pair reads as a choice. A row set
+ * to 「每次询问」 offers no standing grant, so its primary button is the plain
+ * 「确认执行」. Both mean "do it once".
+ */
+function browserConfirmButton(page: Page) {
+  return page.getByRole('button', {
+    name: /^(仅本次对话|This conversation only|确认执行|Confirm)$/,
+  });
 }
 
 function showPanelToggle(page: Page) {
@@ -1108,5 +1190,217 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     ).toBe(true);
     const finalStates = await nativeBrowserViewStates(app!);
     expect(finalStates.filter((state) => state.url === fixture!.url)).toHaveLength(1);
+  });
+
+  /**
+   * T5 — a real `<input type="file">` on a real page, filled from a real file
+   * on disk, in the real Electron browser.
+   *
+   * The claim the unit tests cannot make: no operating-system file picker is
+   * drawn at any point. Nothing in `browserHost.cjs` calls `showOpenDialog`,
+   * and the page's own chooser is intercepted while automation drives the tab
+   * — but "no native modal appeared" is only observable from out here, and its
+   * failure mode is a hang rather than a wrong value: a real picker would
+   * suspend this run until a human clicked it, and the test would time out.
+   *
+   * The file lives under the system temp root, which `pathSafety` treats as
+   * readable without a permission prompt — the upload gate's own authorization
+   * check is the subject of `registry.browserUploadGate.test.ts`, not of this
+   * journey.
+   */
+  test('attaches a real file to a real file input, with no OS file picker anywhere', async () => {
+    const response = `abu-e2e-upload-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const uploadCallId = `call-upload-${randomUUID()}`;
+    // A Chinese name with a space in it — the shape the field reports were
+    // about, and the one a naive path split gets wrong.
+    const uploadDir = mkdtempSync(join(tmpdir(), 'abu-e2e-upload-'));
+    const uploadName = '排班表 2026.csv';
+    const uploadPath = join(uploadDir, uploadName);
+    writeFileSync(uploadPath, 'name,shift\nabu,late\n');
+
+    fixture = await startFixturePage(
+      `abu-e2e-upload-${randomUUID()}`,
+      // The page reports back what its OWN input ended up holding, so the
+      // assertion reads the page's truth rather than the tool's summary.
+      '<input type="file" id="attach" '
+      + 'onchange="window.__abuE2eLivePageMarker = this.files[0] ? this.files[0].name : \'(empty)\'" />',
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: getTabsCallId, toolName: 'abu-browser__get_tabs' },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          target: JSON.stringify({ css: 'input[type=file]' }),
+          files: JSON.stringify([{ path: uploadPath }]),
+        },
+        toolCallId: uploadCallId,
+        toolName: 'abu-browser__upload_file',
+      }),
+      { kind: 'complete', responseText: response },
+    ]);
+
+    try {
+      const launched = await launchAbuElectron(dataRoot);
+      app = launched.app;
+      const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+      await waitForApp(page);
+      await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+      await sendComposerMessage(page, mock, `abu-e2e-up-${randomUUID().slice(0, 8)}`);
+
+      // navigate asks first.
+      await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+      await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+      await browserConfirmButton(page).click();
+
+      // Then the upload asks on its own — and the question NAMES the file, in
+      // the spelling the user wrote it, which is the whole point of freezing
+      // the resolved list before anybody is asked.
+      //
+      // It asks in its OWN words (acceptance F5): 「上传 1 个文件到 <host>」
+      // over 「确认上传」, not 「浏览器操作确认」 over 「确认执行」, and with
+      // no `abu-browser__upload_file` anywhere on the box. Asserted in the
+      // real shell because the string a person actually reads is assembled
+      // from three tiers — the gate's resolved file list, the ask's `kind`,
+      // and the dialog's own wording — and each was individually plausible
+      // while the box still said the tool's name.
+      await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(3);
+      await expect(browserUploadHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(browserConfirmHeading(page)).toBeHidden();
+      await expect(page.getByText(uploadName, { exact: false })).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(page.getByText('abu-browser__upload_file', { exact: false })).toHaveCount(0);
+      await browserUploadConfirmButton(page).click();
+
+      await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
+      await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+      // The PAGE's own onchange fired, and the field holds the file. If a
+      // native picker had opened instead, this run would have hung above.
+      expect(await readLivePageMarker(app!, fixture.url)).toBe(uploadName);
+    } finally {
+      rmSync(uploadDir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * T6 — click a real download link on a real page and come back with the
+   * FILE: where it landed, and that its bytes are the server's.
+   *
+   * Two things only this level can show. The file is written under Abu's own
+   * per-task root rather than the browser's default folder — so the assertion
+   * reads the path out of the tool result and then opens it. And no "Save as"
+   * window appears: `setSavePath` is what suppresses it, and a run that lost
+   * that would hang here exactly the way a file picker would.
+   */
+  test('clicks a real download link and comes back with the file on disk', async () => {
+    const response = `abu-e2e-download-complete-${randomUUID()}`;
+    const getTabsCallId = `call-get-tabs-${randomUUID()}`;
+    const navigateCallId = `call-navigate-${randomUUID()}`;
+    const downloadCallId = `call-download-${randomUUID()}`;
+    const exported = 'name,shift\nabu,early\n';
+
+    fixture = await startFixturePage(
+      `abu-e2e-download-${randomUUID()}`,
+      '<a id="export" href="/export.csv">导出</a>',
+      {
+        '/export.csv': {
+          headers: {
+            'content-type': 'text/csv; charset=utf-8',
+            // The header a real export sends, and the one whose file name is
+            // attacker-controlled — hence `safeDownloadFileName`. RFC 5987
+            // form because a raw non-ASCII header value is not transmissible
+            // (Node refuses to write one), which is also why real servers use
+            // it: the Chinese name has to survive the whole trip to be worth
+            // asserting on.
+            'content-disposition':
+              "attachment; filename=\"export.csv\"; filename*=UTF-8''%E6%8E%92%E7%8F%AD%E8%A1%A8.csv",
+          },
+          body: exported,
+        },
+      },
+    );
+    dataRoot = createElectronDataRoot();
+
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: getTabsCallId, toolName: 'abu-browser__get_tabs' },
+      (body) => ({
+        kind: 'tool-call',
+        arguments: { tabId: extractCurrentTabId(body), url: fixture!.url },
+        toolCallId: navigateCallId,
+        toolName: 'abu-browser__navigate',
+      }),
+      (body) => ({
+        kind: 'tool-call',
+        arguments: {
+          tabId: extractCurrentTabId(body),
+          action: 'click',
+          locator: JSON.stringify({ css: '#export' }),
+          timeoutMs: 15_000,
+        },
+        toolCallId: downloadCallId,
+        toolName: 'abu-browser__download',
+      }),
+      { kind: 'complete', responseText: response },
+    ]);
+
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+    await sendComposerMessage(page, mock, `abu-e2e-dl-${randomUUID().slice(0, 8)}`);
+
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserConfirmButton(page).click();
+
+    // `download` is an `interactive` action — it presses a control — so it
+    // rides the conversation grant that confirmation just minted, exactly the
+    // way the second click of any two-step form does. No second dialog, and
+    // the run reaches its answer on its own.
+    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
+    await expect(browserConfirmHeading(page)).toBeHidden();
+    await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+
+    const savedPath = extractDownloadPath(taskRequests(mock!)[3].body);
+    // Abu's own folder, under the name derived from the header — and the
+    // bytes the server actually sent.
+    expect(savedPath).toContain('browser-downloads');
+    expect(savedPath.endsWith('排班表.csv')).toBe(true);
+    expect(readFileSync(savedPath, 'utf8')).toBe(exported);
+
+    /*
+      ...and the person who asked for it gets somewhere to click (acceptance
+      F3). Until this existed the file reached the disk and the conversation
+      said nothing about it: the path lived only in a tool result buried in
+      the transcript, and the report card had three emitters, all of them
+      unattended. The card that appears here carries the FILES and nothing
+      else — no outcome badge, no 「访问过的网站」 — because the person watched
+      the run and needs the file, not an account of it.
+    */
+    const downloadsCard = page.getByRole('region', { name: /^(下载到的文件|Files it downloaded)$/ });
+    await expect(downloadsCard).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(downloadsCard.getByText('排班表.csv', { exact: false })).toBeVisible();
+    await expect(page.getByText(/^(浏览器任务报告|Browser task report)$/)).toHaveCount(0);
+    // And the row really is a pair of controls, not a line of text: both the
+    // name and 「在文件夹中显示」 are reachable. They are not CLICKED here —
+    // one opens Finder — but which path each is handed is pinned at the
+    // component level (`BrowserRunReportCard.test.tsx`).
+    await expect(downloadsCard.getByRole('button', { name: /排班表\.csv/ })).toBeEnabled();
+    await expect(
+      downloadsCard.getByRole('button', { name: /^(在文件夹中显示|Show in folder)$/ }),
+    ).toBeEnabled();
   });
 });

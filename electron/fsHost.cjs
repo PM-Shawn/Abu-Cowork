@@ -362,8 +362,35 @@ function resolveScoped(app, p, baseDirNum, opts) {
   return assertAllowed(resolved, opts);
 }
 
-function dateOrNull(value) {
-  return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : null;
+/**
+ * A timestamp on the wire, in the SAME integer milliseconds the real plugin
+ * produces.
+ *
+ * Tauri's Rust `plugin:fs` builds every FileInfo timestamp with
+ * `SystemTime::duration_since(UNIX_EPOCH).as_millis()` (`commands.rs:1721`),
+ * and `as_millis()` **truncates** the sub-millisecond remainder. Node's
+ * `Stats.mtime` is `new Date(Math.round(mtimeMs))` — it **rounds**. Shimming
+ * the plugin with Node's `Date` therefore hands the frontend a value that is
+ * one millisecond LATER than the plugin's for every file whose mtime has a
+ * fractional part of .5 ms or more (measured: 11 of 20 freshly written files
+ * on APFS).
+ *
+ * That one millisecond is not cosmetic: `upload_file` freezes the approved
+ * file's identity from this value in the renderer gate and the main process
+ * re-derives it with `Math.floor(stat.mtimeMs)` before sending the bytes
+ * (`browserHost.cjs` `readApprovedUploadFile`). Rounding on one side and
+ * flooring on the other made roughly half of all uploads of an UNCHANGED file
+ * refuse themselves with 「changed on disk」 (acceptance F1).
+ *
+ * So the truncation happens here, once, at the only place that still sees the
+ * float — not at each of the tiers that consume the value.
+ */
+function msecOrNull(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(Math.floor(ms));
+  // An out-of-range stamp makes an Invalid Date, whose `toISOString()` throws.
+  // `dateOrNull` used to swallow that case by testing `getTime()`; keep doing so.
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
 /** Convert Node's fs.Stats into @tauri-apps/plugin-fs FileInfo wire shape. */
@@ -374,9 +401,9 @@ function toFileInfo(info) {
     isDirectory: info.isDirectory(),
     isSymlink: info.isSymbolicLink(),
     size: info.size,
-    mtime: dateOrNull(info.mtime),
-    atime: dateOrNull(info.atime),
-    birthtime: dateOrNull(info.birthtime),
+    mtime: msecOrNull(info.mtimeMs),
+    atime: msecOrNull(info.atimeMs),
+    birthtime: msecOrNull(info.birthtimeMs),
     readonly: unix ? (info.mode & 0o222) === 0 : false,
     fileAttributes: null,
     dev: unix ? info.dev : null,

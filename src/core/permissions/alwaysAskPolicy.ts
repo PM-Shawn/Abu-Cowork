@@ -49,7 +49,7 @@ import type { DangerLevel } from '../tools/commandSafety';
 /** The subset of a confirmation request that decides the persistence floor. */
 export interface PersistenceFloorInput {
   level: DangerLevel;
-  kind?: 'command' | 'browser' | 'self-extension';
+  kind?: 'command' | 'browser' | 'browser-upload' | 'self-extension';
 }
 
 /**

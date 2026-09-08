@@ -96,6 +96,16 @@ const ABU_FRAMES_FOR_TAB_META_KEY = 'abu/framesForTab';
 const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
 
 /**
+ * T5 — the files the approval gate resolved and the user confirmed for an
+ * `upload_file` call. Rides `_meta` exactly as `expectedOrigin` does, and for
+ * the same reason: it is an authorization fact, so the model must be able to
+ * neither read nor forge it. The bridge uses it as the ONLY source of paths
+ * and refuses a call that carries none. Mirrors
+ * `ABU_APPROVED_UPLOAD_FILES_META_KEY` in `abu-browser-bridge/src/tools.ts`.
+ */
+const ABU_APPROVED_UPLOAD_FILES_META_KEY = 'abu/approvedUploadFiles';
+
+/**
  * The Chrome-extension bridge. Named here because it is the one MCP server
  * whose tab bookkeeping outlives a single tool call, so the app has to tell it
  * when a run is over. (`abu-browser` — the built-in Electron host — is told the
@@ -1209,6 +1219,19 @@ export class MCPClientManager {
        * embedded region the batch's steps target, keyed by frame handle.
        */
       expectedFrameOrigins?: Record<string, string>;
+      /**
+       * Browser servers' `upload_file` only: the files the gate approved.
+       * See `ABU_APPROVED_UPLOAD_FILES_META_KEY`.
+       */
+      approvedUploadFiles?: Array<{
+        path: string;
+        name: string;
+        size: number;
+        /** Identity pin (review F1) — the runtime refuses an entry without one. */
+        mtimeMs: number;
+        ino?: number;
+        dev?: number;
+      }>;
     }
   ): Promise<ToolResult> {
     if (isEnterpriseServerBlocked(serverName)) {
@@ -1293,6 +1316,13 @@ export class MCPClientManager {
       // caller that passes nothing keeps the pre-existing `_meta` shape.
       if (opts?.expectedFrameOrigins !== undefined) {
         meta[ABU_EXPECTED_FRAME_ORIGINS_META_KEY] = opts.expectedFrameOrigins;
+      }
+      // Only when the gate produced one — which it does for every upload it
+      // approves and for nothing else. Every other call keeps its exact
+      // pre-T5 `_meta` shape, and an `upload_file` without this key is
+      // refused by the bridge rather than falling back to its arguments.
+      if (opts?.approvedUploadFiles !== undefined) {
+        meta[ABU_APPROVED_UPLOAD_FILES_META_KEY] = opts.approvedUploadFiles;
       }
       if (Object.keys(meta).length > 0) {
         params._meta = meta;

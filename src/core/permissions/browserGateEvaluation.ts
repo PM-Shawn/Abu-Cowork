@@ -214,6 +214,16 @@ export function evaluateBrowserGate(facts: BrowserGateFacts): BrowserGateEvaluat
 
   const stateChanging = opClass !== 'read-only';
   const scripting = opClass === 'scripting';
+  /**
+   * T5 / 2026-09-07 — `upload` is deliberately NOT named anywhere in this
+   * function. It is a `stateChanging` class and nothing else: it consults the
+   * site, rides the site grant and the conversation grant, is offered
+   * 「以后都允许该网站」, and goes to the IM target when nobody is watching —
+   * every one of those the same as `interactive`. The 09-05 口径 that carved
+   * it out here (`!uploading` in `granted`, a `upload-unattended` refusal, no
+   * persistent grant) was overturned; the file-side checks that replaced none
+   * of it live in `browserUploadFiles.ts` and run on every release path.
+   */
 
   /**
    * An ATTENDED READ-ONLY call reads exactly one thing out of the site

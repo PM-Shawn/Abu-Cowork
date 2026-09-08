@@ -108,13 +108,34 @@ const browserState: {
   probeFunc?: (...a: never[]) => unknown;
   /** Content-script answers by `${tabId}:${frameId}:${action}`; default is a routed echo. */
   contentAnswers: Record<string, { data?: unknown; error?: string }>;
+  /** Every `offscreen.createDocument` the worker got as far as calling. */
+  offscreenCreated: { url: string; reasons: unknown[]; justification: string }[];
+  /** The `stitch` messages the offscreen document was asked to composite. */
+  stitchRequests: Record<string, unknown>[];
 } = {
   windows: [], tabs: [], updated: [], reloaded: [], injected: [], captured: [], sessionStore: {},
   pageDialogState: { installed: false, armed: null, last: null },
   pageIsFrozen: false,
   frames: {},
   contentAnswers: {},
+  offscreenCreated: [],
+  stitchRequests: [],
 };
+
+/**
+ * `chrome.offscreen.Reason`, as the browser actually defines it.
+ *
+ * Copied from the runtime rather than from memory: dumped out of a real
+ * service worker with `Object.keys(chrome.offscreen.Reason)` (Chrome 149 and
+ * 152 agree), and identical to the enum in `@types/chrome` and to the list on
+ * developer.chrome.com. There is deliberately no CANVAS here — see the
+ * full-page screenshot case at the bottom of this file for why that matters.
+ */
+const CHROME_OFFSCREEN_REASONS = [
+  'AUDIO_PLAYBACK', 'BATTERY_STATUS', 'BLOBS', 'CLIPBOARD', 'DISPLAY_MEDIA',
+  'DOM_PARSER', 'DOM_SCRAPING', 'GEOLOCATION', 'IFRAME_SCRIPTING', 'LOCAL_STORAGE',
+  'MATCH_MEDIA', 'TESTING', 'USER_MEDIA', 'WEB_RTC', 'WORKERS',
+] as const;
 
 /** Enough of the extension APIs to drive the real request path. */
 function fakeChrome(): Record<string, unknown> {
@@ -176,7 +197,43 @@ function fakeChrome(): Record<string, unknown> {
       },
     },
     downloads: { onCreated: slot('downloads.onCreated'), onChanged: slot('downloads.onChanged') },
-    runtime: { onMessage: slot('runtime.onMessage'), lastError: undefined },
+    runtime: {
+      onMessage: slot('runtime.onMessage'),
+      lastError: undefined,
+      ContextType: { OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT' },
+      // No document until one is created, which is the state the worker's
+      // `getContexts` check exists to detect after a service-worker restart.
+      getContexts: async () => (browserState.offscreenCreated.length > 0
+        ? [{ contextType: 'OFFSCREEN_DOCUMENT' }]
+        : []),
+      sendMessage: async (message: Record<string, unknown>) => {
+        if (message.type === 'stitch') {
+          browserState.stitchRequests.push(message);
+          return { success: true, data: 'data:image/png;base64,STITCHED' };
+        }
+        return undefined;
+      },
+    },
+    offscreen: {
+      Reason: Object.fromEntries(CHROME_OFFSCREEN_REASONS.map((r) => [r, r])),
+      // Chrome validates `reasons` against the enum and rejects anything else
+      // before the document is created. The fake refuses in the same place and
+      // with the same sentence, because THAT rejection is what this suite has
+      // to be able to see — a permissive fake would accept `[undefined]` and
+      // report a passing test for a call the browser throws on.
+      createDocument: async (params: { url: string; reasons: unknown[]; justification: string }) => {
+        params.reasons.forEach((reason, index) => {
+          if (typeof reason !== 'string' || !(CHROME_OFFSCREEN_REASONS as readonly string[]).includes(reason)) {
+            throw new TypeError(
+              "Error in invocation of offscreen.createDocument(offscreen.CreateParameters parameters, "
+              + "optional function callback): Error at parameter 'parameters': Error at property 'reasons': "
+              + `Error at index ${index}: Invalid type: expected offscreen.Reason, found ${String(reason)}.`,
+            );
+          }
+        });
+        browserState.offscreenCreated.push(params);
+      },
+    },
     alarms: { create: () => {}, onAlarm: slot('alarms.onAlarm') },
     scripting: {
       executeScript: async (opts: {
@@ -274,6 +331,7 @@ beforeEach(() => {
   browserState.captured.length = 0;
   browserState.frames = {};
   browserState.contentAnswers = {};
+  browserState.stitchRequests.length = 0;
   sentToContent.length = 0;
 });
 
@@ -845,6 +903,86 @@ describe('actions the service worker answers itself', () => {
 
     expect(response.success).toBe(false);
     expect(response.error).toMatch(/No tab with id/);
+  });
+});
+
+/**
+ * Full-page capture, and the offscreen document it composites in.
+ *
+ * This path shipped broken: `ensureOffscreen()` asked for
+ * `chrome.offscreen.Reason.CANVAS`, and there is no CANVAS in that enum — the
+ * expression is `undefined` at runtime, so Chrome rejected the call with
+ * "Invalid type: expected offscreen.Reason, found undefined" and every
+ * `screenshot_full_page` ended in an error. Confirmed in a real Chrome (149
+ * and 152) against the built extension before the fix.
+ *
+ * The cost was paid before the failure, too: the reason is only read AFTER the
+ * scroll-and-capture loop, so the page was dragged to the bottom and every
+ * slice was captured before the request died.
+ *
+ * `screenshot_full_page` had no test of any kind, on either channel, which is
+ * why a call that the browser could never accept survived review and shipped.
+ */
+describe('full-page screenshot', () => {
+  /** Two slices of a 1000px page through a 500px viewport. */
+  function tallPage(tabId: number): void {
+    browserState.contentAnswers[`${tabId}:0:fullpage_prepare`] = {
+      data: { scrollHeight: 1000, viewportHeight: 500, viewportWidth: 800, scrollX: 0, scrollY: 0 },
+    };
+  }
+
+  it('composites the slices into one image instead of dying at the offscreen document', async () => {
+    twoTabWindow();
+    tallPage(12);
+
+    vi.useFakeTimers();
+    let response: BridgeResponse;
+    try {
+      // Each slice waits out Chrome's captureVisibleTab rate limit, on a fake
+      // clock so a busy machine cannot fail the suite.
+      response = await request('screenshot_full_page', { tabId: 12 }, { pumpMs: 4_000 });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(response.success).toBe(true);
+    expect(response.data).toMatch(/^data:image\/png;base64,/);
+    // One capture per slice, and all of them handed to the stitcher.
+    expect(browserState.captured).toEqual([1, 1]);
+    expect(browserState.stitchRequests).toHaveLength(1);
+    expect(browserState.stitchRequests[0]).toMatchObject({
+      type: 'stitch', viewportWidth: 800, viewportHeight: 500, totalHeight: 1000, lastSliceHeight: 500,
+    });
+    expect((browserState.stitchRequests[0].slices as string[])).toHaveLength(2);
+  });
+
+  it('asks for the offscreen document with a reason the browser actually defines', async () => {
+    // The regression itself. `reasons` is what Chrome validates, and the
+    // failure mode is silent at build time: the bad member typechecks as
+    // `undefined` only because the extension sat outside the typecheck gate.
+    expect(browserState.offscreenCreated).toHaveLength(1);
+    const [created] = browserState.offscreenCreated;
+
+    expect(created.url).toBe('offscreen.html');
+    expect(created.justification).toBeTruthy();
+    expect(created.reasons.length).toBeGreaterThan(0);
+    for (const reason of created.reasons) {
+      expect(CHROME_OFFSCREEN_REASONS).toContain(reason);
+    }
+  });
+
+  it('the fake refuses an undefined reason, so the case above can fail', async () => {
+    // Without this, "every reason is valid" would also pass against a fake
+    // that never checked anything — including for the exact call that shipped.
+    const offscreen = (globalThis as unknown as {
+      chrome: { offscreen: { createDocument: (p: unknown) => Promise<void> } };
+    }).chrome.offscreen;
+
+    await expect(offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: [(undefined as unknown as string)],
+      justification: 'the call that shipped',
+    })).rejects.toThrow(/Invalid type: expected offscreen\.Reason, found undefined/);
   });
 });
 

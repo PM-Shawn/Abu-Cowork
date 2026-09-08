@@ -1138,13 +1138,23 @@ async function ensureOffscreen(): Promise<void> {
   }
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
-    // Pre-existing bug, deliberately not fixed by the typecheck-gate change:
-    // `CANVAS` is not a `chrome.offscreen.Reason` (none of the enum's 15 values
-    // in @types/chrome), so this is `undefined` at runtime and createDocument
-    // rejects. Picking a valid reason changes behaviour (full-page capture
-    // would start working), so it is tracked as its own fix.
-    // @ts-expect-error pre-existing bug: CANVAS is not a chrome.offscreen.Reason; fixing it changes runtime behaviour
-    reasons: [chrome.offscreen.Reason.CANVAS],
+    // BLOBS, not CANVAS: there is no CANVAS in `chrome.offscreen.Reason`, so
+    // the old value was `undefined` at runtime and Chrome rejected the whole
+    // call ("Invalid type: expected offscreen.Reason, found undefined") —
+    // every full-page capture failed, after the page had already been scrolled
+    // and every slice captured.
+    //
+    // No reason in the enum names canvas work, so this picks the closest
+    // documented one rather than a literal match. The reason is declarative:
+    // per the offscreen docs it determines the document's LIFETIME, and only
+    // AUDIO_PLAYBACK carries a limit (closed after 30s without audio), so any
+    // other member gives the unbounded lifetime a stitch needs. BLOBS is what
+    // shipped extensions doing this same job declare — Anthropic's own Claude
+    // extension composites images in an offscreen document under
+    // `[AUDIO_PLAYBACK, BLOBS]`. DOM_SCRAPING, the other candidate, is
+    // explicitly about embedding an iframe and scraping its DOM, which this
+    // document does not do.
+    reasons: [chrome.offscreen.Reason.BLOBS],
     justification: 'Stitching full-page screenshot slices on canvas',
   });
   offscreenCreated = true;

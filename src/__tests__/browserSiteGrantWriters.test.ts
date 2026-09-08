@@ -70,15 +70,16 @@ const TEST_VERDICT_HELPER = join('src', 'test', 'browserSiteVerdicts.ts');
  *   refuses to mint `'allowed'` for a high-risk origin, which the dialog also
  *   refuses (`allowPersistentGrant: false`).
  *
- * ## The mark is the WIDE default when omitted (round-3 R3-H)
+ * ## The scope is the WIDE default when omitted (round-3 R3-H)
  *
- * `setBrowserSitePermission(origin, verdict, { viaEmbed })` takes the mark as
- * an OPTIONAL option, and leaving it out mints a full grant — the kind an
- * automatic task may act on. So the dangerous edit is not a new writer, it is
- * an existing-shaped writer that learns to grant on behalf of an EMBEDDED
- * REGION and forgets the third argument: nothing would be red, and a region
- * grant would silently become a standing one. The last two cases below make
- * that an enumerated decision as well.
+ * `setBrowserSitePermission(origin, verdict, { viaEmbedPage })` takes the
+ * scope as an OPTIONAL option, and leaving it out mints a full grant — one
+ * that is valid on that site anywhere, in either run mode. So the dangerous
+ * edit is not a new writer, it is an existing-shaped writer that learns to
+ * grant on behalf of an EMBEDDED REGION and forgets the third argument:
+ * nothing would be red, and a grant the user gave for one page's regions would
+ * silently become a standing one. The last two cases below make that an
+ * enumerated decision as well.
  */
 const PERMITTED_WRITERS = [
   join('src', 'components', 'common', 'CommandConfirmDialog.tsx'),
@@ -164,11 +165,11 @@ describe('standing browser site verdicts have exactly two writers', () => {
     expect(forced).toEqual([]);
   });
 
-  it('lets nobody but the merged region prompt mint a MARKED grant', () => {
-    // The mark itself is a small enumerable set, so that "which screens can
-    // produce a grant an automatic task may NOT act on" stays answerable by
+  it('lets nobody but the merged region prompt mint a SCOPED grant', () => {
+    // The scope itself is a small enumerable set, so that "which screens can
+    // produce a grant that is only valid inside one page" stays answerable by
     // reading one list.
-    const markers = filesMatching((src) => /viaEmbed:\s*true/.test(src));
+    const markers = filesMatching((src) => /viaEmbedPage:/.test(src));
     expect(markers).toEqual([...REGION_AWARE_WRITERS].sort());
   });
 
@@ -181,7 +182,7 @@ describe('standing browser site verdicts have exactly two writers', () => {
     const grantsForRegionsUnmarked = filesMatching(
       (src) => src.includes('setBrowserSitePermission(')
         && src.includes('browserPageOrigin')
-        && !src.includes('viaEmbed'),
+        && !src.includes('viaEmbedPage'),
     );
     expect(grantsForRegionsUnmarked).toEqual([]);
 

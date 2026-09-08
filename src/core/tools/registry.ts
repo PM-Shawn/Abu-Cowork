@@ -37,7 +37,7 @@ import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   type BrowserDenialReasonCode,
   type DecideBrowserOperationSiteVerdict,
-  type SiteVerdictOptions,
+  type BrowserSiteGrantScopes,
 } from '../permissions/browserToolPolicy';
 import {
   classifyPluginTool,
@@ -557,31 +557,50 @@ function strictestVerdict(
 }
 
 /**
+ * One site this call touches, and the role it is touched IN.
+ *
+ * The role is not decoration: a scoped via-embed grant is valid inside the
+ * page it was given on and nowhere else, so "vendor.example.net as a region of
+ * oa.example.com" and "vendor.example.net as the page being driven" are two
+ * different questions with two different answers. Folding a bare origin list
+ * could only ask one of them.
+ */
+interface TouchedSite {
+  origin: string | null;
+  /** The top-level page this origin is a region OF; `null` when it IS the page. */
+  embeddedIn: string | null;
+}
+
+/**
  * The stricter answer across EVERY site one call touches — the page, and each
  * embedded region its steps target.
  *
  * A `batch` can name several regions under one approval, so folding over all
  * of them is what stops one authorized region from carrying the others.
- * Duplicates collapse (the same site named twice is one site), and an absent
- * origin still counts: `getSiteVerdict(null, …)` is `default`, which is
+ * Duplicates collapse (the same site in the same role is one question), and an
+ * absent origin still counts: `getSiteVerdict(null, …)` is `default`, which is
  * "nothing standing here", not "fine".
+ *
+ * A via-embed grant that does not reach the role it is asked about drops that
+ * origin to `'default'` one site at a time, and one such origin is enough to
+ * take the whole fold below `'allowed'` — which is the point: the fold's
+ * `'allowed'` means "every site this call touches is authorized here".
  */
 function strictestVerdictOf(
-  origins: Array<string | null>,
+  sites: TouchedSite[],
   sitePermissions: Record<string, 'allowed' | 'denied'>,
-  /**
-   * Passed straight through to each `getSiteVerdict`, so a grant minted
-   * through the merged embedded-region prompt drops out of an UNATTENDED fold
-   * one origin at a time (R2-C-②). One marked origin is enough to take the
-   * whole fold below `'allowed'` — which is the point: the fold's `'allowed'`
-   * means "every site this call touches is authorized", and a marked one is
-   * not authorized for a run nobody is watching.
-   */
-  options?: SiteVerdictOptions,
+  viaEmbed?: BrowserSiteGrantScopes,
 ): 'allowed' | 'denied' | 'default' {
   let verdict: 'allowed' | 'denied' | 'default' | null = null;
-  for (const origin of [...new Set(origins)]) {
-    const next = getSiteVerdict(origin, sitePermissions, options);
+  const seen = new Set<string>();
+  for (const site of sites) {
+    const key = `${site.origin ?? ''}\u0000${site.embeddedIn ?? ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const next = getSiteVerdict(site.origin, sitePermissions, {
+      viaEmbed,
+      embeddedIn: site.embeddedIn,
+    });
     verdict = verdict === null ? next : strictestVerdict(verdict, next);
   }
   return verdict ?? 'default';
@@ -1616,24 +1635,39 @@ export async function checkToolApproval(
        * value, so the full verdict goes in and the narrowing happens in one
        * place rather than two.
        */
+      /**
+       * The page this call happens on, when a region was named. `undefined`
+       * `topOrigin` means the call targets the main document, where the page
+       * and the target are the same site; a null one means the tab's address
+       * did not parse, and an unknown page is no page — a scoped grant does
+       * not reach it, which is the fail-safe direction.
+       */
+      const pageOrigin = target.topOrigin ?? null;
+      /** The page a given origin is a REGION of, or null when it is the page. */
+      const embeddedIn = (site: string | null): string | null =>
+        (pageOrigin !== null && site !== null && site !== pageOrigin ? pageOrigin : null);
       const storedVerdict = resolvesTarget
         ? strictestVerdictOf(
           [
-            origin,
+            { origin, embeddedIn: embeddedIn(origin) },
             // Only when a region was named — otherwise these ARE the same site
-            // and folding it in would say nothing.
-            ...(target.topOrigin !== undefined ? [target.topOrigin] : []),
+            // and folding it in would say nothing. The page is always judged
+            // AS the page, never as a region of itself.
+            ...(target.topOrigin !== undefined
+              ? [{ origin: target.topOrigin, embeddedIn: null }]
+              : []),
             // A `batch` may name several regions, and every one of them is a
             // site this approval would let it act on. Judging only the first
             // (or only the page) is how a step reaches a region the user never
             // authorized on the strength of one it did.
-            ...Object.values(target.frameOrigins ?? {}),
+            ...Object.values(target.frameOrigins ?? {})
+              .map((frameOrigin) => ({
+                origin: frameOrigin,
+                embeddedIn: embeddedIn(frameOrigin),
+              })),
           ],
           settingsSnapshot.browserSitePermissions ?? {},
-          {
-            viaEmbed: settingsSnapshot.browserSiteGrantViaEmbed ?? {},
-            runMode,
-          },
+          settingsSnapshot.browserSiteGrantViaEmbed ?? {},
         )
         : 'default';
       /**
@@ -2473,21 +2507,22 @@ export async function checkToolApproval(
  * An entry whose url does not parse is treated as unknown: dropped unattended,
  * kept attended. Fail-safe both ways.
  *
- * ## Via-embed marks apply here (round-3 R3-D)
+ * ## Via-embed scopes apply here (round-3 R3-D)
  *
  * The unattended tier narrows to `'allowed'`, which is exactly the side a
- * via-embed mark takes away: `getSiteVerdict` reads a marked grant as
- * `'default'` for a run nobody is watching. Without the mark this filter kept
- * handing an unattended run the download records of a site the same run cannot
- * so much as click on — the two halves of one gate disagreeing, which is the
- * thing the mark exists to stop. Passing the marks in is not a new rule; it is
- * this filter finally asking the same question everyone else asks.
+ * scoped via-embed grant does not reach: a download listing is a question
+ * about the browser, not about any one page, so there is no embedding page to
+ * be inside of and `getSiteVerdict` answers `'default'`. Without the scopes
+ * this filter kept handing an unattended run the download records of a site
+ * the same run cannot so much as click on — the two halves of one gate
+ * disagreeing. Passing them in is not a new rule; it is this filter asking the
+ * same question everyone else asks.
  */
 export function filterDownloadsByOrigin(
   result: ToolResult,
   runMode: 'attended' | 'unattended',
   sitePermissions: Record<string, 'allowed' | 'denied'>,
-  viaEmbed?: Record<string, true>,
+  viaEmbed?: BrowserSiteGrantScopes,
 ): ToolResult {
   if (typeof result !== 'string') return result;
   // An error string ("Error: ...") is not a listing; leave it alone.
@@ -2509,7 +2544,7 @@ export function filterDownloadsByOrigin(
       ? (entry as { url?: unknown }).url
       : undefined;
     const origin = normalizeBrowserOrigin(typeof url === 'string' ? url : undefined);
-    const verdict = getSiteVerdict(origin, sitePermissions, { runMode, viaEmbed });
+    const verdict = getSiteVerdict(origin, sitePermissions, { viaEmbed });
     if (verdict === 'denied') return false;
     return runMode === 'unattended' ? verdict === 'allowed' : true;
   });
@@ -2569,23 +2604,28 @@ const REDACTED_TAB_FIELD = '[hidden: you blocked this site, and nobody is watchi
  * today), so hiding that same page's title here would be the two halves of
  * one gate disagreeing again.
  *
- * ## Via-embed marks are passed in and change nothing — on purpose (R3-D)
+ * ## Via-embed scopes are NOT consulted here (#402, settled 2026-09-08)
  *
- * They are threaded through so there is ONE verdict rule in this file rather
- * than two spellings of `getSiteVerdict` that can drift. Behaviourally it is a
- * no-op by construction: a mark can only take a grant DOWN to `'default'`,
- * never to `'denied'`, and this filter hides nothing but `'denied'`. Making it
- * hide marked sites too would be a genuinely new rule — and a self-contradictory
- * one, since it would hide a marked site's tab while still showing every
- * never-listed site's tab, i.e. treat a partial grant as worse than no grant
- * at all. If that rule is ever wanted it belongs to the unattended READ policy
- * as a whole, not to this one function.
+ * They used to be threaded in, as a deliberate no-op, so that one verdict rule
+ * covered the file. #402 asked whether they should start MEANING something
+ * here — hide a scoped site's tab title from an automatic task. The answer is
+ * no, and the parameter is gone with it:
+ *
+ * - It could never have had an effect. A via-embed scope can only take a grant
+ *   down to `'default'`; this filter hides nothing but `'denied'`.
+ * - Making it hide them would be self-contradictory: a partly-authorized site
+ *   would be hidden while every never-listed site stayed visible.
+ * - And it would be an in-my-presence-or-not rule, which is exactly what the
+ *   2026-09-07 ruling removed from this grant. Tab visibility does not change
+ *   because of a scoped grant, in either run mode.
+ *
+ * (What this function does with `runMode` at all is a separate, older question
+ * — the unattended READ policy as a whole — and is untouched here.)
  */
 export function filterTabsBySitePermissions(
   result: ToolResult,
   runMode: 'attended' | 'unattended',
   sitePermissions: Record<string, 'allowed' | 'denied'>,
-  viaEmbed?: Record<string, true>,
 ): ToolResult {
   // Attended keeps its exact shipped behavior.
   if (runMode !== 'unattended') return result;
@@ -2607,7 +2647,7 @@ export function filterTabsBySitePermissions(
   let redacted = false;
   const isDenied = (url: unknown): boolean =>
     typeof url === 'string'
-    && getSiteVerdict(normalizeBrowserOrigin(url), sitePermissions, { runMode, viaEmbed }) === 'denied';
+    && getSiteVerdict(normalizeBrowserOrigin(url), sitePermissions) === 'denied';
 
   const windows = doc.windows.map((win) => {
     if (!win || typeof win !== 'object') return win;
@@ -2773,7 +2813,6 @@ export async function executeAnyTool(
           result,
           approval.browserExecution?.runMode ?? 'unattended',
           snapshot.browserSitePermissions ?? {},
-          snapshot.browserSiteGrantViaEmbed,
         );
       }
       // U6 / F2.4, the ATTENDED half of the login-expiry split. The action was

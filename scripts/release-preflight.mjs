@@ -12,17 +12,29 @@
  *      src-tauri/Cargo.lock — and, when --tag is passed, matches the tag.
  *   2. CHANGELOG.md has this version's section, English only (no CJK).
  *   3. CHANGELOG.zh-CN.md has this version's section, containing Chinese (CJK).
+ *   4. Local runs read GitHub branch protection and compare it with the
+ *      committed policy. Release CI opts out explicitly because its token lacks
+ *      administration:read; it never claims to have performed this check.
  *
  * Pre-release tags (vX.Y.Z-rc1) skip the changelog checks — RC builds only
  * exercise signing/notarization and may have no changelog entry.
  *
  * See RELEASING.md and the Release Process in CLAUDE.md for the convention.
  */
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { shouldCheckBranchProtection } from './check-branch-protection.mjs';
 
 const args = process.argv.slice(2);
 const tagIdx = args.indexOf('--tag');
 const tagArg = tagIdx >= 0 ? args[tagIdx + 1] : null;
+const skipBranchProtection = args.includes('--skip-branch-protection');
+const checkBranchProtection = shouldCheckBranchProtection({
+  skipRequested: skipBranchProtection,
+  githubActions: process.env.GITHUB_ACTIONS,
+});
 
 const errors = [];
 const fail = (m) => errors.push(m);
@@ -97,6 +109,25 @@ if (!isPrerelease) {
   else if (!CJK.test(zh)) fail(`CHANGELOG.zh-CN.md v${ref} section has no Chinese text — it must be the Chinese changelog`);
 }
 
+// The release workflow cannot read branch protection with GITHUB_TOKEN. It
+// passes --skip-branch-protection explicitly and the workflow structure test
+// pins that boundary. Local `npm run release:check` takes this read-only path.
+if (errors.length === 0) {
+  if (!checkBranchProtection) {
+    console.log(
+      'ℹ Branch-protection check skipped explicitly; GitHub release CI lacks administration:read. ' +
+        'Run `npm run release:check` locally before tagging.',
+    );
+  } else {
+    const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+    const result = spawnSync(process.execPath, [path.join(scriptDir, 'check-branch-protection.mjs')], {
+      stdio: 'inherit',
+    });
+    if (result.error) fail(`branch-protection check could not start: ${result.error.message}`);
+    else if (result.status !== 0) fail('branch protection does not match the committed release policy');
+  }
+}
+
 // ── Report ──
 const label = `v${ref}${tagArg ? ` (tag ${tagArg})` : ''}${isPrerelease ? ' [pre-release: changelog checks skipped]' : ''}`;
 if (errors.length) {
@@ -106,7 +137,8 @@ if (errors.length) {
     '\nFix before tagging. Convention (RELEASING.md): CHANGELOG.md is English, ' +
       'CHANGELOG.zh-CN.md is Chinese, and the version must match across package.json, ' +
       'package-lock.json, tauri.conf.json, Cargo.toml, and Cargo.lock. ' +
-      'Re-sync the lockfile with `npm install --package-lock-only`.\n',
+      'Re-sync the lockfile with `npm install --package-lock-only`. Branch-protection ' +
+      'drift must be restored separately; this preflight never mutates GitHub.\n',
   );
   process.exit(1);
 }

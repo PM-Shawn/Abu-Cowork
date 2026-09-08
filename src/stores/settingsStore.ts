@@ -11,7 +11,9 @@ import type { PermissionMode } from '../core/permissions/permissionMode';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   normalizeBrowserOperationPolicy,
+  normalizeBrowserSiteGrantScopes,
   type BrowserOperationPolicy,
+  type BrowserSiteGrantScopes,
   type BrowserSiteVerdicts,
 } from '../core/permissions/browserToolPolicy';
 import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
@@ -313,26 +315,33 @@ export interface SettingsState {
   browserSitePermissions: BrowserSiteVerdicts;
   /**
    * Which of those `'allowed'` verdicts were minted through the MERGED prompt
-   * that a page's embedded regions get (round-2 R2-C-②).
+   * that a page's embedded regions get — and, since v51, WHERE.
    *
    * A page decides what it embeds and in what order, so the regions a merged
    * "always allow this site and its N embedded regions" click covers are
-   * chosen by the page, not by the user — the user consented to a list they
-   * read, on a page they were looking at, which is real consent for work they
-   * are watching, and NOT the premise an unattended run is built on ("the user
-   * went to this site and allowed it"). So a marked grant is a full grant while
-   * a human is present, and no grant at all for an automatic run.
+   * chosen by the page, not by the user. What the user read was "the page I am
+   * on also contains regions from X", and what they agreed to was letting Abu
+   * work on those regions HERE — not "go to X whenever you like". So the grant
+   * is SCOPED to the page it was given on, and is not a standing grant for
+   * visiting that site directly or for meeting it inside some other page.
+   *
+   * The scope is the whole of the qualification: WHO IS WATCHING does not
+   * enter into it (2026-09-07 ruling). Until v51 this map held a bare `true`
+   * and `getSiteVerdict` withheld the grant from unattended runs only — the
+   * right instinct expressed on the one axis the ruling forbids. See
+   * {@link BrowserSiteGrantScopes} for the two shapes and
+   * `viaEmbedScopeCovers` for the single reader of both.
    *
    * Kept as a sibling map rather than a richer verdict value so
    * `getSiteVerdict`'s two-value precedence — the thing every gate path reads
    * — stays exactly what it was. The two cannot drift because every write goes
    * through `setBrowserSitePermission` / `removeBrowserSitePermission`, and
    * `browserSiteGrantWriters.test.ts` pins that the writers can be enumerated.
-   * Any later write of the same origin without `viaEmbed` (Settings › 网站授权,
-   * or a dialog on the page itself) CLEARS the mark: that write is the direct
-   * authorization the mark was recording the absence of.
+   * Any later write of the same origin without `viaEmbedPage` (Settings ›
+   * 网站授权, or a dialog on the page itself) CLEARS the scope: that write is
+   * the direct authorization the scope was recording the absence of.
    */
-  browserSiteGrantViaEmbed: Record<string, true>;
+  browserSiteGrantViaEmbed: BrowserSiteGrantScopes;
   /**
    * Operation-class three-state policy: one allow/deny/ask row per operation
    * class (read-only / interactive / scripting). Consumed by
@@ -538,11 +547,12 @@ interface SettingsActions {
     origin: string,
     verdict: 'allowed' | 'denied',
     /**
-     * The grant came from the merged embedded-region prompt — see
+     * The grant came from the merged embedded-region prompt, given while
+     * THIS top-level page was in front of the user — see
      * `browserSiteGrantViaEmbed`. Omitted everywhere a user authorized the
-     * origin directly, which is what CLEARS an existing mark.
+     * origin directly, which is what CLEARS an existing scope.
      */
-    options?: { viaEmbed?: boolean },
+    options?: { viaEmbedPage?: string },
   ) => void;
   removeBrowserSitePermission: (origin: string) => void;
   /** Set one operation-class row of `browserOperationPolicy`. */
@@ -1079,7 +1089,7 @@ export const useSettingsStore = create<SettingsStore>()(
       telemetryOptOut: false,
       computerUseEnabled: false,
       browserSitePermissions: mintBrowserSiteVerdicts({}),
-      browserSiteGrantViaEmbed: {},
+      browserSiteGrantViaEmbed: {} as BrowserSiteGrantScopes,
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
       browserConfigRevisions: INITIAL_BROWSER_CONFIG_REVISIONS,
@@ -1445,12 +1455,22 @@ export const useSettingsStore = create<SettingsStore>()(
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
       setBrowserSitePermission: (origin, verdict, options) => set((state) => {
-        // The mark lives and dies with the verdict it qualifies: a block, or a
+        // The scope lives and dies with the verdict it qualifies: a block, or a
         // grant given anywhere the user authorized this origin directly,
-        // leaves nothing marked behind.
+        // leaves nothing scoped behind.
         const viaEmbed = { ...state.browserSiteGrantViaEmbed };
-        if (verdict === 'allowed' && options?.viaEmbed === true) viaEmbed[origin] = true;
-        else delete viaEmbed[origin];
+        const page = verdict === 'allowed' ? options?.viaEmbedPage : undefined;
+        if (page !== undefined) {
+          const previous = viaEmbed[origin];
+          // Granting the same region on a SECOND page adds that page rather
+          // than replacing the first: each click was its own human act, and
+          // dropping the earlier one would revoke a grant nobody took back.
+          // A legacy scope (`{}` — "any page, page unknown") already covers
+          // this one, so naming a page there would NARROW it; left alone.
+          viaEmbed[origin] = previous !== undefined && Object.keys(previous).length === 0
+            ? {}
+            : { ...(previous ?? {}), [page]: true };
+        } else delete viaEmbed[origin];
         return {
           browserSitePermissions: mintBrowserSiteVerdicts({
             ...state.browserSitePermissions,
@@ -1509,8 +1529,11 @@ export const useSettingsStore = create<SettingsStore>()(
             // dropped by an older build that never knew about marks widens the
             // grant) is stated where the rule lives —
             // `BROWSER_CONFIG_COMPANION_FIELDS` in browserConfigPersistence.ts.
+            // Normalized, not cast: an adopted blob can come from a build
+            // that wrote the pre-v51 shape (a bare `true`), and that path
+            // never passes through `migrate`.
             browserSiteGrantViaEmbed:
-              (companions?.browserSiteGrantViaEmbed as Record<string, true> | undefined) ?? {},
+              normalizeBrowserSiteGrantScopes(companions?.browserSiteGrantViaEmbed),
           }
           : field === 'browserOperationPolicy'
             ? { browserOperationPolicy: normalizeBrowserOperationPolicy(value) }
@@ -1531,8 +1554,7 @@ export const useSettingsStore = create<SettingsStore>()(
                 attempted.value as Record<string, 'allowed' | 'denied'>,
               ),
               browserSiteGrantViaEmbed:
-                (attempted.companions.browserSiteGrantViaEmbed as Record<string, true> | undefined)
-                ?? {},
+                normalizeBrowserSiteGrantScopes(attempted.companions.browserSiteGrantViaEmbed),
             }
             : field === 'browserOperationPolicy'
               ? { browserOperationPolicy: normalizeBrowserOperationPolicy(attempted.value) }
@@ -1603,7 +1625,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 50,
+      version: 51,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -1696,6 +1718,22 @@ export const useSettingsStore = create<SettingsStore>()(
           // Browser site permissions start empty: every site keeps asking until
           // the user explicitly settles it from the confirmation dialog.
           if (state.browserSitePermissions === undefined) state.browserSitePermissions = {};
+        }
+
+        // ════════════════════════════════════════════════
+        // V51: `browserSiteGrantViaEmbed` gains a SCOPE. Until v50 a mark was
+        // a bare `true` and the gate withheld it from unattended runs; the
+        // 2026-09-07 ruling replaced that with "valid inside the page it was
+        // given on". Old marks do not say which page that was, so they migrate
+        // to the empty scope — "only as an embedded region, page unknown".
+        // That neither widens what the user gave (it never becomes a standing
+        // grant for visiting the site directly) nor silently revokes it, and
+        // `viaEmbedScopeCovers` reads both shapes, so there is one rule and
+        // not two. `normalizeBrowserSiteGrantScopes` does the conversion.
+        // ════════════════════════════════════════════════
+        if (version < 51) {
+          state.browserSiteGrantViaEmbed =
+            normalizeBrowserSiteGrantScopes(state.browserSiteGrantViaEmbed);
         }
 
         // ════════════════════════════════════════════════

@@ -5,6 +5,8 @@ on:
     branches: [dev, main]
   pull_request:
     branches: [main, dev]
+    # Re-evaluate body/label-based gate exemptions when their inputs change.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 jobs:
   check:
@@ -18,6 +20,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Fail fast if closed-source enterprise modules leaked into this public
       # repo (open-core boundary). Runs before npm so a build/test pass can't
@@ -72,6 +76,12 @@ jobs:
         id: test
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run test:coverage
+
+      - name: Changed-lines coverage (80%)
+        if: ${{ github.event_name == 'pull_request' && !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha }}
+        run: npm run coverage:changed -- --base "$DIFF_BASE"
 
       - name: Test-infra scripts (node:test)
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

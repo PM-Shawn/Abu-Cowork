@@ -222,12 +222,17 @@ describe('CommandConfirmDialog', () => {
     });
 
     /**
-     * Round-2 R2-C-②. What this click writes is a real grant — and it is a
-     * grant given because ANOTHER site embeds these, so it is marked. The mark
-     * is what keeps an automatic task from acting there later; see
-     * `settingsStore`'s `browserSiteGrantViaEmbed`.
+     * What this click writes is a real grant — and it is a grant given because
+     * the page in front of the user embeds these, so it is SCOPED to that
+     * page. The scope is what keeps it from becoming authorization to visit
+     * those sites on their own later; see `settingsStore`'s
+     * `browserSiteGrantViaEmbed`.
+     *
+     * The page it is scoped to is the dialog's own origin here, because the
+     * action's target is the page: `browserPageOrigin` is set only when the
+     * target is a region inside some OTHER page (the next case).
      */
-    it('marks every region grant as one given through an embedding page', async () => {
+    it('scopes every region grant to the page the user was on', async () => {
       const user = userEvent.setup();
       const { onConfirm } = renderDialog({
         browserOrigin: 'https://oa.example.com',
@@ -239,15 +244,16 @@ describe('CommandConfirmDialog', () => {
         screen.getByRole('button', { name: '此网站及 2 个内嵌区域以后都允许' }),
       );
 
-      // The page the user was on is a DIRECT grant; the two regions are not.
+      // The page the user was on is a DIRECT grant; the two regions are not —
+      // they are valid inside that page and nowhere else.
       expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({
-        'https://vendor.example.net': true,
-        'https://cdn.example.org': true,
+        'https://vendor.example.net': { 'https://oa.example.com': true },
+        'https://cdn.example.org': { 'https://oa.example.com': true },
       });
       expect(onConfirm).toHaveBeenCalledTimes(1);
     });
 
-    it('marks the action\'s OWN target too when that target is a region', async () => {
+    it('scopes the action\'s OWN target too when that target is a region', async () => {
       const user = userEvent.setup();
       renderDialog({
         browserOrigin: 'https://vendor.example.net',
@@ -259,13 +265,14 @@ describe('CommandConfirmDialog', () => {
       await user.click(screen.getByRole('button', { name: '此网站以后都允许' }));
 
       // The user never navigated to vendor.example.net — they were on the OA
-      // page. Direct authorization is what the mark records the absence of.
+      // page, which is therefore the page this grant is scoped to. Direct
+      // authorization is what the scope records the absence of.
       expect(useSettingsStore.getState().browserSiteGrantViaEmbed).toEqual({
-        'https://vendor.example.net': true,
+        'https://vendor.example.net': { 'https://oa.example.com': true },
       });
     });
 
-    it('leaves an ordinary page grant unmarked', async () => {
+    it('leaves an ordinary page grant unscoped', async () => {
       const user = userEvent.setup();
       renderDialog({
         browserOrigin: 'https://example.com',

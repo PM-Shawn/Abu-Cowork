@@ -14,6 +14,7 @@ import { cn } from '@/lib/utils';
 import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
+import AvatarPicker from '@/components/common/AvatarPicker';
 
 interface AgentEditorProps {
   agent: SubagentDefinition | null;  // null = creating new agent
@@ -162,8 +163,8 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
             {t.toolbox.agentEditorMetadata}
           </h3>
 
-          {/* Name + Avatar row */}
-          <div className="flex gap-3">
+          {/* Name and avatar */}
+          <div className="space-y-3">
             <div className="flex-1">
               <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorName}</label>
               <input
@@ -180,15 +181,9 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
               )}
             </div>
-            <div className="w-20">
+            <div>
               <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentAvatar}</label>
-              <input
-                type="text"
-                value={avatar}
-                onChange={(e) => setAvatar(e.target.value)}
-                placeholder="🤖"
-                className="w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all text-center"
-              />
+              <AvatarPicker value={avatar} onChange={setAvatar} />
             </div>
           </div>
 

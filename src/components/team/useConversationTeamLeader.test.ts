@@ -22,8 +22,7 @@ describe('teamLeaderFromTeam', () => {
     expect(teamLeaderFromTeam(team())?.leader.avatar).toBe('📊');
     expect(teamLeaderFromTeam(team({ avatar: '🚀' }))?.teamAvatar).toBe('🚀');
   });
-  it('is null for archived teams, missing leaders, or no team', () => {
-    expect(teamLeaderFromTeam(team({ archivedAt: 5 }))).toBeNull();
+  it('is null for missing leaders or no team', () => {
     expect(teamLeaderFromTeam(team({ leaderRoleId: 'r-gone' }))).toBeNull();
     expect(teamLeaderFromTeam(null)).toBeNull();
   });

@@ -54,7 +54,7 @@ export default function ScheduleEditor() {
   // Team executor (labs-gated): when set, the prompt is handed to this team
   // as a task goal instead of running a plain conversation.
   const [teamId, setTeamId] = useState('');
-  const teams = useTeamStore((store) => store.teams).filter((team) => !team.archivedAt);
+  const teams = useTeamStore((store) => store.teams);
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectId, setProjectId] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');

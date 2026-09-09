@@ -22,6 +22,7 @@ import {
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const TEAM_NAME = 'E2E数据小队';
+const DESCRIPTION = '帮你把需求变成可执行的方案';
 const INTRO = '我们负责梳理需求和检查方案';
 const QUESTION = '帮我梳理下个版本的需求';
 
@@ -90,13 +91,16 @@ test.describe('team management surface', () => {
       await expect(page.getByTestId('team-name-input')).toHaveCount(0);
       await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-edit').click();
-      await page.getByLabel('介绍（可选）', { exact: true }).fill('帮你把需求变成可执行的方案');
+      await page.getByLabel('介绍（可选）', { exact: true }).fill(DESCRIPTION);
       await page.getByLabel('开场白（可选）', { exact: true }).fill(INTRO);
       await page.getByLabel('擅长（可选）', { exact: true }).fill('需求分析\n方案检查\n计划整理');
       await page.getByLabel('推荐提问（可选）', { exact: true }).fill(QUESTION);
       await page.screenshot({ path: test.info().outputPath('team-editor.png') });
       await page.getByTestId('team-save').click();
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
+      await expect(page.getByText(DESCRIPTION, { exact: true })).toHaveCount(2);
+      await expect(page.getByText(DESCRIPTION, { exact: true }).last()).toBeVisible();
+      await expect(page.getByText(INTRO, { exact: true })).toHaveCount(0);
       for (const label of ['擅长', '推荐提问', '需求分析']) {
         await expect(page.getByText(label, { exact: true })).toBeVisible();
       }

@@ -445,6 +445,7 @@ export default function TeamView() {
         maxWidth="max-w-2xl"
         avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="lg" /> : undefined}
         title={detailTeam?.name}
+        subtitle={detailTeam?.description?.trim()}
         headerActions={detailTeam ? (
           <>
             <button

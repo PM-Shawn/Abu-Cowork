@@ -242,6 +242,7 @@ describe('TeamView', () => {
     render(<TeamView />);
     expect(screen.getByTestId('team-row-数据小队')).toHaveTextContent('看数据的小队');
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.getAllByText('看数据的小队', { exact: true })).toHaveLength(2);
     expect(screen.queryByText('我们负责取数和出图')).toBeNull();
     expect(screen.queryByText('开场白')).toBeNull();
     expect(screen.queryByText('擅长')).toBeNull();

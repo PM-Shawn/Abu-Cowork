@@ -3934,6 +3934,10 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
+      /** Error: AGENT.md could not be parsed. */
+      errInvalidAgentFile: string;
+      /** Error: invalid fixed tool declaration. {field} */
+      errInvalidAgentTools: string;
       /** Error: unsafe file path. {p} */
       errUnsafeFilePath: string;
       /** Attached-files section header + list. {list} */

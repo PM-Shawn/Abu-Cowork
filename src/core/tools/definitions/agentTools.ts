@@ -5,7 +5,8 @@ import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expecte
 import { createParentStepResolver } from '../../agent/delegateParentStep';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
-import { agentRegistry } from '../../agent/registry';
+import { agentRegistry, parseAgentFile } from '../../agent/registry';
+import { resolveSubagentToolNames } from '../../agent/subagentToolRoster';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -514,6 +515,15 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       const nameRe = isSkill ? ITEM_NAME_RE : AGENT_NAME_RE;
       if (!nameRe.test(name)) {
         return format(t.errInvalidName, { label, name });
+      }
+
+      if (!isSkill) {
+        const agent = parseAgentFile(content, '');
+        if (!agent) return t.errInvalidAgentFile;
+        const { invalidField } = resolveSubagentToolNames([], agent);
+        if (invalidField) {
+          return format(t.errInvalidAgentTools, { field: invalidField === 'tools' ? 'tools' : 'disallowed-tools' });
+        }
       }
 
       const info = await getSystemInfoData();

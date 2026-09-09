@@ -9,22 +9,31 @@ import { startCapabilityRuntimes } from './bootstrapRuntimes';
 
 beforeEach(() => vi.clearAllMocks());
 
-it('starts the private browser and user MCP synchronization without waiting for plugin recovery', async () => {
+it('starts the private browser immediately and MCP synchronization once recovery settles', async () => {
   let finish!: () => void;
   mocks.recovery.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
   const stop = startCapabilityRuntimes();
   expect(mocks.browser).toHaveBeenCalledOnce();
-  expect(mocks.sync).toHaveBeenCalledOnce();
-  // Recovery must be entered first: its synchronous prefix marks plugin
-  // activation not-ready, so this connect pass cannot start plugin-owned
-  // servers before ownership is known.
-  expect(mocks.recovery.mock.invocationCallOrder[0]).toBeLessThan(mocks.sync.mock.invocationCallOrder[0]);
+  // Not before: until plugin ownership is published, a plugin's own server
+  // looks independent and would be connected, then invalidated by epoch.
+  expect(mocks.sync).not.toHaveBeenCalled();
   finish();
+  await Promise.resolve();
   await Promise.resolve();
   expect(mocks.sync).toHaveBeenCalledOnce();
   stop();
   expect(mocks.browserCleanup).toHaveBeenCalledOnce();
   expect(mocks.syncCleanup).toHaveBeenCalledOnce();
+});
+
+it('does not start MCP synchronization after the owning effect is cleaned up', async () => {
+  let finish!: () => void;
+  mocks.recovery.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
+  startCapabilityRuntimes()();
+  finish();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(mocks.sync).not.toHaveBeenCalled();
 });
 
 /**
@@ -38,6 +47,7 @@ it('keeps user MCP connectors running when plugin recovery fails', async () => {
   const stop = startCapabilityRuntimes();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
   expect(mocks.browser).toHaveBeenCalledOnce();
   expect(mocks.sync).toHaveBeenCalledOnce();
   expect(mocks.browserCleanup).not.toHaveBeenCalled();
@@ -49,6 +59,7 @@ it('keeps user MCP connectors running when plugin recovery fails', async () => {
 it('tears both runtimes down on cleanup', async () => {
   mocks.recovery.mockResolvedValue(undefined);
   startCapabilityRuntimes()();
+  await Promise.resolve();
   await Promise.resolve();
   expect(mocks.browserCleanup).toHaveBeenCalledOnce();
   expect(mocks.syncCleanup).toHaveBeenCalledOnce();

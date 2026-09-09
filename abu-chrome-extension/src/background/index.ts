@@ -105,7 +105,29 @@ function saveTracking(tabId: number, windowId: number): void {
   chrome.storage.session.set({ lastActiveTabId: tabId, lastActiveWindowId: windowId });
 }
 
+// Only an activation requested by a screenshot is excluded. Consume its event
+// once, and always release on update completion/failure; capture/paint waits do
+// not mask user switches. Chrome delivers onActivated before update resolves.
+const screenshotActivations = new Set<{ tabId: number; windowId: number }>();
+
+async function activateForScreenshot(tabId: number, windowId: number): Promise<void> {
+  const activation = { tabId, windowId };
+  screenshotActivations.add(activation);
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } finally {
+    screenshotActivations.delete(activation);
+  }
+}
+
 chrome.tabs.onActivated.addListener((activeInfo) => {
+  const activation = [...screenshotActivations].find(
+    pending => pending.tabId === activeInfo.tabId && pending.windowId === activeInfo.windowId,
+  );
+  if (activation) {
+    screenshotActivations.delete(activation);
+    return;
+  }
   saveTracking(activeInfo.tabId, activeInfo.windowId);
 });
 
@@ -789,7 +811,7 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         const tab = await chrome.tabs.get(tabId);
         // Activate the target tab first to ensure we capture the right one
         if (!tab.active) {
-          await chrome.tabs.update(tabId, { active: true });
+          await activateForScreenshot(tabId, tab.windowId);
           // Brief wait for tab switch to render
           await new Promise(r => setTimeout(r, 300));
         }
@@ -801,7 +823,7 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       case 'screenshot_full_page': {
         const tab = await chrome.tabs.get(tabId);
         if (!tab.active) {
-          await chrome.tabs.update(tabId, { active: true });
+          await activateForScreenshot(tabId, tab.windowId);
           await new Promise(r => setTimeout(r, 300));
         }
         // Scrolls the page and stitches many captures, so it is a strictly
@@ -1213,11 +1235,10 @@ async function annotateWithFrames(tabId: number, action: string, result: unknown
 
 // --- Popup Communication ---
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'tab_visible' && sender.tab?.id && sender.tab?.windowId) {
-    saveTracking(sender.tab.id, sender.tab.windowId);
-    return;
-  }
+// Visibility reports cannot identify user intent: content initialization and
+// automation activation also make a page visible. Track native tab/window
+// events above instead (including when an old content script still reports).
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'get_status') {
     sendResponse({

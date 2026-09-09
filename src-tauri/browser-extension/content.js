@@ -37,14 +37,6 @@
   if (electronBrowserRuntime) {
     electronBrowserRuntime.handleAction = handleAction;
   } else {
-    const reportVisible = () => {
-      if (document.visibilityState === "visible") {
-        chrome.runtime.sendMessage({ type: "tab_visible" }).catch(() => {
-        });
-      }
-    };
-    document.addEventListener("visibilitychange", reportVisible);
-    reportVisible();
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const { action, payload } = message;
       handleAction(action, payload).then((data) => sendResponse({ data })).catch((err) => sendResponse({ error: err instanceof Error ? err.message : String(err) }));

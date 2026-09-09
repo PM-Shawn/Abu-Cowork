@@ -58,16 +58,6 @@ const electronBrowserRuntime = (
 if (electronBrowserRuntime) {
   electronBrowserRuntime.handleAction = handleAction;
 } else {
-  const reportVisible = (): void => {
-    if (document.visibilityState === 'visible') {
-      chrome.runtime.sendMessage({ type: 'tab_visible' }).catch(() => {
-        // Background not ready or extension context invalidated — ignore
-      });
-    }
-  };
-  document.addEventListener('visibilitychange', reportVisible);
-  reportVisible();
-
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const { action, payload } = message;
 

@@ -330,36 +330,13 @@ function ownerKeyOf(id) {
  * filling under their hands, and the model then reasoned about a page state
  * that neither side had produced alone.
  *
- * Attribution is a plain time window. `before-input-event` and `focus` on a
- * view are the USER only while no automation action is holding THAT VIEW (see
- * `aiOwnsGuestEvents`); an action that injects input runs with its target
- * view's depth raised, so `keyboardAutomation`'s own `webContents.focus()` +
- * `sendInputEvent()` are excluded without needing to tag individual events.
- *
- * Both halves of that sentence used to be wider, and the width was the bug
- * (F0, 2026-09-05): the depth was ONE GLOBAL counter raised for EVERY action
- * for its whole duration. `wait_for`'s timeout is caller-supplied and
- * unbounded (`abu-browser-bridge`'s schema defaults it to 30s), so a single
- * `wait_for` silently swallowed every keystroke the user made anywhere — in
- * another task's tab AND in the waiting task's own page — for as long as it
- * ran. The old comment here called the window "milliseconds wide"; that
- * premise never held for the read-only long-waiters. Two rules now keep it
- * true:
- *
- *  1. Only `ATTRIBUTION_SUPPRESSING_ACTIONS` raise a depth at all. A read-only
- *     action (`wait_for`, snapshots, the extract_ pair, screenshots, get_html)
- *     synthesizes no input and loads no page, so it has no events of its own
- *     to exclude and must not hide the user's.
- *  2. The depth is per VIEW, not global. Owner A's `click` cannot mask real
- *     input landing on owner B's tab, nor on A's other tabs.
- *
- * A short GLOBAL phase remains, because `performBrowserAutomation` is entered
- * before the target view is known (`get_tabs` may still have to create it).
- * Its bound is structural rather than temporal: the scope is narrowed to a
- * single view id in the same synchronous run as the entry — at the `match` for
- * a tab-addressed action, and at id-mint time (before `emit`) for a
- * provisioning `get_tabs` — so no `await` can land inside it and nothing can
- * fire there. See `createAiActionScope`.
+ * Attribution is per view. Input-injecting actions suppress their native
+ * input/focus echoes. Navigation, arbitrary page scripts and provisioning can
+ * cause focus changes but do not inject native keys or pointer events, so they
+ * suppress focus only. Real input during their asynchronous work still resets
+ * the owner's quiet window. Read-only actions suppress neither event class.
+ * Scopes bind before provisioning emits the new view; no global suppression is
+ * needed. Each call releases its own depth in finally, including failed waits.
  *
  * State-changing actions then wait for a quiet window before running. Read-only
  * ones (snapshot, get_html, the extract_ pair, screenshots, get_tabs, wait_for)
@@ -431,14 +408,9 @@ const TAKEOVER_GATED_ACTIONS = new Set([
  * The actions whose OWN side effects can look like the user, and which
  * therefore suppress attribution on the view they touch (F0).
  *
- * It is `TAKEOVER_GATED_ACTIONS` plus `get_tabs`, and the two additions to the
- * gated list are for the same reason the gated list has them:
- *  - every gated action either injects input (`click`/`fill`/`select`/
- *    `keyboard`/`scroll`/`start_recording`, and `execute_js`, which can
- *    synthesize anything) or commits a navigation, and Chromium hands the
- *    guest frame keyboard focus on a navigation commit (F1 above);
- *  - `get_tabs` is the one listing that can PROVISION — it creates a view and
- *    loads `about:blank` into it, i.e. it commits a navigation too.
+ * Input-producing actions suppress input and focus; navigate, execute_js and
+ * provisioning get_tabs only suppress incidental focus. A DOM-dispatched event
+ * from execute_js is not a native webContents input event.
  *
  * Everything else (`wait_for`, `snapshot`, `get_html`, `extract_text`,
  * `extract_table`, `screenshot`, `screenshot_full_page`, `stop_recording`,
@@ -740,98 +712,56 @@ function takeReclaimLiftedNotice(owner) {
   return RECLAIM_LIFTED_NOTICE;
 }
 
-/**
- * >0 while an automation action is executing but has not yet been narrowed to
- * one view. Only the entry of `performBrowserAutomation` and the code up to
- * the scope's `bind` runs under it, and that stretch contains no `await` on
- * any path (see `createAiActionScope`), so no guest event can be observed
- * while it is raised.
- */
-let globalAiActionDepth = 0;
-
-/** viewId -> >0 while an automation action is acting on THAT view. */
+/** Synthetic native input and incidental focus need different attribution. */
 const aiActionDepthByView = new Map();
+const aiFocusDepthByView = new Map();
+const FOCUS_ONLY_ACTIONS = new Set(['navigate', 'execute_js', 'get_tabs']);
 
-/** True when events on `viewId` right now are automation's own, not the user's. */
-function aiOwnsGuestEvents(viewId) {
-  if (globalAiActionDepth > 0) return true;
-  return (aiActionDepthByView.get(viewId) || 0) > 0;
+function aiOwnsGuestEvents(viewId, directInput = false) {
+  return (aiActionDepthByView.get(viewId) || 0) > 0
+    || (!directInput && (aiFocusDepthByView.get(viewId) || 0) > 0);
 }
 
-function addViewActionDepth(viewId, delta) {
-  const next = (aiActionDepthByView.get(viewId) || 0) + delta;
-  // Deleting at zero keeps the map from growing one dead entry per view a long
-  // session ever automated (the same reason `forgetOwnerInteractionIfUnused`
-  // exists) — a view id is never reused, so there is nothing to preserve.
-  if (next > 0) aiActionDepthByView.set(viewId, next);
-  else aiActionDepthByView.delete(viewId);
+function addViewActionDepth(scope, viewId, delta) {
+  const depths = scope.focusOnly ? aiFocusDepthByView : aiActionDepthByView;
+  const next = (depths.get(viewId) || 0) + delta;
+  if (next > 0) depths.set(viewId, next);
+  else depths.delete(viewId);
 }
 
-/**
- * One automation call's attribution suppression.
- *
- * Lifecycle: created at `performBrowserAutomation` entry (global phase),
- * narrowed by `bindAiActionScope` to the single view the call turns out to
- * touch, released in the caller's `finally`. A read-only action gets an INERT
- * scope that never suppresses anything — that is rule 1 of the F0 fix.
- */
+/** No suppression until the target is known, including during provisioning. */
 function createAiActionScope(action) {
-  // `dialogWatchViewId` rides along on the same object for the same reason:
-  // it is per-CALL state that must be released in the same `finally`, and a
-  // second parallel bag would be one more thing to forget on an early return.
-  // Null until `runBrowserAutomation` both resolves a target AND decides this
-  // action may arm the watcher.
-  if (!ATTRIBUTION_SUPPRESSING_ACTIONS.has(action)) {
-    return { global: false, viewId: null, dialogWatchViewId: null };
-  }
-  globalAiActionDepth += 1;
-  return { global: true, viewId: null, dialogWatchViewId: null };
+  return {
+    pending: ATTRIBUTION_SUPPRESSING_ACTIONS.has(action),
+    focusOnly: FOCUS_ONLY_ACTIONS.has(action),
+    viewId: null,
+    dialogWatchViewId: null,
+  };
 }
 
-/**
- * Narrow a scope from "every view" to `viewId`. Called the moment the target
- * is known and before anything can await, so the global phase never spans a
- * suspension point. A second call is a no-op: one automation call suppresses
- * one view.
- */
 function bindAiActionScope(scope, viewId) {
-  if (!scope.global) return;
-  addViewActionDepth(viewId, 1);
+  if (!scope.pending) return;
+  addViewActionDepth(scope, viewId, 1);
   scope.viewId = viewId;
-  scope.global = false;
-  globalAiActionDepth -= 1;
+  scope.pending = false;
 }
 
 function endAiActionScope(scope) {
-  if (scope.global) {
-    scope.global = false;
-    globalAiActionDepth -= 1;
-    return;
-  }
+  scope.pending = false;
   if (scope.viewId !== null) {
-    addViewActionDepth(scope.viewId, -1);
+    addViewActionDepth(scope, scope.viewId, -1);
     scope.viewId = null;
   }
 }
 
-/**
- * Run `fn` with this scope's suppression lifted, then put it back — used for
- * the takeover wait, where observing the user is the entire point.
- */
+/** Lift this call only; other in-flight calls keep their own attribution. */
 async function withAiAttributionLifted(scope, fn) {
-  const lifted = scope.global || scope.viewId !== null;
   const viewId = scope.viewId;
-  if (lifted) {
-    if (scope.global) globalAiActionDepth -= 1;
-    else addViewActionDepth(viewId, -1);
-  }
+  if (viewId !== null) addViewActionDepth(scope, viewId, -1);
   try {
     return await fn();
   } finally {
-    if (lifted) {
-      if (scope.global) globalAiActionDepth += 1;
-      else addViewActionDepth(viewId, 1);
-    }
+    if (viewId !== null) addViewActionDepth(scope, viewId, 1);
   }
 }
 
@@ -1438,13 +1368,11 @@ function configureBrowserView(id, view) {
   // user really entering the guest from a navigation-commit focus steal (F1).
   let lastDirectGuestInputAt = 0;
   const recordDirectGuestInput = () => {
-    if (aiOwnsGuestEvents(id)) return;
+    if (aiOwnsGuestEvents(id, true)) return;
     lastDirectGuestInputAt = clock.now();
+    userInteractionAt.set(ownerKeyOf(id), lastDirectGuestInputAt);
   };
-  contents.on('before-input-event', () => {
-    recordDirectGuestInput();
-    recordUserInteraction();
-  });
+  contents.on('before-input-event', recordDirectGuestInput);
   // `before-input-event` is keyboard-only; a pointer entering the guest is
   // only visible here.
   contents.on('input-event', (_event, inputEvent) => {
@@ -1453,7 +1381,8 @@ function configureBrowserView(id, view) {
   contents.on('focus', () => {
     const now = clock.now();
     const userTypingInMainUi = now - mainWindowKeyInputAt < USER_INTERACT_QUIET_MS;
-    const enteredGuestDirectly = now - lastDirectGuestInputAt < GUEST_INPUT_ATTRIBUTION_MS;
+    const enteredGuestDirectly = lastDirectGuestInputAt >= mainWindowKeyInputAt
+      && now - lastDirectGuestInputAt < GUEST_INPUT_ATTRIBUTION_MS;
     if (userTypingInMainUi && !enteredGuestDirectly) {
       // Navigation-commit steal (F1): the user is typing in the main window
       // and never touched this view — hand focus straight back, and do not

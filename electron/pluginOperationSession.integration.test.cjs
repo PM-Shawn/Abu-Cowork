@@ -65,15 +65,17 @@ test('tree publication never writes through a replaced parent symlink', () => {
       process.chdir(home);
       const identity = fs.statSync('.');
       const parentIdentity = fs.statSync(parent);
-      const io = { ...fs, mkdirSync(name, ...args) {
-        if (name === '.incoming') {
+      const chdir = name => {
+        if (name === 'agents') {
+          // Replace the parent while the worker is still in .abu. Windows
+          // rejects renaming a directory that is the current working directory.
           fs.renameSync(parent, parent + '-old');
           fs.symlinkSync(outside, parent, 'dir');
         }
-        return fs.mkdirSync(name, ...args);
-      }};
+        process.chdir(name);
+      };
       assert.throws(() => run({ identity, parent: ['.abu', 'agents'], parentIdentity,
-        action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, io), /parent changed/);
+        action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, fs, chdir), /directory changed/);
       assert.deepEqual(fs.readdirSync(outside), []);
     `, path.join(__dirname, 'pluginOperationWorker.cjs'), home, outside, parent]);
     assert.deepEqual(fs.readdirSync(outside), []);

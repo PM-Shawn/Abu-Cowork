@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AgentRegistry, getBuiltinAgentNames } from './registry'
+import { resolveSubagentToolNames } from '@/core/agent/subagentToolRoster'
 import type { SubagentDefinition } from '@/types'
 
 function definition(ready = true): SubagentDefinition {
@@ -51,21 +52,24 @@ describe('managed Agent registry', () => {
 describe('builtin Agent tool boundaries', () => {
   const registry = new AgentRegistry()
   ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+  const businessTools = [
+    'read_file', 'write_file', 'edit_file', 'list_directory', 'run_command', 'web_search',
+    'abu-browser__screenshot', 'abu-browser-bridge__click', 'runtime-service__inspect',
+  ]
+  const runtimeTools = [...businessTools, 'delegate_to_agent', 'run_agent_batch', 'update_soul', 'ask_user_question']
 
   it.each([
-    ['高级开发工程师', 'abu-browser__*'],
-    ['高级开发工程师', 'abu-browser-bridge__*'],
-    ['产品经理', 'abu-browser__*'],
-    ['产品经理', 'abu-browser-bridge__*'],
-    ['HR 招聘官', 'abu-browser__*'],
-    ['HR 招聘官', 'abu-browser-bridge__*'],
-    ['公众号编辑', 'write_file'],
-    ['公众号编辑', 'edit_file'],
-    ['公众号编辑', 'list_directory'],
-    ['数据分析师', 'abu-browser__*'],
-    ['数据分析师', 'abu-browser-bridge__*'],
-  ])('%s retains the declared %s capability', (name, tool) => {
-    expect(registry.getAgent(name)?.tools).toContain(tool)
+    '高级开发工程师',
+    '产品经理',
+    '数据分析师',
+    '公众号编辑',
+    'HR 招聘官',
+  ])('%s inherits runtime business tools without a job-specific boundary', (name) => {
+    const agent = registry.getAgent(name)
+    expect(agent).toBeDefined()
+    expect(agent?.tools).toBeUndefined()
+    expect(agent?.disallowedTools).toBeUndefined()
+    expect(resolveSubagentToolNames(runtimeTools, agent!)).toEqual({ toolNames: businessTools })
   })
 })
 

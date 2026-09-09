@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
 import { saveAgentTool, delegateToAgentTool } from './agentTools';
+import { parseAgentFile, serializeAgentMd } from '@/core/agent/registry';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
@@ -588,8 +589,11 @@ describe('save_agent multi-file support', () => {
       'tools: null',
       'tools:\n  - read_file\n  - 42',
       'tools:\n  - " "',
+      'tools: { allow: read_file }',
       'disallowed-tools: run_command',
+      'disallowed-tools: null',
       'disallowed-tools:\n  - false',
+      'disallowed-tools: [" "]',
     ])('rejects unusable tool metadata before writing or refreshing: %s', async (declaration) => {
       const { useDiscoveryStore } = await import('../../../stores/discoveryStore');
       const result = await saveAgentTool.execute({
@@ -609,11 +613,48 @@ describe('save_agent multi-file support', () => {
       expect(writeTextFile).not.toHaveBeenCalled();
     });
 
-    it('preserves valid tool restrictions and optional display fields exactly', async () => {
-      const content = '---\nname: my-agent\nintro: Hello\nexpertise: [Planning]\nsample-prompts: [Plan a task]\navatar: icon:code/blue\ntools: [read_file]\ndisallowed-tools: [run_command]\n---\nHelp with a task.';
+    it.each([
+      ['omitted constraints', ''],
+      ['empty role lists', 'tools: []\ndisallowed-tools: []\n'],
+    ])('saves and re-saves %s as inherited tools', async (_label, declaration) => {
+      const filePath = '/Users/testuser/.abu/agents/my-agent/AGENT.md';
+      const content = `---\nname: my-agent\n${declaration}---\nHelp with a task.`;
+      expect(await saveAgentTool.execute({ name: 'my-agent', content })).not.toMatch(/^Error:/);
+      const firstSaved = vi.mocked(writeTextFile).mock.calls.at(-1)?.[1];
+      expect(firstSaved).toBe(content);
+
+      const parsed = parseAgentFile(firstSaved!, filePath);
+      expect(parsed).not.toBeNull();
+      const serialized = serializeAgentMd(parsed!, parsed!.systemPrompt);
+      expect(await saveAgentTool.execute({ name: 'my-agent', content: serialized })).not.toMatch(/^Error:/);
+
+      const persisted = vi.mocked(writeTextFile).mock.calls.at(-1)?.[1];
+      expect(persisted).not.toMatch(/^(?:tools|disallowed-tools):/m);
+      const reloaded = parseAgentFile(persisted!, filePath);
+      expect(reloaded).not.toBeNull();
+      expect(reloaded?.tools).toBeUndefined();
+      expect(reloaded?.disallowedTools).toBeUndefined();
+    });
+
+    it('preserves valid tool restrictions and optional display fields through an editor re-save', async () => {
+      const filePath = '/Users/testuser/.abu/agents/my-agent/AGENT.md';
+      const content = '---\nname: my-agent\nintro: Hello\nexpertise: [Planning]\nsample-prompts: [Plan a task]\navatar: icon:code/blue\ntools: [read_file, "abu-browser__*", "run_command(npm run *)"]\ndisallowed-tools: ["abu-browser__click"]\n---\nHelp with a task.';
       const result = await saveAgentTool.execute({ name: 'my-agent', content });
       expect(result).not.toMatch(/^Error:/);
-      expect(writeTextFile).toHaveBeenCalledWith('/Users/testuser/.abu/agents/my-agent/AGENT.md', content);
+      expect(writeTextFile).toHaveBeenCalledWith(filePath, content);
+
+      const parsed = parseAgentFile(vi.mocked(writeTextFile).mock.calls.at(-1)![1], filePath)!;
+      const serialized = serializeAgentMd(parsed, parsed.systemPrompt);
+      expect(await saveAgentTool.execute({ name: 'my-agent', content: serialized })).not.toMatch(/^Error:/);
+      const persisted = vi.mocked(writeTextFile).mock.calls.at(-1)![1];
+      expect(parseAgentFile(persisted, filePath)).toMatchObject({
+        tools: ['read_file', 'abu-browser__*', 'run_command(npm run *)'],
+        disallowedTools: ['abu-browser__click'],
+        intro: 'Hello',
+        expertise: ['Planning'],
+        samplePrompts: ['Plan a task'],
+        avatar: 'icon:code/blue',
+      });
     });
 
     it('should save AGENT.md + supporting files', async () => {

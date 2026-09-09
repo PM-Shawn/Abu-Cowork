@@ -37,7 +37,7 @@ allowed-tools:
 
 ## 专家流程
 
-1. 先调用 `capability_snapshot` 查看当前实际可用的工具，再根据用户目标推荐职责、工具和合适的记忆范围，连同展示字段形成草案；已有明确授权就继续。
+1. Call `capability_snapshot` to assess whether the current environment can support the user's goal, then recommend responsibilities, memory scope and display fields. Ordinary experts inherit runtime tools by default; do not turn the snapshot into a permanent role allowlist. Continue when the user has already authorized the proposal.
 2. 根据用户确认的职责写系统提示词，再生成完整的 `AGENT.md`。
 3. 使用 `save_agent`，传入专家 `name` 和完整文件 `content`。工具会保存文件并刷新专家列表。
 4. 根据工具返回的路径用 `read_file` 回读 `AGENT.md`；核对身份、职责与展示字段，再复述给用户。
@@ -63,11 +63,6 @@ sample-prompts:
 avatar: icon:pen/coral
 model: inherit
 max-turns: 20
-tools:
-  - read_file
-  - write_file
-disallowed-tools:
-  - run_command
 memory: session
 background: false
 ---
@@ -86,19 +81,19 @@ background: false
 | `avatar` | 内置图标引用；兼容已有 emoji；不指定则使用默认图标 |
 | `model` | 可选，默认 `inherit`，沿用用户当前模型 |
 | `max-turns` | 最大对话轮数，默认 20 |
-| `tools` | 允许使用的工具列表，按用户职责选择实际存在的工具 |
-| `disallowed-tools` | 禁止使用的工具列表 |
+| `tools` | Optional allowlist, only for an explicit user restriction; omit by default |
+| `disallowed-tools` | Optional denylist, only for an explicit user prohibition; omit by default |
 | `memory` | `session`（会话）、`project`（项目）、`user`（用户级） |
 | `background` | 是否在后台运行，默认 false |
 
-工具配置按职责选，例如研究角色需要查资料和读文件，写作角色需要读写文档，审查角色通常只读。不要把示例中的工具或头像当成用户已确认的选择。
+By default, omit both `tools` and `disallowed-tools`. Describe the expert's responsibilities, methods and deliverables in the system prompt; do not infer tool restrictions from the job title or from being a research, writing or review role. An omitted boundary inherits runtime tools subject to the execution role, task restrictions and existing approvals. Add tool constraints only when the user explicitly requests a boundary, such as allowing only named tools or prohibiting command execution. Do not treat the example avatar as a user-confirmed choice.
 
-新专家的工具名只从 `capability_snapshot` 的可用清单按需取用，逐字沿用实际名称，不凭记忆拼写 MCP 工具名，也不把已有专家的工具通配符展开成猜测的具体名称。可用清单不是授权，执行时仍遵守原权限确认。通用需求没有指定外部服务时，不强加尚未接入的服务依赖；如果用户明确需要的服务不可用，说明缺少的能力并询问是否先接入，不静默换工具或放宽限制。修改已有专家时保留用户原有的工具边界，不因为服务暂时离线就删除限制。
+Use `capability_snapshot` for environment feasibility, not to copy the current tool inventory into the role. When expressing an explicit restriction with concrete tool names, verify their actual names in the snapshot; never invent MCP names or expand an existing wildcard into guessed names. The available inventory is not authorization: execution still follows existing approval checks. Do not impose an unconnected external service on a generic request. If a service the user explicitly needs is unavailable, explain the missing capability and ask whether to connect it first; do not silently substitute tools or loosen restrictions. When editing an existing expert, preserve the user's tool boundaries even if a service is temporarily offline. Present constraint fields must be YAML lists of non-empty strings, never comma-separated scalars, nulls or non-string values. Empty role lists retain inheritance semantics; they do not mean deny-all.
 
 ## 专家团流程
 
 1. 根据目标推荐精简的角色构成，说明谁统筹、其他人分别做什么。专业岗位用普通用户能理解的职责来解释。
-2. 对照已有专家的实际名字选人；不要猜名字。缺少的专家纳入同一份推荐草案，先按专家流程核对实际可用工具，获整体授权后按上面的完整 AGENT.md 格式用 `save_agent` 建好并分别回读，再继续组建专家团。每位新专家都要有自己的 `intro`、`expertise`、`sample-prompts` 和头像，不能只填专家团的展示字段。`tools` 与 `disallowed-tools` 必须写成 YAML 字符串列表，不能写成逗号分隔的单个字符串。
+2. 对照已有专家的实际名字选人；不要猜名字。缺少的专家纳入同一份推荐草案，先按专家流程核对实际可用工具，获整体授权后按上面的完整 AGENT.md 格式用 `save_agent` 建好并分别回读，再继续组建专家团。每位新专家都要有自己的 `intro`、`expertise`、`sample-prompts` 和头像，不能只填专家团的展示字段。Omit `tools` and `disallowed-tools` unless the user explicitly requested restrictions; when present, use YAML lists of non-empty strings.
 3. 新建时推荐开启「分工先经我确认」，说明专家团会先给出分工等用户点头，用户可以调整；这是一项随整体方案确认的推荐，不另起必答问题。已有专家团保持用户的设置。`leaderNote` 仅用于用户已有约束，没有额外要求就省略，不强行追问。
 4. 起草专家团的一句话描述、简短开场白、擅长 3 条和推荐提问 3 条。不能用成员技能清单代替专家团的「擅长」，也不要让用户逐项写这些内容。
 5. 调用 `save_team`，传入 `name`、队长的准确名字 `leader`、成员名字列表 `members`、`description`、`intro`、`expertise`、`samplePrompts`、`requirePlanApproval`，以及用户选定的 `avatar`、`leaderNote`。成员列表可不重复队长，工具会自动包含队长。

@@ -1,3 +1,4 @@
+import { agentToolPolicyForRoute, checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { clearRunBounds } from '../team/teamRunBounds';
 import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
@@ -299,6 +300,8 @@ export interface AgentLoopRunOptions {
 export interface RunSession {
   /** Captured exactly once, before any reverse request can execute. */
   teamSnapshot?: Pick<ToolExecutionContext, 'teamRoster' | 'teamRequirePlanApproval'>;
+  /** Derived by the host from its own orchestration route before dispatch. */
+  agentToolPolicy?: AgentToolPolicy;
   conversationId: string;
   loopId: string;
   options: AgentLoopRunOptions;
@@ -1602,6 +1605,8 @@ function assertRunToolAllowed(
   toolName: string,
   input: Record<string, unknown>,
 ): void {
+  const roleError = session.agentToolPolicy && checkAgentToolCall(session.agentToolPolicy, toolName, input);
+  if (roleError) throw new SidecarRequestError(-32602, roleError);
   // Glob-matched, not exact `.includes()`: `blockedTools` may carry namespace
   // wildcards (`abu-browser__*`, the read_tools trigger tier's browser
   // ceiling). resolveTools (agentLoop.ts) and executeToolBatch
@@ -3037,6 +3042,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     resolveTerminal = resolve;
   });
   const session: RunSession = {
+    agentToolPolicy: agentToolPolicyForRoute(params.orchestration.route),
     teamSnapshot: captureTeamExecutionSnapshot(params.conversationSnapshot.teamId, params.orchestration.route.team),
     conversationId,
     loopId: runId, // same id as runId by convention — see agentLoop.ts's AgentLoopOptions.loopId doc.

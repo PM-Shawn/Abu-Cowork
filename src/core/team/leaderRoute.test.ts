@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SubagentDefinition } from '@/types';
+import { agentToolPolicyForRoute, resolveAgentToolNames } from '@/core/agent/agentToolPolicy';
 import type { RouteResult } from '@/core/agent/orchestrator';
 
 import {
@@ -23,15 +24,27 @@ describe('applyTeamLeaderRoute', () => {
     members: [def('a'), def('b')],
   };
 
-  it('rewrites a general route into the leader agent route and drops the member-style tools whitelist', () => {
+  it('rewrites a general route into the leader agent route and preserves the leader business tools whitelist', () => {
     const r = applyTeamLeaderRoute(general, team);
     expect(r.type).toBe('agent');
     expect(r.name).toBe('lead');
     expect(r.cleanInput).toBe('出周报');
     expect(r.definition?.systemPrompt).toBe('lead prompt');
-    expect(r.definition?.tools).toBeUndefined();
+    expect(r.definition?.tools).toEqual(['team_propose_plan']);
     expect(r.definition?.disallowedTools).toEqual(['run_command']);
     expect(r.team).toBe(team);
+  });
+
+  it('grants a read-only leader the three team protocols while keeping explicit deny authoritative', () => {
+    const runtimeNames = ['read_file', 'write_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch'];
+    const leader = def('lead', { tools: ['read_file'] });
+    const route = applyTeamLeaderRoute(general, { ...team, leader });
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(route)!).toolNames)
+      .toEqual(['read_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch']);
+    route.definition!.disallowedTools = ['delegate_to_agent'];
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(route)!).toolNames)
+      .toEqual(['read_file', 'report_plan', 'run_agent_batch']);
+    expect(leader.tools).toEqual(['read_file']);
   });
 
   it('leaves explicit skill / @agent routes and un-pinned conversations alone', () => {

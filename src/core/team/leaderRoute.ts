@@ -41,15 +41,13 @@ export interface TeamRouteContext {
  */
 export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext | null): RouteResult {
   if (!team || route.type !== 'general') return route;
-  // The leader runs as the root agent: it needs the root roster (delegate_to_agent,
-  // run_agent_batch, report_plan, …), so a member-style `tools` whitelist written
-  // for the old board flow must not shrink it. `disallowedTools` still applies.
-  const { tools: _memberTools, ...leaderAsRoot } = team.leader;
+  // Keep business restrictions intact. The trusted root route adds only its
+  // orchestration protocols when resolving/checking the role tool policy.
   return {
     ...route,
     type: 'agent',
     name: team.leader.name,
-    definition: leaderAsRoot,
+    definition: { ...team.leader },
     team,
   };
 }

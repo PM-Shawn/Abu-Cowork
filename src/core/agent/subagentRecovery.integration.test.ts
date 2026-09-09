@@ -1348,6 +1348,42 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(events).toContainEqual(expect.objectContaining({ type: 'tool-end', id: 'invalid-command', error: true }));
   });
 
+  it.each([
+    ['role allow tightened', { tools: ['write_file'] }],
+    ['role deny tightened', { disallowedTools: ['read_file'] }],
+    ['damaged allow', { tools: 'read_file' }],
+    ['damaged deny', { disallowedTools: [''] }],
+  ])('rechecks %s metadata after the loop has offered its frozen roster', async (_label, changedMetadata) => {
+    const activeAgent = { ...agent, tools: [] };
+    mockClaudeChat
+      .mockImplementationOnce(async (_messages, options, onEvent) => {
+        expect(options.tools.map((tool: { name: string }) => tool.name)).toContain('read_file');
+        Object.assign(activeAgent, changedMetadata);
+        await emits([
+          { type: 'tool_use', id: 'changed-role', name: 'read_file', input: { path: '/tmp/x' } } as StreamEvent,
+          { type: 'done', stopReason: 'tool_use' } as StreamEvent,
+        ])(_messages, options, onEvent);
+      })
+      .mockImplementationOnce(emits([{ type: 'text', text: 'boundary refused' }, { type: 'done', stopReason: 'end_turn' }] as StreamEvent[]));
+    const events: Array<{ type: string; id?: string; error?: boolean }> = [];
+    await runSubagentLoop({ agent: activeAgent, task: 'read', onProgress: (event) => events.push(event) });
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ id: 'changed-role', type: 'tool-end', error: true }));
+  });
+
+  it.each(['npm run build', 'npm install test'])('rejects hook input %s that satisfies only one of role/task constraints', async (command) => {
+    mockGetAllTools.mockReturnValue([{ name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() }]);
+    mockEmitHook.mockImplementation((event: unknown) => (event as { type?: string }).type === 'preToolCall'
+      ? { ...event as object, modifiedInput: { command } } : event);
+    mockClaudeChat
+      .mockImplementationOnce(emits([{ type: 'tool_use', id: 'cross-constraint', name: 'run_command', input: { command: 'npm run test' } }, { type: 'done', stopReason: 'tool_use' }] as StreamEvent[]))
+      .mockImplementationOnce(emits([{ type: 'text', text: 'refused' }, { type: 'done', stopReason: 'end_turn' }] as StreamEvent[]));
+    const events: Array<{ type: string; id?: string; error?: boolean }> = [];
+    await runSubagentLoop({ agent: { ...agent, tools: ['run_command(npm run *)'] }, task: 'test', allowedTools: ['run_command(npm * test)'], onProgress: (event) => events.push(event) });
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({ id: 'cross-constraint', type: 'tool-end', error: true }));
+  });
+
   it('rechecks constrained tool input after a preToolCall hook modifies it', async () => {
     mockGetAllTools.mockReturnValue([
       { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },

@@ -303,6 +303,73 @@ test.describe.serial('Electron run_command approval E2E', () => {
     }
   });
 
+  for (const choice of ['allow', 'reject', 'stop']) {
+    test(`team member approval resumes the same sidecar call (${choice})`, async () => {
+      const allow = choice === 'allow';
+      test.setTimeout(180_000);
+      dataRoot = createElectronDataRoot();
+      const sentinel = path.join(dataRoot.rootDir, 'team-approval-sentinel.txt');
+      fs.writeFileSync(sentinel, 'isolated E2E file');
+      const command = `rm -- ${quoteShellArgument(sentinel)}`;
+      mock = await startOpenAiMock([
+        { kind: 'tool-call', toolName: 'delegate_to_agent', toolCallId: 'team-delegate', arguments: { agent_name: '高级开发工程师', task: 'Perform the isolated approval test' } },
+        { kind: 'tool-call', toolName: 'run_command', toolCallId: 'team-member-command', arguments: { command } },
+        { kind: 'complete', responseText: 'Member completed the approval test.' },
+        { kind: 'complete', responseText: 'Team approval test finished.' },
+      ]);
+      const launched = await launchAbuElectron(dataRoot);
+      app = launched.app;
+      const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+      await waitForApp(page);
+      await page.evaluate(() => {
+        const previous = JSON.parse(localStorage.getItem('abu-team') ?? '{}');
+        localStorage.setItem('abu-team', JSON.stringify({ ...previous, state: { ...previous.state, teams: [{
+          id: 'team-approval', name: 'E2E授权专家团', leaderRoleId: 'builtin:产品经理',
+          memberRoleIds: ['builtin:高级开发工程师'], requirePlanApproval: false, createdAt: 1,
+        }] } }));
+      });
+      await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+      const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
+      await input.fill('@');
+      await page.getByRole('option', { name: /E2E授权专家团/ }).click();
+      await input.fill('Run the isolated team approval test');
+      await input.press('Enter');
+      const strip = page.getByTestId('team-confirmations-strip');
+      await expect(strip).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(strip).toContainText('高级开发工程师');
+      await expect(strip).toContainText('这一步正在等待你批准');
+      expect(mock.requests).toHaveLength(2);
+      expect(fs.existsSync(sentinel)).toBe(true);
+      await page.screenshot({ path: test.info().outputPath('team-live-approval-compact.png') });
+      await strip.getByRole('button', { name: '查看操作详情' }).click();
+      await expect(strip.locator('pre')).toHaveText(command);
+      await page.screenshot({ path: test.info().outputPath('team-live-approval.png') });
+      if (choice === 'stop') {
+        await page.getByRole('button', { name: '停止 高级开发工程师 这次的活', exact: true }).click();
+        await expect(strip).toContainText('原步骤已结束');
+        await expect(strip.getByRole('button', { name: `允许此次: ${command}`, exact: true })).toHaveCount(0);
+        await expect(strip.getByRole('button', { name: `重新尝试: ${command}`, exact: true })).toBeVisible();
+        expect(fs.existsSync(sentinel)).toBe(true);
+        await strip.getByRole('button', { name: `忽略: ${command}`, exact: true }).click();
+        await expect(strip).toHaveCount(0);
+        expect(fs.existsSync(sentinel)).toBe(true);
+        return;
+      }
+      await strip.getByRole('button', { name: `${allow ? '允许此次' : '拒绝'}: ${command}`, exact: true }).click();
+      await expect(page.getByText('Team approval test finished.', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      expect(mock.requests).toHaveLength(4);
+      expectToolExchange(mock.requests[2].body, command, allow ? 'exit code: 0' : '用户取消了此操作');
+      expect(fs.existsSync(sentinel)).toBe(!allow);
+      await expect(strip).toHaveCount(0);
+      // A queued retry would add a user message and another run. The same child
+      // instead delivers a tool result with its original tool_call_id.
+      const messages = (mock.requests[2].body as { messages: OpenAiRequestMessage[] }).messages;
+      const pendingCall = messages.flatMap((message) => message.tool_calls ?? []).find((call) => call.function?.name === 'run_command');
+      expect(messages.find((message) => message.role === 'tool')?.tool_call_id).toBe(pendingCall?.id);
+      expect(messages.filter((message) => message.role === 'user')).toHaveLength(1);
+    });
+  }
+
   test('confirms an approval-required command, executes it, and continues with the tool result', async () => {
     const response = `abu-e2e-approved-command-complete-${randomUUID()}`;
     const toolCallId = `call-approved-${randomUUID()}`;

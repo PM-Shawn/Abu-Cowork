@@ -80,6 +80,18 @@ interface PersistedBatchTask {
   liveStatus?: ExecutionStep['status'];
 }
 
+/**
+ * A completed live execution can be evicted from the execution store before
+ * its final child-step snapshot reaches the same render. Prefer whichever
+ * source has the richer process so a transient empty live view cannot hide a
+ * child step that is already persisted on the assistant message.
+ */
+function preferRicherDispatch(live: PersistedBatchTask | null, persisted: PersistedBatchTask | null): PersistedBatchTask | null {
+  if (!live) return persisted;
+  if (!persisted || live.steps.length >= persisted.steps.length) return live;
+  return { ...persisted, liveStatus: live.liveStatus ?? persisted.liveStatus };
+}
+
 /** Children of a dispatch step that belong to `taskIndex`: batch children carry a
  *  batchTask tag; a delegate_to_agent step's children all belong to task 0. */
 function childrenForTask(children: readonly ExecutionStep[], taskIndex: number): ExecutionStep[] {
@@ -225,9 +237,13 @@ export default function SubagentTab({ identity, taskIndex, title }: SubagentTabP
   const persistedMessages = useChatStore((s) => s.conversations[identity.conversationId]?.messages);
   const liveExecutions = useTaskExecutionStore((s) => s.executions);
   const persisted = useMemo(
-    () => (batch && task
-      ? null
-      : findLiveDispatch(liveExecutions, identity, taskIndex, locale) ?? findPersistedBatchTask(persistedMessages, identity, taskIndex, locale, t)),
+    () => {
+      if (batch && task) return null;
+      return preferRicherDispatch(
+        findLiveDispatch(liveExecutions, identity, taskIndex, locale),
+        findPersistedBatchTask(persistedMessages, identity, taskIndex, locale, t),
+      );
+    },
     [batch, task, liveExecutions, persistedMessages, identity, taskIndex, locale, t],
   );
 

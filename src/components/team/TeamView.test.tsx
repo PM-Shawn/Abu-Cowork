@@ -543,6 +543,8 @@ describe('TeamView', () => {
     render(<TeamView />);
     expect(screen.getByTestId('team-row-数据小队')).toHaveTextContent('看数据的小队');
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    // The card summary and the detail subtitle both carry the description.
+    expect(screen.getAllByText('看数据的小队', { exact: true })).toHaveLength(2);
     expect(screen.getByText('我们负责取数和出图')).toBeTruthy();
     expect(screen.getByText('开场白')).toBeTruthy();
     expect(screen.queryByText('擅长')).toBeNull();

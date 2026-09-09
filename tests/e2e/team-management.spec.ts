@@ -22,6 +22,9 @@ import {
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const TEAM_NAME = 'E2E数据小队';
+const DESCRIPTION = '帮你把需求变成可执行的方案';
+const INTRO = '我们负责梳理需求和检查方案';
+const QUESTION = '帮我梳理下个版本的需求';
 
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
@@ -108,7 +111,41 @@ test.describe('team management surface', () => {
       await expect(page.getByTestId('avatar-tint-purple')).toHaveAttribute('aria-pressed', 'true');
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
-      await page.getByRole('button', { name: '取消', exact: true }).click();
+
+      // ---- Display fields: fill, save, read back in the detail ------------
+      await page.getByLabel('介绍（可选）', { exact: true }).fill(DESCRIPTION);
+      await page.getByLabel('开场白（可选）', { exact: true }).fill(INTRO);
+      await page.getByLabel('擅长（可选）', { exact: true }).fill('需求分析\n方案检查\n计划整理');
+      await page.getByLabel('推荐提问（可选）', { exact: true }).fill(QUESTION);
+      await page.screenshot({ path: test.info().outputPath('team-editor.png') });
+      await page.getByTestId('team-save').click();
+      await page.getByTestId(`team-row-${TEAM_NAME}`).click();
+      // The description is both the card summary and the detail subtitle.
+      await expect(page.getByText(DESCRIPTION, { exact: true })).toHaveCount(2);
+      await expect(page.getByText(DESCRIPTION, { exact: true }).last()).toBeVisible();
+      await expect(page.getByText(INTRO, { exact: true })).toBeVisible();
+      for (const label of ['开场白', '擅长', '推荐提问', '需求分析']) {
+        await expect(page.getByText(label, { exact: true })).toBeVisible();
+      }
+      await page.screenshot({ path: test.info().outputPath('team-detail.png') });
+
+      // ---- A suggested question only prefills a fresh team conversation ---
+      await page.getByRole('button', { name: QUESTION, exact: true }).click();
+      const welcome = page.getByTestId('team-welcome');
+      await expect(welcome.getByRole('heading', { name: TEAM_NAME })).toBeVisible();
+      await expect(welcome.getByText(INTRO, { exact: true })).toBeVisible();
+      await expect(welcome.getByText('产品经理', { exact: true })).toBeVisible();
+      await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue(QUESTION);
+      // Nothing was sent: no conversation is persisted yet.
+      const conversations = await page.evaluate(() => {
+        const stored = JSON.parse(localStorage.getItem('abu-chat') ?? '{}');
+        return Object.values(stored.state.conversationIndex ?? {}) as Array<{ teamId?: string; messageCount: number }>;
+      });
+      expect(conversations.filter((conversation) => conversation.teamId)).toHaveLength(0);
+      await page.screenshot({ path: test.info().outputPath('team-welcome.png') });
+
+      await openTeamSurface(page);
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '团队' }).click();
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
       await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-delete').click();

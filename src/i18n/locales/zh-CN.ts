@@ -1406,6 +1406,10 @@ const zhCN: TranslationDict = {
   },
 
   avatarPicker: {
+    chooseAvatar: '选择头像',
+    chooseAvatarWithSelection: '选择头像，当前为{avatar}',
+    color: '颜色',
+    icon: '图标',
     defaultAvatar: '使用默认头像',
     optionLabel: '{icon} · {tint}',
     icons: {
@@ -1440,7 +1444,6 @@ const zhCN: TranslationDict = {
     detailIntro: '开场白',
     detailExpertise: '擅长',
     detailSamplePrompts: '推荐提问',
-    fieldAvatar: '头像',
     fieldMembers: '成员',
     fieldMembersHint: '点选加入团队，点右侧皇冠设为队长。队长负责拆解任务并分派给成员。',
     noMembersYet: '还没有队员。',
@@ -1888,7 +1891,6 @@ const zhCN: TranslationDict = {
     agentMemoryUser: '用户级',
     agentMaxTurns: '最大轮次',
     agentBackground: '后台运行',
-    agentAvatar: '头像',
     agentSystemPrompt: '系统提示词',
     agentEdit: '编辑',
     agentFromPlugin: '来自插件 {plugin}',

@@ -1843,6 +1843,10 @@ export interface TranslationDict {
 
   // Toolbox Modal
   avatarPicker: {
+    chooseAvatar: string;
+    chooseAvatarWithSelection: string;
+    color: string;
+    icon: string;
     defaultAvatar: string;
     optionLabel: string;
     icons: Record<string, string>;
@@ -1871,7 +1875,6 @@ export interface TranslationDict {
     detailIntro: string;
     detailExpertise: string;
     detailSamplePrompts: string;
-    fieldAvatar: string;
     fieldMembers: string;
     fieldMembersHint: string;
     noMembersYet: string;
@@ -2363,7 +2366,6 @@ export interface TranslationDict {
     agentMemoryUser: string;
     agentMaxTurns: string;
     agentBackground: string;
-    agentAvatar: string;
     agentSystemPrompt: string;
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */

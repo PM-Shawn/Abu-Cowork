@@ -63,7 +63,9 @@ describe('AgentEditor — plugin-owned agents are not writable', () => {
 
   it('saves the avatar selected from the shared picker', async () => {
     render(<AgentEditor agent={base} onClose={vi.fn()} onSave={vi.fn(async () => undefined)} />);
-    fireEvent.click(screen.getByTestId('avatar-option-code-purple'));
+    fireEvent.click(screen.getByTestId('avatar-picker-trigger'));
+    fireEvent.click(screen.getByTestId('avatar-tint-purple'));
+    fireEvent.click(screen.getByTestId('avatar-icon-code'));
     clickSave();
     await waitFor(() => expect(vi.mocked(saveItemToAbuDir)).toHaveBeenCalledTimes(1));
     expect(vi.mocked(saveItemToAbuDir).mock.calls[0][3]).toContain('avatar: icon:code/purple');
@@ -71,9 +73,11 @@ describe('AgentEditor — plugin-owned agents are not writable', () => {
 
   it('shows the existing emoji and updates the avatar preview after choosing a preset', () => {
     render(<AgentEditor agent={{ ...base, avatar: '📊' }} onClose={vi.fn()} onSave={vi.fn(async () => undefined)} />);
-    const preview = screen.getByTestId('agent-editor-avatar-preview');
+    const preview = screen.getByTestId('avatar-picker-trigger');
     expect(preview).toHaveTextContent('📊');
-    fireEvent.click(screen.getByTestId('avatar-option-code-purple'));
+    fireEvent.click(preview);
+    fireEvent.click(screen.getByTestId('avatar-tint-purple'));
+    fireEvent.click(screen.getByTestId('avatar-icon-code'));
     expect(preview.querySelector('[data-avatar-kind="icon"]')).not.toBeNull();
     expect(preview).not.toHaveTextContent('📊');
   });

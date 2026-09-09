@@ -1405,6 +1405,10 @@ const enUS: TranslationDict = {
   },
 
   avatarPicker: {
+    chooseAvatar: 'Choose avatar',
+    chooseAvatarWithSelection: 'Choose avatar, currently {avatar}',
+    color: 'Color',
+    icon: 'Icon',
     defaultAvatar: 'Use default avatar',
     optionLabel: '{icon} · {tint}',
     icons: {
@@ -1439,7 +1443,6 @@ const enUS: TranslationDict = {
     detailIntro: 'Introduction',
     detailExpertise: 'Expertise',
     detailSamplePrompts: 'Try asking',
-    fieldAvatar: 'Avatar',
     fieldMembers: 'Members',
     fieldMembersHint: 'Click to add members; use the crown to pick the leader. The leader breaks tasks down and delegates.',
     noMembersYet: 'No members yet.',
@@ -1887,7 +1890,6 @@ const enUS: TranslationDict = {
     agentMemoryUser: 'User',
     agentMaxTurns: 'Max Turns',
     agentBackground: 'Background',
-    agentAvatar: 'Avatar',
     agentSystemPrompt: 'System Prompt',
     agentEdit: 'Edit',
     agentFromPlugin: 'From plugin {plugin}',

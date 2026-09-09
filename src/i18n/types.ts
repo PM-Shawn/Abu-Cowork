@@ -135,7 +135,9 @@ export interface TranslationDict {
     automation: string;
     scheduledTasks: string;
     triggers: string;
-    toolbox: string;
+    /** Sidebar entry for the Extensions view (插件 / 技能 / 连接器). */
+    extensions: string;
+    team: string;
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
@@ -314,6 +316,55 @@ export interface TranslationDict {
     htmlWidgetDownload: string;
     htmlWidgetViewCode: string;
     htmlWidgetViewPreview: string;
+    // ── MCP Apps (connector-provided interfaces, spec io.modelcontextprotocol/ui) ──
+    /** Muted line while the connector's ui:// resource is being fetched. */
+    mcpAppLoading: string;
+    /** Muted line under the plain tool result when the interface could not be
+     *  fetched, was not an MCP App resource, or never completed its handshake. */
+    mcpAppLoadFailed: string;
+    /** Muted line on replay when the connector that owns the interface is
+     *  offline. `{server}` is the MCP server name. */
+    mcpAppNotConnected: string;
+    /** Button on a collapsed placeholder past the concurrent-app cap. */
+    mcpAppLoadPlaceholder: string;
+    /** One-line disclosure that the resource asked for capabilities Abu does
+     *  not grant (a dedicated sandbox `domain`, device `permissions`). */
+    mcpAppUnsupportedMeta: string;
+    /** Same line, for domains the host refused to put in the CSP.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppIgnoredDomains: string;
+    /** Suffix appended to that list when it was truncated. */
+    mcpAppIgnoredDomainsMore: string;
+    /** Same line, for the third-party origins the host DID put in the CSP —
+     *  with `connect-src 'none'` an `img-src` origin is still an outbound
+     *  channel, so who the interface may reach is worth showing.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppAllowedDomains: string;
+    /** Collapsed audit row under the tool card: the app called a tool of its
+     *  own server. `{tool}` is the tool name. */
+    mcpAppAuditRow: string;
+    /** Label above the arguments the app passed in that audit row. */
+    mcpAppAuditArgs: string;
+    /** Label above the result summary in that audit row. */
+    mcpAppAuditResult: string;
+    /** Muted status line once the app hit the per-minute call budget. */
+    mcpAppRateLimited: string;
+    /** Expander title for the text the app added to the model's context. */
+    mcpAppModelContext: string;
+    /** Accessible label / tooltip for the button that leaves fullscreen. */
+    mcpAppExitFullscreen: string;
+    /** Title of the consent dialog an app-initiated `ui/open-link` must pass. */
+    mcpAppOpenLinkTitle: string;
+    /** Confirm button of that dialog. */
+    mcpAppOpenLinkConfirm: string;
+    /** Audit-row label for an `ui/open-link` attempt (whatever the outcome). */
+    mcpAppAuditOpenLink: string;
+    /** Audit outcome: the user agreed and the link went to the browser. */
+    mcpAppOutcomeOpened: string;
+    /** Audit outcome: the user said no. */
+    mcpAppOutcomeDeclined: string;
+    /** Audit outcome: the host refused it (bad scheme, or too long). */
+    mcpAppOutcomeRejected: string;
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;
@@ -354,10 +405,14 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
+    composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
     // Agent selector in toolbar
     pickAgent: string;
     pickAgentEmpty: string;
     pickAgentClear: string;
+    /** Trailing tag on a plugin-contributed agent's row in the @ picker. */
+    pickAgentPluginTag: string;
     // Conversation ID badge
     copyConvIdTooltip: string;
     copyConvIdCopied: string;
@@ -441,14 +496,23 @@ export interface TranslationDict {
     attachmentAdmissionPending: string;
     /** Composer has an in-flight initial send for this draft. */
     sendAlreadyPending: string;
+    /** Toast after a direct instruction was queued for a running team member. */
+    memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;
+    suggestionSectionTeams: string;
+    suggestionSectionAgents: string;
+    suggestionSectionSkills: string;
     /** Subagent (subagentLoop.ts) result/status strings. */
     subagent: {
       /** Subagent task was cancelled. */
       taskCancelled: string;
+      /** User content wrapping a direct instruction to a running team member. */
+      memberInstruction: string;
+      /** Abort reason attached when the stall watchdog stops a hand-off. */
+      stalledStopped: string;
       /** Output repeatedly hit the token limit; result may be incomplete. */
       outputLimitIncomplete: string;
       /** Subagent stopped: repeated incomplete tool calls / truncated output. */
@@ -633,6 +697,7 @@ export interface TranslationDict {
     skillDraftReady: string;
     imInbound: string;
     updateAvailable: string;
+    stuckDetection: string;
   };
 
   // Scratchpad entry titles (scratchpadStore.ts)
@@ -777,6 +842,14 @@ export interface TranslationDict {
     /** "{count} 次被页面拦住（验证码 / 频率限制等）" */
     blockedPages: string;
     nextStepsTitle: string;
+    /** Section header over the files this run downloaded (T6 / R-1). */
+    artifactsTitle: string;
+    /** "另有 {count} 个文件未列出" */
+    moreArtifacts: string;
+    /** Tooltip on an artifact row — click opens it in the preview panel. */
+    artifactOpenHint: string;
+    /** Label of the reveal-in-folder button on an artifact row. */
+    artifactReveal: string;
     /** Short label per denial reason code. */
     reason: {
       masterSwitchOff: string;
@@ -859,6 +932,11 @@ export interface TranslationDict {
     detailBrowserToolsNotReady: string;
     /** "接下来：{step}" — second line, only when there is something to do. */
     nextStep: string;
+    /**
+     * "产物：{name}（{size}）· {path}" — one line per file the run downloaded.
+     * Name, size and location; never the file itself (T6 / R-1).
+     */
+    artifactLine: string;
   };
 
   // Settings Modal
@@ -1082,14 +1160,18 @@ export interface TranslationDict {
      *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
     /** Row tag: this 「始终允许」 was minted through the merged prompt a page's
-     *  embedded regions get, so an automatic task is refused when it tries to
-     *  ACT there. Scoped to acting on purpose (round-3 R3-G): the mark takes
-     *  the grant down to `'default'`, and reading a default-verdict site is
-     *  something an unattended run has always been allowed to do — a tag that
-     *  said 「不适用」 promised a wall that is not there. */
+     *  embedded regions get, so it is SCOPED — valid only inside the embedded
+     *  regions of the page it was given on, whoever is watching. Used when the
+     *  stored grant does not say which page that was (a pre-v51 mark). */
     browserViaEmbedTag: string;
-    /** `title` for {@link browserViaEmbedTag} — what is refused, what is not,
-     *  and how to promote it. */
+    /** {@link browserViaEmbedTag} when the page IS known — `{page}` is that
+     *  page's address, or {@link browserViaEmbedTagPageMore}. */
+    browserViaEmbedTagOnPage: string;
+    /** The `{page}` of {@link browserViaEmbedTagOnPage} when the same region was
+     *  granted on several pages: the first address plus how many others. */
+    browserViaEmbedTagPageMore: string;
+    /** `title` for both tags — what the scope covers, what it does not, and how
+     *  to promote it to an ordinary standing grant. */
     browserViaEmbedTagHint: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;
@@ -1102,6 +1184,8 @@ export interface TranslationDict {
     browserOpPolicyDesc: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
+    /** T5 — the fourth operation class, one row on the same card. */
+    browserOpClassUpload: string;
     /** Scripting is split out into its own card: it is the one row an ordinary
      *  user should not skim past, and the only one that carries a risk
      *  warning. The class name is that card's title, so it carries a
@@ -1242,6 +1326,15 @@ export interface TranslationDict {
     capabilityChromeProbeUnavailable: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
+    capabilityComputerAuthorize: string;
+    capabilityComputerUsable: string;
+    capabilityComputerSetupIntro: string;
+    capabilityComputerScreenShort: string;
+    capabilityComputerControlShort: string;
+    capabilityComputerViewHelp: string;
+    capabilityComputerSystemPermissions: string;
+    capabilityComputerPermissionProgress: string;
+    capabilityComputerRestartNote: string;
     capabilityComputerModel: string;
     capabilityComputerModelFull: string;
     capabilityComputerModelStructured: string;
@@ -1712,13 +1805,233 @@ export interface TranslationDict {
   };
 
   // Toolbox Modal
+  team: {
+    tabMembers: string;
+    tabTeams: string;
+    searchPlaceholder: string;
+    newTeam: string;
+    editTeam: string;
+    createTeamAction: string;
+    teamCreated: string;
+    teamSaved: string;
+    teamSaveFailed: string;
+    fieldName: string;
+    fieldNamePlaceholder: string;
+    fieldAvatar: string;
+    fieldAvatarPlaceholder: string;
+    fieldAvatarHint: string;
+    fieldMembers: string;
+    fieldMembersHint: string;
+    noMembersYet: string;
+    createMemberNow: string;
+    fieldLeaderNote: string;
+    fieldLeaderNoteHint: string;
+    fieldLeaderNotePlaceholder: string;
+    teamRowSummary: string;
+    detailStartChat: string;
+    detailLeader: string;
+    detailMembers: string;
+    detailNoMembers: string;
+    detailPlanApproval: string;
+    detailPlanApprovalOn: string;
+    detailPlanApprovalOff: string;
+    detailLeaderNote: string;
+    detailSkills: string;
+    detailSkillsHint: string;
+    detailNoSkills: string;
+    detailEdit: string;
+    aiCreateTeamPrompt: string;
+    unknownMember: string;
+    teamsEmpty: string;
+    teamsEmptyHint: string;
+    /** Follow-up chips under a finished team turn. */
+    followUpRedoStep: string;
+    followUpMemberRevise: string;
+    followUpMemberAppend: string;
+    confirmationStripTitle: string;
+    confirmationSeparator: string;
+    confirmationLeader: string;
+    confirmationApproveRun: string;
+    confirmationWriteRead: string;
+    confirmationWrite: string;
+    confirmationRead: string;
+    confirmationCwd: string;
+    confirmationRequestOrdinal: string;
+    confirmationDefaultCwd: string;
+    confirmationLegacy: string;
+    confirmationRunRule: string;
+    confirmationRevoke: string;
+    confirmationApprove: string;
+    confirmationReject: string;
+    confirmationNotice: string;
+    confirmationApprovedFollowUp: string;
+    confirmationRejectedFollowUp: string;
+    stallStoppedNotice: string;
+    resumeAfterRestart: string;
+    resumeAfterRestartFailed: string;
+    followUpHint: string;
+    fieldPlanApproval: string;
+    fieldPlanApprovalHint: string;
+    chatReceiptEmptyGoal: string;
+    chatReceiptOtherTeam: string;
+    fieldLeader: string;
+    fieldLeaderHint: string;
+    leaderPlaceholder: string;
+    membersPlaceholder: string;
+    pickerEmpty: string;
+    suggestionTeamHint: string;
+    deleteTeamAction: string;
+    deleteTeamTitle: string;
+    deleteTeamMessage: string;
+    teamArchived: string;
+  };
+
   toolbox: {
+    agentNamePlaceholder: string;
+    agentNameFormatHint: string;
+    agentInstructionsLabel: string;
+    agentAdvancedSection: string;
+    agentSkillsPlaceholder: string;
+    agentSkillsEmpty: string;
     title: string;
     skills: string;
     agents: string;
     mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
+    // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
+    plugins: string;
+    pluginsEmptyState: string;
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
+     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
+     *  literally "MCP", not a Connectors-flavored label. */
+    connectors: string;
+    // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
+    pluginsMarketplaceTab: string;
+    // Extensions 「市场 | 我的」 source sub-nav + the `···` menu on an installed item
+    sourceMarket: string;
+    sourceMine: string;
+    /** "{name} 的操作" — accessible name of an installed item's `···` trigger. */
+    itemMenuLabel: string;
+    menuTrial: string;
+    menuManage: string;
+    menuUninstall: string;
+    menuEdit: string;
+    menuView: string;
+    menuDelete: string;
+    menuRemove: string;
+    menuManagedByOrg: string;
+    /** 「立即试用」prefilled prompt — `{name}` = item name, `{hint}` = its description. */
+    trialPrompt: string;
+    /** Hint used when an item has no description. */
+    trialPromptFallback: string;
+    pluginsAddMarketplace: string;
+    pluginsAddMarketplaceTitle: string;
+    pluginsManifestInvalidField: string;
+    pluginsComponentMissing: string;
+    pluginsComponentEmptySkills: string;
+    pluginsBusy: string;
+    pluginsChanging: string;
+    pluginsCreate: string;
+    pluginsDraft: string;
+    pluginsAuthorConversation: string;
+    pluginsAuthorPrompt: string;
+    pluginsContinueEditing: string;
+    pluginsUpdating: string;
+    pluginsCheckChanges: string;
+    pluginsPreviewUpdate: string;
+    pluginsAuthorUpdateAvailable: string;
+    pluginsAuthorUpdateHint: string;
+    pluginsValidationPassed: string;
+    pluginsUpdateDisclosureTitle: string;
+    pluginsUpdateDisclosureSubtitle: string;
+    pluginsReviewChanges: string;
+    pluginsAuthoredSource: string;
+    pluginsReadyToInstall: string;
+    pluginsSourceFiles: string;
+    pluginsUnchanged: string;
+    pluginsDraftHint: string;
+    pluginsConfiguration: string;
+    pluginsConfigurationHint: string;
+    pluginsMarketplaceNameConflict: string;
+    pluginsMarketplaceIdentityChanged: string;
+    pluginsRefreshMarketplace: string;
+    pluginsCachedMarketplace: string;
+    pluginsRecoveryNeeded: string;
+    pluginsRetryRecovery: string;
+    pluginsDisabledCapability: string;
+    pluginsComponentInvalidJson: string;
+    pluginsComponentConflict: string;
+    pluginsMarketplaceDirLabel: string;
+    pluginsMarketplaceDirPlaceholder: string;
+    pluginsMarketplaceDirHint: string;
+    pluginsBrowseDir: string;
+    pluginsMarketplaceReadFailed: string;
+    pluginsNoMarketplaces: string;
+    pluginsNoMarketplacesHint: string;
+    pluginsRemoveMarketplace: string;
+    pluginsRemoveMarketplaceTitle: string;
+    pluginsRemoveMarketplaceMessage: string;
+    pluginsCategoryAll: string;
+    pluginsNoMatches: string;
+    pluginsEntryCount: string;
+    pluginsInstall: string;
+    pluginsUpdate: string;
+    pluginsUpdateSucceeded: string;
+    pluginsUpdateReloadHint: string;
+    /** Sidebar red-dot a11y label / Plugins-tab badge — "{count} updates available". */
+    pluginsUpdatesAvailable: string;
+    /** Singular form: English needs it, Chinese reuses the same wording. */
+    pluginsUpdatesAvailableOne: string;
+    pluginsUninstall: string;
+    pluginsUninstallTitle: string;
+    pluginsUninstallMessage: string;
+    pluginsUninstallFailed: string;
+    pluginsSkillCount: string;
+    pluginsServerCount: string;
+    pluginsFromMarketplace: string;
+    pluginsGoToMarketplace: string;
+    /** 「我的」 empty state — the user has authored no plugins yet. */
+    pluginsMineEmptyTitle: string;
+    pluginsMineEmptyHint: string;
+    /** Heading of the group for installs whose marketplace is gone. */
+    pluginsOrphanGroup: string;
+    /** Title of the installed-plugin detail dialog opened from 「管理」. */
+    pluginsManageTitle: string;
+    /** Install disclosure — the screen that shows what executable code is coming in. */
+    pluginsDisclosureTitle: string;
+    pluginsDisclosureSubtitle: string;
+    pluginsDisclosureSource: string;
+    pluginsDisclosureSkills: string;
+    pluginsDisclosureServers: string;
+    pluginsDisclosureServersHint: string;
+    /** Heading of the agents group — also reused by the manage dialog. */
+    pluginsDisclosureAgents: string;
+    /** Why one agent in the group will be skipped; one short tag per row. */
+    pluginsDisclosureAgentExists: string;
+    pluginsDisclosureAgentUnsafeName: string;
+    pluginsDisclosureAgentEmptyPrompt: string;
+    pluginsDisclosureCapabilities: string;
+    pluginsDisclosureIgnoredTitle: string;
+    pluginsDisclosureIgnoredHint: string;
+    pluginsDisclosureSymlinkTitle: string;
+    pluginsDisclosureSymlinkHint: string;
+    /** List punctuation for the refused-link paths — `, ` reads wrong in zh. */
+    pluginsDisclosureSymlinkSeparator: string;
+    /** Shown when the artifact carried no verifiable signature. */
+    pluginsDisclosureUnsigned: string;
+    pluginsDisclosureNone: string;
+    pluginsDisclosureLoading: string;
+    pluginsInstalling: string;
+    pluginsInstallFailed: string;
+    pluginsInstallSucceeded: string;
+    pluginsRemoteSourceBadge: string;
+    pluginsUnsupportedTitle: string;
+    pluginsUnsupportedRemote: string;
+    pluginsPlanFailed: string;
+    /** The package's own directory is a symlink, so nothing about it is trustworthy. */
+    pluginsSymlinkRootRefused: string;
+    pluginsPlanDenied: string;
     // Skills Section
     installedSkills: string;
     noInstalledSkills: string;
@@ -1854,6 +2167,16 @@ export interface TranslationDict {
     pickFolder: string;              // "选择文件夹"
     pickFile: string;                // "选择文件 (.askill/.zip)"
     importSkippedFiles: string;      // "跳过 {n} 个隐藏文件：{names}"
+    /** {n}, {names} — symlinks the copy refused, NOT hidden files. */
+    importSkippedLinks: string;
+    /** Joins the link paths in {@link importSkippedLinks}. */
+    importSkippedLinksSeparator: string;
+    /** {path} — the chosen folder is itself a symlink. */
+    importSymlinkRootRefused: string;
+    /** {name} — the .askill's frontmatter name is not one directory segment. */
+    importUnsafeName: string;
+    /** {n}, {names} — entries packSkill will not put in an exported archive. */
+    exportSymlinkRefused: string;
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;
@@ -1872,6 +2195,8 @@ export interface TranslationDict {
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
+    backToDetails: string;
+    useNow: string;
     skillTryInChat: string;
     skillSave: string;
     skillSaveAndTest: string;
@@ -1905,9 +2230,24 @@ export interface TranslationDict {
     categoryBuiltin: string;           // "市场" (ships-with-Abu / catalog, vs "我的")
     skillSourceBuiltin: string;
     skillSourceUser: string;
+    skillSourcePlugin: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;
+    /** Skills 「市场」 hint card — outside skills arrive with plugins. */
+    skillsMarketHintTitle: string;
+    skillsMarketHintBody: string;
+    skillsMarketGoPlugins: string;
+    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
+    skillsMineEmptyTitle: string;
+    /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
+    connectorsMarketTitle: string;
+    connectorsFromPlugins: string;
+    connectorsAdd: string;
+    /** Accessible name of one catalog row's 添加 button — `{name}` is the connector. */
+    connectorAddLabel: string;
+    /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
+    connectorsMineEmptyTitle: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;
@@ -1940,6 +2280,10 @@ export interface TranslationDict {
     agentAvatar: string;
     agentSystemPrompt: string;
     agentEdit: string;
+    /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
+    agentFromPlugin: string;
+    agentFromPluginEditDisabled: string;
+    agentFromPluginDeleteDisabled: string;
     agentSave: string;
     agentSaveAndTest: string;
     agentEditorTitle: string;
@@ -1972,10 +2316,12 @@ export interface TranslationDict {
     // Connection test
     testConnection: string;
     testSuccess: string;
+    mcpFromPlugin: string;
     testFailed: string;
     testing: string;
     // Tool count
     toolCount: string;
+    toolCountWithApp: string;
     noTools: string;
     // Server logs
     viewLogs: string;
@@ -2070,7 +2416,7 @@ export interface TranslationDict {
     categoryBlocksUnblock: string;      // button label
     categoryBlocksUnblockError: string; // toast title on delete failure
     categoryBlocksHint: string;         // subtitle describing what these are
-    // Enterprise capability source (shown inside Skill / MCP when bound)
+    // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
     personalSource: string;
@@ -2327,6 +2673,33 @@ export interface TranslationDict {
     agentTokens: string;
     agentNoSteps: string;
     agentFullProcessUnavailable: string;
+    /** Member tab header note when the process is replayed from the message snapshot. */
+    agentPersistedProcess: string;
+    /** Member tab header note while the dispatch is still running (live execution source). */
+    teamLiveProcess: string;
+    /** Team overview tab (in-conversation team). */
+    teamTitle: string;
+    teamNotPinned: string;
+    teamLeaderBadge: string;
+    teamLeaderIdle: string;
+    teamMembersHeader: string;
+    teamNoMembers: string;
+    teamMemberIdle: string;
+    teamDispatchCount: string;
+    teamNoDispatchYet: string;
+    teamDispatchOrdinal: string;
+    teamOpenDispatch: string;
+    teamOpenOverview: string;
+    teamStopDispatch: string;
+    teamStopDispatchShort: string;
+    teamStopDispatchShortNamed: string;
+    teamAppendInstruction: string;
+    teamStalledFor: string;
+    teamDispatchInterrupted: string;
+    teamDispatchNoToolCalls: string;
+    teamMemberBarCollapse: string;
+    teamMemberBarExpand: string;
+    teamMemberBarCollapsed: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;
@@ -2361,6 +2734,13 @@ export interface TranslationDict {
 
   // Scheduled Tasks
   schedule: {
+    teamExecutor: string;
+    teamExecutorNone: string;
+    teamExecutorSearch: string;
+    teamExecutorEmpty: string;
+    teamExecutorHint: string;
+    teamAutoPaused: string;
+    teamPlanUnconfirmed: string;
     title: string;
     newTask: string;
     editTask: string;
@@ -2858,6 +3238,8 @@ export interface TranslationDict {
     confirm: string;
     blocked: string;
     userCancelled: string;
+    /** Team run: action refused pending the user's confirmation (never blocks). */
+    teamPendingConfirmation: string;
     aiDenied: string;
     browserAction: string;
     browserReason: string;
@@ -2893,6 +3275,48 @@ export interface TranslationDict {
     /** Unattended or attended run whose operation-class policy is set to
      *  'deny' for this kind of browser action. */
     browserPolicyDenied: string;
+    /** Why an upload is being asked about — the sentence every ask channel
+     *  (desktop dialog and IM) shows above the file list and the target
+     *  site. */
+    browserUploadReason: string;
+    /**
+     * The upload confirmation's own wording (acceptance F5).
+     *
+     * An upload had been asked about with the generic browser-action box, so
+     * the question read 「浏览器操作: abu-browser__upload_file (origin)」 over a
+     * button that said 「确认执行」 — an internal tool name and a verb that
+     * does not say a file is leaving the machine. These say the decision
+     * instead: how many files, to which site, confirmed with 「确认上传」.
+     * `{host}` is a hostname, never a full path.
+     */
+    browserUploadTitle: string;
+    /** Singular of `browserUploadTitle`; both locales read badly with "1 files". */
+    browserUploadTitleOne: string;
+    /** Stands in for `{host}` when the target origin could not be resolved. */
+    browserUploadHostThisSite: string;
+    /** Wraps `{host}` when the upload targets a region embedded in the page. */
+    browserUploadHostEmbedded: string;
+    /** The line under the upload title. */
+    browserUploadDescription: string;
+    /** Primary button of the upload confirmation. */
+    browserUploadConfirm: string;
+    /** Primary button when 「以后都允许该网站」 is offered beside it. */
+    browserUploadConfirmOnce: string;
+    /** `files` could not be read as a list of paths. */
+    browserUploadMalformed: string;
+    /** More files than one submission may carry. `{max}` */
+    browserUploadTooManyFiles: string;
+    /** Outside every workspace the user authorized. `{name}` */
+    browserUploadNotAuthorized: string;
+    /** Missing, or not a regular file. `{name}` */
+    browserUploadNotAFile: string;
+    /** A symbolic link — refused rather than followed. `{name}` */
+    browserUploadSymlink: string;
+    /** Over the per-file or per-call size ceiling. `{name}` `{max}` */
+    browserUploadTooLarge: string;
+    /** The filesystem reported neither an mtime nor an inode for the file, so
+     *  nothing could be frozen that identifies it later (review F1). */
+    browserUploadUnidentifiable: string;
     browserEnterprisePolicyDenied: string;
     /** Unattended run on a site that carries no standing "allowed" verdict —
      *  the cross-origin fail-closed baseline. */
@@ -2982,6 +3406,9 @@ export interface TranslationDict {
      *  refuses the pending action. Offered whenever the origin is known,
      *  including for requests that may not be granted permanently. */
     browserBlockSite: string;
+    pluginToolAction: string;
+    pluginToolReason: string;
+    pluginToolDenied: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };
@@ -3302,6 +3729,12 @@ export interface TranslationDict {
       planImApprovalNeeded: string;
       /** Plan-approval card header. */
       planApprovalHeader: string;
+      /** Strict-team variants of the approval card (先确认分工). */
+      planApprovalHeaderTeam: string;
+      planApprovalQuestionTeam: string;
+      planApproveLabelTeam: string;
+      planRejectLabelTeam: string;
+      planApprovedTeam: string;
       /** Plan-approval card question (rendered after step list). */
       planApprovalQuestion: string;
       /** Approve option label. */
@@ -3503,6 +3936,17 @@ export interface TranslationDict {
       errAgentNotFound: string;
       /** Error: agent disabled. {agentName} */
       errAgentDisabled: string;
+      errNotTeamMember: string;
+      /** Team run hit its hand-off cap (teamRunBounds). */
+      errDispatchCapReached: string;
+      /** Member blocked after consecutive failed hand-offs. */
+      errMemberBlocked: string;
+      /** Declared artifacts missing after the member finished (define-done check). */
+      errExpectedFilesMissing: string;
+      delegateNoToolCallsNote: string;
+      /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
+      delegateUnconfirmedInstructionsNote: string;
+      delegateUserInstructionsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
       // save_skill / save_agent (createSaveItemTool)
@@ -3538,6 +3982,10 @@ export interface TranslationDict {
       errBatchAgentNotFound: string;
       /** Error: agent disabled in batch task. {i}, {agentName} */
       errBatchAgentDisabled: string;
+      errBatchNotTeamMember: string;
+      errBatchDispatchCapReached: string;
+      errBatchMemberBlocked: string;
+      errBatchExpectedFilesMissing: string;
       /** Activity label when a sub-agent calls a tool. {toolName} */
       activityCalling: string;
       /** Timeout error message for runWithTimeout. */
@@ -3550,6 +3998,9 @@ export interface TranslationDict {
       batchSectionTitle: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
+      /** Appended to a member result that made zero tool calls (team leader review). */
+      batchNoToolCallsNote: string;
+      batchUserInstructionsNote: string;
       /** Structured path: could not parse JSON. */
       errJsonParseFailed: string;
       /** Structured path: missing required fields. {fields} */
@@ -3597,7 +4048,11 @@ export interface TranslationDict {
       installFailed: string;
       /** {count}, {files} */
       skippedNote: string;
-      /** {name}, {count}, {skippedNote} */
+      /** {count}, {files} — symlinks the copy refused, NOT hidden files. */
+      skippedLinksNote: string;
+      /** {path} — the folder at `source` is itself a symlink. */
+      symlinkRootRefused: string;
+      /** {name}, {count}, {skippedNote}, {linksNote} */
       installed: string;
       /** {name}, {path} */
       draftProposed: string;
@@ -3612,6 +4067,8 @@ export interface TranslationDict {
       searchNoResults: string;
       /** Env-var needed note fragment. {envList} */
       searchEnvNote: string;
+      /** Configurable-argument needed note fragment. {argList} */
+      searchArgNote: string;
       /** Search results header. {count}, {lines} */
       searchResults: string;
       /** Error: action=install requires name. */
@@ -3645,6 +4102,10 @@ export interface TranslationDict {
       mcpCatalog: Record<string, string>;
       /** MCP env-var config hints keyed by env-var name. */
       mcpEnvHints: Record<string, string>;
+      /** Labels for configurable positional args, keyed by `${serverName}.${argIndex}`. */
+      mcpArgLabels: Record<string, string>;
+      /** Out-of-app setup notes keyed by server name (e.g. install a Chrome extension). */
+      mcpSetupHints: Record<string, string>;
       /** Generic unknown-error fallback for MCP connect failures. */
       mcpUnknownError: string;
       /** Server connected. {name}, {count} */
@@ -3655,6 +4116,8 @@ export interface TranslationDict {
       mcpConnectFailed: string;
       /** Install needs env vars. {name}, {hints} */
       mcpNeedsEnvVars: string;
+      /** Install is missing a configurable positional argument. {name}, {label} */
+      mcpMissingArg: string;
       /** Installed and connected. {name}, {count} */
       mcpInstalledConnected: string;
       /** Installed but connect failed. {name}, {error} */

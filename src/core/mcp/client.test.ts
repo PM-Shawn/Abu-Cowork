@@ -11,6 +11,8 @@
 // server the same way src/core/mcp/enterprise-entitlement.test.ts does.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MCPClientManager, toCallToolOpts } from './client';
+import { publishPluginActivation } from '../plugin/activationPolicy';
+beforeEach(() => publishPluginActivation({}, [], true));
 import type { ToolDefinition } from '../../types';
 
 // Mirrors the private `ConnectedServer` shape in client.ts — not exported
@@ -21,6 +23,7 @@ interface FakeConnectedServer {
   client: { callTool: ReturnType<typeof vi.fn> };
   transport: unknown;
   tools: Map<string, ToolDefinition>;
+  appTools: Map<string, ToolDefinition>;
 }
 
 describe('conversationId threading into MCP _meta', () => {
@@ -35,12 +38,21 @@ describe('conversationId threading into MCP _meta', () => {
       config: { name: 'test-server' },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (manager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
       'test-server',
       fakeServer
     );
+  });
+
+  it('denies cached connections immediately when their owning plugin closes', async () => {
+    publishPluginActivation({ 'tools@market': { enabled: false, root: '/pkg', skillDirs: [], legacySkills: false, agentFiles: [], mcpServers: ['test-server'] } }, ['test-server'], true);
+    await expect(manager.callTool('test-server', 'some_tool', {})).rejects.toThrow(/test-server/);
+    expect(mockCallTool).not.toHaveBeenCalled();
+    expect(manager.getServerTools('test-server')).toEqual([]);
+    await expect(manager.connectServer({ name: 'test-server', command: 'example', enabled: true })).rejects.toThrow(/test-server/);
   });
 
   it('includes _meta with the conversation id when callTool() is given a conversationId', async () => {
@@ -120,6 +132,7 @@ describe('abort signal propagation into MCP callTool', () => {
       config: { name },
       client: { callTool: mockCallTool },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (manager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
@@ -249,6 +262,7 @@ describe('browser bridge run-settled notification', () => {
       config: { name },
       client: { callTool: mockCallTool, notification: mockNotification, close: vi.fn() },
       transport: {},
+      appTools: new Map(),
       tools: new Map(),
     };
     (manager as unknown as { servers: Map<string, unknown> }).servers.set(name, fakeServer);

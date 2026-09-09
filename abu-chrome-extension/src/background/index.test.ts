@@ -108,13 +108,46 @@ const browserState: {
   probeFunc?: (...a: never[]) => unknown;
   /** Content-script answers by `${tabId}:${frameId}:${action}`; default is a routed echo. */
   contentAnswers: Record<string, { data?: unknown; error?: string }>;
+  /**
+   * What the BROWSER does while a content-script message is in flight.
+   *
+   * `download`'s whole contract is about ordering — the waiter is armed before
+   * the click and the file may land before the click even returns — so a test
+   * needs a seam at exactly that instant. This is it; everything else in this
+   * file leaves it null.
+   */
+  onContentMessage: ((action: string, tabId: number) => void) | null;
+  onTabActivation: ((tabId: number) => Promise<void> | void) | null;
+  /** Every `offscreen.createDocument` the worker got as far as calling. */
+  offscreenCreated: { url: string; reasons: unknown[]; justification: string }[];
+  /** The `stitch` messages the offscreen document was asked to composite. */
+  stitchRequests: Record<string, unknown>[];
 } = {
   windows: [], tabs: [], updated: [], reloaded: [], injected: [], captured: [], sessionStore: {},
   pageDialogState: { installed: false, armed: null, last: null },
   pageIsFrozen: false,
   frames: {},
   contentAnswers: {},
+  onContentMessage: null,
+  onTabActivation: null,
+  offscreenCreated: [],
+  stitchRequests: [],
 };
+
+/**
+ * `chrome.offscreen.Reason`, as the browser actually defines it.
+ *
+ * Copied from the runtime rather than from memory: dumped out of a real
+ * service worker with `Object.keys(chrome.offscreen.Reason)` (Chrome 149 and
+ * 152 agree), and identical to the enum in `@types/chrome` and to the list on
+ * developer.chrome.com. There is deliberately no CANVAS here — see the
+ * full-page screenshot case at the bottom of this file for why that matters.
+ */
+const CHROME_OFFSCREEN_REASONS = [
+  'AUDIO_PLAYBACK', 'BATTERY_STATUS', 'BLOBS', 'CLIPBOARD', 'DISPLAY_MEDIA',
+  'DOM_PARSER', 'DOM_SCRAPING', 'GEOLOCATION', 'IFRAME_SCRIPTING', 'LOCAL_STORAGE',
+  'MATCH_MEDIA', 'TESTING', 'USER_MEDIA', 'WEB_RTC', 'WORKERS',
+] as const;
 
 /** Enough of the extension APIs to drive the real request path. */
 function fakeChrome(): Record<string, unknown> {
@@ -129,10 +162,14 @@ function fakeChrome(): Record<string, unknown> {
       onActivated: slot('tabs.onActivated'),
       onRemoved: slot('tabs.onRemoved'),
       onUpdated: slot('tabs.onUpdated'),
-      query: async (q: { active?: boolean; windowId?: number }) => browserState.tabs.filter(
-        (t) => (q.active === undefined || t.active === q.active)
-          && (q.windowId === undefined || t.windowId === q.windowId),
-      ),
+      query: async (q: { active?: boolean; windowId?: number }, cb?: (tabs: typeof browserState.tabs) => void) => {
+        const tabs = browserState.tabs.filter(
+          (t) => (q.active === undefined || t.active === q.active)
+            && (q.windowId === undefined || t.windowId === q.windowId),
+        );
+        cb?.(tabs);
+        return tabs;
+      },
       get: async (tabId: number) => {
         const tab = browserState.tabs.find((t) => t.id === tabId);
         if (!tab) throw new Error(`No tab with id: ${tabId}`);
@@ -141,7 +178,11 @@ function fakeChrome(): Record<string, unknown> {
       update: async (tabId: number, props: Record<string, unknown>) => {
         browserState.updated.push({ tabId, props });
         if (props.active === true) {
-          for (const t of browserState.tabs) if (t.windowId === browserState.tabs.find((x) => x.id === tabId)?.windowId) t.active = t.id === tabId;
+          const tab = browserState.tabs.find((x) => x.id === tabId);
+          const changed = tab && !tab.active;
+          for (const t of browserState.tabs) if (t.windowId === tab?.windowId) t.active = t.id === tabId;
+          if (changed) fire('tabs.onActivated', { tabId, windowId: tab.windowId });
+          await browserState.onTabActivation?.(tabId);
         }
         return browserState.tabs.find((t) => t.id === tabId);
       },
@@ -159,6 +200,7 @@ function fakeChrome(): Record<string, unknown> {
         const cb = typeof options === 'function' ? options : maybeCb!;
         const frameId = typeof options === 'function' ? undefined : options.frameId;
         sentToContent.push({ tabId, action: message.action, payload: message.payload, frameId });
+        browserState.onContentMessage?.(message.action, tabId);
         const scripted = browserState.contentAnswers[`${tabId}:${frameId ?? 0}:${message.action}`];
         cb(scripted ?? { data: { routed: message.action } });
       },
@@ -175,8 +217,52 @@ function fakeChrome(): Record<string, unknown> {
         return Promise.resolve(populated);
       },
     },
-    downloads: { onCreated: slot('downloads.onCreated'), onChanged: slot('downloads.onChanged') },
-    runtime: { onMessage: slot('runtime.onMessage'), lastError: undefined },
+    downloads: {
+      onCreated: slot('downloads.onCreated'),
+      onChanged: slot('downloads.onChanged'),
+      // T6 — the hook that files an Abu download into its own folder. Present
+      // here because the worker registers it conditionally, and a fake without
+      // it would make the "leaves the user's own downloads alone" claim
+      // vacuously true.
+      onDeterminingFilename: slot('downloads.onDeterminingFilename'),
+    },
+    runtime: {
+      onMessage: slot('runtime.onMessage'),
+      lastError: undefined,
+      ContextType: { OFFSCREEN_DOCUMENT: 'OFFSCREEN_DOCUMENT' },
+      // No document until one is created, which is the state the worker's
+      // `getContexts` check exists to detect after a service-worker restart.
+      getContexts: async () => (browserState.offscreenCreated.length > 0
+        ? [{ contextType: 'OFFSCREEN_DOCUMENT' }]
+        : []),
+      sendMessage: async (message: Record<string, unknown>) => {
+        if (message.type === 'stitch') {
+          browserState.stitchRequests.push(message);
+          return { success: true, data: 'data:image/png;base64,STITCHED' };
+        }
+        return undefined;
+      },
+    },
+    offscreen: {
+      Reason: Object.fromEntries(CHROME_OFFSCREEN_REASONS.map((r) => [r, r])),
+      // Chrome validates `reasons` against the enum and rejects anything else
+      // before the document is created. The fake refuses in the same place and
+      // with the same sentence, because THAT rejection is what this suite has
+      // to be able to see — a permissive fake would accept `[undefined]` and
+      // report a passing test for a call the browser throws on.
+      createDocument: async (params: { url: string; reasons: unknown[]; justification: string }) => {
+        params.reasons.forEach((reason, index) => {
+          if (typeof reason !== 'string' || !(CHROME_OFFSCREEN_REASONS as readonly string[]).includes(reason)) {
+            throw new TypeError(
+              "Error in invocation of offscreen.createDocument(offscreen.CreateParameters parameters, "
+              + "optional function callback): Error at parameter 'parameters': Error at property 'reasons': "
+              + `Error at index ${index}: Invalid type: expected offscreen.Reason, found ${String(reason)}.`,
+            );
+          }
+        });
+        browserState.offscreenCreated.push(params);
+      },
+    },
     alarms: { create: () => {}, onAlarm: slot('alarms.onAlarm') },
     scripting: {
       executeScript: async (opts: {
@@ -213,7 +299,7 @@ function fakeChrome(): Record<string, unknown> {
         if (String(opts.func ?? '').includes('__ABU_PAGE_DIALOGS__')) {
           return [{ result: browserState.pageDialogState }];
         }
-        return [{ result: 'evaluated' }];
+        return [{ result: { originMatched: true, value: 'evaluated' } }];
       },
     },
   };
@@ -274,6 +360,9 @@ beforeEach(() => {
   browserState.captured.length = 0;
   browserState.frames = {};
   browserState.contentAnswers = {};
+  browserState.onContentMessage = null;
+  browserState.onTabActivation = null;
+  browserState.stitchRequests.length = 0;
   sentToContent.length = 0;
 });
 
@@ -685,6 +774,15 @@ describe('actions the service worker answers itself', () => {
     expect(browserState.sessionStore.lastActiveTabId).toBe(11);
   });
 
+  it('still follows the user focusing a different Chrome window', async () => {
+    twoTabWindow();
+    browserState.tabs.push({ id: 14, windowId: 2, active: true, url: 'https://c.example/', title: 'C' });
+    fire('windows.onFocusChanged', 2);
+    expect(browserState.sessionStore).toMatchObject({ lastActiveTabId: 14, lastActiveWindowId: 2 });
+    fire('windows.onFocusChanged', -1);
+    expect(browserState.sessionStore.lastActiveTabId).toBe(14);
+  });
+
   it('does NOT send a tabId-less action to the tab the user last used', async () => {
     // The pre-claims behaviour — a request with no `tabId` followed whatever
     // tab the user had most recently looked at — was deliberately retired for
@@ -734,7 +832,7 @@ describe('actions the service worker answers itself', () => {
     const response = await request('execute_js', { tabId: 11, code: '1 + 1' });
 
     expect(response.data).toBe('evaluated');
-    expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'MAIN', args: ['1 + 1'] });
+    expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'MAIN', args: ['1 + 1', 'https://a.example'] });
   });
 
   describe('JavaScript dialogs', () => {
@@ -813,6 +911,52 @@ describe('actions the service worker answers itself', () => {
     });
   });
 
+  it.each(['screenshot', 'screenshot_full_page'])('%s activation preserves user last-active tracking', async (action) => {
+    twoTabWindow();
+    fire('tabs.onActivated', { tabId: 12, windowId: 1 });
+    vi.useFakeTimers();
+    try {
+      await request(action, { tabId: 11 }, { pumpMs: 4_000 });
+      expect(browserState.updated).toContainEqual({ tabId: 11, props: { active: true } });
+      expect(browserState.sessionStore.lastActiveTabId).toBe(12);
+      // A later real switch to the same tab is not a leftover automation echo.
+      fire('tabs.onActivated', { tabId: 11, windowId: 1 });
+      expect(browserState.sessionStore.lastActiveTabId).toBe(11);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not mask another user activation while screenshot activation is pending', async () => {
+    twoTabWindow();
+    fire('tabs.onActivated', { tabId: 12, windowId: 1 });
+    browserState.onTabActivation = () => {
+      fire('tabs.onActivated', { tabId: 13, windowId: 2 });
+    };
+    vi.useFakeTimers();
+    try {
+      await request('screenshot', { tabId: 11 }, { pumpMs: 500 });
+      expect(browserState.sessionStore).toMatchObject({ lastActiveTabId: 13, lastActiveWindowId: 2 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans up failed screenshot activation before a later user activation', async () => {
+    twoTabWindow();
+    const original = chrome.tabs.update;
+    chrome.tabs.update = vi.fn().mockRejectedValue(new Error('tab closed'));
+    try {
+      const response = await request('screenshot', { tabId: 11 });
+      expect(response.success).toBe(false);
+      expect(response.error).toMatch(/tab closed/);
+      fire('tabs.onActivated', { tabId: 11, windowId: 1 });
+      expect(browserState.sessionStore.lastActiveTabId).toBe(11);
+    } finally {
+      chrome.tabs.update = original;
+    }
+  });
+
   it('activates a background tab before screenshotting it, so it shoots the right page', async () => {
     twoTabWindow();
     vi.useFakeTimers();
@@ -828,14 +972,181 @@ describe('actions the service worker answers itself', () => {
     expect(browserState.captured).toEqual([1]);
   });
 
-  it('reports a download and the state it ended in', async () => {
+  /**
+   * T6 — a download nobody armed for belongs to nobody.
+   *
+   * Before T6 `get_downloads` answered with the last 20 downloads Chrome had
+   * seen, whoever started them: one task could read another's exports, and so
+   * could a task read the user's own. Now a download is attributed only to a
+   * run that registered interest before the click, so a bare `onCreated` with
+   * no waiting run is invisible to everybody.
+   */
+  it('does not attribute a download nobody was waiting for', async () => {
     fire('downloads.onCreated', { id: 7, filename: '', url: 'https://x.example/report.xlsx', state: 'in_progress' });
     fire('downloads.onChanged', { id: 7, state: { current: 'complete' }, filename: { current: '/tmp/report.xlsx' } });
 
-    const downloads = (await request('get_downloads', {})).data as
-      { id: number; filename: string; state: string }[];
+    const downloads = (await request('get_downloads', { ownerId: 'conv-a' })).data as unknown[];
 
-    expect(downloads[0]).toMatchObject({ id: 7, filename: '/tmp/report.xlsx', state: 'complete' });
+    expect(downloads).toEqual([]);
+  });
+
+  /**
+   * T6 — the `download` tool on this channel: arm, click, follow the file.
+   *
+   * The waiter is armed BEFORE the click for a reason a slower fake would
+   * hide: a small file can finish before `sendToContentScript` returns, and a
+   * waiter armed afterwards would miss the download its own click produced and
+   * then report «这次点击没产生可识别的下载» for a file already on disk. The
+   * hook below fires the browser events at exactly that instant.
+   */
+  it('presses the control and comes back with the file that click produced', async () => {
+    twoTabWindow();
+    browserState.onContentMessage = (action) => {
+      if (action !== 'click') return;
+      fire('downloads.onCreated', {
+        id: 31, filename: '', url: 'https://a.example/排班表.xlsx',
+        referrer: 'https://a.example/', state: 'in_progress',
+      });
+      fire('downloads.onChanged', {
+        id: 31,
+        filename: { current: '/Users/me/Downloads/Abu/conv-a/排班表.xlsx' },
+        state: { current: 'complete' },
+      });
+    };
+
+    const response = await request('download', {
+      ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 5_000,
+    });
+
+    expect(response.success).toBe(true);
+    expect(response.data).toMatchObject({ started: true, complete: true });
+    expect((response.data as { download: { filename: string; path: string } }).download)
+      .toMatchObject({
+        filename: '排班表.xlsx',
+        path: '/Users/me/Downloads/Abu/conv-a/排班表.xlsx',
+      });
+    // A plain click, through the ordinary content-script path.
+    expect(sentToContent.filter((m) => m.action === 'click')).toHaveLength(1);
+  });
+
+  it('files the download it asked for under this task, and leaves the user\'s own alone', async () => {
+    twoTabWindow();
+    const suggested: unknown[] = [];
+    browserState.onContentMessage = (action) => {
+      if (action !== 'click') return;
+      // Chrome asks the extension where to put it, before or after onCreated.
+      fire('downloads.onDeterminingFilename',
+        { id: 32, filename: '排班表.xlsx', referrer: 'https://a.example/' },
+        (s: unknown) => suggested.push(s));
+      fire('downloads.onCreated', {
+        id: 32, filename: '', url: 'https://a.example/a',
+        referrer: 'https://a.example/', state: 'in_progress',
+      });
+      fire('downloads.onChanged', { id: 32, state: { current: 'complete' } });
+    };
+
+    await request('download', {
+      ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 5_000,
+    });
+    // A download nobody armed for: the user's own, and untouched.
+    const before = suggested.length;
+    fire('downloads.onDeterminingFilename',
+      { id: 33, filename: 'mine.pdf', referrer: 'https://bank.example/statements' },
+      (s: unknown) => suggested.push(s));
+
+    // One folder per OWNER — conversation plus subagent run, flattened into a
+    // single writable segment (`safeSegment`), which is as deep as `suggest()`
+    // lets an extension file anything.
+    expect(suggested).toEqual([{ filename: 'Abu/conv-a_main/排班表.xlsx', conflictAction: 'uniquify' }]);
+    expect(suggested).toHaveLength(before);
+  });
+
+  /**
+   * Review F2. The export produced nothing, so the waiter stays armed for its
+   * whole budget — and the user downloads their own file in that window.
+   * Before the site check it was claimed: renamed into the task's folder and
+   * reported to the model as what the click produced.
+   */
+  it('does not adopt the user\'s own download while its waiter is still armed', async () => {
+    twoTabWindow();
+    const suggested: unknown[] = [];
+    vi.useFakeTimers();
+    try {
+      browserState.onContentMessage = (action) => {
+        if (action !== 'click') return;
+        // The click did nothing. The user, meanwhile, saves a bank statement.
+        fire('downloads.onDeterminingFilename',
+          { id: 41, filename: 'my-tax-return.pdf', referrer: 'https://bank.example/statements' },
+          (s: unknown) => suggested.push(s));
+        fire('downloads.onCreated', {
+          id: 41,
+          filename: '/Users/me/Downloads/my-tax-return.pdf',
+          url: 'https://cdn.bank.example/2026.pdf',
+          referrer: 'https://bank.example/statements',
+          state: 'in_progress',
+        });
+        fire('downloads.onChanged', { id: 41, state: { current: 'complete' } });
+      };
+
+      const response = await request('download', {
+        ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 50,
+      }, { pumpMs: 200 });
+
+      expect(response.data).toMatchObject({ started: false });
+      // Not renamed, not moved, and not in the task's list either. (The
+      // service worker is a module singleton, so earlier cases' downloads are
+      // still in this owner's list — the claim is about THIS file.)
+      expect(suggested).toEqual([]);
+      const listed = (await request('get_downloads', { ownerId: 'conv-a' })).data as
+        Array<{ filename: string }>;
+      expect(listed.map((d) => d.filename)).not.toContain('my-tax-return.pdf');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('says the click produced no download rather than adopting another task\'s file', async () => {
+    twoTabWindow();
+    vi.useFakeTimers();
+    try {
+      const response = await request('download', {
+        ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 50,
+      }, { pumpMs: 200 });
+
+      expect(response.success).toBe(true);
+      expect(response.data).toMatchObject({ started: false });
+      expect((response.data as { message: string }).message).toMatch(/no other file was adopted/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('refuses to wait on a download id that is not this task\'s', async () => {
+    twoTabWindow();
+    browserState.onContentMessage = (action) => {
+      if (action !== 'click') return;
+      fire('downloads.onCreated', {
+        id: 34, filename: '/d/a.csv', url: 'https://a.example/a',
+        referrer: 'https://a.example/', state: 'in_progress',
+      });
+      fire('downloads.onChanged', { id: 34, state: { current: 'complete' } });
+    };
+    const started = await request('download', {
+      ownerId: 'conv-a', tabId: 11, action: 'click', locator: { css: 'a#export' }, timeoutMs: 5_000,
+    });
+    const downloadId = (started.data as { download: { downloadId: string } }).download.downloadId;
+
+    // A DIFFERENT tab, so the tab-claim gate (which would refuse first, and
+    // for its own reason) is out of the way and the download's own ownership
+    // check is what answers.
+    const other = await request('download', {
+      ownerId: 'conv-b', tabId: 12, action: 'wait', downloadId,
+    });
+
+    expect(other.success).toBe(false);
+    expect(other.error).toMatch(/belongs to this task/);
+    // And the neighbour cannot see it in a listing either.
+    expect((await request('get_downloads', { ownerId: 'conv-b' })).data).toEqual([]);
   });
 
   it('answers a missing tab with the browser error rather than a silent success', async () => {
@@ -845,6 +1156,86 @@ describe('actions the service worker answers itself', () => {
 
     expect(response.success).toBe(false);
     expect(response.error).toMatch(/No tab with id/);
+  });
+});
+
+/**
+ * Full-page capture, and the offscreen document it composites in.
+ *
+ * This path shipped broken: `ensureOffscreen()` asked for
+ * `chrome.offscreen.Reason.CANVAS`, and there is no CANVAS in that enum — the
+ * expression is `undefined` at runtime, so Chrome rejected the call with
+ * "Invalid type: expected offscreen.Reason, found undefined" and every
+ * `screenshot_full_page` ended in an error. Confirmed in a real Chrome (149
+ * and 152) against the built extension before the fix.
+ *
+ * The cost was paid before the failure, too: the reason is only read AFTER the
+ * scroll-and-capture loop, so the page was dragged to the bottom and every
+ * slice was captured before the request died.
+ *
+ * `screenshot_full_page` had no test of any kind, on either channel, which is
+ * why a call that the browser could never accept survived review and shipped.
+ */
+describe('full-page screenshot', () => {
+  /** Two slices of a 1000px page through a 500px viewport. */
+  function tallPage(tabId: number): void {
+    browserState.contentAnswers[`${tabId}:0:fullpage_prepare`] = {
+      data: { scrollHeight: 1000, viewportHeight: 500, viewportWidth: 800, scrollX: 0, scrollY: 0 },
+    };
+  }
+
+  it('composites the slices into one image instead of dying at the offscreen document', async () => {
+    twoTabWindow();
+    tallPage(12);
+
+    vi.useFakeTimers();
+    let response: BridgeResponse;
+    try {
+      // Each slice waits out Chrome's captureVisibleTab rate limit, on a fake
+      // clock so a busy machine cannot fail the suite.
+      response = await request('screenshot_full_page', { tabId: 12 }, { pumpMs: 4_000 });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(response.success).toBe(true);
+    expect(response.data).toMatch(/^data:image\/png;base64,/);
+    // One capture per slice, and all of them handed to the stitcher.
+    expect(browserState.captured).toEqual([1, 1]);
+    expect(browserState.stitchRequests).toHaveLength(1);
+    expect(browserState.stitchRequests[0]).toMatchObject({
+      type: 'stitch', viewportWidth: 800, viewportHeight: 500, totalHeight: 1000, lastSliceHeight: 500,
+    });
+    expect((browserState.stitchRequests[0].slices as string[])).toHaveLength(2);
+  });
+
+  it('asks for the offscreen document with a reason the browser actually defines', async () => {
+    // The regression itself. `reasons` is what Chrome validates, and the
+    // failure mode is silent at build time: the bad member typechecks as
+    // `undefined` only because the extension sat outside the typecheck gate.
+    expect(browserState.offscreenCreated).toHaveLength(1);
+    const [created] = browserState.offscreenCreated;
+
+    expect(created.url).toBe('offscreen.html');
+    expect(created.justification).toBeTruthy();
+    expect(created.reasons.length).toBeGreaterThan(0);
+    for (const reason of created.reasons) {
+      expect(CHROME_OFFSCREEN_REASONS).toContain(reason);
+    }
+  });
+
+  it('the fake refuses an undefined reason, so the case above can fail', async () => {
+    // Without this, "every reason is valid" would also pass against a fake
+    // that never checked anything — including for the exact call that shipped.
+    const offscreen = (globalThis as unknown as {
+      chrome: { offscreen: { createDocument: (p: unknown) => Promise<void> } };
+    }).chrome.offscreen;
+
+    await expect(offscreen.createDocument({
+      url: 'offscreen.html',
+      reasons: [(undefined as unknown as string)],
+      justification: 'the call that shipped',
+    })).rejects.toThrow(/Invalid type: expected offscreen\.Reason, found undefined/);
   });
 });
 
@@ -893,10 +1284,11 @@ describe('popup status channel', () => {
     expect(sent[0]).toMatchObject({ connected: true, reconnecting: false, port: 9876 });
   });
 
-  it('records the tab a content script says is visible', async () => {
+  it('does not treat content initialization or visibility as user activation', async () => {
     twoTabWindow();
+    fire('tabs.onActivated', { tabId: 12, windowId: 1 });
     fire('runtime.onMessage', { type: 'tab_visible' }, { tab: { id: 11, windowId: 1 } }, () => {});
 
-    expect(browserState.sessionStore.lastActiveTabId).toBe(11);
+    expect(browserState.sessionStore.lastActiveTabId).toBe(12);
   });
 });

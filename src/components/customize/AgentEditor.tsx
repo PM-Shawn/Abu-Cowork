@@ -12,6 +12,7 @@ import { useItemName } from '@/hooks/useItemName';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
 import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 
 interface AgentEditorProps {
@@ -84,11 +85,20 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       samplePrompts: samplePrompts.length > 0 ? samplePrompts : undefined,
       category: category.trim() || undefined,
       tags: tags.length > 0 ? tags : undefined,
+      // Provenance is not an editable field: carried over verbatim so a save
+      // cannot quietly launder a plugin's agent into a user-authored one. A new
+      // agent has none. (The detail views disable Edit for plugin agents, so
+      // this is the invariant behind that gate, not a second entry point.)
+      source: agent?.source,
     };
   };
 
   const handleSave = async (): Promise<boolean> => {
     if (!name.trim()) return false;
+    // A plugin owns this AGENT.md — the next plugin update overwrites whatever
+    // is saved here. The only entry point (AgentsSection's Edit) is disabled
+    // for plugin agents; this keeps the invariant local to the save itself.
+    if (agent && isPluginOwnedAgent(agent)) return false;
     setSaving(true);
     try {
       const metadata = buildMetadata();

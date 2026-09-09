@@ -48,20 +48,38 @@ describe('summarizeBrowserAuthorization', () => {
   });
 
   /**
-   * Round-2 R2-C-②. A grant minted through the merged embedded-region prompt
-   * is not one an automatic task may act on, so the screens that answer "where
-   * may a scheduled task go?" must not count it. Reported separately, the same
-   * way high-risk is, so the list does not silently look shorter than the
-   * user's own settings.
+   * A grant minted through the merged embedded-region prompt is SCOPED to the
+   * page it was given on, and the screens that answer "where may a scheduled
+   * task GO?" must not count it: a run arrives at a site as a top-level page,
+   * which is the one role a scoped grant never covers. Reported separately,
+   * the same way high-risk is, so the list does not silently look shorter than
+   * the user's own settings.
    */
   it('keeps a via-embed grant out of the unattended reach, and says where it went', () => {
     const summary = summarizeBrowserAuthorization(
       { 'https://vendor.example.net': 'allowed', 'https://ok.example.com': 'allowed' },
       true,
-      { 'https://vendor.example.net': true },
+      { 'https://vendor.example.net': { 'https://oa.example.com': true } },
     );
 
     expect(summary.reachableUnattended).toEqual(['https://ok.example.com']);
+    expect(summary.viaEmbedAllowed).toEqual(['https://vendor.example.net']);
+  });
+
+  /**
+   * The migrated shape (`{}` — "page unknown"). It is still a scoped grant, so
+   * it is still not reach; reading `Object.keys(...).length > 0` instead of
+   * "is there an entry" would have counted it as an ordinary standing grant
+   * and told the user a scheduled task can go somewhere it cannot.
+   */
+  it('counts a pre-v51 grant with no page recorded the same way', () => {
+    const summary = summarizeBrowserAuthorization(
+      { 'https://vendor.example.net': 'allowed' },
+      true,
+      { 'https://vendor.example.net': {} },
+    );
+
+    expect(summary.reachableUnattended).toEqual([]);
     expect(summary.viaEmbedAllowed).toEqual(['https://vendor.example.net']);
   });
 

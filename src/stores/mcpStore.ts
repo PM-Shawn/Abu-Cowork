@@ -1,3 +1,4 @@
+import { isPluginMcpAllowed } from '@/core/plugin/activationPolicy';
 /**
  * MCP Store - State management for MCP server connections
  */
@@ -53,6 +54,13 @@ interface MCPActions {
 
 export type MCPStore = MCPState & MCPActions;
 
+const connectionOperations = new Map<string, number>();
+function nextConnectionOperation(name: string): number {
+  const operation = (connectionOperations.get(name) ?? 0) + 1;
+  connectionOperations.set(name, operation);
+  return operation;
+}
+
 export const useMCPStore = create<MCPStore>()(
   persist(
     immer((set, get) => ({
@@ -70,6 +78,7 @@ export const useMCPStore = create<MCPStore>()(
       },
 
       removeServer: (name) => {
+        nextConnectionOperation(name);
         const entry = get().servers[name];
         if (entry?.status === 'connected') {
           mcpManager.disconnectServer(name).catch(console.error);
@@ -113,6 +122,7 @@ export const useMCPStore = create<MCPStore>()(
       },
 
       connectServer: async (name) => {
+        const operation = nextConnectionOperation(name);
         const entry = get().servers[name];
         if (!entry) return;
         if (entry.config.enabled === false) {
@@ -126,6 +136,7 @@ export const useMCPStore = create<MCPStore>()(
 
         try {
           await mcpManager.connectServer(entry.config);
+          if (connectionOperations.get(name) !== operation || !get().servers[name]) return;
           const toolDetails = mcpManager.getServerToolDetails(name);
           set((state) => {
             state.servers[name].status = 'connected';
@@ -133,6 +144,7 @@ export const useMCPStore = create<MCPStore>()(
             state.servers[name].lastConnectedAt = Date.now();
           });
         } catch (err) {
+          if (connectionOperations.get(name) !== operation || !get().servers[name]) return;
           const errorMsg = err instanceof Error ? err.message : String(err);
           set((state) => {
             state.servers[name].status = 'error';
@@ -142,7 +154,9 @@ export const useMCPStore = create<MCPStore>()(
       },
 
       disconnectServer: async (name) => {
+        const operation = nextConnectionOperation(name);
         await mcpManager.disconnectServer(name);
+        if (connectionOperations.get(name) !== operation) return;
         set((state) => {
           if (state.servers[name]) {
             state.servers[name].status = 'disconnected';
@@ -212,7 +226,7 @@ export const useMCPStore = create<MCPStore>()(
       connectAllEnabled: async () => {
         const servers = get().servers;
         const enabledServers = Object.values(servers).filter(
-          (s) => s.config.enabled && s.status === 'disconnected'
+          (s) => s.config.enabled && s.status === 'disconnected' && isPluginMcpAllowed(s.config.name)
         );
 
         await Promise.all(

@@ -1,3 +1,5 @@
+import { acquirePluginUse } from '../plugin/runtimeLease';
+import { isPluginSkillAllowed, pluginOwnerForSkill } from '../plugin/activationPolicy';
 /**
  * Skill-Scoped Hooks
  *
@@ -60,10 +62,14 @@ async function executeHookCommand(
   skillDir: string,
   context?: ToolExecutionContext,
 ): Promise<boolean> {
+  let release: (() => void) | undefined;
   try {
+    release = acquirePluginUse(pluginOwnerForSkill(skillDir));
+    if (!isPluginSkillAllowed({ skillDir })) return true;
     if (await explainBlockedSkillCommand(command, skillDir, context)) {
       return false;
     }
+    if (!isPluginSkillAllowed({ skillDir })) return true;
     const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
       command,
       cwd: skillDir,
@@ -75,7 +81,7 @@ async function executeHookCommand(
     return output.code === 0;
   } catch {
     return false;
-  }
+  } finally { release?.(); }
 }
 
 /**
@@ -93,6 +99,7 @@ export function activateSkillHooks(skill: Skill, context?: ToolExecutionContext)
       const cleanup = registerHook<PreToolCallEvent>(
         'preToolCall',
         async (event: PreToolCallEvent) => {
+          if (!isPluginSkillAllowed(skill)) return;
           if (!matchWildcard(event.toolName, entry.matcher)) return;
           if (!eventBelongsToActivation(event, context)) return;
 
@@ -120,6 +127,7 @@ export function activateSkillHooks(skill: Skill, context?: ToolExecutionContext)
       const cleanup = registerHook<PostToolCallEvent>(
         'postToolCall',
         async (event: PostToolCallEvent) => {
+          if (!isPluginSkillAllowed(skill)) return;
           if (!matchWildcard(event.toolName, entry.matcher)) return;
           if (!eventBelongsToActivation(event, context)) return;
 

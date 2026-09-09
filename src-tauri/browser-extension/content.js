@@ -37,14 +37,6 @@
   if (electronBrowserRuntime) {
     electronBrowserRuntime.handleAction = handleAction;
   } else {
-    const reportVisible = () => {
-      if (document.visibilityState === "visible") {
-        chrome.runtime.sendMessage({ type: "tab_visible" }).catch(() => {
-        });
-      }
-    };
-    document.addEventListener("visibilitychange", reportVisible);
-    reportVisible();
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const { action, payload } = message;
       handleAction(action, payload).then((data) => sendResponse({ data })).catch((err) => sendResponse({ error: err instanceof Error ? err.message : String(err) }));
@@ -309,7 +301,7 @@
   function closedShadowNote(count) {
     return ` This page also has ${count} sealed region${count === 1 ? "" : "s"} (closed shadow DOM), whose contents no automation can read or operate \u2014 not this tool, and not a script. If what you are looking for is in one, ask the user to do that step by hand.`;
   }
-  var ORIGIN_PINNED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select", "keyboard"]);
+  var ORIGIN_PINNED_ACTIONS = /* @__PURE__ */ new Set(["click", "fill", "select", "keyboard", "upload_file"]);
   var ORIGIN_PINNED_READ_ACTIONS = /* @__PURE__ */ new Set([
     "snapshot",
     "find",
@@ -378,7 +370,11 @@
     "select",
     "wait_for",
     "extract_text",
-    "extract_table"
+    "extract_table",
+    // T5 — an OA attachment field is usually inside the form's own iframe, and
+    // an upload that could only reach the main document would send the model
+    // straight back to scripting the page.
+    "upload_file"
   ]);
   async function handleAction(action, payload) {
     const stamped = payload?.__abuFrameId;
@@ -417,6 +413,8 @@
         return fillElement(scope, payload.locator, payload.value);
       case "select":
         return selectOption(scope, payload.locator, payload.value);
+      case "upload_file":
+        return uploadFiles(scope, payload.locator, payload.files);
       case "wait_for":
         return waitFor(scope, payload.condition, payload.timeout);
       case "get_html":
@@ -1331,6 +1329,77 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       success: true,
       message: `Filled field with "${value.slice(0, 50)}"`,
       previousValue
+    };
+  }
+  var UPLOAD_FILE_BYTES_MAX = 20 * 1024 * 1024;
+  function isUploadPayloadFile(value) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+    const file = value;
+    return typeof file.name === "string" && file.name !== "" && typeof file.size === "number" && Number.isFinite(file.size) && file.size >= 0 && typeof file.base64 === "string";
+  }
+  function decodeBase64ToBytes(base64) {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+  }
+  function uploadFiles(scope, locator, rawFiles) {
+    const declared = Array.isArray(rawFiles) ? rawFiles : [];
+    if (declared.length === 0) {
+      throw new Error("Refused: this upload carried no file, so nothing was attached.");
+    }
+    const files = [];
+    for (const entry of declared) {
+      if (!isUploadPayloadFile(entry)) {
+        throw new Error("Refused: the file list for this upload was not readable.");
+      }
+      if (entry.size > UPLOAD_FILE_BYTES_MAX) {
+        throw new Error(`Refused: "${entry.name}" is larger than this browser will attach.`);
+      }
+      files.push(entry);
+    }
+    const el = findElementOrThrow(scope, locator);
+    const input = el;
+    if (input.tagName !== "INPUT" || input.type !== "file") {
+      throw new Error(
+        `That element is a <${el.tagName.toLowerCase()}>, not a file input, so a file cannot be attached to it. Point the locator at the <input type="file"> itself \u2014 pages usually hide it behind a styled button, so { "css": "input[type=file]" } finds it even when it is invisible. Do NOT click the visible button: that opens the operating system's own file picker, which nothing here can fill in.`
+      );
+    }
+    if (input.disabled) {
+      throw new Error("That file input is disabled right now, so nothing was attached.");
+    }
+    if (files.length > 1 && !input.multiple) {
+      throw new Error(
+        `This input accepts one file and ${files.length} were offered. Nothing was attached \u2014 send them one call at a time, or find the field that accepts several.`
+      );
+    }
+    const transfer = new DataTransfer();
+    for (const file of files) {
+      const bytes = decodeBase64ToBytes(file.base64);
+      if (bytes.byteLength !== file.size) {
+        throw new Error(
+          `Refused: "${file.name}" did not arrive intact (${file.size} bytes expected, ${bytes.byteLength} received). Nothing was attached.`
+        );
+      }
+      transfer.items.add(new File([bytes], file.name));
+    }
+    highlightElement(input);
+    showStatus(`Upload: ${files.map((f) => f.name).join(", ")}`, "info");
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const attached = Array.from(input.files ?? []).map((f) => ({ name: f.name, size: f.size }));
+    if (attached.length === 0) {
+      return {
+        success: false,
+        message: "The file was handed to the input and the field is empty again \u2014 the page rejected it (an accept filter, a size rule, or its own onchange). Read the page for the message it showed, and do not retry the same file.",
+        attached
+      };
+    }
+    return {
+      success: true,
+      message: `Attached ${attached.length} file(s) to the input: ${attached.map((f) => f.name).join(", ")}. The field now holds exactly these. Submit the form as a separate step.`,
+      attached
     };
   }
   var DROPDOWN_OPEN_TIMEOUT_MS = 1500;

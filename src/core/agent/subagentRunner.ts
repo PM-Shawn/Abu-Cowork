@@ -1,3 +1,8 @@
+import { acquirePluginUse } from '../plugin/runtimeLease';
+import { assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
+import { acknowledgeDispatchInstruction } from './dispatchInput';
+import { digestApprovalParameters } from './teamConfirmationIdentity';
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Subagent run-session registry + selector — the ONLY entry point callers
  * should use to run a subagent going forward (P1-3a "正式步 3a", see
@@ -84,6 +89,7 @@ import {
   type SubagentStopReason,
 } from './subagentLoop';
 import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
@@ -207,7 +213,15 @@ export interface SubagentRunParams {
   runPermissionCeiling?: import('../permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Shell-resolved `## Preloaded Skills` section for `agent.skills`. MUST
+   *  cross the wire: the sidecar hosts `runSubagentLoop` with an empty skill
+   *  loader, so a sidecar-run subagent can only get its declared skills
+   *  preloaded from here. Omitting it would make `skills:` silently no-op for
+   *  exactly the runtime that serves most runs. */
+  preloadedSkills?: SubagentLoopOptions['preloadedSkills'];
   initiatedBy?: import('./runInteractionMode').RunInitiator;
+  /** Hand-off key so the member loop (wherever it runs) can take direct instructions. */
+  dispatchKey?: string;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -268,6 +282,7 @@ export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
   // source of the same fact. The in-process engine reads it from these options
   // directly, which is why the field exists at all.
   'agentRunId',
+  'teamApprovalDispatch',
 ] as const satisfies readonly (keyof SubagentLoopOptions)[];
 
 export type SubagentLoopOptionsWireExhaustive = AssertNever<
@@ -374,6 +389,8 @@ function buildTrustedSubagentToolContext(
     loopId: session.options.parentLoopId,
     conversationId: session.options.parentConversationId,
     agentRunId: session.runId,
+    agentName: session.options.agent.name,
+    teamApprovalDispatch: session.options.teamApprovalDispatch,
     imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
     interactionMode: resolveSubagentInteractionMode(session.options),
     // Inherited from the parent run at delegation time — the sidecar's copy
@@ -712,7 +729,9 @@ function buildSubagentRunParams(
     runPermissionCeiling: options.runPermissionCeiling,
     triggerId: options.triggerId,
     scheduledTaskId: options.scheduledTaskId,
+    preloadedSkills: options.preloadedSkills,
     initiatedBy: options.initiatedBy,
+    dispatchKey: options.dispatchKey,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
@@ -757,7 +776,31 @@ function cancelledSubagentResult(): SubagentResult {
  * protocol and fallback discipline.
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
-  const trustedOptions = withTrustedSkillCommandApproval(options);
+  const release = acquirePluginUse(pluginOwnerForAgent(options.agent));
+  try { return await runAdmittedSubagent(options); } finally { release(); }
+}
+
+async function runAdmittedSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  assertPluginAgentEnabled(options.agent);
+  // Register the original dispatch before any child tool can request consent.
+  // The retry association is shell-owned and includes the actual delegated task.
+  const dispatchId = options.dispatchKey;
+  const fingerprint = dispatchId ? await digestApprovalParameters({
+    agent: options.agent.name, task: options.task, context: options.context,
+  }) : undefined;
+  if (dispatchId && fingerprint && options.parentConversationId && options.parentLoopId) {
+    useTeamConfirmationStore.getState().claimDispatch(options.parentConversationId,
+      options.parentLoopId, dispatchId, fingerprint, options.agent.name);
+  }
+  const trustedOptions = withTrustedSkillCommandApproval({ ...options,
+    teamApprovalDispatch: dispatchId && fingerprint ? { id: dispatchId, fingerprint } : undefined,
+    ...(dispatchId ? { onProgress: (event: SubagentProgressEvent) => {
+      if (dispatchId && event.type === 'instruction-consumed') {
+        acknowledgeDispatchInstruction(dispatchId, event.instructionId);
+      }
+      options.onProgress?.(event);
+    } } : {}),
+  });
   if (options.authorizationScopeId === undefined) {
     return runSubagentForSignal(trustedOptions);
   }
@@ -794,6 +837,7 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
  */
 async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
   try {
+    assertPluginAgentEnabled(options.agent);
     return await runSubagentLoop(options);
   } finally {
     disposeRunBrowserViews(options.parentConversationId, options.agentRunId);
@@ -816,11 +860,29 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   const mcpPreflightFailure = buildSubagentMcpPreflightFailure(options.agent, availableTools);
   if (mcpPreflightFailure) return mcpPreflightFailure;
 
+  // Resolve `agent.skills` HERE, before either runtime is chosen: this is the
+  // shell, the only place the skill loader's index is populated (the sidecar
+  // hosts the loop with an empty loader). A caller that already resolved one
+  // — `agentLoop.ts`'s `@agent` route, whose section is precomputed with the
+  // rest of the entry orchestration — keeps its own.
+  // The `await` is taken ONLY when the agent actually declares skills: for
+  // every other run this stays synchronous up to dispatch, which the
+  // reverse-channel tests (and the pre-commit ordering of
+  // `ensureHandlersRegistered` before the first `sidecarRequest`) rely on.
+  let withPreloadedSkills = options;
+  if (!options.preloadedSkills && (options.agent?.skills?.length ?? 0) > 0) {
+    withPreloadedSkills = {
+      ...options,
+      preloadedSkills: (await resolvePreloadedSkills(options.agent)) ?? undefined,
+    };
+  }
+
   // Generate an app-owned scope for EVERY runtime path. Provider tool-call ids
   // are only run-local; exposing them raw to the parent causes cross-agent
   // collisions in child-step replay and hidden image persistence.
   const runId = createSubagentProgressScopeId();
-  const localOptions = scopeSubagentLoopProgress(options, runId);
+  assertPluginAgentEnabled(options.agent);
+  const localOptions = scopeSubagentLoopProgress(withPreloadedSkills, runId);
 
   if (getSidecarStatus() !== 'running') {
     logger.debug('subagent path selected', { path: 'local', runId, sidecarStatus: getSidecarStatus() });
@@ -833,7 +895,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
 
   let params: SubagentRunParams;
   try {
-    params = buildSubagentRunParams(runId, options, availableTools);
+    params = buildSubagentRunParams(runId, withPreloadedSkills, availableTools);
   } catch (err) {
     // Failed before any dispatch — no tool has executed. Fall back to the
     // in-process engine, which hits the identical real error path (e.g.
@@ -846,7 +908,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   }
 
   const sessionOptions: SubagentLoopOptions = {
-    ...options,
+    ...withPreloadedSkills,
     workspaceReader: { getCurrentPath: () => params.workspacePathSnapshot },
   };
   const session: RunSession = {
@@ -918,14 +980,23 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     }
     if (!session.firstToolInvokeArrived) {
       // Nothing executed yet — safe to retry the whole run in-process.
+      // Retry from `withPreloadedSkills`, NOT the pre-resolution `options`:
+      // this is a rerun of the same agent, so it must carry the same prompt,
+      // and the shell already paid for resolving `agent.skills` above. A stale
+      // sidecar that rejects the `preloadedSkills` wire field through its
+      // unknown-key guard lands precisely here, so this is exactly the path
+      // where dropping the section is most likely.
+      // The scope id is deliberately fresh (no `runId`): progress the sidecar
+      // may already have published under `runId` is dropped, so the rerun must
+      // not reuse that namespace — see the fallback-scope test.
       logger.warn('subagent transport failed before first tool — retrying in-process', {
         runId,
         error: err instanceof Error ? err.message : String(err),
       });
-      // A fresh scope id on purpose (the sidecar attempt may already have
-      // emitted progress under `runId`); the rerun therefore owns — and
-      // releases — its own browser tabs.
-      return runLocalSubagentLoop(scopeSubagentLoopProgress(options));
+      // The rerun therefore owns — and releases — its own browser tabs, which
+      // is why it goes through `runLocalSubagentLoop` rather than the bare
+      // engine.
+      return runLocalSubagentLoop(scopeSubagentLoopProgress(withPreloadedSkills));
     }
     logger.warn('subagent transport failed after tool execution — surfacing error, no rerun', {
       runId,

@@ -8,6 +8,7 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
+import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginToolPolicy';
 import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { checkToolApproval } from './registry';
 import {
@@ -156,6 +157,14 @@ describe('browser automation approval gate', () => {
     expect(second.decision).toBe('allow');
     expect(asked).toHaveLength(1);
     expect(asked[0]).toContain('abu-browser__click');
+  });
+
+  it('a team browser approval never silently becomes a broader conversation grant (F1)', async () => {
+    const confirm = vi.fn(async () => true);
+    const context = { conversationId: 'team-browser', teamRoster: ['A'], agentName: 'A', loopId: 'l', toolCallId: 't' };
+    await checkToolApproval('abu-browser__click', { ref: 'e1' }, context, confirm);
+    await checkToolApproval('abu-browser__fill', { ref: 'e2', value: 'other action' }, context, confirm);
+    expect(confirm).toHaveBeenCalledTimes(2);
   });
 
   it('denies the action when the user declines', async () => {
@@ -631,4 +640,140 @@ describe('self-extension approval gate', () => {
       expect(confirm).not.toHaveBeenCalled();
     },
   );
+});
+
+describe('plugin tool approval gate', () => {
+  beforeEach(() => {
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    setPluginServerNames(['weather']);
+    forgetPluginGrants();
+  });
+
+  const collectingConfirm = (asked: string[]) =>
+    (async (info: { command: string }) => { asked.push(info.command); return true; }) as never;
+
+  // The whole point of pluginToolPolicy: before it, `consequence` was undefined
+  // for every non-browser MCP server, so `decideConsequentialTool` returned
+  // 'allow' — identically in all three modes. This asserts the gap is closed
+  // in each of them, not just the strictest one.
+  it.each(['standard', 'smart', 'full'] as const)(
+    'asks before running a plugin-contributed MCP tool in %s mode',
+    async (mode) => {
+      useSettingsStore.setState({ permissionMode: mode });
+      const asked: string[] = [];
+      const decision = await checkToolApproval(
+        'weather__get_forecast', {}, { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(asked).toHaveLength(1);
+      expect(asked[0]).toContain('weather__get_forecast');
+    },
+  );
+
+  it('does not ask for an MCP server no plugin contributed', async () => {
+    const asked: string[] = [];
+    await checkToolApproval(
+      'handwired__do_thing', {}, { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+    expect(asked).toHaveLength(0);
+  });
+
+  it('denies when the user declines', async () => {
+    const decision = await checkToolApproval(
+      'weather__get_forecast', {}, { conversationId: 'conv-1' } as never,
+      (async () => false) as never,
+    );
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('a team plugin approval cannot become a server-wide conversation grant (F1)', async () => {
+    const asked: string[] = [];
+    const context = { conversationId: 'team-plugin', teamRoster: ['A'], agentName: 'A', loopId: 'l', toolCallId: 't' };
+    await checkToolApproval('weather__get_forecast', {}, context, collectingConfirm(asked));
+    await checkToolApproval('weather__list_stations', {}, context, collectingConfirm(asked));
+    expect(asked).toHaveLength(2);
+  });
+
+  it('only asks once per conversation for the same plugin', async () => {
+    const asked: string[] = [];
+    const confirm = collectingConfirm(asked);
+    await checkToolApproval('weather__get_forecast', {}, { conversationId: 'conv-1' } as never, confirm);
+    await checkToolApproval('weather__list_stations', {}, { conversationId: 'conv-1' } as never, confirm);
+    expect(asked).toHaveLength(1);
+  });
+
+  it('does not let one plugin approval cover a different plugin', async () => {
+    setPluginServerNames(['weather', 'notes']);
+    const asked: string[] = [];
+    const confirm = collectingConfirm(asked);
+    await checkToolApproval('weather__get_forecast', {}, { conversationId: 'conv-1' } as never, confirm);
+    await checkToolApproval('notes__delete_all', {}, { conversationId: 'conv-1' } as never, confirm);
+    expect(asked).toHaveLength(2);
+  });
+
+  it('fails closed when there is no confirmation channel', async () => {
+    // A headless/background run must not become the cheap path to executing
+    // third-party plugin code the user never saw.
+    const decision = await checkToolApproval(
+      'weather__get_forecast', {}, { conversationId: 'conv-1' } as never, undefined,
+    );
+    expect(decision.decision).toBe('deny');
+  });
+
+  it('denies plugin tools under a scheduled run ceiling', async () => {
+    const decision = await checkToolApproval(
+      'weather__get_forecast', {},
+      { conversationId: 'conv-1', runPermissionCeiling: buildTriggerRunPermissionCeiling('scheduled') } as never,
+      (async () => true) as never,
+    );
+    expect(decision.decision).toBe('deny');
+  });
+});
+
+describe('team file retry boundary (F1/F2)', () => {
+  it('approves exact write+overwrite-read parameters in a call scope and disposes it', async () => {
+    const { requestFilePermission, setLoopContext, clearLoopContext } = await import('../agent/permissionBridge');
+    const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+    const { usePermissionStore } = await import('../../stores/permissionStore');
+    const { isInScopedAuthorizedWorkspace } = await import('./pathSafety');
+    useChatStore.setState({ conversations: { 'file-team': { id: 'file-team', teamId: 't', title: 't', createdAt: 1, updatedAt: 1, status: 'running', messages: [] } } });
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+    useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
+    policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (path) => String(path));
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+    const path = '/Users/testuser/ExternalReview/exact.txt';
+    const input = { path, content: 'approved contents' };
+    const context = { conversationId: 'file-team', loopId: 'original-file', toolCallId: 'call-1', agentName: 'A', teamRoster: ['A'],
+      teamApprovalDispatch: { id: 'dispatch-1', fingerprint: 'task' } };
+    const makeLoop = (loopId: string) => ({ loopId, conversationId: 'file-team', signal: new AbortController().signal,
+      commandConfirmCallback: async () => false, filePermissionCallback: requestFilePermission, eventRouter: {} as never, toolCallToStepId: new Map() });
+    setLoopContext('original-file', makeLoop('original-file'));
+    setLoopContext('retry-file', makeLoop('retry-file'));
+    let scope: string | undefined;
+    const callback: typeof requestFilePermission = async (request, loopId) => {
+      scope = request.teamAuthorizationScopeId;
+      return requestFilePermission(request, loopId);
+    };
+    try {
+      expect((await checkToolApproval('write_file', input, context, undefined, callback)).decision).toBe('deny');
+      const pending = Object.values(useTeamConfirmationStore.getState().pending)[0];
+      expect(pending).toMatchObject({ capability: 'write', additionalCapabilities: ['read'] });
+      const selected = useTeamConfirmationStore.getState().selectRetry(pending.id, 'once');
+      useTeamConfirmationStore.getState().beginRetry('file-team', 'retry-file', selected);
+      useTeamConfirmationStore.getState().claimDispatch('file-team', 'retry-file', 'retry-dispatch', 'task', 'A');
+      const retryContext = { ...context, loopId: 'retry-file', toolCallId: 'call-2', teamApprovalDispatch: { id: 'retry-dispatch', fingerprint: 'task' } };
+      expect((await checkToolApproval('write_file', { ...input, content: 'different contents' }, retryContext, undefined, callback)).decision).toBe('deny');
+      const outcome = await checkToolApproval('write_file', input, retryContext, undefined, callback);
+      expect(outcome, JSON.stringify(outcome)).toMatchObject({ decision: 'allow' });
+      expect(scope).toBeDefined();
+      expect(isInScopedAuthorizedWorkspace(path, 'write', scope)).toBe(false);
+      expect(isInScopedAuthorizedWorkspace(path, 'read', scope)).toBe(false);
+      expect(usePermissionStore.getState().hasPermission(path, 'write')).toBe(false);
+      expect((await checkToolApproval('write_file', input, retryContext, undefined, callback)).decision).toBe('deny');
+    } finally { clearLoopContext('original-file'); clearLoopContext('retry-file'); useTeamConfirmationStore.getState().clearConversation('file-team'); }
+  });
 });

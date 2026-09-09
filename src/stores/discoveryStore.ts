@@ -1,9 +1,72 @@
 import { create } from 'zustand';
+import { homeDir } from '@tauri-apps/api/path';
 import type { SkillMetadata, SubagentMetadata } from '../types';
 import { skillLoader } from '../core/skill/loader';
 import { agentRegistry } from '../core/agent/registry';
+import { readInstalled, readInstalledResult, type InstalledPlugin } from '../core/plugin/installedStore';
 import { useSettingsStore } from './settingsStore';
 import { useWorkspaceStore } from './workspaceStore';
+
+/**
+ * Resolve every agent's plugin provenance against `installed.json`.
+ *
+ * `installed.json`'s `contributed.agents` — the same list uninstall trusts — is
+ * the SOLE authority on which agents belong to a plugin. A `source:` parsed off
+ * an AGENT.md is only a cache of it:
+ *
+ *  - a name a record claims is labelled with THAT record's key, whatever the
+ *    file said (a fresh install stamps the file, but the file can also be stale,
+ *    hand-edited, or written by the `save_agent` tool);
+ *  - a name no record claims loses any `source` it carried in, so a user's own
+ *    agent cannot lock itself behind the plugin read-only gates (delete/save
+ *    disabled in `AgentsSection`/`AgentEditor`) just because the string
+ *    `source: plugin:x` reached its frontmatter — nor can an orphan left behind
+ *    by a refused `removeContributedAgent`.
+ *
+ * Backfill is the same rule seen from the other side: an agent installed before
+ * the `source:` key existed has no provenance on disk, and rewriting its
+ * AGENT.md would edit a file that now lives in the user's `~/.abu/agents`, so
+ * the label is restored here, in memory.
+ *
+ * Lives in the store, not in `core/agent/registry`, on purpose: the registry
+ * must not learn about `core/plugin` (the plugin installer already depends on
+ * the registry, and the reverse edge would close the cycle).
+ */
+export function applyPluginAgentSources(
+  agents: SubagentMetadata[],
+  installed: readonly InstalledPlugin[],
+): SubagentMetadata[] {
+  const owner = new Map<string, string>();
+  for (const record of installed) {
+    for (const name of record.contributed?.agents ?? []) {
+      if (!owner.has(name)) owner.set(name, record.key);
+    }
+  }
+
+  return agents.map((agent) => {
+    const plugin = owner.get(agent.name);
+    if (plugin) {
+      if (agent.source?.plugin === plugin) return agent;
+      return { ...agent, source: { kind: 'plugin' as const, plugin } };
+    }
+    if (!agent.source) return agent;
+    const { source: _unclaimed, ...withoutSource } = agent;
+    return withoutSource;
+  });
+}
+
+/**
+ * `installed.json`, or `[]`. Discovery must not fail because the plugin
+ * manifest could not be read — the agents themselves are already on disk and
+ * usable; only the provenance label is lost.
+ */
+async function readInstalledPluginsSafely(): Promise<InstalledPlugin[]> {
+  try {
+    return await readInstalled(await homeDir());
+  } catch {
+    return [];
+  }
+}
 
 interface DiscoveryState {
   skills: SkillMetadata[];
@@ -25,7 +88,7 @@ interface DiscoveryActions {
    *   - pass `null` explicitly → scan with no workspace (global scan)
    *   - pass a string → scan that workspace
    */
-  refresh: (workspaceOverride?: string | null) => Promise<void>;
+  refresh: (workspaceOverride?: string | null, options?: { strict?: boolean }) => Promise<void>;
 }
 
 export type DiscoveryStore = DiscoveryState & DiscoveryActions;
@@ -44,7 +107,7 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
   agents: [],
   isLoading: false,
 
-  refresh: async (workspaceOverride) => {
+  refresh: async (workspaceOverride, options) => {
     lastRefreshAt = Date.now();
     set({ isLoading: true });
     try {
@@ -54,9 +117,14 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
         workspaceOverride !== undefined
           ? workspaceOverride
           : useWorkspaceStore.getState().currentPath;
-      const [skills, agents] = await Promise.all([
+      const [skills, agents, installedPlugins] = await Promise.all([
         skillLoader.discoverSkills(wp),
         agentRegistry.discoverAgents(),
+        options?.strict ? homeDir().then(async home => {
+          const result = await readInstalledResult(home);
+          if (!result.ok) throw result.error;
+          return result.plugins;
+        }) : readInstalledPluginsSafely(),
       ]);
 
       // Auto-disable project-level skills on first discovery (opt-in model).
@@ -68,10 +136,11 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
         useSettingsStore.getState().autoDisableProjectSkills(projectSkillNames);
       }
 
-      set({ skills, agents, isLoading: false });
+      set({ skills, agents: applyPluginAgentSources(agents, installedPlugins), isLoading: false });
     } catch (err) {
       console.warn('Discovery refresh failed:', err);
       set({ isLoading: false });
+      if (options?.strict) throw err;
     }
   },
 }));

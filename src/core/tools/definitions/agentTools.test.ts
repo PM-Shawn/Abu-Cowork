@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
-import { saveAgentTool, delegateToAgentTool } from './agentTools';
+import { saveAgentTool, delegateToAgentTool, useSkillTool } from './agentTools';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
 
 // Mock dependencies not covered by global setup
 vi.mock('../../skill/loader', () => ({
-  skillLoader: { getSkill: vi.fn(), loadSkill: vi.fn(), refreshSkill: vi.fn() },
+  skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn() },
 }));
 vi.mock('../../agent/registry', () => ({
   agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]) },
@@ -65,6 +65,7 @@ vi.mock('../../../utils/pathUtils', () => ({
 }));
 vi.mock('../../../utils/validation', () => ({
   ITEM_NAME_RE: /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/,
+  AGENT_NAME_RE: /^[\p{L}\p{N}](?:[\p{L}\p{N}_-]*[\p{L}\p{N}])?$/u,
 }));
 vi.mock('../helpers/toolHelpers', () => ({
   getSystemInfoData: vi.fn().mockResolvedValue({ home: '/Users/testuser' }),
@@ -72,6 +73,12 @@ vi.mock('../helpers/toolHelpers', () => ({
 vi.mock('../../agent/ports/settingsReader', () => ({
   getSettingsReader: () => ({ getSnapshot: () => ({ disabledAgents: [], disabledSkills: [] }) }),
 }));
+
+const findMissingExpectedFilesMock = vi.fn(async (_files: readonly string[], _ws: string | null | undefined): Promise<string[]> => []);
+vi.mock('../../team/expectedFiles', async () => {
+  const actual = await vi.importActual<typeof import('../../team/expectedFiles')>('../../team/expectedFiles');
+  return { ...actual, findMissingExpectedFiles: (files: readonly string[], ws: string | null | undefined) => findMissingExpectedFilesMock(files, ws) };
+});
 
 describe('delegateToAgentTool', () => {
   beforeEach(async () => {
@@ -421,6 +428,101 @@ describe('delegateToAgentTool', () => {
     expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
   });
 
+  it('appends the instructions the user sent the member mid-run to the hand-off result', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const { noteDeliveredInstruction } = await import('../../agent/dispatchInput');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-notes', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: '默认结束', stopReason: 'completed', toolCallCount: 2 } as never);
+    noteDeliveredInstruction('tc-notes:0', '只看 Q3');
+
+    const text = String(await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'go' },
+      { conversationId: 'conv-1', loopId: 'loop-notes', toolCallId: 'tc-notes', teamRoster: ['researcher'] } as never,
+    ));
+    expect(text).toContain('默认结束');
+    expect(text).toContain('- 只看 Q3');
+    expect(text).toContain('researcher');
+    // Taken once: a second hand-off under the same key starts clean.
+    const again = String(await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'go' },
+      { conversationId: 'conv-1', loopId: 'loop-notes', toolCallId: 'tc-notes', teamRoster: ['researcher'] } as never,
+    ));
+    expect(again).not.toContain('只看 Q3');
+  });
+
+  it('fails the hand-off when a declared expected file is missing, whatever the member said', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const { clearRunBounds, getRunBounds } = await import('../../team/teamRunBounds');
+    clearRunBounds('loop-files');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'writer1', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-files', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: '报告已写好', stopReason: 'completed', toolCallCount: 2 } as never);
+    findMissingExpectedFilesMock.mockResolvedValueOnce(['/ws/writer1/report.md']);
+    const reportMetadata = vi.fn();
+    const ctx = { conversationId: 'conv-1', loopId: 'loop-files', teamRoster: ['writer1'], workspacePath: '/ws', reportMetadata } as never;
+
+    await expect(delegateToAgentTool.execute({ agent_name: 'writer1', task: 'write', expected_files: ['writer1/report.md'] }, ctx))
+      .rejects.toThrow(/report\.md/);
+    expect(findMissingExpectedFilesMock).toHaveBeenCalledWith(['writer1/report.md'], '/ws');
+    expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'error' });
+    expect(getRunBounds('loop-files').consecutiveFailures.writer1).toBe(1);
+
+    // Present → ordinary success, streak reset.
+    const text = await delegateToAgentTool.execute({ agent_name: 'writer1', task: 'write', expected_files: ['writer1/report.md'] }, ctx);
+    expect(String(text)).toContain('报告已写好');
+    expect(getRunBounds('loop-files').consecutiveFailures.writer1).toBeUndefined();
+    clearRunBounds('loop-files');
+  });
+
+  it('blocks a team member after three failed hand-offs in a row (code-enforced bound)', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const { clearRunBounds } = await import('../../team/teamRunBounds');
+    clearRunBounds('loop-bounds');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-bounds', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'gave up', stopReason: 'error', toolCallCount: 1 } as never);
+    const ctx = { conversationId: 'conv-1', loopId: 'loop-bounds', teamRoster: ['researcher'] } as never;
+
+    for (let i = 0; i < 3; i++) {
+      const text = await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'try' }, ctx);
+      expect(String(text)).toContain('gave up');
+    }
+    const refused = String(await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'try again' }, ctx));
+    expect(refused).toMatch(/failed 3 hand-offs in a row|连续 3 次/);
+    expect(refused).toContain('researcher');
+    expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledTimes(3);
+
+    // Outside a team the bound does not apply.
+    const plain = await delegateToAgentTool.execute({ agent_name: 'researcher', task: 'try' }, { conversationId: 'conv-1', loopId: 'loop-bounds' } as never);
+    expect(String(plain)).toContain('gave up');
+    clearRunBounds('loop-bounds');
+  });
+
   it('prefers the shell-owned tool execution authorization scope for nested delegation', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
@@ -502,4 +604,16 @@ describe('save_agent multi-file support', () => {
       expect(result).toContain('scripts/helper.py');
     });
   });
+});
+
+
+it('does not auto-enable a child skill when runtime resolution refuses it', async () => {
+  const { useSettingsStore } = await import('@/stores/settingsStore');
+  const { skillLoader } = await import('@/core/skill/loader');
+  const toggleSkillEnabled = vi.fn();
+  vi.mocked(useSettingsStore.getState).mockReturnValue({ disabledSkills: ['closed-skill'], toggleSkillEnabled } as unknown as ReturnType<typeof useSettingsStore.getState>);
+  vi.mocked(skillLoader.getSkill).mockReturnValue(undefined);
+  const result = await useSkillTool.execute({ skill_name: 'closed-skill' });
+  expect(result).toContain('not found');
+  expect(toggleSkillEnabled).not.toHaveBeenCalled();
 });

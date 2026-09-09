@@ -1,11 +1,12 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SandboxSection from './SandboxSection';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { initLanguage, getI18n } from '@/i18n';
+import type { PermissionMode } from '@/core/permissions/permissionMode';
 
 // Platform is the axis under test: the OS-level sandbox UI must render on
 // BOTH macOS and Windows (electron/commandHost.cjs sandboxes on both), and
@@ -100,5 +101,60 @@ describe('SandboxSection platform gating', () => {
       expect(screen.getByText(t().settings.sandboxMacOSOnly)).toBeInTheDocument();
       expect(screen.queryByText(t().settings.sandboxProtection)).not.toBeInTheDocument();
     });
+  });
+});
+
+describe('SandboxSection permission dropdown', () => {
+  beforeEach(() => {
+    platformState.current = 'macos';
+    initLanguage('zh-CN');
+    useSettingsStore.setState({
+      permissionMode: 'standard',
+      sandboxEnabled: true,
+      networkIsolationEnabled: false,
+      safety: { ...useSettingsStore.getState().safety, enableContentGuard: true },
+    });
+  });
+
+  afterEach(cleanup);
+
+  const modeCopy = () => ({
+    standard: { label: t().settings.permissionModeStandard, description: t().settings.permissionModeStandardDesc },
+    smart: { label: t().settings.permissionModeSmart, description: t().settings.permissionModeSmartDesc },
+    autonomous: { label: t().settings.permissionModeAutonomous, description: t().settings.permissionModeAutonomousDesc },
+  });
+
+  it('keeps mode explanations in the menu without changing settings when opened', () => {
+    render(<SandboxSection />);
+    const copy = modeCopy();
+    expect(screen.queryByText(copy.smart.description)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', {
+      name: `${t().settings.permissionMode}: ${copy.standard.label}`,
+    }));
+
+    for (const { description } of Object.values(copy)) {
+      expect(screen.getByText(description)).toBeVisible();
+    }
+    expect(useSettingsStore.getState().permissionMode).toBe('standard');
+  });
+
+  it.each<PermissionMode>(['standard', 'smart', 'autonomous'])('saves %s from the menu and leaves protection toggles unchanged', mode => {
+    render(<SandboxSection />);
+    const copy = modeCopy();
+    fireEvent.click(screen.getByRole('button', {
+      name: `${t().settings.permissionMode}: ${copy.standard.label}`,
+    }));
+    fireEvent.click(screen.getByRole('button', {
+      name: `${copy[mode].label} ${copy[mode].description}`,
+    }));
+
+    expect(useSettingsStore.getState().permissionMode).toBe(mode);
+    expect(screen.getByRole('button', {
+      name: `${t().settings.permissionMode}: ${copy[mode].label}`,
+    })).toHaveAttribute('aria-expanded', 'false');
+    expect(useSettingsStore.getState().sandboxEnabled).toBe(true);
+    expect(useSettingsStore.getState().networkIsolationEnabled).toBe(false);
+    expect(useSettingsStore.getState().safety.enableContentGuard).toBe(true);
   });
 });

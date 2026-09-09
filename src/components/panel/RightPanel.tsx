@@ -163,7 +163,13 @@ export default function RightPanel() {
     if (getVisibleTabs().length === 0) {
       summaryInitedRef.current = true;
       usePreviewStore.getState().openSummary();
+      // Team-pinned conversation: the team overview sits next to the summary
+      // and is what the user looks for first ("没看到 Agent 团队标签页").
+      if (conversation?.teamId && conversationId) {
+        usePreviewStore.getState().openTeam(conversationId, { activate: true });
+      }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collapsed, hasMessages, conversationId]);
 
   // Auto-expand: only when workspace is attached (meaningful context)

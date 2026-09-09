@@ -373,6 +373,11 @@ export function updateComposerDraft(
   writeComposerDraft(key, update(readComposerDraft(key)));
 }
 
+/** Append a line to the draft (newline-joined, like ChatInput's mergeComposerAppend). */
+export function appendToComposerDraft(key: string, addition: string): void {
+  updateComposerDraft(key, (draft) => ({ ...draft, text: draft.text.trim().length > 0 ? `${draft.text}\n${addition}` : addition }));
+}
+
 /** Debounced callers use this to update only the persistent text layer. */
 export function writePersistedComposerText(key: string, text: string): void {
   if (discardedDraftKeys.has(key)) return;

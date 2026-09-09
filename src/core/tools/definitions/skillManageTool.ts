@@ -376,6 +376,7 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
   let skillName: string;
   let fileCount: number;
   let skipped: string[] = [];
+  let skippedLinks: string[] = [];
 
   try {
     if (sourceType === 'folder') {
@@ -384,11 +385,17 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
         if (r.code === 'ALREADY_EXISTS') {
           return { success: false, error: `${r.message}${t.overwriteHint}` };
         }
+        // A folder that is itself a link is a refusal we can explain and the
+        // model can act on (retry with the real path), not a read failure.
+        if (r.code === 'SYMLINK_ROOT') {
+          return { success: false, error: format(t.symlinkRootRefused, { path: source }) };
+        }
         return { success: false, error: r.message };
       }
       skillName = r.name;
       fileCount = r.fileCount;
       skipped = r.skipped ?? [];
+      skippedLinks = r.skippedSymlinks ?? [];
     } else if (sourceType === 'npm') {
       const r = await installSkillFromNpm(source);
       skillName = r.skillName;
@@ -409,11 +416,17 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
   const skippedNote = skipped.length > 0
     ? format(t.skippedNote, { count: skipped.length, files: skipped.join(getI18n().toolResult.listSeparator) })
     : '';
+  // Its own note, not folded into skippedNote: that one says "hidden file(s)",
+  // which a link is not, and the model has to be told the installed skill is
+  // missing exactly these entries.
+  const linksNote = skippedLinks.length > 0
+    ? format(t.skippedLinksNote, { count: skippedLinks.length, files: skippedLinks.join(getI18n().toolResult.listSeparator) })
+    : '';
 
   return {
     success: true,
     status: 'applied',
-    message: format(t.installed, { name: skillName, count: fileCount, skippedNote }),
+    message: format(t.installed, { name: skillName, count: fileCount, skippedNote, linksNote }),
   };
 }
 

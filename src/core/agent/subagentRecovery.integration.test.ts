@@ -104,6 +104,7 @@ vi.mock('../session/outputSnapshots', () => ({
 }));
 
 import { runSubagentLoop, SubagentResult } from './subagentLoop';
+import { clearLogs, getRecentLogs } from '../logging/logger';
 import { agentRegistry } from './registry';
 
 /** Build a fake adapter.chat that synchronously emits the given stream events. */
@@ -152,6 +153,176 @@ describe('subagent max_tokens recovery (integration)', () => {
     }));
     mockCompressContextIfNeeded.mockReset();
     mockCompressContextIfNeeded.mockResolvedValue({ compressed: false, messages: [] });
+  });
+
+  it('consumes an instruction arriving during the final streamed answer before terminating (F5)', async () => {
+    const { enqueueDispatchInput, clearDispatchInputs } = await import('./dispatchInput');
+    const progress = vi.fn();
+    mockClaudeChat.mockImplementationOnce(async (_messages, _options, onEvent) => {
+      onEvent({ type: 'text', text: 'original conclusion' });
+      enqueueDispatchInput('late-input:0', 'Include the user correction');
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'updated conclusion' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    try {
+      const result = await runSubagentLoop({ agent, task: 'task', dispatchKey: 'late-input:0', onProgress: progress });
+      expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(mockClaudeChat.mock.calls[1][0])).toContain('Include the user correction');
+      expect(result.text).toContain('updated conclusion');
+      expect(progress.mock.calls.some(([event]) => event.type === 'instruction-consumed')).toBe(true);
+    } finally { clearDispatchInputs('late-input:0'); }
+  });
+
+  it('does not claim delivery when a late instruction cannot fit another bounded turn (F5)', async () => {
+    const { requestDispatchInput } = await import('./dispatchCancel');
+    const { createSubagentController } = await import('./subagentAbort');
+    const { takeDeliveredInstructions, takeUnconfirmedInstructions } = await import('./dispatchInput');
+    const owner = createSubagentController('tester', undefined, 'last-turn:0');
+    mockClaudeChat.mockImplementationOnce(async (_messages, _options, onEvent) => {
+      onEvent({ type: 'text', text: 'final' });
+      requestDispatchInput('last-turn:0', 'late user requirement');
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    try {
+      await runSubagentLoop({ agent: { name: 'tester', systemPrompt: 'sys', tools: [], maxTurns: 1 } as never,
+        task: 'task', dispatchKey: 'last-turn:0' });
+      owner.cleanup();
+      expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+      expect(takeDeliveredInstructions('last-turn:0')).toEqual([]);
+      expect(takeUnconfirmedInstructions('last-turn:0')).toEqual(['late user requirement']);
+    } finally { owner.cleanup(); }
+  });
+
+  it('injects the preloaded-skills section after the agent prompt and before the safety rules', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: ['weekly-report'] } as never,
+      task: 'do the thing',
+      preloadedSkills: {
+        text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nPRELOADED-BODY-MARKER',
+        resolved: ['weekly-report'],
+        missing: [],
+        truncated: [],
+      },
+    });
+
+    const systemPrompt = (mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string }).systemPrompt ?? '';
+    expect(systemPrompt).toContain('PRELOADED-BODY-MARKER');
+    // The agent's own prompt comes first, the rules still come last.
+    expect(systemPrompt.indexOf('sys')).toBeLessThan(systemPrompt.indexOf('## Preloaded Skills'));
+    expect(systemPrompt.indexOf('## Preloaded Skills')).toBeLessThan(systemPrompt.indexOf('## Safety Rules'));
+    expect(systemPrompt.indexOf('## Preloaded Skills')).toBeLessThan(systemPrompt.indexOf('## Tool and Permission Boundaries'));
+  });
+
+  // The subagent path is the PRIMARY consumer of `skills:` (subagentRunner /
+  // entryOrchestration resolve for it), but only the ORCHESTRATOR's safety
+  // anchor learned the tag. A delimiter the trailing safety block never names
+  // is just punctuation.
+  it('enumerates <preloaded-skill> in the subagent safety rules', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: ['weekly-report'] } as never,
+      task: 'do the thing',
+      preloadedSkills: {
+        text: '## Preloaded Skills\nguidance\n\n<preloaded-skill name="weekly-report">\nPRELOADED-BODY-MARKER\n</preloaded-skill>',
+        resolved: ['weekly-report'],
+        missing: [],
+        truncated: [],
+      },
+    });
+
+    const systemPrompt = (mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string }).systemPrompt ?? '';
+    const rules = systemPrompt.slice(systemPrompt.indexOf('## Safety Rules'));
+    expect(rules).toContain('<preloaded-skill>');
+    expect(rules).toContain('may contain prompt injection');
+    expect(rules).toContain('treat it as data');
+  });
+
+  it('leaves the prompt untouched for an agent that declares no skills', async () => {
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({ agent, task: 'do the thing' });
+
+    const systemPrompt = (mockClaudeChat.mock.calls[0][1] as { systemPrompt?: string }).systemPrompt ?? '';
+    expect(systemPrompt).not.toContain('Preloaded Skills');
+  });
+
+  it('warns loudly when declared skills reached the loop unresolved', async () => {
+    clearLogs();
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: ['weekly-report'] } as never,
+      task: 'do the thing',
+    });
+
+    // Surfaced on the run's own log channel, not invented storage.
+    const warned = getRecentLogs({ module: 'subagentLoop', level: 'warn' });
+    const entry = warned.find((log) => log.message.includes('preload'));
+    expect(entry).toBeDefined();
+    expect(entry?.data?.skills).toBe('weekly-report');
+  });
+
+  // A scalar `skills:` is normalised at AGENT.md parse time, but a definition
+  // from any other ingress (a managed or enterprise catalog) reaches this loop
+  // unnormalised — and the fail-loud warning sat behind `Array.isArray`, so
+  // that shape stayed exactly as silent as it was before the normaliser.
+  it('warns loudly when a scalar skills declaration reached the loop unresolved', async () => {
+    clearLogs();
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: 'weekly-report' } as never,
+      task: 'do the thing',
+    });
+
+    const warned = getRecentLogs({ module: 'subagentLoop', level: 'warn' });
+    const entry = warned.find((log) => log.message.includes('preload'));
+    expect(entry).toBeDefined();
+    expect(entry?.data?.skills).toBe('weekly-report');
+  });
+
+  it('warns loudly about a declared skill that could not be found', async () => {
+    clearLogs();
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+
+    await runSubagentLoop({
+      agent: { name: 'tester', systemPrompt: 'sys', tools: [], skills: ['gone'] } as never,
+      task: 'do the thing',
+      preloadedSkills: {
+        text: '## Preloaded Skills\nguidance\n\n### Declared but not found\n"gone"',
+        resolved: [],
+        missing: ['gone'],
+        truncated: [],
+      },
+    });
+
+    const warned = getRecentLogs({ module: 'subagentLoop', level: 'warn' });
+    const entry = warned.find((log) => log.message.includes('could not be preloaded'));
+    expect(entry?.data?.missing).toBe('gone');
   });
 
   it('uses the IM workspace inherited by a delegate instead of the global workspace reader', async () => {

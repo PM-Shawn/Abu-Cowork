@@ -64,10 +64,9 @@ describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
     expect(typeof delta[method]).toBe('function');
     delta[method](...args);
 
-    const expectedArgs = method === 'setMessageToolCalls'
-      ? ['conv-1', 'msg-1', [{ id: 'tc1', name: 'read_file', input: { path: '[REDACTED:path]' } }]]
-      : args;
-    expect(frames).toEqual([{ p: 'chat', m: method, a: expectedArgs }]);
+    // Media-free frames travel verbatim — including absolute paths in tool
+    // inputs (the shell owns the filesystem; redaction is for media transport).
+    expect(frames).toEqual([{ p: 'chat', m: method, a: args }]);
     if (method === 'setContextUsage') {
       const usage = frames[0].a[1] as Record<string, unknown>;
       expect(usage).toMatchObject({

@@ -11,28 +11,32 @@ const iconMap = {
 
 const colorMap = {
   success: {
-    bg: 'bg-[var(--abu-success-bg)] border-[var(--abu-success)]',
+    bg: 'bg-[var(--abu-bg-base)] border-[var(--abu-success)]',
+    tint: 'var(--abu-success-bg)',
     icon: 'text-[var(--abu-success)]',
     title: 'text-[var(--abu-success)]',
     message: 'text-[var(--abu-success)]',
     action: 'bg-[var(--abu-success-solid)] hover:opacity-90 text-white',
   },
   error: {
-    bg: 'bg-[var(--abu-danger-bg)] border-[var(--abu-danger)]',
+    bg: 'bg-[var(--abu-bg-base)] border-[var(--abu-danger)]',
+    tint: 'var(--abu-danger-bg)',
     icon: 'text-[var(--abu-danger)]',
     title: 'text-[var(--abu-danger)]',
     message: 'text-[var(--abu-danger)]',
     action: 'bg-[var(--abu-danger-solid)] hover:opacity-90 text-white',
   },
   info: {
-    bg: 'bg-[var(--abu-info-bg)] border-[var(--abu-info)]',
+    bg: 'bg-[var(--abu-bg-base)] border-[var(--abu-info)]',
+    tint: 'var(--abu-info-bg)',
     icon: 'text-[var(--abu-info)]',
     title: 'text-[var(--abu-info)]',
     message: 'text-[var(--abu-info)]',
     action: 'bg-[var(--abu-info-solid)] hover:opacity-90 text-white',
   },
   warning: {
-    bg: 'bg-[var(--abu-warning-bg)] border-[var(--abu-warning)]',
+    bg: 'bg-[var(--abu-bg-base)] border-[var(--abu-warning)]',
+    tint: 'var(--abu-warning-bg)',
     icon: 'text-[var(--abu-warning)]',
     title: 'text-[var(--abu-warning)]',
     message: 'text-[var(--abu-warning)]',
@@ -54,6 +58,7 @@ export default function ToastContainer() {
         return (
           <div
             key={toast.id}
+            style={{ backgroundImage: `linear-gradient(${colors.tint}, ${colors.tint})` }}
             className={cn(
               'pointer-events-auto flex items-start gap-2.5 px-4 py-3 rounded-xl border shadow-lg max-w-[360px] animate-in slide-in-from-right-5 fade-in duration-200',
               colors.bg

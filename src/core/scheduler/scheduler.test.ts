@@ -92,13 +92,16 @@ vi.mock('../im/outputSender', () => ({
 vi.mock('../../utils/notifications', () => ({
   notifyScheduledTaskCompleted: vi.fn(),
   notifyScheduledTaskError: vi.fn(),
+  notifyScheduledTeamRunUnconfirmed: vi.fn(),
 }));
 
 // Import after mocks
-import { schedulerEngine } from './scheduler';
+import { countLeadingErrorRuns, schedulerEngine } from './scheduler';
 import { runAgentLoop } from '../agent/agentLoop';
 import { notifyScheduledTaskCompleted } from '../../utils/notifications';
 import { outputSender } from '../im/outputSender';
+import { notifyScheduledTeamRunUnconfirmed } from '../../utils/notifications';
+import { useTeamStore } from '../../stores/teamStore';
 import {
   buildBrowserSignalContext,
   buildBrowserSignalRecord,
@@ -193,6 +196,29 @@ describe('SchedulerEngine output delivery by exit reason', () => {
 
     expect(outputSender.buildMessage).toHaveBeenCalled();
     expect(latestRunStatus(task.id)).toBe('completed');
+  });
+
+  it('tells the user when a strict team ran unattended (split never confirmed)', async () => {
+    useTeamStore.setState({ teams: [
+      { id: 't-strict', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1', 'r2'], createdAt: 1, requirePlanApproval: true },
+      { id: 't-loose', name: '闲聊小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 },
+    ] });
+    try {
+      const strict = makeTask({ id: 'task-strict', name: '周报', teamId: 't-strict' });
+      const loose = makeTask({ id: 'task-loose', name: '闲聊', teamId: 't-loose' });
+      useScheduleStore.setState({ tasks: { [strict.id]: strict, [loose.id]: loose } });
+      vi.mocked(runAgentLoop).mockResolvedValue({ reason: 'completed' });
+
+      await schedulerEngine.runNow(strict.id);
+      expect(notifyScheduledTeamRunUnconfirmed).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(notifyScheduledTeamRunUnconfirmed).mock.calls[0][0]).toContain('周报');
+      expect(vi.mocked(notifyScheduledTeamRunUnconfirmed).mock.calls[0][0]).toContain('数据小队');
+
+      await schedulerEngine.runNow(loose.id);
+      expect(notifyScheduledTeamRunUnconfirmed).toHaveBeenCalledTimes(1);
+    } finally {
+      useTeamStore.setState({ teams: [] });
+    }
   });
 
   /**
@@ -1243,6 +1269,18 @@ describe('SchedulerEngine permission tier', () => {
     await schedulerEngine.runNow(task.id);
 
     expect(latestRunError(task.id)).toBe('boom');
+  });
+});
+
+describe('countLeadingErrorRuns', () => {
+  const run = (status: string) => ({ status });
+  it('counts the newest consecutive failures, skipping in-flight runs', () => {
+    expect(countLeadingErrorRuns([])).toBe(0);
+    expect(countLeadingErrorRuns([run('error')])).toBe(1);
+    expect(countLeadingErrorRuns([run('error'), run('running'), run('error')])).toBe(2);
+    // A success ends the streak — older failures don't count.
+    expect(countLeadingErrorRuns([run('error'), run('completed'), run('error')])).toBe(1);
+    expect(countLeadingErrorRuns([run('completed'), run('error'), run('error')])).toBe(0);
   });
 });
 

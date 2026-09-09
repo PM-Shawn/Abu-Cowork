@@ -52,6 +52,12 @@ const {
 } = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
+const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
+const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
+const { createOperationSession } = require('./pluginOperationSession.cjs');
+const { PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost } = require('./pluginRegistryHost.cjs');
+const { PLUGIN_AUTHOR_CHANNEL, createPluginAuthorHost } = require('./pluginAuthorHost.cjs');
+const { PLUGIN_OPERATION_CHANNEL, createPluginOperationHost } = require('./pluginOperationHost.cjs');
 const {
   SAVE_IMAGE_ATTACHMENT_CHANNEL,
   saveImageAttachment,
@@ -794,6 +800,19 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app, options = {}) {
+  const pluginOperationSession = createOperationSession(app.getPath('home'));
+  const pluginSnapshots = createPluginSnapshotHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.mutate(input) });
+  const pluginAuthors = createPluginAuthorHost({ home: app.getPath('home'), session: pluginOperationSession, snapshots: pluginSnapshots });
+  const pluginRegistry = createPluginRegistryHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.registry(input) });
+  const { safeStorage } = require('electron');
+  const pluginOperations = createPluginOperationHost({
+    home: app.getPath('home'), registry: pluginRegistry, snapshots: pluginSnapshots, session: pluginOperationSession,
+    encrypt: raw => {
+      if (!safeStorage.isEncryptionAvailable() || safeStorage.getSelectedStorageBackend?.() === 'basic_text') throw new Error('Plugin operation: secure storage unavailable');
+      return safeStorage.encryptString(raw);
+    },
+    decrypt: bytes => safeStorage.decryptString(bytes),
+  });
   migrationStartupBlock = null;
   migrationStartupPending = false;
   migrationBackupPath = null;
@@ -1196,7 +1215,19 @@ function registerTauriHost(app, options = {}) {
   // isQuitting guard BEFORE the window 'close' fires, so the preventable-close
   // handler lets the quit through instead of cancelling it — otherwise Cmd+Q
   // with closeAction='minimize' would just hide the window and never quit.
-  app.on('before-quit', () => {
+  let pluginRegistryQuitReady = false;
+  let pluginRegistryQuitPending = false;
+  app.on('before-quit', (event) => {
+    if (!pluginRegistryQuitReady) {
+      event.preventDefault();
+      if (!pluginRegistryQuitPending) {
+        pluginRegistryQuitPending = true;
+        void pluginOperations.shutdown().then(() => pluginRegistry.shutdown()).finally(() => {
+          pluginRegistryQuitReady = true;
+          app.quit();
+        });
+      }
+    }
     quitting = true;
     // No orphans: tear down every live browser WebContentsView (same
     // no-orphan intent as ptyHost's killAllPtys / mcpBridge's
@@ -1265,6 +1296,12 @@ function registerTauriHost(app, options = {}) {
       // just returns the value, so it resolves before reaching the caller.
       const desktopResult = desktopDispatch(app, cmd, { args: a, body, headers, event: e });
       if (desktopResult !== DESKTOP_MISS) return desktopResult;
+      // Plugin remote git fetch (B2-A) — `plugin_git_fetch` clones a remote
+      // plugin source into the plugin-packages root, sha-pinned. Privileged
+      // (spawns git, writes fs); the renderer only names the source + dest,
+      // both re-validated here. Returns a Promise; this handler awaits it.
+      const pluginGitResult = pluginGitDispatch(cmd, { args: a }, { packagesRoot: path.join(app.getPath('home'), '.abu', 'plugin-packages') });
+      if (pluginGitResult !== PLUGIN_GIT_MISS) return pluginGitResult;
       // Preview server (slice F13) — get_preview_server_info/register_preview_root/
       // unregister_preview_root, backed by a real loopback Node http server
       // (electron/previewServer.cjs) since the frontend hardcodes the `http://`
@@ -1478,6 +1515,31 @@ function registerTauriHost(app, options = {}) {
   ipcMain.handle(SAVE_IMAGE_ATTACHMENT_CHANNEL, async (e, request = {}) => {
     assertTrustedMainIpcSender(e);
     return saveImageAttachment(app, e, request, { dialog, BrowserWindow });
+  });
+
+  ipcMain.handle(PLUGIN_REGISTRY_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return pluginOperations.external(payload.action, () => pluginRegistry.dispatch(payload.action, payload.request));
+  });
+
+  ipcMain.handle(PLUGIN_OPERATION_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return pluginOperations.dispatch(e.sender, payload.action, payload.request);
+  });
+
+  ipcMain.handle(PLUGIN_AUTHOR_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid plugin author request');
+    return pluginAuthors.dispatch(e.sender, payload.action, payload.request);
+  });
+
+  ipcMain.handle(PLUGIN_SNAPSHOT_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    if (!['prepare', 'inspect', 'read', 'validate', 'materialize', 'release'].includes(payload.action)) {
+      throw new Error('Plugin snapshot: unsupported action');
+    }
+    if (payload.action === 'materialize') return pluginOperations.materialize(e.sender, payload.request);
+    return pluginSnapshots[payload.action](e.sender, payload.request);
   });
 
   ipcMain.handle(READ_USER_ATTACHMENT_CHANNEL, async (e, request = {}) => {

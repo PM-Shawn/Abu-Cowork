@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight, Bot } from 'lucide-react';
+import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight, Bot, Users } from 'lucide-react';
 import {
   usePreviewStore,
   useVisibleTabs,
@@ -24,6 +24,7 @@ function tabIcon(tab: WorkspaceTab) {
   if (tab.kind === 'preview') return FileText;
   if (tab.kind === 'browser') return AppWindow;
   if (tab.kind === 'subagent') return Bot;
+  if (tab.kind === 'team') return Users;
   return SquareTerminal;
 }
 
@@ -42,6 +43,7 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
     }
   }
   if (tab.kind === 'subagent') return tab.title || t.workspace.agentTitle;
+  if (tab.kind === 'team') return t.workspace.teamTitle;
   return t.workspace.terminalTitle;
 }
 

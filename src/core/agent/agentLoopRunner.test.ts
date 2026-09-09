@@ -329,6 +329,7 @@ const onPlanModeChangeMock = vi.fn((cb: (conversationId: string, mode: string | 
 });
 const getPlanModeMock = vi.fn().mockReturnValue('off');
 vi.mock('./planMode', () => ({
+  setPlanMode: vi.fn(),
   clearPlanMode: (...a: unknown[]) => clearPlanModeMock(...a),
   onPlanModeChange: (...a: [(conversationId: string, mode: string | null) => void]) => onPlanModeChangeMock(...a),
   getPlanMode: (...a: unknown[]) => getPlanModeMock(...a),
@@ -746,7 +747,7 @@ describe('agentLoopRunner', () => {
       // workspace.authorizedWritablePaths — P1-3d-5 slice 2a — /
       // tool.invoke via the router / hook.emit via the shared hookBridge).
       expect(onSidecarNotification).toHaveBeenCalledTimes(12);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(7);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(8);
       expect(onSidecarConnectionState).toHaveBeenCalledTimes(1);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
@@ -757,6 +758,41 @@ describe('agentLoopRunner', () => {
       expect(requestedMethods).toEqual(
         expect.arrayContaining(['native.invoke', 'tool.list', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
       );
+    });
+
+    it('keeps direct delegated plugins busy for the entire registered run', async () => {
+      const { registerRunSession, unregisterRunSession } = await importFresh();
+      const { acquirePluginChange } = await import('../plugin/runtimeLease');
+      const session = makeSession();
+      session.options.directDelegatePluginKey = 'held@market';
+      registerRunSession('held-run', session);
+      expect(() => acquirePluginChange('held@market')).toThrow();
+      unregisterRunSession('held-run');
+      const release = acquirePluginChange('held@market');
+      release();
+    });
+
+    it('checks shell-owned plugin identity before admitting a direct delegated run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { publishPluginActivation } = await import('../plugin/activationPolicy');
+      ensureHandlersRegistered();
+      chatState.conversations['conv-1'] = {};
+      const session = makeSession();
+      session.options.directDelegateAgentName = 'reviewer';
+      session.options.directDelegatePluginKey = 'demo@market';
+      registerRunSession('delegate-run', session);
+      const handler = handlerFor(onSidecarRequest, 'agent.assertDirectDelegateEnabled');
+      const activation = { enabled: true, root: '/pkg', skillDirs: [], legacySkills: false, agentFiles: [], mcpServers: [] };
+      publishPluginActivation({ 'demo@market': activation }, [], true);
+      expect(await handler({ runId: 'delegate-run' })).toEqual({ allowed: true });
+      publishPluginActivation({ 'demo@market': { ...activation, enabled: false } }, [], true);
+      await expect(Promise.resolve().then(() => handler({ runId: 'delegate-run', pluginKey: 'independent', agentName: 'other' }))).rejects.toThrow();
+      publishPluginActivation({}, [], true);
+      await expect(Promise.resolve().then(() => handler({ runId: 'delegate-run' }))).rejects.toThrow();
+      await expect(Promise.resolve().then(() => handler({ runId: 'missing' }))).rejects.toThrow();
+      session.options.directDelegatePluginKey = undefined;
+      session.abortRequested = true;
+      await expect(Promise.resolve().then(() => handler({ runId: 'delegate-run' }))).rejects.toThrow();
     });
 
     it('projects connection recovery and failure onto active user-run lifecycle state', async () => {
@@ -1493,6 +1529,23 @@ describe('agentLoopRunner', () => {
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
         interactionMode: 'foreground',
       }));
+    });
+
+    it('tool.invoke retains the startup team snapshot despite later store/wire omissions (F4)', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-team', { ...makeSession(),
+        teamSnapshot: { teamRoster: ['A'], teamRequirePlanApproval: true },
+      });
+      // The backing conversation no longer carries a resolvable team pin.
+      // That must not turn this already-running session into ordinary Abu.
+      chatState.conversations['conv-1'] = {};
+      const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
+      await handler({ runId: 'run-team', toolName: 'read_file', input: {},
+        context: { teamRoster: undefined, teamRequirePlanApproval: false, agentName: 'forged-member' } });
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toMatchObject({
+        teamRoster: ['A'], teamRequirePlanApproval: true, agentName: undefined,
+      });
     });
 
     it('tool.invoke overwrites a sidecar-forged ceiling with the shell session ceiling', async () => {
@@ -3104,6 +3157,28 @@ describe('agentLoopRunner', () => {
       getSettingsSnapshotMock.mockReturnValue(dispatchSettingsSnapshot());
     });
 
+    it('binds the selected retry to its run and retires approvals and bounds on completion (F1/F7)', async () => {
+      getSidecarStatusMock.mockReturnValue('stopped');
+      const { runAgentLoopDispatched } = await importFresh();
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      const { admitDispatches, getRunBounds } = await import('../team/teamRunBounds');
+      const approvals = useTeamConfirmationStore.getState();
+      approvals.clearConversation('conv-1');
+      const original = { conversationId: 'conv-1', kind: 'command' as const, detail: 'test',
+        identity: { toolName: 'run_command', parametersDigest: 'p', cwd: '/a', loopId: 'original', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
+      const pending = approvals.add(original)!;
+      const id = approvals.selectRetry(pending.id, 'run');
+      const retried = { ...original, identity: { ...original.identity, loopId: 'selected-retry', callId: 'new-call' } };
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        expect(approvals.consumeApproval(retried)).toBe(true);
+        admitDispatches('selected-retry', ['A']);
+        return { reason: 'completed' };
+      });
+      await runAgentLoopDispatched('conv-1', 'retry', { loopId: 'selected-retry', teamConfirmationRetryId: id });
+      expect(approvals.consumeApproval(retried)).toBe(false);
+      expect(getRunBounds('selected-retry').dispatches).toBe(0);
+    });
+
     it('runs in-process (runAgentLoop) when the sidecar is not running', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       getSidecarStatusMock.mockReturnValue('stopped');
@@ -3112,6 +3187,7 @@ describe('agentLoopRunner', () => {
 
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
       expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', {
+        loopId: expect.any(String),
         onMessageTaken: expect.any(Function),
         runtimeEvent: expect.any(Function),
         skillCommandApprovalFactory: expect.any(Function),
@@ -3252,6 +3328,158 @@ describe('agentLoopRunner', () => {
 
         expect(runAgentLoopMock).not.toHaveBeenCalled();
         expect(releaseRunBrowserTabClaimsMock).not.toHaveBeenCalled();
+      });
+    });
+
+    /**
+     * Acceptance F3 — handing back a file downloaded in an ORDINARY
+     * conversation.
+     *
+     * The run report card had exactly three emitters, all of them unattended
+     * (scheduler, trigger engine, file watcher), so a `download` in the chat
+     * window put the file on disk and told the user nothing: no row, no
+     * 「打开」, no 「在文件夹中显示」. This dispatch seam is the one place
+     * every human-initiated run passes through, whichever surface started it,
+     * so the card is emitted from here — and the interesting assertions are
+     * the negative ones, since an emitter that fires on the wrong runs would
+     * double up the unattended card or announce a file nobody fetched.
+     *
+     * The signal buffer is REAL here (only the store is a mock), so this
+     * exercises the same aggregation the tool gate feeds in
+     * `registry.browserDownloadArtifacts.test.ts`.
+     */
+    describe('the downloads card at the end of an ordinary conversation run', () => {
+      /**
+       * Record a finished download the way the browser tool does, from INSIDE
+       * the run — a card built from signals recorded before the run started
+       * would prove nothing about the cursor.
+       */
+      async function downloadDuringRun(): Promise<void> {
+        const signals = await import('../observability/browserSignals');
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          signals.recordBrowserSignal(
+            signals.buildBrowserSignalRecord(
+              {
+                kind: 'download_saved',
+                downloadId: 'dl_f3',
+                name: '月度报表.csv',
+                path: '/Users/me/Library/Application Support/abu/browser-downloads/conv-1/main/月度报表.csv',
+                bytes: 18,
+                mime: 'text/csv',
+              },
+              signals.buildBrowserSignalContext('builtin', 'conv-1', 1_700_000_000_000),
+            ),
+          );
+          return { reason: 'completed' };
+        });
+      }
+
+      /** The report snapshots appended to the conversation by this dispatch. */
+      function appendedReports(): { variant?: string; artifacts?: { name: string }[] }[] {
+        return chatStoreAddMessageMock.mock.calls
+          .map((call) => (call[1] as { browserRunReport?: unknown }).browserRunReport)
+          .filter(Boolean) as { variant?: string; artifacts?: { name: string }[] }[];
+      }
+
+      beforeEach(async () => {
+        getSidecarStatusMock.mockReturnValue('stopped');
+        const signals = await import('../observability/browserSignals');
+        signals.clearBrowserSignals();
+      });
+
+      it('appends one card listing the file the run downloaded', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        await downloadDuringRun();
+
+        await runAgentLoopDispatched('conv-1', '把月度报表导出来', { initiatedBy: 'user' });
+
+        const reports = appendedReports();
+        expect(reports).toHaveLength(1);
+        expect(reports[0].variant).toBe('downloads');
+        expect(reports[0].artifacts?.map((a) => a.name)).toEqual(['月度报表.csv']);
+      });
+
+      it('appends nothing when the run downloaded nothing', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+
+        await runAgentLoopDispatched('conv-1', '今天天气怎么样', { initiatedBy: 'user' });
+
+        expect(appendedReports()).toEqual([]);
+      });
+
+      /**
+       * A file that arrived before the user hit Stop is still the user's.
+       */
+      it('still hands back a file the run fetched before it was stopped', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const signals = await import('../observability/browserSignals');
+        runAgentLoopMock.mockImplementationOnce(async () => {
+          signals.recordBrowserSignal(
+            signals.buildBrowserSignalRecord(
+              {
+                kind: 'download_saved',
+                downloadId: 'dl_f3',
+                name: '月度报表.csv',
+                path: '/Users/me/abu/browser-downloads/conv-1/main/月度报表.csv',
+                bytes: 18,
+              },
+              signals.buildBrowserSignalContext('builtin', 'conv-1', 1_700_000_000_000),
+            ),
+          );
+          return { reason: 'aborted' };
+        });
+
+        await runAgentLoopDispatched('conv-1', '导出报表', { initiatedBy: 'user' });
+
+        expect(appendedReports()).toHaveLength(1);
+      });
+
+      /**
+       * The scheduler, the trigger engine and the file watcher each end their
+       * run by emitting the FULL report, which already lists the same files.
+       * Two cards for one run would be worse than the gap this closes.
+       */
+      it('leaves an automation run to emit its own, fuller card', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        await downloadDuringRun();
+
+        await runAgentLoopDispatched('conv-1', 'scheduled export', { initiatedBy: 'automation' });
+
+        expect(appendedReports()).toEqual([]);
+      });
+
+      /**
+       * A message merely staged into a conversation whose run is still going
+       * ran nothing. The owner of that run is inside its own `finally` and
+       * will report the files; emitting from both would put two cards on one
+       * download.
+       */
+      it('stays silent for a send that was only staged into a running conversation', async () => {
+        const { runAgentLoopDispatched, registerRunSession } = await importFresh();
+        const signals = await import('../observability/browserSignals');
+        registerRunSession('run-existing', makeSession({ conversationId: 'conv-1' }));
+        // The run in flight finishes a download WHILE the staged send is being
+        // parked — i.e. after this call took its cursor, which is the only
+        // moment at which the staged send could steal the other run's file.
+        enqueueUserInputMock.mockImplementationOnce(() => {
+          signals.recordBrowserSignal(
+            signals.buildBrowserSignalRecord(
+              {
+                kind: 'download_saved',
+                downloadId: 'dl_owner',
+                name: '别人的文件.csv',
+                path: '/Users/me/abu/browser-downloads/conv-1/main/别人的文件.csv',
+                bytes: 18,
+              },
+              signals.buildBrowserSignalContext('builtin', 'conv-1', 1_700_000_000_000),
+            ),
+          );
+        });
+
+        const result = await runAgentLoopDispatched('conv-1', '再导一份', { initiatedBy: 'user' });
+
+        expect(result).toEqual({ reason: 'enqueued' });
+        expect(appendedReports()).toEqual([]);
       });
     });
 

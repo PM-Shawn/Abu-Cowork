@@ -33,6 +33,7 @@ import type { SettingsState } from '@/stores/settingsStore';
 import type { DelegatedUserTurn } from '@/core/subagent/delegatedUserTurn';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from '@/core/agent/subagentLoop';
+import { clearDispatchInputs } from '@/core/agent/dispatchInput';
 import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import { isDelegatedUserTurn } from '@/core/subagent/delegatedUserTurn';
 import {
@@ -97,7 +98,12 @@ export interface SubagentHostRunParams {
   runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Shell-resolved `## Preloaded Skills` section for the agent's `skills:`
+   *  field. It can only be resolved shell-side — this process hosts the loop
+   *  with an empty skill loader — so it arrives as rendered text. */
+  preloadedSkills?: SubagentLoopOptions['preloadedSkills'];
   initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
+  dispatchKey?: string;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -184,6 +190,26 @@ function failClosedProgressEvent(event: SubagentProgressEvent): SubagentProgress
   };
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+/** The rendered section is prompt text, so validate its shape rather than
+ *  passing an arbitrary object into the system prompt. */
+function assertPreloadedSkills(value: unknown): void {
+  if (!isRecord(value)) {
+    throw new RpcError(-32602, 'Invalid params: preloadedSkills must be an object');
+  }
+  if (typeof value.text !== 'string' || !value.text) {
+    throw new RpcError(-32602, 'Invalid params: preloadedSkills.text must be a non-empty string');
+  }
+  for (const field of ['resolved', 'missing', 'truncated'] as const) {
+    if (!isStringArray(value[field])) {
+      throw new RpcError(-32602, `Invalid params: preloadedSkills.${field} must be a string array`);
+    }
+  }
+}
+
 function assertDelegatedUserTurn(value: unknown): asserts value is DelegatedUserTurn {
   if (!isDelegatedUserTurn(value)) {
     throw new RpcError(-32602, 'Invalid params: delegatedUserTurn must contain only opaque media refs and trusted origin metadata');
@@ -258,6 +284,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (params.initiatedBy !== undefined && params.initiatedBy !== 'user' && params.initiatedBy !== 'automation') {
     throw new RpcError(-32602, "Invalid params: initiatedBy must be 'user' or 'automation'");
   }
+  if (params.dispatchKey !== undefined && typeof params.dispatchKey !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: dispatchKey must be a string');
+  }
   if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
     throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
   }
@@ -273,6 +302,9 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   }
   if (params.delegatedMediaFallback !== undefined && params.delegatedMediaFallback !== 'text-only') {
     throw new RpcError(-32602, 'Invalid params: delegatedMediaFallback must be text-only');
+  }
+  if (params.preloadedSkills !== undefined) {
+    assertPreloadedSkills(params.preloadedSkills);
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -378,7 +410,11 @@ function createReverseToolInvoker(
   };
 }
 
-const activeRuns = new Map<string, { controller: AbortController }>();
+const activeRuns = new Map<string, { controller: AbortController; dispatchKey?: string }>();
+
+export function isSubagentDispatchActive(key: string): boolean {
+  return Array.from(activeRuns.values()).some((run) => run.dispatchKey === key && !run.controller.signal.aborted);
+}
 
 export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   const params = parseSubagentRunParams(rawParams);
@@ -389,7 +425,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   }
 
   const controller = new AbortController();
-  activeRuns.set(runId, { controller });
+  activeRuns.set(runId, { controller, dispatchKey: params.dispatchKey });
 
   /**
    * Read settings through the sidecar's SHARED mirror, not through this run's
@@ -498,7 +534,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     runPermissionCeiling: params.runPermissionCeiling,
     triggerId: params.triggerId,
     scheduledTaskId: params.scheduledTaskId,
+    preloadedSkills: params.preloadedSkills,
     initiatedBy: params.initiatedBy,
+    dispatchKey: params.dispatchKey,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;
 
@@ -592,6 +630,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   } finally {
     await drainProgress();
     activeRuns.delete(runId);
+    // Instructions queued for this hand-off die with it (the shell-side
+    // registry cannot see runs hosted here).
+    if (params.dispatchKey) clearDispatchInputs(params.dispatchKey);
   }
 }
 

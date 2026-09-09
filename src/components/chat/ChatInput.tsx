@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId } from 'react';
-import { Plus, ArrowUp, Square, X, ChevronDown, FileText } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Plus, ArrowUp, Square, X, ChevronDown, FileText, Paperclip, Users, Sparkles } from 'lucide-react';
 import { ModelSelector } from '@/components/chat/ModelSelector';
-// AgentSelector hidden from UI; import kept for easy restore
-// import AgentSelector from '@/components/chat/AgentSelector';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import TeamAvatar from '@/components/team/TeamAvatar';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
@@ -17,10 +18,14 @@ import {
   type ElectronUserAttachmentToken,
 } from '@/utils/electronHost';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { requestDispatchInput } from '@/core/agent/dispatchCancel';
+import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import { collectMemberDispatches, findRunningDispatch, parseMemberAddress } from '@/components/team/teamDispatches';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -33,6 +38,7 @@ import { mergeFileAttachments } from '@/components/chat/composerFileAttachments'
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
+import { useTeamStore } from '@/stores/teamStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { ImageAttachment } from '@/types';
@@ -145,6 +151,14 @@ interface SuggestionItem {
   name: string;
   description: string;
   trigger?: string;
+  /** True for team entries in the @ list — picking one pins the conversation
+   *  to the team (its leader runs the loop) instead of becoming an @ prefix. */
+  team?: boolean;
+  teamId?: string;
+  /** Team emoji avatar (user-set); absent = default group mark. */
+  avatar?: string;
+  /** True when the agent's AGENT.md was installed by a plugin (provenance tag). */
+  fromPlugin?: boolean;
 }
 
 interface FileAttachmentItem {
@@ -350,6 +364,127 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
   }
 }
 
+/**
+ * Composer suggestion popup — grouped like Codex's composer (user feedback
+ * 2026-09-01): small section headers (团队 / 队员 / 技能), names only (no
+ * descriptions — too long), one scrollable list whose height is clamped to
+ * the space above the composer so the top can never be clipped by the window.
+ */
+const SUGGESTION_MAX_HEIGHT = 320;
+const SUGGESTION_TOP_MARGIN = 16;
+
+function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, pluginTagLabel, optionId, onApply, anchorRef }: {
+  listboxId: string;
+  ariaLabel: string;
+  suggestions: SuggestionItem[];
+  selectedIndex: number;
+  suggestionType: 'skill' | 'agent' | null;
+  sectionLabels: { teams: string; agents: string; skills: string };
+  /** Provenance tag shown on an agent installed by a plugin. */
+  pluginTagLabel: string;
+  optionId: (index: number) => string;
+  onApply: (item: SuggestionItem) => void;
+  /** The composer card the popup opens above. */
+  anchorRef: React.RefObject<HTMLElement | null>;
+}) {
+  // Rendered in a portal with FIXED positioning, anchored above the composer.
+  // As an absolutely-positioned child it was clipped by an overflow ancestor
+  // whenever it grew past the chat area's top edge — the top ~40px (padding +
+  // the first group header) simply were not painted, which read as "the card
+  // is cut off" (real-machine reports 2026-09-01 and 09-03). Same remedy as
+  // ui/search-select: escape the clipping tree, measure the anchor, re-measure
+  // on capture-phase scroll (dialog/chat bodies scroll, not the window) and on
+  // resize. Height is clamped to the space above the anchor so the popup never
+  // leaves the window either.
+  const [style, setStyle] = useState<React.CSSProperties | null>(null);
+  // useEffect, not useLayoutEffect: when the popup is already open on the
+  // composer's FIRST render (a restored draft ending in `@`), it mounts in the
+  // same commit as the anchor div, and React runs a child's layout effects
+  // before it attaches the parent's ref — the anchor would measure as null and
+  // nothing would be rendered until a scroll/resize. Passive effects run after
+  // every ref in the commit is attached. Nothing paints until `style` is set,
+  // so there is no mispositioned first frame either.
+  useEffect(() => {
+    const update = () => {
+      const rect = anchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setStyle({
+        position: 'fixed',
+        left: rect.left,
+        width: rect.width,
+        bottom: window.innerHeight - rect.top + 8,
+        maxHeight: Math.max(120, Math.min(SUGGESTION_MAX_HEIGHT, rect.top - SUGGESTION_TOP_MARGIN)),
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    // The textarea auto-grows without any scroll/resize event; follow the anchor.
+    const observer = typeof ResizeObserver === 'function' && anchorRef.current ? new ResizeObserver(update) : null;
+    if (observer && anchorRef.current) observer.observe(anchorRef.current);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); observer?.disconnect(); };
+  }, [anchorRef]);
+
+  const teamCount = suggestions.filter((item) => item.team).length;
+  const sections: Array<{ label: string; items: Array<{ item: SuggestionItem; idx: number }> }> = suggestionType === 'agent'
+    ? [
+        { label: sectionLabels.teams, items: suggestions.slice(0, teamCount).map((item, i) => ({ item, idx: i })) },
+        { label: sectionLabels.agents, items: suggestions.slice(teamCount).map((item, i) => ({ item, idx: teamCount + i })) },
+      ]
+    : [{ label: sectionLabels.skills, items: suggestions.map((item, i) => ({ item, idx: i })) }];
+
+  if (!style) return null;
+  return createPortal(
+    <div
+      id={listboxId}
+      role="listbox"
+      aria-label={ariaLabel}
+      style={style}
+      // Overlays painted above the window chrome must carve themselves out of
+      // the drag lane (src/styles/index.css) — this one can now overlap it.
+      data-electron-no-drag
+      className="bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto py-1.5 z-[10001]"
+    >
+      {sections.filter((section) => section.items.length > 0).map((section) => (
+        <div key={section.label} role="group" aria-label={section.label}>
+          <div className="px-4 pt-2 pb-1 text-minor text-[var(--abu-text-tertiary)] select-none">{section.label}</div>
+          {section.items.map(({ item, idx }) => (
+            <button
+              key={item.name}
+              id={optionId(idx)}
+              role="option"
+              aria-selected={idx === selectedIndex}
+              onClick={() => onApply(item)}
+              onMouseDown={(event) => event.preventDefault()}
+              className={cn(
+                'btn-ghost w-full flex items-center gap-3 px-4 py-2 text-body text-left',
+                idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
+              )}
+            >
+              <span className={cn(
+                'w-5 text-center font-mono text-minor shrink-0',
+                suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
+              )}>
+                {suggestionType === 'agent' ? (item.team ? <TeamAvatar avatar={item.avatar} size="xs" round className="mx-auto" /> : '@') : '/'}
+              </span>
+              <span className="font-medium text-[var(--abu-text-primary)] truncate">{item.name}</span>
+              {item.fromPlugin && (
+                <span
+                  data-testid="agent-source-plugin"
+                  className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                >
+                  {pluginTagLabel}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
 export default function ChatInput({ variant, onSend, disabled, scenarioPlaceholder, onInputChange }: ChatInputProps) {
   const isWelcome = variant === 'welcome';
   const activeConv = useActiveConversation();
@@ -372,7 +507,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
+  const allTeams = useTeamStore((store) => store.teams);
+  const activeTeams = allTeams;
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selection, setSelection] = useState<ComposerSelection>({
     start: initialDraft.text.length,
@@ -380,11 +518,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   });
   const [isComposing, setIsComposing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composerAnchorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const isMountedRef = useRef(false);
   const compositionResetTimerRef = useRef<number | null>(null);
   const pendingSelectionRef = useRef<ComposerSelection | null>(null);
-  const suggestionOptionRefs = useRef(new Map<number, HTMLButtonElement>());
 
   const currentDraftRef = useRef<ComposerDraft>(initialDraft);
   const currentDraftKeyRef = useRef(draftKey);
@@ -642,6 +780,23 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Save draft & restore on conversation switch. Rich content stays in the
   // module-level session cache; plain text is also persisted for app reloads.
   const activeConvId = activeConv?.id ?? null;
+
+  // Team chip = the conversation's team pin (welcome: the pending pin that
+  // createConversation consumes). Store-derived on purpose — it survives the
+  // welcome→conversation draft-key switch that resets composer-local chips.
+  const pendingTeamId = useChatStore((s) => s.pendingTeamId);
+  const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
+  const setPendingTeamId = useChatStore((s) => s.setPendingTeamId);
+  const pinnedTeamId = activeConvId ? activeConv?.teamId : pendingTeamId;
+  // Selector rather than `activeTeams.find` on the per-render filtered array:
+  // that form makes the React Compiler drop the component's memoization.
+  const pinnedTeam = useTeamStore((store) => (
+    pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId) ?? null : null
+  ));
+  const pinTeam = useCallback((teamId: string | undefined) => {
+    if (activeConvId) setConversationTeamId(activeConvId, teamId);
+    else setPendingTeamId(teamId);
+  }, [activeConvId, setConversationTeamId, setPendingTeamId]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -906,7 +1061,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const disabledAgentSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
   const agentMentionTarget = useMemo((): AgentMentionTarget | null => {
-    if (selectedSkill || selectedAgent || isComposing) return null;
+    // An agent chip does not block a fresh `@` — picking again switches the chip.
+    if (selectedSkill || isComposing) return null;
     // A leading slash command owns the composer suggestion surface even if
     // the command body happens to contain an inline @ token.
     if (/^\s*\/\S*/.test(text)) return null;
@@ -920,15 +1076,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const inlineTarget = findAgentMentionTarget(text, selection.start, selection.end);
     if (inlineTarget) return inlineTarget;
     return null;
-  }, [isComposing, selectedAgent, selectedSkill, selection.end, selection.start, text]);
+  }, [isComposing, selectedSkill, selection.end, selection.start, text]);
 
   // Suggestion type tracking: 'skill' for / prefix, 'agent' for @ prefix
   const suggestionType = useMemo((): 'skill' | 'agent' | null => {
     const trimmed = text.trim();
-    if (!selectedSkill && !selectedAgent) {
-      if (agentMentionTarget) return 'agent';
-      if (trimmed.startsWith('/')) return 'skill';
-    }
+    // `@` keeps working with an agent chip set — picking again switches the
+    // chip (user report 2026-09-04: "已选择 Agent 后再输入 @ 没反应").
+    if (agentMentionTarget) return 'agent';
+    if (!selectedSkill && !selectedAgent && trimmed.startsWith('/')) return 'skill';
     return null;
   }, [agentMentionTarget, text, selectedSkill, selectedAgent]);
 
@@ -936,20 +1092,28 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const suggestions = useMemo((): SuggestionItem[] => {
     const trimmed = text.trim();
 
-    // Agent suggestions when typing @
+    // Agent + team suggestions when typing @. Teams come first with a kind
+    // badge so 用户 can tell 团队 from 单个队员 at a glance (feedback 2026-08-31).
     if (suggestionType === 'agent') {
       const query = agentMentionTarget?.query ?? '';
-      return agents
-        .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
-        .filter((a) => {
-          if (!query) return true;
-          return a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query);
-        })
-        .map((a) => ({
-          name: a.name,
-          description: a.description,
-        }));
+      const teamItems: SuggestionItem[] = activeTeams
+        .filter((team) => !query || team.name.toLowerCase().includes(query))
+        .map((team) => ({ name: team.name, description: t.team.suggestionTeamHint, team: true, teamId: team.id, avatar: team.avatar }));
+      return [
+        ...teamItems,
+        ...agents
+          .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
+          .filter((a) => {
+            if (!query) return true;
+            return a.name.toLowerCase().includes(query) ||
+              a.description.toLowerCase().includes(query);
+          })
+          .map((a) => ({
+            name: a.name,
+            description: a.description,
+            fromPlugin: isPluginOwnedAgent(a),
+          })),
+      ];
     }
 
     // Skill suggestions when typing /
@@ -971,7 +1135,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         }));
     }
     return [];
-  }, [text, skills, agents, suggestionType, agentMentionTarget, disabledSkillSet, disabledAgentSet]);
+  }, [text, skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, disabledAgentSet, t.team.suggestionTeamHint]);
 
   const suggestionKey = useMemo(() => {
     if (suggestionType === 'agent') return agentMentionTarget?.key ?? null;
@@ -987,6 +1151,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (suggestionType !== null && suggestions.length > 0) setSelectedIndex(0);
   }, [suggestionKey, suggestionType, suggestions.length]);
 
+  // Escape (and picking an item) suppress the popup for the token that was
+  // showing, so it does not spring back while the user keeps typing that same
+  // token. That suppression must end with the token: once the `@`/`/` is
+  // deleted there is nothing being suppressed any more, and typing it again is
+  // a fresh open (real-machine bug 2026-09-03: "删掉再打 @ 没有面板了").
+  useEffect(() => {
+    if (suggestionKey === null) setDismissedSuggestionKey(null);
+  }, [suggestionKey]);
+
   // Derived: show suggestions when there are matches and not dismissed
   const showSuggestions = suggestionKey !== null &&
     dismissedSuggestionKey !== suggestionKey &&
@@ -995,8 +1168,23 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   useLayoutEffect(() => {
     if (!showSuggestions) return;
-    suggestionOptionRefs.current.get(selectedIndex)?.scrollIntoView({ block: 'nearest' });
-  }, [selectedIndex, showSuggestions]);
+    const option = document.getElementById(suggestionOptionId(selectedIndex));
+    if (!option) return;
+    if (selectedIndex === 0) {
+      // The first option sits under its group header. scrollIntoView(nearest)
+      // would pin the option's own top edge to the container and leave the
+      // header scrolled out — which is exactly what happened when a stale
+      // non-zero index from a previous open scrolled the list first (real-
+      // machine report 2026-09-03: "卡片上面被截断"). Show the list top instead.
+      const listbox = option.closest<HTMLElement>('[role="listbox"]');
+      if (listbox) listbox.scrollTop = 0;
+      return;
+    }
+    option.scrollIntoView({ block: 'nearest' });
+    // suggestionKey: when the query changes the LIST changes while selectedIndex
+    // often stays 0 — without this dep the popup keeps its old scrollTop and the
+    // top rows (teams) sit out of view (real-machine bug 2026-08-31).
+  }, [selectedIndex, showSuggestions, suggestionKey, suggestionOptionId]);
 
   // Auto-select skill/agent when text exactly matches "/name " or "@name " (e.g. from "Try in chat")
   useEffect(() => {
@@ -1017,14 +1205,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         suggestions.length === 1 &&
         suggestions[0].name.toLowerCase() === leadingCommand.query
       ) {
-        setSelectedAgent(suggestions[0]);
+        if (suggestions[0].team) {
+          pinTeam(suggestions[0].teamId);
+          setSelectedAgent(null);
+        } else {
+          setSelectedAgent(suggestions[0]);
+        }
         const remainingText = leadingCommand.body;
         setText(remainingText);
         setSelection({ start: remainingText.length, end: remainingText.length });
         setDismissedSuggestionKey(suggestionKey);
       }
     }
-  }, [isComposing, text, suggestionKey, suggestionType, suggestions, selectedSkill, selectedAgent]);
+  }, [isComposing, text, suggestionKey, suggestionType, suggestions, selectedSkill, selectedAgent, pinTeam]);
 
   // Auto-resize textarea
   const maxHeight = isWelcome ? 180 : 160;
@@ -1078,7 +1271,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         textarea.value.slice(replacementRange.end);
       const nextCaret = replacementRange.start;
       pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
-      setSelectedAgent(item);
+      if (item.team) {
+        pinTeam(item.teamId);
+        setSelectedAgent(null);
+      } else {
+        // A member chip is a one-off route for the next message; the team pin
+        // (a conversation property) is left alone.
+        setSelectedAgent(item);
+      }
       setText(nextText);
       setSelection({ start: nextCaret, end: nextCaret });
       setDismissedSuggestionKey(currentTarget.key);
@@ -1224,6 +1424,20 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return;
     }
     if (isRunning && activeConv?.id && message) {
+      // `@队员 …` while that member is working goes straight to it (block M);
+      // anything else waits in the queue strip for the leader as before.
+      const address = parseMemberAddress(message, selectedAgent?.name);
+      const running = address
+        ? findRunningDispatch(
+          collectMemberDispatches({ conversationId: activeConv.id, executions: Object.values(useTaskExecutionStore.getState().executions), messages: activeConv.messages }),
+          address.member,
+        )
+        : null;
+      if (address && running && requestDispatchInput(running.key, address.body)) {
+        useToastStore.getState().addToast({ type: 'success', title: format(t.chat.memberInstructionSent, { member: running.agent }) });
+        resetInput();
+        return;
+      }
       enqueueUserInput(activeConv.id, message);
       resetInput();
       return;
@@ -1308,12 +1522,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (showSuggestions && suggestions.length > 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev - 1 + suggestions.length) % suggestions.length);
+        setSelectedIndex((prev) => Math.max(0, prev - 1));
         return;
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev + 1) % suggestions.length);
+        setSelectedIndex((prev) => Math.min(suggestions.length - 1, prev + 1));
         return;
       }
       if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey)) {
@@ -1403,6 +1617,112 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleAttachClick = hasElectronUserAttachmentSelectHost() ? handleAttachElectron : handleAttach;
 
+  /** `+` menu → 队员·团队: drop an `@` at the caret so the grouped picker opens. */
+  const openMentionPicker = () => {
+    const textarea = textareaRef.current;
+    const base = textarea?.value ?? text;
+    const caret = textarea?.selectionStart ?? base.length;
+    const before = base.slice(0, caret);
+    const token = before.length > 0 && !/\s$/.test(before) ? ' @' : '@';
+    const nextText = before + token + base.slice(caret);
+    const nextCaret = before.length + token.length;
+    // The menu means "pick a new one": both chips are cleared, or the mention
+    // picker stays gated off (agentMentionTarget bails on a skill chip).
+    setSelectedAgent(null);
+    setSelectedSkill(null);
+    pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
+    setText(nextText);
+    setSelection({ start: nextCaret, end: nextCaret });
+    setDismissedSuggestionKey(null);
+    textarea?.focus();
+  };
+
+  /** `+` menu → 技能: make the text a `/` command so the skill picker opens. */
+  const openSkillPicker = () => {
+    const base = textareaRef.current?.value ?? text;
+    const nextText = base.trimStart().startsWith('/') ? base : '/' + base.trimStart();
+    setSelectedSkill(null);
+    pendingSelectionRef.current = { start: 1, end: 1 };
+    setText(nextText);
+    setSelection({ start: 1, end: 1 });
+    setDismissedSuggestionKey(null);
+    textareaRef.current?.focus();
+  };
+
+  // Explicit handlers (not a mapped handler table): the React Compiler must
+  // see that the ref-reading pickers are only called from event handlers.
+  const pickAddFile = () => { setShowPlusMenu(false); handleAttachClick(); };
+  const pickTeamOrMember = () => { setShowPlusMenu(false); openMentionPicker(); };
+  const pickSkill = () => { setShowPlusMenu(false); openSkillPicker(); };
+  const clearTeamPin = () => { pinTeam(undefined); textareaRef.current?.focus(); };
+  const plusMenuItemClass = 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-body text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:bg-[var(--abu-bg-hover)]';
+  const plusMenuIconClass = 'h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)]';
+
+  // WorkBuddy-style `+` menu (design §2.1): 添加文件 / 队员·团队 / 技能.
+  const plusMenu = (
+    <Popover open={showPlusMenu} onOpenChange={setShowPlusMenu}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t.chat.composerMenu.open}
+          aria-haspopup="menu"
+          data-testid="composer-plus"
+          className="btn-ghost h-7 w-7 shrink-0 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" className="w-48 p-1.5" role="menu" aria-label={t.chat.composerMenu.open} data-electron-no-drag>
+        <button type="button" role="menuitem" data-testid="composer-menu-add-file" onClick={pickAddFile} className={plusMenuItemClass}>
+          <Paperclip className={plusMenuIconClass} />
+          <span className="truncate">{t.chat.composerMenu.addFile}</span>
+        </button>
+        <button type="button" role="menuitem" data-testid="composer-menu-team" onClick={pickTeamOrMember} className={plusMenuItemClass}>
+          <Users className={plusMenuIconClass} />
+          <span className="truncate">{t.chat.composerMenu.teamOrMember}</span>
+        </button>
+        <button type="button" role="menuitem" data-testid="composer-menu-skill" onClick={pickSkill} className={plusMenuItemClass}>
+          <Sparkles className={plusMenuIconClass} />
+          <span className="truncate">{t.chat.composerMenu.skill}</span>
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+
+  // Who takes the next message: the team pin, an @agent, or a /skill. Lives in
+  // the bottom row next to `+` (WorkBuddy chip bar): neutral pill with an ✕,
+  // click = clear.
+  const chipClass = 'group inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full px-2 py-0.5 text-minor font-medium text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors cursor-pointer';
+  // Rest: kind mark + name. Hover: the mark becomes ✕ and the pill gets a background (WorkBuddy).
+  const chipMarkClass = 'shrink-0 text-[var(--abu-text-tertiary)] group-hover:hidden';
+  const chipCloseClass = 'hidden h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)] group-hover:block';
+  const composerChips = (
+    <>
+      {pinnedTeam && (
+        <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close} aria-label={`👥${pinnedTeam.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}><TeamAvatar avatar={pinnedTeam.avatar} size="xs" round /></span>
+          <X aria-hidden="true" className={chipCloseClass} />
+          <span className="truncate">{pinnedTeam.name}</span>
+        </button>
+      )}
+      {selectedAgent && (
+        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close} aria-label={`@${selectedAgent.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}>@</span>
+          <X aria-hidden="true" className={chipCloseClass} />
+          <span className="truncate">{selectedAgent.name}</span>
+        </button>
+      )}
+      {selectedSkill && (
+        <button type="button" onClick={removeSkill} className={chipClass} title={t.common.close} aria-label={`/${selectedSkill.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}>/</span>
+          <X aria-hidden="true" className={chipCloseClass} />
+          <span className="truncate">{selectedSkill.name}</span>
+        </button>
+      )}
+    </>
+  );
+
   const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
   const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
 
@@ -1437,50 +1757,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         />
       )}
 
-      <div className="relative">
-        {/* Suggestions Popup (Skills / Agents) */}
+      <div className="relative" ref={composerAnchorRef}>
+        {/* Suggestions Popup (Skills / Agents) — portaled, anchored above this card */}
         {showSuggestions && suggestions.length > 0 && (
-          <div
-            id={suggestionListboxId}
-            role="listbox"
-            aria-label={t.chat.composerSuggestions}
-            className="absolute bottom-full left-0 right-0 mb-2 bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20"
-          >
-            {suggestions.map((item, idx) => (
-              <button
-                key={item.name}
-                ref={(element) => {
-                  if (element) suggestionOptionRefs.current.set(idx, element);
-                  else suggestionOptionRefs.current.delete(idx);
-                }}
-                id={suggestionOptionId(idx)}
-                role="option"
-                aria-selected={idx === selectedIndex}
-                onClick={() => applySuggestion(item)}
-                onMouseDown={(event) => event.preventDefault()}
-                className={cn(
-                  'btn-ghost w-full flex flex-col gap-0.5 px-4 py-2.5 text-body text-left',
-                  idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <span className={cn(
-                    'w-5 text-center font-mono text-minor shrink-0',
-                    suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
-                  )}>
-                    {suggestionType === 'agent' ? '@' : '/'}
-                  </span>
-                  <span className="font-medium text-[var(--abu-text-primary)] text-body">{item.name}</span>
-                  <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
-                </div>
-                {item.trigger && (
-                  <div className="pl-8 text-caption text-[var(--abu-text-muted)] truncate">
-                    TRIGGER: {item.trigger}
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
+          <SuggestionPopup
+            anchorRef={composerAnchorRef}
+            listboxId={suggestionListboxId}
+            ariaLabel={t.chat.composerSuggestions}
+            suggestions={suggestions}
+            selectedIndex={selectedIndex}
+            suggestionType={suggestionType}
+            sectionLabels={{ teams: t.chat.suggestionSectionTeams, agents: t.chat.suggestionSectionAgents, skills: t.chat.suggestionSectionSkills }}
+            pluginTagLabel={t.chat.pickAgentPluginTag}
+            optionId={suggestionOptionId}
+            onApply={applySuggestion}
+          />
         )}
 
         {/* Input Card */}
@@ -1594,25 +1885,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               ? hasAttachments ? 'px-5 pt-1 pb-1' : 'px-5 pt-4 pb-1'
               : hasAttachments ? 'px-4 pt-1 pb-1' : 'px-4 pt-3.5 pb-1'
           )}>
-            {/* Inline command prefix (unified for both variants) */}
-            {selectedAgent && (
-              <button
-                onClick={removeAgent}
-                className="shrink-0 mt-[3px] mr-1.5 text-body font-medium text-[var(--abu-link)] hover:text-[var(--abu-link-hover)] hover:line-through transition-colors cursor-pointer"
-                title={t.common.close}
-              >
-                @{selectedAgent.name}
-              </button>
-            )}
-            {selectedSkill && (
-              <button
-                onClick={removeSkill}
-                className="shrink-0 mt-[3px] mr-1.5 text-body font-medium text-purple-600 hover:text-purple-800 hover:line-through transition-colors cursor-pointer"
-                title={t.common.close}
-              >
-                /{selectedSkill.name}
-              </button>
-            )}
             <textarea
               ref={textareaRef}
               data-chat-composer
@@ -1671,23 +1943,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             /* Workspace context lives below the input card. The send toolbar
                stays a single, calm row even in a narrow center pane. */
             <div className="flex items-center gap-2 px-5 pb-3.5">
-              {/* AgentSelector entry hidden from UI; multi-agent logic remains intact */}
-              {/* <AgentSelector
-                agents={agents}
-                selectedName={selectedAgent?.name ?? null}
-                onSelect={setSelectedAgent}
-                disabledAgentSet={disabledAgentSet}
-              /> */}
-              <div className="flex flex-1 items-center">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleAttachClick}
-                  aria-label={t.chat.addAttachment}
-                  className="btn-ghost h-7 w-7 shrink-0 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                {plusMenu}
+                {composerChips}
               </div>
 
               {/* Model picker — right-aligned, before Start button */}
@@ -1735,24 +1993,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             /* Chat variant: [+] --- [Model ∨] [Stop/Send] */
             <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 pb-2.5 pt-0.5">
               {/* Left Actions */}
-              <div className="flex items-center gap-0.5">
-                {/* AgentSelector entry hidden from UI; multi-agent logic remains intact */}
-                {/* <AgentSelector
-                  agents={agents}
-                  selectedName={selectedAgent?.name ?? null}
-                  onSelect={setSelectedAgent}
-                  disabledAgentSet={disabledAgentSet}
-                /> */}
-
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleAttachClick}
-                  aria-label={t.chat.addAttachment}
-                  className="btn-ghost h-7 w-7 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-lg"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+              <div className="flex min-w-0 items-center gap-1">
+                {plusMenu}
+                {composerChips}
               </div>
 
               {/* Right Actions: Model picker + Context indicator + Send / Stop */}

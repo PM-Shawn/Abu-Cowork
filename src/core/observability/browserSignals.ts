@@ -55,6 +55,20 @@ export type BrowserSignalEvent =
    *  module never records any (see the module header). */
   | { kind: 'js_dialog'; event: 'opened' | 'handled' | 'timed_out'; dialogType: string; action?: 'accept' | 'dismiss' }
   | { kind: 'tab_lifetime'; event: 'created' | 'closed'; aliveMs?: number }
+  /**
+   * A `download` finished and a file is on disk (batch-三 T6 / R-1).
+   *
+   * The one browser signal that is about something the run PRODUCED rather
+   * than something it did or was refused, and the reason the report grew an
+   * artifact list: a scheduled export that worked used to end with a green
+   * card and no way to reach the file it made.
+   *
+   * `name` and `path` are derived from a `Content-Disposition` header, so they
+   * are attacker-influenceable like every origin on this stream — the
+   * aggregator clamps them the same way (`clampUntrusted`) and nothing here
+   * carries page BODY text.
+   */
+  | { kind: 'download_saved'; downloadId: string; name: string; path: string; bytes: number; mime?: string }
   | { kind: 'task_end'; browserToolCalls: number; unfinishedHint: boolean }
   /**
    * U7 / G1 — the authorization gate refused a browser action.

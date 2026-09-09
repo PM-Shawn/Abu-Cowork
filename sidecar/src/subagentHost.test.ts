@@ -39,6 +39,7 @@ import {
   handleSubagentRun,
   handleSubagentAbort,
   __getActiveSubagentRunCount,
+  isSubagentDispatchActive,
   SUBAGENT_HOST_LOOP_OPTION_WIRE_FIELDS,
   SUBAGENT_HOST_RUN_WIRE_FIELDS,
 } from './subagentHost';
@@ -138,7 +139,9 @@ describe('subagentHost', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'preloadedSkills',
         'initiatedBy',
+        'dispatchKey',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -166,6 +169,12 @@ describe('subagentHost', () => {
         runPermissionCeiling: { version: 1, source: 'im', capability: 'custom' },
       }],
       ['unknown wire field', { ...baseParams(), injectedByRenderer: true }],
+      ['preloadedSkills not an object', { ...baseParams(), preloadedSkills: 'section' }],
+      ['preloadedSkills without text', { ...baseParams(), preloadedSkills: { resolved: [], missing: [], truncated: [] } }],
+      ['preloadedSkills with a non-string name list', {
+        ...baseParams(),
+        preloadedSkills: { text: '## Preloaded Skills', resolved: [7], missing: [], truncated: [] },
+      }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleSubagentRun(params)).rejects.toThrow(RpcError);
       await expect(handleSubagentRun(params)).rejects.toMatchObject({ code: -32602 });
@@ -823,6 +832,12 @@ describe('subagentHost', () => {
         allowedTools: ['read_*'],
         blockedTools: ['write_*'],
         authorizationScopeId: 'scope-wire',
+        preloadedSkills: {
+          text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nbody',
+          resolved: ['weekly-report'],
+          missing: [],
+          truncated: [],
+        },
       });
 
       await handleSubagentRun(request);
@@ -1000,6 +1015,23 @@ describe('subagentHost', () => {
 
     it('subagent.abort with an unknown runId is a silent no-op', () => {
       expect(() => handleSubagentAbort({ runId: 'no-such-run' })).not.toThrow();
+    });
+  });
+});
+
+describe('instruction receipts across the subagent host (F5)', () => {
+  it('accepts input only for an active dispatch and forwards exact receipt ids', async () => {
+    const params = baseParams({ dispatchKey: 'host-receipt:0' });
+    runSubagentLoopMock.mockImplementationOnce(async (options: { onProgress: (event: SubagentProgressEvent) => void }) => {
+      expect(isSubagentDispatchActive('host-receipt:0')).toBe(true);
+      expect(isSubagentDispatchActive('another:0')).toBe(false);
+      options.onProgress({ type: 'instruction-consumed', instructionId: 'issued-id' });
+      return resultShape('ok');
+    });
+    await handleSubagentRun(params);
+    expect(isSubagentDispatchActive('host-receipt:0')).toBe(false);
+    expect(sendNotificationMock).toHaveBeenCalledWith('subagent.progress', {
+      runId: params.runId, event: { type: 'instruction-consumed', instructionId: 'issued-id' },
     });
   });
 });

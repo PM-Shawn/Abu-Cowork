@@ -42,7 +42,7 @@ export function scopeSubagentProgressEvent(
   runId: string,
   event: SubagentProgressEvent,
 ): SubagentProgressEvent {
-  if (event.type === 'turn-complete') return event;
+  if (event.type === 'turn-complete' || event.type === 'instruction-consumed') return event;
   return {
     ...event,
     id: makeSubagentProgressToolCallId(runId, event.id),

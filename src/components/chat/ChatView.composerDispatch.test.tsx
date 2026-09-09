@@ -98,6 +98,27 @@ describe('ChatView welcome composer dispatch ownership', () => {
     useToastStore.setState(useToastStore.getInitialState(), true);
   });
 
+  it('pins a new conversation to the team named by a typed @团队 and dispatches the plain text', async () => {
+    configureApiKey();
+    const { useTeamStore } = await import('@/stores/teamStore');
+    useTeamStore.setState({
+      teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }]
+    });
+    dispatchMock.mockResolvedValueOnce({ reason: 'completed' });
+    try {
+      render(<ChatView />);
+      await submitWelcome('@zz数据小队 出周报');
+
+      await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+      const [convId, text] = dispatchMock.mock.calls[0] as [string, string];
+      expect(text).toBe('出周报');
+      expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
+      expect(useChatStore.getState().pendingTeamId).toBeUndefined();
+    } finally {
+      useTeamStore.setState({ teams: []});
+    }
+  });
+
   it('keeps the composer empty after a post-commit dispatch failure', async () => {
     configureApiKey();
     dispatchMock.mockResolvedValueOnce({

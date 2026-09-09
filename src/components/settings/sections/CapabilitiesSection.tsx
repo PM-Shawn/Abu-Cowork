@@ -2,10 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronRight,
   Chrome,
-  Eye,
   Globe2,
   MonitorCog,
-  MousePointer2,
   RefreshCw,
 } from 'lucide-react';
 import { useI18n } from '@/i18n';
@@ -17,10 +15,8 @@ import { useMCPStore } from '@/stores/mcpStore';
 import { useToastStore } from '@/stores/toastStore';
 import {
   checkComputerUsePermissions,
-  closeComputerUsePermissionGuide,
   requestComputerUsePermission,
   revealComputerUseAppInFinder,
-  runComputerUsePermissionGuide,
   type ComputerUsePermission,
   type ComputerUsePermissionRequirements,
   type ComputerUsePermissions,
@@ -49,6 +45,7 @@ import {
   resolveMCPCompanionResource,
 } from '@/core/agent/mcpDiscovery';
 import { openBundledChromeExtensionSetup } from '@/core/capabilityPlugins/chromeSetup';
+import { restartApp } from '@/core/updates/checker';
 import { isMacOS } from '@/utils/platform';
 import { resolveAgentModelCapabilities } from '@/core/llm/modelCapabilities';
 import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
@@ -58,7 +55,6 @@ import {
   ComputerUseSetupView,
   SetupHeader,
   StatusBadge,
-  settingsCardClass,
   type StatusBadgeTone,
 } from './CapabilitySetupView';
 import {
@@ -234,7 +230,6 @@ export default function CapabilitiesSection({
   const [revealingComputerUseApp, setRevealingComputerUseApp] = useState(false);
   const computerPermissionCheckRef =
     useRef<Promise<ComputerUsePermissions | undefined> | null>(null);
-  const computerPermissionGuideOpenRef = useRef(false);
   const [, setRuntimeRevision] = useState(0);
   const activeProvider = providers.find((provider) => provider.id === activeModel.providerId);
   const computerModelCapabilities = useMemo(() => resolveAgentModelCapabilities({
@@ -242,11 +237,6 @@ export default function CapabilitiesSection({
     providerSource: activeProvider?.source,
     declared: resolveModelDeclared(activeProvider, activeModel.modelId),
   }), [activeModel.modelId, activeProvider]);
-  const singleComputerPermissionRequired = Boolean(
-    computerUseRequirements
-    && Number(computerUseRequirements.screenRead)
-      + Number(computerUseRequirements.uiControl) === 1,
-  );
 
   useEffect(() => mcpManager.subscribe(() => {
     setRuntimeRevision((revision) => revision + 1);
@@ -513,71 +503,6 @@ export default function CapabilitiesSection({
   ) => {
     setRequestingComputerPermission(permission);
     try {
-      computerPermissionGuideOpenRef.current = true;
-      const guideResult = await runComputerUsePermissionGuide({
-        requestedByTask: setupRequestedByTask,
-        permissions,
-        requirements: computerUseRequirements,
-        strings: {
-          title: t.settings.capabilityComputerSetupTitle,
-          description: setupRequestedByTask
-            ? t.settings.capabilityComputerTaskNeedsSetup
-            : t.settings.capabilityComputerSetupDesc,
-          screenTitle: t.settings.capabilityScreenRead,
-          screenDescription: t.settings.capabilityScreenReadDesc,
-          controlTitle: t.settings.capabilityUIControl,
-          controlDescription: t.settings.capabilityUIControlDesc,
-          screenStep: singleComputerPermissionRequired
-            ? t.settings.capabilityComputerStepOnly
-            : t.settings.capabilityComputerStepScreen,
-          controlStep: singleComputerPermissionRequired
-            ? t.settings.capabilityComputerStepOnly
-            : t.settings.capabilityComputerStepControl,
-          allow: t.settings.capabilityPermissionGuideAllow,
-          done: t.settings.capabilityPermissionGuideDone,
-          checking: t.settings.capabilityStatusChecking,
-          cancel: t.common.cancel,
-          returnToAbu: setupRequestedByTask
-            ? t.settings.capabilityReturnToTask
-            : t.settings.capabilityPermissionGuideReturnToAbu,
-          missingApp: t.settings.capabilityComputerMissingApp,
-          revealApp: t.settings.capabilityShowAppInFinder,
-          developmentIdentity:
-            t.settings.capabilityPermissionGuideDevelopmentIdentity,
-          errorTitle: t.settings.capabilityPermissionGuideErrorTitle,
-          retry: t.settings.capabilityRetry,
-          timeout: t.settings.capabilityPermissionGuideTimeout,
-          restart: t.settings.capabilityPermissionGuideRestart,
-          privacyNote: t.settings.capabilityComputerPrivacy,
-        },
-      });
-      if (guideResult) {
-        setPermissions((current) => ({
-          screenRead: guideResult.permissions.screenRead,
-          uiControl: guideResult.permissions.uiControl,
-          screenReadStatus: current?.screenReadStatus
-            ?? (guideResult.permissions.screenRead ? 'granted' : 'not-determined'),
-          uiControlStatus: current?.uiControlStatus
-            ?? (guideResult.permissions.uiControl ? 'granted' : 'not-determined'),
-          restartRequired: guideResult.permissions.restartRequired === true,
-        }));
-        if (guideResult.status === 'complete') {
-          completeSetup();
-        } else if (guideResult.status === 'relaunch-required' && onSetupRelaunch) {
-          onSetupRelaunch();
-        } else if (guideResult.status === 'cancelled' && setupRequestedByTask) {
-          cancelSetup();
-        } else if (guideResult.status === 'unavailable') {
-          useToastStore.getState().addToast({
-            type: 'error',
-            title: t.settings.capabilityStatusUnavailable,
-            message: guideResult.error
-              ?? t.settings.capabilityPermissionGuideErrorTitle,
-          });
-        }
-        return;
-      }
-
       await requestComputerUsePermission(permission);
       await syncComputerPermissions(false);
     } catch (error) {
@@ -587,7 +512,6 @@ export default function CapabilitiesSection({
         message: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      computerPermissionGuideOpenRef.current = false;
       setRequestingComputerPermission(undefined);
     }
   };
@@ -647,19 +571,6 @@ export default function CapabilitiesSection({
       window.clearInterval(poll);
     };
   }, [setupView, syncComputerPermissions]);
-
-  useEffect(() => {
-    if (setupView === 'computer') return;
-    if (computerPermissionGuideOpenRef.current) {
-      void closeComputerUsePermissionGuide();
-    }
-  }, [setupView]);
-
-  useEffect(() => () => {
-    if (computerPermissionGuideOpenRef.current) {
-      void closeComputerUsePermissionGuide();
-    }
-  }, []);
 
   const browserStatus = statuses[CAPABILITY_IDS.builtinBrowser];
   const chromeStatus = statuses[CAPABILITY_IDS.chromeBridge];
@@ -877,68 +788,43 @@ export default function CapabilitiesSection({
         onRefresh={() => void syncComputerPermissions()}
         onDisable={() => {
           setComputerUseEnabled(false);
-          cancelSetup();
+          if (setupRequestedByTask) cancelSetup();
         }}
         onDone={completeSetup}
-        onRelaunch={onSetupRelaunch}
+        modelIssue={computerModelCapabilities.computerUseTier === 'unsupported' || computerModelCapabilities.computerUseTier === 'unknown'
+          ? computerModelTierNotes[computerModelCapabilities.computerUseTier] : undefined}
+        onRelaunch={setupRequestedByTask ? onSetupRelaunch : async () => {
+          try {
+            await restartApp();
+          } catch (error) {
+            useToastStore.getState().addToast({
+              type: 'error', title: t.settings.capabilityStatusUnavailable,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }}
       >
         {/*
           The active model decides whether Computer Use can see the screen at
           all, so it belongs beside the permissions it gates rather than on the
           overview, where it was a second status the card had to explain.
         */}
-        <div className={settingsCardClass}>
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-minor text-[var(--abu-text-secondary)]">
-              {t.settings.capabilityComputerModel}
-            </span>
-            <span className={cn(
-              'text-caption font-medium',
-              computerModelCapabilities.computerUseTier === 'full' && 'text-[var(--abu-success)]',
-              computerModelCapabilities.computerUseTier === 'structured' && 'text-[var(--abu-warning)]',
-              computerModelCapabilities.computerUseTier === 'unsupported' && 'text-[var(--abu-danger)]',
-              computerModelCapabilities.computerUseTier === 'unknown' && 'text-[var(--abu-text-muted)]',
-            )}>
+        <details className="text-minor text-[var(--abu-text-muted)]"
+          open={computerModelCapabilities.computerUseTier === 'unsupported' || computerModelCapabilities.computerUseTier === 'unknown'}>
+          <summary className="cursor-pointer">{t.settings.capabilityComputerModel}</summary>
+          <div className="mt-3 pl-4 text-minor">
+            <span className="min-w-0 break-all text-[var(--abu-text-secondary)]">
               {activeModel.modelId || t.settings.capabilityComputerModelUnknown}
-              {' · '}
-              {computerModelTierLabels[computerModelCapabilities.computerUseTier]}
+              {' · '}{computerModelTierLabels[computerModelCapabilities.computerUseTier]}
             </span>
           </div>
-          <p className="mt-1 text-caption text-[var(--abu-text-tertiary)]">
+          <p className={cn('mt-1 pl-4 text-caption',
+            computerModelCapabilities.computerUseTier === 'unsupported' ? 'text-[var(--abu-danger)]'
+              : computerModelCapabilities.computerUseTier === 'unknown' ? 'text-[var(--abu-warning)]'
+                : 'text-[var(--abu-text-muted)]')}>
             {computerModelTierNotes[computerModelCapabilities.computerUseTier]}
           </p>
-          <div className="mt-3 grid grid-cols-1 gap-2 border-t border-[var(--abu-border)] pt-3 sm:grid-cols-2">
-            {([
-              {
-                icon: Eye,
-                label: t.settings.capabilityScreenRead,
-                granted: screenPermission,
-              },
-              {
-                icon: MousePointer2,
-                label: t.settings.capabilityUIControl,
-                granted: controlPermission,
-              },
-            ] as const).map(({ icon: PermissionIcon, label, granted }) => (
-              <div key={label} className="flex items-center gap-2">
-                <PermissionIcon className="h-3.5 w-3.5 shrink-0 text-[var(--abu-text-muted)]" />
-                <span className="text-minor text-[var(--abu-text-secondary)]">{label}</span>
-                <span className={cn(
-                  'ml-auto text-caption font-medium',
-                  granted === true && 'text-[var(--abu-success)]',
-                  granted === false && 'text-[var(--abu-warning)]',
-                  granted === undefined && 'text-[var(--abu-text-muted)]',
-                )}>
-                  {granted === true
-                    ? t.settings.capabilityPermissionGranted
-                    : granted === false
-                      ? t.settings.capabilityPermissionMissing
-                      : t.settings.capabilityPermissionUnknown}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
+        </details>
       </ComputerUseSetupView>
     );
   }

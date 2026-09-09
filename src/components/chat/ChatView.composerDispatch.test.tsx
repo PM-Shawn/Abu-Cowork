@@ -268,22 +268,23 @@ describe('ChatView welcome composer dispatch ownership', () => {
       expect(screen.getAllByTestId('agent-avatar').some((avatar) => avatar.dataset.avatarKind === 'icon')).toBe(true);
     });
 
-    it('shows an explicit first greeting as a message without creating a task or dispatching a model', () => {
+    it('keeps the team welcome before sending even when a first greeting is pending', () => {
       const team = useTeamStore.getState().teams[0];
       useChatStore.setState({ pendingTeamId: team.id, pendingExpertContact: { identity: teamIdentity(team), introduction: team.intro } });
       render(<ChatView />);
-      expect(screen.getByTestId('expert-introduction')).toHaveTextContent('我们负责取数和出图');
-      expect(screen.queryByTestId('team-welcome')).toBeNull();
+      expect(screen.queryByTestId('expert-introduction')).toBeNull();
+      expect(within(screen.getByTestId('team-welcome')).getByRole('heading', { name: team.name })).toBeTruthy();
       expect(useChatStore.getState().conversationIndex).toEqual({});
       expect(dispatchMock).not.toHaveBeenCalled();
       expect(screen.getByRole('button', { name: getI18n().panel.selectWorkspace })).toBeInTheDocument();
-      expect(within(screen.getByTestId('expert-introduction')).queryByRole('button')).toBeNull();
     });
 
-    it('preserves the expert greeting when its prefilled mention becomes a composer chip', async () => {
+    it('keeps the expert welcome and pending greeting when its mention becomes a composer chip', async () => {
       useChatStore.setState({ pendingAgentName: leader.name, pendingInput: `@${leader.name} `, pendingExpertContact: { identity: expertIdentity(leader, 'zh-CN'), introduction: leader.intro } });
       render(<ChatView />);
-      await waitFor(() => expect(screen.getByTestId('expert-introduction')).toHaveTextContent('队员开场白'));
+      await waitFor(() => expect(screen.getByRole('heading', { name: leader.name })).toBeTruthy());
+      expect(screen.queryByTestId('expert-introduction')).toBeNull();
+      expect(useChatStore.getState().pendingExpertContact?.introduction).toBe(leader.intro);
       expect(screen.getByRole('button', { name: `@${leader.name}` })).toBeTruthy();
       expect(dispatchMock).not.toHaveBeenCalled();
     });

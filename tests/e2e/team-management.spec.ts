@@ -68,6 +68,15 @@ test.describe('team management surface', () => {
       await page.getByTestId('search-select-query').fill('产品');
       await page.getByTestId('search-select-option-产品经理').click();
       await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      const avatarBorder = await page.getByTestId('avatar-picker-trigger').evaluate((el) => {
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--abu-border-subtle)';
+        el.append(probe);
+        const expected = getComputedStyle(probe).color;
+        probe.remove();
+        return { actual: getComputedStyle(el).borderTopColor, expected };
+      });
+      expect(avatarBorder.actual).toBe(avatarBorder.expected);
       await page.getByTestId('avatar-picker-trigger').click();
       await expect(page.getByTestId('avatar-picker')).toBeVisible();
       await expect(page.getByTestId('avatar-picker').getByTestId(/^avatar-icon-/)).toHaveCount(20);

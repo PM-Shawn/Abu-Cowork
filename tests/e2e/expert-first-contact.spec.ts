@@ -49,19 +49,38 @@ for (const team of [false, true]) {
       });
       await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true, permissionMode: 'standard' });
       await openIdentity(page, team);
-      const greeting = page.getByTestId('expert-introduction');
-      await expect(greeting).toBeVisible();
+      const welcome = page.getByRole('heading', { name: team ? 'E2E专家团' : '产品经理', exact: true });
+      await expect(welcome).toBeVisible();
+      await expect(page.getByTestId('expert-introduction')).toHaveCount(0);
       await expect(page.getByRole('textbox')).toHaveValue('');
       await expect(page.getByRole('button', { name: /选择工作区/ })).toBeVisible();
-      const greetingText = await greeting.locator('.select-text').innerText();
-      expect(greetingText.trim().length).toBeGreaterThan(0);
+      const prompts = page.getByTestId('expert-prompts').getByRole('button');
+      if (!team) {
+        await expect(prompts.first()).toBeVisible();
+        for (const dark of [false, true]) {
+          await page.evaluate((enabled) => document.documentElement.classList.toggle('dark', enabled), dark);
+          await expect.poll(() => prompts.first().evaluate((el) => {
+            const probe = document.createElement('span');
+            probe.style.color = 'var(--abu-border-subtle)';
+            el.append(probe);
+            const expected = getComputedStyle(probe).color;
+            probe.remove();
+            return getComputedStyle(el).borderTopColor === expected;
+          })).toBe(true);
+        }
+        await page.evaluate(() => document.documentElement.classList.remove('dark'));
+      }
       expect(await page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('abu-chat') ?? '{}').state.conversationIndex))).toHaveLength(0);
       // Leaving without sending does not consume first contact or create history.
       await openIdentity(page, team);
-      await expect(page.getByTestId('expert-introduction')).toContainText(greetingText);
+      await expect(welcome).toBeVisible();
+      await expect(page.getByTestId('expert-introduction')).toHaveCount(0);
       await page.screenshot({ path: test.info().outputPath('first-contact.png') });
       await page.getByRole('textbox').fill('给同事用');
       await page.getByRole('textbox').press('Enter');
+      await expect(page.getByTestId('expert-introduction')).toBeVisible();
+      const greetingText = await page.getByTestId('expert-introduction').locator('.select-text').innerText();
+      expect(greetingText.trim().length).toBeGreaterThan(0);
       await expect.poll(() => mock.requests.some((request) => request.messages?.some((message) => {
         const content = typeof message.content === 'string' ? message.content : message.content?.map((block) => block.text ?? '').join('\n') ?? '';
         return message.role === 'user' && content.includes(JSON.stringify(greetingText));
@@ -73,6 +92,7 @@ for (const team of [false, true]) {
       page = await launched.app.firstWindow();
       await openIdentity(page, team);
       await expect(page.getByTestId('expert-introduction')).toHaveCount(0);
+      await expect(page.getByRole('heading', { name: team ? 'E2E专家团' : '产品经理', exact: true })).toBeVisible();
       await expect(page.getByRole('textbox')).toBeVisible();
       expect(await page.evaluate(() => Object.values(JSON.parse(localStorage.getItem('abu-chat') ?? '{}').state.expertContactReceipts).some((receipt) => (receipt as { confirmed: boolean }).confirmed))).toBe(true);
       await page.screenshot({ path: test.info().outputPath('subsequent-contact.png') });

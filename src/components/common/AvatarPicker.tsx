@@ -27,7 +27,7 @@ export default function AvatarPicker({ value, onChange, children }: {
   return (
     <Popover onOpenChange={(open) => { if (open) setPendingTint('blue'); }}>
       <PopoverTrigger asChild>
-        <Button type="button" variant="outline" size="icon-lg" className="shrink-0 rounded-xl p-1" aria-label={selectionLabel ? format(t.avatarPicker.chooseAvatarWithSelection, { avatar: selectionLabel }) : t.avatarPicker.chooseAvatar} title={t.avatarPicker.chooseAvatar} data-testid="avatar-picker-trigger">
+        <Button type="button" variant="outline" size="icon-lg" className="shrink-0 rounded-xl border-[var(--abu-border-subtle)] dark:border-[var(--abu-border-subtle)] p-1 shadow-none hover:border-[var(--abu-border-hover)]" aria-label={selectionLabel ? format(t.avatarPicker.chooseAvatarWithSelection, { avatar: selectionLabel }) : t.avatarPicker.chooseAvatar} title={t.avatarPicker.chooseAvatar} data-testid="avatar-picker-trigger">
           {children ?? <AgentAvatar agent={{ name: 'avatar', avatar: value }} size="lg" />}
         </Button>
       </PopoverTrigger>

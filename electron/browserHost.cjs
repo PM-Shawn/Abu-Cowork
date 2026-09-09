@@ -1401,7 +1401,15 @@ function configureBrowserView(id, view) {
   const contents = view.webContents;
   const automationTabId = contents.id;
   contents.setWindowOpenHandler(({ url: targetUrl }) => {
-    if (targetUrl) void contents.loadURL(targetUrl);
+    let safeUrl;
+    try {
+      safeUrl = allowedAutomationUrl(targetUrl);
+    } catch {
+      return { action: 'deny' };
+    }
+    // Popups still navigate their source view; apply the navigation whitelist
+    // before loading untrusted window.open / target=_blank destinations.
+    void contents.loadURL(safeUrl);
     return { action: 'deny' };
   });
 

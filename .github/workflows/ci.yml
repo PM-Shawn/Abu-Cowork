@@ -87,6 +87,10 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run test:infra
 
+      - name: Electron host UI tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run electron:host-ui-test
+
       - name: TESTING.md inventory is up to date
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run test:inventory:check
@@ -157,7 +161,7 @@ jobs:
           # Any drift means someone changed abu-chrome-extension/src/ (or
           # abu-browser-shared/types.ts) without rebuilding + syncing the
           # committed artifact — so the released app would ship a stale extension.
-          (cd abu-chrome-extension && npm ci && npm run build)
+          npm run build:electron-browser-runtime
 
           # .map files excluded: non-behavioral, sourcemap paths can have minor
           # environmental variance. .js/.html/manifest.json are what users run.
@@ -176,6 +180,11 @@ jobs:
             exit 1
           fi
           echo "OK: Chrome extension bundle matches source"
+
+          # Only stamp the tracked copy after the comparison succeeds. Copying
+          # resources here would hide precisely the drift this gate must catch.
+          node --input-type=module -e "import { recordSourceDigest } from './scripts/check-browser-artifacts.mjs'; recordSourceDigest('src-tauri/browser-extension/content.js');"
+          npm run check:browser-artifacts
 
   # Windows unit tests — ADVISORY for now. This suite has never run on Windows
   # in CI; the first runs will surface path-sensitive tests. Triage them

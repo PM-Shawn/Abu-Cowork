@@ -1,5 +1,18 @@
 import { readTextFile, writeTextFile, exists } from '@tauri-apps/plugin-fs';
-import { installedManifestPath , pluginInstallDir } from './paths';
+import { installedManifestPath , pluginInstallDir, normalizePluginComponentPath } from './paths';
+
+type RegistryAction = 'read' | 'validate' | 'upsert' | 'remove';
+type RegistryBridge = (action: RegistryAction, request: object) => Promise<unknown>;
+
+/** Electron must never fall back to the old read-modify-write path. */
+function registryBridge(): RegistryBridge | undefined {
+  const shell = (globalThis as typeof globalThis & {
+    __ABU_SHELL__?: { pluginRegistry?: RegistryBridge };
+  }).__ABU_SHELL__;
+  if (!shell) return undefined; // Frozen Tauri compatibility path.
+  if (!shell.pluginRegistry) throw new Error('Plugin registry requires the Electron host bridge');
+  return shell.pluginRegistry;
+}
 
 export interface InstalledPlugin {
   key: string;
@@ -9,6 +22,12 @@ export interface InstalledPlugin {
   sha?: string;
   checksum?: string;
   installedAt: string;
+  /** Host-assigned provenance, never inferred from a marketplace path. */
+  authoringId?: string;
+  /** Versioned component layout; missing only on pre-layout records. */
+  componentLayoutVersion?: 1;
+  /** Concrete package-relative skill directories approved at install time. */
+  skillPaths?: string[];
   /**
    * How the bytes were copied in — the `PluginSource['kind']` the installer was
    * handed, not a claim about where the package came from. Enterprise installs
@@ -17,8 +36,7 @@ export interface InstalledPlugin {
    * be enterprise (see `isEnterpriseInstall`).
    *
    * Optional because records written before this field existed must still
-   * load; consumers that need "was this authored locally?" fall back to the
-   * absence of `sha` for those (see `authored.ts`).
+   * load. Neither this field nor the absence of `sha` establishes authorship.
    */
   sourceKind?: 'relative' | 'url' | 'git-subdir';
   /**
@@ -61,7 +79,18 @@ export type ReadInstalledResult =
  * dropped from an otherwise-successful read (see {@link isInstalledPlugin}) —
  * one bad record is not a bad file.
  */
-export async function readInstalledResult(home: string): Promise<ReadInstalledResult> {
+export async function readInstalledResult(home: string, forWrite = false): Promise<ReadInstalledResult> {
+  try {
+    const bridge = registryBridge();
+    if (bridge) {
+      const raw = await bridge('read', { home, ...(forWrite ? { forWrite: true } : {}) });
+      if (raw === null) return { ok: true, plugins: [] };
+      if (typeof raw !== 'string') throw new Error('Invalid plugin registry response');
+      return parseInstalled(raw);
+    }
+  } catch (error) {
+    return { ok: false, error };
+  }
   const path = installedManifestPath(home);
 
   let fileExists: boolean;
@@ -79,6 +108,10 @@ export async function readInstalledResult(home: string): Promise<ReadInstalledRe
     return { ok: false, error };
   }
 
+  return parseInstalled(raw);
+}
+
+function parseInstalled(raw: string): ReadInstalledResult {
   try {
     const parsed: unknown = JSON.parse(raw);
     // Valid JSON that is not an array is a corrupted manifest (hand-edited, or
@@ -86,7 +119,7 @@ export async function readInstalledResult(home: string): Promise<ReadInstalledRe
     if (!Array.isArray(parsed)) return { ok: false, error: new Error('installed.json is not an array') };
     return {
       ok: true,
-      plugins: parsed.filter(isInstalledPlugin).map(withValidSourceKind).map(withContributedAgents),
+      plugins: parsed.filter(isInstalledPlugin).map(withValidSourceKind).map(withContributedAgents).map(withComponentLayout),
     };
   } catch (error) {
     return { ok: false, error };
@@ -192,6 +225,17 @@ function withContributedAgents(p: InstalledPlugin): InstalledPlugin {
   return { ...p, contributed: { ...p.contributed, agents: [] } };
 }
 
+/** Malformed new layouts grant no skills; never fall back to a broader legacy scan. */
+function withComponentLayout(p: InstalledPlugin): InstalledPlugin {
+  if (p.componentLayoutVersion === undefined && p.skillPaths === undefined) return p;
+  if (p.componentLayoutVersion === 1 && isStringArray(p.skillPaths)) {
+    try {
+      return { ...p, skillPaths: [...new Set(p.skillPaths.map(normalizePluginComponentPath))] };
+    } catch { /* Keep MCP/agent ownership while refusing invalid skill paths. */ }
+  }
+  return { ...p, skillPaths: [] };
+}
+
 async function writeInstalled(home: string, plugins: InstalledPlugin[]): Promise<void> {
   const path = installedManifestPath(home);
   await writeTextFile(path, JSON.stringify(plugins, null, 2));
@@ -230,9 +274,15 @@ export class InstalledManifestUnreadableError extends Error {
  * honest empty state, and the first install must be able to create the file.
  */
 export async function readInstalledForWrite(home: string): Promise<InstalledPlugin[]> {
-  const result = await readInstalledResult(home);
+  const result = await readInstalledResult(home, true);
   if (!result.ok) throw new InstalledManifestUnreadableError(result.error);
   return result.plugins;
+}
+
+/** Check the prospective record before materializing packages or contributions. */
+export async function validateInstalledRecord(home: string, record: InstalledPlugin): Promise<void> {
+  const bridge = registryBridge();
+  if (bridge) await bridge('validate', { home, record });
 }
 
 /**
@@ -241,6 +291,11 @@ export async function readInstalledForWrite(home: string): Promise<InstalledPlug
  * @throws {InstalledManifestUnreadableError} — see {@link readInstalledForWrite}.
  */
 export async function upsertInstalled(home: string, p: InstalledPlugin): Promise<void> {
+  const bridge = registryBridge();
+  if (bridge) {
+    await bridge('upsert', { home, record: p });
+    return;
+  }
   const plugins = await readInstalledForWrite(home);
   const idx = plugins.findIndex((x) => x.key === p.key);
   if (idx >= 0) {
@@ -257,6 +312,11 @@ export async function upsertInstalled(home: string, p: InstalledPlugin): Promise
  * @throws {InstalledManifestUnreadableError} — see {@link readInstalledForWrite}.
  */
 export async function removeInstalled(home: string, key: string): Promise<void> {
+  const bridge = registryBridge();
+  if (bridge) {
+    await bridge('remove', { home, key });
+    return;
+  }
   const plugins = await readInstalledForWrite(home);
   const next = plugins.filter((x) => x.key !== key);
   if (next.length === plugins.length) return;

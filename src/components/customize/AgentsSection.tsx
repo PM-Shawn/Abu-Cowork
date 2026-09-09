@@ -108,7 +108,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
     const loadAgentDetails = async () => {
       const fullAgents: SubagentDefinition[] = [];
       for (const meta of agents) {
-        const full = agentRegistry.getAgent(meta.name);
+        const full = agentRegistry.getAgent(meta.name, { includeDisabledPlugins: true });
         if (!full) continue;
         // The store's `meta.source` is the only authority on provenance, so it
         // replaces the registry's copy outright rather than merely filling a

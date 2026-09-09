@@ -3,6 +3,7 @@
  * Use these constants instead of hardcoded strings for type safety and refactorability.
  */
 export const TOOL_NAMES = {
+  PLUGIN_PREPARE: 'plugin_prepare',
   // Core file/system tools
   GET_SYSTEM_INFO: 'get_system_info',
   READ_FILE: 'read_file',

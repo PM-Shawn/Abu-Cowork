@@ -170,6 +170,23 @@ describe('one ownership rule behind the scan, the copy and the collect', () => {
 });
 
 describe('scanPluginPackage', () => {
+  it('never reinterprets a literal backslash basename as a path through a skipped symlink', async () => {
+    tree({
+      '/src': [{ name: 'skills', isDirectory: true }],
+      '/src/skills': [{ name: 'x\\y', isDirectory: true }],
+      // This is the target behind a skipped /src/skills/x symlink.
+      '/src/skills/x/y': [{ name: 'SKILL.md', isDirectory: false }],
+    });
+    const scan = scanPluginPackage('/src');
+    expect(await scan.find('skills/x\\y/SKILL.md')).toBeUndefined();
+    expect(await scan.children('skills')).toEqual([]);
+    await copyPluginDir('/src', '/dst');
+    await collectPluginSymlinks('/src');
+    expect(mockReadDir).not.toHaveBeenCalledWith('/src/skills/x/y');
+    expect(mockReadFile).not.toHaveBeenCalled();
+    expect(writtenPaths()).toEqual([]);
+  });
+
   it('normalizes the listing key so a trailing slash is not a second cache entry', async () => {
     // `find` filters empty segments but `listOwned` keyed on the raw string,
     // so `children('skills/')` both missed the cache and asked the host for

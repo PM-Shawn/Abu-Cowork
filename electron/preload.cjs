@@ -571,6 +571,10 @@ contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sen
 // to fall back to running its own renderer heartbeat.
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   mainSupervisesSidecar: true,
+  pluginAuthor: (action, request) => ipcRenderer.invoke('abu:plugin-author', { action, request }),
+  pluginSnapshot: (action, request) => ipcRenderer.invoke('abu:plugin-snapshot', { action, request }),
+    pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
+    pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,
     { path, followFinalSymlink },

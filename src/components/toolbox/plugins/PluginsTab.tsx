@@ -1,48 +1,29 @@
-/**
- * Plugins tab (Extensions → 插件).
- *
- * Owns the two things the sub-views should not each own: the resolved home
- * directory, and the mount-time hydration of the installed set.
- *
- * The hydration is not just for display. `refreshInstalled` is also what arms
- * `pluginToolPolicy`'s in-memory server-name set (see pluginStore's module
- * doc); without a hydrate somewhere, a plugin installed in a *previous*
- * session would have its MCP tools run unapproved until the next install.
- * App start now hydrates too (`bootstrapPluginUpdates`, called from App's boot
- * effect so the update badge has something to count), so this one is no longer
- * the earliest — it stays because opening the tab is also when the user
- * expects to see changes made on disk since launch.
- *
- * What it deliberately does NOT own any more is navigation. 市场 | 我的 is a
- * choice shared by every Extensions tab, so the sub-nav lives above this
- * component and arrives as `source`; the old 已安装 / 插件市场 sub-tabs are
- * gone, and installed plugins are shown in place inside 市场 instead.
- */
-
 import { useEffect, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
-import { usePluginStore } from '@/stores/pluginStore';
-import type { ExtensionSource } from '@/components/toolbox/extensionSource';
-import InstalledPluginList from './InstalledPluginList';
+import { Button } from '@/components/ui/button';
+import { bootstrapPluginUpdates, usePluginStore } from '@/stores/pluginStore';
+import { useI18n } from '@/i18n';
+import AuthoredPluginList from './AuthoredPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
 
 interface PluginsTabProps {
   /** Shared toolbox header search box. */
   searchQuery: string;
-  /**
-   * Which source to show. The sub-nav above this component supplies it; the
-   * default keeps 市场 as the surface for any caller that renders the tab
-   * without a sub-nav (a test harness, a deep link that names no source),
-   * rather than leaving them a blank panel.
-   */
-  source?: ExtensionSource;
+  addTrigger?: number;
+
 }
 
-export default function PluginsTab({ searchQuery, source = 'market' }: PluginsTabProps) {
+export default function PluginsTab({ searchQuery, addTrigger = 0 }: PluginsTabProps) {
+  const { t } = useI18n();
+  const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const [home, setHome] = useState<string | null>(null);
+  const [requestedMarket, setRequestedMarket] = useState<{ name: string }>();
   const [addOpen, setAddOpen] = useState(false);
+  useEffect(() => { if (addTrigger > 0) setAddOpen(true); }, [addTrigger]);
+  const [recovering, setRecovering] = useState(false);
+  const recoveryError = usePluginStore(s => s.recoveryError);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const ensureBuiltinMarketplace = usePluginStore((s) => s.ensureBuiltinMarketplace);
 
@@ -72,21 +53,31 @@ export default function PluginsTab({ searchQuery, source = 'market' }: PluginsTa
   }, [refreshInstalled, ensureBuiltinMarketplace]);
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1">
-        {home === null ? null : source === 'mine' ? (
-          <InstalledPluginList home={home} mode="authored" searchQuery={searchQuery} />
-        ) : (
+    <div ref={setScrollParent} className="h-full overflow-y-auto overlay-scroll pb-6">
+      {recoveryError && <div role="alert" className="mx-8 mb-4 rounded-xl border border-[var(--abu-border)] p-4">
+        <p className="text-body text-[var(--abu-text-primary)]">{t.toolbox.pluginsRecoveryNeeded}</p>
+        <p className="mt-1 break-words text-minor text-[var(--abu-text-muted)]">{recoveryError}</p>
+        <Button size="sm" className="mt-3" disabled={recovering} onClick={() => {
+          setRecovering(true);
+          void bootstrapPluginUpdates().catch(() => {}).finally(() => setRecovering(false));
+        }}>{t.toolbox.pluginsRetryRecovery}</Button>
+      </div>}
+      {home !== null && <>
+        <AuthoredPluginList home={home} searchQuery={searchQuery} />
+        <section>
+          <h3 className="mx-auto max-w-[1088px] pl-11 pr-8 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.sourceMarket}</h3>
           <MarketplaceBrowser
             home={home}
+            requestedMarket={requestedMarket}
             searchQuery={searchQuery}
             onAddMarketplace={() => setAddOpen(true)}
+            scrollParent={scrollParent ?? undefined}
           />
-        )}
-      </div>
+        </section>
+      </>}
 
       {home !== null && (
-        <AddMarketplaceDialog open={addOpen} home={home} onClose={() => setAddOpen(false)} />
+        <AddMarketplaceDialog onAdded={name => setRequestedMarket({ name })} open={addOpen} home={home} onClose={() => setAddOpen(false)} />
       )}
     </div>
   );

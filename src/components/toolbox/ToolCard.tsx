@@ -10,9 +10,12 @@ import { cn } from '@/lib/utils';
 export interface ToolItem {
   id: string;
   name: string;
-  description?: string;
+  description?: ReactNode;
   /** Rendered node so callers can pass an emoji, <img>, or a status-colored icon. */
   avatar?: ReactNode;
+  nameTestId?: string;
+  /** Extra disclosure content stays outside the truncated description. */
+  footer?: ReactNode;
   /** Optional top-right corner adornment (source badge, connection status dot, …). */
   badge?: ReactNode;
   /** Optional test hook — the card IS the click target, so a wrapper testid
@@ -56,7 +59,8 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
         }
       }}
       className={cn(
-        'group flex flex-col gap-2 w-full h-[120px] overflow-hidden rounded-xl p-4 text-left',
+        'group flex flex-col gap-2 w-full overflow-hidden rounded-xl p-4 text-left',
+        item.footer ? 'min-h-[120px] h-full' : 'h-[120px]',
         'bg-[var(--abu-bg-subtle)] border border-[var(--abu-border)]',
         interactive && 'cursor-pointer hover:border-[var(--abu-clay)] hover:shadow-sm',
         !interactive && 'cursor-default',
@@ -85,6 +89,7 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
         <p
           className="flex-1 min-w-10 text-body font-semibold leading-snug truncate text-[var(--abu-text-primary)]"
           title={item.name}
+          data-testid={item.nameTestId}
         >
           {item.name}
         </p>
@@ -97,6 +102,7 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
       <p className="w-full text-minor text-[var(--abu-text-secondary)] leading-relaxed line-clamp-2 break-words">
         {item.description}
       </p>
+      {item.footer && <div className="mt-auto text-caption text-[var(--abu-text-muted)]">{item.footer}</div>}
     </div>
   );
 }

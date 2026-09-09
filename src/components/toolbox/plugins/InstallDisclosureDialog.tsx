@@ -14,10 +14,13 @@
  * caller guarantee `installPlugin` cannot run before `onConfirm` fires.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Bot, Loader2, Sparkles, Server, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, Bot, Loader2, Sparkles, Server, ShieldCheck, Package } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
+import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import { Input } from '@/components/ui/input';
+import { PLUGIN_CONFIG_VALUE_LIMIT, pluginConfigFields } from '@/core/plugin/configuration';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { InstallDisclosure, PluginAgentDisclosure } from '@/core/plugin/installer';
@@ -26,6 +29,7 @@ import { formatServerCommand } from './serverCommand';
 
 export type InstallPlanState =
   | { kind: 'loading' }
+  | { kind: 'unchanged' }
   | {
       kind: 'ready';
       disclosure: InstallDisclosure;
@@ -51,11 +55,13 @@ export type InstallPlanState =
 
 interface InstallDisclosureDialogProps {
   open: boolean;
+  authoring?: boolean;
+  updating?: boolean;
   /** Name from the marketplace listing — available before the plan resolves. */
   entryName: string;
   state: InstallPlanState;
   installing: boolean;
-  onConfirm: () => void;
+  onConfirm: (configuration: Record<string, string>) => void;
   onCancel: () => void;
 }
 
@@ -111,6 +117,8 @@ function skipReason(
 
 export default function InstallDisclosureDialog({
   open,
+  authoring = false,
+  updating = false,
   entryName,
   state,
   installing,
@@ -118,27 +126,34 @@ export default function InstallDisclosureDialog({
   onCancel,
 }: InstallDisclosureDialogProps) {
   useEffect(() => {
-    if (!open) return;
+    if (!open || authoring) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !installing) onCancel();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, installing, onCancel]);
+  }, [open, authoring, installing, onCancel]);
 
+  const [configuration, setConfiguration] = useState<Record<string, string>>({});
+  const preparation = state.kind === 'ready' ? state.disclosure.preparedToken : undefined;
+  useEffect(() => { setConfiguration({}); }, [open, preparation]);
+  const fields = state.kind === 'ready' ? pluginConfigFields(state.disclosure.manifest.mcpServers) : [];
   const { t } = useI18n();
   if (!open) return null;
 
   const tb = t.toolbox;
   const isReady = state.kind === 'ready';
 
-  const title = state.kind === 'unsupported' ? tb.pluginsUnsupportedTitle : tb.pluginsDisclosureTitle;
+  const title = state.kind === 'unsupported' ? tb.pluginsUnsupportedTitle : updating ? tb.pluginsUpdateDisclosureTitle : tb.pluginsDisclosureTitle;
 
   const body = (() => {
     switch (state.kind) {
+      case 'unchanged':
+        return <p role="status" className="text-body text-[var(--abu-text-secondary)]">{tb.pluginsUnchanged}</p>;
+
       case 'loading':
         return (
-          <p className="flex items-center gap-2 text-body text-[var(--abu-text-tertiary)]">
+          <p role="status" className="flex items-center gap-2 text-body text-[var(--abu-text-tertiary)]">
             <Loader2 className="h-4 w-4 animate-spin" />
             {tb.pluginsDisclosureLoading}
           </p>
@@ -177,7 +192,8 @@ export default function InstallDisclosureDialog({
         return (
           <div className="space-y-4">
             <p className="text-body text-[var(--abu-text-tertiary)]">
-              {format(tb.pluginsDisclosureSubtitle, { name: d.name })}
+              {format(updating ? tb.pluginsUpdateDisclosureSubtitle : tb.pluginsDisclosureSubtitle, { name: d.name })}
+              {authoring && !updating && <span role="status" className="mt-2 block text-[var(--abu-text-secondary)]">{tb.pluginsValidationPassed}</span>}
             </p>
 
             {/* Above every payload section on purpose: the dialog scrolls, and
@@ -195,9 +211,13 @@ export default function InstallDisclosureDialog({
               </div>
             )}
 
+            {fields.length > 0 && <Section icon={Server} title={tb.pluginsConfiguration}>
+              <p className="text-minor text-[var(--abu-text-muted)]">{tb.pluginsConfigurationHint}</p>
+              {fields.map(field => <label key={field} className="block text-minor">{field}<Input type="password" maxLength={PLUGIN_CONFIG_VALUE_LIMIT} autoComplete="new-password" value={configuration[field] ?? ''} onChange={event => setConfiguration(current => ({ ...current, [field]: event.target.value }))} /></label>)}
+            </Section>}
             <Section icon={ShieldCheck} title={tb.pluginsDisclosureSource}>
               <p className="text-body text-[var(--abu-text-secondary)]">
-                {d.marketplace}
+                {d.marketplace.startsWith('author-') ? tb.pluginsAuthoredSource : d.marketplace}
                 {d.version ? ` · v${d.version}` : ''}
               </p>
               <p className="break-all font-mono text-minor text-[var(--abu-text-muted)]">
@@ -205,10 +225,7 @@ export default function InstallDisclosureDialog({
               </p>
             </Section>
 
-            <Section icon={Sparkles} title={tb.pluginsDisclosureSkills}>
-              {d.skills.length === 0 ? (
-                <p className="text-body text-[var(--abu-text-muted)]">{tb.pluginsDisclosureNone}</p>
-              ) : (
+            {d.skills.length > 0 && <Section icon={Sparkles} title={tb.pluginsDisclosureSkills}>
                 <ul className="space-y-1">
                   {d.skills.map((skill) => (
                     <li
@@ -219,13 +236,9 @@ export default function InstallDisclosureDialog({
                     </li>
                   ))}
                 </ul>
-              )}
-            </Section>
+            </Section>}
 
-            <Section icon={Server} title={tb.pluginsDisclosureServers}>
-              {d.mcpServers.length === 0 ? (
-                <p className="text-body text-[var(--abu-text-muted)]">{tb.pluginsDisclosureNone}</p>
-              ) : (
+            {d.mcpServers.length > 0 && <Section icon={Server} title={tb.pluginsDisclosureServers}>
                 <>
                   {/* The whole point of this screen: the literal command line,
                       not a count. Never truncate it — wrap instead. */}
@@ -250,8 +263,7 @@ export default function InstallDisclosureDialog({
                     {tb.pluginsDisclosureServersHint}
                   </p>
                 </>
-              )}
-            </Section>
+            </Section>}
 
             {d.agents.length > 0 && (
               <Section icon={Bot} title={tb.pluginsDisclosureAgents}>
@@ -295,7 +307,7 @@ export default function InstallDisclosureDialog({
             )}
 
             {d.capabilities && d.capabilities.length > 0 && (
-              <Section icon={ShieldCheck} title={tb.pluginsDisclosureCapabilities}>
+            <Section icon={ShieldCheck} title={tb.pluginsDisclosureCapabilities}>
                 <div className="flex flex-wrap gap-1.5">
                   {d.capabilities.map((cap) => (
                     <span
@@ -340,6 +352,33 @@ export default function InstallDisclosureDialog({
     }
   })();
 
+  const footer = <div className="flex items-center justify-end gap-3">{isReady ? (
+            <>
+              <Button variant="ghost" onClick={onCancel} disabled={installing}>
+                {t.common.cancel}
+              </Button>
+              <Button data-testid="plugin-install-confirm" onClick={() => onConfirm(configuration)} disabled={installing || fields.some(field => !configuration[field]?.trim())}>
+                {installing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : tb.pluginsInstall}
+              </Button>
+            </>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={onCancel}>
+              {t.common.close}
+            </Button>
+          )}</div>;
+
+  if (authoring) return createPortal(
+    <ToolDetailModal open ariaLabel={title} testId="plugin-install-disclosure" onClose={() => { if (!installing) onCancel(); }} disableEscape={installing}
+      stackedHeader maxWidth="max-w-2xl" panelClassName="h-[min(640px,85vh)]"
+      avatar={<Package className="h-6 w-6" />} footer={footer}>
+      <div>
+        <h2 className="mb-4 text-h-lg font-semibold text-[var(--abu-text-primary)]">{title}</h2>
+        {body}
+      </div>
+    </ToolDetailModal>, document.body,
+  );
+
   return createPortal(
     <div
       data-electron-no-drag
@@ -360,21 +399,7 @@ export default function InstallDisclosureDialog({
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">{body}</div>
 
         <div className="flex shrink-0 items-center justify-end gap-3 px-6 pb-6">
-          {isReady ? (
-            <>
-              <Button variant="ghost" onClick={onCancel} disabled={installing}>
-                {t.common.cancel}
-              </Button>
-              <Button data-testid="plugin-install-confirm" onClick={onConfirm} disabled={installing}>
-                {installing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {installing ? tb.pluginsInstalling : tb.pluginsInstall}
-              </Button>
-            </>
-          ) : (
-            <Button variant="outline" onClick={onCancel}>
-              {t.common.close}
-            </Button>
-          )}
+          {footer}
         </div>
       </div>
     </div>,

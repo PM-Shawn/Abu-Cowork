@@ -11,6 +11,8 @@
 // server the same way src/core/mcp/enterprise-entitlement.test.ts does.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MCPClientManager, toCallToolOpts } from './client';
+import { publishPluginActivation } from '../plugin/activationPolicy';
+beforeEach(() => publishPluginActivation({}, [], true));
 import type { ToolDefinition } from '../../types';
 
 // Mirrors the private `ConnectedServer` shape in client.ts — not exported
@@ -43,6 +45,14 @@ describe('conversationId threading into MCP _meta', () => {
       'test-server',
       fakeServer
     );
+  });
+
+  it('denies cached connections immediately when their owning plugin closes', async () => {
+    publishPluginActivation({ 'tools@market': { enabled: false, root: '/pkg', skillDirs: [], legacySkills: false, agentFiles: [], mcpServers: ['test-server'] } }, ['test-server'], true);
+    await expect(manager.callTool('test-server', 'some_tool', {})).rejects.toThrow(/test-server/);
+    expect(mockCallTool).not.toHaveBeenCalled();
+    expect(manager.getServerTools('test-server')).toEqual([]);
+    await expect(manager.connectServer({ name: 'test-server', command: 'example', enabled: true })).rejects.toThrow(/test-server/);
   });
 
   it('includes _meta with the conversation id when callTool() is given a conversationId', async () => {

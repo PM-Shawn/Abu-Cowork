@@ -1,3 +1,7 @@
+import { acquirePluginUse } from '../plugin/runtimeLease';
+import { pluginOwnerForMcp } from '../plugin/activationPolicy';
+import { format, getI18n } from '@/i18n';
+import { assertPluginMcpEnabled, assertPluginMcpEpoch, isPluginMcpAllowed, pluginMcpEpoch } from '../plugin/activationPolicy';
 // MCP Client Manager
 // Stdio transport uses Tauri Rust backend for child process management.
 // HTTP transports (StreamableHTTP, SSE) use the MCP SDK directly.
@@ -5,6 +9,7 @@
 import type { ToolDefinition, ToolExecutionContext, ToolParameter, ToolResult, ToolResultContent } from '../../types';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { resolvePluginConfiguration } from '@/core/plugin/configuration';
 import { expandConfigEnvVars } from '@/utils/envExpansion';
 import { hasEmbeddedNode } from '@/utils/nodeRuntime';
 import { getTauriFetch } from '@/core/llm/tauriFetch';
@@ -163,6 +168,8 @@ function isEnterpriseServerBlocked(name: string): boolean {
 }
 
 export interface MCPServerConfig {
+  /** Opaque encrypted configuration reference; no credential values persist here. */
+  pluginConfiguration?: string;
   name: string;
   transport?: 'stdio' | 'http';
   // stdio transport
@@ -212,10 +219,14 @@ interface JSONRPCMessage {
   error?: { code: number; message: string; data?: unknown };
 }
 
-class TauriStdioTransport {
+export class TauriStdioTransport {
   private processId: string;
   private config: { command: string; args: string[]; env: Record<string, string> };
   private unlisteners: UnlistenFn[] = [];
+  private closed = false;
+  private started = false;
+  private spawnPromise?: Promise<unknown>;
+  private killPromise?: Promise<unknown>;
 
   onmessage?: (message: JSONRPCMessage) => void;
   onerror?: (error: Error) => void;
@@ -227,53 +238,54 @@ class TauriStdioTransport {
     this.config = config;
   }
 
+  private keepListener(unlisten: UnlistenFn): void {
+    if (this.closed) { unlisten(); throw new Error('MCP transport is closed'); }
+    this.unlisteners.push(unlisten);
+  }
+
   async start(): Promise<void> {
-    // Listen for JSON-RPC messages from stdout
-    const unlisten1 = await listen<string>(`mcp-msg-${this.processId}`, (event) => {
-      try {
-        const message = JSON.parse(event.payload) as JSONRPCMessage;
-        this.onmessage?.(message);
-      } catch (err) {
-        this.onerror?.(new Error(`Failed to parse MCP message: ${err}`));
-      }
-    });
-
-    // Listen for stderr (log + callback)
-    const unlisten2 = await listen<string>(`mcp-err-${this.processId}`, (event) => {
-      console.warn(`[MCP stderr] ${event.payload}`);
-      this.onstderr?.(event.payload);
-    });
-
-    // Listen for process close
-    const unlisten3 = await listen<string>(`mcp-close-${this.processId}`, () => {
-      this.onclose?.();
-    });
-
-    this.unlisteners = [unlisten1, unlisten2, unlisten3];
-
-    // Spawn the process via Tauri backend
-    await invoke('mcp_spawn', {
-      id: this.processId,
-      command: this.config.command,
-      args: this.config.args,
-      env: this.config.env,
-    });
-
-    console.log(`[MCP] TauriStdioTransport started: ${this.config.command} (id: ${this.processId})`);
+    if (this.closed || this.started) throw new Error('MCP transport cannot be started');
+    this.started = true;
+    try {
+      this.keepListener(await listen<string>(`mcp-msg-${this.processId}`, event => {
+        if (this.closed) return;
+        try { this.onmessage?.(JSON.parse(event.payload) as JSONRPCMessage); }
+        catch (err) { this.onerror?.(new Error(`Failed to parse MCP message: ${err}`)); }
+      }));
+      this.keepListener(await listen<string>(`mcp-err-${this.processId}`, event => {
+        if (!this.closed) this.onstderr?.(event.payload);
+      }));
+      this.keepListener(await listen<string>(`mcp-close-${this.processId}`, () => {
+        if (!this.closed) this.onclose?.();
+      }));
+      this.spawnPromise = invoke('mcp_spawn', {
+        id: this.processId, command: this.config.command, args: this.config.args, env: this.config.env,
+      });
+      await this.spawnPromise;
+      if (this.closed) throw new Error('MCP transport was closed during start');
+      console.log(`[MCP] TauriStdioTransport started: ${this.config.command} (id: ${this.processId})`);
+    } catch (err) {
+      await this.close();
+      throw err;
+    }
   }
 
   async send(message: JSONRPCMessage): Promise<void> {
-    const json = JSON.stringify(message);
-    await invoke('mcp_write', { id: this.processId, message: json });
+    if (this.closed || !this.spawnPromise) throw new Error('MCP transport is closed');
+    await invoke('mcp_write', { id: this.processId, message: JSON.stringify(message) });
   }
 
   async close(): Promise<void> {
-    for (const unlisten of this.unlisteners) {
-      unlisten();
+    this.closed = true;
+    for (const unlisten of this.unlisteners.splice(0)) unlisten();
+    // A kill before a pending spawn resolves can miss the process entirely.
+    // Listener registration may still resolve later; keepListener releases it
+    // and refuses to start a process after this close has already returned.
+    if (this.spawnPromise) {
+      await this.spawnPromise.catch(() => {});
+      this.killPromise ??= invoke('mcp_kill', { id: this.processId });
+      await this.killPromise;
     }
-    this.unlisteners = [];
-    await invoke('mcp_kill', { id: this.processId });
-    console.log(`[MCP] TauriStdioTransport closed: ${this.processId}`);
   }
 }
 
@@ -545,6 +557,19 @@ export function resetRawAppResults(): void {
 
 export class MCPClientManager {
   private servers: Map<string, ConnectedServer> = new Map();
+  private pendingConnections = new Map<string, { admissionName: string; cancelled: boolean; client?: { close(): Promise<void> } }>();
+  private clientClosures = new WeakMap<object, Promise<void>>();
+
+  private closeClient(client: { close(): Promise<void> }): Promise<void> {
+    const pending = this.clientClosures.get(client);
+    if (pending) return pending;
+    const closing = Promise.resolve().then(() => client.close()).catch(err => {
+      console.error('[MCP] Error closing client:', err);
+    });
+    this.clientClosures.set(client, closing);
+    return closing;
+  }
+
   private listeners: Set<() => void> = new Set();
   private reconnectAttempts: Map<string, number> = new Map();
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -571,23 +596,37 @@ export class MCPClientManager {
     this.listeners.forEach((cb) => cb());
   }
 
-  async connectServer(config: MCPServerConfig): Promise<void> {
-    if (this.servers.has(config.name)) {
-      // Disconnect the old one first to avoid zombie processes
-      console.log(`[MCP] Server ${config.name} already exists, disconnecting old instance first`);
-      await this.disconnectServer(config.name);
-    }
+  async connectServer(config: MCPServerConfig, admissionName = config.name): Promise<void> {
+    assertPluginMcpEnabled(admissionName);
+    const epoch = pluginMcpEpoch(admissionName);
+    // Detach the previous instance before awaiting close. A later disconnect
+    // can cancel this attempt even while SDK loading/handshake is pending.
+    const previousClosed = this.disconnectServer(config.name);
+    const attempt: { admissionName: string; cancelled: boolean; client?: { close(): Promise<void> } } = { admissionName, cancelled: false };
+    this.pendingConnections.set(config.name, attempt);
+    const admit = () => {
+      assertPluginMcpEpoch(admissionName, epoch);
+      if (attempt.cancelled || this.pendingConnections.get(config.name) !== attempt) throw new Error(format(getI18n().toolbox.pluginsDisabledCapability, { name: admissionName }));
+    };
+    const track = (client: { close(): Promise<void> }) => { admit(); attempt.client = client; };
+    await previousClosed;
 
-    const available = await loadMCPSDK();
-    if (!available || !Client) {
-      throw new Error('MCP SDK 加载失败，请检查依赖是否正确安装');
-    }
-
-    // Expand ${VAR} references in config
-    const expandedConfig = await expandConfigEnvVars(config);
-    const transportType = getTransportType(expandedConfig);
-
+    let redact = (value: string) => value;
     try {
+      admit();
+      const resolved = await resolvePluginConfiguration(config);
+      redact = resolved.redact;
+      const available = await loadMCPSDK();
+      if (!available || !Client) {
+        throw new Error('MCP SDK 加载失败，请检查依赖是否正确安装');
+      }
+
+      // Expand ${VAR} references in config
+      const expandedConfig = await expandConfigEnvVars(resolved.config);
+      if (pluginOwnerForMcp(admissionName) && JSON.stringify([expandedConfig.command, expandedConfig.args, expandedConfig.env, expandedConfig.url, expandedConfig.headers]).match(/\$\{[^}]+\}/)) throw new Error('Plugin configuration is incomplete');
+      const transportType = getTransportType(expandedConfig);
+
+      admit();
       console.log(`[MCP] Connecting to server: ${config.name} (${transportType})`);
 
       let transport: unknown;
@@ -598,7 +637,7 @@ export class MCPClientManager {
           throw new Error('HTTP transport requires a URL');
         }
         // HTTP: use connectHTTPWithFallback (StreamableHTTP → SSE, with Tauri fetch for CORS)
-        const result = await this.connectHTTPWithFallback(expandedConfig, config.name);
+        const result = await this.connectHTTPWithFallback(expandedConfig, config.name, admit, track, redact);
         transport = result.transport;
         client = result.client as InstanceType<typeof Client>;
       } else {
@@ -622,6 +661,7 @@ export class MCPClientManager {
             }
           }
         }
+        admit();
         transport = new TauriStdioTransport({
           command: expandedConfig.command,
           args: expandedConfig.args ?? [],
@@ -630,11 +670,15 @@ export class MCPClientManager {
 
         // Create MCP client and connect for stdio
         client = createMcpClient();
+        track(client);
         await client.connect(transport as Parameters<typeof client.connect>[0]);
       }
 
+      track(client);
+      admit();
       // Discover tools
       const toolsResponse = await client.listTools();
+      admit();
       const tools = new Map<string, ToolDefinition>();
       const appTools = new Map<string, ToolDefinition>();
 
@@ -676,6 +720,7 @@ export class MCPClientManager {
       // A previous connection's ui:// resources may be stale after a reconnect.
       this.appResources.invalidateServer(config.name);
       this.servers.set(config.name, { config, client, transport, tools, appTools });
+      this.pendingConnections.delete(config.name);
       this.registerResourceNotifications(config.name, client);
 
       // Reset reconnect counter on successful connection
@@ -691,7 +736,7 @@ export class MCPClientManager {
       if (transportType === 'stdio' && transport instanceof TauriStdioTransport) {
         // Capture stderr as server logs
         transport.onstderr = (line) => {
-          this.addLog(config.name, 'warn', line);
+          this.addLog(config.name, 'warn', redact(line));
         };
         const origOnClose = transport.onclose;
         transport.onclose = () => {
@@ -708,10 +753,14 @@ export class MCPClientManager {
       console.log(`[MCP] Connected to ${config.name}, discovered ${tools.size} tools`);
       this.notifyListeners();
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
+      if (attempt.client) await this.closeClient(attempt.client);
+      if (this.pendingConnections.get(config.name) === attempt) this.pendingConnections.delete(config.name);
+      const errorMessage = redact(err instanceof Error ? err.message : String(err));
       mcpLogger.error('MCP server connection failed', { name: config.name, error: errorMessage });
-      console.error(`[MCP] Failed to connect to ${config.name}:`, err);
-      throw err;
+      console.error(`[MCP] Failed to connect to ${config.name}:`, errorMessage);
+      // Original causes can contain credentials expanded for the transport.
+      // eslint-disable-next-line preserve-caught-error -- Never propagate an unredacted transport cause.
+      throw new Error(errorMessage);
     }
   }
 
@@ -721,7 +770,10 @@ export class MCPClientManager {
    */
   private async connectHTTPWithFallback(
     config: MCPServerConfig,
-    displayName: string
+    displayName: string,
+    admit: () => void = () => {},
+    track: (client: { close(): Promise<void> }) => void = () => {},
+    redact: (value: string) => string = value => value,
   ): Promise<{ transport: unknown; client: unknown }> {
     if (!Client) throw new Error('MCP Client not loaded');
 
@@ -740,22 +792,27 @@ export class MCPClientManager {
         this.addLog(displayName, 'info', 'Trying StreamableHTTP transport...');
         const transport = new StreamableHTTPClientTransport(url, transportOpts);
         const client = createMcpClient();
-        await client.connect(transport as Parameters<typeof client.connect>[0]);
+        track(client);
+        admit();
+        try { await client.connect(transport as Parameters<typeof client.connect>[0]); } catch (err) { await this.closeClient(client); throw err; }
         this.addLog(displayName, 'info', 'Connected via StreamableHTTP');
         return { transport, client };
       } catch (err) {
-        streamableErr = err instanceof Error ? err.message : String(err);
+        streamableErr = redact(err instanceof Error ? err.message : String(err));
         this.addLog(displayName, 'warn', `StreamableHTTP failed: ${streamableErr}, trying SSE...`);
       }
     }
 
+    admit();
     // Fallback to SSE
     if (SSEClientTransport) {
       try {
         this.addLog(displayName, 'info', 'Trying SSE transport...');
         const transport = new SSEClientTransport(url, transportOpts);
         const client = createMcpClient();
-        await client.connect(transport as Parameters<typeof client.connect>[0]);
+        track(client);
+        admit();
+        try { await client.connect(transport as Parameters<typeof client.connect>[0]); } catch (err) { await this.closeClient(client); throw err; }
         this.addLog(displayName, 'info', 'Connected via SSE');
         return { transport, client };
       } catch (err) {
@@ -895,11 +952,22 @@ export class MCPClientManager {
     appToolCount?: number;
     error?: string;
   }> {
+    if (!isPluginMcpAllowed(config.name)) return { success: false, error: format(getI18n().toolbox.pluginsDisabledCapability, { name: config.name }) };
+    // Probe the live transport without starting or stopping a second runtime.
+    const active = this.servers.get(config.name);
+    if (active) {
+      try {
+        await (active.client as { listTools(): Promise<unknown> }).listTools();
+        return { success: true, toolCount: active.tools.size, appToolCount: active.appTools.size };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
     const tempName = `__test_${Date.now()}`;
     const tempConfig = { ...config, name: tempName };
 
     try {
-      await this.connectServer(tempConfig);
+      await this.connectServer(tempConfig, config.name);
       const toolCount = this.servers.get(tempName)?.tools.size ?? 0;
       const appToolCount = this.servers.get(tempName)?.appTools.size ?? 0;
       await this.disconnectServer(tempName);
@@ -924,19 +992,25 @@ export class MCPClientManager {
     }
     this.reconnectAttempts.delete(name);
 
-    const server = this.servers.get(name);
-    if (!server) return;
-
-    try {
-      const client = server.client as { close: () => Promise<void> };
-      await client.close();
-    } catch (err) {
-      console.error(`[MCP] Error disconnecting from ${name}:`, err);
+    const closing: Promise<void>[] = [];
+    for (const [pendingName, attempt] of this.pendingConnections) {
+      if (pendingName !== name && attempt.admissionName !== name) continue;
+      attempt.cancelled = true;
+      this.pendingConnections.delete(pendingName);
+      if (attempt.client) closing.push(this.closeClient(attempt.client));
     }
-    this.servers.delete(name);
-    this.appResources.invalidateServer(name);
-    this.forgetBrowserBridgeRunOwners(name);
+    const server = this.servers.get(name);
+    if (server) {
+      // Remove only the captured instance, synchronously. Old close callbacks
+      // must never delete a newly connected instance under the same name.
+      this.servers.delete(name);
+      if (server.transport instanceof TauriStdioTransport) server.transport.onclose = undefined;
+      this.appResources.invalidateServer(name);
+      this.forgetBrowserBridgeRunOwners(name);
+      closing.push(this.closeClient(server.client as { close(): Promise<void> }));
+    }
     this.notifyListeners();
+    await Promise.all(closing);
   }
 
   /**
@@ -958,21 +1032,21 @@ export class MCPClientManager {
     }
     this.reconnectAttempts.clear();
 
-    const names = Array.from(this.servers.keys());
+    const names = [...new Set([...this.servers.keys(), ...this.pendingConnections.keys()])];
     await Promise.all(names.map((name) => this.disconnectServer(name)));
   }
 
   listTools(): ToolDefinition[] {
     const allTools: ToolDefinition[] = [];
     for (const [name, server] of this.servers) {
-      if (isEnterpriseServerBlocked(name)) continue;
+      if (isEnterpriseServerBlocked(name) || !isPluginMcpAllowed(name)) continue;
       allTools.push(...server.tools.values());
     }
     return allTools;
   }
 
   getServerTools(serverName: string): ToolDefinition[] {
-    if (isEnterpriseServerBlocked(serverName)) return [];
+    if (isEnterpriseServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return [];
     const server = this.servers.get(serverName);
     return server ? Array.from(server.tools.values()) : [];
   }
@@ -984,7 +1058,7 @@ export class MCPClientManager {
    * then falls back to this.
    */
   getAppTool(serverName: string, toolName: string): ToolDefinition | undefined {
-    if (isEnterpriseServerBlocked(serverName)) return undefined;
+    if (isEnterpriseServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return undefined;
     return this.servers.get(serverName)?.appTools.get(toolName);
   }
 
@@ -1004,71 +1078,75 @@ export class MCPClientManager {
    *   missing text content, or an oversized resource.
    */
   async readResource(serverName: string, uri: string): Promise<McpAppResource> {
-    if (isEnterpriseServerBlocked(serverName)) {
-      throw new McpAppResourceError(
-        'server-not-authorized',
-        `Enterprise MCP server ${serverName} is not authorized by the current live session`
-      );
-    }
-    if (!isAppResourceUri(uri)) {
-      throw new McpAppResourceError(
-        'unsupported-uri',
-        `Only ${APP_RESOURCE_URI_PREFIX} resources can be read as MCP App interfaces (got: ${uri})`
-      );
-    }
-    const server = this.servers.get(serverName);
-    if (!server) {
-      throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
-    }
-
-    return this.appResources.read(serverName, uri, async () => {
-      const client = server.client as {
-        readResource: (params: { uri: string }) => Promise<{
-          contents?: Array<{
-          uri?: string;
-          mimeType?: string;
-          text?: string;
-          blob?: string;
-          _meta?: Record<string, unknown>;
-        }>;
-        }>;
-      };
-      const result = await client.readResource({ uri });
-      // A server may answer with several contents (the interface plus siblings).
-      // Prefer the one that actually is the requested uri; only fall back to
-      // "first text content" when none of them carries a matching uri.
-      const textContents = (result.contents ?? []).filter((c) => typeof c.text === 'string');
-      const content = textContents.find((c) => c.uri === uri) ?? textContents[0];
-      if (!content || typeof content.text !== 'string') {
+    const release = acquirePluginUse(pluginOwnerForMcp(serverName));
+    try {
+      assertPluginMcpEnabled(serverName);
+      if (isEnterpriseServerBlocked(serverName)) {
         throw new McpAppResourceError(
-          'no-text-content',
-          `Resource ${uri} on ${serverName} returned no text content`
+          'server-not-authorized',
+          `Enterprise MCP server ${serverName} is not authorized by the current live session`
         );
       }
-
-      const byteLength = utf8ByteLength(content.text);
-      if (byteLength > MAX_APP_RESOURCE_BYTES) {
+      if (!isAppResourceUri(uri)) {
         throw new McpAppResourceError(
-          'resource-too-large',
-          `Resource ${uri} on ${serverName} is too large: ${byteLength} bytes (limit ${MAX_APP_RESOURCE_BYTES})`
+          'unsupported-uri',
+          `Only ${APP_RESOURCE_URI_PREFIX} resources can be read as MCP App interfaces (got: ${uri})`
         );
       }
+      const server = this.servers.get(serverName);
+      if (!server) {
+        throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
+      }
 
-      const mimeType = content.mimeType ?? '';
-      // Carry `_meta.ui` through untouched — the renderer builds the sandbox
-      // CSP (`connectDomains`/`resourceDomains`) and the border preference from
-      // it. Validation happens there, on the security boundary.
-      const rawMeta = (content as { _meta?: Record<string, unknown> })._meta;
-      const uiMeta = rawMeta && typeof rawMeta.ui === 'object' && rawMeta.ui !== null
-        ? (rawMeta.ui as Record<string, unknown>)
-        : undefined;
-      return {
-        mimeType,
-        text: content.text,
-        isMcpApp: isMcpAppMimeType(mimeType),
-        ...(uiMeta ? { meta: uiMeta } : {}),
-      };
-    });
+      return await this.appResources.read(serverName, uri, async () => {
+        const client = server.client as {
+          readResource: (params: { uri: string }) => Promise<{
+            contents?: Array<{
+            uri?: string;
+            mimeType?: string;
+            text?: string;
+            blob?: string;
+            _meta?: Record<string, unknown>;
+          }>;
+          }>;
+        };
+        const result = await client.readResource({ uri });
+        // A server may answer with several contents (the interface plus siblings).
+        // Prefer the one that actually is the requested uri; only fall back to
+        // "first text content" when none of them carries a matching uri.
+        const textContents = (result.contents ?? []).filter((c) => typeof c.text === 'string');
+        const content = textContents.find((c) => c.uri === uri) ?? textContents[0];
+        if (!content || typeof content.text !== 'string') {
+          throw new McpAppResourceError(
+            'no-text-content',
+            `Resource ${uri} on ${serverName} returned no text content`
+          );
+        }
+
+        const byteLength = utf8ByteLength(content.text);
+        if (byteLength > MAX_APP_RESOURCE_BYTES) {
+          throw new McpAppResourceError(
+            'resource-too-large',
+            `Resource ${uri} on ${serverName} is too large: ${byteLength} bytes (limit ${MAX_APP_RESOURCE_BYTES})`
+          );
+        }
+
+        const mimeType = content.mimeType ?? '';
+        // Carry `_meta.ui` through untouched — the renderer builds the sandbox
+        // CSP (`connectDomains`/`resourceDomains`) and the border preference from
+        // it. Validation happens there, on the security boundary.
+        const rawMeta = (content as { _meta?: Record<string, unknown> })._meta;
+        const uiMeta = rawMeta && typeof rawMeta.ui === 'object' && rawMeta.ui !== null
+          ? (rawMeta.ui as Record<string, unknown>)
+          : undefined;
+        return {
+          mimeType,
+          text: content.text,
+          isMcpApp: isMcpAppMimeType(mimeType),
+          ...(uiMeta ? { meta: uiMeta } : {}),
+        };
+      });
+    } finally { release(); }
   }
 
   /**
@@ -1097,7 +1175,7 @@ export class MCPClientManager {
    * Returns the number of tools discovered, or -1 if server not connected.
    */
   async refreshServerTools(serverName: string): Promise<number> {
-    if (isEnterpriseServerBlocked(serverName)) return -1;
+    if (isEnterpriseServerBlocked(serverName) || !isPluginMcpAllowed(serverName)) return -1;
     const server = this.servers.get(serverName);
     if (!server) return -1;
 
@@ -1234,6 +1312,7 @@ export class MCPClientManager {
       }>;
     }
   ): Promise<ToolResult> {
+    assertPluginMcpEnabled(serverName);
     if (isEnterpriseServerBlocked(serverName)) {
       throw new Error('Enterprise MCP is not authorized by the current live session');
     }
@@ -1257,6 +1336,7 @@ export class MCPClientManager {
     const toolDef = modelToolDef ?? appToolDef;
     const coercedArgs = toolDef ? coerceNumericArgs(toolDef, args) : args;
 
+    const releasePlugin = acquirePluginUse(pluginOwnerForMcp(serverName));
     let timerId: ReturnType<typeof setTimeout>;
     try {
       const client = server.client as {
@@ -1407,6 +1487,8 @@ export class MCPClientManager {
       const errorMsg = err instanceof Error ? err.message : String(err);
       console.error(`[MCP] Tool call failed: ${serverName}:${toolName}`, err);
       throw new Error(`Tool call failed: ${errorMsg}`, { cause: err });
+    } finally {
+      releasePlugin();
     }
   }
 
@@ -1443,39 +1525,43 @@ export class MCPClientManager {
   async readServerResource(serverName: string, uri: string): Promise<{
     contents: Array<{ uri: string; mimeType?: string; text?: string; blob?: string }>;
   }> {
-    if (isEnterpriseServerBlocked(serverName)) {
-      throw new McpAppResourceError(
-        'server-not-authorized',
-        `Enterprise MCP server ${serverName} is not authorized by the current live session`
-      );
-    }
-    const server = this.servers.get(serverName);
-    if (!server) {
-      throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
-    }
-    const client = server.client as {
-      readResource: (params: { uri: string }) => Promise<{
-        contents?: Array<{ uri?: string; mimeType?: string; text?: string; blob?: string }>;
-      }>;
-    };
-    const result = await client.readResource({ uri });
-    const contents = (result.contents ?? []).map((c) => ({
-      uri: typeof c.uri === 'string' ? c.uri : uri,
-      ...(c.mimeType !== undefined ? { mimeType: c.mimeType } : {}),
-      ...(typeof c.text === 'string' ? { text: c.text } : {}),
-      ...(typeof c.blob === 'string' ? { blob: c.blob } : {}),
-    }));
-    let total = 0;
-    for (const c of contents) {
-      total += utf8ByteLength(c.text ?? '') + (c.blob?.length ?? 0);
-    }
-    if (total > MAX_APP_RESOURCE_BYTES) {
-      throw new McpAppResourceError(
-        'resource-too-large',
-        `Resource ${uri} on ${serverName} exceeds ${MAX_APP_RESOURCE_BYTES} bytes`
-      );
-    }
-    return { contents };
+    const release = acquirePluginUse(pluginOwnerForMcp(serverName));
+    try {
+      assertPluginMcpEnabled(serverName);
+      if (isEnterpriseServerBlocked(serverName)) {
+        throw new McpAppResourceError(
+          'server-not-authorized',
+          `Enterprise MCP server ${serverName} is not authorized by the current live session`
+        );
+      }
+      const server = this.servers.get(serverName);
+      if (!server) {
+        throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
+      }
+      const client = server.client as {
+        readResource: (params: { uri: string }) => Promise<{
+          contents?: Array<{ uri?: string; mimeType?: string; text?: string; blob?: string }>;
+        }>;
+      };
+      const result = await client.readResource({ uri });
+      const contents = (result.contents ?? []).map((c) => ({
+        uri: typeof c.uri === 'string' ? c.uri : uri,
+        ...(c.mimeType !== undefined ? { mimeType: c.mimeType } : {}),
+        ...(typeof c.text === 'string' ? { text: c.text } : {}),
+        ...(typeof c.blob === 'string' ? { blob: c.blob } : {}),
+      }));
+      let total = 0;
+      for (const c of contents) {
+        total += utf8ByteLength(c.text ?? '') + (c.blob?.length ?? 0);
+      }
+      if (total > MAX_APP_RESOURCE_BYTES) {
+        throw new McpAppResourceError(
+          'resource-too-large',
+          `Resource ${uri} on ${serverName} exceeds ${MAX_APP_RESOURCE_BYTES} bytes`
+        );
+      }
+      return { contents };
+    } finally { release(); }
   }
 
   /** List a connected server's resources for its app interface (read-only). */
@@ -1483,34 +1569,38 @@ export class MCPClientManager {
     resources: Array<{ uri: string; name?: string; mimeType?: string; description?: string }>;
     nextCursor?: string;
   }> {
-    if (isEnterpriseServerBlocked(serverName)) {
-      throw new McpAppResourceError(
-        'server-not-authorized',
-        `Enterprise MCP server ${serverName} is not authorized by the current live session`
-      );
-    }
-    const server = this.servers.get(serverName);
-    if (!server) {
-      throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
-    }
-    const client = server.client as {
-      listResources: (params?: { cursor?: string }) => Promise<{
-        resources?: Array<{ uri?: string; name?: string; mimeType?: string; description?: string }>;
-        nextCursor?: string;
-      }>;
-    };
-    const result = await client.listResources(cursor === undefined ? undefined : { cursor });
-    return {
-      resources: (result.resources ?? [])
-        .filter((r): r is { uri: string } & typeof r => typeof r.uri === 'string')
-        .map((r) => ({
-          uri: r.uri,
-          ...(r.name !== undefined ? { name: r.name } : {}),
-          ...(r.mimeType !== undefined ? { mimeType: r.mimeType } : {}),
-          ...(r.description !== undefined ? { description: r.description } : {}),
-        })),
-      ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
-    };
+    const release = acquirePluginUse(pluginOwnerForMcp(serverName));
+    try {
+      assertPluginMcpEnabled(serverName);
+      if (isEnterpriseServerBlocked(serverName)) {
+        throw new McpAppResourceError(
+          'server-not-authorized',
+          `Enterprise MCP server ${serverName} is not authorized by the current live session`
+        );
+      }
+      const server = this.servers.get(serverName);
+      if (!server) {
+        throw new McpAppResourceError('server-not-connected', `Server ${serverName} not connected`);
+      }
+      const client = server.client as {
+        listResources: (params?: { cursor?: string }) => Promise<{
+          resources?: Array<{ uri?: string; name?: string; mimeType?: string; description?: string }>;
+          nextCursor?: string;
+        }>;
+      };
+      const result = await client.listResources(cursor === undefined ? undefined : { cursor });
+      return {
+        resources: (result.resources ?? [])
+          .filter((r): r is { uri: string } & typeof r => typeof r.uri === 'string')
+          .map((r) => ({
+            uri: r.uri,
+            ...(r.name !== undefined ? { name: r.name } : {}),
+            ...(r.mimeType !== undefined ? { mimeType: r.mimeType } : {}),
+            ...(r.description !== undefined ? { description: r.description } : {}),
+          })),
+        ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
+      };
+    } finally { release(); }
   }
 
   /**

@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { usePluginStore } from '@/stores/pluginStore';
+import { canonicalizeElectronPathForPolicy } from '@/utils/electronHost';
 import { expandHome, loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 
 interface AddMarketplaceDialogProps {
@@ -75,9 +76,13 @@ export default function AddMarketplaceDialog({
     setBusy(true);
     setError(null);
     try {
-      const absolute = expandHome(trimmed, home);
+      const expanded = expandHome(trimmed, home);
+      const absolute = await canonicalizeElectronPathForPolicy(expanded) ?? expanded;
       const marketplace = await loadMarketplaceFromDir(absolute);
-      addMarketplace(marketplace.name, absolute);
+      const existing = usePluginStore.getState().marketplaces.find(item => item.name === marketplace.name);
+      const existingCanonical = existing ? await canonicalizeElectronPathForPolicy(expandHome(existing.dir, home)) : null;
+      // Re-adding an alias of the same existing directory just selects it.
+      if (!existing || existingCanonical !== absolute) addMarketplace(marketplace.name, absolute);
       onAdded?.(marketplace.name);
       onClose();
     } catch (err) {

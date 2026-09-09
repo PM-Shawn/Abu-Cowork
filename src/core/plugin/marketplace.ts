@@ -5,9 +5,8 @@
  * every location.
  *
  * `source` is polymorphic in the wild: a bare relative-path string, or an
- * object discriminated by its own `source` field (`"url"` | `"git-subdir"`).
- * See the real `claude-plugins-official` marketplace for examples of all
- * three shapes plus the assorted unknown top-level/plugin-level fields
+ * object discriminated by its own `source` field (`"local"` | `"url"` | `"git-subdir"`).
+ * Claude and Codex marketplaces use these shapes plus unknown top-level/plugin-level fields
  * (`$schema`, `metadata`, `lspServers`, `skills`, ...) that must survive a
  * round-trip through this parser untouched.
  */
@@ -65,6 +64,14 @@ export function parseSource(raw: unknown): PluginSource {
 
   const discriminant = raw.source;
 
+  if (discriminant === 'local') {
+    if (typeof raw.path !== 'string' || raw.path.trim().length === 0) {
+      throw new MarketplaceParseError('source of kind "local" requires a non-empty path', 'source.path');
+    }
+    // Reuse the existing resolver and its marketplace containment check.
+    return { kind: 'relative', path: raw.path };
+  }
+
   if (discriminant === 'url') {
     if (typeof raw.url !== 'string') {
       throw new MarketplaceParseError(
@@ -102,7 +109,7 @@ export function parseSource(raw: unknown): PluginSource {
   }
 
   throw new MarketplaceParseError(
-    `unknown source discriminant ${JSON.stringify(discriminant)} (expected "url" or "git-subdir")`,
+    `unknown source discriminant ${JSON.stringify(discriminant)} (expected "local", "url" or "git-subdir")`,
     'source.source',
   );
 }

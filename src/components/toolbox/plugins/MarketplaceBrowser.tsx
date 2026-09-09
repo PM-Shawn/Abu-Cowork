@@ -1,45 +1,22 @@
-/**
- * Browse a local marketplace and install from it.
- *
- * Two decisions worth keeping:
- *
- * 1. **Entries are read from disk on every mount / marketplace switch**, never
- *    cached in the store. The official marketplace is a git clone the user can
- *    `git pull`; a cached listing would offer packages that are no longer
- *    there.
- * 2. **`planInstall` and `installPlugin` are separated by a user decision.**
- *    Clicking Install only *plans* — it reads the manifest and shows the
- *    disclosure. Nothing is written until the user confirms in the dialog.
- *    This is the invariant the tests pin: no confirmation, no `installPlugin`.
- *
- * Most entries in the real world (~82% of the 291 in `claude-plugins-official`)
- * are remote git sources. Those now install too: `planInstall` fetches the
- * package (sha-verified, in the main process) before disclosing it, so the
- * user still reads the real contents before confirming. `UnsupportedSourceError`
- * remains only as the graceful degradation when no fetcher is wired (headless
- * surfaces) — it renders as an explanatory notice, not a toast-shaped failure.
- *
- * 3. **Installed entries stay in the list**, showing their actions behind a
- *    `···` menu instead of moving to a separate 已安装 tab. Installs whose
- *    marketplace is gone have no row to sit in, so they get their own group
- *    below the list — otherwise removing a market would make its plugins
- *    invisible while they were still loaded and running.
+/** Marketplace rows remain in place after installation. Refresh keeps the
+ * last readable listing visible, but only a fresh listing can plan installs.
+ * Every install consumes an immutable preview after explicit confirmation.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso } from 'react-virtuoso';
-import { Loader2, Package, Plus, Trash2, AlertTriangle } from 'lucide-react';
+import { Loader2, Package, Plus, RefreshCw, Trash2, AlertTriangle } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import { Select } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
-import InstalledItemMenu from '@/components/toolbox/InstalledItemMenu';
-import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
 import { useToastStore } from '@/stores/toastStore';
-import { usePluginStore } from '@/stores/pluginStore';
+import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
+import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
+import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { orphanedInstalls } from '@/core/plugin/authored';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
-import { planInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
+import { planInstall, releasePreparedInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
 import { PluginSymlinkRootError } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
 import { installedByEntryName } from '@/core/plugin/updateCheck';
@@ -52,6 +29,8 @@ import {
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import MarketplaceEntryRow from './MarketplaceEntryRow';
+import InstalledPluginCard from './InstalledPluginCard';
+import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
@@ -74,16 +53,18 @@ type InstallFlow =
 
 interface MarketplaceBrowserProps {
   home: string;
+  scrollParent?: HTMLElement;
   /** Shared toolbox header search box — 291 entries are unusable without it. */
   searchQuery: string;
+  requestedMarket?: { name: string };
   onAddMarketplace: () => void;
 }
 
 type EntriesState =
   | { kind: 'idle' }
-  | { kind: 'loading' }
+  | { kind: 'loading'; marketplace?: Marketplace }
   | { kind: 'ready'; marketplace: Marketplace }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; marketplace?: Marketplace };
 
 function authorName(author: MarketplaceEntry['author']): string | undefined {
   if (!author) return undefined;
@@ -108,12 +89,15 @@ function matchesQuery(entry: MarketplaceEntry, query: string): boolean {
 export default function MarketplaceBrowser({
   home,
   searchQuery,
+  requestedMarket,
   onAddMarketplace,
+  scrollParent,
 }: MarketplaceBrowserProps) {
   const { t } = useI18n();
   const tb = t.toolbox;
   const marketplaces = usePluginStore((s) => s.marketplaces);
   const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
+  const authors = usePluginAuthorStore(s => s.authors);
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
   const update = usePluginStore((s) => s.update);
@@ -121,7 +105,10 @@ export default function MarketplaceBrowser({
   const updateAvailableKeys = usePluginStore((s) => s.updateAvailableKeys);
   const addToast = useToastStore((s) => s.addToast);
 
+  const cachedMarkets = useRef(new Map<string, Marketplace>());
+  const [reload, setReload] = useState(0);
   const [selectedName, setSelectedName] = useState<string | null>(null);
+  useEffect(() => { if (requestedMarket) setSelectedName(requestedMarket.name); }, [requestedMarket]);
   const [entriesState, setEntriesState] = useState<EntriesState>({ kind: 'idle' });
   const [category, setCategory] = useState(ALL_CATEGORIES);
   const [flow, setFlow] = useState<InstallFlow>({ kind: 'closed' });
@@ -129,7 +116,6 @@ export default function MarketplaceBrowser({
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
   const [managing, setManaging] = useState<InstalledPlugin | null>(null);
   const [uninstallTarget, setUninstallTarget] = useState<InstalledPlugin | null>(null);
-  const launchTrial = useTrialLauncher();
 
   /**
    * Bumped on every new plan request and on every close. A `planInstall` that
@@ -139,12 +125,20 @@ export default function MarketplaceBrowser({
    * async plan path was missing.
    */
   const planEpochRef = useRef(0);
-  useEffect(() => () => void (planEpochRef.current += 1), []);
+  const preparedTokenRef = useRef<string | undefined>(undefined);
+  const installingRef = useRef(false);
+  const releasePreparation = useCallback(() => {
+    const token = preparedTokenRef.current;
+    preparedTokenRef.current = undefined;
+    if (token) void releasePreparedInstall(token).catch(() => {});
+  }, []);
+  useEffect(() => () => { planEpochRef.current += 1; releasePreparation(); }, [releasePreparation]);
 
   const closeFlow = useCallback(() => {
     planEpochRef.current += 1;
+    releasePreparation();
     setFlow({ kind: 'closed' });
-  }, []);
+  }, [releasePreparation]);
 
   // Keep the selection valid as marketplaces are added/removed, and land the
   // user on a market they just added. User markets are appended last (the
@@ -177,25 +171,27 @@ export default function MarketplaceBrowser({
       return;
     }
     let cancelled = false;
-    setEntriesState({ kind: 'loading' });
+    setEntriesState({ kind: 'loading', marketplace: cachedMarkets.current.get(selected.dir) });
     setCategory(ALL_CATEGORIES);
     loadMarketplaceFromDir(selected.dir)
       .then((marketplace) => {
-        if (!cancelled) setEntriesState({ kind: 'ready', marketplace });
+        if (marketplace.name !== selected.name) throw new Error(tb.pluginsMarketplaceIdentityChanged);
+        if (!cancelled) { cachedMarkets.current.set(selected.dir, marketplace); setEntriesState({ kind: 'ready', marketplace }); }
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         setEntriesState({
           kind: 'error',
+          marketplace: cachedMarkets.current.get(selected.dir),
           message: err instanceof Error ? err.message : String(err),
         });
       });
     return () => {
       cancelled = true;
     };
-  }, [selected]);
+  }, [selected, reload, tb.pluginsMarketplaceIdentityChanged]);
 
-  const marketplace = entriesState.kind === 'ready' ? entriesState.marketplace : null;
+  const marketplace = entriesState.kind === 'ready' || entriesState.kind === 'error' || entriesState.kind === 'loading' ? entriesState.marketplace ?? null : null;
 
   /**
    * Names already installed *from this marketplace*, resolved through the
@@ -222,7 +218,7 @@ export default function MarketplaceBrowser({
   // whatever a superseded scan computes.
   useEffect(() => {
     void recomputeUpdates(home);
-  }, [recomputeUpdates, home, marketplaces, installed]);
+  }, [recomputeUpdates, home, marketplaces, installed, reload]);
 
   /** Store keys are `pluginKey(entryName, marketName)` — see `updateCheck`. */
   const updateKeySet = useMemo(() => new Set(updateAvailableKeys), [updateAvailableKeys]);
@@ -236,8 +232,8 @@ export default function MarketplaceBrowser({
    */
   const marketsHydrated = useMemo(() => marketplaces.some((m) => m.builtin), [marketplaces]);
   const orphans = useMemo(
-    () => (marketsHydrated ? orphanedInstalls(installed, marketplaces) : []),
-    [marketsHydrated, installed, marketplaces],
+    () => (marketsHydrated ? orphanedInstalls(installed, marketplaces).filter(plugin => !authors.some(author => author.key === plugin.key && author.id === plugin.authoringId)) : []),
+    [marketsHydrated, installed, marketplaces, authors],
   );
 
   const categoryOptions = useMemo(() => {
@@ -261,11 +257,13 @@ export default function MarketplaceBrowser({
 
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
-      if (!selected) return;
+      if (!selected || entriesState.kind !== 'ready') return;
+      releasePreparation();
       const epoch = (planEpochRef.current += 1);
       setFlow({ kind: 'planning', entry });
       try {
         const disclosure = await planInstall({
+          prepareSnapshot: true,
           marketplaceName: selected.name,
           marketplaceDir: selected.dir,
           entry,
@@ -274,7 +272,11 @@ export default function MarketplaceBrowser({
           // before disclosure, so what the user reads is what will install.
           fetchRemote: fetchRemotePluginSource,
         });
-        if (planEpochRef.current !== epoch) return; // superseded or cancelled
+        if (planEpochRef.current !== epoch) {
+          if (disclosure.preparedToken) await releasePreparedInstall(disclosure.preparedToken).catch(() => {});
+          return;
+        }
+        preparedTokenRef.current = disclosure.preparedToken;
         setFlow({ kind: 'ready', entry, disclosure });
       } catch (err) {
         if (planEpochRef.current !== epoch) return; // superseded or cancelled
@@ -302,17 +304,26 @@ export default function MarketplaceBrowser({
         });
       }
     },
-    [selected, home, tb],
+    [selected, entriesState.kind, home, tb, releasePreparation],
   );
 
-  const handleConfirmInstall = useCallback(async () => {
-    if (!selected || flow.kind !== 'ready') return;
+  const handleConfirmInstall = useCallback(async (configuration: Record<string, string>) => {
+    if (!selected || flow.kind !== 'ready' || installingRef.current) return;
     const { entry } = flow;
+    const preparedToken = flow.disclosure.preparedToken;
+    if (!preparedToken) return;
     const existing = installedByName.get(entry.name);
     setInstalling(true);
+    installingRef.current = true;
+    preparedTokenRef.current = undefined;
+    let pluginConfiguration: string | undefined;
     try {
+      pluginConfiguration = await savePluginConfiguration(flow.disclosure.key, pluginConfigFields(flow.disclosure.manifest.mcpServers), configuration);
       if (existing) {
         await update({
+          preparedToken,
+          pluginConfiguration,
+          enableMcp: true,
           home,
           marketplaceName: selected.name,
           marketplaceDir: selected.dir,
@@ -321,6 +332,9 @@ export default function MarketplaceBrowser({
         });
       } else {
         await install({
+          preparedToken,
+          pluginConfiguration,
+          enableMcp: true,
           home,
           marketplaceName: selected.name,
           marketplaceDir: selected.dir,
@@ -334,15 +348,20 @@ export default function MarketplaceBrowser({
       });
       closeFlow();
     } catch (err) {
+      releasePreparation();
+      setFlow({ kind: 'error', entry, message: err instanceof Error ? err.message : String(err) });
       addToast({
         type: 'error',
         title: tb.pluginsInstallFailed,
         message: err instanceof Error ? err.message : String(err),
       });
     } finally {
+      await releasePreparedInstall(preparedToken).catch(() => {});
+      await cleanupPluginConfiguration(pluginConfiguration);
+      installingRef.current = false;
       setInstalling(false);
     }
-  }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow]);
+  }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow, releasePreparation]);
 
   const dialogState: InstallPlanState =
     flow.kind === 'ready'
@@ -353,12 +372,27 @@ export default function MarketplaceBrowser({
           ? { kind: 'error', message: flow.message }
           : { kind: 'loading' };
 
-  const showList = entriesState.kind === 'ready' && visibleEntries.length > 0;
+  const showList = marketplace !== null && visibleEntries.length > 0;
 
-  // One marketplace row. Row spacing is padding on an outer wrapper rather
-  // than a margin on the row: Virtuoso measures each item's box, and a bottom
-  // margin would collapse through the item wrapper and escape that measurement
-  // (same rule ChatView's message rows follow).
+  // Virtualize complete grid rows: their heights may differ when disclosure
+  // chips wrap. Virtuoso measures each row instead of assuming equal card heights.
+  const gridViewport = useRef<HTMLDivElement>(null);
+  const [columns, setColumns] = useState(3);
+  useEffect(() => {
+    const element = gridViewport.current;
+    if (!showList || !element) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setColumns(Math.max(1, Math.floor((entry.contentRect.width + 16) / 256)));
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [showList]);
+  const entryRows = useMemo(() => Array.from(
+    { length: Math.ceil(visibleEntries.length / columns) },
+    (_, index) => visibleEntries.slice(index * columns, (index + 1) * columns),
+  ), [visibleEntries, columns]);
+
+  // Plugin cards reuse the released toolbox geometry; the grid owns spacing.
   const renderEntry = (entry: MarketplaceEntry) => {
     // "Installed" is read from the record map, not a separate name set: the
     // row's menu acts on that exact record, so a row that claims to be
@@ -367,81 +401,22 @@ export default function MarketplaceBrowser({
     // Read from the store rather than scored here: one source of truth for the
     // badge count and this button (see the recompute effect above).
     const hasUpdate = !!selected && updateKeySet.has(pluginKey(entry.name, selected.name));
+    if (installedRecord) return <InstalledPluginCard
+      plugin={installedRecord}
+      home={home}
+      description={entry.description}
+      testId="plugin-marketplace-entry"
+      onClick={() => setManaging(installedRecord)}
+      actions={hasUpdate ? <Button size="sm" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
+    />;
     return (
-      <div className="pb-1.5">
+      <div className="h-full">
         <MarketplaceEntryRow
           testId="plugin-marketplace-entry"
           name={entry.name}
           description={entry.description}
-          chips={[
-            entry.version && (
-              <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
-                v{entry.version}
-              </span>
-            ),
-            entry.category && (
-              <span className="shrink-0 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]">
-                {entry.category}
-              </span>
-            ),
-            /* Most of a real marketplace (238 of the official 291) is
-               remote-sourced: installing one fetches it from git
-               (sha-verified) rather than copying a local folder, so the row
-               flags it up front. */
-            entry.source.kind !== 'relative' && (
-              <span
-                data-testid="plugin-remote-source-badge"
-                className="shrink-0 rounded-full bg-[var(--abu-warning-bg)] px-2 py-0.5 text-caption text-[var(--abu-warning)]"
-              >
-                {tb.pluginsRemoteSourceBadge}
-              </span>
-            ),
-          ]}
-          actions={
-            installedRecord ? (
-              <>
-                {/* Update stays a plain button rather than a menu item: it is the
-                    one action a user comes to an installed row *for*, and it is
-                    only offered when there is genuinely a newer version. */}
-                {hasUpdate && (
-                  <Button
-                    size="sm"
-                    data-testid="plugin-update-button"
-                    onClick={() => void handlePlan(entry)}
-                    aria-label={`${tb.pluginsUpdate}: ${entry.name}`}
-                  >
-                    {tb.pluginsUpdate}
-                  </Button>
-                )}
-                <InstalledItemMenu
-                  testId="plugin-item-menu"
-                  ariaLabel={format(tb.itemMenuLabel, { name: entry.name })}
-                  actions={[
-                    {
-                      id: 'trial',
-                      label: tb.menuTrial,
-                      onSelect: () => launchTrial({ name: entry.name, description: entry.description }),
-                    },
-                    { id: 'manage', label: tb.menuManage, onSelect: () => setManaging(installedRecord) },
-                    {
-                      id: 'uninstall',
-                      label: tb.menuUninstall,
-                      destructive: true,
-                      onSelect: () => setUninstallTarget(installedRecord),
-                    },
-                  ]}
-                />
-              </>
-            ) : (
-              <Button
-                size="sm"
-                onClick={() => void handlePlan(entry)}
-                aria-label={`${tb.pluginsInstall}: ${entry.name}`}
-              >
-                {tb.pluginsInstall}
-              </Button>
-            )
-          }
+          onClick={() => void handlePlan(entry)}
+          actions={<Button size="sm" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${tb.pluginsInstall}: ${entry.name}`}>{tb.pluginsInstall}</Button>}
         />
       </div>
     );
@@ -464,8 +439,8 @@ export default function MarketplaceBrowser({
   }
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex shrink-0 items-center gap-2 px-8 py-3">
+    <div className={scrollParent ? "flex flex-col" : "flex h-full flex-col"}>
+      <div className="flex shrink-0 flex-wrap items-center gap-2 px-8 py-3 w-full max-w-[1088px] mx-auto">
         {marketplaces.length > 1 ? (
           <Select
             variant="inline"
@@ -495,15 +470,7 @@ export default function MarketplaceBrowser({
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onAddMarketplace}
-            data-testid="plugin-add-marketplace-open"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            {tb.pluginsAddMarketplace}
-          </Button>
+          {selectedName && <Button size="icon-sm" variant="ghost" aria-label={tb.pluginsRefreshMarketplace} disabled={entriesState.kind === 'loading'} onClick={() => setReload(value => value + 1)}><RefreshCw className="h-3.5 w-3.5" /></Button>}
           {selectedName && (
             <Button
               variant="ghost"
@@ -518,18 +485,20 @@ export default function MarketplaceBrowser({
         </div>
       </div>
 
+      {entriesState.kind === 'error' && marketplace && <div role="alert" className="mx-8 mb-3 rounded-lg bg-[var(--abu-danger-bg)] p-3 text-minor text-[var(--abu-danger)]"><p>{entriesState.message}</p><p>{tb.pluginsCachedMarketplace}</p></div>}
       {showList ? (
         // The ready-state list is virtualized: the official marketplace alone
         // has ~291 entries and organization catalogs grow, so only the rows in
         // view are mounted. Virtuoso owns scrolling here, which is why this
         // wrapper has no `overflow-y-auto` of its own.
-        <div className="min-h-0 flex-1 px-8 pb-6">
+        <div ref={gridViewport} className="min-h-0 flex-1 px-8 pb-6 w-full max-w-[1088px] mx-auto">
           <Virtuoso
-            className="h-full"
+            className={scrollParent ? undefined : "h-full"}
+            customScrollParent={scrollParent}
             data-testid="plugin-marketplace-list"
-            data={visibleEntries}
-            computeItemKey={(_, entry) => entry.name}
-            itemContent={(_, entry) => renderEntry(entry)}
+            data={entryRows}
+            computeItemKey={(_, row) => row[0].name}
+            itemContent={(_, row) => <div className="pb-4"><ToolGrid>{row.map(entry => <div key={entry.name} className="h-full">{renderEntry(entry)}</div>)}</ToolGrid></div>}
           />
         </div>
       ) : (
@@ -550,6 +519,7 @@ export default function MarketplaceBrowser({
                 </p>
                 <p className="mt-1 break-words text-minor text-[var(--abu-text-tertiary)]">
                   {entriesState.message}
+                  {marketplace && <span className="block">{tb.pluginsCachedMarketplace}</span>}
                 </p>
               </div>
             </div>
@@ -569,43 +539,24 @@ export default function MarketplaceBrowser({
           className="shrink-0 border-t border-[var(--abu-border)] px-8 py-3"
         >
           <h4 className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsOrphanGroup}</h4>
-          <ul className="mt-2 space-y-1.5">
+          <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
             {orphans.map((plugin) => (
-              <li
+              <MarketplaceEntryRow
                 key={plugin.key}
-                data-testid="plugin-orphan-row"
-                className="flex items-center gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
-              >
-                <div className="min-w-0 flex-1">
-                  <span className="truncate text-h-xs text-[var(--abu-text-primary)]">
-                    {plugin.name}
-                  </span>
-                  <p className="mt-0.5 truncate text-minor text-[var(--abu-text-tertiary)]">
-                    {format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
-                  </p>
-                </div>
-                {/* Removal is the only honest action left: there is nowhere to
-                    update from, and nothing to re-read the listing out of. */}
-                <InstalledItemMenu
-                  testId="plugin-orphan-menu"
-                  ariaLabel={format(tb.itemMenuLabel, { name: plugin.name })}
-                  actions={[
-                    {
-                      id: 'uninstall',
-                      label: tb.menuUninstall,
-                      destructive: true,
-                      onSelect: () => setUninstallTarget(plugin),
-                    },
-                  ]}
-                />
-              </li>
+                testId="plugin-orphan-row"
+                name={plugin.name}
+                description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
+                onClick={() => setManaging(plugin)}
+              />
             ))}
-          </ul>
+          </div>
         </section>
       )}
 
       <InstalledPluginDetail
         plugin={managing}
+        description={managing?.marketplace === selected?.name ? marketplace?.plugins.find(entry => entry.name === managing?.name)?.description : undefined}
+        home={home}
         onClose={() => setManaging(null)}
         onUninstall={(plugin) => {
           setManaging(null);
@@ -624,7 +575,7 @@ export default function MarketplaceBrowser({
         entryName={flow.kind === 'closed' ? '' : flow.entry.name}
         state={dialogState}
         installing={installing}
-        onConfirm={() => void handleConfirmInstall()}
+        onConfirm={configuration => void handleConfirmInstall(configuration)}
         onCancel={closeFlow}
       />
 

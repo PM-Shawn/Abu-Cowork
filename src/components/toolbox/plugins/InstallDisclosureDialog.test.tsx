@@ -296,3 +296,24 @@ describe('InstallDisclosureDialog', () => {
     expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull();
   });
 });
+
+it('requires secret configuration before approval and clears it for a new preview', () => {
+  const props = { open: true, entryName: 'weather', installing: false, onCancel: vi.fn(), onConfirm: vi.fn(), state: { kind: 'ready' as const, disclosure: { ...disclosure, preparedToken: 'first', manifest: { name: 'weather', mcpServers: { weather: { env: { TOKEN: '${config.TOKEN}' } } } } } } };
+  const { rerender } = render(<InstallDisclosureDialog {...props} />);
+  expect(screen.getByTestId('plugin-install-confirm')).toBeDisabled();
+  const input = screen.getByLabelText('TOKEN');
+  expect(input).toHaveAttribute('type', 'password');
+  fireEvent.change(input, { target: { value: 'fake-local-test-token' } });
+  fireEvent.click(screen.getByTestId('plugin-install-confirm'));
+  expect(props.onConfirm).toHaveBeenCalledWith({ TOKEN: 'fake-local-test-token' });
+  rerender(<InstallDisclosureDialog {...props} state={{ ...props.state, disclosure: { ...props.state.disclosure, preparedToken: 'second' } }} />);
+  expect(screen.getByLabelText('TOKEN')).toHaveValue('');
+  expect(screen.getByTestId('plugin-install-confirm')).toBeDisabled();
+});
+
+it('omits empty skill and connector categories from the installation preview', () => {
+  render(<InstallDisclosureDialog open entryName="empty" installing={false} onConfirm={vi.fn()} onCancel={vi.fn()}
+    state={{ kind: 'ready', disclosure: { key: 'empty@market', name: 'empty', version: '1', marketplace: 'market', sourceDir: '/source', manifest: { name: 'empty' }, skills: [], mcpServers: [], agents: [], ignoredPayloads: [] } }} />);
+  expect(screen.queryByText(getI18n().toolbox.pluginsDisclosureSkills)).not.toBeInTheDocument();
+  expect(screen.queryByText(getI18n().toolbox.pluginsDisclosureServers)).not.toBeInTheDocument();
+});

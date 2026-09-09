@@ -1,12 +1,4 @@
 // @vitest-environment happy-dom
-/**
- * PluginsTab is now a router, not a container with its own navigation: the
- * 市场 | 我的 choice is made above it (ToolboxModal owns the sub-nav) and
- * arrives as a prop. These tests pin that contract — which panel each source
- * mounts, that the old 已安装/插件市场 sub-tabs are gone, and that the tab
- * still renders when no `source` is passed (ToolboxModal is wired separately).
- */
-
 import { render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
@@ -30,9 +22,9 @@ vi.mock('./MarketplaceBrowser', () => ({
     <div data-testid="stub-marketplace-browser" data-home={String(props.home)} />
   ),
 }));
-vi.mock('./InstalledPluginList', () => ({
+vi.mock('./AuthoredPluginList', () => ({
   default: (props: Record<string, unknown>) => (
-    <div data-testid="stub-installed-list" data-mode={String(props.mode)} />
+    <div data-testid="stub-installed-list" data-home={String(props.home)} />
   ),
 }));
 
@@ -45,18 +37,18 @@ beforeEach(() => {
 });
 
 describe('PluginsTab', () => {
-  it('mounts the marketplace browser for source="market"', async () => {
-    render(<PluginsTab searchQuery="" source="market" />);
+  it('mounts the marketplace browser for', async () => {
+    render(<PluginsTab searchQuery="" />);
     const browser = await screen.findByTestId('stub-marketplace-browser');
     expect(browser).toHaveAttribute('data-home', '/Users/testuser');
-    expect(screen.queryByTestId('stub-installed-list')).toBeNull();
+    expect(screen.getByTestId('stub-installed-list')).toBeInTheDocument();
   });
 
-  it('mounts the authored-only installed list for source="mine"', async () => {
-    render(<PluginsTab searchQuery="" source="mine" />);
+  it('mounts the authored-only installed list for', async () => {
+    render(<PluginsTab searchQuery="" />);
     const list = await screen.findByTestId('stub-installed-list');
-    expect(list).toHaveAttribute('data-mode', 'authored');
-    expect(screen.queryByTestId('stub-marketplace-browser')).toBeNull();
+    expect(list).toHaveAttribute('data-home', '/Users/testuser');
+    expect(screen.getByTestId('stub-marketplace-browser')).toBeInTheDocument();
   });
 
   it('defaults to the market panel when no source is passed', async () => {
@@ -67,7 +59,7 @@ describe('PluginsTab', () => {
   });
 
   it('no longer renders the 已安装 / 插件市场 sub-tabs', async () => {
-    render(<PluginsTab searchQuery="" source="market" />);
+    render(<PluginsTab searchQuery="" />);
     await screen.findByTestId('stub-marketplace-browser');
     await waitFor(() =>
       expect(screen.queryByText(/^(已安装|Installed)$/)).toBeNull(),

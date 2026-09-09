@@ -16,14 +16,12 @@ test.describe('Skill upload menu (Phase E)', () => {
     await setupAbuSettings(page);
     await page.goto('/');
     await waitForAppReady(page);
-    // Enter 扩展 → 技能 tab → 我的 (mirrors tabs.spec.ts). The create menu is a
-    // header control of 「我的」 only: 「市场」 is somebody else's catalog, so
-    // creating/importing a skill has no place there.
+    // Enter 扩展 → 技能. Creation lives in the shared header; My and Market
+    // are stacked sections, so there is no source tab to select first.
     await page.getByLabel('Main navigation').getByRole('button', { name: '扩展' }).click();
     const panel = page.getByRole('main');
     await expect(panel.getByRole('button', { name: '技能' })).toBeVisible({ timeout: 5000 });
     await panel.getByRole('button', { name: '技能' }).click();
-    await page.getByTestId('extensions-source-mine').click();
     await page.getByTestId('skill-create-trigger').click();
     await expect(page.getByTestId('skill-create-menu')).toBeVisible();
   });

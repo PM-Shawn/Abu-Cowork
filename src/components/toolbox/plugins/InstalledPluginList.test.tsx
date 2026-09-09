@@ -61,11 +61,11 @@ beforeEach(() => {
 });
 
 describe('InstalledPluginList', () => {
-  it('shows the name, version, source marketplace and what the plugin contributed', () => {
+  it('shows name and contributions without the card version', () => {
     renderList();
     const row = screen.getByTestId('plugin-mine-row');
     expect(row).toHaveTextContent('weather');
-    expect(row).toHaveTextContent('v1.2.0');
+    expect(row).not.toHaveTextContent('v1.2.0');
     expect(row).toHaveTextContent('official');
     expect(row).toHaveTextContent('2');
     expect(row).toHaveTextContent('1');
@@ -168,7 +168,7 @@ describe('InstalledPluginList', () => {
       installedAt: '2026-09-01T00:00:00.000Z',
       contributed: { skills: [], mcpServers: [], agents: [] },
     };
-    /** Installed from a local folder in the user's own market — theirs. */
+    /** Local marketplace package: location does not establish authorship. */
     const authored: InstalledPlugin = {
       key: 'my-plugin@my-market',
       marketplace: 'my-market',
@@ -179,12 +179,11 @@ describe('InstalledPluginList', () => {
       contributed: { skills: ['draft'], mcpServers: [], agents: [] },
     };
 
-    it('lists only plugins the user authored themselves', () => {
+    it('does not classify local market packages as authored plugins', () => {
       usePluginStore.setState({ installed: [remoteInstall, authored] });
       renderList('', 'authored');
-      const rows = screen.getAllByTestId('plugin-mine-row');
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toHaveTextContent('my-plugin');
+      expect(screen.queryByTestId('plugin-mine-row')).toBeNull();
+      expect(screen.queryByText('my-plugin')).toBeNull();
       expect(screen.queryByText('cloud-thing')).toBeNull();
     });
 

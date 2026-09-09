@@ -80,13 +80,8 @@ import { startWeChatManager, stopWeChatManager } from '@/core/im/wechatConnectio
 import { loadIMPlugins } from '@/core/im/pluginLoader';
 import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
-import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { provisionFirstPartyMCPServers } from '@/core/agent/mcpDiscovery';
-import { bootstrapPluginUpdates } from '@/stores/pluginStore';
-import {
-  initBuiltinBrowserRuntime,
-  cleanupBuiltinBrowserRuntime,
-} from '@/core/browser/builtinBrowserRuntime';
+import { startCapabilityRuntimes } from '@/core/plugin/bootstrapRuntimes';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
@@ -473,18 +468,8 @@ function App() {
 
   useEffect(() => {
     registerBuiltinTools();
-    refreshDiscovery();
     provisionFirstPartyMCPServers();
-    // Hydrate installed plugins and score every added market once, so the
-    // sidebar 「扩展」 badge is right before the user opens anything. Failure
-    // costs the badge and nothing else. It skips its own discovery scan
-    // because `refreshDiscovery()` above already covers this tick — keep that
-    // call if this one stays.
-    bootstrapPluginUpdates().catch((err) => {
-      console.warn('[App] Plugin update scan failed:', err);
-    });
-    initMCPStoreSync();
-    initBuiltinBrowserRuntime();
+    const stopCapabilityRuntimes = startCapabilityRuntimes();
 
     // Hydrate API keys from the encrypted secret store. During Phase 2 the
     // plaintext apiKey is still persisted via localStorage as a fallback,
@@ -573,8 +558,7 @@ function App() {
     });
 
     return () => {
-      void cleanupBuiltinBrowserRuntime();
-      cleanupMCPStoreSync();
+      stopCapabilityRuntimes();
       stopAllWatchers();
       stopRegistryWatcher();
       import('@/stores/skillDraftsStore').then(({ stopDraftsSweeper }) => stopDraftsSweeper()).catch(() => {});

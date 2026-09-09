@@ -1,10 +1,12 @@
+import { isPluginSkillAllowed } from '../plugin/activationPolicy';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
 import { homeDir, appDataDir, resolve, resolveResource } from '@tauri-apps/api/path';
 import type { Skill, SkillMetadata, SkillHookEntry, SkillSource } from '../../types';
 import { joinPath, getParentDir, normalizeSeparators } from '../../utils/pathUtils';
 import { sanitizePath } from '../memdir/paths';
-import { pluginSkillDirs } from '../plugin/skillRoots';
+import { pluginSkillLocations } from '../plugin/skillRoots';
+import { scanPluginPackage } from '../plugin/fsOps';
 import { isEnterpriseModuleActive } from '../enterprise/entitlement';
 
 /**
@@ -40,7 +42,7 @@ function normalizeToolList(raw: unknown): string[] | undefined {
 /**
  * Parse a SKILL.md file: YAML frontmatter (between ---) + Markdown body
  */
-function parseSkillFile(raw: string, filePath: string): Skill | null {
+export function parseSkillFile(raw: string, filePath: string): Skill | null {
   const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) return null;
 
@@ -181,7 +183,7 @@ export class SkillLoader {
       }
     }
 
-    const dirs: Array<{ path: string; source: SkillSource }> = [];
+    const dirs: Array<{ path: string; source: SkillSource; direct?: boolean; packageRoot?: string }> = [];
 
     // Workspace-scoped dirs take priority so project-local skills override globals.
     if (workspacePath) {
@@ -223,8 +225,8 @@ export class SkillLoader {
     // here would cost the user *every* skill, not just the plugin ones, and
     // that is far too much blast radius for an optional subsystem.
     try {
-      for (const dir of await pluginSkillDirs(home)) {
-        dirs.push({ path: dir, source: 'plugin' });
+      for (const location of await pluginSkillLocations(home)) {
+        dirs.push({ ...location, source: 'plugin' });
       }
     } catch (error) {
       console.warn('[SkillLoader] skipping plugin skill roots:', error);
@@ -243,16 +245,34 @@ export class SkillLoader {
       dirs.push({ path: builtinDir, source: 'builtin' });
     }
 
-    for (const { path, source } of dirs) {
-      await this.scanDirectory(path, source);
+    for (const { path, source, direct, packageRoot } of dirs) {
+      if (direct && packageRoot) await this.scanPluginSkill(path, packageRoot);
+      else await this.scanDirectory(path, source);
     }
 
-    return this.getAvailableSkills();
+    return this.getAvailableSkills({ includeDisabledPlugins: true });
   }
 
   /** Currently-active workspace path (null when discovered without one). */
   getCurrentWorkspace(): string | null {
     return this.currentWorkspace;
+  }
+
+  private async scanPluginSkill(dir: string, packageRoot: string): Promise<void> {
+    try {
+      const scan = scanPluginPackage(packageRoot);
+      const relative = normalizeSeparators(dir).slice(normalizeSeparators(packageRoot).length).replace(/^\//, '');
+      for (const filename of ['SKILL.md', 'skill.md']) {
+        const entry = await scan.find(relative ? `${relative}/${filename}` : filename);
+        if (!entry || entry.isDirectory) continue;
+        const path = joinPath(dir, filename);
+        const skill = parseSkillFile(await readTextFile(path), path);
+        if (skill) {
+          if (!this.skills.has(skill.name)) this.skills.set(skill.name, { ...skill, source: 'plugin' });
+          break;
+        }
+      }
+    } catch { /* An unavailable plugin component cannot hide independent skills. */ }
   }
 
   private async scanDirectory(dir: string, source: SkillSource): Promise<void> {
@@ -306,7 +326,8 @@ export class SkillLoader {
     return skill && this.isUsable(skill) ? skill : null;
   }
 
-  private isUsable(skill: Skill): boolean {
+  private isUsable(skill: Skill, includeDisabledPlugins = false): boolean {
+    if (!includeDisabledPlugins && !isPluginSkillAllowed(skill)) return false;
     return skill.source !== 'enterprise' || isEnterpriseModuleActive('skills');
   }
 
@@ -318,10 +339,10 @@ export class SkillLoader {
    * index or agent-facing skill list. Pass `{ includeDrafts: true }` to
    * surface them (for the Settings → Skills → Drafts tab).
    */
-  getAvailableSkills(options: { includeDrafts?: boolean } = {}): SkillMetadata[] {
+  getAvailableSkills(options: { includeDrafts?: boolean; includeDisabledPlugins?: boolean } = {}): SkillMetadata[] {
     const includeDrafts = options.includeDrafts ?? false;
     return Array.from(this.skills.values())
-      .filter((skill) => this.isUsable(skill) && (includeDrafts || skill.source !== 'draft'))
+      .filter((skill) => this.isUsable(skill, options.includeDisabledPlugins) && (includeDrafts || skill.source !== 'draft'))
       .map((skill) => {
         // Omit runtime-only fields not part of SkillMetadata
         const { content, filePath, skillDir, ...meta } = skill;
@@ -336,9 +357,9 @@ export class SkillLoader {
   }
 
   /** Get full skill by name */
-  getSkill(name: string): Skill | undefined {
+  getSkill(name: string, options: { includeDisabledPlugins?: boolean } = {}): Skill | undefined {
     const skill = this.skills.get(name);
-    return skill && this.isUsable(skill) ? skill : undefined;
+    return skill && this.isUsable(skill, options.includeDisabledPlugins) ? skill : undefined;
   }
 
   /** Re-read a single skill from disk to get latest content */
@@ -348,6 +369,7 @@ export class SkillLoader {
     if (!existing.filePath) return existing;
     try {
       const raw = await readTextFile(existing.filePath);
+      if (!this.isUsable(existing)) return undefined;
       const skill = parseSkillFile(raw, existing.filePath);
       if (skill) {
         skill.source = existing.source;
@@ -355,7 +377,7 @@ export class SkillLoader {
         return skill;
       }
     } catch { /* file might have been deleted */ }
-    return existing;
+    return this.isUsable(existing) ? existing : undefined;
   }
 
   /** Check if a skill is registered */
@@ -385,10 +407,11 @@ export class SkillLoader {
   /** List supporting files in a skill's directory (excluding SKILL.md) */
   async listSupportingFiles(skillName: string): Promise<string[]> {
     const skill = this.skills.get(skillName);
-    if (!skill) return [];
+    if (!skill || !this.isUsable(skill)) return [];
 
     try {
-      return await listFilesRecursive(skill.skillDir, '', 'SKILL.md');
+      const files = await listFilesRecursive(skill.skillDir, '', 'SKILL.md');
+      return this.isUsable(skill) ? files : [];
     } catch {
       return [];
     }
@@ -408,16 +431,17 @@ export class SkillLoader {
    */
   async loadSupportingFile(skillName: string, relativePath: string): Promise<string | null> {
     const skill = this.skills.get(skillName);
-    if (!skill) return null;
+    if (!skill || !this.isUsable(skill)) return null;
 
     // Cheap pre-filter, kept for what it does catch. It is not the rule: it is
     // a string test, and a symlink needs no `..` in the path at all.
     if (relativePath.includes('..')) return null;
 
     const fullPath = await resolveOwnedFile(skill.skillDir, relativePath);
-    if (!fullPath) return null;
+    if (!fullPath || !this.isUsable(skill)) return null;
     try {
-      return await readTextFile(fullPath);
+      const content = await readTextFile(fullPath);
+      return this.isUsable(skill) ? content : null;
     } catch {
       return null;
     }

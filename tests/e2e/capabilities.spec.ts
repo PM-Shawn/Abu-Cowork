@@ -34,6 +34,7 @@ const BUILTIN_BROWSER = /^(阿布内置浏览器|Abu built-in browser)$/;
 const MY_CHROME = /^(我的 Chrome|My Chrome)$/;
 const COMPUTER_USE = /^(电脑操控|Computer Use)$/;
 const READY = /^(已就绪|Ready)$/;
+const CONNECTED = /^(已连接|Connected)$/;
 const NOT_CONNECTED = /^(未连接|Not connected)$/;
 const SETUP_REQUIRED = /^(需要设置|Setup required)$/;
 const OFF = /^(已关闭|Off)$/;
@@ -41,7 +42,7 @@ const START_SETUP = /^(开始设置|Start setup)$/;
 const ENABLE = /^(开启电脑操控|Enable Computer Use)$/;
 const CONNECT_CHROME = /^(连接 Chrome|Connect Chrome)$/;
 const CHROME_HEADER = /^(我的 Chrome|My Chrome)$/;
-const DISCONNECT = /^(断开|Disconnect)$/;
+const DISCONNECT = /^(断开我的 Chrome|Disconnect My Chrome)$/;
 const INSTALL_STEPS = /^(安装扩展|Install the extension)$/;
 const BACK_TO_CAPABILITIES = /^(返回能力|Back to Capabilities)$/;
 const COMPUTER_SETUP = /^(开启电脑操控|Enable Computer Use)$/;
@@ -89,6 +90,22 @@ async function waitForWelcomeScreen(page: Page): Promise<void> {
  */
 function capabilityCard(page: Page, title: RegExp) {
   return page.getByRole('button', { name: new RegExp(title.source.replace(/\$$/, '')) });
+}
+
+/** Assert the status/action pair without changing the external Chrome session. */
+async function expectChromeConnectionActions(page: Page): Promise<boolean> {
+  await expect(page.getByText(CONNECTED).or(page.getByText(NOT_CONNECTED)))
+    .toBeVisible({ timeout: READY_TIMEOUT });
+  const connected = await page.getByText(CONNECTED).isVisible();
+  await expect(page.getByText(connected ? NOT_CONNECTED : CONNECTED)).toHaveCount(0);
+  if (connected) {
+    await expect(page.getByRole('button', { name: DISCONNECT })).toBeVisible();
+    await expect(page.getByText(INSTALL_STEPS)).toHaveCount(0);
+  } else {
+    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
+    await expect(page.getByText(INSTALL_STEPS)).toBeVisible();
+  }
+  return connected;
 }
 
 /**
@@ -200,20 +217,18 @@ test.describe.serial('Electron capability overview', () => {
     await expect(builtinBrowser.getByText(READY)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(computerUse.getByText(OFF)).toBeVisible({ timeout: READY_TIMEOUT });
 
-    // This machine has no extension installed, and that is ONE state with one
-    // description. It used to depend on whether the local bridge finished
-    // connecting before the probe answered — amber "setup required" if the
-    // probe won, grey "not connected" if it lost. The badge is now decided by
-    // whether the extension has ever handshaked, which never un-happens, so
-    // the amber fault must not appear at any point.
-    await expect(myChrome.getByText(NOT_CONNECTED))
+    // The real Chrome extension uses a machine-wide bridge, outside this
+    // test's isolated app data. Both settled states are valid; neither is a
+    // setup fault. Do not disconnect a developer's Chrome to force a fixture.
+    await expect(myChrome.getByText(NOT_CONNECTED).or(myChrome.getByText(READY)))
       .toBeVisible({ timeout: READY_TIMEOUT });
     await expect(myChrome.getByText(SETUP_REQUIRED)).toHaveCount(0);
-    await expect(myChrome.getByText(READY)).toHaveCount(0);
-
-    // Not connected is not a fault, so the card spends its one line on what
-    // connecting would buy rather than restating the badge next to it.
-    await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
+    if (await myChrome.getByText(NOT_CONNECTED).isVisible()) {
+      await expect(myChrome.getByText(READY)).toHaveCount(0);
+      await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
+    } else {
+      await expect(myChrome.getByText(NOT_CONNECTED)).toHaveCount(0);
+    }
     // The overview carries decisions ABOUT capabilities, never the rules
     // inside them — those all live one level down now.
     await expect(page.getByText(ACTION_PERMISSIONS)).toHaveCount(0);
@@ -239,20 +254,18 @@ test.describe.serial('Electron capability overview', () => {
     // first-party local bridge is already prepared in the background.
     await myChrome.click();
     await expect(page.getByRole('heading', { name: CHROME_HEADER })).toBeVisible();
-    // Install guidance is for someone with no extension attached, and the
-    // developer-mode warning now lives inside it rather than on its own.
-    await expect(page.getByText(INSTALL_STEPS)).toBeVisible();
-    await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
-    await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
-    // Nothing is connected, so nothing offers to disconnect it.
-    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
-    const chromeCheckButton = page.getByRole('button', {
-      name: /^(检查连接|Check connection)$/,
-    });
-    await expect(chromeCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
-    await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
-    await page.waitForTimeout(2_500);
-    await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+    const chromeConnected = await expectChromeConnectionActions(page);
+    if (!chromeConnected) {
+      await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
+      await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
+      const chromeCheckButton = page.getByRole('button', {
+        name: /^(检查连接|Check connection)$/,
+      });
+      await expect(chromeCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
+      await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+      await page.waitForTimeout(2_500);
+      await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+    }
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     await computerUse.click();
@@ -483,10 +496,8 @@ test.describe.serial('Electron capability overview', () => {
     // Header carries the one-liner, not the paragraph it used to open with.
     await expect(page.getByText(/复用你已登录的 Chrome 标签页/)).toBeVisible();
     await expect(page.getByText(/让阿布在你明确要求时使用现有标签页/)).toHaveCount(0);
-    // One status row, one action — and on a machine with no extension the
-    // action is never "disconnect".
-    await expect(page.getByText(NOT_CONNECTED)).toBeVisible();
-    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
+    // Re-read live state here: Chrome may connect after the overview opens.
+    await expectChromeConnectionActions(page);
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
     await page.screenshot({ path: iaScreenshot('04-my-chrome-detail-zh') });

@@ -12,6 +12,7 @@ import {
   InstalledManifestUnreadableError,
   readInstalled,
   readInstalledResult,
+  readInstalledForWrite,
   upsertInstalled,
   removeInstalled,
   findInstalled,
@@ -307,5 +308,57 @@ describe('findInstalled', () => {
     mockExists.mockResolvedValue(false);
     const result = await findInstalled(HOME, 'foo@mkt');
     expect(result).toBeNull();
+  });
+});
+
+describe('Electron registry coordinator', () => {
+  function shell(bridge?: ReturnType<typeof vi.fn>) {
+    vi.stubGlobal('__ABU_SHELL__', { pluginRegistry: bridge });
+  }
+
+  it('sends mutations rather than renderer-generated replacement arrays', async () => {
+    const bridge = vi.fn().mockResolvedValue(undefined);
+    shell(bridge);
+    try {
+      await upsertInstalled(HOME, makePlugin());
+      await removeInstalled(HOME, 'foo@mkt');
+      expect(bridge.mock.calls).toEqual([
+        ['upsert', { home: HOME, record: makePlugin() }],
+        ['remove', { home: HOME, key: 'foo@mkt' }],
+      ]);
+      expect(mockReadTextFile).not.toHaveBeenCalled();
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('reads the host profile and preserves legacy record normalization', async () => {
+    const bridge = vi.fn().mockResolvedValue(JSON.stringify([{ ...makePlugin(), contributed: { skills: [], mcpServers: [] } }]));
+    shell(bridge);
+    try {
+      expect(await readInstalled(HOME)).toEqual([{ ...makePlugin(), contributed: { skills: [], mcpServers: [], agents: [] } }]);
+      expect(bridge).toHaveBeenCalledWith('read', { home: HOME });
+      expect(mockReadTextFile).not.toHaveBeenCalled();
+      bridge.mockResolvedValue(null);
+      expect(await readInstalledResult(HOME)).toEqual({ ok: true, plugins: [] });
+      expect(await readInstalledForWrite(HOME)).toEqual([]);
+      expect(bridge).toHaveBeenLastCalledWith('read', { home: HOME, forWrite: true });
+      bridge.mockResolvedValue({ bad: 'response' });
+      expect(await readInstalledResult(HOME)).toMatchObject({ ok: false });
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it('does not bypass the coordinator when the Electron bridge fails or is missing', async () => {
+    shell(vi.fn().mockRejectedValue(new Error('host write failed')));
+    try {
+      await expect(upsertInstalled(HOME, makePlugin())).rejects.toThrow('host write failed');
+      await expect(removeInstalled(HOME, 'foo@mkt')).rejects.toThrow('host write failed');
+      expect(await readInstalledResult(HOME)).toMatchObject({ ok: false });
+      shell();
+      await expect(upsertInstalled(HOME, makePlugin())).rejects.toThrow('host bridge');
+      await expect(removeInstalled(HOME, 'foo@mkt')).rejects.toThrow('host bridge');
+      expect(await readInstalledResult(HOME)).toMatchObject({ ok: false });
+      expect(mockReadTextFile).not.toHaveBeenCalled();
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); }
   });
 });

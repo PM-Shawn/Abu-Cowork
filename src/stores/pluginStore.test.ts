@@ -12,7 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@/core/plugin/installer', () => ({ installPlugin: vi.fn() }));
+vi.mock('@/core/plugin/installer', () => ({ installPlugin: vi.fn(), prepareInstallRecord: vi.fn() }));
 vi.mock('@/core/plugin/uninstaller', () => ({ uninstallPlugin: vi.fn() }));
 vi.mock('@/core/plugin/installedStore', () => ({
   readInstalled: vi.fn(),
@@ -32,7 +32,7 @@ vi.mock('@/core/plugin/loadMarketplace', async (importOriginal) => ({
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
 vi.mock('@/stores/discoveryStore', () => ({ useDiscoveryStore: { getState: () => ({ refresh: mockDiscoveryRefresh }) } }));
 
-import { installPlugin } from '@/core/plugin/installer';
+import { installPlugin, prepareInstallRecord } from '@/core/plugin/installer';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
 import { readInstalled, readInstalledResult, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
@@ -60,6 +60,8 @@ function resetStore() {
   usePluginStore.setState({
     marketplaces: [],
     installed: [],
+    activationByKey: {},
+    activationReady: false,
     updateAvailableKeys: [],
     updateAvailableCount: 0,
     loading: false,
@@ -82,7 +84,7 @@ beforeEach(() => {
 });
 
 describe('marketplaces', () => {
-  it('adds, replaces by name, and removes marketplace pointers', () => {
+  it('rejects identity replacement and deduplicates an existing marketplace', () => {
     const { addMarketplace, removeMarketplace } = usePluginStore.getState();
 
     addMarketplace('official', '/m/official');
@@ -94,15 +96,16 @@ describe('marketplaces', () => {
 
     // Re-adding the same marketplace from a new location replaces it rather
     // than creating a duplicate identity (install keys embed the name).
-    addMarketplace('official', '/m/official-v2');
+    expect(() => addMarketplace('official', '/m/official-v2')).toThrow();
+    addMarketplace('official', '/m/official');
     expect(usePluginStore.getState().marketplaces).toEqual([
+      { name: 'official', dir: '/m/official' },
       { name: 'other', dir: '/m/other' },
-      { name: 'official', dir: '/m/official-v2' },
     ]);
 
     removeMarketplace('other');
     expect(usePluginStore.getState().marketplaces).toEqual([
-      { name: 'official', dir: '/m/official-v2' },
+      { name: 'official', dir: '/m/official' },
     ]);
   });
 
@@ -291,9 +294,30 @@ describe('refreshInstalled', () => {
 });
 
 describe('bootstrapPluginUpdates', () => {
-  it('hydrates and arms the gate without a second discovery scan', async () => {
-    // App's boot effect calls `refreshDiscovery()` on the same tick; a second
-    // identical skills/agents scan here is pure launch cost.
+  it('connects enabled plugin MCPs after startup ownership migration', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const { isPluginMcpAllowed } = await import('@/core/plugin/activationPolicy');
+    useMCPStore.setState({ servers: { 'weather-mcp': { config: { name: 'weather-mcp', command: 'weather', enabled: true }, status: 'disconnected', tools: [] } } });
+    usePluginStore.setState({ activationByKey: {}, knownMcpServerNames: ['weather-mcp'], activationReady: false });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    let finish!: () => void;
+    const discovery = new Promise<void>(resolve => { finish = resolve; });
+    const spy = vi.spyOn(mcpManager, 'connectServer').mockImplementation(async () => {
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(true);
+    });
+    try {
+      await useMCPStore.getState().connectAllEnabled();
+      expect(spy).not.toHaveBeenCalled();
+      const boot = bootstrapPluginUpdates(discovery);
+      finish();
+      await boot;
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(useMCPStore.getState().servers['weather-mcp'].status).toBe('connected');
+    } finally { spy.mockRestore(); useMCPStore.setState({ servers: {} }); }
+  });
+
+  it('owns one discovery scan when no prior scan is supplied', async () => {
+    // The boot coordinator owns discovery after recovery.
     vi.mocked(readInstalled).mockResolvedValue([weather]);
     mockDiscoveryRefresh.mockClear();
 
@@ -301,7 +325,7 @@ describe('bootstrapPluginUpdates', () => {
 
     expect(usePluginStore.getState().installed).toEqual([weather]);
     expect(setPluginServerNames).toHaveBeenCalledWith(['weather-mcp']);
-    expect(mockDiscoveryRefresh).not.toHaveBeenCalled();
+    expect(mockDiscoveryRefresh).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -396,6 +420,25 @@ describe('built-in marketplace', () => {
 });
 
 describe('plugin MCP server wiring', () => {
+  it('preserves environment configuration through the store and real MCP registration bridge', async () => {
+    const env = { REGION: 'cn east', OPTIONAL: '', TEMPLATE: '${HOME}' };
+    useMCPStore.setState({ servers: {} });
+    const outcome = {
+      record: weather,
+      mcpServers: [{ name: 'weather-mcp', command: 'node', args: ['server.js'], env }],
+    };
+    vi.mocked(installPlugin).mockResolvedValue(outcome);
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    await usePluginStore.getState().install({
+      home: HOME, marketplaceName: 'official', marketplaceDir: '/m/official',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+    });
+    expect(useMCPStore.getState().servers['weather-mcp'].config).toMatchObject({
+      env, command: 'node', args: ['server.js'], enabled: false,
+    });
+    expect(useMCPStore.getState().servers['weather-mcp'].status).toBe('disconnected');
+  });
+
   it('registers the plugin server DISABLED so nothing auto-connects', async () => {
     useMCPStore.setState({ servers: {} });
     vi.mocked(installPlugin).mockResolvedValue({ record: weather, mcpServers: [{ name: 'weather-mcp', command: 'npx', args: ['-y', 'weather-mcp'], url: undefined }] });
@@ -731,5 +774,220 @@ describe('recomputeUpdates', () => {
     await usePluginStore.getState().recomputeUpdates(HOME);
 
     expect(usePluginStore.getState().updateAvailableKeys).toEqual(['weather@official']);
+  });
+});
+
+describe('independent plugin master switch', () => {
+  it('closes the gate before disconnecting and preserves all child preferences across off/on', async () => {
+    const { useSettingsStore } = await import('./settingsStore');
+    const { isPluginMcpAllowed } = await import('@/core/plugin/activationPolicy');
+    const { mcpManager } = await import('@/core/mcp/client');
+    useSettingsStore.setState({ disabledSkills: ['forecast'], disabledAgents: [] });
+    useMCPStore.setState({ servers: {
+      'weather-mcp': { config: { name: 'weather-mcp', command: 'weather', enabled: true }, status: 'connected', tools: [] },
+    } });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    await usePluginStore.getState().refreshInstalled(HOME);
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer').mockImplementation(async () => {
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+    });
+    const connect = vi.spyOn(mcpManager, 'connectServer').mockResolvedValue(undefined);
+    try {
+      await usePluginStore.getState().setPluginEnabled(weather.key, false);
+      expect(useSettingsStore.getState().disabledSkills).toEqual(['forecast']);
+      expect(useSettingsStore.getState().disabledAgents).toEqual([]);
+      expect(useMCPStore.getState().servers['weather-mcp'].config.enabled).toBe(true);
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+      await usePluginStore.getState().setPluginEnabled(weather.key, true);
+      expect(connect).toHaveBeenCalledOnce();
+      expect(useSettingsStore.getState().disabledSkills).toEqual(['forecast']);
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(true);
+    } finally { disconnect.mockRestore(); connect.mockRestore(); }
+  });
+
+  it('does not enable a child connector that the user left disabled', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    useMCPStore.setState({ servers: {
+      'weather-mcp': { config: { name: 'weather-mcp', command: 'weather', enabled: false }, status: 'disconnected', tools: [] },
+    } });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    await usePluginStore.getState().refreshInstalled(HOME);
+    const connect = vi.spyOn(mcpManager, 'connectServer');
+    try {
+      await usePluginStore.getState().setPluginEnabled(weather.key, false);
+      await usePluginStore.getState().setPluginEnabled(weather.key, true);
+      expect(connect).not.toHaveBeenCalled();
+      expect(useMCPStore.getState().servers['weather-mcp'].config.enabled).toBe(false);
+    } finally { connect.mockRestore(); }
+  });
+
+  it('does not reopen a plugin when refreshed during an update disconnect', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const { isPluginMcpAllowed } = await import('@/core/plugin/activationPolicy');
+    useMCPStore.setState({ servers: { 'weather-mcp': { config: { name: 'weather-mcp', command: 'weather', enabled: true }, status: 'connected', tools: [] } } });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    await usePluginStore.getState().refreshInstalled(HOME);
+    let finish!: () => void;
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer').mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    vi.mocked(uninstallPlugin).mockRejectedValueOnce(new Error('stop update'));
+    try {
+      const updating = usePluginStore.getState().update({ home: HOME, key: weather.key, marketplaceName: 'official', marketplaceDir: '/m', entry: { name: 'weather', source: { kind: 'relative', path: './weather' } } });
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+      await usePluginStore.getState().refreshInstalled(HOME);
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+      finish();
+      await expect(updating).rejects.toThrow('stop update');
+    } finally { disconnect.mockRestore(); }
+  });
+
+  it('persists off across rehydration and an unreadable installation manifest', async () => {
+    const { isPluginMcpAllowed } = await import('@/core/plugin/activationPolicy');
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    await usePluginStore.getState().refreshInstalled(HOME);
+    await usePluginStore.getState().setPluginEnabled(weather.key, false);
+    const saved = localStorage.getItem('abu-plugins');
+    expect(JSON.parse(saved!).state.activationByKey[weather.key].enabled).toBe(false);
+    usePluginStore.setState({ activationByKey: {}, activationReady: false });
+    localStorage.setItem('abu-plugins', saved!);
+    await usePluginStore.persist.rehydrate();
+    expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+    vi.mocked(readInstalledResult).mockResolvedValue({ ok: false, error: new Error('unreadable') });
+    await usePluginStore.getState().refreshInstalled(HOME);
+    expect(usePluginStore.getState().activationByKey[weather.key].enabled).toBe(false);
+    expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+  });
+});
+
+
+describe('managed update preparation', () => {
+  it('preserves persisted intent and denies refresh while disconnecting before the journal', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const { isPluginMcpAllowed } = await import('@/core/plugin/activationPolicy');
+    const global = globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+    const originalBridge = global.__ABU_SHELL__;
+    const host = vi.fn(async (action: string) => {
+      if (action === 'begin') throw new Error('stop before journal');
+      return null;
+    });
+    global.__ABU_SHELL__ = { pluginOperation: host };
+    useMCPStore.setState({ servers: { 'weather-mcp': { config: { name: 'weather-mcp', command: 'weather', enabled: true }, status: 'connected', tools: [] } } });
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    vi.mocked(prepareInstallRecord).mockResolvedValue(weather);
+    await usePluginStore.getState().refreshInstalled(HOME);
+    let finish!: () => void;
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer').mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const connect = vi.spyOn(mcpManager, 'connectServer').mockResolvedValue(undefined);
+    try {
+      const changing = usePluginStore.getState().update({ home: HOME, key: weather.key, preparedToken: 'approved', marketplaceName: 'official', marketplaceDir: '/m', entry: { name: 'weather', source: { kind: 'relative', path: './weather' } } });
+      await vi.waitFor(() => expect(disconnect).toHaveBeenCalled());
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+      await usePluginStore.getState().refreshInstalled(HOME);
+      expect(isPluginMcpAllowed('weather-mcp')).toBe(false);
+      expect(usePluginStore.getState().activationByKey[weather.key].enabled).toBe(true);
+      expect(JSON.parse(localStorage.getItem('abu-plugins') ?? '{}').state?.activationByKey[weather.key]?.enabled).toBe(true);
+      await expect(usePluginStore.getState().setPluginEnabled(weather.key, true)).rejects.toThrow();
+      finish();
+      await expect(changing).rejects.toThrow('stop before journal');
+      expect(usePluginStore.getState().activationByKey[weather.key].enabled).toBe(true);
+    } finally { disconnect.mockRestore(); connect.mockRestore(); global.__ABU_SHELL__ = originalBridge; }
+  });
+});
+
+describe('managed recovery compare-and-swap', () => {
+  it('does not overwrite a standalone connector added after the transaction snapshot', async () => {
+    const global = globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+    const original = global.__ABU_SHELL__;
+    const independent = { name: 'shared', command: 'user-config', env: { TOKEN: 'independent-secret' }, enabled: false };
+    const desired = { name: 'shared', command: 'plugin-config', enabled: false };
+    const expected = { enabled: false, servers: { shared: null }, disabledSkills: {}, disabledAgents: {} };
+    const host = vi.fn(async (action: string) => action === 'recover' ? {
+      id: 'operation', key: weather.key, phase: 'committed', expectedRuntime: expected,
+      runtime: { ...expected, enabled: true, servers: { shared: desired } },
+    } : null);
+    global.__ABU_SHELL__ = { pluginOperation: host };
+    useMCPStore.setState({ servers: { shared: { config: independent, status: 'disconnected', tools: [] } } });
+    try {
+      await expect(bootstrapPluginUpdates()).rejects.toThrow(/configuration changed/);
+      expect(useMCPStore.getState().servers.shared.config).toEqual(independent);
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+      expect(usePluginStore.getState().activationReady).toBe(false);
+    } finally { global.__ABU_SHELL__ = original; }
+  });
+});
+
+describe('recovery awaits concurrent configuration edits', () => {
+  it('rechecks after disconnect resolves and preserves the intervening user edit', async () => {
+    const { mcpManager } = await import('@/core/mcp/client');
+    const global = globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+    const original = global.__ABU_SHELL__;
+    const old = { name: 'shared', command: 'old-config', enabled: false };
+    const desired = { ...old, command: 'plugin-config' };
+    const expected = { enabled: false, servers: { shared: old }, disabledSkills: {}, disabledAgents: {} };
+    const host = vi.fn(async (action: string) => action === 'recover' ? {
+      id: 'operation', key: weather.key, phase: 'committed', expectedRuntime: expected,
+      runtime: { ...expected, servers: { shared: desired } },
+    } : null);
+    global.__ABU_SHELL__ = { pluginOperation: host };
+    useMCPStore.setState({ servers: { shared: { config: old, status: 'connected', tools: [] } } });
+    let finish!: () => void;
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer').mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    try {
+      const recovering = bootstrapPluginUpdates();
+      await vi.waitFor(() => expect(disconnect).toHaveBeenCalled());
+      useMCPStore.getState().updateServer('shared', { command: 'user-third-config' });
+      finish();
+      await expect(recovering).rejects.toThrow(/configuration changed/);
+      expect(useMCPStore.getState().servers.shared.config.command).toBe('user-third-config');
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+      expect(usePluginStore.getState().recoveryError).toMatch(/configuration changed/);
+    } finally { disconnect.mockRestore(); global.__ABU_SHELL__ = original; }
+  });
+});
+
+describe('recovery hydration must complete before journal acknowledgement', () => {
+  it.each(['registry', 'discovery', 'missing activation'] as const)('keeps the journal when %s fails', async failure => {
+    const global = globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+    const original = global.__ABU_SHELL__;
+    const runtime = { enabled: true, servers: {}, disabledSkills: {}, disabledAgents: {} };
+    const host = vi.fn(async (action: string) => action === 'recover' ? {
+      id: 'operation', key: 'renamed@official', installed: true, phase: 'committed', runtime,
+    } : null);
+    global.__ABU_SHELL__ = { pluginOperation: host };
+    if (failure === 'registry') vi.mocked(readInstalledResult).mockResolvedValue({ ok: false, error: new Error('unreadable') });
+    if (failure === 'discovery') mockDiscoveryRefresh.mockRejectedValueOnce(new Error('discovery failed'));
+    try {
+      await expect(bootstrapPluginUpdates()).rejects.toThrow();
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+      expect(usePluginStore.getState().activationReady).toBe(false);
+    } finally { global.__ABU_SHELL__ = original; }
+  });
+
+  it('rechecks configuration after asynchronous discovery before acknowledging', async () => {
+    const global = globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+    const original = global.__ABU_SHELL__;
+    const config = { name: 'shared', command: 'plugin', enabled: false };
+    const runtime = { enabled: false, servers: { shared: config }, disabledSkills: {}, disabledAgents: {} };
+    const host = vi.fn(async (action: string) => action === 'recover' ? {
+      id: 'operation', key: weather.key, phase: 'committed', expectedRuntime: runtime, runtime,
+    } : null);
+    global.__ABU_SHELL__ = { pluginOperation: host };
+    useMCPStore.setState({ servers: {} });
+    // The absent connector is an allowed previous state; the plugin adds it.
+    const expected = { ...runtime, servers: { shared: null } };
+    host.mockImplementation(async action => action === 'recover' ? {
+      id: 'operation', key: weather.key, phase: 'committed', expectedRuntime: expected, runtime,
+    } : null);
+    let finish!: () => void;
+    let waiting = false;
+    mockDiscoveryRefresh.mockImplementationOnce(() => new Promise<void>(resolve => { waiting = true; finish = resolve; }));
+    try {
+      const recovering = bootstrapPluginUpdates();
+      await vi.waitFor(() => expect(waiting).toBe(true));
+      useMCPStore.getState().updateServer('shared', { command: 'independent-edit' });
+      finish();
+      await expect(recovering).rejects.toThrow(/configuration changed/);
+      expect(useMCPStore.getState().servers.shared.config.command).toBe('independent-edit');
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+    } finally { global.__ABU_SHELL__ = original; }
   });
 });

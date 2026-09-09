@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 /**
  * The invariant under test: browsing a marketplace can *plan* an install, but
- * nothing reaches the filesystem until the user confirms the disclosure. A
+ * no plugin is installed or registered until the user confirms the disclosure. A
  * regression here would mean third-party executables land on disk from a
  * single click, with the disclosure reduced to decoration.
  */
 
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 /** A promise whose resolution this test controls, to drive plan ordering. */
@@ -28,6 +28,8 @@ vi.mock('@/core/plugin/installer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/plugin/installer')>()),
   planInstall: vi.fn(),
   installPlugin: vi.fn(),
+  releasePreparedInstall: vi.fn().mockResolvedValue(undefined),
+  validatePreparedInstall: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('@/core/plugin/installedStore', () => ({
   readInstalled: vi.fn().mockResolvedValue([]),
@@ -72,6 +74,7 @@ vi.mock('react-virtuoso', async () => {
 import {
   planInstall,
   installPlugin,
+  releasePreparedInstall,
   UnsupportedSourceError,
   type InstallDisclosure,
 } from '@/core/plugin/installer';
@@ -105,6 +108,7 @@ const marketplace: Marketplace = {
 };
 
 const disclosure: InstallDisclosure = {
+  preparedToken: 'test-prepared-token',
   key: 'weather@official',
   name: 'weather',
   marketplace: 'official',
@@ -140,6 +144,8 @@ beforeEach(() => {
   usePluginStore.setState({
     marketplaces: [{ name: 'official', dir: '/m/official' }],
     installed: [],
+    activationByKey: {},
+    activationReady: true,
     loading: false,
     error: null,
   });
@@ -205,6 +211,7 @@ describe('MarketplaceBrowser', () => {
       marketplaceName: 'official',
       marketplaceDir: '/m/official',
       entry: localEntry,
+      preparedToken: 'test-prepared-token',
     });
   });
 
@@ -223,6 +230,7 @@ describe('MarketplaceBrowser', () => {
     };
     const cloudPlan: InstallDisclosure = {
       ...disclosure,
+      preparedToken: 'cloud-prepared-token',
       key: 'cloud-thing@official',
       name: 'cloud-thing',
       sourceDir: '/m/official/plugins/cloud-thing',
@@ -255,6 +263,8 @@ describe('MarketplaceBrowser', () => {
     });
     expect(dialog).toHaveTextContent('cloud-mcp');
     expect(dialog).not.toHaveTextContent('weather-mcp');
+    expect(releasePreparedInstall).toHaveBeenCalledWith(weatherPlan.preparedToken);
+    expect(releasePreparedInstall).not.toHaveBeenCalledWith(cloudPlan.preparedToken);
   });
 
   it('gates the confirm button on the current plan, never a leftover ready one', async () => {
@@ -302,16 +312,43 @@ describe('MarketplaceBrowser', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull());
     expect(installPlugin).not.toHaveBeenCalled();
+    expect(releasePreparedInstall).toHaveBeenCalledWith('test-prepared-token');
   });
 
-  it('flags remote-sourced entries before the user clicks Install', async () => {
+  it('releases the prepared token when the marketplace component unmounts', async () => {
+    const browser = renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
+    await screen.findByTestId('plugin-install-confirm');
+    browser.unmount();
+    expect(releasePreparedInstall).toHaveBeenCalledWith('test-prepared-token');
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it('consumes a prepared confirmation only once while installation is pending', async () => {
+    const pending = makeDeferred<Awaited<ReturnType<typeof installPlugin>>>();
+    vi.mocked(installPlugin).mockReturnValue(pending.promise);
+    renderBrowser();
+    await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
+    fireEvent.click(screen.getByRole('button', { name: /weather$/ }));
+    const confirm = await screen.findByTestId('plugin-install-confirm');
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(installPlugin).toHaveBeenCalledTimes(1));
+    await act(async () => { pending.resolve({ record: installedWeather, mcpServers: [] }); });
+    await waitFor(() => expect(screen.queryByTestId('plugin-install-disclosure')).toBeNull());
+    expect(releasePreparedInstall).toHaveBeenCalledWith('test-prepared-token');
+  });
+
+  it('keeps the catalog card compact and opens remote install disclosure', async () => {
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
-    // Only the git-subdir entry is marked — the vendored one installs fine.
-    const badges = screen.getAllByTestId('plugin-remote-source-badge');
-    expect(badges).toHaveLength(1);
-    expect(screen.getAllByTestId('plugin-marketplace-entry')[1]).toContainElement(badges[0]);
+    expect(screen.queryByTestId('plugin-remote-source-badge')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /cloud-thing$/ }));
+    await screen.findByTestId('plugin-install-confirm');
+    expect(planInstall).toHaveBeenCalledWith(expect.objectContaining({ entry: remoteEntry }));
+    expect(installPlugin).not.toHaveBeenCalled();
   });
 
   it('explains an unsupported remote source instead of blowing up', async () => {
@@ -347,39 +384,40 @@ describe('MarketplaceBrowser', () => {
     expect(installPlugin).not.toHaveBeenCalled();
   });
 
-  it('replaces the install button with the `···` menu on an installed entry', async () => {
-    // 市场 now shows installed items in place: an installed row must not offer
-    // "安装" at all — its actions live behind the menu instead.
+  it('replaces the install button with an inline switch on an installed entry', async () => {
+    // Installed cards open details; their inline control is the master switch.
     usePluginStore.setState({ installed: [installedWeather] });
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
     const rows = screen.getAllByTestId('plugin-marketplace-entry');
-    expect(rows[0].querySelector('[data-testid="plugin-item-menu"]')).toBeTruthy();
+    expect(within(rows[0]).getByRole('switch')).toBeInTheDocument();
+    expect(rows[0].querySelector('[data-testid="plugin-item-menu"]')).toBeNull();
     expect(rows[0].textContent).not.toContain(tb().pluginsInstall);
     // The not-installed row still gets the plain install button.
     expect(rows[1].querySelector('[data-testid="plugin-item-menu"]')).toBeNull();
     expect(rows[1].textContent).toContain(tb().pluginsInstall);
   });
 
-  it('offers 立即试用 / 管理 / 卸载 behind the installed row\'s menu', async () => {
+  it('opens details from the card with trial and uninstall outside the source menu', async () => {
     usePluginStore.setState({ installed: [installedWeather] });
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
-    fireEvent.click(screen.getByTestId('plugin-item-menu'));
-    expect(screen.getByTestId('plugin-item-menu-trial')).toHaveTextContent(tb().menuTrial);
-    expect(screen.getByTestId('plugin-item-menu-manage')).toHaveTextContent(tb().menuManage);
-    expect(screen.getByTestId('plugin-item-menu-uninstall')).toHaveTextContent(tb().menuUninstall);
+    fireEvent.click(screen.getByText('weather'));
+    expect(screen.getByRole('button', { name: tb().menuTrial })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: tb().pluginsUninstall })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('plugin-detail-menu'));
+    expect(screen.getByRole('menuitem', { name: tb().pluginsDisclosureSource })).toBeInTheDocument();
   });
 
-  it('uninstalls through the menu, but only after the confirmation', async () => {
+  it('uninstalls from details, but only after the confirmation', async () => {
     usePluginStore.setState({ installed: [installedWeather] });
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
-    fireEvent.click(screen.getByTestId('plugin-item-menu'));
-    fireEvent.click(screen.getByTestId('plugin-item-menu-uninstall'));
+    fireEvent.click(screen.getByText('weather'));
+    fireEvent.click(screen.getByRole('button', { name: tb().pluginsUninstall }));
     // Confirmation is up; nothing removed yet.
     expect(uninstallPlugin).not.toHaveBeenCalled();
     expect(screen.getByText(tb().pluginsUninstallTitle)).toBeInTheDocument();
@@ -406,12 +444,11 @@ describe('MarketplaceBrowser', () => {
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
-    fireEvent.click(screen.getByTestId('plugin-item-menu'));
-    fireEvent.click(screen.getByTestId('plugin-item-menu-manage'));
+    fireEvent.click(screen.getByText('weather'));
 
     const detail = screen.getByTestId('plugin-manage-dialog');
     expect(detail).toHaveTextContent('weather');
-    expect(detail).toHaveTextContent('official');
+    expect(detail).not.toHaveTextContent('official');
     expect(detail).toHaveTextContent('forecast');
     expect(detail).toHaveTextContent('weather-mcp');
     expect(detail).toHaveTextContent(tb().pluginsDisclosureAgents);
@@ -436,10 +473,9 @@ describe('MarketplaceBrowser', () => {
     expect(group).toHaveTextContent('stale');
     expect(group).toHaveTextContent('removed');
 
-    // Its only action is removal — there is nowhere left to update it from.
-    fireEvent.click(screen.getByTestId('plugin-orphan-menu'));
-    expect(screen.getByTestId('plugin-orphan-menu-uninstall')).toBeInTheDocument();
-    expect(screen.queryByTestId('plugin-orphan-menu-manage')).toBeNull();
+    fireEvent.click(screen.getByText('stale'));
+    expect(screen.getByTestId('plugin-manage-dialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: tb().pluginsUninstall })).toBeInTheDocument();
   });
 
   it('does not guess at orphans before the marketplace list has hydrated', async () => {
@@ -471,7 +507,7 @@ describe('MarketplaceBrowser', () => {
 
     renderBrowser();
     const list = await screen.findByTestId('plugin-marketplace-list');
-    expect(list).toHaveAttribute('data-item-count', '300');
+    expect(list).toHaveAttribute('data-item-count', '100');
     const rows = screen.getAllByTestId('plugin-marketplace-entry');
     expect(rows).toHaveLength(300);
     expect(rows[0]).toHaveTextContent('plugin-0');
@@ -591,4 +627,16 @@ describe('MarketplaceBrowser', () => {
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry').length).toBeGreaterThan(0));
     expect(screen.queryByTestId('plugin-update-button')).toBeNull();
   });
+});
+
+it('retains readable rows on refresh failure and blocks stale installs until retry succeeds', async () => {
+  renderBrowser();
+  await screen.findByText('weather');
+  vi.mocked(loadMarketplaceFromDir).mockRejectedValueOnce(new Error('market unavailable'));
+  fireEvent.click(screen.getByRole('button', { name: tb().pluginsRefreshMarketplace }));
+  await screen.findByText('market unavailable');
+  expect(screen.getByText('weather')).toBeVisible();
+  expect(screen.getByRole('button', { name: `${tb().pluginsInstall}: weather` })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: tb().pluginsRefreshMarketplace }));
+  await waitFor(() => expect(screen.getByRole('button', { name: `${tb().pluginsInstall}: weather` })).toBeEnabled());
 });

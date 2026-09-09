@@ -25,10 +25,13 @@ import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { partitionInstalled } from '@/core/plugin/enterpriseMarket';
 import { isSelfAuthoredPlugin } from '@/core/plugin/authored';
 import { InstalledPluginSummary } from './InstalledPluginDetail';
+import ToolGrid from '@/components/toolbox/ToolGrid';
+import MarketplaceEntryRow from './MarketplaceEntryRow';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
 interface InstalledPluginListProps {
   home: string;
+  grouped?: boolean;
   searchQuery: string;
   /**
    * `'authored'` narrows the list to plugins the user wrote themselves (the
@@ -45,6 +48,7 @@ export default function InstalledPluginList({
   home,
   searchQuery,
   mode = 'all',
+  grouped = false,
   onBrowseMarketplace,
 }: InstalledPluginListProps) {
   const { t } = useI18n();
@@ -66,6 +70,17 @@ export default function InstalledPluginList({
     if (!query) return scoped;
     return scoped.filter((p) => `${p.name} ${p.marketplace}`.toLowerCase().includes(query));
   }, [scoped, searchQuery]);
+
+  if (grouped && visible.length === 0) return (
+    <section className="px-8 pb-6" data-testid="plugin-mine-group">
+      <div className="mx-auto max-w-5xl">
+        <h3 className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{tb.sourceMine}</h3>
+        <div className="rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]">
+          {scoped.length === 0 ? tb.pluginsMineEmptyTitle : tb.pluginsNoMatches}
+        </div>
+      </div>
+    </section>
+  );
 
   if (scoped.length === 0) {
     return (
@@ -93,30 +108,21 @@ export default function InstalledPluginList({
   }
 
   return (
-    <div className="h-full overflow-y-auto px-8 py-3">
+    <div className={grouped ? "px-8 pb-6" : "h-full overflow-y-auto px-8 py-3"}><div className="max-w-5xl mx-auto">
+      {grouped && <h3 className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{tb.sourceMine}</h3>}
       {visible.length === 0 ? (
         <p className="py-8 text-center text-body text-[var(--abu-text-tertiary)]">
           {tb.pluginsNoMatches}
         </p>
       ) : (
-        <ul className="space-y-1.5">
+        <ToolGrid>
           {visible.map((plugin) => (
-            <li
+            <MarketplaceEntryRow
               key={plugin.key}
-              data-testid="plugin-mine-row"
-              className="flex items-center gap-3 rounded-lg border border-[var(--abu-border)] px-3 py-2.5"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="truncate text-h-xs text-[var(--abu-text-primary)]">
-                    {plugin.name}
-                  </span>
-                  <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
-                    v{plugin.version}
-                  </span>
-                </div>
-                <InstalledPluginSummary plugin={plugin} />
-              </div>
+              testId="plugin-mine-row"
+              name={plugin.name}
+              description={<InstalledPluginSummary plugin={plugin} />}
+              actions={
               <Button
                 variant="ghost"
                 size="sm"
@@ -126,11 +132,13 @@ export default function InstalledPluginList({
                 <Trash2 className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
                 <span className="text-[var(--abu-danger)]">{tb.pluginsUninstall}</span>
               </Button>
-            </li>
+              }
+            />
           ))}
-        </ul>
+        </ToolGrid>
       )}
 
+      </div>
       <UninstallPluginDialog
         home={home}
         target={pendingRemoval}

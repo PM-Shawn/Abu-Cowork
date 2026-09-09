@@ -154,6 +154,7 @@ function mockSendRequest(
 ) {
   const { approvalDecision = 'allow', approvalReason = 'Error: denied by shell policy', toolInvokeResult = 'tool output' } = overrides;
   sendRequestMock.mockImplementation((method: unknown) => {
+    if (method === 'agent.assertDirectDelegateEnabled') return Promise.resolve({ allowed: true });
     if (method === 'approval.check') {
       return Promise.resolve(
         approvalDecision === 'deny' ? { decision: 'deny', reason: approvalReason } : { decision: 'allow' },

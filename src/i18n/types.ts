@@ -1927,6 +1927,41 @@ export interface TranslationDict {
     trialPromptFallback: string;
     pluginsAddMarketplace: string;
     pluginsAddMarketplaceTitle: string;
+    pluginsManifestInvalidField: string;
+    pluginsComponentMissing: string;
+    pluginsComponentEmptySkills: string;
+    pluginsBusy: string;
+    pluginsChanging: string;
+    pluginsCreate: string;
+    pluginsDraft: string;
+    pluginsAuthorConversation: string;
+    pluginsAuthorPrompt: string;
+    pluginsContinueEditing: string;
+    pluginsUpdating: string;
+    pluginsCheckChanges: string;
+    pluginsPreviewUpdate: string;
+    pluginsAuthorUpdateAvailable: string;
+    pluginsAuthorUpdateHint: string;
+    pluginsValidationPassed: string;
+    pluginsUpdateDisclosureTitle: string;
+    pluginsUpdateDisclosureSubtitle: string;
+    pluginsReviewChanges: string;
+    pluginsAuthoredSource: string;
+    pluginsReadyToInstall: string;
+    pluginsSourceFiles: string;
+    pluginsUnchanged: string;
+    pluginsDraftHint: string;
+    pluginsConfiguration: string;
+    pluginsConfigurationHint: string;
+    pluginsMarketplaceNameConflict: string;
+    pluginsMarketplaceIdentityChanged: string;
+    pluginsRefreshMarketplace: string;
+    pluginsCachedMarketplace: string;
+    pluginsRecoveryNeeded: string;
+    pluginsRetryRecovery: string;
+    pluginsDisabledCapability: string;
+    pluginsComponentInvalidJson: string;
+    pluginsComponentConflict: string;
     pluginsMarketplaceDirLabel: string;
     pluginsMarketplaceDirPlaceholder: string;
     pluginsMarketplaceDirHint: string;
@@ -2160,6 +2195,8 @@ export interface TranslationDict {
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
+    backToDetails: string;
+    useNow: string;
     skillTryInChat: string;
     skillSave: string;
     skillSaveAndTest: string;
@@ -2382,6 +2419,7 @@ export interface TranslationDict {
     // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
+    personalSource: string;
     organizationSource: string;
   };
 

@@ -82,16 +82,16 @@ export const useSkillTool: ToolDefinition = {
     const skillName = (input.skill_name as string).replace(/^\/+/, '');
     const context = input.context as string | undefined;
 
-    // Auto-enable skill if disabled — user intent to use it takes precedence
-    const { disabledSkills, toggleSkillEnabled } = useSettingsStore.getState();
-    if (disabledSkills?.includes(skillName)) {
-      toggleSkillEnabled(skillName);
-    }
-
     const skill = skillLoader.getSkill(skillName);
     if (!skill) {
       const available = skillLoader.getAvailableSkills().map(s => s.name).join(', ');
       return `Error: Skill "${skillName}" not found. Available skills: ${available}`;
+    }
+
+    // Auto-enable skill if disabled — only after resolving through the plugin gate
+    const { disabledSkills, toggleSkillEnabled } = useSettingsStore.getState();
+    if (disabledSkills?.includes(skillName)) {
+      toggleSkillEnabled(skillName);
     }
 
     // Dedup: if already active in this conversation, short-circuit to prevent

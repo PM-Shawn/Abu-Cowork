@@ -277,8 +277,8 @@ test('plugin_git_fetch clones, asserts sha, and lands the package atomically', a
       source: { kind: 'url', url: 'https://ignored.example/repo.git', sha },
       destDir,
     },
-    __testOverrides: { cloneUrl: srcRepo, packagesRoot: path.join(scratch, 'plugin-packages') },
-  });
+    __testOverrides: { cloneUrl: srcRepo },
+  }, { packagesRoot: path.join(scratch, 'plugin-packages') });
 
   assert.equal(result.sha, sha);
   assert.ok(

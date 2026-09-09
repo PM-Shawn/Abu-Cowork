@@ -1,5 +1,6 @@
 import type { Message } from '@/types';
 import { getMessageText } from '@/core/context/contextUtils';
+import { isIntroductionMessage } from '@/core/team/expertContact';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 
 /**
@@ -104,7 +105,7 @@ export function deriveChapters(groups: Message[][], fallbackTitle: string): Chap
 
   groups.forEach((group, groupIndex) => {
     const head = group[0];
-    if (!head) return;
+    if (!head || isIntroductionMessage(head)) return;
 
     // Groups that do not open with a user turn belong to the chapter already in
     // progress. Only when there is no such chapter do they start one, so the

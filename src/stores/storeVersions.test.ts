@@ -4,7 +4,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // When adding a new persist store, add it to this list — otherwise this test fails.
 const PERSISTED_STORES = [
   { key: 'abu-settings', minVersion: 52 },
-  { key: 'abu-chat', minVersion: 12 },
+  { key: 'abu-chat', minVersion: 13 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
   { key: 'abu-permissions', minVersion: 1 },
   { key: 'abu-workspace', minVersion: 1 },

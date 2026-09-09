@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
@@ -25,13 +26,16 @@ vi.mock('@/stores/settingsStore', () => ({
 const chatState = {
   setPendingInput: vi.fn(),
   setPendingAgent: vi.fn(),
+  setPendingTeamId: vi.fn(),
+  setPendingExpertContact: vi.fn(),
+  expertContactReceipts: {}, pendingReferences: [], pendingAttachmentRequests: [],
   startNewConversation: vi.fn(),
   switchConversation: vi.fn(),
   createConversation: vi.fn(() => 'c-new'),
   conversationIndex: {} as Record<string, { id: string; title: string; updatedAt: number; teamId?: string; workspacePath?: string | null }>,
 };
 vi.mock('@/stores/chatStore', () => ({
-  useChatStore: (selector: (state: Record<string, unknown>) => unknown) => selector(chatState),
+  useChatStore: Object.assign((selector: (state: Record<string, unknown>) => unknown) => selector(chatState), { getState: () => chatState }),
 }));
 
 const loadMessages = vi.fn();
@@ -139,6 +143,7 @@ function seedAgent(name: string, extra?: string | SeedExtra) {
 
 describe('TeamView', () => {
   beforeEach(() => {
+    clearAllComposerDrafts();
     useTeamStore.setState({ teams: []});
     settingsState.activeTeamTab = 'members';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
@@ -371,10 +376,12 @@ describe('TeamView', () => {
     render(<TeamView />);
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
     fireEvent.click(screen.getByTestId('team-detail-start-chat'));
-    expect(chatState.createConversation).toHaveBeenCalledWith(null, { teamId: 't1' });
+    expect(chatState.createConversation).not.toHaveBeenCalled();
+    expect(chatState.startNewConversation).toHaveBeenCalled();
+    expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
     expect(chatState.setPendingAgent).toHaveBeenCalledWith(null);
     // Nothing prefilled: the user says what they want in their own words.
-    expect(chatState.setPendingInput).not.toHaveBeenCalled();
+    expect(chatState.setPendingInput).toHaveBeenCalledWith('');
   });
 
   it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 队员 detail', () => {
@@ -545,8 +552,9 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
     // The card summary and the detail subtitle both carry the description.
     expect(screen.getAllByText('看数据的小队', { exact: true })).toHaveLength(2);
-    expect(screen.getByText('我们负责取数和出图')).toBeTruthy();
-    expect(screen.getByText('开场白')).toBeTruthy();
+    // The greeting is first-contact only — the detail no longer repeats it.
+    expect(screen.queryByText('我们负责取数和出图')).toBeNull();
+    expect(screen.queryByText('开场白')).toBeNull();
     expect(screen.queryByText('擅长')).toBeNull();
     expect(screen.queryByText('推荐提问')).toBeNull();
   });
@@ -560,7 +568,9 @@ describe('TeamView', () => {
     expect(screen.getByText('擅长')).toBeTruthy();
     expect(screen.getByText('取数')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '帮我看上季度销量' }));
-    expect(chatState.createConversation).toHaveBeenCalledWith(null, { teamId: 't1' });
+    expect(chatState.createConversation).not.toHaveBeenCalled();
+    expect(chatState.startNewConversation).toHaveBeenCalled();
+    expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
     expect(chatState.setPendingInput).toHaveBeenCalledWith('帮我看上季度销量');
     expect(settingsState.closeTeam).toHaveBeenCalledOnce();
     expect(dispatch).not.toHaveBeenCalled();

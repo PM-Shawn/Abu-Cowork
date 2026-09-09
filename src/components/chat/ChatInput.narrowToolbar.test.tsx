@@ -71,6 +71,23 @@ describe('composer toolbar in a narrow pane', () => {
     expect(chip.querySelector('.\\@max-\\[420px\\]\\:hidden')).not.toBeNull();
   });
 
+  /* The chat column now keeps a floor (clampNarrowPanelWidth), so on a normal
+     window the ring's own rung is only reached in the corner the floor cannot
+     protect — a 900px window with the sidebar open, where the panel yields to
+     its own minimum instead. That is out of reach of the Electron guard, so
+     pin the wiring here. */
+  it('marks the context ring as the rung below the permission label', () => {
+    useChatStore.getState().createConversation();
+    render(<ChatInput variant="chat" onSend={vi.fn()} />);
+
+    const toolbar = screen.getByTestId('composer-toolbar');
+    const ring = toolbar.querySelector('.\\@max-\\[360px\\]\\:hidden');
+    expect(ring, 'the context ring lost its degradation rung').not.toBeNull();
+    // Ordering is the whole design: the ring may only go after the permission
+    // label has already collapsed, never before.
+    expect(toolbar.querySelector('.\\@max-\\[420px\\]\\:hidden')).not.toBeNull();
+  });
+
   it('keeps the pinned team identifiable by its avatar once the name collapses', () => {
     const id = useChatStore.getState().createConversation();
     useTeamStore.setState({

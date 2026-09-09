@@ -192,15 +192,18 @@ test.describe('composer toolbar in a narrow pane', () => {
   });
 
   /* The variant above is the welcome composer. The bug was REPORTED on the
-     in-conversation one, which carries an extra control — the context usage
-     ring — and therefore its own rung. This walks the exact reported path:
-     a ~1000px window, the workspace panel open, and its divider dragged left
-     until the chat column is starved. Window resizing cannot substitute here —
-     the chat column stops shrinking around 500px on its own, and only the
-     panel's flex split pushes the toolbar down to the ~300px where the report
+     in-conversation one, along this path: a ~1000px window, the workspace panel
+     open, its divider dragged left until the chat column is starved. Window
+     resizing cannot substitute — the chat column stops shrinking around 500px
+     on its own, and only the panel's flex split reaches the ~300px the report
      came from. Costs one scripted turn, because the in-conversation composer
-     and the panel divider both need a conversation with a message. */
-  test('walks the reported path: panel divider starving the chat column', async () => {
+     and the panel divider both need a conversation with a message.
+
+     Two guards live here, because the fix has two halves. The divider can no
+     longer starve the chat past CHAT_MIN_WIDTH (clampNarrowPanelWidth), so the
+     toolbar bottoms out around 368px of content rather than the 204px where its
+     controls used to collide. And across that whole range it stays one row. */
+  test('walks the reported path: panel divider vs the chat column floor', async () => {
     test.setTimeout(180_000);
     const dataRoot = createElectronDataRoot();
     const mock = await startOneShotMock();
@@ -233,9 +236,7 @@ test.describe('composer toolbar in a narrow pane', () => {
       const toolbar = page.getByTestId('composer-toolbar');
       const card = page.locator('[data-chat-composer]')
         .locator('xpath=ancestor::div[contains(@class,"rounded-2xl")][1]');
-      const ring = toolbar.locator('.\\@max-\\[360px\\]\\:hidden');
       const permissionLabel = toolbar.locator('.\\@max-\\[420px\\]\\:hidden').first();
-      await expect(ring).toBeVisible();
       await expect(permissionLabel).toBeVisible();
 
       const handle = page.locator('div.cursor-col-resize').first();
@@ -243,10 +244,12 @@ test.describe('composer toolbar in a narrow pane', () => {
       expect(handleBox, 'the panel divider never appeared').not.toBeNull();
       await page.mouse.move(handleBox!.x + 2, handleBox!.y + handleBox!.height / 2);
       await page.mouse.down();
+      let widest = 0;
       let narrowest = Number.POSITIVE_INFINITY;
-      // Assert at every stop rather than only at the extreme — a ladder that
-      // breaks mid-range is still broken.
-      for (const offset of [0, 60, 120, 180, 240]) {
+      // Drag well past where the clamp bites, and assert at every stop rather
+      // than only at the extreme — a ladder that breaks mid-range is still
+      // broken, and a clamp that only holds at the end is not a clamp.
+      for (const offset of [0, 60, 120, 180, 240, 360, 480]) {
         await page.mouse.move(handleBox!.x + 2 - offset, handleBox!.y + handleBox!.height / 2, { steps: 4 });
         await page.waitForTimeout(150);
 
@@ -260,23 +263,40 @@ test.describe('composer toolbar in a narrow pane', () => {
         // ...and nothing may escape the card sideways instead of wrapping.
         expect(box!.x + box!.width, `divider -${offset}px: toolbar overflows its card`)
           .toBeLessThanOrEqual(cardBox!.x + cardBox!.width + 1);
+        // Below ~300px of content the ladder runs out and the controls start
+        // sitting on top of each other. That is the state the chat-column floor
+        // exists to make unreachable, so check the controls themselves.
+        const overlap = await toolbar.evaluate((el) => {
+          const boxes = [...el.querySelectorAll('button')].map((b) => b.getBoundingClientRect());
+          return boxes.some((a, i) => boxes.slice(i + 1).some((b) => (
+            a.right > b.left + 1 && b.right > a.left + 1 && a.bottom > b.top + 1 && b.bottom > a.top + 1
+          )));
+        });
+        expect(overlap, `divider -${offset}px: toolbar controls overlap each other`).toBe(false);
+
+        widest = Math.max(widest, box!.width);
         narrowest = Math.min(narrowest, box!.width);
       }
       await page.mouse.up();
 
-      // Guard the guard: a drag that stopped working would pass everything above
-      // while proving nothing. ~336px is where the reported screenshot sat.
-      expect(narrowest, 'the divider drag never actually starved the chat column')
-        .toBeLessThan(400);
+      // Guard the guard: a drag that silently stopped working would pass
+      // everything above while proving nothing.
+      expect(widest - narrowest, 'the divider drag never moved anything')
+        .toBeGreaterThan(100);
+      // ...and the floor held. 1000px window, sidebar collapsed: the chat keeps
+      // CHAT_MIN_WIDTH (480), leaving the toolbar 368px of content inside its
+      // 32px of padding. Before the clamp this bottomed out at 236px total,
+      // with `+` sitting under the permission icon.
+      expect(narrowest, 'the divider starved the chat column past its floor')
+        .toBeGreaterThanOrEqual(400);
 
-      // Both rungs fired on the way down, and both come back with the space.
+      // The permission rung still fired on the way down, and comes back with
+      // the space.
       await expect(permissionLabel).toBeHidden();
-      await expect(ring).toBeHidden();
       await launched.app.evaluate(({ BrowserWindow }) => {
         BrowserWindow.getAllWindows()[0]?.setBounds({ width: 1400, height: 820 });
       });
       await expect(permissionLabel).toBeVisible();
-      await expect(ring).toBeVisible();
 
       await closeAbuElectron(launched.app);
     } finally {

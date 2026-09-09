@@ -51,6 +51,31 @@ export function resolveChatWidth(chatWidth: number | null, viewportWidth: number
   return clampChatWidth(preferred, viewportWidth, sidebarOpen);
 }
 
+// The narrow panel (summary / empty state) is the mirror image: there the PANEL
+// owns an explicit width and the chat flex-fills, so the chat's floor has to be
+// defended from this side. Without it the narrow drag clamped to its own
+// constants alone and could starve the chat to ~316px on a 900px window — the
+// composer row then ran out of things to give up and its controls collided,
+// which is exactly what CHAT_MIN_WIDTH's "fits the composer row" is there to
+// prevent. The wide path already honored it via clampChatWidth; this is the
+// same rule applied to the other drag.
+//
+// On a window too small to give both their minimums the PANEL yields to its own
+// floor rather than the chat growing below CHAT_MIN_WIDTH — same graceful shrink
+// clampChatWidth performs, and the chat is the surface being typed into.
+export function clampNarrowPanelWidth(
+  width: number,
+  viewportWidth: number,
+  sidebarOpen: boolean,
+  minPanelWidth: number,
+  maxPanelWidth: number,
+): number {
+  const available = viewportWidth - (sidebarOpen ? SIDEBAR_WIDTH : 0) - PANEL_GUTTERS;
+  const roomForPanel = available - CHAT_MIN_WIDTH;
+  const max = Math.max(minPanelWidth, Math.min(maxPanelWidth, roomForPanel));
+  return Math.min(Math.max(width, minPanelWidth), max);
+}
+
 // Reactive window.innerWidth so the layout re-clamps on resize.
 export function useViewportWidth(): number {
   const [width, setWidth] = useState<number>(getViewportWidth);

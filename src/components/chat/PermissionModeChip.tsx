@@ -77,13 +77,20 @@ export default function PermissionModeChip({ conversationId }: Props) {
       <button
         onClick={() => setOpen((v) => !v)}
         title={`${t.settings.permissionMode}: ${currentLabel}`}
+        aria-label={`${t.settings.permissionMode}: ${currentLabel}`}
         className={cn(
           'btn-ghost flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors hover:bg-[var(--abu-bg-hover)]',
           MODE_CHIP_COLOR[effectiveMode] ?? MODE_CHIP_COLOR.standard
         )}
       >
         <CurrentIcon className="h-3.5 w-3.5 shrink-0" />
-        <span className="whitespace-nowrap">{currentLabel}</span>
+        {/* Second rung of the composer toolbar's degradation ladder: in a
+            narrow pane the mode reads well enough from its icon (the risk ramp
+            is also colored gray → clay → red), and the full label stays in the
+            tooltip and `aria-label`. The query resolves against the composer
+            toolbar's `@container`; anywhere without one it never matches, so
+            the label simply always shows. */}
+        <span className="whitespace-nowrap @max-[420px]:hidden">{currentLabel}</span>
       </button>
 
       {open && (

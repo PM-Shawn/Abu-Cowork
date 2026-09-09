@@ -1786,6 +1786,7 @@ const zhCN: TranslationDict = {
     skillSourceBuiltin: '内置',
     skillSourceUser: '用户创建',
     skillSourcePlugin: '来自插件',
+    skillPluginDisabled: '所属插件已停用',
     skillSourceStandard: '全局安装',
     skillSourceProject: '项目',
     skillSourceWorkspaceAuto: '自进化',

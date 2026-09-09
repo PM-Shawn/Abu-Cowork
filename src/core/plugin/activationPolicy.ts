@@ -112,13 +112,20 @@ export function isPluginEnabled(key: string): boolean {
 export function assertPluginEnabled(key: string): void {
   if (!isPluginEnabled(key)) throw new Error(format(getI18n().toolbox.pluginsDisabledCapability, { name: key }));
 }
-export function isPluginSkillAllowed(skill: { skillDir: string }): boolean {
-  const dir = normalized(skill.skillDir);
-  const matches = Object.entries(activations).filter(([, a]) => dir === a.root || dir.startsWith(`${a.root}/`));
+/** The same gate the loader enforces, over an explicitly supplied snapshot.
+ * The skills page renders disabled plugins' skills, so its switches must read
+ * this rather than the per-skill preference alone; taking the snapshot as an
+ * argument lets React subscribe to the store instead of this module's state. */
+export function isSkillAllowedIn(source: PluginActivations, recordsReady: boolean, skillDir: string): boolean {
+  const dir = normalized(skillDir);
+  const matches = Object.entries(source).filter(([, a]) => dir === a.root || dir.startsWith(`${a.root}/`));
   if (!matches.length) return !dir.includes('/.abu/plugin-packages/');
   if (matches.length !== 1) return false;
   const [, a] = matches[0];
-  return ready && a.enabled && !a.conflicted && ownsSkill(a, dir);
+  return recordsReady && a.enabled && !a.conflicted && ownsSkill(a, dir);
+}
+export function isPluginSkillAllowed(skill: { skillDir: string }): boolean {
+  return isSkillAllowedIn(activations, ready, skill.skillDir);
 }
 export function isPluginAgentAllowed<T extends { filePath: string }>(agent: T): boolean {
   const owner = pluginOwnerForAgent(agent);

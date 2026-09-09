@@ -1785,6 +1785,7 @@ const enUS: TranslationDict = {
     skillSourceBuiltin: 'Built-in',
     skillSourceUser: 'User',
     skillSourcePlugin: 'From a plugin',
+    skillPluginDisabled: 'Owning plugin is disabled',
     skillSourceStandard: 'Installed',
     skillSourceProject: 'Project',
     skillSourceWorkspaceAuto: 'Self-evolved',

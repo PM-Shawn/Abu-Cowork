@@ -38,10 +38,9 @@ const NOT_CONNECTED = /^(未连接|Not connected)$/;
 const SETUP_REQUIRED = /^(需要设置|Setup required)$/;
 const OFF = /^(已关闭|Off)$/;
 const START_SETUP = /^(开始设置|Start setup)$/;
-const ENABLE = /^(开启|Enable)$/;
+const ENABLE = /^(开启电脑操控|Enable Computer Use)$/;
 const CONNECT_CHROME = /^(连接 Chrome|Connect Chrome)$/;
 const CHROME_HEADER = /^(我的 Chrome|My Chrome)$/;
-const COMPUTER_OFF_ACTION = /^(开启|Enable)$/;
 const DISCONNECT = /^(断开|Disconnect)$/;
 const INSTALL_STEPS = /^(安装扩展|Install the extension)$/;
 const BACK_TO_CAPABILITIES = /^(返回能力|Back to Capabilities)$/;
@@ -131,6 +130,59 @@ test.describe.serial('Electron capability overview', () => {
     }
   });
 
+  test('routes either permission button through Electron to its matching system pane', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+    // Replace only native consent/status and external navigation. Renderer,
+    // preload IPC, request helper and Electron permission host remain real.
+    await app.evaluate(({ systemPreferences, shell, desktopCapturer }) => {
+      const fixture = { screen: false, control: false, opened: [] as string[], prompts: [] as boolean[] };
+      (globalThis as typeof globalThis & { permissionFixture?: typeof fixture }).permissionFixture = fixture;
+      systemPreferences.getMediaAccessStatus = () => fixture.screen ? 'granted' : 'denied';
+      systemPreferences.isTrustedAccessibilityClient = (prompt) => {
+        fixture.prompts.push(prompt);
+        return fixture.control;
+      };
+      desktopCapturer.getSources = async () => [];
+      shell.openExternal = async (url) => { fixture.opened.push(url); };
+    });
+    const page = await app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await seedSettings(page, { language: 'zh-CN', computerUseEnabled: true });
+    await waitForWelcomeScreen(page);
+    await openCapabilities(page);
+    await capabilityCard(page, COMPUTER_USE).click();
+    const controlRow = page.getByRole('heading', { name: '操作界面', exact: true }).locator('..');
+    const screenRow = page.getByRole('heading', { name: '查看屏幕', exact: true }).locator('..');
+    await expect(page.getByRole('button', { name: '去授权', exact: true })).toHaveCount(2);
+    await controlRow.getByRole('button', { name: '去授权' }).click();
+    await expect.poll(() => app!.evaluate(() => {
+      const state = (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture;
+      return state.opened.length;
+    })).toBeGreaterThan(0);
+    const urls = await app.evaluate(() => (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture.opened);
+    expect(urls.every(url => url.endsWith('Privacy_Accessibility'))).toBe(true);
+    await app.evaluate(() => {
+      const state = (globalThis as typeof globalThis & { permissionFixture: { control: boolean; opened: string[] } }).permissionFixture;
+      state.control = true;
+      state.opened.length = 0;
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(controlRow.getByText('已授权', { exact: true })).toBeVisible();
+    await screenRow.getByRole('button', { name: '去授权' }).click();
+    await expect.poll(() => app!.evaluate(() => (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture.opened.length)).toBeGreaterThan(0);
+    const screenUrls = await app.evaluate(() => (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture.opened);
+    expect(screenUrls.every(url => url.endsWith('Privacy_ScreenCapture'))).toBe(true);
+    await app.evaluate(() => { (globalThis as typeof globalThis & { permissionFixture: { screen: boolean } }).permissionFixture.screen = true; });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(page.getByText('已授权', { exact: true })).toHaveCount(2);
+    await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
+    await page.getByRole('switch', { name: '关闭电脑操控' }).click();
+    await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
+    await expect(page.getByRole('switch', { name: '开启电脑操控' })).toHaveAttribute('aria-checked', 'false');
+  });
+
   test('shows real runtime readiness and keeps optional capabilities explicit', async () => {
     const launched = await launchAbuElectron();
     app = launched.app;
@@ -205,9 +257,9 @@ test.describe.serial('Electron capability overview', () => {
 
     await computerUse.click();
     await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
-    await expect(page.getByRole('button', { name: ENABLE })).toBeVisible();
+    await expect(page.getByRole('switch', { name: ENABLE })).toBeVisible();
     await expect(page.getByText(/current task needs|当前任务需要/)).toHaveCount(0);
-    await page.getByRole('button', { name: ENABLE }).click();
+    await page.getByRole('switch', { name: ENABLE }).click();
     await expect(page.getByText(/View screen|查看屏幕/, { exact: true }).first()).toBeVisible();
     await expect(page.getByText(/Control interface|操作界面/, { exact: true }).first()).toBeVisible();
 
@@ -452,16 +504,13 @@ test.describe.serial('Electron capability overview', () => {
     // ---- Computer Use detail: now owns the active-model block -----------
     await capabilityCard(page, COMPUTER_USE).click();
     // Titled by the capability, like the other two pages — the verb lives on
-    // the status row's button.
+    // the header switch.
     await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
-    await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: COMPUTER_SETUP, exact: true })).toHaveCount(0);
     await expect(page.getByText(/^(当前模型|Current model)$/)).toBeVisible();
-    // Same skeleton: the one-line subtitle, then ONE status row saying it is
-    // off with the single button that changes that — no consent callout, and
-    // no closing paragraph restating both.
+    // The header switch communicates the opt-in state without another status row.
     await expect(page.getByText(/读取屏幕并操作界面|Reads the screen and operates/)).toBeVisible();
-    await expect(page.getByText(OFF)).toBeVisible();
-    await expect(page.getByRole('button', { name: COMPUTER_OFF_ACTION })).toBeVisible();
+    await expect(page.getByRole('switch', { name: ENABLE })).toHaveAttribute('aria-checked', 'false');
     await expect(page.getByText(/阿布不会自行开启电脑操控|cannot enable Computer Use by itself/))
       .toHaveCount(0);
     await expect(page.getByText(/敏感应用和危险按键|dangerous key combinations/)).toHaveCount(0);

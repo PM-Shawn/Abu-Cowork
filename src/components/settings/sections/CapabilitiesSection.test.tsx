@@ -27,6 +27,9 @@ import {
 } from '@/core/capabilityPlugins/chromeHandshakeLatch';
 import { testSiteVerdicts } from '@/test/browserSiteVerdicts';
 
+const restartAppMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('@/core/updates/checker', () => ({ restartApp: restartAppMock }));
+
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => invoke(...args),
@@ -857,7 +860,7 @@ describe('CapabilitiesSection', () => {
     enabling DOES is untouched: the same store action, from a button in a new
     place.
   */
-  it('reports Computer Use on the same status row and enables through the same action', async () => {
+  it('reports Computer Use on the labelled header switch', async () => {
     useSettingsStore.setState({ computerUseEnabled: false });
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
@@ -871,25 +874,25 @@ describe('CapabilitiesSection', () => {
     expect(screen.queryByText(/Sensitive apps and dangerous key combinations/))
       .not.toBeInTheDocument();
 
-    expect(screen.getByText('Off')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Turn off Computer Use' }))
+    expect(screen.getByRole('switch', { name: 'Enable Computer Use' })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.queryByRole('switch', { name: 'Turn off Computer Use' }))
       .not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Enable' }));
+    await user.click(screen.getByRole('switch', { name: 'Enable Computer Use' }));
     await waitFor(() => {
       expect(useSettingsStore.getState().computerUseEnabled).toBe(true);
     });
 
-    // On: same row, opposite verb, and no second "Enable" left anywhere.
+    // On: same switch, opposite accessible action.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Turn off Computer Use' })).toBeInTheDocument();
+      expect(screen.getByRole('switch', { name: 'Turn off Computer Use' })).toBeInTheDocument();
     });
-    expect(screen.queryByRole('button', { name: 'Enable' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: 'Enable Computer Use' })).not.toBeInTheDocument();
     // The model card and the two permission rows are what the page is for.
     expect(screen.getByText('Current model')).toBeInTheDocument();
     expect(screen.getAllByText('View screen').length).toBeGreaterThan(0);
 
-    await user.click(screen.getByRole('button', { name: 'Turn off Computer Use' }));
+    await user.click(screen.getByRole('switch', { name: 'Turn off Computer Use' }));
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
   });
 
@@ -933,10 +936,10 @@ describe('CapabilitiesSection', () => {
     await openDetail(user, 'Computer Use');
 
     expect(screen.getByRole('heading', { name: 'Computer Use' })).toBeInTheDocument();
-    expect(screen.queryByText('Enable Computer Use')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Enable Computer Use' })).not.toBeInTheDocument();
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
 
-    await user.click(screen.getByRole('button', { name: 'Enable' }));
+    await user.click(screen.getByRole('switch', { name: 'Enable Computer Use' }));
 
     await waitFor(() => {
       expect(useSettingsStore.getState().computerUseEnabled).toBe(true);
@@ -945,7 +948,7 @@ describe('CapabilitiesSection', () => {
     // permissions, so count is not the assertion — presence is.
     expect(screen.getAllByText('View screen').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Control interface').length).toBeGreaterThan(0);
-    expect(screen.getByText('Step 2 of 2')).toBeInTheDocument();
+    expect(screen.getByText('1/2 completed')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Back to Capabilities' }));
     expect(findCapabilityCard('Computer Use')).toHaveTextContent('Setup required');
@@ -981,7 +984,7 @@ describe('CapabilitiesSection', () => {
 
     render(<CapabilitiesSection />);
     await openDetail(user, 'Computer Use');
-    await user.click(screen.getByRole('button', { name: 'Turn off Computer Use' }));
+    await user.click(screen.getByRole('switch', { name: 'Turn off Computer Use' }));
 
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
     resolvePending({
@@ -1006,7 +1009,7 @@ describe('CapabilitiesSection', () => {
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
     expect(useSettingsStore.getState().capabilitySetupTarget).toBeNull();
 
-    await user.click(screen.getByRole('button', { name: 'Enable' }));
+    await user.click(screen.getByRole('switch', { name: 'Enable Computer Use' }));
     expect(useSettingsStore.getState().computerUseEnabled).toBe(true);
   });
 
@@ -1031,67 +1034,55 @@ describe('CapabilitiesSection', () => {
 
     expect(await screen.findByText('The current task needs Computer Use'))
       .toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Enable' }));
+    await user.click(screen.getByRole('switch', { name: 'Enable Computer Use' }));
     await user.click(await screen.findByRole('button', { name: 'Return to task' }));
 
     expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
     expect(useSettingsStore.getState().capabilitySetupTarget).toBeNull();
   });
 
-  it('uses the Electron floating permission guide and resumes the requesting task', async () => {
-    useSettingsStore.setState({
-      capabilitySetupTarget: 'computer',
-      computerUseEnabled: false,
-      systemSettingsOpen: true,
-    });
+  it('requests the selected native permission and waits for explicit task continuation', async () => {
+    useSettingsStore.setState({ capabilitySetupTarget: 'computer', computerUseEnabled: true, systemSettingsOpen: true });
+    let controlGranted = false;
     invoke.mockImplementation((command: string) => {
-      if (command === 'check_macos_permissions') {
-        return Promise.resolve({
-          screen_recording: true,
-          accessibility: false,
-        });
-      }
-      if (command === 'computer_use_permission_guide_show') {
-        return Promise.resolve({
-          status: 'complete',
-          permissions: {
-            screenRead: true,
-            uiControl: true,
-          },
-          error: null,
-        });
-      }
+      if (command === 'request_accessibility') { controlGranted = true; return Promise.resolve(true); }
+      if (command === 'check_macos_permissions') return Promise.resolve({ screen_recording: true, accessibility: controlGranted });
       return Promise.resolve(undefined);
     });
     const user = userEvent.setup();
     render(<CapabilitiesSection />);
+    await user.click(await screen.findByRole('button', { name: 'Grant access' }));
+    await screen.findByRole('button', { name: 'Return to task' });
+    expect(invoke).toHaveBeenCalledWith('request_accessibility');
+    expect(invoke.mock.calls.some(([command]) => command === 'computer_use_permission_guide_show')).toBe(false);
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
+    await user.click(screen.getByRole('button', { name: 'Return to task' }));
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+  });
 
-    expect(await screen.findByText('The current task needs Computer Use'))
-      .toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Enable' }));
-    await user.click(screen.getByRole('button', { name: 'Open System Settings' }));
+  it('keeps the ordinary detail open when disabled and exposes restart when required', async () => {
+    useSettingsStore.setState({ computerUseEnabled: true });
+    invoke.mockImplementation((command: string) => command === 'check_macos_permissions'
+      ? Promise.resolve({ screen_recording: false, accessibility: true, restart_required: true })
+      : Promise.resolve(undefined));
+    const user = userEvent.setup();
+    render(<CapabilitiesSection />);
+    await openDetail(user, 'Computer Use');
+    await user.click(await screen.findByRole('button', { name: 'Restart Abu' }));
+    expect(restartAppMock).toHaveBeenCalled();
+    await user.click(screen.getByRole('switch', { name: 'Turn off Computer Use' }));
+    expect(screen.getByRole('heading', { name: 'Computer Use' })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Enable Computer Use' })).toHaveAttribute('aria-checked', 'false');
+  });
 
-    await waitFor(() => {
-      expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
-    });
-    expect(invoke).toHaveBeenCalledWith(
-      'computer_use_permission_guide_show',
-      expect.objectContaining({
-        requestedByTask: true,
-        permissions: expect.objectContaining({
-          screenRead: true,
-          uiControl: false,
-          screenReadStatus: 'granted',
-          uiControlStatus: 'not-determined',
-          restartRequired: false,
-        }),
-        strings: expect.objectContaining({
-          title: 'Enable Computer Use',
-          allow: 'Allow',
-          developmentIdentity: expect.stringContaining('Electron'),
-        }),
-      }),
-    );
+  it('cancels the waiting task when Computer Use is explicitly disabled in its dialog', async () => {
+    useSettingsStore.setState({ computerUseEnabled: true });
+    const onSetupCancel = vi.fn();
+    const user = userEvent.setup();
+    render(<CapabilitiesSection setupTarget="computer" requestedByTask setupOnly onSetupCancel={onSetupCancel} />);
+    await user.click(screen.getByRole('switch', { name: 'Turn off Computer Use' }));
+    expect(onSetupCancel).toHaveBeenCalledOnce();
+    expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
   });
 
   it('shows only Accessibility for an AX-only task setup', async () => {
@@ -1114,10 +1105,9 @@ describe('CapabilitiesSection', () => {
     />);
 
     expect((await screen.findAllByText('Control interface')).length).toBeGreaterThan(0);
-    // The setup ROWS drop the permission this task does not need; the model
-    // card still reports both, because both describe the model's own tier.
-    expect(screen.queryAllByText('View screen')).toHaveLength(1);
-    expect(screen.getByText('Required permission')).toBeInTheDocument();
+    // Both the permission card and the model summary omit duplicate permissions.
+    expect(screen.queryAllByText('View screen')).toHaveLength(0);
+    expect(screen.getByText('0/1 completed')).toBeInTheDocument();
   });
 
   it('keeps background permission checks silent and advances the active step', async () => {
@@ -1137,7 +1127,7 @@ describe('CapabilitiesSection', () => {
 
     render(<CapabilitiesSection />);
 
-    expect(await screen.findByText('Step 1 of 2')).toBeInTheDocument();
+    expect(await screen.findByText('0/2 completed')).toBeInTheDocument();
     await waitFor(() => {
       expect(screen.queryByText('Checking')).not.toBeInTheDocument();
     });
@@ -1168,13 +1158,13 @@ describe('CapabilitiesSection', () => {
       expect(checksAfterFocus).toBeGreaterThan(checksBeforeFocus);
     });
     expect(screen.queryByText('Checking')).not.toBeInTheDocument();
-    expect(screen.getByText('Step 1 of 2')).toBeInTheDocument();
+    expect(screen.getByText('0/2 completed')).toBeInTheDocument();
 
     resolveBackgroundCheck({
       screen_recording: true,
       accessibility: false,
     });
-    expect(await screen.findByText('Step 2 of 2')).toBeInTheDocument();
+    expect(await screen.findByText('1/2 completed')).toBeInTheDocument();
     expect(screen.queryByText('Checking')).not.toBeInTheDocument();
   });
 
@@ -1229,7 +1219,7 @@ describe('CapabilitiesSection', () => {
 
     await openDetail(user, 'Computer Use');
     expect(useSettingsStore.getState().computerUseEnabled).toBe(false);
-    await user.click(screen.getByRole('button', { name: 'Enable' }));
+    await user.click(screen.getByRole('switch', { name: 'Enable Computer Use' }));
     await waitFor(() => {
       expect(useSettingsStore.getState().computerUseEnabled).toBe(true);
     });

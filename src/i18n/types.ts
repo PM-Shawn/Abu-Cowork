@@ -1326,6 +1326,15 @@ export interface TranslationDict {
     capabilityChromeProbeUnavailable: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
+    capabilityComputerAuthorize: string;
+    capabilityComputerUsable: string;
+    capabilityComputerSetupIntro: string;
+    capabilityComputerScreenShort: string;
+    capabilityComputerControlShort: string;
+    capabilityComputerViewHelp: string;
+    capabilityComputerSystemPermissions: string;
+    capabilityComputerPermissionProgress: string;
+    capabilityComputerRestartNote: string;
     capabilityComputerModel: string;
     capabilityComputerModelFull: string;
     capabilityComputerModelStructured: string;

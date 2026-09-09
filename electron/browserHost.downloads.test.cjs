@@ -912,6 +912,10 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
     const { tabId, contents } = await openTab(host, OWNER_A);
     const approvedPath = path.join(root, 'report.txt');
     fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    // Use an exactly representable whole second: Date -> utimes can lose a
+    // microsecond for real-clock millisecond values, changing the floored pin.
+    const frozen = new Date(1_700_000_000_000);
+    fs.utimesSync(approvedPath, frozen, frozen);
     const approved = approvedEntry(approvedPath, 'report.txt');
     const other = path.join(root, 'other.txt');
     fs.writeFileSync(other, 'SECRET!!');
@@ -923,7 +927,6 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
     // that deletes the `ino`/`dev` comparison went red only when the clock
     // happened to disagree. Freeze the clock onto the approved value and the
     // identity pin is the one thing left standing.
-    const frozen = new Date(approved.mtimeMs);
     fs.utimesSync(approvedPath, frozen, frozen);
     assert.equal(Math.floor(fs.lstatSync(approvedPath).mtimeMs), approved.mtimeMs);
     assert.equal(fs.lstatSync(approvedPath).size, approved.size);

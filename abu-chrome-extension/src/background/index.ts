@@ -861,29 +861,50 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       case 'execute_js': {
         // Execute JS via chrome.scripting.executeScript to bypass CSP restrictions
         const code = payload.code as string;
-        // The one state-changing action on this channel that never reaches the
-        // content script, so the content script's own pin cannot cover it —
-        // and the strongest capability of the set (arbitrary code with the
-        // page's full authority). Pinned here against the tab's live URL.
-        //
-        // The tab pinned is the OWNER-RESOLVED one — the same `tabId` the
-        // script is about to run in. It used to be a local `execTabId` read
-        // straight from the payload; the tab-claims change (632d40cc) removed
-        // that local and rewrote the `executeScript` target, but left this
-        // call referring to the now-undefined name, so every `execute_js` on
-        // this channel died with a ReferenceError before the pin ever ran.
-        // Nothing caught it: this channel had no test for `execute_js` until
-        // this branch added one.
+        // Keep the early refusal, then pin the actual document observed by a
+        // read-only ISOLATED probe. tabs.get alone races with navigation; a
+        // second tab lookup would have the same race. Chrome supplies the
+        // documentId alongside the probe result, outside the page's control.
         await assertTabOriginPin(tabId, payload);
+        const documents = await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [0] },
+          world: 'ISOLATED',
+          func: () => ({ url: location.href }),
+        });
+        const document = documents[0];
+        if (documents.length !== 1 || document?.frameId !== 0
+          || typeof document.documentId !== 'string' || !document.documentId.trim()
+          || typeof document.result?.url !== 'string' || !normalizedOrigin(document.result.url)) {
+          throw new Error('Refused: could not verify the page document identity. Take a fresh snapshot before acting again.');
+        }
+        const observedUrl = document.result.url;
+        await assertTabOriginPin(tabId, payload, async () => ({ url: observedUrl }));
+        // documentIds avoids ordinary retargeting, but Chromium can resolve a
+        // BFCache document through its frame tree node to a new active page.
+        // Recheck the native, unforgeable Location origin synchronously in MAIN
+        // before eval; no URL/Object helper or await may sit on this boundary.
+        // Never retry against the tab or repeat a script after a failure.
         const results = await chrome.scripting.executeScript({
-          target: { tabId },
-          func: (jsCode: string) => {
-            return eval(jsCode);
+          target: { tabId, documentIds: [document.documentId] },
+          func: async (jsCode: string, approvedOrigin: string) => {
+            if (location.origin !== approvedOrigin) {
+              return { __proto__: null, originMatched: false as const };
+            }
+            return { __proto__: null, originMatched: true as const, value: await eval(jsCode) };
           },
-          args: [code],
+          args: [code, new URL(observedUrl).origin],
           world: 'MAIN',
         });
-        return { id, success: true, data: results[0]?.result };
+        const execution = results[0]?.result;
+        // Chrome may resolve with a null result when injected code throws.
+        // An explicit envelope distinguishes refusal from a valid null value.
+        if (execution?.originMatched === false) {
+          throw new Error('Refused: page origin changed before script execution. Take a fresh snapshot before acting again.');
+        }
+        if (execution?.originMatched !== true) {
+          throw new Error('Script execution did not return a result. Take a fresh snapshot before acting again.');
+        }
+        return { id, success: true, data: execution.value };
       }
 
       default: {
@@ -1251,13 +1272,23 @@ async function ensureOffscreen(): Promise<void> {
   }
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
-    // Pre-existing bug, deliberately not fixed by the typecheck-gate change:
-    // `CANVAS` is not a `chrome.offscreen.Reason` (none of the enum's 15 values
-    // in @types/chrome), so this is `undefined` at runtime and createDocument
-    // rejects. Picking a valid reason changes behaviour (full-page capture
-    // would start working), so it is tracked as its own fix.
-    // @ts-expect-error pre-existing bug: CANVAS is not a chrome.offscreen.Reason; fixing it changes runtime behaviour
-    reasons: [chrome.offscreen.Reason.CANVAS],
+    // BLOBS, not CANVAS: there is no CANVAS in `chrome.offscreen.Reason`, so
+    // the old value was `undefined` at runtime and Chrome rejected the whole
+    // call ("Invalid type: expected offscreen.Reason, found undefined") —
+    // every full-page capture failed, after the page had already been scrolled
+    // and every slice captured.
+    //
+    // No reason in the enum names canvas work, so this picks the closest
+    // documented one rather than a literal match. The reason is declarative:
+    // per the offscreen docs it determines the document's LIFETIME, and only
+    // AUDIO_PLAYBACK carries a limit (closed after 30s without audio), so any
+    // other member gives the unbounded lifetime a stitch needs. BLOBS is what
+    // shipped extensions doing this same job declare — Anthropic's own Claude
+    // extension composites images in an offscreen document under
+    // `[AUDIO_PLAYBACK, BLOBS]`. DOM_SCRAPING, the other candidate, is
+    // explicitly about embedding an iframe and scraping its DOM, which this
+    // document does not do.
+    reasons: [chrome.offscreen.Reason.BLOBS],
     justification: 'Stitching full-page screenshot slices on canvas',
   });
   offscreenCreated = true;

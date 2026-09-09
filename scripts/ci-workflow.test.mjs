@@ -10,6 +10,41 @@ const ci = readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8')
 const e2e = readFileSync(path.join(repoRoot, '.github/workflows/e2e.yml'), 'utf8');
 const release = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
 const vitestConfig = readFileSync(path.join(repoRoot, 'vitest.config.ts'), 'utf8');
+const packageScripts = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).scripts;
+
+function requiredCheckStep(name) {
+  const check = ci.split('\n  check:')[1]?.split(/\n  [a-z][\w-]*:/)[0];
+  assert.ok(check, 'required check job must exist');
+  assert.doesNotMatch(check, /continue-on-error:\s*true/);
+  const start = check.indexOf(`- name: ${name}\n`);
+  assert.ok(start >= 0, `${name} must run in check, not an advisory job`);
+  const next = check.indexOf('\n      - name:', start + 1);
+  const step = check.slice(start, next < 0 ? undefined : next);
+  assert.ok(step.includes("!cancelled() && steps.install.outcome == 'success'"));
+  assert.doesNotMatch(step, /^\s*continue-on-error:|\|\|\s*true/m);
+  return step;
+}
+
+test('browser host UI tests block check and local verify, including popup regressions', () => {
+  assert.match(requiredCheckStep('Electron host UI tests'), /run: npm run electron:host-ui-test\s*$/);
+  const stages = packageScripts['verify:full'].split(' && ');
+  assert.ok(stages.indexOf('npm run electron:host-ui-test') > stages.indexOf('npm run check:browser-artifacts'));
+  assert.ok(stages.indexOf('npm run electron:host-ui-test') < stages.indexOf('npm run test:coverage'));
+  assert.ok(packageScripts['electron:host-ui-test'].split(' ').includes('electron/browserHost.popups.test.cjs'));
+});
+
+test('browser artifact gate builds runtimes and verifies the tracked copy before stamping it', () => {
+  const step = requiredCheckStep('Verify Chrome extension bundle is in sync with source');
+  const build = step.indexOf('npm run build:electron-browser-runtime');
+  const compare = step.indexOf('if ! diff -r');
+  const stamp = step.indexOf("recordSourceDigest('src-tauri/browser-extension/content.js')");
+  const verify = step.indexOf('npm run check:browser-artifacts');
+  assert.ok(build >= 0 && compare > build && stamp > compare && verify > stamp);
+  assert.match(step.slice(compare, stamp), /exit 1\s*\n\s*fi/);
+  // The instructions printed on drift may mention copy-resources; no command
+  // may actually overwrite the tracked copy before the comparison.
+  assert.doesNotMatch(step, /^\s*npm run copy-resources/m);
+});
 const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
 
 test('E2E required-check job names are stable, blocking, and run on PRs to dev', () => {

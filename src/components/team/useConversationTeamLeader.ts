@@ -16,7 +16,7 @@ export interface ConversationTeamLeader {
 }
 
 export function teamLeaderFromTeam(team: Team | null | undefined): ConversationTeamLeader | null {
-  if (!team || team.archivedAt) return null;
+  if (!team) return null;
   const leader = resolveRoleId(team.leaderRoleId);
   if (!leader) return null;
   return {

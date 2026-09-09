@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { useTeamStore } from './teamStore';
+import { migrateTeamState, useTeamStore } from './teamStore';
 
 function reset() {
   useTeamStore.setState({ teams: []});
@@ -35,10 +35,10 @@ describe('teamStore', () => {
       expect(() => useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'r2', memberRoleIds: [] })).toThrow();
     });
 
-    it('allows reusing the name of an archived team (failure is visible, name is not)', () => {
-      const s = useTeamStore.getState();
-      const team = s.createTeam({ name: 't', leaderRoleId: 'r', memberRoleIds: [] });
-      useTeamStore.getState().archiveTeam(team.id);
+    it('frees the name once the team is deleted', () => {
+      const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'r', memberRoleIds: [] });
+      expect(() => useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'r', memberRoleIds: [] })).toThrow();
+      useTeamStore.getState().deleteTeam(team.id);
       expect(() => useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'r', memberRoleIds: [] })).not.toThrow();
     });
   });
@@ -53,13 +53,24 @@ describe('teamStore', () => {
     });
   });
 
-  describe('archive / restore', () => {
-    it('round-trips archivedAt', () => {
-      const team = useTeamStore.getState().createTeam({ name: 't', leaderRoleId: 'r', memberRoleIds: [] });
-      useTeamStore.getState().archiveTeam(team.id);
-      expect(useTeamStore.getState().teams[0].archivedAt).toBeDefined();
-      useTeamStore.getState().restoreTeam(team.id);
-      expect(useTeamStore.getState().teams[0].archivedAt).toBeUndefined();
+  describe('deleteTeam', () => {
+    it('removes only that team, leaving the rest alone', () => {
+      const a = useTeamStore.getState().createTeam({ name: 'a', leaderRoleId: 'r', memberRoleIds: [] });
+      useTeamStore.getState().createTeam({ name: 'b', leaderRoleId: 'r', memberRoleIds: [] });
+      useTeamStore.getState().deleteTeam(a.id);
+      expect(useTeamStore.getState().teams.map((t) => t.name)).toEqual(['b']);
+    });
+
+    /**
+     * v6 → v7 dropped archive. A team the user had archived comes BACK to the
+     * list instead of vanishing: they asked to archive it, never to erase it,
+     * and an upgrade must not delete their data on its own.
+     */
+    it('migration keeps previously archived teams, minus the field', () => {
+      const out = migrateTeamState({ teams: [{ id: '1', name: 'old', leaderRoleId: 'r', memberRoleIds: [], createdAt: 1, archivedAt: 99 }] }) as unknown as { teams: Array<Record<string, unknown>> };
+      expect(out.teams).toHaveLength(1);
+      expect(out.teams[0].name).toBe('old');
+      expect('archivedAt' in out.teams[0]).toBe(false);
     });
   });
 });

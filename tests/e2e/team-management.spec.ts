@@ -6,8 +6,8 @@
  *
  * Journey: sidebar entry is there out of the box → tab order
  * 队员·团队 (task board shelved) → create a team with a builtin leader →
- * team survives an app restart → archive
- * moves it to the 已归档 section and 恢复 brings it back.
+ * team survives an app restart → a row opens the read-only detail (not the
+ * edit form) → 删除 behind "…" removes it for good.
  */
 import { expect, test } from '@playwright/test';
 import type { Page } from 'playwright';
@@ -78,14 +78,18 @@ test.describe('team management surface', () => {
       await page.getByTestId('top-tab-nav').getByRole('button', { name: '团队' }).click();
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
 
-      // ---- Archive → 已归档 section → 恢复 --------------------------------
+      // ---- Detail (not the edit form) → delete ----------------------------
+      // A row opens the read-only detail; 编辑 and 删除 live behind "…",
+      // matching the 队员 detail. Archive is gone: a team is deleted outright.
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
-      await page.getByTestId('team-archive').click();
-      await page.getByRole('button', { name: '归档', exact: true }).nth(1).click(); // ConfirmDialog's solid confirm
-      await expect(page.getByText('已归档（1）')).toBeVisible();
-      // Zero active teams → the archived <details> renders open by default.
-      await page.getByRole('button', { name: '恢复' }).click();
-      await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
+      await expect(page.getByTestId('team-detail-start-chat')).toBeVisible();
+      await expect(page.getByTestId('team-name-input')).toHaveCount(0);
+      await page.getByTestId('team-detail-menu').click();
+      await page.getByTestId('team-detail-delete').click();
+      // The "…" menu closes on click, so the ConfirmDialog's is the only 删除 left.
+      await page.getByRole('button', { name: '删除', exact: true }).last().click();
+      await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toHaveCount(0);
+      await expect(page.getByText('还没有团队')).toBeVisible();
 
       await closeAbuElectron(launched.app);
     } finally {

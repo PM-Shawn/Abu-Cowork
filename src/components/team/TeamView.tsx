@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
@@ -8,14 +8,16 @@ import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Bot, UsersRound, Search, RotateCcw } from 'lucide-react';
-import { getMessageText } from '@/core/context/contextUtils';
+import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
+import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import ToolCard from '@/components/toolbox/ToolCard';
+import ToolGrid from '@/components/toolbox/ToolGrid';
 import AgentsSection from '@/components/customize/AgentsSection';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -76,6 +78,10 @@ function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: strin
   return agents.find((a) => effectiveRoleId(a) === roleId)?.name ?? fallback;
 }
 
+function roleAgent(agents: SubagentDefinition[], roleId: string): SubagentDefinition | undefined {
+  return agents.find((a) => effectiveRoleId(a) === roleId);
+}
+
 function memberOption(a: SubagentDefinition): SearchSelectOption {
   return { value: a.name, label: a.name, description: a.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
 }
@@ -90,8 +96,6 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
-  const archiveTeam = useTeamStore((s) => s.archiveTeam);
-  const [confirmArchive, setConfirmArchive] = useState(false);
   const agents = useMemberPool();
 
   const [name, setName] = useState('');
@@ -243,59 +247,18 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         </div>
 
         <div className="flex items-center gap-2 pt-1">
-          {team && (
-            <Button variant="ghost" className="text-[var(--abu-danger)]" onClick={() => setConfirmArchive(true)} data-testid="team-archive">
-              {t.team.archiveTeamAction}
-            </Button>
-          )}
           <div className="flex-1" />
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
           <Button onClick={handleSave} disabled={!name.trim() || (!leaderName && !leaderKept) || saving} data-testid="team-save">
             {team ? t.common.save : t.team.createTeamAction}
           </Button>
         </div>
-        <ConfirmDialog
-          open={confirmArchive}
-          title={t.team.archiveTeamTitle}
-          message={format(t.team.archiveTeamMessage, { name: team?.name ?? '' })}
-          confirmText={t.team.archiveTeamAction}
-          cancelText={t.common.cancel}
-          variant="danger"
-          onCancel={() => setConfirmArchive(false)}
-          onConfirm={() => {
-            if (team) archiveTeam(team.id);
-            setConfirmArchive(false);
-            addToast({ type: 'success', title: t.team.teamArchived });
-            onClose();
-          }}
-        />
       </div>
     </DialogShell>
   );
 }
 
 // ---------------------------------------------------------------- Task dialog
-
-function ArchivedTeams({ teams, open = false, className }: { teams: Team[]; open?: boolean; className?: string }) {
-  const { t } = useI18n();
-  if (teams.length === 0) return null;
-  return (
-    <details open={open} className={className}>
-      <summary className="cursor-pointer text-caption text-[var(--abu-text-tertiary)] select-none px-1">
-        {format(t.team.archivedSection, { count: String(teams.length) })}
-      </summary>
-      <div className="mt-2 space-y-2">
-        {teams.map((team) => (
-          <div key={team.id} className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 opacity-70">
-            <TeamAvatar avatar={team.avatar} size="lg" className="opacity-70" />
-            <div className="flex-1 min-w-0 text-body text-[var(--abu-text-secondary)] truncate">{team.name}</div>
-            <Button size="sm" variant="outline" onClick={() => useTeamStore.getState().restoreTeam(team.id)}>{t.team.restoreTeamAction}</Button>
-          </div>
-        ))}
-      </div>
-    </details>
-  );
-}
 
 export default function TeamView() {
   const { activeTeamTab: persistedTeamTab, setActiveTeamTab } = useSettingsStore();
@@ -305,26 +268,15 @@ export default function TeamView() {
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
-  const switchConversation = useChatStore((s) => s.switchConversation);
   const createConversation = useChatStore((s) => s.createConversation);
-  const conversationIndex = useChatStore((s) => s.conversationIndex);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
-  const addToast = useToastStore((s) => s.addToast);
 
-  // "Run again": a fresh conversation pinned to the same team, same workspace,
-  // with the original first request prefilled (not sent) so it can be tweaked.
-  const rerunConversation = async (team: Team, meta: { id: string; workspacePath?: string | null }) => {
-    const { loadMessages } = await import('@/core/session/conversationStorage');
-    const messages = await loadMessages(meta.id);
-    const first = messages.find((m) => m.role === 'user');
-    const text = first ? getMessageText(first.content).trim() : '';
-    if (!text) {
-      addToast({ type: 'info', title: t.team.rerunConversationEmpty });
-      return;
-    }
-    createConversation(meta.workspacePath ?? null, { teamId: team.id });
-    setPendingInput(text);
+  // Primary action of the detail: a fresh conversation already pinned to this
+  // team, nothing prefilled — the user says what they want in their own words.
+  const startChatWithTeam = (team: Team) => {
+    createConversation(null, { teamId: team.id });
+    setDetailTeam(null);
     closeTeam();
   };
 
@@ -334,10 +286,13 @@ export default function TeamView() {
   const [search, setSearch] = useState('');
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
   const [teamDialog, setTeamDialog] = useState<{ open: boolean; team: Team | null }>({ open: false, team: null });
+  const [detailTeam, setDetailTeam] = useState<Team | null>(null);
+  const [detailMenuOpen, setDetailMenuOpen] = useState(false);
+  const [confirmDeleteTeam, setConfirmDeleteTeam] = useState<Team | null>(null);
 
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
-  const activeTeams = useMemo(() => teams.filter((tm) => !tm.archivedAt), [teams]);
+  const activeTeams = teams;
   const agents = useMemberPool();
 
   const navItems = [
@@ -346,6 +301,12 @@ export default function TeamView() {
   ];
 
   // AI-create for 队员 reuses the toolbox idiom: jump to chat with a crafted prompt.
+  const handleAICreateTeam = () => {
+    closeTeam();
+    startNewConversation();
+    setPendingInput(t.team.aiCreateTeamPrompt);
+  };
+
   const handleAICreateMember = () => {
     closeTeam();
     startNewConversation();
@@ -377,7 +338,14 @@ export default function TeamView() {
         />
       );
     } else if (activeTeamTab === 'teams') {
-      createControl = <ToolboxCreateMenu onClick={() => setTeamDialog({ open: true, team: null })} triggerTestId="team-create-trigger" />;
+      createControl = (
+        <ToolboxCreateMenu
+          onAICreate={handleAICreateTeam}
+          onManualCreate={() => setTeamDialog({ open: true, team: null })}
+          triggerTestId="team-create-trigger"
+          menuTestId="team-create-menu"
+        />
+      );
     }
     return <>{searchBox}{createControl}</>;
   };
@@ -388,7 +356,6 @@ export default function TeamView() {
         // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} />;
       case 'teams': {
-        const archivedTeams = teams.filter((tm) => tm.archivedAt);
         if (activeTeams.length === 0) {
           return (
             <div className="h-full flex flex-col">
@@ -400,66 +367,32 @@ export default function TeamView() {
                   action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
                 />
               </div>
-              {/* Archived teams must stay reachable even with zero active ones
-                  (real-machine bug 2026-08-31: the section vanished). */}
-              <ArchivedTeams teams={archivedTeams} open className="p-4 pt-0" />
             </div>
           );
         }
         return (
-          <div className="p-4 space-y-2 overflow-y-auto h-full">
-            {activeTeams.map((team) => (
-              <div
-                key={team.id}
-                className="flex items-center gap-3 rounded-xl bg-[var(--abu-bg-muted)] px-4 py-3 cursor-pointer hover:bg-[var(--abu-bg-hover)]"
-                onClick={() => setTeamDialog({ open: true, team })}
-                data-testid={`team-row-${team.name}`}
-              >
-                <TeamAvatar avatar={team.avatar} size="lg" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-body text-[var(--abu-text-primary)] truncate">{team.name}</div>
-                  <div className="text-caption text-[var(--abu-text-tertiary)] truncate">
-                    {format(t.team.teamRowSummary, {
-                      leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
-                      count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId).length),
-                    })}
-                  </div>
-                  {(() => {
-                    const recent = Object.values(conversationIndex)
-                      .filter((meta) => meta.teamId === team.id)
-                      .sort((a, b) => b.updatedAt - a.updatedAt)
-                      .slice(0, 5);
-                    return (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1" data-testid={`team-recent-${team.name}`}>
-                        <span className="text-caption text-[var(--abu-text-muted)]">{recent.length > 0 ? t.team.recentConversations : t.team.noConversationsYet}</span>
-                        {recent.map((meta) => (
-                          <span key={meta.id} className="inline-flex max-w-[240px] items-center rounded-md bg-[var(--abu-bg-base)]">
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); void switchConversation(meta.id); closeTeam(); }}
-                              className="min-w-0 truncate px-1.5 py-0.5 text-caption text-[var(--abu-text-secondary)] hover:text-[var(--abu-text-primary)]"
-                              title={meta.title}
-                            >
-                              {meta.title}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(e) => { e.stopPropagation(); void rerunConversation(team, meta); }}
-                              className="shrink-0 rounded-md px-1 py-0.5 text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
-                              aria-label={`${t.team.rerunConversation}: ${meta.title}`}
-                              title={t.team.rerunConversationTitle}
-                            >
-                              <RotateCcw aria-hidden="true" className="h-3 w-3" />
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-            ))}
-            <ArchivedTeams teams={archivedTeams} className="pt-2" />
+          // Same grid + card the 队员 tab uses (ToolGrid/ToolCard), not a
+          // hand-rolled row: a team and a member are peers in this surface, so
+          // they must look and behave alike.
+          <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6 h-full">
+            <ToolGrid>
+              {activeTeams.map((team) => (
+                <ToolCard
+                    key={team.id}
+                    item={{
+                      id: team.id,
+                      testId: `team-row-${team.name}`,
+                      name: team.name,
+                      description: format(t.team.teamRowSummary, {
+                        leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
+                        count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId).length),
+                      }),
+                      avatar: <TeamAvatar avatar={team.avatar} />,
+                    }}
+                    onClick={() => setDetailTeam(team)}
+                  />
+              ))}
+            </ToolGrid>
           </div>
         );
       }
@@ -470,6 +403,131 @@ export default function TeamView() {
     <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
       <TopTabNav items={navItems} activeId={activeTeamTab} onSelect={setActiveTeamTab} belowChrome right={renderHeaderRight()} />
       <div className="flex-1 overflow-hidden">{renderContent()}</div>
+      {/* Team detail — same shell and header grammar as the 队员 detail:
+          read-only body, primary CTA + "…" (edit / archive) in the header.
+          Opening a team used to jump straight into the edit form, which is
+          why 团队 felt unlike every other list in the app. */}
+      <ToolDetailModal
+        open={!!detailTeam}
+        onClose={() => { setDetailTeam(null); setDetailMenuOpen(false); }}
+        maxWidth="max-w-2xl"
+        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="lg" /> : undefined}
+        title={detailTeam?.name}
+        headerActions={detailTeam ? (
+          <>
+            <button
+              onClick={() => startChatWithTeam(detailTeam)}
+              className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-minor font-medium text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)] border border-[var(--abu-clay-40)] hover:border-[var(--abu-clay)] transition-colors"
+              data-testid="team-detail-start-chat"
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              <span>{t.team.detailStartChat}</span>
+            </button>
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setDetailMenuOpen((v) => !v); }}
+                className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                data-testid="team-detail-menu"
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+              {detailMenuOpen && (
+                <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                    onClick={() => { setTeamDialog({ open: true, team: detailTeam }); setDetailMenuOpen(false); setDetailTeam(null); }}
+                    data-testid="team-detail-edit"
+                  >
+                    <Pencil className="h-3 w-3" />
+                    {t.team.detailEdit}
+                  </button>
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
+                    onClick={() => { setConfirmDeleteTeam(detailTeam); setDetailMenuOpen(false); }}
+                    data-testid="team-detail-delete"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    {t.team.deleteTeamAction}
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        ) : undefined}
+      >
+        {detailTeam && (() => {
+          const memberIds = detailTeam.memberRoleIds.filter((id) => id !== detailTeam.leaderRoleId);
+          const leader = roleAgent(agents, detailTeam.leaderRoleId);
+          const members = memberIds.map((id) => ({ id, agent: roleAgent(agents, id) }));
+          // Skills live on each member, not on the team — the union answers
+          // "what can this team actually do" without opening every member.
+          const skills = [...new Set([leader, ...members.map((m) => m.agent)]
+            .flatMap((a) => a?.skills ?? []))].sort();
+          const row = (agent: SubagentDefinition | undefined, fallback: string, onPick?: () => void) => (
+            <button
+              type="button"
+              disabled={!agent}
+              onClick={onPick}
+              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--abu-bg-muted)] disabled:cursor-default disabled:hover:bg-transparent"
+            >
+              {agent ? <AgentAvatar agent={agent} size="sm" /> : <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-body text-[var(--abu-text-primary)]">{agent?.name ?? fallback}</span>
+                {agent?.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{agent.description}</span>}
+              </span>
+            </button>
+          );
+          return (
+            <div className="space-y-5">
+              <div>
+                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
+                {row(leader, t.team.unknownMember)}
+              </div>
+              <div>
+                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{format(t.team.detailMembers, { count: String(memberIds.length) })}</div>
+                {memberIds.length === 0
+                  ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoMembers}</div>
+                  : <div className="space-y-0.5">{members.map((m) => <div key={m.id}>{row(m.agent, t.team.unknownMember)}</div>)}</div>}
+              </div>
+              <div>
+                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailPlanApproval}</div>
+                <div className="text-body text-[var(--abu-text-secondary)]">
+                  {detailTeam.requirePlanApproval ? t.team.detailPlanApprovalOn : t.team.detailPlanApprovalOff}
+                </div>
+              </div>
+              {detailTeam.leaderNote?.trim() && (
+                <div>
+                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeaderNote}</div>
+                  <div className="whitespace-pre-wrap text-body text-[var(--abu-text-secondary)]">{detailTeam.leaderNote.trim()}</div>
+                </div>
+              )}
+              <div>
+                <div className="text-minor text-[var(--abu-text-muted)]">{t.team.detailSkills}</div>
+                <div className="text-caption text-[var(--abu-text-tertiary)] mb-1.5">{t.team.detailSkillsHint}</div>
+                {skills.length === 0
+                  ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoSkills}</div>
+                  : <div className="flex flex-wrap gap-1">{skills.map((name) => (
+                      <span key={name} className="rounded-md bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-secondary)]">{name}</span>
+                    ))}</div>}
+              </div>
+            </div>
+          );
+        })()}
+      </ToolDetailModal>
+      <ConfirmDialog
+        open={!!confirmDeleteTeam}
+        title={t.team.deleteTeamTitle}
+        message={format(t.team.deleteTeamMessage, { name: confirmDeleteTeam?.name ?? '' })}
+        confirmText={t.team.deleteTeamAction}
+        cancelText={t.common.cancel}
+        variant="danger"
+        onCancel={() => setConfirmDeleteTeam(null)}
+        onConfirm={() => {
+          if (confirmDeleteTeam) useTeamStore.getState().deleteTeam(confirmDeleteTeam.id);
+          setConfirmDeleteTeam(null);
+          setDetailTeam(null);
+        }}
+      />
       <TeamEditDialog
         open={teamDialog.open}
         team={teamDialog.team}

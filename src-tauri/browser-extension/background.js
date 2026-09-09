@@ -781,7 +781,24 @@
     lastActiveWindowId = windowId;
     chrome.storage.session.set({ lastActiveTabId: tabId2, lastActiveWindowId: windowId });
   }
+  var screenshotActivations = /* @__PURE__ */ new Set();
+  async function activateForScreenshot(tabId2, windowId) {
+    const activation = { tabId: tabId2, windowId };
+    screenshotActivations.add(activation);
+    try {
+      await chrome.tabs.update(tabId2, { active: true });
+    } finally {
+      screenshotActivations.delete(activation);
+    }
+  }
   chrome.tabs.onActivated.addListener((activeInfo) => {
+    const activation = [...screenshotActivations].find(
+      (pending) => pending.tabId === activeInfo.tabId && pending.windowId === activeInfo.windowId
+    );
+    if (activation) {
+      screenshotActivations.delete(activation);
+      return;
+    }
     saveTracking(activeInfo.tabId, activeInfo.windowId);
   });
   chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -1224,7 +1241,7 @@
         case "screenshot": {
           const tab = await chrome.tabs.get(tabId);
           if (!tab.active) {
-            await chrome.tabs.update(tabId, { active: true });
+            await activateForScreenshot(tabId, tab.windowId);
             await new Promise((r) => setTimeout(r, 300));
           }
           await assertTabOriginPin(tabId, payload, void 0, { read: true });
@@ -1234,7 +1251,7 @@
         case "screenshot_full_page": {
           const tab = await chrome.tabs.get(tabId);
           if (!tab.active) {
-            await chrome.tabs.update(tabId, { active: true });
+            await activateForScreenshot(tabId, tab.windowId);
             await new Promise((r) => setTimeout(r, 300));
           }
           await assertTabOriginPin(tabId, payload, void 0, { read: true });
@@ -1507,11 +1524,7 @@
     const hint = await framesHint(tabId2);
     return hint ? { ...record, message: `${record.message ?? ""}${hint}` } : record;
   }
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "tab_visible" && sender.tab?.id && sender.tab?.windowId) {
-      saveTracking(sender.tab.id, sender.tab.windowId);
-      return;
-    }
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "get_status") {
       sendResponse({
         connected: state.connected,

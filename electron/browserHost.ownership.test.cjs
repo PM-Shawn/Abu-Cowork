@@ -2985,6 +2985,28 @@ test('F1: a focus steal while the user types in the main window bounces back and
   }
 });
 
+test('#364: later main-window input wins over guest input during a pending navigation', async () => {
+  const { host, restore, mainWin } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const tabId = await tabOnHttps(host, OWNER_A, 'https://a.example/');
+    const parked = holdNextLoad(tabId);
+    const pending = navigate(host, OWNER_A, tabId, 'https://a.example/loading');
+    await parked.entered;
+    typeInto(tabId);
+    state.t += 100;
+    typeInMainUi(mainWin);
+    state.t += 100;
+    contentsFor(tabId).fire('focus');
+    assert.equal(mainWin.webContents.focusCalls, 1, 'the late commit must not steal focus back');
+    parked.release();
+    await pending;
+  } finally {
+    restore();
+  }
+});
+
 test('F1: a real user click into the guest neither bounces nor loses its attribution', async () => {
   const { host, restore, mainWin } = loadHost();
   try {
@@ -3227,6 +3249,73 @@ test('F0: an injecting action still owns the input events it synthesizes', async
     state.sleeps.length = 0;
     await navigate(host, OWNER_A, aTab, 'https://example.com/');
     assert.deepEqual(state.sleeps, [], 'injected keys are not a user takeover');
+  } finally {
+    restore();
+  }
+});
+
+for (const action of ['navigate', 'execute_js']) {
+  for (const input of ['keyboard', 'mouse']) {
+    test(`#364: ${input} during pending ${action} remains a user takeover`, async () => {
+      const { host, restore } = loadHost();
+      try {
+        const { clock, state } = fakeClock();
+        host.__testing.setClock(clock);
+        const tabId = await tabOnHttps(host, OWNER_A, 'https://a.example/');
+        let parked;
+        let running;
+        if (action === 'navigate') {
+          parked = holdNextLoad(tabId);
+          running = navigate(host, OWNER_A, tabId, 'https://a.example/loading');
+        } else {
+          let entered;
+          let release;
+          const started = new Promise(resolve => { entered = resolve; });
+          const pending = new Promise(resolve => { release = resolve; });
+          contentsFor(tabId).executeJavaScript = () => { entered(); return pending; };
+          parked = { entered: started, release: () => release(42) };
+          running = host.performBrowserAutomation('execute_js', {
+            ownerId: OWNER_A, tabId, code: '42',
+          });
+        }
+        await parked.entered;
+        if (input === 'keyboard') typeInto(tabId);
+        else contentsFor(tabId).fire('input-event', {}, { type: 'mouseDown' });
+        parked.release();
+        await running;
+        state.sleeps.length = 0;
+        await navigate(host, OWNER_A, tabId, 'https://a.example/next');
+        assert.equal(state.sleeps.length, 6, 'real input requires the full quiet interval');
+      } finally {
+        restore();
+      }
+    });
+  }
+}
+
+test('#364: a failed idle wait preserves another in-flight attribution scope', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    const tabId = await tabOnHttps(host, OWNER_A, 'https://a.example/');
+    const parked = holdNextLoad(tabId);
+    const first = navigate(host, OWNER_A, tabId, 'https://a.example/loading');
+    await parked.entered;
+    // The explicit renderer input channel records the user independently of
+    // guest suppression, so this regression also exercises the old scope code.
+    const viewId = emitted.find(entry => entry.event === 'browser://automation-open').payload.id;
+    host.browserDispatch(null, 'browser_note_user_interaction', { id: viewId });
+    state.onSleep = () => { throw new Error('idle wait interrupted'); };
+    await assert.rejects(navigate(host, OWNER_A, tabId, 'https://a.example/second'), /idle wait interrupted/);
+    state.onSleep = null;
+    state.t += 10_000;
+    contentsFor(tabId).fire('focus');
+    parked.release();
+    await first;
+    state.sleeps.length = 0;
+    await navigate(host, OWNER_A, tabId, 'https://a.example/next');
+    assert.deepEqual(state.sleeps, [], 'failed sibling must not consume the first scope');
   } finally {
     restore();
   }

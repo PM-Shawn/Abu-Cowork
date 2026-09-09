@@ -62,13 +62,45 @@ test('tree publication never writes through a replaced parent symlink', () => {
       const assert = require('node:assert/strict');
       const { run } = require(process.argv[1]);
       const [home, outside, parent] = process.argv.slice(2);
+      const probeRoot = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'abu-symlink-probe-'));
+      const probeTarget = path.join(probeRoot, 'target');
+      const probeLink = path.join(probeRoot, 'link');
+      let symlinkProbe;
+      try {
+        fs.mkdirSync(probeTarget);
+        fs.symlinkSync(probeTarget, probeLink, 'dir');
+        symlinkProbe = { ok: true };
+      } catch (error) {
+        symlinkProbe = { ok: false, code: error.code, message: error.message };
+      } finally { fs.rmSync(probeRoot, { recursive: true, force: true }); }
+      process.stderr.write('[SEC-442-B-probe] ' + JSON.stringify({ platform: process.platform, symlinkProbe }) + String.fromCharCode(10));
       process.chdir(home);
       const identity = fs.statSync('.');
       const parentIdentity = fs.statSync(parent);
       const io = { ...fs, mkdirSync(name, ...args) {
         if (name === '.incoming') {
-          fs.renameSync(parent, parent + '-old');
-          fs.symlinkSync(outside, parent, 'dir');
+          process.stderr.write('[SEC-442-B-before-rename] ' + JSON.stringify({
+            cwd: process.cwd(),
+            parent,
+            cwdIdentityMatchesParent: (() => {
+              const cwdIdentity = fs.statSync('.');
+              return cwdIdentity.ino === parentIdentity.ino && cwdIdentity.dev === parentIdentity.dev;
+            })(),
+          }) + String.fromCharCode(10));
+          try {
+            fs.renameSync(parent, parent + '-old');
+            process.stderr.write('[SEC-442-B-rename] ' + JSON.stringify({ ok: true, cwd: process.cwd() }) + String.fromCharCode(10));
+          } catch (error) {
+            process.stderr.write('[SEC-442-B-rename] ' + JSON.stringify({ ok: false, code: error.code, message: error.message }) + String.fromCharCode(10));
+            throw error;
+          }
+          try {
+            fs.symlinkSync(outside, parent, 'dir');
+            process.stderr.write('[SEC-442-B-symlink] ' + JSON.stringify({ ok: true }) + String.fromCharCode(10));
+          } catch (error) {
+            process.stderr.write('[SEC-442-B-symlink] ' + JSON.stringify({ ok: false, code: error.code, message: error.message }) + String.fromCharCode(10));
+            throw error;
+          }
         }
         return fs.mkdirSync(name, ...args);
       }};

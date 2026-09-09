@@ -5,6 +5,7 @@ import { serializeAgentMd } from '@/core/agent/registry';
 import { getAllTools } from '@/core/tools/registry';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import { useSettingsStore, getActiveProvider } from '@/stores/settingsStore';
 import { navigateToChatWithInput } from '@/utils/navigation';
@@ -165,30 +166,26 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
           </h3>
 
           {/* Name and avatar */}
-          <div className="space-y-3">
-            <div className="flex-1">
-              <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorName}</label>
-              <input
+          <div>
+            <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.agentEditorName}</label>
+            <div className="flex items-center gap-2">
+              <AvatarPicker value={avatar} onChange={setAvatar}>
+                <AgentAvatar agent={{ name: agent?.name ?? name, filePath: agent?.filePath, avatar }} size="lg" />
+              </AvatarPicker>
+              <Input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="my-agent"
                 className={cn(
-                  'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
+                  'min-w-0 flex-1',
                   name.trim() && !nameValid ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
                 )}
               />
-              {name.trim() && !nameValid && (
-                <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
-              )}
             </div>
-            <div>
-              <div className="flex items-center gap-2 mb-1" data-testid="agent-editor-avatar-preview">
-                <AgentAvatar agent={{ name: agent?.name ?? name, filePath: agent?.filePath, avatar }} size="lg" />
-                <label className="text-minor font-medium text-[var(--abu-text-secondary)]">{t.toolbox.agentAvatar}</label>
-              </div>
-              <AvatarPicker value={avatar} onChange={setAvatar} />
-            </div>
+            {name.trim() && !nameValid && (
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
+            )}
           </div>
 
           {/* Description */}

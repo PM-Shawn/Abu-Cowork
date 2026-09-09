@@ -193,14 +193,11 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         <div>
           <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldName}</label>
           <div className="mt-1 flex items-center gap-2">
-            <TeamAvatar avatar={avatar} size="lg" />
+            <AvatarPicker value={avatar} onChange={setAvatar}>
+              <TeamAvatar avatar={avatar} size="lg" />
+            </AvatarPicker>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className="flex-1" data-testid="team-name-input" />
           </div>
-        </div>
-
-        <div>
-          <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldAvatar}</label>
-          <AvatarPicker value={avatar} onChange={setAvatar} />
         </div>
 
         {agents.length === 0 ? (

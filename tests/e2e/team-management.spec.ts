@@ -67,7 +67,21 @@ test.describe('team management surface', () => {
       await page.getByTestId('team-leader-select').click();
       await page.getByTestId('search-select-query').fill('产品');
       await page.getByTestId('search-select-option-产品经理').click();
-      await page.getByTestId('avatar-option-users-blue').click();
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await page.getByTestId('avatar-picker-trigger').click();
+      await expect(page.getByTestId('avatar-picker')).toBeVisible();
+      await expect(page.getByTestId('avatar-picker').getByTestId(/^avatar-icon-/)).toHaveCount(20);
+      await expect(page.getByTestId('avatar-picker').getByTestId(/^avatar-tint-/)).toHaveCount(6);
+      await page.getByTestId('avatar-tint-purple').click();
+      await page.getByTestId('avatar-icon-users').click();
+      await page.screenshot({ path: test.info().outputPath('team-avatar-picker.png') });
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await expect(page.getByTestId('team-name-input')).toHaveValue(TEAM_NAME);
+      await expect(page.getByTestId('avatar-picker-trigger')).toBeFocused();
+      await page.getByTestId('avatar-picker-trigger').click();
+      await page.getByTestId('team-name-input').click();
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
       await expect(save).toBeEnabled();
       await save.click();
 
@@ -91,6 +105,10 @@ test.describe('team management surface', () => {
       await expect(page.getByTestId('team-name-input')).toHaveCount(0);
       await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-edit').click();
+      await page.getByTestId('avatar-picker-trigger').click();
+      await expect(page.getByTestId('avatar-icon-users')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('avatar-tint-purple')).toHaveAttribute('aria-pressed', 'true');
+      await page.keyboard.press('Escape');
       await page.getByLabel('介绍（可选）', { exact: true }).fill(DESCRIPTION);
       await page.getByLabel('开场白（可选）', { exact: true }).fill(INTRO);
       await page.getByLabel('擅长（可选）', { exact: true }).fill('需求分析\n方案检查\n计划整理');
@@ -159,10 +177,28 @@ test.describe('team management surface', () => {
       await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家', exact: true }).click();
       await page.getByTestId('member-create-trigger').click();
       await page.getByText('手动创建', { exact: true }).click();
-      await expect(page.getByTestId('avatar-picker')).toBeVisible();
-      await page.getByTestId('avatar-option-code-purple').click();
-      await expect(page.getByTestId('avatar-option-code-purple')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await page.getByTestId('avatar-picker-trigger').click();
+      await page.getByTestId('avatar-tint-purple').click();
+      await page.getByTestId('avatar-icon-code').click();
+      await expect(page.getByTestId('avatar-icon-code')).toHaveAttribute('aria-pressed', 'true');
       await page.screenshot({ path: test.info().outputPath('agent-avatar-picker.png') });
+      await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(900, 420));
+      const picker = page.getByTestId('avatar-picker');
+      await expect.poll(async () => {
+        const box = await picker.boundingBox();
+        const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+        return !!box && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height;
+      }).toBe(true);
+      await expect.poll(() => picker.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+      await page.screenshot({ path: test.info().outputPath('agent-avatar-picker-small-window.png') });
+      await page.getByRole('button', { name: '使用默认头像', exact: true }).scrollIntoViewIfNeeded();
+      await expect(page.getByRole('button', { name: '使用默认头像', exact: true })).toBeInViewport();
+      await page.getByRole('button', { name: '使用默认头像', exact: true }).click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await expect(page.getByPlaceholder('my-agent')).toBeVisible();
+      await expect(page.getByTestId('avatar-picker-trigger').getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'default');
     } finally {
       await closeAbuElectron(launched.app);
       removeElectronDataRoot(dataRoot);

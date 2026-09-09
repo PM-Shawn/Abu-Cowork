@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentRegistry, getBuiltinAgentNames } from './registry'
+import { resolveSubagentToolNames } from '@/core/agent/subagentToolRoster'
+import { agentToolPolicyForRoute, resolveAgentToolNames } from '@/core/agent/agentToolPolicy'
 import type { SubagentDefinition } from '@/types'
 
 function definition(ready = true): SubagentDefinition {
@@ -51,21 +53,47 @@ describe('managed Agent registry', () => {
 describe('builtin Agent tool boundaries', () => {
   const registry = new AgentRegistry()
   ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+  const businessTools = [
+    'read_file', 'write_file', 'edit_file', 'list_directory', 'run_command', 'web_search',
+    'abu-browser__screenshot', 'abu-browser-bridge__click', 'runtime-service__inspect',
+  ]
+  const runtimeTools = [...businessTools, 'delegate_to_agent', 'run_agent_batch', 'update_soul', 'ask_user_question']
 
   it.each([
-    ['高级开发工程师', 'abu-browser__*'],
-    ['高级开发工程师', 'abu-browser-bridge__*'],
-    ['产品经理', 'abu-browser__*'],
-    ['产品经理', 'abu-browser-bridge__*'],
-    ['HR 招聘官', 'abu-browser__*'],
-    ['HR 招聘官', 'abu-browser-bridge__*'],
-    ['公众号编辑', 'write_file'],
-    ['公众号编辑', 'edit_file'],
-    ['公众号编辑', 'list_directory'],
-    ['数据分析师', 'abu-browser__*'],
-    ['数据分析师', 'abu-browser-bridge__*'],
-  ])('%s retains the declared %s capability', (name, tool) => {
-    expect(registry.getAgent(name)?.tools).toContain(tool)
+    '高级开发工程师',
+    '产品经理',
+    '数据分析师',
+    '公众号编辑',
+    'HR 招聘官',
+  ])('%s inherits runtime business tools without a job-specific boundary', (name) => {
+    const agent = registry.getAgent(name)
+    expect(agent).toBeDefined()
+    expect(agent?.tools).toBeUndefined()
+    expect(agent?.disallowedTools).toBeUndefined()
+    expect(resolveSubagentToolNames(runtimeTools, agent!)).toEqual({ toolNames: businessTools })
+  })
+
+  // Pins the rule, not today's five names: a built-in expert added later with
+  // a hand-written `tools:` array fails here, because inheriting the runtime
+  // inventory is the default for every expert but the root agent.
+  it('writes no tool boundary into any built-in expert other than the root agent', () => {
+    const experts = registry.getAvailableAgents()
+      .map(item => registry.getAgent(item.name)!)
+      .filter(agent => agent.name !== 'abu')
+
+    expect(experts).toHaveLength(5)
+    for (const agent of experts) {
+      expect({ name: agent.name, tools: agent.tools, disallowedTools: agent.disallowedTools })
+        .toEqual({ name: agent.name, tools: undefined, disallowedTools: undefined })
+      // Run as a delegated member: the whole runtime inventory minus the tools
+      // a member may never hold.
+      expect(resolveSubagentToolNames(runtimeTools, agent)).toEqual({ toolNames: businessTools })
+      // The same expert routed as the main loop's agent: its role policy adds
+      // no boundary of its own, so nothing is dropped.
+      expect(resolveAgentToolNames(runtimeTools, agentToolPolicyForRoute({
+        type: 'agent', name: agent.name, definition: agent, cleanInput: '',
+      })!)).toEqual({ toolNames: runtimeTools })
+    }
   })
 })
 

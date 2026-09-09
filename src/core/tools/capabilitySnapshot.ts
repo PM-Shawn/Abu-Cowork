@@ -188,8 +188,11 @@ export function computeCapabilitySnapshot(): CapabilitySnapshot {
   const mcpServers = useMCPStore.getState().servers;
   for (const [serverName, serverEntry] of Object.entries(mcpServers)) {
     for (const toolInfo of serverEntry.tools) {
-      if (seenNames.has(toolInfo.name)) continue; // builtin name collision — builtin wins
-      seenNames.add(toolInfo.name);
+      // MCPStore holds the short names returned by getServerToolDetails;
+      // the runtime registry and policy matcher use server-qualified names.
+      const toolName = `${serverName}__${toolInfo.name}`;
+      if (seenNames.has(toolName)) continue; // builtin name collision — builtin wins
+      seenNames.add(toolName);
 
       const unavailableReasons: UnavailableReason[] = [];
       if (!serverEntry.config.enabled) {
@@ -204,11 +207,11 @@ export function computeCapabilitySnapshot(): CapabilitySnapshot {
           // this text is read by the LLM.
           error: summarizeMcpConnectionError(serverEntry.error),
         });
-      } else if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(toolInfo.name)) {
+      } else if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(toolName)) {
         unavailableReasons.push({ kind: 'duplicate-browser-tool', server: serverName });
       }
 
-      const policy = policyProbe(toolInfo.name);
+      const policy = policyProbe(toolName);
       if (policy.decision === 'deny') {
         unavailableReasons.push({ kind: 'policy-denied', reason: policy.reason });
       }
@@ -218,11 +221,11 @@ export function computeCapabilitySnapshot(): CapabilitySnapshot {
       // (fail-closed) whether or not we can look up the live definition —
       // looking it up anyway keeps this correct if that ever changes.
       const liveDef = serverEntry.status === 'connected'
-        ? mcpManager.getServerTools(serverName).find((t) => t.name === toolInfo.name)
+        ? mcpManager.getServerTools(serverName).find((t) => t.name === toolName)
         : undefined;
 
       entries.push({
-        name: toolInfo.name,
+        name: toolName,
         source: { kind: 'mcp', server: serverName },
         unavailableReasons,
         concurrencySafety: classifyConcurrencySafety(liveDef),

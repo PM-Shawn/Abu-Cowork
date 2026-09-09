@@ -1721,8 +1721,8 @@ export default function ChatView({
           )}
           {/* Live agent status — compaction / retry, so a slow provider isn't a
               silent dead wait above the composer. */}
-          {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
+          {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamFollowUpChips conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Staged mid-task messages — cancellable pills at the composer's

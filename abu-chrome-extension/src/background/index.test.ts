@@ -289,7 +289,7 @@ function fakeChrome(): Record<string, unknown> {
         if (String(opts.func ?? '').includes('__ABU_PAGE_DIALOGS__')) {
           return [{ result: browserState.pageDialogState }];
         }
-        return [{ result: 'evaluated' }];
+        return [{ result: { originMatched: true, value: 'evaluated' } }];
       },
     },
   };
@@ -812,7 +812,7 @@ describe('actions the service worker answers itself', () => {
     const response = await request('execute_js', { tabId: 11, code: '1 + 1' });
 
     expect(response.data).toBe('evaluated');
-    expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'MAIN', args: ['1 + 1'] });
+    expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'MAIN', args: ['1 + 1', 'https://a.example'] });
   });
 
   describe('JavaScript dialogs', () => {

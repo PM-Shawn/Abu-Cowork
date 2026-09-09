@@ -1292,15 +1292,36 @@
         case "execute_js": {
           const code = payload.code;
           await assertTabOriginPin(tabId, payload);
+          const documents = await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [0] },
+            world: "ISOLATED",
+            func: () => ({ url: location.href })
+          });
+          const document = documents[0];
+          if (documents.length !== 1 || document?.frameId !== 0 || typeof document.documentId !== "string" || !document.documentId.trim() || typeof document.result?.url !== "string" || !normalizedOrigin(document.result.url)) {
+            throw new Error("Refused: could not verify the page document identity. Take a fresh snapshot before acting again.");
+          }
+          const observedUrl = document.result.url;
+          await assertTabOriginPin(tabId, payload, async () => ({ url: observedUrl }));
           const results = await chrome.scripting.executeScript({
-            target: { tabId },
-            func: (jsCode) => {
-              return eval(jsCode);
+            target: { tabId, documentIds: [document.documentId] },
+            func: async (jsCode, approvedOrigin) => {
+              if (location.origin !== approvedOrigin) {
+                return { __proto__: null, originMatched: false };
+              }
+              return { __proto__: null, originMatched: true, value: await eval(jsCode) };
             },
-            args: [code],
+            args: [code, new URL(observedUrl).origin],
             world: "MAIN"
           });
-          return { id, success: true, data: results[0]?.result };
+          const execution = results[0]?.result;
+          if (execution?.originMatched === false) {
+            throw new Error("Refused: page origin changed before script execution. Take a fresh snapshot before acting again.");
+          }
+          if (execution?.originMatched !== true) {
+            throw new Error("Script execution did not return a result. Take a fresh snapshot before acting again.");
+          }
+          return { id, success: true, data: execution.value };
         }
         default: {
           if (!CONTENT_SCRIPT_ACTIONS.has(action)) {

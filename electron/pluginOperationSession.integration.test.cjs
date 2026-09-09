@@ -79,3 +79,41 @@ test('tree publication never writes through a replaced parent symlink', () => {
     assert.deepEqual(fs.readdirSync(outside), []);
   } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
 });
+
+/**
+ * Regression: a SIGKILLed worker (OOM, antivirus, memory pressure) closed the
+ * session for the life of the process. The plugins tab's retry button routes
+ * through the same session, so it re-awaited a cached rejected startup and
+ * could never restore installing, updating or uninstalling.
+ */
+test('an explicit reopen restarts a killed worker, and a disposed session stays closed', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-operation-reopen-'));
+  const session = createOperationSession(home);
+  try {
+    await session.ready();
+    const info = fs.statSync(home);
+    const write = value => session.mutate({ home, identity: { ino: info.ino, dev: info.dev },
+      parent: ['.abu', 'plugin-operations'], action: 'write', temp: `${value}.tmp`, to: 'active.enc',
+      bytes: Buffer.from(value).toString('base64') });
+    await write('before');
+
+    process.kill(session.pid, 'SIGKILL');
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { await session.ready(); await new Promise(resolve => setTimeout(resolve, 20)); }
+      catch { break; }
+    }
+    await assert.rejects(session.ready(), /session/);
+
+    assert.equal(session.reopen(), true);
+    await session.ready();
+    await write('after');
+    assert.equal(fs.readFileSync(path.join(home, '.abu', 'plugin-operations', 'active.enc'), 'utf8'), 'after');
+
+    await session.close();
+    assert.equal(session.reopen(), false);
+    await assert.rejects(session.ready(), /session closed/);
+  } finally {
+    await session.close().catch(() => {});
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

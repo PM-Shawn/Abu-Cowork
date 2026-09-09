@@ -56,10 +56,13 @@ function runAuthor(input, io = fs, chdir = process.chdir) {
   const current = io.statSync('.');
   if (current.ino !== metadataIdentity.ino || current.dev !== metadataIdentity.dev) throw new Error('Plugin author: metadata directory changed');
   data.write('authors.json', JSON.stringify(authors));
-  let fd;
-  try { fd = io.openSync('.', 'r'); io.fsyncSync(fd); }
-  catch (error) { if (!['EINVAL', 'EPERM', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error; }
-  finally { if (fd !== undefined) io.closeSync(fd); }
+  if (process.platform !== 'win32') {
+    // Windows has no directory-fsync equivalent; see pluginLease.syncDirectory.
+    let fd;
+    try { fd = io.openSync('.', 'r'); io.fsyncSync(fd); }
+    catch (error) { if (!['EINVAL', 'EPERM', 'EACCES', 'EBADF', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error; }
+    finally { if (fd !== undefined) io.closeSync(fd); }
+  }
   return result(author);
 }
 module.exports = { runAuthor };

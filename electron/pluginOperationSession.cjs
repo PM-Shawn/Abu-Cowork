@@ -11,10 +11,14 @@ const { runAuthor } = require('./pluginAuthorWorker.cjs');
  * the lease. A replacement main cannot read an older journal in that window.
  */
 function createOperationSession(home) {
-  let child, startup, closed = false, serial = 0;
+  let child, startup, closed = false, disposed = false, serial = 0, generation = 0;
   const pending = new Map();
   let exitPromise, anchors;
   function launch() {
+    // Orphan the previous worker's callbacks: after a reopen its late 'error'
+    // or 'exit' must not close the session that replaced it, nor reject the
+    // new generation's in-flight calls.
+    const mine = ++generation;
     return new Promise((resolve, reject) => {
       const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
       delete env.NODE_OPTIONS; delete env.NODE_PATH;
@@ -32,6 +36,7 @@ function createOperationSession(home) {
         value.error ? callback.reject(new Error(value.error)) : callback.resolve(value.result);
       });
       const failed = error => {
+        if (mine !== generation) return;
         if (admitted) closed = true;
         reject(error);
         for (const callback of pending.values()) callback.reject(error);
@@ -40,6 +45,20 @@ function createOperationSession(home) {
       worker.once('error', failed);
       worker.once('exit', () => failed(new Error(message || 'Plugin operation: session interrupted')));
     });
+  }
+  /** A worker death is a transient fault, not a terminal one: the journal keeps
+   * the on-disk state recoverable, and a dead worker's PID no longer holds the
+   * lease. Without this the plugins tab's retry button re-awaits the cached
+   * rejected startup and can never succeed. Refuse while calls are in flight
+   * (their results would be attributed to the wrong worker) and after an
+   * intentional shutdown. */
+  function reopen() {
+    if (disposed || pending.size) return false;
+    if (!closed) return true;
+    generation++;
+    closed = false; startup = undefined; child = undefined;
+    exitPromise = undefined; anchors = undefined;
+    return true;
   }
   function ready() {
     if (closed) return Promise.reject(new Error('Plugin operation: session closed'));
@@ -70,11 +89,14 @@ function createOperationSession(home) {
   }
   return {
     ready,
+    reopen,
+    get pid() { return child?.pid; },
     get anchors() { return anchors; },
     mutate: input => send('operation', input),
     registry: input => send('registry', input),
     author: input => send('author', input),
     async close() {
+      disposed = true;
       closed = true;
       if (!child) return;
       if (child.connected) child.disconnect();

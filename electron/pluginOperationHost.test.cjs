@@ -328,3 +328,28 @@ test('unapproved rename cannot claim a different package identity', async () => 
   assert.deepEqual(f.records(), [previous]);
   assert.equal(f.disk.read('/profile/.abu/plugin-packages/market/demo/1/old.txt'), 'old package');
 });
+
+/**
+ * The plugins tab's retry button is the user's only way out after a worker
+ * death, and it routes here. Recovery therefore restarts a closed session;
+ * every other action keeps failing so a half-known state is never acted on.
+ */
+test('recovery restarts a session a worker death closed, other actions do not', async () => {
+  const f = fixture();
+  const stub = () => {
+    let open = false, reopened = 0;
+    return {
+      get reopened() { return reopened; },
+      reopen() { reopened++; open = true; return true; },
+      ready: () => open ? Promise.resolve() : Promise.reject(new Error('Plugin operation: session closed')),
+    };
+  };
+
+  const recovering = stub();
+  assert.equal(await createPluginOperationHost({ ...f.options, session: recovering }).dispatch(f.sender, 'recover'), null);
+  assert.equal(recovering.reopened, 1);
+
+  const idle = stub();
+  await assert.rejects(createPluginOperationHost({ ...f.options, session: idle }).dispatch(f.sender, 'status'), /session closed/);
+  assert.equal(idle.reopened, 0);
+});

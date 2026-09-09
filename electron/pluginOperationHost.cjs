@@ -295,6 +295,9 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     return { id: op.id, previous };
   }
   async function execute(sender, action, request) {
+    // Recovery is the user's explicit "get me out of this" action, so it is the
+    // one place allowed to restart a session that a worker death closed.
+    if (action === 'recover') session?.reopen?.();
     if (action === 'begin') return begin(sender, request);
     const op = await load();
     if (action === 'status') return op ? { id: op.id, key: op.key, phase: op.phase } : null;

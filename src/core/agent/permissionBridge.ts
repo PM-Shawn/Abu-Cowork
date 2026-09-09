@@ -21,7 +21,7 @@ import type { EventRouter } from './eventRouter';
 import type { SettingsReader } from './ports/settingsReader';
 import type { IMContext } from './orchestrator';
 import * as approvalBridge from './ports/approvalBridge';
-import { decideTeamConfirmation } from './teamConfirmations';
+import { decideTeamConfirmation, waitForTeamConfirmation } from './teamConfirmations';
 
 // The file-permission queue's dequeue-time re-check ("another tool call may
 // have already been granted this permission while this request sat in the
@@ -189,7 +189,7 @@ export function drainConfirmationQueue() {
  * @param loopId - Optional loopId to look up the correct context for multi-agent.
  *                 Falls back to getCurrentLoopContext() compat shim if omitted.
  */
-export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?: string): Promise<boolean> {
+export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?: string, signal?: AbortSignal): Promise<boolean> {
   // A refusal NOTICE is not a request (see `ConfirmationInfo.deniedNotice`):
   // the decision is already made and the caller discards the answer. It must
   // never become a dialog — command approvals queue with no timeout, so the
@@ -209,15 +209,16 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
   // The request carries the member's name across the sidecar boundary; the
   // loop context only knows the parent run there.
   const agentName = info.agentName ?? ctx?.agentName;
-  // Team conversations never block on a dialog (teamConfirmations.ts).
-  const teamDecision = decideTeamConfirmation(convId, {
-    kind: info.kind ?? 'command',
+  const item = {
+    kind: info.kind ?? 'command' as const,
     detail: info.command,
     reason: info.reason,
     member: agentName,
     identity: info.teamIdentity,
-  });
-  if (teamDecision !== 'ask') return teamDecision === 'approved';
+  };
+  const teamDecision = decideTeamConfirmation(convId, item);
+  if (teamDecision === 'pending') return waitForTeamConfirmation(convId, item, signal);
+  if (teamDecision === 'approved') return true;
   return approvalBridge.request('command', {
     loopId,
     conversationId: convId,
@@ -326,7 +327,7 @@ export function drainFilePermissionQueue() {
  *
  * @param loopId - Optional loopId for multi-agent context lookup.
  */
-export async function requestFilePermission(request: Parameters<FilePermissionCallback>[0], loopId?: string): Promise<boolean> {
+export async function requestFilePermission(request: Parameters<FilePermissionCallback>[0], loopId?: string, signal?: AbortSignal): Promise<boolean> {
   const permStore = usePermissionStore.getState();
 
   // Already has permission → auto-allow
@@ -345,8 +346,8 @@ export async function requestFilePermission(request: Parameters<FilePermissionCa
   const convId = ctx?.conversationId ?? '';
   const agentName = request.agentName ?? ctx?.agentName;
   // Team retries authorize only the ephemeral scope created by this tool's gate.
-  const teamDecision = decideTeamConfirmation(convId, {
-    kind: 'file',
+  const item = {
+    kind: 'file' as const,
     detail: request.path,
     reason: request.toolName,
     path: request.path,
@@ -354,9 +355,11 @@ export async function requestFilePermission(request: Parameters<FilePermissionCa
     additionalCapabilities: request.additionalCapabilities,
     member: agentName,
     identity: request.teamIdentity,
-  });
+  };
+  const teamDecision = decideTeamConfirmation(convId, item);
   if (teamDecision !== 'ask') {
-    if (teamDecision !== 'approved' || !request.teamAuthorizationScopeId) return false;
+    const approved = teamDecision === 'approved' || await waitForTeamConfirmation(convId, item, signal);
+    if (!approved || !request.teamAuthorizationScopeId) return false;
     scopedAuthorizeWorkspace(request.teamAuthorizationScopeId, request.path, [request.capability, ...(request.additionalCapabilities ?? [])]);
     return true;
   }

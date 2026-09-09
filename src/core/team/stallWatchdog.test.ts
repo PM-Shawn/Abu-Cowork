@@ -1,3 +1,4 @@
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -30,6 +31,7 @@ describe('team stall watchdog (lease expiry, one hand-off at a time)', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
     stopTeamStallWatchdog();
+    useTeamConfirmationStore.setState({ pending: {}, waiting: {}, permissionActivity: {} });
     vi.clearAllMocks();
     useChatStore.setState({ conversations: { team: conversation('team', 't1'), plain: conversation('plain') }, agentStates: new Map() } as never);
   });
@@ -49,6 +51,22 @@ describe('team stall watchdog (lease expiry, one hand-off at a time)', () => {
       team: execution('team', old, [step({ id: 'c1', status: 'completed', startTime: old, endTime: now - MIN })]),
     } } as never);
     expect(findStalledDispatches(now)).toEqual([]);
+  });
+
+  it('does not time out a member waiting for approval and renews activity when answered', () => {
+    const now = 100 * MIN;
+    const old = now - (STALL_STOP_MINUTES + 2) * MIN;
+    useTaskExecutionStore.setState({ executions: { team: execution('team', old, []) } } as never);
+    const store = useTeamConfirmationStore.getState();
+    const pending = { id: 'approval', createdAt: old, conversationId: 'team', kind: 'command' as const, detail: 'npm install',
+      identity: { toolName: 'run_command', parametersDigest: 'p', cwd: '/project', loopId: 'l-team', callId: 'call', dispatchId: 'tc-team:0', dispatchFingerprint: 'task', requestOrdinal: 1 } };
+    useTeamConfirmationStore.setState({ pending: { approval: pending }, waiting: { approval: true } });
+    expect(findStalledDispatches(now)).toEqual([]);
+    store.finishWaiting('approval', now);
+    expect(findStalledDispatches(now + MIN)).toEqual([]);
+    expect(findStalledDispatches(now + STALL_STOP_MINUTES * MIN)).toHaveLength(1);
+    store.clearRun('team', 'l-team');
+    expect(useTeamConfirmationStore.getState().permissionActivity).toEqual({});
   });
 
   it('stops a stalled hand-off once, with a reason the leader can read, and notifies', () => {

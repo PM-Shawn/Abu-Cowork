@@ -1,3 +1,4 @@
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Tests for orchestrationTools.ts pure helpers.
  *
@@ -891,6 +892,26 @@ describe('runWithTimeout', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('excludes only this dispatch approval wait from its execution budget', async () => {
+    vi.setSystemTime(new Date('2026-09-09T00:00:00Z'));
+    useTeamConfirmationStore.setState({ pending: {}, waiting: {} });
+    let signal: AbortSignal | undefined;
+    const run = runWithTimeout((sig) => { signal = sig; return new Promise<never>(() => {}); }, 5000, undefined, { conversationId: 'team', key: 'batch:0' });
+    const result = expect(run).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(2000);
+    const item = { id: 'approval', createdAt: 1, conversationId: 'team', kind: 'command' as const, detail: 'npm install',
+      identity: { toolName: 'run_command', parametersDigest: 'p', cwd: '/project', loopId: 'loop', callId: 'call', dispatchId: 'batch:0', dispatchFingerprint: 'task', requestOrdinal: 1 } };
+    useTeamConfirmationStore.setState({ pending: { approval: item }, waiting: { approval: true } });
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(signal?.aborted).toBe(false);
+    useTeamConfirmationStore.getState().remove('approval');
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await result;
+    expect(signal?.aborted).toBe(true);
   });
 
   it('(a) resolves with factory value when factory completes before timeout', async () => {

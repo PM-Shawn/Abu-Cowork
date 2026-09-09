@@ -1,20 +1,19 @@
 import { isRetryableTeamIdentity } from '@/core/agent/teamConfirmationIdentity';
-import { useMemo } from 'react';
-import { ShieldAlert, Check, X } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { ShieldAlert, Check, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { respondToTeamConfirmation } from '@/core/agent/teamConfirmations';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { pendingFor, useTeamConfirmationStore, type TeamConfirmation, type TeamApprovalMode } from '@/stores/teamConfirmationStore';
+import { pendingFor, useTeamConfirmationStore, type TeamConfirmation } from '@/stores/teamConfirmationStore';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 
-/**
- * "需要你确认" strip for a team conversation (block O): every action the run
- * refused because nobody could confirm it, with approve / reject. Approving
- * authorizes a specific retry turn; reusable exact-parameter rules are visible
- * and revocable, and expire when that run settles.
- */
+/** Existing team approval strip: live answers resume the waiting call; stopped requests need an explicit retry. */
 export default function TeamConfirmationsStrip({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const waiting = useTeamConfirmationStore((s) => s.waiting);
   const pending = useTeamConfirmationStore((s) => s.pending);
   const items = useMemo(() => pendingFor(pending, conversationId), [pending, conversationId]);
   const runRules = useTeamConfirmationStore((s) => s.runRules);
@@ -34,14 +33,15 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
   };
   const memberLabel = (item: TeamConfirmation) => item.member ?? t.team.confirmationLeader;
 
-  const approve = (item: TeamConfirmation, mode: TeamApprovalMode) => {
-    const selection = useTeamConfirmationStore.getState().selectRetry(item.id, mode);
+  const approve = (item: TeamConfirmation) => {
+    if (waiting[item.id]) { respondToTeamConfirmation(item.id, true); return; }
+    const selection = useTeamConfirmationStore.getState().selectRetry(item.id, 'once');
     if (!selection) return;
     followUp(format(t.team.confirmationApprovedFollowUp, { member: memberLabel(item), detail: item.detail }), selection);
   };
   const reject = (item: TeamConfirmation) => {
+    if (waiting[item.id]) { respondToTeamConfirmation(item.id, false); return; }
     useTeamConfirmationStore.getState().remove(item.id);
-    followUp(format(t.team.confirmationRejectedFollowUp, { member: memberLabel(item), detail: item.detail }));
   };
 
   return (
@@ -50,53 +50,56 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
         <ShieldAlert aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-warning)]" />
         {format(t.team.confirmationStripTitle, { n: items.length })}
       </div>
-      <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
-        {items.map((item) => (
-          <li key={item.id} className="flex flex-wrap items-center gap-2" data-testid="team-confirmation-item">
-            <div className="min-w-0 w-full text-caption text-[var(--abu-text-secondary)]">
-              <span className="text-[var(--abu-text-primary)]">{memberLabel(item)}</span>
-              <span>{t.team.confirmationSeparator}</span>
-              <code className="line-clamp-2 break-all align-top" title={item.detail}>{item.detail}</code>
-              {item.kind === 'file' && <div>{item.capability === 'write'
-                ? (item.additionalCapabilities?.includes('read') ? t.team.confirmationWriteRead : t.team.confirmationWrite)
-                : t.team.confirmationRead}</div>}
-              {item.identity && <div>{t.team.confirmationCwd}: <code>{item.identity.cwd ?? t.team.confirmationDefaultCwd}</code></div>}
-              {isRetryableTeamIdentity(item.identity) && <div>{format(t.team.confirmationRequestOrdinal, { n: item.identity!.requestOrdinal })}</div>}
-              {!isRetryableTeamIdentity(item.identity) && <div>{t.team.confirmationLegacy}</div>}
-              {item.reason && <span className="ml-1 text-[var(--abu-text-muted)]" title={item.reason}>（{item.reason.slice(0, 40)}{item.reason.length > 40 ? '…' : ''}）</span>}
-            </div>
-            <button
-              type="button"
-              onClick={() => approve(item, 'once')}
-              disabled={!isRetryableTeamIdentity(item.identity)}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--abu-clay)] px-2 py-0.5 text-caption text-white hover:opacity-90"
-              aria-label={`${t.team.confirmationApprove}: ${item.detail}`}
-            >
-              <Check aria-hidden="true" className="h-3 w-3" />
-              {t.team.confirmationApprove}
-            </button>
-            <button type="button" disabled={!isRetryableTeamIdentity(item.identity)}
-              onClick={() => approve(item, 'run')}
-              title={t.team.confirmationRunRule}
-              className="shrink-0 rounded-md border px-2 py-0.5 text-caption"
-              aria-label={`${t.team.confirmationApproveRun}: ${item.detail}`}>
-              {t.team.confirmationApproveRun}
-            </button>
-            <button
-              type="button"
-              onClick={() => reject(item)}
-              className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5 text-caption text-[var(--abu-text-muted)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
-              aria-label={`${t.team.confirmationReject}: ${item.detail}`}
-            >
-              <X aria-hidden="true" className="h-3 w-3" />
-              {t.team.confirmationReject}
-            </button>
-          </li>
-        ))}
+      <ul className="max-h-64 space-y-3 overflow-y-auto pr-1">
+        {items.map((item) => {
+          const live = !!waiting[item.id];
+          const action = item.kind === 'file'
+            ? (item.capability === 'write'
+              ? (item.additionalCapabilities?.includes('read') ? t.team.confirmationWriteRead : t.team.confirmationWrite)
+              : t.team.confirmationRead)
+            : item.kind === 'browser-upload' ? t.team.confirmationUpload
+            : item.kind === 'browser' ? t.team.confirmationBrowser
+            : item.kind === 'self-extension' ? t.team.confirmationExtension : t.team.confirmationCommand;
+          const rejectLabel = live ? t.team.confirmationReject : t.team.confirmationDismiss;
+          const approveLabel = live ? t.team.confirmationApprove : t.team.confirmationRetry;
+          return (
+            <li key={item.id} className="space-y-1.5 text-caption" data-testid="team-confirmation-item">
+              <div className="font-medium text-[var(--abu-text-primary)]">{memberLabel(item)} · {action}</div>
+              <div className="text-[var(--abu-text-secondary)]">{live ? t.team.confirmationWaiting : t.team.confirmationStopped}</div>
+              {item.reason && item.kind !== 'file' && <div className="break-words text-[var(--abu-text-primary)]">{item.reason}</div>}
+              {/* Keep the actual requested action visible, even when no reliable purpose is available. */}
+              <div className="line-clamp-2 break-all text-[var(--abu-text-primary)]" title={item.detail}>{item.detail}</div>
+              {item.identity && <div className="truncate text-[var(--abu-text-muted)]" title={item.identity.cwd ?? undefined}>
+                {t.team.confirmationCwd}: {item.identity.cwd ?? t.team.confirmationDefaultCwd}
+              </div>}
+              {!isRetryableTeamIdentity(item.identity) && <div className="text-[var(--abu-text-muted)]">{t.team.confirmationLegacy}</div>}
+              <Button type="button" size="xs" variant="ghost" aria-expanded={!!expanded[item.id]}
+                aria-controls={`approval-details-${item.id}`}
+                onClick={() => setExpanded((old) => ({ ...old, [item.id]: !old[item.id] }))}>
+                {expanded[item.id] ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}
+                {expanded[item.id] ? t.team.confirmationHideDetails : t.team.confirmationShowDetails}
+              </Button>
+              {expanded[item.id] && <div id={`approval-details-${item.id}`} className="space-y-1 text-[var(--abu-text-secondary)]">
+                <pre className="whitespace-pre-wrap break-all text-caption">{item.detail}</pre>
+                {item.identity && <div className="break-all">{t.team.confirmationCwd}: {item.identity.cwd ?? t.team.confirmationDefaultCwd}</div>}
+              </div>}
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" size="sm" onClick={() => approve(item)}
+                  disabled={!isRetryableTeamIdentity(item.identity)} aria-label={`${approveLabel}: ${item.detail}`}>
+                  <Check aria-hidden="true" />{approveLabel}
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => reject(item)}
+                  aria-label={`${rejectLabel}: ${item.detail}`}>
+                  <X aria-hidden="true" />{rejectLabel}
+                </Button>
+              </div>
+            </li>
+          );
+        })}
       </ul>
       {rules.map(([id, rule]) => <div key={id} className="mt-1 text-caption">
         {t.team.confirmationRunRule}: {memberLabel(rule.item)} · {rule.item.detail} · {t.team.confirmationCwd}: {rule.item.identity?.cwd ?? t.team.confirmationDefaultCwd}
-        <button type="button" className="ml-2 underline" onClick={() => useTeamConfirmationStore.getState().revoke(id)}>{t.team.confirmationRevoke}</button>
+        <Button type="button" size="xs" variant="link" className="ml-2" onClick={() => useTeamConfirmationStore.getState().revoke(id)}>{t.team.confirmationRevoke}</Button>
       </div>)}
     </div>
   );

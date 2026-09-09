@@ -173,7 +173,7 @@ describe('permissionBridge — UserQuestion queue', () => {
     });
   });
 
-  describe('team conversations never block on a confirmation (block O)', () => {
+  describe('deferred team requests are pending, never human rejection', () => {
     const makeTeamCtx = (loopId: string, conversationId: string, agentName?: string) => ({
       loopId,
       conversationId,
@@ -208,27 +208,27 @@ describe('permissionBridge — UserQuestion queue', () => {
     it('refuses a command now, records it as pending, and lets an approved identical request through once', async () => {
       const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
       const info = { command: 'npm publish', level: 'danger' as const, reason: '发布到公网', teamIdentity: { toolName: 'run_command', parametersDigest: 'p', cwd: '/a', loopId: 'loop-team', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
-      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+      await expect(requestCommandConfirmation(info, 'loop-team')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
       const pending = pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team');
       expect(pending).toHaveLength(1);
       expect(pending[0]).toMatchObject({ kind: 'command', detail: 'npm publish', member: 'zz发布员', reason: '发布到公网' });
       expect(getPendingCommandConfirmation()).toBeNull();
       // A retry does not pile up duplicates.
-      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+      await expect(requestCommandConfirmation(info, 'loop-team')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
       expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')).toHaveLength(1);
 
       const id = useTeamConfirmationStore.getState().selectRetry(pending[0].id, 'once');
       useTeamConfirmationStore.getState().beginRetry('conv-team', 'loop-team', id);
       await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(true);
-      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+      await expect(requestCommandConfirmation(info, 'loop-team')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
     });
 
     it('names the member from the request when the loop context only knows the parent run (sidecar path)', async () => {
       const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
       setLoopContext('loop-parent', makeTeamCtx('loop-parent', 'conv-team') as never);
       try {
-        await expect(requestCommandConfirmation({ command: 'npm publish', level: 'danger', reason: 'r', agentName: 'zz发布员' }, 'loop-parent')).resolves.toBe(false);
-        await expect(requestFilePermission({ path: '/tmp/out/x.md', capability: 'write', toolName: 'write_file', agentName: 'zz撰写员' }, 'loop-parent')).resolves.toBe(false);
+        await expect(requestCommandConfirmation({ command: 'npm publish', level: 'danger', reason: 'r', agentName: 'zz发布员' }, 'loop-parent')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
+        await expect(requestFilePermission({ path: '/tmp/out/x.md', capability: 'write', toolName: 'write_file', agentName: 'zz撰写员' }, 'loop-parent')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
         const pending = pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team');
         expect(pending.map((item) => item.member)).toEqual(['zz发布员', 'zz撰写员']);
       } finally {
@@ -250,25 +250,51 @@ describe('permissionBridge — UserQuestion queue', () => {
         teamAuthorizationScopeId: scopeA,
         teamIdentity: { toolName: 'write_file', parametersDigest: 'write-report-content', cwd: '/project', loopId: 'loop-team', callId: 'file-call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
       try {
-        expect(await requestFilePermission(request, 'loop-team')).toBe(false);
+        await expect(requestFilePermission(request, 'loop-team')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
         const pending = Object.values(useTeamConfirmationStore.getState().pending)[0];
         const selection = useTeamConfirmationStore.getState().selectRetry(pending.id, 'once');
         useTeamConfirmationStore.getState().beginRetry('conv-team', 'loop-team', selection);
-        expect(await requestFilePermission({ ...request, agentName: 'other-member' }, 'loop-team')).toBe(false);
-        expect(await requestFilePermission({ ...request, teamAuthorizationScopeId: scopeB }, 'loop-other')).toBe(false);
+        await expect(requestFilePermission({ ...request, agentName: 'other-member' }, 'loop-team')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
+        await expect(requestFilePermission({ ...request, teamAuthorizationScopeId: scopeB }, 'loop-other')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
         expect(await requestFilePermission(request, 'loop-team')).toBe(true);
         expect(isInScopedAuthorizedWorkspace(path, 'write', scopeA)).toBe(true);
         expect(isInScopedAuthorizedWorkspace(path, 'write', scopeB)).toBe(false);
         expect(usePermissionStore.getState().hasPermission(path, 'write')).toBe(false);
-        expect(await requestFilePermission(request, 'loop-team')).toBe(false);
+        await expect(requestFilePermission(request, 'loop-team')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
       } finally {
         disposeAuthorizationScope(scopeA); disposeAuthorizationScope(scopeB); clearLoopContext('loop-other');
       }
     });
 
+    it('live file approval holds the original call and authorizes only its ephemeral scope', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-09-09T00:00:00Z'));
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      const { respondToTeamConfirmation } = await import('./teamConfirmations');
+      const controller = new AbortController();
+      const scope = createAuthorizationScope();
+      const otherScope = createAuthorizationScope();
+      const path = '/external-team-live/report.md';
+      const request = { path, capability: 'write' as const, additionalCapabilities: ['read' as const], toolName: 'write_file',
+        teamAuthorizationScopeId: scope,
+        teamIdentity: { toolName: 'write_file', parametersDigest: 'write-content', cwd: '/project', loopId: 'loop-team', callId: 'live-file', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
+      try {
+        const answer = requestFilePermission(request, 'loop-team', controller.signal);
+        const item = Object.values(useTeamConfirmationStore.getState().pending)[0];
+        expect(useTeamConfirmationStore.getState().waiting[item.id]).toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'write', scope)).toBe(false);
+        respondToTeamConfirmation(item.id, true);
+        await expect(answer).resolves.toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'write', scope)).toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'read', scope)).toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'write', otherScope)).toBe(false);
+        expect(usePermissionStore.getState().hasPermission(path, 'write')).toBe(false);
+      } finally { controller.abort(); disposeAuthorizationScope(scope); disposeAuthorizationScope(otherScope); vi.useRealTimers(); }
+    });
+
     it('records file access as pending and leaves plain conversations on the dialog path', async () => {
       const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
-      await expect(requestFilePermission({ path: '/tmp/out/report.md', capability: 'write', toolName: 'write_file' }, 'loop-team')).resolves.toBe(false);
+      await expect(requestFilePermission({ path: '/tmp/out/report.md', capability: 'write', toolName: 'write_file' }, 'loop-team')).rejects.toMatchObject({ name: 'TeamConfirmationPendingError' });
       expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')[0]).toMatchObject({ kind: 'file', path: '/tmp/out/report.md', capability: 'write' });
       expect(getPendingFilePermission()).toBeNull();
 

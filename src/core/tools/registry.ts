@@ -1,3 +1,4 @@
+import { TeamConfirmationPendingError } from '../agent/teamConfirmations';
 import { evaluatePlanGate, getPlanMode } from '../agent/planMode';
 import { buildTeamConfirmationIdentity } from '../agent/teamConfirmationIdentity';
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
@@ -321,7 +322,7 @@ export function getAllTools(): ToolDefinition[] {
  * wrong conversation, `ChatView` filters it out, and the run waits forever on
  * an approval nobody can see. Mirrors `FilePermissionCallback` below.
  */
-export type CommandConfirmCallback = (info: ConfirmationInfo, loopId?: string) => Promise<boolean>;
+export type CommandConfirmCallback = (info: ConfirmationInfo, loopId?: string, signal?: AbortSignal) => Promise<boolean>;
 
 /**
  * Callback type for file permission requests
@@ -335,7 +336,7 @@ export type FilePermissionCallback = (request: {
   toolName: string;
   /** Sub-agent stamped by the trusted executor, when known. */
   agentName?: string;
-}, loopId?: string) => Promise<boolean>;
+}, loopId?: string, signal?: AbortSignal) => Promise<boolean>;
 
 /**
  * Map of file-related tools to their path extraction logic
@@ -1178,7 +1179,12 @@ export async function checkToolApproval(
         origin: info.browserOrigin, pageOrigin: info.browserPageOrigin,
         embeddedOrigins: info.browserEmbeddedOrigins,
       }),
-    }, loopId);
+    }, loopId, toolContext?.interactionMode === 'background' ? undefined : toolContext?.abortSignal);
+  }
+  if (isTeam && onRequireFilePermission) {
+    const confirm = onRequireFilePermission;
+    onRequireFilePermission = (request, loopId) => confirm(request, loopId,
+      toolContext?.interactionMode === 'background' ? undefined : toolContext?.abortSignal);
   }
   const convPermissionMode = conversation?.permissionMode;
   const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
@@ -1324,7 +1330,7 @@ export async function checkToolApproval(
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
       }
     }
@@ -1399,9 +1405,7 @@ export async function checkToolApproval(
               if (!granted) {
                 return {
                   decision: 'deny',
-                  reason: toolContext?.teamRoster
-                    ? `${t.commandConfirm.teamPendingConfirmation} (${pathCheck.permissionPath})`
-                    : `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`,
+                  reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`,
                 };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
@@ -1914,7 +1918,7 @@ export async function checkToolApproval(
         if (runMode === 'unattended') return await denyUnattendedBrowser(reason);
         recordGateDenial(reason);
         if (reason === 'user-cancelled') {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
         const text = reason === 'approval-refused'
           ? t.commandConfirm.browserDenied
@@ -2391,7 +2395,7 @@ export async function checkToolApproval(
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
       }
     }
@@ -2479,6 +2483,11 @@ export async function checkToolApproval(
     ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
     ...(browserExecutionPin ? { browserExecution: browserExecutionPin } : {}),
   };
+  } catch (error) {
+    if (error instanceof TeamConfirmationPendingError) {
+      return { decision: 'deny', reason: getI18n().commandConfirm.teamPendingConfirmation };
+    }
+    throw error;
   } finally {
     if (teamFileScope) disposeAuthorizationScope(teamFileScope);
   }

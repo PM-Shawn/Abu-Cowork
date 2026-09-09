@@ -1,3 +1,4 @@
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -38,7 +39,13 @@ export function findStalledDispatches(now: number): StalledDispatch[] {
     if (!conversation?.teamId) continue;
     for (const dispatch of collectMemberDispatches({ conversationId, executions, messages: conversation.messages })) {
       if (!dispatch.live || dispatch.status !== 'running' || dispatch.lastActivityAt === undefined) continue;
-      const minutes = Math.floor((now - dispatch.lastActivityAt) / 60_000);
+      const approvals = useTeamConfirmationStore.getState();
+      if (Object.values(approvals.pending).some((item) => approvals.waiting[item.id]
+        && item.conversationId === conversationId && item.identity?.dispatchId === dispatch.key)) continue;
+      const activity = approvals.permissionActivity[JSON.stringify([conversationId, dispatch.key])];
+      const lastActivity = activity?.conversationId === conversationId
+        ? Math.max(dispatch.lastActivityAt, activity.at) : dispatch.lastActivityAt;
+      const minutes = Math.floor((now - lastActivity) / 60_000);
       if (minutes >= STALL_STOP_MINUTES) stalled.push({ conversationId, key: dispatch.key, agent: dispatch.agent, minutes });
     }
   }

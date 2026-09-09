@@ -9,6 +9,9 @@
 // fail-closed baseline, the confirmation seam that stands in for a human who is
 // not there, and (R1) the one attended path the row's own 'allow' now decides.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
+import { respondToTeamConfirmation } from '../agent/teamConfirmations';
+import { setLoopContext, clearLoopContext } from '../agent/permissionBridge';
 import { checkToolApproval } from './registry';
 import { createBrowserDenialTracker } from '../agent/browserDenialTracker';
 import { mcpManager } from '../mcp/client';
@@ -134,6 +137,52 @@ describe('browser gate — operation-class policy', () => {
     (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
     __resetUnattendedConfirmationForTests();
     __resetBrowserGrantsForTests();
+  });
+
+  it('real team bridge keeps browser calls pending without denial accounting and resumes only the approved call', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-09T00:00:00Z'));
+    const abort = new AbortController();
+    const denied = vi.fn();
+    useChatStore.setState({ conversations: { [OWNER]: { id: OWNER, title: 'team', teamId: 't', createdAt: 1, updatedAt: 1, status: 'running', messages: [] } } });
+    useTeamConfirmationStore.setState({ pending: {}, waiting: {}, permissionActivity: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
+    useSettingsStore.setState({ browserOperationPolicy: policyWith('scripting', 'ask') });
+    withTabOrigin(ALLOWED_URL);
+    setLoopContext('team-loop', { conversationId: OWNER, loopId: 'team-loop', signal: abort.signal } as never);
+    const context = { conversationId: OWNER, loopId: 'team-loop', abortSignal: abort.signal, agentName: 'Designer', reportBrowserDenial: denied };
+    try {
+      const first = checkToolApproval('abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' }, { ...context, toolCallId: 'one' }, requestCommandConfirmation);
+      const second = checkToolApproval('abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '2' }, { ...context, toolCallId: 'two', agentName: 'Developer' }, requestCommandConfirmation);
+      await vi.waitFor(() => expect(Object.keys(useTeamConfirmationStore.getState().waiting)).toHaveLength(2));
+      expect(denied).not.toHaveBeenCalled();
+      const records = Object.values(useTeamConfirmationStore.getState().pending);
+      const a = records.find((item) => item.identity?.callId === 'one')!;
+      const b = records.find((item) => item.identity?.callId === 'two')!;
+      expect(a.member).toBe('Designer');
+      expect(b.member).toBe('Developer');
+      respondToTeamConfirmation(a.id, true);
+      await expect(first).resolves.toMatchObject({ decision: 'allow' });
+      expect(useTeamConfirmationStore.getState().waiting[b.id]).toBe(true);
+      expect(denied).not.toHaveBeenCalled();
+      respondToTeamConfirmation(b.id, false);
+      await expect(second).resolves.toMatchObject({ decision: 'deny' });
+      expect(denied).toHaveBeenCalledTimes(1);
+      const third = checkToolApproval('abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '3' }, { ...context, toolCallId: 'three' }, requestCommandConfirmation);
+      const cancelled = expect(third).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.waitFor(() => expect(Object.keys(useTeamConfirmationStore.getState().waiting)).toHaveLength(1));
+      abort.abort();
+      await cancelled;
+      expect(denied).toHaveBeenCalledTimes(1);
+      const deferred = await checkToolApproval('abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '4' }, { ...context, abortSignal: undefined, toolCallId: 'four' }, requestCommandConfirmation);
+      expect(deferred.decision).toBe('deny');
+      expect(deferred.reason).toBe(getI18n().commandConfirm.teamPendingConfirmation);
+      expect(denied).toHaveBeenCalledTimes(1);
+    } finally {
+      abort.abort();
+      clearLoopContext('team-loop');
+      useTeamConfirmationStore.getState().clearConversation(OWNER);
+      vi.useRealTimers();
+    }
   });
 
   describe('master switch (default: off)', () => {

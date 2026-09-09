@@ -1,3 +1,4 @@
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Orchestration tools — deterministic fan-out + join for multi-agent workflows.
  *
@@ -99,6 +100,7 @@ export function runWithTimeout<T>(
   factory: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
   parentSignal?: AbortSignal,
+  approvalDispatch?: { conversationId: string; key: string },
 ): Promise<T> {
   const controller = new AbortController();
 
@@ -111,20 +113,44 @@ export function runWithTimeout<T>(
   }
 
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let unsubscribe = () => {};
 
   // Single outer promise avoids a floating rejected timeoutPromise that would
   // trigger Vitest / Node unhandledRejection events between the timer callback
   // running synchronously and the microtask handlers being called.
   return new Promise<T>((resolve, reject) => {
-    timeoutHandle = setTimeout(() => {
-      controller.abort();
-      reject(new Error(getI18n().toolResult.orchestration.errTimeout));
-    }, timeoutMs);
+    let remaining = timeoutMs;
+    let startedAt = Date.now();
+    const schedule = () => {
+      startedAt = Date.now();
+      timeoutHandle = setTimeout(() => {
+        controller.abort();
+        reject(new Error(getI18n().toolResult.orchestration.errTimeout));
+      }, remaining);
+    };
+    schedule();
+    if (approvalDispatch) {
+      // Human response time does not spend this member's execution budget.
+      // Other members keep their own clocks, and resuming preserves the budget.
+      const update = () => {
+        const state = useTeamConfirmationStore.getState();
+        const waiting = Object.values(state.pending).some((item) => state.waiting[item.id]
+          && item.conversationId === approvalDispatch.conversationId && item.identity?.dispatchId === approvalDispatch.key);
+        if (waiting && timeoutHandle !== undefined) {
+          remaining = Math.max(0, remaining - (Date.now() - startedAt));
+          clearTimeout(timeoutHandle);
+          timeoutHandle = undefined;
+        } else if (!waiting && timeoutHandle === undefined) schedule();
+      };
+      unsubscribe = useTeamConfirmationStore.subscribe(update);
+      update();
+    }
     // Attach to factory; once the outer promise settles, subsequent
     // resolve/reject calls are no-ops (Promise semantics).
     factory(controller.signal).then(resolve, reject);
   }).finally(() => {
     clearTimeout(timeoutHandle);
+    unsubscribe();
     if (parentSignal) {
       parentSignal.removeEventListener('abort', onParentAbort);
     }
@@ -657,6 +683,9 @@ export const runAgentBatchTool: ToolDefinition = {
             })),
             SUBAGENT_WALLCLOCK_TIMEOUT_MS,
             loopCtx?.signal,
+            toolExecContext?.teamRoster && toolExecContext.interactionMode !== 'background'
+              ? { conversationId: batchIdentity.conversationId, key: `${batchIdentity.batchToolCallId}:${idx}` }
+              : undefined,
           );
           // Define-done check: declared artifacts must exist, whatever the text says.
           if (resolved.expectedFiles.length > 0) {

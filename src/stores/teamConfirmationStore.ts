@@ -42,6 +42,9 @@ export function confirmationKey(item: Pick<TeamConfirmation, 'conversationId' | 
 
 interface TeamConfirmationState {
   pending: Record<string, TeamConfirmation>;
+  /** Live resolvers are held by the shell, never persisted. */
+  waiting: Record<string, true>;
+  permissionActivity: Record<string, { conversationId: string; loopId: string; at: number }>;
   approvedOnce: Record<string, Approval>;
   runRules: Record<string, Approval>;
   /** UI-owned handoff, inert until its specific queued turn starts. Never persisted. */
@@ -50,6 +53,8 @@ interface TeamConfirmationState {
 interface TeamConfirmationActions {
   add: (item: TeamConfirmationInput) => TeamConfirmation | null;
   remove: (id: string) => void;
+  setWaiting: (id: string, waiting: boolean) => void;
+  finishWaiting: (id: string, at: number) => void;
   selectRetry: (id: string, mode: TeamApprovalMode) => string | undefined;
   beginRetry: (conversationId: string, loopId: string, selectionId?: string) => void;
   claimDispatch: (conversationId: string, loopId: string, dispatchId: string, fingerprint: string, member: string) => void;
@@ -64,7 +69,7 @@ export function pendingFor(pending: Record<string, TeamConfirmation>, conversati
 }
 export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
   persist(immer((set, get) => ({
-    pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {},
+    pending: {}, waiting: {}, permissionActivity: {}, approvedOnce: {}, runRules: {}, retrySelections: {},
     add: (item) => {
       // Keep separate calls separate, even when their presentation/parameters match.
       const duplicate = Object.values(get().pending).some((old) => confirmationKey(old) === confirmationKey(item)
@@ -75,10 +80,21 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
       set((s) => { s.pending[entry.id] = entry; });
       return entry;
     },
-    remove: (id) => set((s) => { delete s.pending[id]; }),
+    remove: (id) => set((s) => { delete s.pending[id]; delete s.waiting[id]; }),
+    setWaiting: (id, waiting) => set((s) => {
+      if (waiting && s.pending[id]) s.waiting[id] = true;
+      else delete s.waiting[id];
+    }),
+    finishWaiting: (id, at) => set((s) => {
+      const item = s.pending[id];
+      if (item?.identity) s.permissionActivity[JSON.stringify([item.conversationId, item.identity.dispatchId])] = {
+        conversationId: item.conversationId, loopId: item.identity.loopId, at,
+      };
+      delete s.waiting[id]; delete s.pending[id];
+    }),
     selectRetry: (id, mode) => {
       const item = get().pending[id];
-      if (!item || !isRetryableTeamIdentity(item.identity)) return undefined;
+      if (!item || get().waiting[id] || !isRetryableTeamIdentity(item.identity)) return undefined;
       set((s) => { s.retrySelections[id] = { item, mode }; delete s.pending[id]; });
       return id;
     },
@@ -114,7 +130,7 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
       return true;
     },
     revoke: (id) => set((s) => {
-      delete s.pending[id]; delete s.retrySelections[id]; delete s.approvedOnce[id]; delete s.runRules[id];
+      delete s.waiting[id]; delete s.pending[id]; delete s.retrySelections[id]; delete s.approvedOnce[id]; delete s.runRules[id];
     }),
     clearRun: (conversationId, loopId) => set((s) => {
       clearTeamConfirmationIdentities(conversationId, loopId);
@@ -123,11 +139,18 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
           if (approval.item.conversationId === conversationId && approval.loopId === loopId) delete grants[id];
         }
       }
-      // Refused requests stay visible for a later explicit retry. They confer no authority.
+      for (const [id, item] of Object.entries(s.pending)) {
+        if (item.conversationId === conversationId && item.identity?.loopId === loopId) delete s.waiting[id];
+      }
+      for (const [key, activity] of Object.entries(s.permissionActivity)) {
+        if (activity.conversationId === conversationId && activity.loopId === loopId) delete s.permissionActivity[key];
+      }
+      // Stopped requests stay visible for a later explicit retry. They confer no authority.
     }),
     clearConversation: (conversationId) => set((s) => {
       clearTeamConfirmationIdentities(conversationId);
-      for (const [id, item] of Object.entries(s.pending)) if (item.conversationId === conversationId) delete s.pending[id];
+      for (const [id, item] of Object.entries(s.pending)) if (item.conversationId === conversationId) { delete s.pending[id]; delete s.waiting[id]; }
+      for (const [key, activity] of Object.entries(s.permissionActivity)) if (activity.conversationId === conversationId) delete s.permissionActivity[key];
       for (const grants of [s.approvedOnce, s.runRules, s.retrySelections]) {
         for (const [id, approval] of Object.entries(grants)) if (approval.item.conversationId === conversationId) delete grants[id];
       }
@@ -143,7 +166,7 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
     // Explicitly discard old persisted approvedOnce tickets as well as new runtime fields.
     merge: (persisted, current) => ({ ...current,
       pending: (persisted as Partial<TeamConfirmationState> | undefined)?.pending ?? {},
-      approvedOnce: {}, runRules: {}, retrySelections: {},
+      waiting: {}, permissionActivity: {}, approvedOnce: {}, runRules: {}, retrySelections: {},
     }),
   }),
 );

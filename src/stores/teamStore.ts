@@ -41,7 +41,7 @@ export interface Team {
   avatar?: string;
   /** Card subtitle; absent = leader and member count. */
   description?: string;
-  /** Self-introduction shown in the detail and chat welcome. */
+  /** Greeting shown only on first contact, before the user sends a task. */
   intro?: string;
   /** Display-only areas of expertise, matching agent metadata. */
   expertise?: string[];

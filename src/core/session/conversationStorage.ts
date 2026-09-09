@@ -1805,16 +1805,17 @@ export async function updateLastMessage(
  * Load all messages from a conversation JSONL file.
  * Populates the dedup cache so subsequent writes skip already-persisted messages.
  */
-export async function loadMessages(convId: string): Promise<Message[]> {
+export async function loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
   await ensureBase();
   const path = messagesPath(convId);
   if (!(await exists(path))) return [];
 
-  // File-level read failure → empty list (same contract as before).
+  // Display reads keep the tolerant contract; receipt recovery must distinguish a read failure from an empty ledger.
   let raw: string;
   try {
     raw = await readTextFile(path);
   } catch (err) {
+    if (options?.strictRead) throw err;
     console.warn(
       `[conversationStorage] loadMessages(${convId}) readTextFile failed:`,
       err,

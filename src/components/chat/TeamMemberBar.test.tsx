@@ -42,7 +42,7 @@ describe('TeamMemberBar', () => {
     const bar = screen.getByTestId('team-member-bar');
     expect(bar).toHaveAttribute('data-collapsed', 'true');
     expect(bar).toHaveTextContent('zz数据分析师');
-    expect(bar).toHaveTextContent('1 位队员');
+    expect(bar).toHaveTextContent('1 位专家');
     expect(bar).not.toHaveTextContent('zz取数员');
     fireEvent.click(screen.getByRole('button', { name: '展开成员条' }));
     expect(screen.getByTestId('team-member-bar')).toHaveTextContent('zz取数员');

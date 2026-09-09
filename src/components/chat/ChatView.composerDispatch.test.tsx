@@ -6,6 +6,7 @@ import ChatView from './ChatView';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -13,6 +14,7 @@ import { agentRegistry } from '@/core/agent/registry';
 import { getI18n } from '@/i18n';
 import type { SubagentDefinition } from '@/types';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
+import { teamIdentity, expertIdentity } from '@/core/team/expertContact';
 import {
   clearAllComposerDrafts,
   readComposerDraft,
@@ -89,6 +91,7 @@ async function submitWelcome(text: string): Promise<HTMLTextAreaElement> {
 
 describe('ChatView welcome composer dispatch ownership', () => {
   beforeEach(() => {
+    useWorkspaceStore.setState({ currentPath: null });
     clearAllComposerDrafts();
     dispatchMock.mockReset();
     useChatStore.setState(useChatStore.getInitialState(), true);
@@ -248,7 +251,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
       const welcome = within(screen.getByTestId('team-welcome'));
       expect(welcome.getByRole('heading', { name: '数据小队' })).toBeTruthy();
       expect(welcome.getByText('看数据的小队')).toBeTruthy();
-      expect(welcome.getByText('我们负责取数和出图')).toBeTruthy();
+      expect(welcome.queryByText('我们负责取数和出图')).toBeNull();
       expect(welcome.getByText('分析师')).toBeTruthy();
       expect(welcome.getByText('取数员')).toBeTruthy();
       expect(welcome.getByText(getI18n().team.unknownMember)).toBeTruthy();
@@ -263,6 +266,57 @@ describe('ChatView welcome composer dispatch ownership', () => {
       expect(screen.queryByTestId('team-welcome')).toBeNull();
       expect(screen.queryByText('icon:code/purple')).toBeNull();
       expect(screen.getAllByTestId('agent-avatar').some((avatar) => avatar.dataset.avatarKind === 'icon')).toBe(true);
+    });
+
+    it('shows an explicit first greeting as a message without creating a task or dispatching a model', () => {
+      const team = useTeamStore.getState().teams[0];
+      useChatStore.setState({ pendingTeamId: team.id, pendingExpertContact: { identity: teamIdentity(team), introduction: team.intro } });
+      render(<ChatView />);
+      expect(screen.getByTestId('expert-introduction')).toHaveTextContent('我们负责取数和出图');
+      expect(screen.queryByTestId('team-welcome')).toBeNull();
+      expect(useChatStore.getState().conversationIndex).toEqual({});
+      expect(dispatchMock).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: getI18n().panel.selectWorkspace })).toBeInTheDocument();
+      expect(within(screen.getByTestId('expert-introduction')).queryByRole('button')).toBeNull();
+    });
+
+    it('preserves the expert greeting when its prefilled mention becomes a composer chip', async () => {
+      useChatStore.setState({ pendingAgentName: leader.name, pendingInput: `@${leader.name} `, pendingExpertContact: { identity: expertIdentity(leader, 'zh-CN'), introduction: leader.intro } });
+      render(<ChatView />);
+      await waitFor(() => expect(screen.getByTestId('expert-introduction')).toHaveTextContent('队员开场白'));
+      expect(screen.getByRole('button', { name: `@${leader.name}` })).toBeTruthy();
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('prefills this team’s own prompts without sending or creating history', async () => {
+      const team = useTeamStore.getState().teams[0];
+      useTeamStore.getState().updateTeam(team.id, { samplePrompts: ['Review sales'] });
+      useChatStore.setState({ pendingTeamId: team.id });
+      render(<ChatView />);
+      await userEvent.setup().click(screen.getByRole('button', { name: 'Review sales' }));
+      await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Review sales'));
+      expect(useChatStore.getState().conversationIndex).toEqual({});
+      expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('stages the greeting with the actual first user message on the team route', async () => {
+      configureApiKey();
+      const team = useTeamStore.getState().teams[0];
+      useChatStore.setState({ pendingTeamId: team.id, pendingExpertContact: { identity: teamIdentity(team), introduction: team.intro } });
+      dispatchMock.mockImplementation(async (id: string, text: string) => {
+        useChatStore.getState().addMessage(id, { id: 'first-answer', role: 'user', content: text, timestamp: 101 });
+        return { reason: 'completed' };
+      });
+      render(<ChatView />);
+      act(() => useWorkspaceStore.setState({ currentPath: '/workspace/first-contact' }));
+      await submitWelcome('For colleagues');
+      await waitFor(() => expect(dispatchMock).toHaveBeenCalledOnce());
+      const id = useChatStore.getState().activeConversationId!;
+      expect(useChatStore.getState().conversations[id].workspacePath).toBe('/workspace/first-contact');
+      expect(useChatStore.getState().conversations[id].messages).toMatchObject([
+        { introduction: { key: `team:${team.id}` }, content: team.intro },
+        { content: 'For colleagues', expertContactKey: `team:${team.id}` },
+      ]);
     });
 
     it('uses the active empty conversation pin and hides the team when the pin is removed', () => {

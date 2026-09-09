@@ -1,11 +1,11 @@
 /**
- * Real-Electron smoke for the 团队 (Agent Team) management surface — shipped by
+ * Real-Electron smoke for the 专家团 (Agent Team) management surface — shipped by
  * MVP (docs/abu-team-prd-v2.md). Deterministic per TESTING.md: no LLM provider
  * is configured and nothing here triggers a model run — this covers the
  * management journeys only (execution paths live in orchestrator unit tests).
  *
  * Journey: sidebar entry is there out of the box → tab order
- * 队员·团队 (task board shelved) → create a team with a builtin leader →
+ * 专家·专家团 (task board shelved) → create a team with a builtin leader →
  * team survives an app restart → a row opens the read-only detail (not the
  * edit form) → 删除 behind "…" removes it for good.
  */
@@ -52,12 +52,12 @@ test.describe('team management surface', () => {
       const labels = await nav.locator('button').allInnerTexts();
       const tabLabels = labels
         .map((l) => l.trim().replace(/\d+$/, '').trim())
-        .filter((l) => ['任务', '收件箱', '队员', '团队'].includes(l));
-      expect(tabLabels).toEqual(['队员', '团队']);
+        .filter((l) => ['任务', '收件箱', '专家', '专家团'].includes(l));
+      expect(tabLabels).toEqual(['专家', '专家团']);
 
       // ---- Create a team with a builtin leader ----------------------------
-      await nav.getByRole('button', { name: '团队' }).click();
-      await page.getByText('新建团队').first().click();
+      await nav.getByRole('button', { name: '专家团' }).click();
+      await page.getByText('新建专家团').first().click();
       await expect(page.getByTestId('team-name-input')).toBeVisible();
       await page.getByTestId('team-name-input').fill(TEAM_NAME);
       const save = page.getByTestId('team-save');
@@ -79,12 +79,12 @@ test.describe('team management surface', () => {
       page = await launched.app.firstWindow();
       await waitForApp(page);
       await openTeamSurface(page);
-      await page.getByTestId('top-tab-nav').getByRole('button', { name: '团队' }).click();
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家团' }).click();
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
 
       // ---- Detail (not the edit form) → delete ----------------------------
       // A row opens the read-only detail; 编辑 and 删除 live behind "…",
-      // matching the 队员 detail. Archive is gone: a team is deleted outright.
+      // matching the 专家 detail. Archive is gone: a team is deleted outright.
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
       await expect(page.getByTestId('team-detail-start-chat')).toBeVisible();
       await expect(page.getByTestId('team-name-input')).toHaveCount(0);
@@ -97,14 +97,14 @@ test.describe('team management surface', () => {
       await page.screenshot({ path: test.info().outputPath('team-editor.png') });
       await page.getByTestId('team-save').click();
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
-      for (const label of ['开场白', '擅长', '推荐提问', INTRO, '需求分析']) {
+      for (const label of ['擅长', '推荐提问', '需求分析']) {
         await expect(page.getByText(label, { exact: true })).toBeVisible();
       }
       await page.screenshot({ path: test.info().outputPath('team-detail.png') });
       await page.getByRole('button', { name: QUESTION, exact: true }).click();
       const welcome = page.getByTestId('team-welcome');
       await expect(welcome.getByRole('heading', { name: TEAM_NAME })).toBeVisible();
-      await expect(welcome.getByText(INTRO, { exact: true })).toBeVisible();
+      await expect(page.getByText(INTRO, { exact: true })).toHaveCount(0);
       await expect(welcome.getByText('产品经理', { exact: true })).toBeVisible();
       await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue(QUESTION);
       // The team pin is durable; the question remains a draft, with no message.
@@ -112,19 +112,18 @@ test.describe('team management surface', () => {
         const stored = JSON.parse(localStorage.getItem('abu-chat') ?? '{}');
         return Object.values(stored.state.conversationIndex) as Array<{ teamId?: string; messageCount: number }>;
       });
-      expect(conversations.filter((conversation) => conversation.teamId)).toHaveLength(1);
-      expect(conversations.find((conversation) => conversation.teamId)?.messageCount).toBe(0);
+      expect(conversations.filter((conversation) => conversation.teamId)).toHaveLength(0);
       await page.screenshot({ path: test.info().outputPath('team-welcome.png') });
 
       await openTeamSurface(page);
-      await page.getByTestId('top-tab-nav').getByRole('button', { name: '团队', exact: true }).click();
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家团', exact: true }).click();
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
       await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-delete').click();
       // The "…" menu closes on click, so the ConfirmDialog's is the only 删除 left.
       await page.getByRole('button', { name: '删除', exact: true }).last().click();
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toHaveCount(0);
-      await expect(page.getByText('还没有团队')).toBeVisible();
+      await expect(page.getByText('还没有专家团')).toBeVisible();
 
       await closeAbuElectron(launched.app);
     } finally {
@@ -140,8 +139,8 @@ test.describe('team management surface', () => {
       await waitForApp(page);
       await dismissFirstRunOverlays(page);
       for (const [tab, trigger, prompt] of [
-        ['团队', 'team-create-trigger', '帮我组建一个团队，我的需求是：'],
-        ['队员', 'member-create-trigger', '帮我创建一个队员，我的需求是：'],
+        ['专家团', 'team-create-trigger', '帮我组建一个专家团，我的需求是：'],
+        ['专家', 'member-create-trigger', '帮我创建一个专家，我的需求是：'],
       ]) {
         await openTeamSurface(page);
         await page.getByTestId('top-tab-nav').getByRole('button', { name: tab, exact: true }).click();
@@ -153,7 +152,7 @@ test.describe('team management surface', () => {
       }
       await page.screenshot({ path: test.info().outputPath('member-ai-create.png') });
       await openTeamSurface(page);
-      await page.getByTestId('top-tab-nav').getByRole('button', { name: '队员', exact: true }).click();
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家', exact: true }).click();
       await page.getByTestId('member-create-trigger').click();
       await page.getByText('手动创建', { exact: true }).click();
       await expect(page.getByTestId('avatar-picker')).toBeVisible();

@@ -67,6 +67,6 @@ describe('TeamTab', () => {
   it('explains when the conversation has no team', () => {
     useChatStore.setState((s) => ({ conversations: { c1: { ...s.conversations.c1, teamId: undefined } } }));
     render(<TeamTab conversationId="c1" />);
-    expect(screen.getByText('这个对话没有指定团队。')).toBeInTheDocument();
+    expect(screen.getByText('这个对话没有指定专家团。')).toBeInTheDocument();
   });
 });

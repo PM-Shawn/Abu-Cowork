@@ -4,6 +4,8 @@ import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore } from '@/stores/chatStore';
+import { prepareExpertEntry } from '@/core/team/expertEntry';
+import { teamIdentity } from '@/core/team/expertContact';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
@@ -266,7 +268,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         </div>
         <div>
           <label htmlFor="team-intro" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldIntro}</label>
-          <Textarea id="team-intro" value={intro} onChange={(e) => setIntro(e.target.value)} rows={3} className="mt-1" />
+          <Textarea id="team-intro" value={intro} onChange={(e) => setIntro(e.target.value)} placeholder={t.toolbox.agentIntroPlaceholder} rows={3} className="mt-1" />
         </div>
         <div>
           <label htmlFor="team-expertise" className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldExpertise}</label>
@@ -299,17 +301,12 @@ export default function TeamView() {
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
-  const createConversation = useChatStore((s) => s.createConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
-  const setPendingAgent = useChatStore((s) => s.setPendingAgent);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
 
-  // Both detail actions create a fresh team conversation. A suggested prompt
-  // only prefills it; sending always belongs to the user.
+  // Prepare a draft; opening an expert never creates an empty history entry.
   const startChatWithTeam = (team: Team, prompt?: string) => {
-    setPendingAgent(null);
-    createConversation(null, { teamId: team.id });
-    if (prompt) setPendingInput(prompt);
+    prepareExpertEntry({ identity: teamIdentity(team), introduction: team.intro }, prompt);
     setDetailTeam(null);
     setDetailMenuOpen(false);
     closeTeam();
@@ -534,12 +531,6 @@ export default function TeamView() {
                 <div>
                   <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeaderNote}</div>
                   <div className="whitespace-pre-wrap text-body text-[var(--abu-text-secondary)]">{detailTeam.leaderNote.trim()}</div>
-                </div>
-              )}
-              {detailTeam.intro?.trim() && (
-                <div>
-                  <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailIntro}</div>
-                  <div className="whitespace-pre-wrap text-body text-[var(--abu-text-secondary)]">{detailTeam.intro}</div>
                 </div>
               )}
               {!!detailTeam.expertise?.length && (

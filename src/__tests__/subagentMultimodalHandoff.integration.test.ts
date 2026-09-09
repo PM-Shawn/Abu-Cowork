@@ -47,7 +47,7 @@ vi.mock('../core/agent/orchestrator', async () => {
   return {
     ...actual,
     routeInput: vi.fn((input: string) => input.startsWith('@researcher')
-      ? { type: 'delegate', cleanInput: 'Describe it.', name: 'researcher', delegateAgent: {
+      ? { type: 'delegate', cleanInput: input.slice('@researcher'.length).trim(), name: 'researcher', delegateAgent: {
         name: 'researcher', description: 'test', systemPrompt: 'test', filePath: '__preset__',
       } }
       : { type: 'general', cleanInput: input, name: 'abu' }),
@@ -177,6 +177,21 @@ describe('multimodal delegation route × runtime matrix', () => {
     useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } } as never);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it.each(['local', 'sidecar'] as const)('a short first-contact reply reaches the actual expert with greeting as user data (%s)', async (runtime) => {
+    state.runtime = runtime;
+    const chat = useChatStore.getState();
+    const conversationId = chat.createConversation();
+    chat.stageExpertContact(conversationId, { identity: { kind: 'agent', key: 'agent:test:researcher', name: 'Researcher', agentName: 'researcher' }, introduction: 'Who is this report for?' });
+    await runAgentLoop(conversationId, '@researcher Colleagues');
+    const payload = JSON.stringify((state.chats[0] as Array<{ role: string; content: unknown }>).find((message) => message.role === 'user')?.content);
+    expect(payload).toContain('Who is this report for?');
+    expect(payload).toContain('Colleagues');
+    expect(JSON.stringify(state.adapterCalls.at(-1)?.options)).not.toContain('Who is this report for?');
+    if (runtime === 'sidecar') expect(JSON.stringify(state.sidecarRequests)).toContain('Who is this report for?');
+    // A distinct identity must not inherit the previous case's completed receipt.
+    useChatStore.setState({ expertContactReceipts: {} });
+  });
 
   it.each(['local', 'sidecar'] as const)('direct @agent reaches the child adapter with image content (%s)', async (runtime) => {
     state.runtime = runtime;

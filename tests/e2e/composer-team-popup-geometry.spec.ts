@@ -109,7 +109,7 @@ test.describe('composer @ popup geometry', () => {
         // …open unscrolled…
         expect(g.scrollTop).toBe(0);
         // …with the 团队 header the first thing in it, fully inside its own box.
-        expect(g.groupLabels[0]).toBe('团队');
+        expect(g.groupLabels[0]).toBe('专家团');
         expect(g.headerTop).not.toBeNull();
         expect(g.headerTop as number).toBeGreaterThanOrEqual(g.boxTop);
         expect(g.headerBottom as number).toBeLessThanOrEqual(g.boxBottom);

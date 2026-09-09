@@ -918,7 +918,7 @@ describe('ChatInput inline agent selection', () => {
     expect(onSend).toHaveBeenCalledWith('@publisher 请帮我优化这段文字', undefined, null, expect.any(Function));
   });
 
-  it('groups @ suggestions into 团队 / 队员 sections, names only, and ArrowUp does not wrap', async () => {
+  it('groups @ suggestions into 专家团 / 专家 sections, names only, and ArrowUp does not wrap', async () => {
     const { useTeamStore } = await import('@/stores/teamStore');
     useTeamStore.setState({
       teams: [{ id: 'tm1', name: 'zz数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }]
@@ -930,10 +930,10 @@ describe('ChatInput inline agent selection', () => {
 
       const listbox = screen.getByRole('listbox');
       const groups = within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'));
-      expect(groups).toEqual(['Teams', 'Members']); // test locale is en-US
+      expect(groups).toEqual(['Expert Teams', 'Experts']); // test locale is en-US
       const teamOption = screen.getByRole('option', { name: /zz数据小队/ });
-      expect(teamOption.closest('[role="group"]')?.getAttribute('aria-label')).toBe('Teams');
-      expect(screen.getByRole('option', { name: /publisher/ }).closest('[role="group"]')?.getAttribute('aria-label')).toBe('Members');
+      expect(teamOption.closest('[role="group"]')?.getAttribute('aria-label')).toBe('Expert Teams');
+      expect(screen.getByRole('option', { name: /publisher/ }).closest('[role="group"]')?.getAttribute('aria-label')).toBe('Experts');
       // Names only — the agent description must not be rendered.
       expect(within(listbox).queryByText(/Publish/)).toBeNull();
 
@@ -1031,19 +1031,19 @@ describe('ChatInput inline agent selection', () => {
       }
     });
 
-    it('the + menu offers 添加文件 / 队员·团队 / 技能 and the team entry opens the grouped @ picker', async () => {
+    it('the + menu offers 添加文件 / 专家·专家团 / 技能 and the team entry opens the grouped @ picker', async () => {
       const useTeamStore = await seedTeam();
       try {
         render(<ChatInput variant="welcome" onSend={vi.fn()} />);
         fireEvent.click(screen.getByTestId('composer-plus'));
         const menu = await screen.findByRole('menu');
-        expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Add files', 'Member · Team', 'Skill']);
+        expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Add files', 'Expert · Expert Team', 'Skill']);
 
         fireEvent.click(screen.getByTestId('composer-menu-team'));
         const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
         await waitFor(() => expect(textarea.value).toBe('@'));
         const listbox = await screen.findByRole('listbox');
-        expect(within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Teams', 'Members']);
+        expect(within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Expert Teams', 'Experts']);
       } finally {
         useTeamStore.setState({ teams: []});
       }
@@ -1070,7 +1070,7 @@ describe('ChatInput inline agent selection', () => {
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '@pub' } });
 
-    expect(screen.getByRole('listbox')).toHaveAccessibleName('Agent and skill suggestions');
+    expect(screen.getByRole('listbox')).toHaveAccessibleName('Expert and skill suggestions');
     expect(screen.getByRole('option', { name: /publisher/ })).toBeTruthy();
   });
 

@@ -794,9 +794,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId) ?? null : null
   ));
   const pinTeam = useCallback((teamId: string | undefined) => {
+    if (!activeConvId && teamId) useChatStore.getState().setPendingAgent(null);
     if (activeConvId) setConversationTeamId(activeConvId, teamId);
     else setPendingTeamId(teamId);
   }, [activeConvId, setConversationTeamId, setPendingTeamId]);
+
+  useEffect(() => {
+    if (!activeConvId && selectedAgent) useChatStore.getState().setPendingAgent(selectedAgent.name);
+  }, [activeConvId, selectedAgent]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -906,7 +911,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   // Consume pending input (just set text; auto-selection handled in a later effect)
   useEffect(() => {
-    if (pendingInput) {
+    if (pendingInput !== null) {
       const pendingSelection = { start: pendingInput.length, end: pendingInput.length };
       pendingSelectionRef.current = pendingSelection;
       setText(pendingInput);
@@ -1298,6 +1303,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const removeAgent = () => {
     setSelectedAgent(null);
+    if (!activeConvId) useChatStore.getState().setPendingAgent(null);
     textareaRef.current?.focus();
   };
 
@@ -1629,6 +1635,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // The menu means "pick a new one": both chips are cleared, or the mention
     // picker stays gated off (agentMentionTarget bails on a skill chip).
     setSelectedAgent(null);
+    if (!activeConvId) useChatStore.getState().setPendingAgent(null);
     setSelectedSkill(null);
     pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
     setText(nextText);

@@ -20,6 +20,7 @@
  * nothing was red. Those cases go through the real wire, which is why the stub
  * carries a socket and the tab/scripting surface the request path uses.
  */
+import { runInNewContext } from 'node:vm';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const APPROVED = 'https://shop.example.com';
@@ -40,7 +41,16 @@ interface FakeTab { id: number; windowId: number; url: string; title: string; ac
 /** Tabs the fake Chrome knows about. Tests reshape this per case. */
 let tabs: FakeTab[] = [];
 /** Every `chrome.scripting.executeScript` the worker performed. */
-const injected: { tabId: number; world?: string; args?: unknown[] }[] = [];
+const injected: { tabId: number; world?: string; args?: unknown[]; documentIds?: string[] }[] = [];
+let currentDocumentId = 'document-a';
+let beforeProbe: (() => void) | null = null;
+let beforeMain: (() => void) | null = null;
+let probeAnswer: unknown[] | null = null;
+let probeFailure = false;
+let retargetCachedDocument = false;
+let poisonMainPromiseResolution = false;
+const scriptEffects: string[] = [];
+const executedOrigins: string[] = [];
 /** Every `chrome.tabs.captureVisibleTab` — the pixels that left the browser. */
 const captured: number[] = [];
 /** Every `chrome.tabs.sendMessage` — the full-page capture's first move. */
@@ -131,10 +141,39 @@ function fakeChrome(): Record<string, unknown> {
     alarms: { create: () => {}, onAlarm: noopListener },
     scripting: {
       executeScript: async (opts: {
-        target: { tabId: number }; world?: string; args?: unknown[];
+        target: { tabId: number; documentIds?: string[]; frameIds?: number[] };
+        world?: string; args?: unknown[]; func: (...args: never[]) => unknown;
       }) => {
-        injected.push({ tabId: opts.target.tabId, world: opts.world, args: opts.args });
-        return [{ result: 'evaluated' }];
+        injected.push({
+          tabId: opts.target.tabId, world: opts.world, args: opts.args,
+          ...(opts.target.documentIds ? { documentIds: opts.target.documentIds } : {}),
+        });
+        const tab = tabs.find((t) => t.id === opts.target.tabId)!;
+        if (opts.world === 'ISOLATED') {
+          expect(opts.target.frameIds).toEqual([0]);
+          beforeProbe?.();
+          if (probeFailure) throw new Error('Cannot access document');
+          if (probeAnswer !== null) return probeAnswer;
+          // Run the serialized function without its module closure, just as
+          // Chrome does. Only this read-only world supplies the document URL.
+          const result = runInNewContext(`(${opts.func.toString()})()`, {
+            location: { href: tab.url },
+          });
+          return [{ frameId: 0, documentId: currentDocumentId, result }];
+        }
+        beforeMain?.();
+        if (!retargetCachedDocument && opts.target.documentIds && !opts.target.documentIds.includes(currentDocumentId)) {
+          throw new Error('No document with id: document-a');
+        }
+        const poison = poisonMainPromiseResolution
+          ? "Object.prototype.then = function(resolve) { resolve({ __proto__: null, originMatched: true, value: 'spoofed' }); };"
+          : '';
+        const result = await Promise.resolve(runInNewContext(`${poison}(${opts.func.toString()})(...args)`, {
+          args: opts.args, location: { href: tab.url, origin: new URL(tab.url).origin },
+          recordEffect: () => scriptEffects.push(tab.url),
+        })).catch(() => null);
+        if (result?.originMatched === true) executedOrigins.push(new URL(tab.url).origin);
+        return [{ frameId: 0, documentId: currentDocumentId, result }];
       },
     },
   };
@@ -177,6 +216,15 @@ beforeAll(async () => {
 
 beforeEach(() => {
   injected.length = 0;
+  currentDocumentId = 'document-a';
+  beforeProbe = null;
+  beforeMain = null;
+  probeAnswer = null;
+  probeFailure = false;
+  retargetCachedDocument = false;
+  poisonMainPromiseResolution = false;
+  scriptEffects.length = 0;
+  executedOrigins.length = 0;
   captured.length = 0;
   messaged.length = 0;
   twoTabWindow();
@@ -323,8 +371,11 @@ describe('execute_js: the worker pins the tab it is about to script', () => {
     });
 
     // Before the fix this was `{ success: false, error: 'execTabId is not defined' }`.
-    expect(response).toMatchObject({ success: true, data: 'evaluated' });
-    expect(injected).toEqual([{ tabId: 11, world: 'MAIN', args: ['1 + 1'] }]);
+    expect(response).toMatchObject({ success: true, data: 2 });
+    expect(injected).toEqual([
+      { tabId: 11, world: 'ISOLATED', args: undefined },
+      { tabId: 11, world: 'MAIN', documentIds: ['document-a'], args: ['1 + 1', APPROVED] },
+    ]);
   });
 
   it('refuses, and injects nothing, once the target tab has drifted cross-origin', async () => {
@@ -364,11 +415,114 @@ describe('execute_js: the worker pins the tab it is about to script', () => {
     expect(injected).toEqual([]);
   });
 
-  it('an attended call carrying no pin keeps its exact pre-U5 path', async () => {
+  it('an attended call carrying no pin still binds execution to the observed document', async () => {
     const response = await request('execute_js', { ...OWNER, tabId: 11, code: '1 + 1' });
 
-    expect(response).toMatchObject({ success: true, data: 'evaluated' });
-    expect(injected).toEqual([{ tabId: 11, world: 'MAIN', args: ['1 + 1'] }]);
+    expect(response).toMatchObject({ success: true, data: 2 });
+    expect(injected).toEqual([
+      { tabId: 11, world: 'ISOLATED', args: undefined },
+      { tabId: 11, world: 'MAIN', documentIds: ['document-a'], args: ['1 + 1', APPROVED] },
+    ]);
+  });
+});
+
+
+describe('execute_js document identity across asynchronous navigation (#351)', () => {
+  const payload = {
+    ownerId: 'conv-1', runId: 'run-1', tabId: 11, code: '1 + 1', expectedOrigin: APPROVED,
+  };
+
+  it.each([false, true])('rejects cross-origin drift before the probe (unattended=%s)', async (unattended) => {
+    beforeProbe = () => {
+      tabs[0].url = 'https://evil.example/stolen';
+      currentDocumentId = 'document-b';
+    };
+    const response = await request('execute_js', { ...payload, unattended });
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/no longer on the page this action was approved for/);
+    expect(injected.map((i) => i.world)).toEqual(['ISOLATED']);
+    expect(executedOrigins).toEqual([]);
+  });
+
+  it.each(['https://evil.example/stolen', `${APPROVED}/replacement`])(
+    'never retargets code after the pinned document is replaced by %s', async (url) => {
+      beforeMain = () => { tabs[0].url = url; currentDocumentId = 'document-b'; };
+      const response = await request('execute_js', payload);
+      expect(response.success).toBe(false);
+      expect(response.error).toMatch(/No document with id/);
+      expect(injected.filter((i) => i.world === 'MAIN')).toEqual([
+        { tabId: 11, world: 'MAIN', documentIds: ['document-a'], args: ['1 + 1', APPROVED] },
+      ]);
+      expect(executedOrigins).toEqual([]);
+    },
+  );
+
+  it.each([false, true])('rejects cross-origin retargeting of a cached document before eval (unattended=%s)', async (unattended) => {
+    // Real Chromium 149 with BFCache enabled can resolve an old documentId
+    // through its frame tree node to the new active document.
+    retargetCachedDocument = true;
+    beforeMain = () => { tabs[0].url = 'https://evil.example/stolen'; currentDocumentId = 'document-b'; };
+    const response = await request('execute_js', { ...payload, unattended, code: 'recordEffect();1 + 1' });
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/page origin changed before script execution/);
+    expect(scriptEffects).toEqual([]);
+    expect(executedOrigins).toEqual([]);
+    expect(injected.filter((i) => i.world === 'MAIN')).toHaveLength(1);
+  });
+
+  it('does not let a hostile MAIN Promise resolution turn a refusal into success', async () => {
+    retargetCachedDocument = true;
+    poisonMainPromiseResolution = true;
+    beforeMain = () => { tabs[0].url = 'https://evil.example/stolen'; currentDocumentId = 'document-b'; };
+    expect(await request('execute_js', { ...payload, code: 'recordEffect();1 + 1' }))
+      .toMatchObject({ success: false, error: expect.stringMatching(/page origin changed/) });
+    expect(scriptEffects).toEqual([]);
+  });
+
+  it('uses the observed raw FQDN origin after the policy canonicalizes its trailing dot', async () => {
+    tabs[0].url = 'https://shop.example.com./cart';
+    expect(await request('execute_js', payload)).toMatchObject({ success: true, data: 2 });
+  });
+
+  it.each(['null', 'Promise.resolve(null)', 'Promise.resolve(42)'])(
+    'preserves valid script results for %s', async (code) => {
+      expect(await request('execute_js', { ...payload, code }))
+        .toMatchObject({ success: true, data: code.includes('42') ? 42 : null });
+    },
+  );
+
+  it('does not report success when Chrome returns null after an injected error', async () => {
+    expect(await request('execute_js', { ...payload, code: "throw new Error('bad script')" }))
+      .toMatchObject({ success: false, error: expect.stringMatching(/did not return a result/) });
+  });
+
+  it('allows a same-document path change without changing the document target', async () => {
+    beforeMain = () => { tabs[0].url = `${APPROVED}/cart#details`; };
+    expect(await request('execute_js', payload)).toMatchObject({ success: true, data: 2 });
+    expect(executedOrigins).toEqual([APPROVED]);
+  });
+
+  it.each([
+    [],
+    [{ frameId: 0, result: { url: `${APPROVED}/cart` } }],
+    [{ frameId: 0, documentId: '', result: { url: `${APPROVED}/cart` } }],
+    [{ frameId: 1, documentId: 'iframe', result: { url: `${APPROVED}/cart` } }],
+    [{ frameId: 0, documentId: 'document-a', result: { url: 'about:blank' } }],
+    [{ frameId: 0, documentId: 'document-a', result: {} }],
+  ])('fails closed on an unusable Chrome identity: %j', async (...rows) => {
+    probeAnswer = rows;
+    const response = await request('execute_js', payload);
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/document identity/);
+    expect(executedOrigins).toEqual([]);
+    expect(injected.map((i) => i.world)).toEqual(['ISOLATED']);
+  });
+
+  it('does not fall back to tab-only execution if the probe fails', async () => {
+    probeFailure = true;
+    expect(await request('execute_js', payload)).toMatchObject({ success: false, error: 'Cannot access document' });
+    expect(injected.map((i) => i.world)).toEqual(['ISOLATED']);
+    expect(executedOrigins).toEqual([]);
   });
 });
 

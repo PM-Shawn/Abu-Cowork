@@ -49,6 +49,7 @@ let probeAnswer: unknown[] | null = null;
 let probeFailure = false;
 let retargetCachedDocument = false;
 let poisonMainPromiseResolution = false;
+let invokeSourceFunction = false;
 const scriptEffects: string[] = [];
 const executedOrigins: string[] = [];
 /** Every `chrome.tabs.captureVisibleTab` — the pixels that left the browser. */
@@ -88,6 +89,31 @@ function twoTabWindow(): void {
     { id: 11, windowId: 1, url: `${APPROVED}/cart`, title: 'cart', active: false },
     { id: 12, windowId: 1, url: 'https://b.example/', title: 'B', active: true },
   ];
+}
+
+/** Source mode keeps V8 coverage attached to the production function. Serialized
+ * mode separately proves Chrome's closure-free execution. Both run real code. */
+async function invokeInjection(
+  func: (...args: never[]) => unknown,
+  args: unknown[],
+  sandbox: Record<string, unknown>,
+  prefix = '',
+): Promise<unknown> {
+  if (!invokeSourceFunction || prefix) {
+    return runInNewContext(`${prefix}(${func.toString()})(...args)`, { ...sandbox, args });
+  }
+  const previous = Object.getOwnPropertyDescriptors(globalThis);
+  try {
+    for (const [key, value] of Object.entries(sandbox)) {
+      Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
+    }
+    return await func(...args as never[]);
+  } finally {
+    for (const key of Object.keys(sandbox)) {
+      if (previous[key]) Object.defineProperty(globalThis, key, previous[key]);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
 }
 
 /** Enough of the extension APIs to drive the real request path. */
@@ -156,7 +182,7 @@ function fakeChrome(): Record<string, unknown> {
           if (probeAnswer !== null) return probeAnswer;
           // Run the serialized function without its module closure, just as
           // Chrome does. Only this read-only world supplies the document URL.
-          const result = runInNewContext(`(${opts.func.toString()})()`, {
+          const result = await invokeInjection(opts.func, [], {
             location: { href: tab.url },
           });
           return [{ frameId: 0, documentId: currentDocumentId, result }];
@@ -168,10 +194,10 @@ function fakeChrome(): Record<string, unknown> {
         const poison = poisonMainPromiseResolution
           ? "Object.prototype.then = function(resolve) { resolve({ __proto__: null, originMatched: true, value: 'spoofed' }); };"
           : '';
-        const result = await Promise.resolve(runInNewContext(`${poison}(${opts.func.toString()})(...args)`, {
-          args: opts.args, location: { href: tab.url, origin: new URL(tab.url).origin },
+        const result = await invokeInjection(opts.func, opts.args ?? [], {
+          location: { href: tab.url, origin: new URL(tab.url).origin },
           recordEffect: () => scriptEffects.push(tab.url),
-        })).catch(() => null);
+        }, poison).catch(() => null) as { originMatched?: boolean } | null;
         if (result?.originMatched === true) executedOrigins.push(new URL(tab.url).origin);
         return [{ frameId: 0, documentId: currentDocumentId, result }];
       },
@@ -223,6 +249,7 @@ beforeEach(() => {
   probeFailure = false;
   retargetCachedDocument = false;
   poisonMainPromiseResolution = false;
+  invokeSourceFunction = false;
   scriptEffects.length = 0;
   executedOrigins.length = 0;
   captured.length = 0;
@@ -427,7 +454,8 @@ describe('execute_js: the worker pins the tab it is about to script', () => {
 });
 
 
-describe('execute_js document identity across asynchronous navigation (#351)', () => {
+describe.each(['source', 'serialized'])('execute_js document identity across asynchronous navigation (#351, %s)', (mode) => {
+  beforeEach(() => { invokeSourceFunction = mode === 'source'; });
   const payload = {
     ownerId: 'conv-1', runId: 'run-1', tabId: 11, code: '1 + 1', expectedOrigin: APPROVED,
   };

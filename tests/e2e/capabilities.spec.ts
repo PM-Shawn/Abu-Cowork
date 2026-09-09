@@ -431,10 +431,15 @@ test.describe.serial('Electron capability overview', () => {
     // Header carries the one-liner, not the paragraph it used to open with.
     await expect(page.getByText(/复用你已登录的 Chrome 标签页/)).toBeVisible();
     await expect(page.getByText(/让阿布在你明确要求时使用现有标签页/)).toHaveCount(0);
-    // One status row, one action — and on a machine with no extension the
-    // action is never "disconnect".
-    await expect(page.getByText(NOT_CONNECTED)).toBeVisible();
-    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
+    // A developer may already have the extension connected to the local
+    // bridge. In either state, the status and sole connection action agree;
+    // this read-only page tour must never disconnect the user's real Chrome.
+    await expect.poll(async () => {
+      const connected = await page.getByText(/^(已连接|Connected)$/).isVisible();
+      const disconnected = await page.getByText(NOT_CONNECTED).isVisible();
+      const disconnectAction = await page.getByRole('button').filter({ hasText: DISCONNECT }).count();
+      return connected ? disconnectAction === 1 : disconnected && disconnectAction === 0;
+    }).toBe(true);
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
     await page.screenshot({ path: iaScreenshot('04-my-chrome-detail-zh') });

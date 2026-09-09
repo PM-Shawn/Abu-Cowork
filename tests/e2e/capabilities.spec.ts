@@ -148,19 +148,11 @@ test.describe.serial('Electron capability overview', () => {
     await expect(builtinBrowser.getByText(READY)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(computerUse.getByText(OFF)).toBeVisible({ timeout: READY_TIMEOUT });
 
-    // This machine has no extension installed, and that is ONE state with one
-    // description. It used to depend on whether the local bridge finished
-    // connecting before the probe answered — amber "setup required" if the
-    // probe won, grey "not connected" if it lost. The badge is now decided by
-    // whether the extension has ever handshaked, which never un-happens, so
-    // the amber fault must not appear at any point.
-    await expect(myChrome.getByText(NOT_CONNECTED))
+    // The host's real Chrome extension can handshake while this isolated
+    // Electron profile is open. Both states are valid; neither is a setup fault.
+    await expect(myChrome.getByText(NOT_CONNECTED).or(myChrome.getByText(READY)))
       .toBeVisible({ timeout: READY_TIMEOUT });
     await expect(myChrome.getByText(SETUP_REQUIRED)).toHaveCount(0);
-    await expect(myChrome.getByText(READY)).toHaveCount(0);
-
-    // Not connected is not a fault, so the card spends its one line on what
-    // connecting would buy rather than restating the badge next to it.
     await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
     // The overview carries decisions ABOUT capabilities, never the rules
     // inside them — those all live one level down now.
@@ -187,20 +179,38 @@ test.describe.serial('Electron capability overview', () => {
     // first-party local bridge is already prepared in the background.
     await myChrome.click();
     await expect(page.getByRole('heading', { name: CHROME_HEADER })).toBeVisible();
-    // Install guidance is for someone with no extension attached, and the
-    // developer-mode warning now lives inside it rather than on its own.
-    await expect(page.getByText(INSTALL_STEPS)).toBeVisible();
-    await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
-    await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
-    // Nothing is connected, so nothing offers to disconnect it.
-    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
     const chromeCheckButton = page.getByRole('button', {
       name: /^(检查连接|Check connection)$/,
     });
-    await expect(chromeCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
-    await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+    const disconnectChrome = page.getByRole('button', {
+      name: /^(断开我的 Chrome|Disconnect My Chrome)$/i,
+    });
+    // Probe a complete state, rather than freezing the disconnected state
+    // observed on the overview before the real extension finished connecting.
+    const expectChromeGuideState = async () => {
+      await expect.poll(async () => {
+        // Disconnect remains visible after a lost handshake; only the live
+        // status distinguishes the connected guide from installation/recovery.
+        if (await page.getByText(/^(已连接|Connected)$/).isVisible()) {
+          return await disconnectChrome.isVisible()
+            && await page.getByRole('heading', { name: ACTION_PERMISSIONS }).isVisible()
+            && await chromeCheckButton.count() === 0
+            && await page.getByText(INSTALL_STEPS).count() === 0
+            && await page.getByText(SETUP_REQUIRED).count() === 0;
+        }
+        return await page.getByText(INSTALL_STEPS).isVisible()
+          && await page.getByText(/local extension|本地扩展/).isVisible()
+          && await page.getByText(/Chrome Web Store|Chrome 应用商店/).isVisible()
+          && await chromeCheckButton.isEnabled().catch(() => false)
+          && await chromeCheckButton.locator('.animate-spin').count() === 0;
+      }, { timeout: READY_TIMEOUT }).toBe(true);
+    };
+    await expectChromeGuideState();
     await page.waitForTimeout(2_500);
-    await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+    // Preserve the no-background-probe observation at this instant, without
+    // allowing another readiness poll to wait out a reappearing spinner.
+    expect(await chromeCheckButton.locator('.animate-spin').count()).toBe(0);
+    await expectChromeGuideState();
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     await computerUse.click();

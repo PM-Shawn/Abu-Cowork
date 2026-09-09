@@ -130,4 +130,14 @@ describe('SkillsSection · sourceFilter="mine"', () => {
     expect(screen.getByText('weather-report')).toBeTruthy();
     expect(screen.getByText('pdf-fill')).toBeTruthy();
   });
+  it.each(['pdf-fill', 'weather-report', 'expense-policy'])('retains detail actions but not independent removal for %s', async (name) => {
+    render(<SkillsSection />);
+    fireEvent.click(await screen.findByText(name));
+    expect(screen.getByTestId('skill-detail')).toBeVisible();
+    fireEvent.click(screen.getByTestId('skill-detail-menu'));
+    expect(screen.getByText(tb().exportSkill)).toBeVisible();
+    expect(screen.getByText(tb().historyMenuLabel)).toBeVisible();
+    expect(screen.queryByText(tb().uninstall)).toBeNull();
+  });
+
 });

@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { closeAbuElectron, dismissFirstRunOverlays, launchAbuElectron, removeElectronDataRoot } from './electronHelpers';
 
-test('skills market has no promotion and can open manual creation', async () => {
+test('released skill cards keep switches, detail actions and creation', async () => {
   const launched = await launchAbuElectron();
   try {
     const page = await launched.app.firstWindow();
@@ -11,14 +11,28 @@ test('skills market has no promotion and can open manual creation', async () => 
     await dismissFirstRunOverlays(page);
     await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
     await page.getByRole('button', { name: '技能', exact: true }).click();
-    await expect(page.getByTestId('extensions-source-market')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('extensions-source-market')).toHaveCount(0);
     await expect(page.getByText('技能通过插件获取', { exact: true })).toHaveCount(0);
-    await expect(page.getByTestId('skills-market-go-plugins')).toHaveCount(0);
-    await expect(page.getByTestId('skill-create-trigger')).toBeVisible();
-    await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-skills-market.png' });
+    const card = page.getByRole('button', { name: /^Abu-Browser / });
+    await expect(card).toBeVisible();
+    const bounds = await card.boundingBox();
+    expect(bounds!.height).toBe(120);
+    expect(bounds!.width).toBeLessThan(500);
+    await card.getByRole('switch').click();
+    await expect(page.getByTestId('skill-detail')).toHaveCount(0);
+    await card.click();
+    const detail = page.locator('[data-electron-no-drag]').filter({ has: page.getByTestId('skill-detail') }).last();
+    await expect(detail).toBeVisible();
+    await expect(detail.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+    await detail.getByRole('switch').click();
+    await detail.getByTestId('skill-detail-menu').click();
+    await expect(detail.getByText('导出', { exact: false })).toBeVisible();
+    await expect(detail.getByText('查看历史', { exact: true })).toBeVisible();
+    await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-skills-detail.png' });
+    await page.keyboard.press('Escape');
+    await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-skills-cards.png' });
     await page.getByTestId('skill-create-trigger').click();
     await page.getByText('手动创建', { exact: true }).click();
-    await expect(page.getByTestId('extensions-source-mine')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByPlaceholder('my-skill')).toBeVisible();
   } finally {
     await closeAbuElectron(launched.app);
@@ -26,7 +40,7 @@ test('skills market has no promotion and can open manual creation', async () => 
   }
 });
 
-test('connectors share row layout and allow adding from either source', async () => {
+test('released connector cards keep template install and connection actions', async () => {
   // A real loopback MCP endpoint keeps the UI flow local and credential-free.
   const server = createServer(async (req, res) => {
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
@@ -53,35 +67,38 @@ test('connectors share row layout and allow adding from either source', async ()
     await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
     await page.getByRole('button', { name: '连接器', exact: true }).click();
     await expect(page.getByText('精选连接器', { exact: true })).toHaveCount(0);
-    const marketRow = page.getByTestId('connector-row').first();
-    await expect(marketRow).toBeVisible();
-    const marketBounds = await marketRow.boundingBox();
-    const marketNameBounds = await marketRow.getByText('github', { exact: true }).boundingBox();
-    await expect(marketRow.getByTestId('connector-add-button')).toHaveAttribute('data-variant', 'ghost');
+    await expect(page.getByTestId('extensions-source-market')).toHaveCount(0);
+    const template = page.getByRole('button', { name: /^github / });
+    await expect(template).toBeVisible();
+    const templateBounds = await template.boundingBox();
+    expect(templateBounds!.height).toBe(120);
+    expect(templateBounds!.width).toBeLessThan(500);
+    await template.click();
+    await expect(page.getByRole('button', { name: '安装', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
     await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-connectors-market.png' });
     await page.getByRole('button', { name: '添加', exact: true }).first().click();
-    await expect(page.getByTestId('extensions-source-mine')).toHaveAttribute('aria-selected', 'true');
     await page.getByPlaceholder('服务器名称').fill('ui-layout-fixture');
     await page.getByRole('button', { name: '远程服务 (HTTP)', exact: true }).click();
     await page.getByPlaceholder('http://localhost:3000/mcp').fill(`http://127.0.0.1:${address.port}/mcp`);
     await page.getByRole('button', { name: '添加', exact: true }).last().click();
-    await expect(page.getByRole('heading', { name: 'ui-layout-fixture', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'ui-layout-fixture 连接器', exact: true })).toBeVisible();
     await page.keyboard.press('Escape');
-    const mineRow = page.getByTestId('connector-row').filter({ hasText: 'ui-layout-fixture' });
-    await expect(mineRow.locator('[title="connected"]')).toBeVisible({ timeout: 30_000 });
-    const mineBounds = await mineRow.boundingBox();
-    const mineNameBounds = await mineRow.getByText('ui-layout-fixture', { exact: true }).boundingBox();
-    expect(marketNameBounds).not.toBeNull();
-    expect(mineNameBounds).not.toBeNull();
-    expect(Math.abs(mineNameBounds!.x - marketNameBounds!.x)).toBeLessThan(2);
-    expect(marketBounds).not.toBeNull();
-    expect(mineBounds).not.toBeNull();
-    expect(Math.abs(mineBounds!.width - marketBounds!.width)).toBeLessThan(2);
-    expect(Math.abs(mineBounds!.height - marketBounds!.height)).toBeLessThan(2);
-    await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-connectors-mine.png' });
-    await mineRow.getByRole('button', { name: 'ui-layout-fixture', exact: true }).focus();
+    const ownCard = page.getByRole('button', { name: /^ui-layout-fixture / });
+    await expect(ownCard.getByRole('switch')).toHaveAttribute('aria-checked', 'true', { timeout: 30_000 });
+    const ownBounds = await ownCard.boundingBox();
+    expect(ownBounds!.height).toBe(120);
+    expect(Math.abs(ownBounds!.width - templateBounds!.width)).toBeLessThan(2);
+    await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-connectors-cards.png' });
+    await ownCard.focus();
     await page.keyboard.press('Enter');
-    await expect(page.getByRole('heading', { name: 'ui-layout-fixture', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'ui-layout-fixture 连接器', exact: true })).toBeVisible();
+    const connection = page.getByTestId('mcp-server-toggle-connection');
+    await connection.click();
+    await expect(connection).toHaveAttribute('data-connected', 'false');
+    await connection.click();
+    await expect(connection).toHaveAttribute('data-connected', 'true');
+    await page.screenshot({ animations: 'disabled', path: 'test-results/extensions-connectors-detail.png' });
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: '添加', exact: true }).first().click();
     await expect(page.getByPlaceholder('服务器名称')).toBeVisible();

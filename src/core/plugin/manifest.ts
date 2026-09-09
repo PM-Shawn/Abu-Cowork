@@ -6,12 +6,18 @@
  * 未找到时回退到 Claude 目录以兼容生态内已有插件。
  */
 
+import { format, getI18n } from '@/i18n';
+import { normalizePluginComponentPath } from './paths';
+import { pluginConfigFields } from './configuration';
+
 /** 单个 MCP server 声明：stdio（command/args/env）或 http/sse（url）二选一。 */
 export interface McpServerSpec {
   command?: string;
   args?: string[];
   url?: string;
   env?: Record<string, string>;
+  headers?: Record<string, string>;
+  transport?: 'stdio' | 'http';
 }
 
 /** 插件在 UI 层展示所需的可选元信息（应用市场卡片、聊天输入区图标等）。 */
@@ -40,11 +46,16 @@ export interface PluginManifest {
   author?: string | { name: string; email?: string };
   license?: string;
   keywords?: string[];
-  skills?: string[];
-  mcpServers?: Record<string, McpServerSpec>;
+  skills?: string | string[];
+  mcpServers?: string | Record<string, McpServerSpec>;
   interface?: PluginInterface;
   // 未知字段前向兼容保留，见 parsePluginManifest 尾部的字段回填。
   [key: string]: unknown;
+}
+
+/** File references resolved within the package before disclosure/installation. */
+export interface ResolvedPluginManifest extends PluginManifest {
+  mcpServers?: Record<string, McpServerSpec>;
 }
 
 /** 清单校验失败时抛出；field 指向具体不合法的字段路径，便于上层定位报错。 */
@@ -139,7 +150,16 @@ function validateInterface(iface: unknown): PluginInterface | undefined {
   return iface as PluginInterface;
 }
 
-function validateMcpServers(mcpServers: unknown): Record<string, McpServerSpec> | undefined {
+function invalidField(field: string): never {
+  // Report the field, not its value: configuration can contain credentials.
+  throw new PluginManifestError(format(getI18n().toolbox.pluginsManifestInvalidField, { field }), field);
+}
+
+function validateOptionalString(value: unknown, field: string): void {
+  if (value !== undefined && typeof value !== 'string') invalidField(field);
+}
+
+export function parseMcpServerMap(mcpServers: unknown): Record<string, McpServerSpec> | undefined {
   if (mcpServers === undefined) return undefined;
   if (!isPlainObject(mcpServers)) {
     throw new PluginManifestError('mcpServers 字段必须是对象', 'mcpServers');
@@ -148,8 +168,37 @@ function validateMcpServers(mcpServers: unknown): Record<string, McpServerSpec> 
     if (!isPlainObject(value)) {
       throw new PluginManifestError(`mcpServers.${key} 必须是对象`, `mcpServers.${key}`);
     }
+    const field = `mcpServers.${key}`;
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(key) || key === 'prototype' || Object.hasOwn(Object.prototype, key)) invalidField(field);
+    // Runtime identity, activation and secret references are assigned by Abu,
+    // never by the package being installed.
+    for (const reserved of ['name', 'enabled', 'pluginConfiguration']) {
+      if (Object.hasOwn(value, reserved)) invalidField(`${field}.${reserved}`);
+    }
+    validateOptionalString(value.command, `${field}.command`);
+    validateOptionalString(value.url, `${field}.url`);
+    if (value.args !== undefined && (!Array.isArray(value.args) || value.args.some((arg) => typeof arg !== 'string'))) {
+      invalidField(`${field}.args`);
+    }
+    if (value.env !== undefined && (!isPlainObject(value.env) || Object.values(value.env).some((entry) => typeof entry !== 'string'))) {
+      invalidField(`${field}.env`);
+    }
+    if (value.headers !== undefined && (!isPlainObject(value.headers) || Object.values(value.headers).some(entry => typeof entry !== 'string'))) invalidField(`${field}.headers`);
+    const hasCommand = typeof value.command === 'string' && value.command.trim().length > 0;
+    const hasUrl = typeof value.url === 'string' && value.url.trim().length > 0;
+    if (hasCommand === hasUrl || (value.command !== undefined && !hasCommand) || (value.url !== undefined && !hasUrl)
+      || (value.transport === 'http' && !hasUrl) || (value.transport === 'stdio' && !hasCommand)) invalidField(`${field}.transport`);
+    if ((hasUrl && (value.args !== undefined || value.env !== undefined)) || (hasCommand && value.headers !== undefined)) invalidField(`${field}.transportFields`);
+    if (value.transport !== undefined && value.transport !== 'stdio' && value.transport !== 'http') invalidField(`${field}.transport`);
+    if ([value.command, value.url, ...(Array.isArray(value.args) ? value.args : [])].some(item => typeof item === 'string' && item.includes('${config.'))) invalidField(`${field}.configurationLocation`);
+
   }
+  try { pluginConfigFields(mcpServers as Record<string, McpServerSpec>); } catch { invalidField('mcpServers.configuration'); }
   return mcpServers as Record<string, McpServerSpec>;
+}
+
+function validateComponentPath(value: string, field: string): void {
+  try { normalizePluginComponentPath(value); } catch { invalidField(field); }
 }
 
 /**
@@ -166,7 +215,20 @@ export function parsePluginManifest(raw: unknown): PluginManifest {
     throw new PluginManifestError('缺少必填字段 name（或 name 不是非空字符串）', 'name');
   }
 
-  const mcpServers = validateMcpServers(raw.mcpServers);
+  validateOptionalString(raw.version, 'version');
+  validateOptionalString(raw.description, 'description');
+  let mcpServers: PluginManifest['mcpServers'];
+  if (typeof raw.mcpServers === 'string') {
+    validateComponentPath(raw.mcpServers, 'mcpServers');
+    mcpServers = raw.mcpServers;
+  } else {
+    mcpServers = parseMcpServerMap(raw.mcpServers);
+  }
+  if (raw.skills !== undefined) {
+    const paths = typeof raw.skills === 'string' ? [raw.skills] : raw.skills;
+    if (!Array.isArray(paths) || paths.some(path => typeof path !== 'string')) invalidField('skills');
+    for (const path of paths) validateComponentPath(path as string, 'skills');
+  }
   const iface = validateInterface(raw.interface);
 
   return {

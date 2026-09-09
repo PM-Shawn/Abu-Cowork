@@ -213,7 +213,7 @@ describe('MCPSection · focusServer', () => {
   it('opens the detail for the named server so 「市场」的 管理 lands somewhere', async () => {
     useMCPStore.setState({ servers: { 'hand-rolled': serverEntry('hand-rolled') } });
     render(<MCPSection sourceFilter="mine" focusServer="hand-rolled" />);
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'hand-rolled' })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('heading', { name: /hand-rolled/ })).toBeTruthy());
   });
 
   it('ignores a server that is not configured', () => {
@@ -267,9 +267,10 @@ describe('MCPSection · prefill does not hijack the form', () => {
     });
     render(<Host />);
 
-    // 「市场」's 管理 opened the detail; the user clicks its edit pencil.
-    await waitFor(() => expect(screen.getByRole('heading', { name: 'my-db' })).toBeTruthy());
-    fireEvent.click(screen.getByTitle(tb().skillEdit));
+    // 「市场」's 管理 opened the detail; the user chooses Edit from the detail menu.
+    await waitFor(() => expect(screen.getByRole('heading', { name: /my-db/ })).toBeTruthy());
+    fireEvent.click(screen.getByTestId('mcp-detail-menu'));
+    fireEvent.click(screen.getByRole('menuitem', { name: tb().skillEdit }));
 
     const name = await screen.findByPlaceholderText(tb().serverName);
     expect((name as HTMLInputElement).value).toBe('my-db');
@@ -500,4 +501,64 @@ describe('MCPSection · template install requires its fields', () => {
       setLanguage('system');
     }
   });
+});
+
+
+describe('released connector grouping', () => {
+  it('keeps configured host-filtered templates visible alongside catalog cards', () => {
+    vi.stubEnv('ABU_ELECTRON_COMMAND_HOST', '1');
+    try {
+      useMCPStore.setState({ servers: { 'abu-browser-bridge': serverEntry('abu-browser-bridge') } });
+      render(<MCPSection />);
+      expect(screen.getByText('abu-browser-bridge')).toBeVisible();
+      expect(screen.getByText('github')).toBeVisible();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('does not offer independent removal of a plugin-owned connector', () => {
+    useMCPStore.setState({ servers: { 'weather-mcp': serverEntry('weather-mcp') } });
+    usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });
+    render(<MCPSection />);
+    fireEvent.click(screen.getByText('weather-mcp'));
+    expect(screen.getByTitle(tb().mcpFromPlugin.replace('{name}', 'weather'))).toBeDisabled();
+    fireEvent.click(screen.getByTestId('mcp-detail-menu'));
+    fireEvent.click(screen.getByRole('menuitem', { name: tb().skillEdit }));
+    expect(screen.getByPlaceholderText(tb().serverName)).toBeDisabled();
+  });
+});
+
+describe('MCP card connection switch', () => {
+  it.each(['connected', 'disconnected'] as const)('reuses the %s connection action without opening details', async status => {
+    const action = status === 'connected' ? 'disconnectServer' : 'connectServer';
+    const operation = vi.spyOn(useMCPStore.getState(), action).mockResolvedValue(undefined);
+    useMCPStore.setState({ servers: { local: { ...serverEntry('local'), status } } });
+    render(<MCPSection sourceFilter="mine" />);
+    const toggle = screen.getByRole('switch');
+    expect(toggle).toHaveAttribute('aria-checked', String(status === 'connected'));
+    fireEvent.click(toggle);
+    await waitFor(() => expect(operation).toHaveBeenCalledWith('local'));
+    expect(screen.getAllByText('local')).toHaveLength(1);
+    operation.mockRestore();
+  });
+
+  it.each(['connecting', 'reconnecting'] as const)('disables the switch while %s', status => {
+    useMCPStore.setState({ servers: { local: { ...serverEntry('local'), status } } });
+    render(<MCPSection sourceFilter="mine" />);
+    expect(screen.getByRole('switch')).toBeDisabled();
+  });
+});
+
+it('shows logs as a separate detail view and returns to the connector', async () => {
+  useMCPStore.setState({ servers: { local: serverEntry('local') } });
+  render(<MCPSection focusServer="local" />);
+  await waitFor(() => expect(screen.getByTestId('mcp-detail-menu')).toBeTruthy());
+  fireEvent.click(screen.getByTestId('mcp-detail-menu'));
+  fireEvent.click(screen.getByRole('menuitem', { name: tb().viewLogs }));
+  expect(screen.getByTestId('mcp-logs-view')).toBeVisible();
+  expect(screen.queryByText('Command')).toBeNull();
+  expect(screen.queryByRole('button', { name: tb().testConnection })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: tb().backToDetails }));
+  expect(screen.queryByTestId('mcp-logs-view')).toBeNull();
+  expect(screen.queryByText('Command')).toBeNull();
+  expect(screen.getByRole('button', { name: tb().testConnection })).toBeVisible();
 });

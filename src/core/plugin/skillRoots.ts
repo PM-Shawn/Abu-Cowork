@@ -22,6 +22,17 @@ import { isEnterpriseInstall } from './enterpriseMarket';
  * brought in.
  */
 export async function pluginSkillDirs(home: string): Promise<string[]> {
+  return (await pluginSkillLocations(home)).map(location => location.path);
+}
+
+export interface PluginSkillLocation {
+  path: string;
+  direct: boolean;
+  /** Direct locations are verified from their package root, including ancestors. */
+  packageRoot?: string;
+}
+
+export async function pluginSkillLocations(home: string): Promise<PluginSkillLocation[]> {
   const installed = await readInstalled(home);
   // Organization plugins are entitlement-gated the same way enterprise skills
   // are (loader.ts): licence lapsed/offline → their skills stop loading,
@@ -29,7 +40,13 @@ export async function pluginSkillDirs(home: string): Promise<string[]> {
   const entitled = isEnterpriseModuleActive('skills');
   return installed
     .filter((p) => entitled || !isEnterpriseInstall(p))
-    .map((p) => joinPath(pluginInstallDir(home, p.marketplace, p.name, p.version), 'skills'));
+    .flatMap<PluginSkillLocation>((p) => {
+      const root = pluginInstallDir(home, p.marketplace, p.name, p.version);
+      if (p.skillPaths !== undefined) {
+        return p.skillPaths.map(path => ({ path: path === '.' ? root : joinPath(root, path), direct: true, packageRoot: root }));
+      }
+      return [{ path: joinPath(root, 'skills'), direct: false }];
+    });
 }
 
 /**

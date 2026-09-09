@@ -33,15 +33,17 @@
 import { readTextFile, writeTextFile, mkdir, exists } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
-import { MANIFEST_CANDIDATES, parsePluginManifest, type PluginManifest } from './manifest';
+import { MANIFEST_CANDIDATES, parsePluginManifest, type ResolvedPluginManifest, type McpServerSpec } from './manifest';
+import { resolvePluginMcpServers, discoverPluginSkills } from './packageComponents';
 import type { MarketplaceEntry, PluginSource } from './marketplace';
 import { pluginInstallDir, pluginKey, pluginRoot } from './paths';
 import { collectPluginSymlinks, scanPluginPackage, type PackageScan } from './fsOps';
-import { findInstalled, readInstalledForWrite, type InstalledPlugin } from './installedStore';
+import { findInstalled, readInstalledForWrite, validateInstalledRecord, type InstalledPlugin } from './installedStore';
 import { convertSingleFileAgent, renderAgentMd } from './agentPayload';
 import { installAgentFromFolder } from '../agent/installer';
 import { agentRegistry, getBuiltinAgentNames } from '../agent/registry';
 import { isSafeSkillDirName } from '../skill/skillDirName';
+import { preparePluginSnapshot, validatePluginSnapshot, materializePluginSnapshot, releasePluginSnapshot, snapshotReader, type PluginSnapshot } from './snapshotBridge';
 
 /** A source kind that exists in the ecosystem but that we cannot fetch yet. */
 export class UnsupportedSourceError extends Error {
@@ -108,7 +110,7 @@ export function resolveSourceDir(source: PluginSource, marketplaceDir: string): 
  * order: `.abu-plugin`, then `.claude-plugin`, then `.codex-plugin`. The
  * first one present wins, even if a later one would also parse.
  */
-export async function readManifestFrom(packageDir: string): Promise<PluginManifest> {
+export async function readManifestFrom(packageDir: string): Promise<ResolvedPluginManifest> {
   return readManifestWith(packageDir, scanPluginPackage(packageDir));
 }
 
@@ -116,34 +118,26 @@ export async function readManifestFrom(packageDir: string): Promise<PluginManife
  * The scanning half of {@link readManifestFrom}, so `planInstall` can share one
  * {@link PackageScan} across every scan it does.
  */
-async function readManifestWith(packageDir: string, scan: PackageScan): Promise<PluginManifest> {
+async function readManifestWith(packageDir: string, scan: PackageScan, readText: (path: string) => Promise<string> = readTextFile): Promise<ResolvedPluginManifest> {
   for (const candidate of MANIFEST_CANDIDATES) {
     // A candidate reached through a link is not the package's own file: the
     // copy will skip it, so approving name / version / `mcpServers` read from
     // it would approve a package that installs with no manifest at all.
     if (!(await scan.find(candidate))) continue;
     const path = joinPath(packageDir, candidate);
-    const raw = await readTextFile(path);
+    const raw = await readText(path);
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
     } catch {
       throw new Error(`Plugin manifest is not valid JSON: ${path}`);
     }
-    return parsePluginManifest(parsed);
+    const manifest = parsePluginManifest(parsed);
+    return { ...manifest, mcpServers: await resolvePluginMcpServers(packageDir, scan, manifest.mcpServers, readText) };
   }
   throw new Error(
     `No plugin manifest found in ${packageDir} (looked for ${MANIFEST_CANDIDATES.join(', ')})`,
   );
-}
-
-/** Skill directory names the package ships under `skills/`. */
-async function discoverSkills(scan: PackageScan): Promise<string[]> {
-  const entries = await scan.children('skills');
-  return entries
-    .filter((e) => e.isDirectory)
-    .map((e) => e.name)
-    .sort();
 }
 
 /**
@@ -185,7 +179,7 @@ interface PayloadAgent {
  * down here rather than read out of the package (see `agentPayload`'s
  * `DROPPED_KEYS`).
  */
-async function readPayloadAgents(scan: PackageScan, packageDir: string, pluginKey: string): Promise<PayloadAgent[]> {
+async function readPayloadAgents(scan: PackageScan, packageDir: string, pluginKey: string, readText: (path: string) => Promise<string> = readTextFile): Promise<PayloadAgent[]> {
   const found: PayloadAgent[] = [];
   for (const entry of await scan.children('agents')) {
     let relPath: string;
@@ -208,7 +202,7 @@ async function readPayloadAgents(scan: PackageScan, packageDir: string, pluginKe
     // The folder shape goes through the same converter as the single file: it
     // normalises the list keys and drops `memory` for both, so the two shapes
     // cannot install subtly different agents.
-    const converted = convertSingleFileAgent(await readTextFile(joinPath(packageDir, relPath)), fallbackName);
+    const converted = convertSingleFileAgent(await readText(joinPath(packageDir, relPath)), fallbackName);
     found.push({
       name: converted.name,
       description: converted.description,
@@ -369,11 +363,13 @@ async function installPayloadAgents(
 }
 
 export interface InstallDisclosure {
+  /** Personal marketplace confirmation is bound to this host-owned snapshot. */
+  preparedToken?: string;
   key: string;
   name: string;
   marketplace: string;
   version?: string;
-  manifest: PluginManifest;
+  manifest: ResolvedPluginManifest;
   sourceDir: string;
   /** Skill directory names this plugin will register. */
   skills: string[];
@@ -420,6 +416,7 @@ async function discoverIgnoredPayloads(scan: PackageScan): Promise<string[]> {
 }
 
 export interface PlanInstallOptions {
+  prepareSnapshot?: boolean;
   marketplaceName: string;
   marketplaceDir: string;
   entry: Pick<MarketplaceEntry, 'name' | 'source'>;
@@ -455,18 +452,67 @@ function remoteStagingDir(home: string, marketplace: string, name: string, sha: 
 interface PlannedInstall {
   disclosure: InstallDisclosure;
   previouslyContributedAgents: ReadonlySet<string>;
+  skillPaths: string[];
+}
+
+const preparedInstalls = new Map<string, { plan: PlannedInstall; snapshot: PluginSnapshot; home: string }>();
+
+export async function releasePreparedInstall(token: string): Promise<void> {
+  preparedInstalls.delete(token);
+  await releasePluginSnapshot(token);
+}
+
+function preparedFor(opts: PlanInstallOptions & { preparedToken?: string }) {
+  const prepared = opts.preparedToken ? preparedInstalls.get(opts.preparedToken) : undefined;
+  if (!prepared || prepared.plan.disclosure.key !== pluginKey(opts.entry.name, opts.marketplaceName)
+    || normalizeSeparators(prepared.home) !== normalizeSeparators(opts.home ?? '')) {
+    throw new PluginSecurityError('Plugin preparation unavailable; open the confirmation again');
+  }
+  return prepared;
+}
+
+/** Check before the existing update flow withdraws the previous install. */
+export async function validatePreparedInstall(opts: PlanInstallOptions & { preparedToken?: string }): Promise<void> {
+  const prepared = preparedFor(opts);
+  await validatePluginSnapshot(prepared.snapshot.token);
 }
 
 /**
- * Describe what installing this entry would bring in, without writing anything.
+ * Describe what installing this entry would bring in. Prepared UI installs
+ * stage a snapshot but do not register or activate any plugin capabilities.
  * This is the data behind the install disclosure screen — in particular the
  * MCP server commands, which are arbitrary executables.
  */
 export async function planInstall(opts: PlanInstallOptions): Promise<InstallDisclosure> {
+  if (opts.prepareSnapshot) {
+    if (!opts.home) throw new PluginSecurityError('Plugin preparation requires a home directory');
+    const snapshot = await preparePluginSnapshot({ marketplaceDir: opts.marketplaceDir, marketplaceName: opts.marketplaceName, entryName: opts.entry.name });
+    return planPreparedInstall(snapshot, opts);
+  }
   return (await planInstallWithHistory(opts)).disclosure;
 }
 
-async function planInstallWithHistory(opts: PlanInstallOptions): Promise<PlannedInstall> {
+/** Reuses the same immutable disclosure path for a registered local author. */
+export async function planPreparedInstall(snapshot: PluginSnapshot, opts: PlanInstallOptions): Promise<InstallDisclosure> {
+  if (!opts.home) throw new PluginSecurityError('Plugin preparation requires a home directory');
+    try {
+      const reader = await snapshotReader(snapshot);
+      const plan = await planInstallWithHistory({ ...opts, marketplaceDir: snapshot.packageDir, entry: { name: opts.entry.name, source: { kind: 'relative', path: '.' } } }, reader);
+      if ((plan.disclosure.version ?? UNVERSIONED) !== snapshot.version) throw new PluginSecurityError('Plugin preparation identity changed');
+      plan.disclosure.sourceDir = snapshot.sourceDir;
+      plan.disclosure.skippedSymlinks = snapshot.skippedSymlinks;
+      plan.disclosure.preparedToken = snapshot.token;
+      preparedInstalls.set(snapshot.token, { plan, snapshot, home: opts.home });
+      // Presentation callers cannot mutate the plan used for registration.
+      return structuredClone(plan.disclosure);
+    } catch (error) {
+      await releasePreparedInstall(snapshot.token).catch(() => {});
+      throw error;
+    }
+
+}
+
+async function planInstallWithHistory(opts: PlanInstallOptions, reader?: Awaited<ReturnType<typeof snapshotReader>>): Promise<PlannedInstall> {
   const source = opts.entry.source;
   let sourceDir: string;
   if (source.kind === 'relative') {
@@ -490,11 +536,12 @@ async function planInstallWithHistory(opts: PlanInstallOptions): Promise<Planned
   // installed tree agree by construction rather than by lists kept in step by
   // hand. Both this and `collectPluginSymlinks` refuse a package root that is
   // itself a link, so their order here is presentation, not a guard.
-  const scan = scanPluginPackage(sourceDir);
+  const scan = reader?.scan ?? scanPluginPackage(sourceDir);
   // The skip list comes off the walk the copy performs, so what the user
   // approves is what the copy will actually leave out.
-  const skippedSymlinks = await collectPluginSymlinks(sourceDir);
-  const manifest = await readManifestWith(sourceDir, scan);
+  const skippedSymlinks = reader ? [] : await collectPluginSymlinks(sourceDir);
+  const readText = reader?.readText ?? readTextFile;
+  const manifest = await readManifestWith(sourceDir, scan, readText);
 
   if (manifest.name !== opts.entry.name) {
     throw new PluginSecurityError(
@@ -502,9 +549,9 @@ async function planInstallWithHistory(opts: PlanInstallOptions): Promise<Planned
     );
   }
 
-  const skills = await discoverSkills(scan);
+  const skillEntries = await discoverPluginSkills(sourceDir, scan, manifest.skills, readText);
   const key = pluginKey(manifest.name, opts.marketplaceName);
-  const payloadAgents = await readPayloadAgents(scan, sourceDir, key);
+  const payloadAgents = await readPayloadAgents(scan, sourceDir, key, readText);
   // Without a home there is no install record to read, so every taken name
   // counts as a conflict — the conservative direction: an agent is skipped
   // rather than a user's own one silently replaced.
@@ -530,7 +577,7 @@ async function planInstallWithHistory(opts: PlanInstallOptions): Promise<Planned
       version: manifest.version,
       manifest,
       sourceDir,
-      skills,
+      skills: skillEntries.map(skill => skill.name),
       mcpServers,
       agents,
       capabilities: manifest.interface?.capabilities,
@@ -538,10 +585,15 @@ async function planInstallWithHistory(opts: PlanInstallOptions): Promise<Planned
       skippedSymlinks,
     },
     previouslyContributedAgents: previouslyContributed,
+    skillPaths: skillEntries.map(skill => skill.path),
   };
 }
 
 export interface InstallPluginOptions extends PlanInstallOptions {
+  pluginConfiguration?: string;
+  /** Transactional callers compensate instead of accepting partial agent writes. */
+  requireAllContributions?: boolean;
+  preparedToken?: string;
   home: string;
   /**
    * Copy the package into its final location. Injected so the orchestration
@@ -571,10 +623,10 @@ export interface InstallOutcome {
    * — a second `planInstall` would re-read the package and, worse, is a
    * distinct call some callers mock statefully.
    */
-  mcpServers: InstallDisclosure['mcpServers'];
+  mcpServers: (McpServerSpec & { name: string })[];
 }
 
-export async function installPlugin(opts: InstallPluginOptions): Promise<InstallOutcome> {
+async function describeInstallation(opts: InstallPluginOptions) {
   // 🔴 Fail-closed BEFORE anything is fetched or copied. The install record is
   // written at the very end of this flow, and `upsertInstalled` now refuses an
   // unreadable manifest — so checking only there would abort *after* the
@@ -582,41 +634,80 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
   // uninstall them. One read up front turns that into a clean refusal.
   await readInstalledForWrite(opts.home);
 
-  const { disclosure, previouslyContributedAgents } = await planInstallWithHistory(opts);
+  const prepared = opts.preparedToken ? preparedFor(opts) : undefined;
+  const { disclosure, previouslyContributedAgents, skillPaths } = prepared?.plan ?? await planInstallWithHistory(opts);
   const version = disclosure.version ?? UNVERSIONED;
   const targetDir = pluginInstallDir(opts.home, opts.marketplaceName, disclosure.name, version);
 
-  await opts.copyDir(disclosure.sourceDir, targetDir);
+  const source = prepared?.snapshot.source ?? opts.entry.source;
+  const record: InstalledPlugin = {
+    key: disclosure.key,
+    marketplace: opts.marketplaceName,
+    name: disclosure.name,
+    version,
+    authoringId: prepared?.snapshot.authoringId,
+    componentLayoutVersion: 1,
+    skillPaths,
+    // Pin the record to the verified sha for remote sources, so "what is
+    // installed" is answerable down to the commit.
+    sha: 'sha' in source ? source.sha : undefined,
+    // Recorded at install time because it is the only moment the source is
+    // known: the marketplace entry can be edited or removed afterwards, and
+    // inferring "local vs remote" from the presence of a sha only works by
+    // accident.
+    sourceKind: source.kind,
+    checksum: prepared?.snapshot.checksum ?? opts.checksum,
+    installedAt: (opts.now?.() ?? new Date()).toISOString(),
+    contributed: {
+      skills: disclosure.skills,
+      mcpServers: disclosure.mcpServers.map((s) => s.name),
+      // Preflight the largest approved contribution set. After copying,
+      // replace this with only the agents actually materialized.
+      agents: disclosure.agents.filter(agent => !agent.conflict).map(agent => agent.name),
+    },
+  };
+  await validateInstalledRecord(opts.home, record);
+
+  return { record, prepared, disclosure, previouslyContributedAgents, targetDir };
+}
+
+const installationPlans = new WeakMap<InstallPluginOptions, Awaited<ReturnType<typeof describeInstallation>>>();
+
+/** Full prospective record, without copying packages or materializing agents. */
+export async function prepareInstallRecord(opts: InstallPluginOptions): Promise<InstalledPlugin> {
+  const plan = await describeInstallation(opts);
+  installationPlans.set(opts, plan);
+  return plan.record;
+}
+
+export async function installPlugin(opts: InstallPluginOptions): Promise<InstallOutcome> {
+  const { record, prepared, disclosure, previouslyContributedAgents, targetDir } = installationPlans.get(opts) ?? await describeInstallation(opts);
+  installationPlans.delete(opts);
+
+  let preparedAgents: string[] | undefined;
+  if (prepared) {
+    const copied = await materializePluginSnapshot(prepared.snapshot.token);
+    if (normalizeSeparators(copied.targetDir) !== normalizeSeparators(targetDir) || copied.checksum !== prepared.snapshot.checksum) {
+      throw new PluginSecurityError('Plugin snapshot identity mismatch');
+    }
+    if (!Array.isArray(copied.agents)) throw new PluginSecurityError('Plugin agent materialization missing');
+    preparedAgents = copied.agents;
+  } else {
+    await opts.copyDir(disclosure.sourceDir, targetDir);
+  }
 
   // After the copy: the agents are materialised from the installed tree, so
   // nothing the copy refused can reach ~/.abu/agents.
-  const agents = await installPayloadAgents(targetDir, disclosure.agents, previouslyContributedAgents, disclosure.key);
+  const agents = preparedAgents ?? await installPayloadAgents(targetDir, disclosure.agents, previouslyContributedAgents, disclosure.key);
+  if (opts.requireAllContributions && agents.length !== disclosure.agents.filter(agent => !agent.conflict).length) {
+    throw new PluginSecurityError('Plugin agent installation did not complete');
+  }
 
+  record.contributed.agents = agents;
   return {
-    record: {
-      key: disclosure.key,
-      marketplace: opts.marketplaceName,
-      name: disclosure.name,
-      version,
-      // Pin the record to the verified sha for remote sources, so "what is
-      // installed" is answerable down to the commit.
-      sha: 'sha' in opts.entry.source ? opts.entry.source.sha : undefined,
-      // Recorded at install time because it is the only moment the source is
-      // known: the marketplace entry can be edited or removed afterwards, and
-      // inferring "local vs remote" from the presence of a sha only works by
-      // accident.
-      sourceKind: opts.entry.source.kind,
-      checksum: opts.checksum,
-      installedAt: (opts.now?.() ?? new Date()).toISOString(),
-      contributed: {
-        skills: disclosure.skills,
-        mcpServers: disclosure.mcpServers.map((s) => s.name),
-        // Only the agents this install actually materialised: uninstall deletes
-        // every name listed here, so a name that is not on disk (or is someone
-        // else's) must never appear.
-        agents,
-      },
-    },
-    mcpServers: disclosure.mcpServers,
+    record,
+    // Registration needs runtime configuration, not just the display fields.
+    // Use the same parsed manifest; never re-read a potentially changed source.
+    mcpServers: Object.entries(disclosure.manifest.mcpServers ?? {}).map(([name, spec]) => ({ ...spec, name, ...(opts.pluginConfiguration ? { pluginConfiguration: opts.pluginConfiguration } : {}) })),
   };
 }

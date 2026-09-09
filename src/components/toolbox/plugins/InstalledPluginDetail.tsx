@@ -1,25 +1,18 @@
-/**
- * What Abu knows about one installed plugin, in two sizes.
- *
- * `InstalledPluginSummary` is the one-line form the 「我的」 list rows use.
- * `InstalledPluginDetail` (default) is the 「管理」 dialog the market row opens,
- * which is the only place the market surface can answer "what did this
- * actually bring in, and where did it come from?" now that installed items are
- * shown in place rather than in a separate 已安装 tab.
- *
- * Both read the install *record* — the same list the uninstaller withdraws
- * from — never a rescan of the package directory, so what the UI says a plugin
- * contributed stays identical to what removal takes back out.
- *
- * The dialog is read-only apart from uninstall: it reports, it does not
- * reconfigure. The uninstall button only *asks* — the confirmation and the
- * store call belong to {@link UninstallPluginDialog}.
+/** Shared installed-plugin detail, activation and authoring actions.
+ * Contents come from the installed record; source details replace the body
+ * without resizing the dialog. Uninstall requires its own confirmation.
  */
 
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { useEffect } from 'react';
-import { Bot, Server, ShieldCheck, Sparkles, Trash2 } from 'lucide-react';
+import { Bot, Server, Sparkles, Package, MessageCircle, ArrowLeft } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
+import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import InstalledItemMenu, { type InstalledItemMenuAction } from '@/components/toolbox/InstalledItemMenu';
+import { Toggle } from '@/components/ui/toggle';
+import { usePluginActivation } from './usePluginActivation';
+import { useTrialLauncher } from '@/components/toolbox/useTrialLauncher';
+import { useToastStore } from '@/stores/toastStore';
 import { Button } from '@/components/ui/button';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 
@@ -28,52 +21,44 @@ export function InstalledPluginSummary({ plugin }: { plugin: InstalledPlugin }) 
   const { t } = useI18n();
   const tb = t.toolbox;
   return (
-    <p className="mt-0.5 truncate text-minor text-[var(--abu-text-tertiary)]">
-      {format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
+    <span className="mt-0.5 block truncate text-minor text-[var(--abu-text-tertiary)]">
+      {plugin.authoringId ? tb.pluginsAuthoredSource : format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
       {' · '}
       {format(tb.pluginsSkillCount, { count: plugin.contributed.skills.length })}
       {' · '}
       {format(tb.pluginsServerCount, { count: plugin.contributed.mcpServers.length })}
-    </p>
+    </span>
   );
 }
 
-function Section({
-  icon: Icon,
-  title,
-  items,
-  emptyLabel,
-}: {
+function Section({ icon: Icon, title, items = [] }: {
   icon: typeof Sparkles;
   title: string;
-  items: string[];
-  emptyLabel: string;
+  items?: string[];
 }) {
+  if (items.length === 0) return null;
   return (
-    <section className="space-y-1.5">
-      <h4 className="flex items-center gap-1.5 text-h-xs text-[var(--abu-text-primary)]">
-        <Icon className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-        {title}
-      </h4>
-      {items.length === 0 ? (
-        <p className="text-body text-[var(--abu-text-muted)]">{emptyLabel}</p>
-      ) : (
-        <ul className="space-y-1">
-          {items.map((item) => (
-            <li
-              key={item}
-              className="rounded bg-[var(--abu-bg-muted)] px-2 py-1 text-body text-[var(--abu-text-secondary)]"
-            >
-              {item}
-            </li>
-          ))}
-        </ul>
-      )}
+    <section className="space-y-2">
+      <h4 className="text-minor font-medium text-[var(--abu-text-muted)]">{title}</h4>
+      <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        {items.map(item => (
+          <li key={item} className="flex items-center gap-3 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-3 py-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--abu-bg-active)]">
+              <Icon className="h-4 w-4 text-[var(--abu-text-muted)]" />
+            </span>
+            <span className="min-w-0 break-words text-body font-medium text-[var(--abu-text-primary)]">{item}</span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
 
 interface InstalledPluginDetailProps {
+  authorActions?: InstalledItemMenuAction[];
+  authorUpdate?: { available: boolean; onReview: () => void };
+  home: string;
+  description?: string;
   /** The install to describe; `null` closes the dialog. */
   plugin: InstalledPlugin | null;
   onClose: () => void;
@@ -83,18 +68,19 @@ interface InstalledPluginDetailProps {
 
 export default function InstalledPluginDetail({
   plugin,
+  authorActions,
+  authorUpdate,
+  home,
+  description,
   onClose,
   onUninstall,
 }: InstalledPluginDetailProps) {
   const { t } = useI18n();
-  useEffect(() => {
-    if (!plugin) return;
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [plugin, onClose]);
+  const [showSource, setShowSource] = useState(false);
+  useEffect(() => setShowSource(false), [plugin?.key]);
+  const activation = usePluginActivation(plugin, home);
+  const launchTrial = useTrialLauncher();
+  const addToast = useToastStore(s => s.addToast);
 
   if (!plugin) return null;
   const tb = t.toolbox;
@@ -102,50 +88,52 @@ export default function InstalledPluginDetail({
   const pinned = plugin.sha ?? plugin.checksum;
 
   return createPortal(
-    <div
-      data-electron-no-drag
-      data-testid="plugin-manage-dialog"
-      className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 p-6 animate-in fade-in duration-150"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <ToolDetailModal
+      open
+      onClose={onClose}
+      stackedHeader
+      maxWidth="max-w-2xl"
+      panelClassName="h-[min(640px,85vh)]"
+      avatar={showSource ? <button type="button" aria-label={tb.backToDetails} title={tb.backToDetails} onClick={() => setShowSource(false)} className="flex h-full w-full items-center justify-center rounded-full hover:bg-[var(--abu-bg-active)]"><ArrowLeft className="h-5 w-5 text-[var(--abu-text-muted)]" /></button> : <Package className="h-6 w-6 text-[var(--abu-text-muted)]" />}
+      headerActions={showSource ? undefined : <>
+
+        <Toggle checked={activation.enabled} disabled={activation.busy || !activation.available} tone="green" onChange={() => {
+        void activation.toggle().catch(error => addToast({ type: 'error', title: plugin.name, message: String(error) }));
+      }} />
+        <InstalledItemMenu testId="plugin-detail-menu" ariaLabel={format(tb.itemMenuLabel, { name: plugin.name })} actions={[
+          ...(authorActions ?? []),
+          { id: 'view', label: tb.pluginsDisclosureSource, onSelect: () => setShowSource(true) },
+        ]} />
+      </>}
+      footer={showSource ? undefined : <div className="flex items-center justify-between gap-3">
+        <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => onUninstall(plugin)}>{tb.pluginsUninstall}</Button>
+        <div className="flex items-center gap-3">
+        {authorUpdate && <Button variant="ghost" size="sm" className="rounded-xl border border-[var(--abu-border)]" onClick={authorUpdate.onReview}>{authorUpdate.available ? tb.pluginsPreviewUpdate : tb.pluginsCheckChanges}</Button>}
+        <Button size="sm" className="rounded-xl" disabled={!activation.enabled || activation.busy} onClick={() => { onClose(); launchTrial({ name: plugin.name, description }); }}><MessageCircle className="h-3.5 w-3.5" />{tb.menuTrial}</Button>
+        </div>
+      </div>}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={tb.pluginsManageTitle}
-        className="flex max-h-[80vh] w-[520px] flex-col rounded-2xl bg-[var(--abu-bg-base)] shadow-xl animate-in zoom-in-95 duration-150"
-      >
-        <h3 className="shrink-0 px-6 pt-6 text-h-sm text-[var(--abu-text-primary)]">
-          {tb.pluginsManageTitle}
-        </h3>
-
-        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="truncate text-h-xs text-[var(--abu-text-primary)]">
-                {plugin.name}
-              </span>
-              <span className="shrink-0 text-caption text-[var(--abu-text-muted)]">
-                v{plugin.version}
-              </span>
-            </div>
-            <p className="mt-0.5 text-minor text-[var(--abu-text-tertiary)]">
-              {format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
-            </p>
+      {showSource ? <div data-testid="plugin-source-dialog" className="space-y-4">
+        <h2 className="text-h-lg font-semibold text-[var(--abu-text-primary)]">{tb.pluginsDisclosureSource}</h2>
+        <p className="text-body text-[var(--abu-text-primary)]">{plugin.authoringId ? tb.pluginsAuthoredSource : format(tb.pluginsFromMarketplace, { name: plugin.marketplace })} · v{plugin.version}</p>
+        {pinned && <p className="break-all font-mono text-minor text-[var(--abu-text-muted)]">{pinned}</p>}
+      </div> : <div data-testid="plugin-manage-dialog">
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <h2 className="text-h-lg font-semibold text-[var(--abu-text-primary)]">{plugin.name} <span className="font-normal text-[var(--abu-text-muted)]">{tb.plugins}</span></h2>
+            {authorUpdate && <p className="text-minor text-[var(--abu-text-muted)]">{authorUpdate.available ? tb.pluginsAuthorUpdateAvailable : tb.pluginsAuthorUpdateHint}</p>}
+            {description && <p className="text-body text-[var(--abu-text-secondary)] leading-relaxed">{description}</p>}
           </div>
-
+          <div className="space-y-5">
           <Section
             icon={Sparkles}
-            title={tb.pluginsDisclosureSkills}
+            title={tb.skills}
             items={plugin.contributed.skills}
-            emptyLabel={tb.pluginsDisclosureNone}
           />
           <Section
             icon={Server}
-            title={tb.pluginsDisclosureServers}
+            title={tb.connectors}
             items={plugin.contributed.mcpServers}
-            emptyLabel={tb.pluginsDisclosureNone}
           />
           {/* Named for the same reason as the other two: uninstall withdraws
               these, and they live outside the package directory. */}
@@ -153,38 +141,15 @@ export default function InstalledPluginDetail({
             icon={Bot}
             title={tb.pluginsDisclosureAgents}
             items={plugin.contributed.agents}
-            emptyLabel={tb.pluginsDisclosureNone}
           />
 
-          {pinned && (
-            <section className="space-y-1.5">
-              <h4 className="flex items-center gap-1.5 text-h-xs text-[var(--abu-text-primary)]">
-                <ShieldCheck className="h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-                {tb.pluginsDisclosureSource}
-              </h4>
-              <p className="break-all font-mono text-minor text-[var(--abu-text-muted)]">
-                {pinned}
-              </p>
-            </section>
-          )}
+          </div>
+
+
         </div>
 
-        <div className="flex shrink-0 items-center justify-between gap-3 px-6 pb-6">
-          <Button
-            variant="ghost"
-            data-testid="plugin-manage-uninstall"
-            aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
-            onClick={() => onUninstall(plugin)}
-          >
-            <Trash2 className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
-            <span className="text-[var(--abu-danger)]">{tb.pluginsUninstall}</span>
-          </Button>
-          <Button variant="ghost" onClick={onClose}>
-            {t.common.close}
-          </Button>
-        </div>
-      </div>
-    </div>,
+      </div>}
+    </ToolDetailModal>,
     document.body,
   );
 }

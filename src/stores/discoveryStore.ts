@@ -3,7 +3,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import type { SkillMetadata, SubagentMetadata } from '../types';
 import { skillLoader } from '../core/skill/loader';
 import { agentRegistry } from '../core/agent/registry';
-import { readInstalled, type InstalledPlugin } from '../core/plugin/installedStore';
+import { readInstalled, readInstalledResult, type InstalledPlugin } from '../core/plugin/installedStore';
 import { useSettingsStore } from './settingsStore';
 import { useWorkspaceStore } from './workspaceStore';
 
@@ -88,7 +88,7 @@ interface DiscoveryActions {
    *   - pass `null` explicitly → scan with no workspace (global scan)
    *   - pass a string → scan that workspace
    */
-  refresh: (workspaceOverride?: string | null) => Promise<void>;
+  refresh: (workspaceOverride?: string | null, options?: { strict?: boolean }) => Promise<void>;
 }
 
 export type DiscoveryStore = DiscoveryState & DiscoveryActions;
@@ -107,7 +107,7 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
   agents: [],
   isLoading: false,
 
-  refresh: async (workspaceOverride) => {
+  refresh: async (workspaceOverride, options) => {
     lastRefreshAt = Date.now();
     set({ isLoading: true });
     try {
@@ -120,7 +120,11 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
       const [skills, agents, installedPlugins] = await Promise.all([
         skillLoader.discoverSkills(wp),
         agentRegistry.discoverAgents(),
-        readInstalledPluginsSafely(),
+        options?.strict ? homeDir().then(async home => {
+          const result = await readInstalledResult(home);
+          if (!result.ok) throw result.error;
+          return result.plugins;
+        }) : readInstalledPluginsSafely(),
       ]);
 
       // Auto-disable project-level skills on first discovery (opt-in model).
@@ -136,6 +140,7 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
     } catch (err) {
       console.warn('Discovery refresh failed:', err);
       set({ isLoading: false });
+      if (options?.strict) throw err;
     }
   },
 }));

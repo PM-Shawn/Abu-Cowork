@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MoreHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 export interface InstalledItemMenuAction {
-  id: 'trial' | 'manage' | 'uninstall' | 'edit' | 'view' | 'delete' | 'remove';
+  id: 'trial' | 'manage' | 'uninstall' | 'edit' | 'view' | 'delete' | 'remove' | 'source' | 'prepare';
   label: string;
   onSelect: () => void;
   /** Renders in the destructive group (after the separator), in danger colour. */
@@ -35,6 +36,7 @@ interface InstalledItemMenuProps {
  */
 export default function InstalledItemMenu({ actions, ariaLabel, testId }: InstalledItemMenuProps) {
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -62,6 +64,7 @@ export default function InstalledItemMenu({ actions, ariaLabel, testId }: Instal
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
+        event.stopPropagation();
         closeAndRestoreFocus();
         return;
       }
@@ -89,6 +92,20 @@ export default function InstalledItemMenu({ actions, ariaLabel, testId }: Instal
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [open, getItems, closeAndRestoreFocus]);
+
+  useEffect(() => {
+    if (!open) return;
+    const dismiss = (event: Event) => {
+      if (event.target instanceof Node && panelRef.current?.contains(event.target)) return;
+      setOpen(false);
+    };
+    window.addEventListener('resize', dismiss);
+    document.addEventListener('scroll', dismiss, true);
+    return () => {
+      window.removeEventListener('resize', dismiss);
+      document.removeEventListener('scroll', dismiss, true);
+    };
+  }, [open]);
 
   const primary = actions.filter((a) => !a.destructive);
   const destructive = actions.filter((a) => a.destructive);
@@ -138,25 +155,36 @@ export default function InstalledItemMenu({ actions, ariaLabel, testId }: Instal
         aria-haspopup="menu"
         aria-expanded={open}
         data-testid={testId}
-        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        onClick={(e) => {
+          e.stopPropagation();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const height = actions.length * 36 + 24;
+          setPosition({
+            left: Math.max(8, Math.min(rect.right - 176, window.innerWidth - 184)),
+            top: rect.bottom + height < window.innerHeight ? rect.bottom + 4 : Math.max(8, rect.top - height),
+          });
+          setOpen((v) => !v);
+        }}
         className="flex items-center justify-center h-7 w-7 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)] transition-colors"
       >
         <MoreHorizontal className="h-4 w-4" />
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={panelRef}
           role="menu"
           aria-label={ariaLabel}
           onClick={(event) => event.stopPropagation()}
-          className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1"
+          style={position}
+          className="fixed z-[10000] max-h-[calc(100vh-16px)] overflow-y-auto w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1"
         >
           {primary.map(renderItem)}
           {primary.length > 0 && destructive.length > 0 && (
             <div role="separator" className="my-1 h-px bg-[var(--abu-border)]" />
           )}
           {destructive.map(renderItem)}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

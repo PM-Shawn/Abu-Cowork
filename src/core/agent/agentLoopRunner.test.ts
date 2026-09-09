@@ -747,7 +747,7 @@ describe('agentLoopRunner', () => {
       // workspace.authorizedWritablePaths — P1-3d-5 slice 2a — /
       // tool.invoke via the router / hook.emit via the shared hookBridge).
       expect(onSidecarNotification).toHaveBeenCalledTimes(12);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(7);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(8);
       expect(onSidecarConnectionState).toHaveBeenCalledTimes(1);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
@@ -758,6 +758,41 @@ describe('agentLoopRunner', () => {
       expect(requestedMethods).toEqual(
         expect.arrayContaining(['native.invoke', 'tool.list', 'approval.check', 'snapshot.beforeAiEdit', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
       );
+    });
+
+    it('keeps direct delegated plugins busy for the entire registered run', async () => {
+      const { registerRunSession, unregisterRunSession } = await importFresh();
+      const { acquirePluginChange } = await import('../plugin/runtimeLease');
+      const session = makeSession();
+      session.options.directDelegatePluginKey = 'held@market';
+      registerRunSession('held-run', session);
+      expect(() => acquirePluginChange('held@market')).toThrow();
+      unregisterRunSession('held-run');
+      const release = acquirePluginChange('held@market');
+      release();
+    });
+
+    it('checks shell-owned plugin identity before admitting a direct delegated run', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      const { publishPluginActivation } = await import('../plugin/activationPolicy');
+      ensureHandlersRegistered();
+      chatState.conversations['conv-1'] = {};
+      const session = makeSession();
+      session.options.directDelegateAgentName = 'reviewer';
+      session.options.directDelegatePluginKey = 'demo@market';
+      registerRunSession('delegate-run', session);
+      const handler = handlerFor(onSidecarRequest, 'agent.assertDirectDelegateEnabled');
+      const activation = { enabled: true, root: '/pkg', skillDirs: [], legacySkills: false, agentFiles: [], mcpServers: [] };
+      publishPluginActivation({ 'demo@market': activation }, [], true);
+      expect(await handler({ runId: 'delegate-run' })).toEqual({ allowed: true });
+      publishPluginActivation({ 'demo@market': { ...activation, enabled: false } }, [], true);
+      await expect(Promise.resolve().then(() => handler({ runId: 'delegate-run', pluginKey: 'independent', agentName: 'other' }))).rejects.toThrow();
+      publishPluginActivation({}, [], true);
+      await expect(Promise.resolve().then(() => handler({ runId: 'delegate-run' }))).rejects.toThrow();
+      await expect(Promise.resolve().then(() => handler({ runId: 'missing' }))).rejects.toThrow();
+      session.options.directDelegatePluginKey = undefined;
+      session.abortRequested = true;
+      await expect(Promise.resolve().then(() => handler({ runId: 'delegate-run' }))).rejects.toThrow();
     });
 
     it('projects connection recovery and failure onto active user-run lifecycle state', async () => {

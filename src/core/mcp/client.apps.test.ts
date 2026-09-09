@@ -71,6 +71,7 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({ Client: mcpMock.Fa
 const { state } = mcpMock;
 
 import { mcpManager, resetRawAppResults } from './client';
+import { publishPluginActivation } from '../plugin/activationPolicy';
 import { MAX_APP_RESOURCE_BYTES, McpAppResourceError } from './appResources';
 
 const SERVER = 'ui-server';
@@ -99,7 +100,67 @@ async function connect(tools: FakeTool[], name = SERVER): Promise<void> {
   await mcpManager.connectServer({ name, command: 'echo', args: [] });
 }
 
+it('closes a pending handshake before disconnect resolves', async () => {
+  let began!: () => void;
+  let finish!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  const spy = vi.spyOn(mcpMock.FakeClient.prototype, 'connect').mockImplementationOnce(async () => {
+    began();
+    await new Promise<void>(resolve => { finish = resolve; });
+  });
+  try {
+    const connecting = connect([tool('pending-tool')]);
+    await started;
+    await mcpManager.disconnectServer(SERVER);
+    expect(state.closed).toBe(1);
+    finish();
+    await expect(connecting).rejects.toThrow();
+    expect(state.closed).toBe(1);
+    expect(mcpManager.getServerTools(SERVER)).toEqual([]);
+  } finally { spy.mockRestore(); }
+});
+
+it('does not delete a newer connection when an older close completes', async () => {
+  await connect([tool('old-tool')]);
+  let finish!: () => void;
+  const spy = vi.spyOn(mcpMock.FakeClient.prototype, 'close').mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+  try {
+    const closing = mcpManager.disconnectServer(SERVER);
+    await Promise.resolve();
+    await connect([tool('new-tool')]);
+    finish();
+    await closing;
+    expect(mcpManager.getServerTools(SERVER).map(t => t.name)).toEqual([`${SERVER}__new-tool`]);
+    await mcpManager.disconnectServer(SERVER);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy.mock.instances[0]).not.toBe(spy.mock.instances[1]);
+  } finally { spy.mockRestore(); }
+});
+
+it('does not publish an old MCP connection after its plugin is turned off and back on', async () => {
+  const activation = { enabled: true, root: '/plugin', skillDirs: [], legacySkills: false, agentFiles: [], mcpServers: [SERVER] };
+  publishPluginActivation({ 'demo@market': activation }, [SERVER], true);
+  let finish!: () => void;
+  let began!: () => void;
+  const started = new Promise<void>(resolve => { began = resolve; });
+  const connectSpy = vi.spyOn(mcpMock.FakeClient.prototype, 'connect').mockImplementationOnce(async () => {
+    began();
+    await new Promise<void>(resolve => { finish = resolve; });
+  });
+  try {
+    const connecting = connect([tool('old-tool')]);
+    await started;
+    publishPluginActivation({ 'demo@market': { ...activation, enabled: false } }, [SERVER], true);
+    publishPluginActivation({ 'demo@market': activation }, [SERVER], true);
+    finish();
+    await expect(connecting).rejects.toThrow();
+    expect(state.closed).toBe(1);
+    expect(mcpManager.getServerTools(SERVER)).toEqual([]);
+  } finally { connectSpy.mockRestore(); }
+});
+
 beforeEach(() => {
+  publishPluginActivation({}, [], true);
   state.tools = [];
   state.readCalls = [];
   state.callCalls = [];
@@ -214,6 +275,22 @@ describe('testConnection', () => {
 
     expect(await mcpManager.testConnection({ name: 'probe', command: 'echo', args: [] }))
       .toMatchObject({ success: true, toolCount: 1, appToolCount: 0 });
+  });
+
+  it('probes an active connection without closing it or creating another instance', async () => {
+    state.tools = [tool('plain')];
+    const config = { name: 'active-probe', command: 'echo', args: [] };
+    await mcpManager.connectServer(config);
+    const closedBefore = state.closed;
+    const connect = vi.spyOn(mcpManager, 'connectServer');
+    const disconnect = vi.spyOn(mcpManager, 'disconnectServer');
+    expect(await mcpManager.testConnection(config)).toMatchObject({ success: true, toolCount: 1 });
+    expect(connect).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(state.closed).toBe(closedBefore);
+    expect(mcpManager.getStatus().find(s => s.name === config.name)?.connected).toBe(true);
+    connect.mockRestore();
+    disconnect.mockRestore();
   });
 
   it('leaves no temp server behind', async () => {
@@ -533,4 +610,21 @@ describe('read-only server resources for the app bridge', () => {
     expect(listed.resources).toEqual([{ uri: 'weather://today', name: 'today' }]);
     expect(listed.nextCursor).toBe('c2');
   });
+});
+
+
+it.each(['readResource', 'readServerResource', 'listServerResources'] as const)('holds plugin admission until %s settles', async method => {
+  const { acquirePluginChange } = await import('../plugin/runtimeLease');
+  publishPluginActivation({ 'held@market': { enabled: true, root: '/pkg', skillDirs: [], legacySkills: false, agentFiles: [], mcpServers: [SERVER] } }, [SERVER], true);
+  await connect([]);
+  let finish!: (value: unknown) => void;
+  const pending = new Promise<unknown>(resolve => { finish = resolve; });
+  state.readResource = () => pending;
+  state.listResources = () => pending;
+  const reading = method === 'listServerResources' ? mcpManager.listServerResources(SERVER) : mcpManager[method](SERVER, 'ui://held');
+  expect(() => acquirePluginChange('held@market')).toThrow();
+  finish({ contents: [{ uri: 'ui://held', text: 'hello' }], resources: [] });
+  await reading;
+  const release = acquirePluginChange('held@market');
+  release();
 });

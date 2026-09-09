@@ -1,3 +1,5 @@
+import { acquirePluginUse } from '../plugin/runtimeLease';
+import { assertPluginEnabled, assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
 import { clearRunBounds } from '../team/teamRunBounds';
 import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
@@ -292,11 +294,15 @@ export interface AgentLoopRunOptions {
   unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext | undefined;
   /** Explicit @member route identity, resolved by shell entry orchestration. */
   directDelegateAgentName?: string;
+  /** Ownership captured by the shell, never accepted from reverse RPC params. */
+  directDelegatePluginKey?: string | null;
+  directDelegateAgent?: { filePath: string };
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
 
 export interface RunSession {
+  releasePluginUse?: () => void;
   /** Captured exactly once, before any reverse request can execute. */
   teamSnapshot?: Pick<ToolExecutionContext, 'teamRoster' | 'teamRequirePlanApproval'>;
   conversationId: string;
@@ -414,6 +420,8 @@ const sessions = new Map<string, RunSession>();
 /** Register a run session — exported for 3b-3 (the `agent.run` dispatch path) and this batch's own tests. Idempotent overwrite (a second register for the same runId replaces the first). Installs the push emitters on the FIRST registration. */
 export function registerRunSession(runId: string, session: RunSession): void {
   const previous = sessions.get(runId);
+  session.releasePluginUse ??= acquirePluginUse(session.options.directDelegatePluginKey);
+  if (previous && previous !== session) previous.releasePluginUse?.();
   if (previous?.resourceSettlement && previous !== session) {
     previous.resourceSettlement.seal();
     unregisterRunResourceSettlement(runId, previous.resourceSettlement);
@@ -488,6 +496,7 @@ export function unregisterRunSession(runId: string): void {
   if (session?.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
   session?.resourceSettlement?.seal();
   unregisterRunResourceSettlement(runId, session?.resourceSettlement);
+  session?.releasePluginUse?.();
   sessions.delete(runId);
   if (sessions.size === 0) uninstallPushEmitters();
 }
@@ -504,6 +513,7 @@ export function __getActiveRunSessionCount(): number {
 /** Test-only reset — clears the registry and uninstalls emitters without going through unregisterRunSession's one-at-a-time bookkeeping. */
 export function __resetAgentLoopRunnerForTests(): void {
   for (const session of sessions.values()) {
+    session.releasePluginUse?.();
     if (session.abortWatchdog) clearTimeout(session.abortWatchdog);
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
   }
@@ -1423,6 +1433,21 @@ function assertRunNotStopping(session: RunSession, runId: string): void {
   }
 }
 
+async function handleDirectDelegateAdmission(raw: unknown): Promise<{ allowed: true }> {
+  const runId = (raw as { runId?: unknown } | null)?.runId;
+  const session = typeof runId === 'string' ? sessions.get(runId) : undefined;
+  if (!session || typeof runId !== 'string') throw new SidecarRequestError(-32000, 'Unknown direct delegate run');
+  assertRunNotStopping(session, runId);
+  if (!useChatStore.getState().conversations[session.conversationId] || !session.options.directDelegateAgentName) {
+    throw new SidecarRequestError(-32000, 'No active direct delegate for this run');
+  }
+  const owner = session.options.directDelegatePluginKey;
+  if (owner === null) throw new SidecarRequestError(-32000, 'Conflicting plugin ownership');
+  if (owner !== undefined) assertPluginEnabled(owner);
+  if (session.options.directDelegateAgent) assertPluginAgentEnabled(session.options.directDelegateAgent);
+  return { allowed: true };
+}
+
 async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
   const params = rawParams as {
     runId?: unknown;
@@ -1804,6 +1829,7 @@ export function ensureHandlersRegistered(): void {
   onSidecarNotification('workspace.bindFromWrite', handleWorkspaceBindFromWrite);
   onSidecarNotification('shell.sandboxBlocked', handleShellSandboxBlocked);
 
+  onSidecarRequest('agent.assertDirectDelegateEnabled', handleDirectDelegateAdmission);
   onSidecarRequest('native.invoke', handleNativeInvoke);
   onSidecarRequest('tool.list', handleToolList);
   onSidecarRequest('approval.check', handleApprovalCheck);
@@ -3072,6 +3098,8 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       unattendedApproval: options?.unattendedApproval,
       settingsReader: { getSnapshot: () => params.settingsSnapshot },
       directDelegateAgentName: params.orchestration.route.type === 'delegate' ? params.orchestration.route.delegateAgent?.name : undefined,
+      directDelegatePluginKey: params.orchestration.route.type === 'delegate' && params.orchestration.route.delegateAgent ? pluginOwnerForAgent(params.orchestration.route.delegateAgent) : undefined,
+      directDelegateAgent: params.orchestration.route.type === 'delegate' ? params.orchestration.route.delegateAgent : undefined,
     },
     shellAbortController,
     transportAbortController: new AbortController(),

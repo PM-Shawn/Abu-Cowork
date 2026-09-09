@@ -8,7 +8,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
 }));
 
 import { readTextFile, exists } from '@tauri-apps/plugin-fs';
-import { pluginSkillDirs, mcpServerNamesOf } from './skillRoots';
+import { pluginSkillDirs, pluginSkillLocations, mcpServerNamesOf } from './skillRoots';
 import { readInstalled, type InstalledPlugin } from './installedStore';
 
 const mockRead = vi.mocked(readTextFile);
@@ -42,6 +42,28 @@ beforeEach(() => {
 });
 
 describe('pluginSkillDirs', () => {
+  it('loads exact component paths from new records while keeping the legacy fallback', async () => {
+    installed({ ...weather, componentLayoutVersion: 1, skillPaths: ['extras/review', '.'] }, notes);
+    expect(await pluginSkillLocations('/home/u')).toEqual([
+      { path: '/home/u/.abu/plugin-packages/official/weather/1.2.0/extras/review', direct: true, packageRoot: '/home/u/.abu/plugin-packages/official/weather/1.2.0' },
+      { path: '/home/u/.abu/plugin-packages/official/weather/1.2.0', direct: true, packageRoot: '/home/u/.abu/plugin-packages/official/weather/1.2.0' },
+      { path: '/home/u/.abu/plugin-packages/personal/notes/0.1.0/skills', direct: false },
+    ]);
+  });
+
+  it.each([undefined, ['../outside'], ['/outside'], ['C:\\outside'], [42], 'bad'])(
+    'never broadens scanning when a new layout record has malformed paths: %j', async (skillPaths) => {
+    mockExists.mockResolvedValue(true);
+    mockRead.mockResolvedValue(JSON.stringify([{ ...weather, componentLayoutVersion: 1, skillPaths }]));
+    expect(await pluginSkillLocations('/home/u')).toEqual([]);
+    expect(mcpServerNamesOf(await readInstalled('/home/u'))).toEqual(['forecast']);
+    });
+
+  it('refuses to scan an unknown future layout version', async () => {
+    mockExists.mockResolvedValue(true);
+    mockRead.mockResolvedValue(JSON.stringify([{ ...weather, componentLayoutVersion: 2, skillPaths: ['extras/review'] }]));
+    expect(await pluginSkillLocations('/home/u')).toEqual([]);
+  });
   it('returns one skills root per installed plugin', async () => {
     installed(weather, notes);
     await expect(pluginSkillDirs('/home/u')).resolves.toEqual([

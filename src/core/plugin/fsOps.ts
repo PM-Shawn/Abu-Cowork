@@ -181,6 +181,10 @@ async function listPackageDir(absoluteDir: string): Promise<OwnedListing> {
   const owned: PackageEntry[] = [];
   const links: string[] = [];
   for (const entry of entries) {
+    // Dirent names must stay a single segment when joinPath normalizes them.
+    // A POSIX basename containing a literal backslash could otherwise become
+    // a slash and traverse a different, unverified (possibly linked) ancestor.
+    if (!entry.name || entry.name === '.' || entry.name === '..' || /[/\\]/.test(entry.name)) continue;
     if (PLUGIN_COPY_DENYLIST.has(entry.name)) continue;
     // BEFORE the isDirectory branch: a link to a directory reports
     // `isDirectory: false`, so testing it later would be testing nothing.

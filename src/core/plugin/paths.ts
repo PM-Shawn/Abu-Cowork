@@ -1,4 +1,4 @@
-import { joinPath } from '../../utils/pathUtils';
+import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 
 /**
  * Install root directory name, under `<home>/.abu/`.
@@ -25,6 +25,19 @@ export class PluginPathError extends Error {
     this.name = 'PluginPathError';
     this.field = field;
   }
+}
+
+/** Normalize a package-relative component path without consulting the filesystem. */
+export function normalizePluginComponentPath(value: string): string {
+  const path = normalizeSeparators(value);
+  // Also reject drive/ADS syntax and control characters on non-Windows hosts.
+  // eslint-disable-next-line no-control-regex
+  if (!path || path.trim() !== path || path.startsWith('/') || path.startsWith('~') || /[:\u0000-\u001f\u007f]/.test(path)) {
+    throw new PluginPathError('component', value);
+  }
+  const segments = path.split('/').filter(segment => segment !== '' && segment !== '.');
+  if (segments.includes('..')) throw new PluginPathError('component', value);
+  return segments.join('/') || '.';
 }
 
 /**

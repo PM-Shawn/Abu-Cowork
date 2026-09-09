@@ -28,6 +28,7 @@ vi.mock('../core/agent/registry', () => ({
 }));
 vi.mock('../core/plugin/installedStore', () => ({
   readInstalled: vi.fn(),
+  readInstalledResult: vi.fn().mockResolvedValue({ ok: true, plugins: [] }),
 }));
 
 import { agentRegistry } from '../core/agent/registry';
@@ -158,5 +159,14 @@ describe('discoveryStore.refresh', () => {
     expect(agents.map((a) => a.name)).toEqual(['reviewer']);
     expect(agents[0].source).toBeUndefined();
     expect(isLoading).toBe(false);
+  });
+});
+
+
+describe('strict recovery discovery', () => {
+  it('propagates a failed scan while releasing the loading state', async () => {
+    vi.mocked(agentRegistry.discoverAgents).mockRejectedValueOnce(new Error('scan unavailable'));
+    await expect(useDiscoveryStore.getState().refresh(null, { strict: true })).rejects.toThrow('scan unavailable');
+    expect(useDiscoveryStore.getState().isLoading).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type { Skill } from '../../types';
 import { clearAllHooks, emitHook } from '../agent/lifecycleHooks';
 import { activateSkillHooks } from './skillHooks';
+import { publishPluginActivation } from '../plugin/activationPolicy';
 import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 
 function setElectronMarker(enabled: boolean): void {
@@ -37,13 +38,28 @@ describe('skill command hooks', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     clearAllHooks();
+    publishPluginActivation({}, [], true);
     setElectronMarker(true);
   });
 
   afterEach(() => {
     vi.mocked(invoke).mockReset();
     clearAllHooks();
+    publishPluginActivation({}, [], true);
     setElectronMarker(false);
+  });
+
+  it('does not execute already-registered hooks after the owning plugin is disabled', async () => {
+    const skill = skillWithHooks();
+    const activation = { enabled: true, root: skill.skillDir, skillDirs: [skill.skillDir], legacySkills: false, agentFiles: [], mcpServers: [] };
+    publishPluginActivation({ 'hooks@market': activation }, [], true);
+    activateSkillHooks(skill);
+    publishPluginActivation({ 'hooks@market': { ...activation, enabled: false } }, [], true);
+    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: '', stderr: '' });
+    const event = await emitHook({ type: 'preToolCall', timestamp: 0, toolName: 'write_file', toolInput: {} });
+    await emitHook({ type: 'postToolCall', timestamp: 0, toolName: 'write_file', toolInput: {}, result: 'ok' });
+    expect(event.blocked).not.toBe(true);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('uses the task signal to abort a running pre-tool hook command', async () => {

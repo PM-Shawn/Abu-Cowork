@@ -1,25 +1,11 @@
-/**
- * The skill detail — one implementation, two callers.
- *
- * 「我的」 (SkillsSection) hangs its own header actions off it (enable toggle,
- * export, history, edit, delete); 「市场」 (ExternalSkillsPanel) passes none and
- * gets the read-only reading view. Everything below the header is identical by
- * construction, so a skill that arrived with a plugin is never described in a
- * different shape than one the user wrote.
- *
- * The panel owns the supporting-file viewer state: which file is open and
- * whether it renders as markdown or as source. That state is a function of the
- * open skill and nothing else, which is why it moved here with the markup.
- */
+/** Skill contents and supporting files; the owning page supplies the released header actions. */
 
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { ChevronDown, ChevronRight, Code, Eye, FileText, Folder, Info } from 'lucide-react';
-import { useI18n } from '@/i18n';
+import { ChevronDown, ChevronRight, Code, Eye, FileText, Folder } from 'lucide-react';
 import { skillLoader } from '@/core/skill/loader';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
-import { isSystemSkill } from './isSystemSkill';
 import type { Skill } from '@/types';
 
 // ── Supporting-file tree (restored from the pre-modal list-panel version and
@@ -111,12 +97,12 @@ interface SkillDetailPanelProps {
   onClose: () => void;
   /** Header-row controls (enable toggle / `···`). Omitted = read-only detail. */
   headerActions?: ReactNode;
+  footer?: ReactNode;
   /** Hand Escape to a nested modal stacked on top (e.g. skill history). */
   disableEscape?: boolean;
 }
 
-export default function SkillDetailPanel({ skill, onClose, headerActions, disableEscape }: SkillDetailPanelProps) {
-  const { t } = useI18n();
+export default function SkillDetailPanel({ skill, onClose, headerActions, footer, disableEscape }: SkillDetailPanelProps) {
   // Content view mode: preview (rendered) or source (raw)
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
   // Supporting-file browsing. `activeFilePath` = 'SKILL.md' shows skill.content;
@@ -157,32 +143,17 @@ export default function SkillDetailPanel({ skill, onClose, headerActions, disabl
       disableEscape={disableEscape}
       maxWidth="max-w-2xl"
       avatar={skill ? <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" /> : undefined}
-      title={skill?.name}
+      stackedHeader
       headerActions={skill ? headerActions : undefined}
+      footer={skill ? footer : undefined}
     >
       {skill && (
         <div data-testid="skill-detail" className="space-y-5">
-          {/* Added by */}
-          <div>
-            <div className="text-minor text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
-            <div className="text-body font-medium text-[var(--abu-text-primary)]">{
-              skill.source === 'builtin' ? t.toolbox.skillSourceBuiltin :
-              skill.source === 'user' ? t.toolbox.skillSourceUser :
-              skill.source === 'standard' ? t.toolbox.skillSourceStandard :
-              (skill.source === 'project' || skill.source === 'project-standard') ? t.toolbox.skillSourceProject :
-              skill.source === 'plugin' ? t.toolbox.skillSourcePlugin :
-                skill.source === 'enterprise' ? t.toolbox.organizationSource :
-              (isSystemSkill(skill) ? t.toolbox.skillSourceBuiltin : t.toolbox.skillSourceUser)
-            }</div>
-          </div>
-
-          {/* Description */}
-          <div>
-            <div className="flex items-center gap-1 mb-1.5">
-              <span className="text-minor text-[var(--abu-text-muted)]">Description</span>
-              <Info className="h-3 w-3 text-[var(--abu-text-muted)]" />
-            </div>
-            <p className="text-body text-[var(--abu-text-primary)] leading-relaxed">{skill.description}</p>
+          <div className="space-y-2">
+            <h2 className="text-h-lg font-semibold text-[var(--abu-text-primary)]">
+              {skill.name} <span className="font-normal text-[var(--abu-text-muted)]">Skill</span>
+            </h2>
+            <p className="text-body text-[var(--abu-text-secondary)] leading-relaxed">{skill.description}</p>
           </div>
 
           {/* Files: SKILL.md + supporting files, with an on-demand viewer */}
@@ -191,7 +162,7 @@ export default function SkillDetailPanel({ skill, onClose, headerActions, disabl
             const displayContent = activeFilePath === 'SKILL.md' ? skill.content : activeFileContent;
             const fileTree = buildFileTree(modalFiles);
             return (
-              <div className="border border-[var(--abu-border)] rounded-lg overflow-hidden">
+              <div className="border border-[var(--abu-border)] rounded-xl overflow-hidden">
                 {/* File list — only when the skill ships supporting files */}
                 {modalFiles.length > 0 && (
                   <div className="max-h-40 overflow-y-auto overlay-scroll border-b border-[var(--abu-border)] p-1.5 space-y-0.5">
@@ -230,7 +201,7 @@ export default function SkillDetailPanel({ skill, onClose, headerActions, disabl
                   </div>
                 </div>
                 {/* Content */}
-                <div className="px-4 py-4 bg-[var(--abu-bg-base)]">
+                <div className="px-5 py-5 bg-[var(--abu-bg-subtle)]">
                   {displayContent === null ? (
                     <div className="text-minor text-[var(--abu-text-muted)] py-6 text-center">…</div>
                   ) : contentViewMode === 'preview' && isMd ? (

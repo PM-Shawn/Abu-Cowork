@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
-import { saveAgentTool, delegateToAgentTool } from './agentTools';
+import { saveAgentTool, delegateToAgentTool, useSkillTool } from './agentTools';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
 
 // Mock dependencies not covered by global setup
 vi.mock('../../skill/loader', () => ({
-  skillLoader: { getSkill: vi.fn(), loadSkill: vi.fn(), refreshSkill: vi.fn() },
+  skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn() },
 }));
 vi.mock('../../agent/registry', () => ({
   agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]) },
@@ -604,4 +604,16 @@ describe('save_agent multi-file support', () => {
       expect(result).toContain('scripts/helper.py');
     });
   });
+});
+
+
+it('does not auto-enable a child skill when runtime resolution refuses it', async () => {
+  const { useSettingsStore } = await import('@/stores/settingsStore');
+  const { skillLoader } = await import('@/core/skill/loader');
+  const toggleSkillEnabled = vi.fn();
+  vi.mocked(useSettingsStore.getState).mockReturnValue({ disabledSkills: ['closed-skill'], toggleSkillEnabled } as unknown as ReturnType<typeof useSettingsStore.getState>);
+  vi.mocked(skillLoader.getSkill).mockReturnValue(undefined);
+  const result = await useSkillTool.execute({ skill_name: 'closed-skill' });
+  expect(result).toContain('not found');
+  expect(toggleSkillEnabled).not.toHaveBeenCalled();
 });

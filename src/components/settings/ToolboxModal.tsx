@@ -10,12 +10,10 @@ import SkillsSection from '../customize/SkillsSection';
 import MCPSection from '../customize/MCPSection';
 import TopTabNav, { type TopTabNavItem } from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
-import SourceSubNav from '@/components/toolbox/SourceSubNav';
-import { sourceTabId, type ExtensionSource } from '@/components/toolbox/extensionSource';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
-import ExternalSkillsPanel from '@/components/toolbox/skills/ExternalSkillsPanel';
-import ConnectorCatalog from '@/components/toolbox/connectors/ConnectorCatalog';
-import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
+import CapabilityScopeToggle, { type CapabilityScope } from '@/components/toolbox/CapabilityScopeToggle';
+import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
+import { useToastStore } from '@/stores/toastStore';
 import { Input } from '@/components/ui/input';
 import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 
@@ -28,18 +26,7 @@ import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 /** The element the source sub-nav switches between — named so the two pills read as tabs over it. */
 const SOURCE_PANEL_ID = 'extensions-source-panel';
 
-/**
- * The Extensions view (sidebar 「扩展」): 插件 / 技能 / 连接器, driven directly by
- * the settings store's `activeExtensionsTab`. Agents are not managed here —
- * they belong to the Team view's 「队员」 tab.
- *
- * Every tab is split the same way, by SOURCE: 「市场」 is what is on offer,
- * 「我的」 is what this user has. That replaced the old 个人/组织 scope toggle,
- * which asked a question only bound enterprise clients could answer and put
- * personal content behind the same control as an organization catalog. A bound
- * client's organization catalog IS the 「市场」 panel now; an unbound one gets
- * Abu's own catalog there. 「我的」 means the same thing either way.
- */
+/** Plugins add their own market navigation; skills and connectors retain the released toolbox. */
 export default function ExtensionsView() {
   const {
     activeExtensionsTab: activeTab,
@@ -51,70 +38,33 @@ export default function ExtensionsView() {
   } = useSettingsStore();
   // Per tab: 插件's words survive a trip to 技能 and are still there on return.
   const extensionsSearchQuery = useExtensionsSearchQuery(activeTab);
+  const pluginSearchQuery = useExtensionsSearchQuery('plugins');
+  const [visitedTabs, setVisitedTabs] = useState<ExtensionsTab[]>([activeTab]);
+  if (!visitedTabs.includes(activeTab)) setVisitedTabs([...visitedTabs, activeTab]);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const { t } = useI18n();
   const enterpriseMode = useEnterpriseStore(s => s.mode);
   const isEnterprise = enterpriseMode.kind !== 'personal';
 
+  const [pluginAddTrigger, setPluginAddTrigger] = useState(0);
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
-  const [mcpPrefill, setMcpPrefill] = useState<ConnectorPrefill | null>(null);
-  const [mcpFocusServer, setMcpFocusServer] = useState<string | null>(null);
+  const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('personal');
   const [skillUploadModalOpen, setSkillUploadModalOpen] = useState(false);
   const [manualCreateTrigger, setManualCreateTrigger] = useState(0);
-  // Per-tab, so 插件 staying on 我的 does not drag 技能 there too. Deliberately
-  // not persisted: the view opens on what is on offer, every time — unless a
-  // deep link says otherwise. A link that knows its target lives in 「我的」
-  // (SkillProposalCard jumping to a skill the user just accepted) names the
-  // source, and it is applied HERE, in the initializer, rather than in an
-  // effect: seeding it after the first paint would both flash the wrong panel
-  // and count as a source CHANGE, whose reset would wipe the query the same
-  // deep link just set.
-  const [sourceByTab, setSourceByTab] = useState<Record<ExtensionsTab, ExtensionSource>>(() => {
-    const initial: Record<ExtensionsTab, ExtensionSource> = {
-      plugins: 'market', skills: 'market', mcp: 'market',
-    };
-    if (pendingExtensionsSource) initial[activeTab] = pendingExtensionsSource;
-    return initial;
-  });
-  const source = sourceByTab[activeTab];
-  const setSource = (tab: ExtensionsTab, next: ExtensionSource) =>
-    setSourceByTab((prev) => ({ ...prev, [tab]: next }));
-
-  // Apply and SPEND the pending source. At mount the initializer has already
-  // applied it, so the updater returns `prev` untouched and only the store
-  // write happens; the branch still matters for a link that arrives while this
-  // view is open. Either way the value is one-shot — left armed it would
-  // hijack the next, unrelated open.
+  // Consume existing deep links without leaving an accepted skill behind a catalog.
   useEffect(() => {
     if (!pendingExtensionsSource) return;
-    setSourceByTab((prev) => (
-      prev[activeTab] === pendingExtensionsSource
-        ? prev
-        : { ...prev, [activeTab]: pendingExtensionsSource }
-    ));
+    setCapabilityScope(pendingExtensionsSource === 'mine' ? 'personal' : 'organization');
     clearPendingExtensionsSource();
   }, [pendingExtensionsSource, activeTab, clearPendingExtensionsSource]);
 
-  // Reset the manual-create trigger and spend the pending 「管理」 target when
-  // the tab or source CHANGES — not on first paint.
-  //
-  // What it no longer does is clear the search box: each tab remembers its own
-  // words (settingsStore.extensionsSearchQueries), so switching away and back
-  // resumes the same filtered list instead of starting over.
-  const lastTabSource = useRef<{ tab: ExtensionsTab; source: ExtensionSource }>({ tab: activeTab, source });
+  const lastView = useRef({ activeTab, capabilityScope });
   useEffect(() => {
-    const last = lastTabSource.current;
-    if (last.tab === activeTab && last.source === source) return;
-    lastTabSource.current = { tab: activeTab, source };
+    if (lastView.current.activeTab === activeTab && lastView.current.capabilityScope === capabilityScope) return;
+    lastView.current = { activeTab, capabilityScope };
     setManualCreateTrigger(0);
-    // `focusServer` is a one-shot instruction, but as a prop it would stay
-    // armed and then fail to re-fire the second time the same server is
-    // managed. MCPSection has already consumed it by now (a child's effect
-    // runs before its parent's), so withdrawing it here costs nothing and
-    // leaves the next 「管理」 free to offer the same name again.
-    setMcpFocusServer(null);
-  }, [activeTab, source]);
+  }, [activeTab, capabilityScope]);
 
   // Handler for creating a skill with AI (the only tab with an AI-create entry)
   const handleAICreate = () => {
@@ -125,7 +75,6 @@ export default function ExtensionsView() {
 
   // Handler for manual create (opens blank editor in SkillsSection)
   const handleManualCreate = () => {
-    setSource('skills', 'mine');
     setManualCreateTrigger((c) => c + 1);
   };
 
@@ -142,7 +91,7 @@ export default function ExtensionsView() {
     { id: 'mcp', label: t.toolbox.connectors, icon: Server },
   ];
 
-  const renderContent = () => {
+  const renderContent = (tab: ExtensionsTab = activeTab) => {
     const binding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
       ? enterpriseMode.binding
       : null;
@@ -157,65 +106,34 @@ export default function ExtensionsView() {
     // enterprise build without one falls through to Abu's own market rather
     // than showing a blank panel.
     const mount = isEnterprise && binding
-      ? { plugins: getEnterpriseMount('pluginTab'), skills: getEnterpriseMount('skillTab'), mcp: getEnterpriseMount('mcpTab') }[activeTab]
+      ? { plugins: getEnterpriseMount('pluginTab'), skills: getEnterpriseMount('skillTab'), mcp: getEnterpriseMount('mcpTab') }[tab]
       : null;
-    if (source === 'market' && mount && binding) {
+    const showOrganization = capabilityScope === 'organization';
+    if (showOrganization && mount && binding) {
       const Market = mount;
       return <Market binding={binding} config={config} searchQuery={extensionsSearchQuery} />;
     }
 
-    switch (activeTab) {
+    switch (tab) {
       // Plugins own the install-disclosure flow and, inside 「市场」, the
       // add-marketplace entry; the shared header search box feeds both halves.
       case 'plugins':
-        return <PluginsTab searchQuery={extensionsSearchQuery} source={source} />;
+        return <PluginsTab searchQuery={pluginSearchQuery} addTrigger={pluginAddTrigger} />;
       case 'skills':
-        return source === 'market'
-          ? <ExternalSkillsPanel searchQuery={extensionsSearchQuery} />
-          : <SkillsSection
-              sourceFilter="mine"
-              manualCreateTrigger={manualCreateTrigger}
-              showUploadModal={skillUploadModalOpen}
-              onUploadModalChange={setSkillUploadModalOpen}
-            />;
+        return <SkillsSection
+          manualCreateTrigger={manualCreateTrigger}
+          showUploadModal={skillUploadModalOpen}
+          onUploadModalChange={setSkillUploadModalOpen}
+        />;
       case 'mcp':
-        return source === 'market'
-          ? <ConnectorCatalog
-              searchQuery={extensionsSearchQuery}
-              // 「添加」 does not add: a catalog entry's env carries key names
-              // with empty values, so it hands the config to 「我的」's form for
-              // the user to complete.
-              onPrefillAdd={(entry) => {
-                setMcpPrefill(entry);
-                setSource('mcp', 'mine');
-                setMcpAddFormOpen(true);
-              }}
-              // 「管理」 lands in the per-server editor, which lives in 「我的」.
-              onManage={(name) => {
-                setMcpFocusServer(name);
-                setSource('mcp', 'mine');
-              }}
-            />
-          : <MCPSection
-              sourceFilter="mine"
-              showAddForm={mcpAddFormOpen}
-              onAddFormChange={(open) => {
-                setMcpAddFormOpen(open);
-                // Withdraw the offer with the form it filled: a template-sourced
-                // connector closes this form and opens its own installer, and a
-                // stale prefill would re-fire on the next 「添加」.
-                if (!open) setMcpPrefill(null);
-              }}
-              prefill={mcpPrefill}
-              focusServer={mcpFocusServer}
-            />;
+        return <MCPSection showAddForm={mcpAddFormOpen} onAddFormChange={setMcpAddFormOpen} />;
       default:
         return null;
     }
   };
 
   // Header-right control: always a search box, plus a per-tab create control.
-  // Creation is available from either source; local forms open in My items.
+  // Local creation stays with the released personal capability view.
   const renderHeaderRight = () => {
     const searchBox = (
       <div className="relative w-52 shrink-0">
@@ -231,25 +149,36 @@ export default function ExtensionsView() {
     );
 
     let createControl: ReactNode = null;
-    if (activeTab === 'skills') {
+    if (activeTab === 'skills' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreate}
           onManualCreate={handleManualCreate}
-          onUploadFile={() => { setSource('skills', 'mine'); setSkillUploadModalOpen(true); }}
+          onUploadFile={() => setSkillUploadModalOpen(true)}
           uploadLabel={t.toolbox.importEntry}
           triggerTestId="skill-create-trigger"
           menuTestId="skill-create-menu"
         />
       );
-    } else if (activeTab === 'mcp') {
-      createControl = <ToolboxCreateMenu onClick={() => { setMcpPrefill(null); setSource('mcp', 'mine'); setMcpAddFormOpen(true); }} />;
+    } else if (activeTab === 'mcp' && (!isEnterprise || capabilityScope === 'personal')) {
+      createControl = <ToolboxCreateMenu onClick={() => setMcpAddFormOpen(true)} />;
     }
-    // activeTab === 'plugins' → no header create control: what you add there is
-    // a marketplace, not a plugin, and that entry lives inside 「市场」 (and in
-    // its empty state) where the markets themselves are listed.
+    if (activeTab === 'plugins' && (!isEnterprise || capabilityScope === 'personal')) {
+      createControl = <ToolboxCreateMenu triggerTestId="plugin-create-trigger" menuTestId="plugin-create-menu" items={[
+        { label: t.toolbox.pluginsCreate, onSelect: () => { void usePluginAuthorStore.getState().create().catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
+        { label: t.toolbox.pluginsAddMarketplace, onSelect: () => setPluginAddTrigger(value => value + 1) },
+      ]} />;
+    }
 
-    return <>{searchBox}{createControl}</>;
+    return <>
+      {isEnterprise && <CapabilityScopeToggle
+        value={capabilityScope}
+        onChange={setCapabilityScope}
+        personalLabel={t.toolbox.personalSource}
+        organizationLabel={t.toolbox.organizationSource}
+      />}
+      {searchBox}{createControl}
+    </>;
   };
 
   return (
@@ -267,32 +196,16 @@ export default function ExtensionsView() {
         right={renderHeaderRight()}
       />
 
-      {/* 市场 | 我的 — the same split on every tab, so it sits above the panel
-          rather than inside any one of them. Padded like TopTabNav's row and
-          the panels below so all three left edges line up. */}
-      <div className="shrink-0 px-8">
-        <div className="mx-auto max-w-5xl">
-          <SourceSubNav
-            value={source}
-            onChange={(next) => setSource(activeTab, next)}
-            marketLabel={t.toolbox.sourceMarket}
-            mineLabel={t.toolbox.sourceMine}
-            panelId={SOURCE_PANEL_ID}
-          />
-        </div>
-      </div>
-
-      {/* Content — the one panel the sub-nav's two tabs switch between, so it
-          names the selected tab back (aria-labelledby) and takes focus itself
-          (tabIndex) the way a tabpanel must. */}
       <div
         id={SOURCE_PANEL_ID}
-        role="tabpanel"
-        aria-labelledby={sourceTabId(source)}
         tabIndex={0}
         className="flex-1 overflow-hidden"
       >
-        {renderContent()}
+        {capabilityScope === 'organization' ? renderContent() : visitedTabs.map(tab => (
+          <div key={tab} hidden={tab !== activeTab} className="h-full" data-extension-panel={tab}>
+            {renderContent(tab)}
+          </div>
+        ))}
       </div>
     </div>
   );

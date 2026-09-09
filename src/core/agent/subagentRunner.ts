@@ -1,3 +1,5 @@
+import { acquirePluginUse } from '../plugin/runtimeLease';
+import { assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
 import { acknowledgeDispatchInstruction } from './dispatchInput';
 import { digestApprovalParameters } from './teamConfirmationIdentity';
 import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
@@ -774,6 +776,12 @@ function cancelledSubagentResult(): SubagentResult {
  * protocol and fallback discipline.
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  const release = acquirePluginUse(pluginOwnerForAgent(options.agent));
+  try { return await runAdmittedSubagent(options); } finally { release(); }
+}
+
+async function runAdmittedSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  assertPluginAgentEnabled(options.agent);
   // Register the original dispatch before any child tool can request consent.
   // The retry association is shell-owned and includes the actual delegated task.
   const dispatchId = options.dispatchKey;
@@ -829,6 +837,7 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
  */
 async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
   try {
+    assertPluginAgentEnabled(options.agent);
     return await runSubagentLoop(options);
   } finally {
     disposeRunBrowserViews(options.parentConversationId, options.agentRunId);
@@ -872,6 +881,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   // are only run-local; exposing them raw to the parent causes cross-agent
   // collisions in child-step replay and hidden image persistence.
   const runId = createSubagentProgressScopeId();
+  assertPluginAgentEnabled(options.agent);
   const localOptions = scopeSubagentLoopProgress(withPreloadedSkills, runId);
 
   if (getSidecarStatus() !== 'running') {

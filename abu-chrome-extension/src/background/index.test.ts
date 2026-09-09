@@ -117,6 +117,7 @@ const browserState: {
    * file leaves it null.
    */
   onContentMessage: ((action: string, tabId: number) => void) | null;
+  onTabActivation: ((tabId: number) => Promise<void> | void) | null;
   /** Every `offscreen.createDocument` the worker got as far as calling. */
   offscreenCreated: { url: string; reasons: unknown[]; justification: string }[];
   /** The `stitch` messages the offscreen document was asked to composite. */
@@ -128,6 +129,7 @@ const browserState: {
   frames: {},
   contentAnswers: {},
   onContentMessage: null,
+  onTabActivation: null,
   offscreenCreated: [],
   stitchRequests: [],
 };
@@ -160,10 +162,14 @@ function fakeChrome(): Record<string, unknown> {
       onActivated: slot('tabs.onActivated'),
       onRemoved: slot('tabs.onRemoved'),
       onUpdated: slot('tabs.onUpdated'),
-      query: async (q: { active?: boolean; windowId?: number }) => browserState.tabs.filter(
-        (t) => (q.active === undefined || t.active === q.active)
-          && (q.windowId === undefined || t.windowId === q.windowId),
-      ),
+      query: async (q: { active?: boolean; windowId?: number }, cb?: (tabs: typeof browserState.tabs) => void) => {
+        const tabs = browserState.tabs.filter(
+          (t) => (q.active === undefined || t.active === q.active)
+            && (q.windowId === undefined || t.windowId === q.windowId),
+        );
+        cb?.(tabs);
+        return tabs;
+      },
       get: async (tabId: number) => {
         const tab = browserState.tabs.find((t) => t.id === tabId);
         if (!tab) throw new Error(`No tab with id: ${tabId}`);
@@ -172,7 +178,11 @@ function fakeChrome(): Record<string, unknown> {
       update: async (tabId: number, props: Record<string, unknown>) => {
         browserState.updated.push({ tabId, props });
         if (props.active === true) {
-          for (const t of browserState.tabs) if (t.windowId === browserState.tabs.find((x) => x.id === tabId)?.windowId) t.active = t.id === tabId;
+          const tab = browserState.tabs.find((x) => x.id === tabId);
+          const changed = tab && !tab.active;
+          for (const t of browserState.tabs) if (t.windowId === tab?.windowId) t.active = t.id === tabId;
+          if (changed) fire('tabs.onActivated', { tabId, windowId: tab.windowId });
+          await browserState.onTabActivation?.(tabId);
         }
         return browserState.tabs.find((t) => t.id === tabId);
       },
@@ -351,6 +361,7 @@ beforeEach(() => {
   browserState.frames = {};
   browserState.contentAnswers = {};
   browserState.onContentMessage = null;
+  browserState.onTabActivation = null;
   browserState.stitchRequests.length = 0;
   sentToContent.length = 0;
 });
@@ -763,6 +774,15 @@ describe('actions the service worker answers itself', () => {
     expect(browserState.sessionStore.lastActiveTabId).toBe(11);
   });
 
+  it('still follows the user focusing a different Chrome window', async () => {
+    twoTabWindow();
+    browserState.tabs.push({ id: 14, windowId: 2, active: true, url: 'https://c.example/', title: 'C' });
+    fire('windows.onFocusChanged', 2);
+    expect(browserState.sessionStore).toMatchObject({ lastActiveTabId: 14, lastActiveWindowId: 2 });
+    fire('windows.onFocusChanged', -1);
+    expect(browserState.sessionStore.lastActiveTabId).toBe(14);
+  });
+
   it('does NOT send a tabId-less action to the tab the user last used', async () => {
     // The pre-claims behaviour — a request with no `tabId` followed whatever
     // tab the user had most recently looked at — was deliberately retired for
@@ -889,6 +909,52 @@ describe('actions the service worker answers itself', () => {
         vi.useRealTimers();
       }
     });
+  });
+
+  it.each(['screenshot', 'screenshot_full_page'])('%s activation preserves user last-active tracking', async (action) => {
+    twoTabWindow();
+    fire('tabs.onActivated', { tabId: 12, windowId: 1 });
+    vi.useFakeTimers();
+    try {
+      await request(action, { tabId: 11 }, { pumpMs: 4_000 });
+      expect(browserState.updated).toContainEqual({ tabId: 11, props: { active: true } });
+      expect(browserState.sessionStore.lastActiveTabId).toBe(12);
+      // A later real switch to the same tab is not a leftover automation echo.
+      fire('tabs.onActivated', { tabId: 11, windowId: 1 });
+      expect(browserState.sessionStore.lastActiveTabId).toBe(11);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not mask another user activation while screenshot activation is pending', async () => {
+    twoTabWindow();
+    fire('tabs.onActivated', { tabId: 12, windowId: 1 });
+    browserState.onTabActivation = () => {
+      fire('tabs.onActivated', { tabId: 13, windowId: 2 });
+    };
+    vi.useFakeTimers();
+    try {
+      await request('screenshot', { tabId: 11 }, { pumpMs: 500 });
+      expect(browserState.sessionStore).toMatchObject({ lastActiveTabId: 13, lastActiveWindowId: 2 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cleans up failed screenshot activation before a later user activation', async () => {
+    twoTabWindow();
+    const original = chrome.tabs.update;
+    chrome.tabs.update = vi.fn().mockRejectedValue(new Error('tab closed'));
+    try {
+      const response = await request('screenshot', { tabId: 11 });
+      expect(response.success).toBe(false);
+      expect(response.error).toMatch(/tab closed/);
+      fire('tabs.onActivated', { tabId: 11, windowId: 1 });
+      expect(browserState.sessionStore.lastActiveTabId).toBe(11);
+    } finally {
+      chrome.tabs.update = original;
+    }
   });
 
   it('activates a background tab before screenshotting it, so it shoots the right page', async () => {
@@ -1218,10 +1284,11 @@ describe('popup status channel', () => {
     expect(sent[0]).toMatchObject({ connected: true, reconnecting: false, port: 9876 });
   });
 
-  it('records the tab a content script says is visible', async () => {
+  it('does not treat content initialization or visibility as user activation', async () => {
     twoTabWindow();
+    fire('tabs.onActivated', { tabId: 12, windowId: 1 });
     fire('runtime.onMessage', { type: 'tab_visible' }, { tab: { id: 11, windowId: 1 } }, () => {});
 
-    expect(browserState.sessionStore.lastActiveTabId).toBe(11);
+    expect(browserState.sessionStore.lastActiveTabId).toBe(12);
   });
 });

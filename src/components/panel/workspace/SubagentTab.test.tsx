@@ -105,6 +105,37 @@ describe('SubagentTab', () => {
     expect(screen.queryByText('The full subagent process is only retained during this app run.')).toBeNull();
   });
 
+  it('uses the persisted child steps when a stale live dispatch still has zero steps', async () => {
+    const { useChatStore } = await import('@/stores/chatStore');
+    const { useTaskExecutionStore } = await import('@/stores/taskExecutionStore');
+    const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
+    useChatStore.getState().addMessage(convId, {
+      id: 'assistant-live-race',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 1,
+      executionSteps: [{
+        id: 'delegate-persisted', toolCallId: 'delegate-live-race', type: 'delegate', label: 'delegate', status: 'completed',
+        toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [{
+          id: 'child-persisted', toolCallId: 'child-call', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file',
+          detailBlocks: [], source: 'agent', executionId: 'delegate-persisted', toolInput: {},
+        }],
+        detailBlocks: [], source: 'agent', executionId: 'exec-live-race', toolInput: {},
+      }],
+    } as never);
+    const exec = useTaskExecutionStore.getState().createExecutionWithId(convId, 'loop-live-race', 'exec-live-race');
+    useTaskExecutionStore.getState().addStep(exec.id, {
+      id: 'delegate-live', executionId: exec.id, toolCallId: 'delegate-live-race', type: 'delegate', label: 'delegate', status: 'completed',
+      toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [], detailBlocks: [], source: 'agent', toolInput: {},
+    });
+
+    render(<SubagentTab identity={{ conversationId: convId, assistantMessageId: 'assistant-live-race', batchToolCallId: 'delegate-live-race' }} taskIndex={0} title="writer" />);
+
+    expect(screen.getByText('1 tool calls')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');
+    useTaskExecutionStore.getState().clearAll();
+  });
+
   it('renders queued status with a static icon instead of a spinner', () => {
     useBatchProgressStore.getState().initBatch(identity, ['Worker']);
 

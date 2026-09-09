@@ -634,6 +634,8 @@ export interface ToolExecutionContext {
   teamApprovalDispatch?: { id: string; fingerprint: string };
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
+  /** Execution step ID — a shell/sidecar correlation hint for delegated progress. */
+  executionStepId?: string;
   /**
    * Member identity stamped by the trusted runner (the shell session's agent
    * definition across RPC, never the incoming context). Team approval keys

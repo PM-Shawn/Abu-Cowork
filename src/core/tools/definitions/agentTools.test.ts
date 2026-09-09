@@ -357,6 +357,47 @@ describe('delegateToAgentTool', () => {
     );
   });
 
+  it('drains member progress after a delayed parent step becomes visible', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    const toolCallToStepId = new Map<string, string>();
+    const addChildStepToDelegate = vi.fn().mockReturnValue('child-step-delayed');
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId,
+      loopId: 'loop-delayed-parent',
+      conversationId: 'conv-1',
+      eventRouter: {
+        getCurrentStepId: () => undefined,
+        addChildStepToDelegate,
+        completeChildStep: vi.fn(),
+      },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_delayed', toolName: 'write_file', toolInput: { path: 'report.md' } });
+      await new Promise<void>((resolve) => setTimeout(() => {
+        toolCallToStepId.set('delegate-delayed', 'parent-step-delayed');
+        resolve();
+      }, 15));
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-delayed-parent', toolCallId: 'delegate-delayed' } as never,
+    );
+
+    expect(addChildStepToDelegate).toHaveBeenCalledWith(
+      'loop-delayed-parent',
+      'parent-step-delayed',
+      expect.objectContaining({ toolName: 'write_file', toolCallId: expect.stringContaining(':toolu_delayed') }),
+    );
+  });
+
   it('forgets a completed child id so a duplicate tool-end cannot complete it twice', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getCurrentLoopContext } = await import('../../agent/permissionBridge');

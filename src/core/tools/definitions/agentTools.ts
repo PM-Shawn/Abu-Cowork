@@ -3,6 +3,8 @@ import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
+import { getExecutionPort } from '../../agent/ports/executionPort';
+import { snapshotExecutionSteps } from '../../agent/executionSnapshot';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry, parseAgentFile } from '../../agent/registry';
@@ -293,17 +295,23 @@ export const delegateToAgentTool: ToolDefinition = {
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
+    let drainProgress: (() => Promise<void>) | undefined;
 
     if (loopCtx?.eventRouter && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function') {
       // Parent step resolved lazily, by this call's tool_use id — see
       // delegateParentStep.ts (eager lookup lost the member process when the
       // leader loop ran in the sidecar).
-      const resolveParentStepId = createParentStepResolver(loopCtx, toolExecContext?.toolCallId);
+      const resolveParentStepId = createParentStepResolver(
+        loopCtx,
+        toolExecContext?.toolCallId,
+        toolExecContext?.executionStepId,
+      );
       const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
+      const pendingProgress: SubagentProgressEvent[] = [];
+      let retryScheduled = false;
+      let retryCount = 0;
 
-      onProgress = (event) => {
-        const parentStepId = resolveParentStepId();
-        if (!parentStepId) return;
+      const applyProgress = (event: SubagentProgressEvent, parentStepId: string): void => {
         if (event.type === 'tool-start') {
           const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
             loopCtx.loopId,
@@ -312,6 +320,14 @@ export const delegateToAgentTool: ToolDefinition = {
           );
           if (childStepId) {
             childIdMap.set(event.id, childStepId);
+            const execution = getExecutionPort().getExecutionByLoopId(loopCtx.loopId);
+            if (execution) {
+              useChatStore.getState().setExecutionStepsSnapshot(
+                loopCtx.conversationId,
+                loopCtx.loopId,
+                snapshotExecutionSteps(execution.steps),
+              );
+            }
           }
         } else if (event.type === 'tool-end') {
           const childStepId = childIdMap.get(event.id);
@@ -323,10 +339,62 @@ export const delegateToAgentTool: ToolDefinition = {
               childStepId,
               event.result,
               event.error,
-              event.resultContent
+              event.resultContent,
             );
+            const execution = getExecutionPort().getExecutionByLoopId(loopCtx.loopId);
+            if (execution) {
+              useChatStore.getState().setExecutionStepsSnapshot(
+                loopCtx.conversationId,
+                loopCtx.loopId,
+                snapshotExecutionSteps(execution.steps),
+              );
+            }
           }
         }
+      };
+
+      const flushPending = (): void => {
+        const parentStepId = resolveParentStepId();
+        if (!parentStepId) {
+          retryScheduled = false;
+          if (pendingProgress.length > 0 && retryCount < 100) {
+            retryCount += 1;
+            retryScheduled = true;
+            setTimeout(flushPending, 5);
+          }
+          return;
+        }
+        for (const pending of pendingProgress.splice(0)) applyProgress(pending, parentStepId);
+        retryCount = 0;
+        retryScheduled = false;
+      };
+
+      // A sidecar delegate can finish its member run before the shell has
+      // applied the parent's addStep frame. Keep the delegate result behind a
+      // short bounded drain so the caller never observes "completed" while
+      // the member's child steps are still waiting in this queue.
+      drainProgress = async (): Promise<void> => {
+        for (let attempt = 0; attempt < 100 && pendingProgress.length > 0; attempt += 1) {
+          flushPending();
+          if (pendingProgress.length === 0) return;
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+        }
+        flushPending();
+      };
+
+      onProgress = (event) => {
+        const parentStepId = resolveParentStepId();
+        if (!parentStepId) {
+          pendingProgress.push(event);
+          if (!retryScheduled) {
+            retryScheduled = true;
+            retryCount = 0;
+            setTimeout(flushPending, 0);
+          }
+          return;
+        }
+        flushPending();
+        applyProgress(event, parentStepId);
       };
     }
 
@@ -377,6 +445,7 @@ export const delegateToAgentTool: ToolDefinition = {
         ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
+      await drainProgress?.();
 
       // Clear this agent from tracking and cleanup
       subagentCleanup();

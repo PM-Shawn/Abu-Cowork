@@ -1,10 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ToolDefinition } from '../../types';
 import { TOOL_NAMES } from './toolNames';
+import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginToolPolicy';
+import { clearBrowserSignals, getRecentBrowserSignals } from '../observability/browserSignals';
+import { getI18n, format } from '@/i18n';
 
 const mocks = vi.hoisted(() => ({
   isConnected: vi.fn().mockReturnValue(false),
   getServerTools: vi.fn().mockReturnValue([]),
+  getConnectedServers: vi.fn().mockReturnValue([]),
+  callTool: vi.fn().mockResolvedValue('ok'),
   checkTool: vi.fn().mockReturnValue({ decision: 'allow' }),
 }));
 
@@ -12,7 +17,9 @@ vi.mock('../mcp/client', () => ({
   mcpManager: {
     isConnected: mocks.isConnected,
     getServerTools: mocks.getServerTools,
-    listTools: () => [],
+    getConnectedServers: mocks.getConnectedServers,
+    callTool: mocks.callTool,
+    listTools: () => mocks.getConnectedServers().flatMap((server: string) => mocks.getServerTools(server)),
   },
 }));
 
@@ -24,7 +31,7 @@ vi.mock('../enterprise/policy/enforcer', () => ({
   getCurrentPolicy: () => null,
 }));
 
-import { toolRegistry } from './registry';
+import { toolRegistry, getAllTools, checkToolApproval, executeAnyTool } from './registry';
 import { useMCPStore } from '../../stores/mcpStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import {
@@ -52,8 +59,12 @@ function register(tool: ToolDefinition): void {
 
 describe('computeCapabilitySnapshot', () => {
   beforeEach(() => {
+    useSettingsStore.setState({ permissionMode: 'standard', computerUseEnabled: false, labs: {} });
+    clearBrowserSignals();
     mocks.isConnected.mockReturnValue(false);
     mocks.getServerTools.mockReturnValue([]);
+    mocks.getConnectedServers.mockReturnValue([]);
+    mocks.callTool.mockResolvedValue('ok');
     mocks.checkTool.mockReturnValue({ decision: 'allow' });
     useMCPStore.setState({ servers: {}, isLoading: false });
   });
@@ -62,7 +73,116 @@ describe('computeCapabilitySnapshot', () => {
     for (const name of registeredNames.splice(0)) {
       toolRegistry.remove(name);
     }
+    useSettingsStore.setState({ permissionMode: 'standard', computerUseEnabled: false, labs: {} });
+    clearBrowserSignals();
+    setPluginServerNames([]);
+    forgetPluginGrants();
     vi.clearAllMocks();
+  });
+
+  it.each(['abu-browser', 'notes-runtime'])('includes runtime-only %s tools in both views', (server) => {
+    const tool = makeTool(`${server}__inspect`, true);
+    mocks.getConnectedServers.mockReturnValue([server]);
+    mocks.isConnected.mockImplementation((name: string) => name === server);
+    mocks.getServerTools.mockImplementation((name: string) => name === server ? [tool] : []);
+    expect(getAllTools()).toContain(tool);
+    expect(computeCapabilitySnapshot().entries).toContainEqual({
+      name: tool.name, source: { kind: 'mcp', server }, unavailableReasons: [],
+      concurrencySafety: 'safe', policy: { decision: 'allow', reason: undefined },
+    });
+  });
+
+  it('does not advertise a stale configured connected tool without a runtime definition', () => {
+    useMCPStore.setState({ servers: {
+      stale: { config: { name: 'stale', enabled: true }, status: 'connected', tools: [{ name: 'inspect' }] },
+    } });
+    expect(getAllTools().map(t => t.name)).not.toContain('stale__inspect');
+    expect(computeCapabilitySnapshot().entries.find(e => e.name === 'stale__inspect')?.unavailableReasons)
+      .toEqual([{ kind: 'mcp-not-connected', server: 'stale', status: 'disconnected', error: undefined }]);
+  });
+
+  it('rejects a disabled server still connected at schema, approval and execution boundaries', async () => {
+    const tool = makeTool('notes__inspect');
+    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    useMCPStore.setState({ servers: {
+      notes: { config: { name: 'notes', enabled: false }, status: 'connected', tools: [{ name: 'inspect' }] },
+    } });
+    mocks.getConnectedServers.mockReturnValue(['notes']);
+    mocks.isConnected.mockImplementation((name: string) => name === 'notes');
+    mocks.getServerTools.mockImplementation((name: string) => name === 'notes' ? [tool] : []);
+    expect(getAllTools()).not.toContain(tool);
+    expect((await checkToolApproval(tool.name, {})).decision).toBe('deny');
+    expect(await executeAnyTool(tool.name, {})).toBe(`Error: ${format(getI18n().toolResult.capabilitySnapshot.reasonMcpDisabled, { server: 'notes' })}`);
+    expect(mocks.callTool).not.toHaveBeenCalled();
+    useMCPStore.getState().toggleServerEnabled('notes');
+    expect(getAllTools()).toContain(tool);
+    expect(await executeAnyTool(tool.name, {})).toBe('ok');
+    expect(mocks.callTool).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks a server disabled while its approval is pending', async () => {
+    useSettingsStore.setState({ permissionMode: 'standard' });
+    setPluginServerNames(['notes']);
+    useMCPStore.setState({ servers: {
+      notes: { config: { name: 'notes', enabled: true }, status: 'connected', tools: [{ name: 'inspect' }] },
+    } });
+    mocks.isConnected.mockImplementation((name: string) => name === 'notes');
+    const confirm = vi.fn(async () => {
+      useMCPStore.getState().toggleServerEnabled('notes');
+      return true;
+    });
+    expect(String(await executeAnyTool('notes__inspect', {}, confirm))).toContain('Error:');
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(mocks.callTool).not.toHaveBeenCalled();
+  });
+
+  it('does not apply an MCP disable to a builtin name collision', async () => {
+    const builtin = makeTool('notes__inspect');
+    register(builtin);
+    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    useMCPStore.setState({ servers: {
+      notes: { config: { name: 'notes', enabled: false }, status: 'connected', tools: [{ name: 'inspect' }] },
+    } });
+    expect(getAllTools()).toContain(builtin);
+    expect(await executeAnyTool(builtin.name, {})).toBe('ok');
+    expect(mocks.callTool).not.toHaveBeenCalled();
+  });
+
+  it('uses live metadata despite a stale disconnected configuration and does not mutate configuration', () => {
+    useMCPStore.setState({ servers: {
+      notes: { config: { name: 'notes', enabled: true }, status: 'disconnected', tools: [] },
+    } });
+    mocks.getConnectedServers.mockReturnValue(['notes']);
+    mocks.getServerTools.mockReturnValue([makeTool('notes__inspect')]);
+    expect(computeCapabilitySnapshot().entries.find(e => e.name === 'notes__inspect')?.unavailableReasons).toEqual([]);
+    expect(useMCPStore.getState().servers.notes.status).toBe('disconnected');
+    expect(useMCPStore.getState().servers.notes.tools).toEqual([]);
+  });
+
+  it('drops stale configured tool names when a connected runtime no longer offers them', () => {
+    mocks.getConnectedServers.mockReturnValue(['filtered']);
+    mocks.getServerTools.mockReturnValue([]);
+    useMCPStore.setState({ servers: {
+      filtered: { config: { name: 'filtered', enabled: true }, status: 'connected', tools: [{ name: 'old_tool' }] },
+    } });
+    expect(computeCapabilitySnapshot().entries.map(e => e.name)).not.toContain('filtered__old_tool');
+  });
+
+  it('restores Playwright while a disabled browser bridge still has a connection', async () => {
+    const bridge = makeTool('abu-browser-bridge__get_tabs');
+    const playwright = makeTool('playwright__browser_click');
+    mocks.getConnectedServers.mockReturnValue(['abu-browser-bridge', 'playwright']);
+    mocks.getServerTools.mockImplementation((name: string) => name === 'playwright' ? [playwright] : [bridge]);
+    useMCPStore.setState({ servers: {
+      'abu-browser-bridge': { config: { name: 'abu-browser-bridge', enabled: false }, status: 'connected', tools: [] },
+    } });
+    expect(getAllTools()).toContain(playwright);
+    expect(getAllTools()).not.toContain(bridge);
+    expect((await checkToolApproval(bridge.name, {}, { conversationId: 'disabled-browser', interactionMode: 'background' })).decision).toBe('deny');
+    expect(getRecentBrowserSignals().filter(s => s.kind === 'gate_denied')).toMatchObject([
+      { reason: 'server-disabled', tool: bridge.name, runMode: 'unattended', conversationId: 'disabled-browser' },
+    ]);
+    expect(mocks.callTool).not.toHaveBeenCalled();
   });
 
   it('reports a normal builtin tool as active with the right concurrency classification', () => {
@@ -94,6 +214,8 @@ describe('computeCapabilitySnapshot', () => {
   });
 
   it('reports a connected MCP server tool as active, sourced to its server', () => {
+    mocks.getConnectedServers.mockReturnValue(['github']);
+    mocks.getServerTools.mockReturnValue([makeTool('github__search_issues')]);
     useMCPStore.setState({
       servers: {
         github: {
@@ -140,6 +262,7 @@ describe('computeCapabilitySnapshot', () => {
       alpha: { config: { name: 'alpha', enabled: true }, status: 'connected', tools: [{ name: 'search' }] },
       beta: { config: { name: 'beta', enabled: true }, status: 'connected', tools: [{ name: 'search' }] },
     } });
+    mocks.getConnectedServers.mockReturnValue(['alpha', 'beta']);
     mocks.getServerTools.mockImplementation((server: string) => [makeTool(`${server}__search`, true)]);
     mocks.checkTool.mockImplementation((_policy: unknown, name: string) =>
       name === 'beta__search' ? { decision: 'deny', reason: 'restricted' } : { decision: 'allow' },
@@ -203,6 +326,8 @@ describe('computeCapabilitySnapshot', () => {
   });
 
   it('filters a Playwright browser tool as a duplicate when an Abu browser is connected', () => {
+    mocks.getConnectedServers.mockReturnValue(['abu-browser', 'playwright']);
+    mocks.getServerTools.mockImplementation((server: string) => server === 'playwright' ? [makeTool('playwright__browser_click')] : []);
     mocks.isConnected.mockImplementation((name: string) => name === 'abu-browser');
     useMCPStore.setState({
       servers: {
@@ -224,6 +349,8 @@ describe('computeCapabilitySnapshot', () => {
   });
 
   it('does NOT filter a Playwright browser tool when no Abu browser is connected', () => {
+    mocks.getConnectedServers.mockReturnValue(['playwright']);
+    mocks.getServerTools.mockReturnValue([makeTool('playwright__browser_click')]);
     mocks.isConnected.mockReturnValue(false);
     useMCPStore.setState({
       servers: {

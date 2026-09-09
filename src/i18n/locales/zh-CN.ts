@@ -2754,6 +2754,7 @@ const zhCN: TranslationDict = {
     browserUploadSymlink: '「{name}」是一个符号链接。阿布不跟随链接上传——请直接给出文件本身的路径。',
     browserUploadTooLarge: '「{name}」超过了上传上限（单个文件最大 {max}）。请自己在浏览器里手动上传这个文件。',
     browserUploadUnidentifiable: '无法确认「{name}」是哪一个文件（系统没有给出修改时间和文件编号），因此没有上传。请把文件复制到已授权的目录里再试。',
+    browserServerDisabled: '浏览器服务已停用，请重新启用后再试',
     browserEnterprisePolicyDenied: '这次浏览器操作被企业策略拦下了，需要联系管理员',
     browserUnattendedSiteNotAllowed: '无人值守运行只能在你已明确允许的网站上操作，当前网站没有这条授权',
     browserUnattendedConfirmUnavailable: '该操作需要确认，但无人值守运行没有可用的确认入口',

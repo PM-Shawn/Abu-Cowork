@@ -9,6 +9,9 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+### 🐛 Fixes
+
+- **A tool step no longer hangs at "executing" when its media fails to transport.** A batch of sidecar updates carrying an unexpected inline image payload was dropped whole, taking the updates that settle the tool call down with it. Now only the offending update is degraded — its media is replaced with a transport-error placeholder and the step is marked failed — while every other update in the same batch applies as usual.
 - **A team member that stops short no longer reads as done.** When a member runs out of turns, is interrupted, or errors, the reason now travels in the hand-off result text itself — not just in metadata only Claude-family providers can carry — so the leader treats the step as unfinished instead of quietly taking the work over. Batch sub-task lines are marked the same way. Hitting the turn cap now says the task is unfinished rather than "completed N turns" — in the main conversation and in an `@agent` hand-off, which used to end in silence on a truncated answer. The leader also gets a turn-budget floor, applied only over an explicit `maxTurns` on its role card, so a member-sized number can no longer cap a whole team run while a card without one still follows your global turn setting.
 ### 🐛 Fixes
 

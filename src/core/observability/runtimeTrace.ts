@@ -16,6 +16,8 @@ export interface RuntimeTraceAttributes {
   durationMs?: number;
   payloadBytes?: number;
   frameCount?: number;
+  /** Frames in a delta batch that were degraded in place (agentLoopRunner's media guard). */
+  degradedCount?: number;
   pendingRpcCount?: number;
   reason?: string;
   executionPath?: string;

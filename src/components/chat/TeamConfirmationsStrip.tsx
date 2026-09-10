@@ -3,6 +3,8 @@ import { useMemo } from 'react';
 import { ShieldAlert, Check, X } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
 import { pendingFor, useTeamConfirmationStore, type TeamConfirmation, type TeamApprovalMode } from '@/stores/teamConfirmationStore';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
@@ -39,6 +41,28 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
     if (!selection) return;
     followUp(format(t.team.confirmationApprovedFollowUp, { member: memberLabel(item), detail: item.detail }), selection);
   };
+  /**
+   * The strip's only SCOPE control. "Allow this retry" and the run rule are
+   * both keyed on the exact parameters, so a form fill — different values on
+   * every call — is asked field by field. A site grant is what the browser
+   * gate actually consults (`registry.ts`'s `granted` disjunct), in a team
+   * conversation like any other.
+   *
+   * It is offered strictly where the desktop dialog would offer it: the
+   * requester has to have allowed a standing grant, and
+   * `mayOfferPersistentGrant` may only lower that — never raise it. No new
+   * authorization semantics live here.
+   */
+  const canOfferSite = (item: TeamConfirmation) =>
+    (item.kind === 'browser' || item.kind === 'browser-upload')
+    && !!item.browserOrigin
+    && mayOfferPersistentGrant({ level: item.level ?? 'warn', kind: item.kind, allowPersistentGrant: item.allowPersistentGrant });
+  const allowSite = (item: TeamConfirmation) => {
+    useSettingsStore.getState().setBrowserSitePermission(item.browserOrigin!, 'allowed');
+    // The grant covers the SITE from now on; this refused call still needs its
+    // own retry, and it gets the narrowest one.
+    approve(item, 'once');
+  };
   const reject = (item: TeamConfirmation) => {
     useTeamConfirmationStore.getState().remove(item.id);
     followUp(format(t.team.confirmationRejectedFollowUp, { member: memberLabel(item), detail: item.detail }));
@@ -61,6 +85,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
                 ? (item.additionalCapabilities?.includes('read') ? t.team.confirmationWriteRead : t.team.confirmationWrite)
                 : t.team.confirmationRead}</div>}
               {item.identity && <div>{t.team.confirmationCwd}: <code>{item.identity.cwd ?? t.team.confirmationDefaultCwd}</code></div>}
+              {item.browserOrigin && <div>{t.team.confirmationOrigin}: <code>{item.browserOrigin}</code></div>}
               {isRetryableTeamIdentity(item.identity) && <div>{format(t.team.confirmationRequestOrdinal, { n: item.identity!.requestOrdinal })}</div>}
               {!isRetryableTeamIdentity(item.identity) && <div>{t.team.confirmationLegacy}</div>}
               {item.reason && <span className="ml-1 text-[var(--abu-text-muted)]" title={item.reason}>（{item.reason.slice(0, 40)}{item.reason.length > 40 ? '…' : ''}）</span>}
@@ -82,6 +107,15 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
               aria-label={`${t.team.confirmationApproveRun}: ${item.detail}`}>
               {t.team.confirmationApproveRun}
             </button>
+            {canOfferSite(item) && (
+              <button type="button" disabled={!isRetryableTeamIdentity(item.identity)}
+                onClick={() => allowSite(item)}
+                data-testid="team-confirmation-allow-site"
+                className="shrink-0 rounded-md border px-2 py-0.5 text-caption"
+                aria-label={format(t.team.confirmationAllowSite, { origin: item.browserOrigin! })}>
+                {format(t.team.confirmationAllowSite, { origin: item.browserOrigin! })}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => reject(item)}

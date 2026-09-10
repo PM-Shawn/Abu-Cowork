@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePermissionStore } from '@/stores/permissionStore';
-import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useTeamConfirmationStore, type TeamConfirmationInput } from '@/stores/teamConfirmationStore';
 import type { Conversation } from '@/types';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
 
@@ -76,4 +77,85 @@ describe('TeamConfirmationsStrip', () => {
     expect(screen.getByRole('button', { name: '仅本次补跑允许: legacy' })).toBeDisabled();
   });
 
+});
+
+/**
+ * P1-a — the strip must be able to express a SCOPE.
+ *
+ * "Allow this retry" and the run rule are both keyed on the exact parameters,
+ * so a member filling a form was asked once per field. The site grant is the
+ * scope the browser gate actually consults, and the strip may offer it only
+ * where the always-ask floor allows a standing grant at all.
+ */
+describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
+  const ORIGIN = 'http://127.0.0.1:8765';
+  const browserRequest = (overrides: Partial<TeamConfirmationInput> = {}): TeamConfirmationInput => ({
+    identity: { ...identity, toolName: 'fill' },
+    conversationId: 'c1',
+    kind: 'browser',
+    detail: 'fill #q',
+    member: 'zz填表员',
+    browserOrigin: ORIGIN,
+    browserOperationClass: 'interactive',
+    allowPersistentGrant: true,
+    level: 'warn',
+    ...overrides,
+  });
+  const renderWith = (item: TeamConfirmationInput) => {
+    useTeamConfirmationStore.getState().add(item);
+    render(<TeamConfirmationsStrip conversationId="c1" />);
+  };
+  const allowSiteButton = () => screen.queryByTestId('team-confirmation-allow-site');
+
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
+    useChatStore.setState({ activeConversationId: 'c1', conversations: { c1: conversation('idle') }, agentStates: new Map() });
+    // `browserSitePermissions` is branded so only the store's own action can
+    // mint one; a test reset has to go around the brand, not through it.
+    useSettingsStore.setState({ browserSitePermissions: {}, browserSiteGrantViaEmbed: {} } as never);
+    vi.clearAllMocks();
+  });
+  afterEach(() => cleanup());
+
+  it('A: offers the site grant and names the site on the row', () => {
+    renderWith(browserRequest());
+    expect(allowSiteButton()).toHaveTextContent(`以后都允许该网站（${ORIGIN}）`);
+    expect(allowSiteButton()).toHaveAttribute('aria-label', expect.stringContaining(ORIGIN));
+    expect(screen.getByTestId('team-confirmation-item').textContent).toContain(`网站: ${ORIGIN}`);
+  });
+
+  it('B: no grant when the requester did not allow persistence', () => {
+    renderWith(browserRequest({ allowPersistentGrant: false }));
+    expect(allowSiteButton()).toBeNull();
+  });
+
+  it('C: no grant above the always-ask floor', () => {
+    renderWith(browserRequest({ level: 'danger' }));
+    expect(allowSiteButton()).toBeNull();
+  });
+
+  it('D: no grant without an origin to key it to', () => {
+    renderWith(browserRequest({ browserOrigin: undefined }));
+    expect(allowSiteButton()).toBeNull();
+  });
+
+  it('E: no grant for a non-browser request', () => {
+    renderWith(browserRequest({ kind: 'command', detail: 'npm publish' }));
+    expect(allowSiteButton()).toBeNull();
+  });
+
+  it('F: granting writes the site verdict once and retries only this call', () => {
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'setBrowserSitePermission');
+    renderWith(browserRequest());
+    fireEvent.click(allowSiteButton()!);
+
+    expect(setSite).toHaveBeenCalledTimes(1);
+    expect(setSite).toHaveBeenCalledWith(ORIGIN, 'allowed');
+    expect(useSettingsStore.getState().browserSitePermissions?.[ORIGIN]).toBe('allowed');
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    // The grant covers the site; it mints no reusable run rule.
+    expect(useTeamConfirmationStore.getState().runRules).toEqual({});
+    setSite.mockRestore();
+  });
 });

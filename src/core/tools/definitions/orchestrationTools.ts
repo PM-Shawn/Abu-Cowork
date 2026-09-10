@@ -191,7 +191,7 @@ export async function runWithConcurrency<T, R>(
  *               `### 子任务 N: <label>\n[失败] <text>` (error)
  */
 export function aggregateBatchResults(
-  entries: Array<{ label: string; status: 'ok' | 'error'; text: string; toolCallCount?: number; userInstructions?: string[] }>,
+  entries: Array<{ label: string; status: 'ok' | 'error'; text: string; toolCallCount?: number; stopReason?: SubagentStopReason; userInstructions?: string[] }>,
   options: { flagNoToolCalls?: boolean } = {},
 ): string {
   const total = entries.length;
@@ -204,7 +204,13 @@ export function aggregateBatchResults(
   if (total === 0) return header;
 
   const sections = entries.map((entry, i) => {
-    const title = format(t.batchSectionTitle, { n: i + 1, label: entry.label });
+    // A member that stopped short (turn cap, abort, error) used to produce a
+    // section indistinguishable from a finished one, so the leader folded it
+    // into the final report as done. Say it on the task line itself.
+    const stopped = entry.stopReason && entry.stopReason !== 'completed'
+      ? format(t.batchStoppedSuffix, { reason: getI18n().toolResult.agent.stopReasonLabel[entry.stopReason] })
+      : '';
+    const title = format(t.batchSectionTitle, { n: i + 1, label: entry.label }) + stopped;
     const body = entry.status === 'ok' ? entry.text : format(t.batchFailPrefix, { text: entry.text });
     // A member that answered without a single tool call produced nothing it
     // could have verified — say so, so the leader reviews instead of trusting.
@@ -309,6 +315,7 @@ export function aggregateSubagentTextResults(
         status: isSubagentResultError(result.value) ? 'error' as const : 'ok' as const,
         text: result.value.text,
         toolCallCount: result.value.toolCallCount,
+        stopReason: result.value.stopReason,
         userInstructions,
       };
     }

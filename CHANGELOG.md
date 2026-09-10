@@ -9,6 +9,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+- **A team member that stops short no longer reads as done.** When a member runs out of turns, is interrupted, or errors, the reason now travels in the hand-off result text itself — not just in metadata only Claude-family providers can carry — so the leader treats the step as unfinished instead of quietly taking the work over. Batch sub-task lines are marked the same way. Hitting the turn cap now says the task is unfinished rather than "completed N turns" — in the main conversation and in an `@agent` hand-off, which used to end in silence on a truncated answer. The leader also gets a turn-budget floor, applied only over an explicit `maxTurns` on its role card, so a member-sized number can no longer cap a whole team run while a card without one still follows your global turn setting.
 ### 🐛 Fixes
 
 - **Team runs: browser approvals can now be granted per site from the confirmation strip.** The row shows which member asked and for which site, and a new "always allow this site" button writes the site grant instead of approving one retry at a time — so filling a form no longer asks once per field. It is offered only where a standing grant is allowed at all (never for a high-risk page, a script, or a request without a resolved origin).

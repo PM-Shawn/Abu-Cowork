@@ -9,6 +9,8 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+- **Sandbox blocks say what was actually blocked.** A command the sandbox refused to *run* (a setuid binary such as `ps`) was reported as a blocked file write and raised an "authorize this directory" toast pointing at an unrelated path. Execution denials are now their own class, and a denial the output cannot attribute is reported as unclassified instead of being called a write. The toast is limited to real write blocks; every other block still reaches the agent in the command output.
+
 ## v0.42.0 · 2026-08-27
 
 ### ✨ Features

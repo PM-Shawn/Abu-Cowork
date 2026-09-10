@@ -145,6 +145,45 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     expect(allowSiteButton()).toBeNull();
   });
 
+  /**
+   * A row in `pending` is persisted, so it can outlive the verdict it was
+   * captured under: the user blocks the origin afterwards (Settings › 网站授权,
+   * or a dialog in another conversation) and the frozen payload still says
+   * "offer a grant". A denied site never reaches a dialog, and the Settings row
+   * shows what it is changing — the strip must not be the one surface that can
+   * undo a block without showing the current verdict.
+   */
+  it('G: a site the user blocked is never offered, and the offer returns the moment the block is lifted', () => {
+    renderWith(browserRequest());
+    expect(allowSiteButton()).not.toBeNull();
+
+    // Blocking from anywhere else — same store, no remount of this strip.
+    act(() => useSettingsStore.getState().setBrowserSitePermission(ORIGIN, 'denied'));
+    expect(allowSiteButton()).toBeNull();
+    // The row's other two approvals are untouched: the block is about the SITE.
+    expect(screen.getByRole('button', { name: '仅本次补跑允许: fill #q' })).toBeEnabled();
+
+    // Lifting the block brings the offer back live, still without a remount.
+    act(() => useSettingsStore.getState().removeBrowserSitePermission(ORIGIN));
+    expect(allowSiteButton()).not.toBeNull();
+  });
+
+  it('H: clicking through a block that landed after paint writes nothing', () => {
+    renderWith(browserRequest());
+    const button = allowSiteButton()!;
+    // The button is captured while the site is still `default`, then the block
+    // lands without React repainting it — the click path has to refuse too.
+    useSettingsStore.setState({ browserSitePermissions: { [ORIGIN]: 'denied' } } as never);
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'setBrowserSitePermission');
+    fireEvent.click(button);
+
+    expect(setSite).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().browserSitePermissions[ORIGIN]).toBe('denied');
+    expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+    expect(useTeamConfirmationStore.getState().retrySelections).toEqual({});
+    setSite.mockRestore();
+  });
+
   it('F: granting writes the site verdict once and retries only this call', () => {
     const setSite = vi.spyOn(useSettingsStore.getState(), 'setBrowserSitePermission');
     renderWith(browserRequest());

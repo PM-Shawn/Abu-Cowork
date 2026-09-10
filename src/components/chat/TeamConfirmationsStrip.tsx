@@ -20,6 +20,14 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
   const pending = useTeamConfirmationStore((s) => s.pending);
   const items = useMemo(() => pendingFor(pending, conversationId), [pending, conversationId]);
   const runRules = useTeamConfirmationStore((s) => s.runRules);
+  /**
+   * Read REACTIVELY, not through `getState()`: a row in `pending` is persisted
+   * and can outlive the verdict it was captured under, so the button has to
+   * follow the CURRENT one. Subscribing here also means revoking the site in
+   * Settings › 网站授权 (or blocking it from a dialog in another conversation)
+   * retracts the button live, without this strip remounting.
+   */
+  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
   const rules = Object.entries(runRules).filter(([, rule]) => rule.item.conversationId === conversationId);
   if (items.length === 0 && rules.length === 0) return null;
 
@@ -49,16 +57,31 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
    * conversation like any other.
    *
    * It is offered strictly where the desktop dialog would offer it: the
-   * requester has to have allowed a standing grant, and
-   * `mayOfferPersistentGrant` may only lower that — never raise it. No new
-   * authorization semantics live here.
+   * requester has to have allowed a standing grant,
+   * `mayOfferPersistentGrant` may only lower that — never raise it, and the
+   * user must not have BLOCKED the origin. No new authorization semantics
+   * live here.
+   *
+   * The block check is what keeps this surface from being the one place a
+   * verdict can be undone without showing it: a denied site never reaches a
+   * dialog at all, and the Settings row names what it is changing, while this
+   * row's payload is frozen at the moment the call was refused. `'denied'` is
+   * read directly rather than through `getSiteVerdict` on purpose — a block is
+   * absolute in every direction, so none of that function's scoped-grant
+   * qualification applies to it.
    */
+  const isBlockedSite = (origin: string | undefined) => !!origin && sitePermissions[origin] === 'denied';
   const canOfferSite = (item: TeamConfirmation) =>
     (item.kind === 'browser' || item.kind === 'browser-upload')
     && !!item.browserOrigin
-    && mayOfferPersistentGrant({ level: item.level ?? 'warn', kind: item.kind, allowPersistentGrant: item.allowPersistentGrant });
+    && mayOfferPersistentGrant({ level: item.level ?? 'warn', kind: item.kind, allowPersistentGrant: item.allowPersistentGrant })
+    && !isBlockedSite(item.browserOrigin);
   const allowSite = (item: TeamConfirmation) => {
-    useSettingsStore.getState().setBrowserSitePermission(item.browserOrigin!, 'allowed');
+    const settings = useSettingsStore.getState();
+    // Belt and braces: the render-time gate above already hides the button, but
+    // a block landing between paint and click must not be overwritten either.
+    if (settings.browserSitePermissions[item.browserOrigin!] === 'denied') return;
+    settings.setBrowserSitePermission(item.browserOrigin!, 'allowed');
     // The grant covers the SITE from now on; this refused call still needs its
     // own retry, and it gets the narrowest one.
     approve(item, 'once');

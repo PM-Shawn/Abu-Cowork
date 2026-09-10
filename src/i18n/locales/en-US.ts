@@ -2688,10 +2688,7 @@ const enUS: TranslationDict = {
 
   about: {
     feedback: 'Feedback',
-    wechatSectionTitle: 'Contact Developer',
-    feedbackDesc: 'Scan to add on WeChat for feedback or discussion',
-    sponsor: 'Support',
-    sponsorDesc: 'Buy the author a coffee if you find Abu useful',
+    versionDescription: 'Current version and updates',
     deviceId: 'Device ID',
     deviceIdHint: 'Share with the developer when reporting issues',
     copied: 'Copied',
@@ -2700,6 +2697,29 @@ const enUS: TranslationDict = {
     licenseLinkLabel: 'Apache 2.0 License',
     disclaimerTitle: 'Disclaimer',
     disclaimerClose: 'Collapse',
+  },
+
+  author: {
+    title: 'About the author',
+    name: 'Shawn',
+    tagline: '📔 Tinkerer · rational, noise-free, hands-on',
+    role: '🧑🏻‍💻 Product manager | AI product practitioner',
+    vibe: '🗳️ 1,200+ hours of vibe coding',
+    build: '🛠️ 30+ products shipped solo · 30B tokens a month',
+    contactTitle: 'CONTACT & SUPPORT',
+    wechatLabel: 'Official account',
+    wechatCaption: 'Follow to receive my WeChat ID',
+    wechatCaptionFull: 'Follow and you will receive my WeChat ID automatically — for feedback or a chat',
+    sponsorLabel: 'Buy me a coffee',
+    sponsorCaption: 'If Abu has been useful',
+    sponsorCaptionFull: 'If you find Abu useful, buy the author a coffee',
+    xiaohongshu: 'Xiaohongshu',
+    x: 'X',
+    github: 'GitHub',
+    website: 'Website',
+    zoomHint: 'Click to enlarge',
+    feedbackLink: 'Want to reach the author directly?',
+    feedbackLinkAction: 'Go to "About the author"',
   },
 
   disclaimerBanner: {

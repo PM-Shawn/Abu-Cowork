@@ -9,6 +9,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+### 🐛 Fixes
+
+- **A tool step no longer hangs at "executing" when its media fails to transport.** A batch of sidecar updates carrying an unexpected inline image payload was dropped whole, taking the updates that settle the tool call down with it. Now only the offending update is degraded — its media is replaced with a transport-error placeholder and the step is marked failed — while every other update in the same batch applies as usual.
+
 ## v0.42.0 · 2026-08-27
 
 ### ✨ Features

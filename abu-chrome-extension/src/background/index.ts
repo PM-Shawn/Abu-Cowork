@@ -11,6 +11,7 @@
 import type { BridgeRequest, BridgeResponse, FrameTree, JsDialogAction } from '../shared/types.js';
 import { MAIN_FRAME_REF } from '../shared/types.js';
 import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
+import { noCaptureAreaRefusal } from '../shared/captureArea.js';
 import {
   createDownloadTracker,
   downloadResultFor,
@@ -1335,6 +1336,15 @@ async function captureFullPage(tabId: number, windowId: number): Promise<string>
   };
 
   const { scrollHeight, viewportHeight, viewportWidth, scrollX, scrollY } = dims;
+  // Refuse BEFORE the scroll-and-capture loop. A page that measures zero
+  // yields zero slices, and the empty list used to travel all the way to the
+  // stitcher, where `images[0].naturalWidth` threw `Cannot read properties of
+  // undefined` — no explanation for the user, and nothing for the model to act
+  // on but the same capture again. Same reasoning and the same wording policy
+  // as `canvasLimitRefusal`, applied at the producer so none of the scroll is
+  // paid for first.
+  const noArea = noCaptureAreaRefusal(scrollHeight, viewportHeight);
+  if (noArea) throw new Error(noArea);
   const sliceCount = Math.ceil(scrollHeight / viewportHeight);
 
   // Step 2: Capture each viewport slice

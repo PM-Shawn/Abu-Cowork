@@ -9,6 +9,8 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+- **A team member that stops short no longer reads as done.** When a member runs out of turns, is interrupted, or errors, the reason now travels in the hand-off result text itself — not just in metadata only Claude-family providers can carry — so the leader treats the step as unfinished instead of quietly taking the work over. Batch sub-task lines are marked the same way. Hitting the turn cap in the main conversation now says the task is unfinished rather than "completed N turns", and the leader gets its own turn budget instead of inheriting a member-sized one from its role card.
+
 ## v0.42.0 · 2026-08-27
 
 ### ✨ Features

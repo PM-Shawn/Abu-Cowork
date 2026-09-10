@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { SubagentDefinition } from '@/types';
 import type { RouteResult } from '@/core/agent/orchestrator';
 
+import { TEAM_LEADER_MAX_TURNS } from './teamRunBounds';
 import {
   applyTeamLeaderRoute,
   captureTeamExecutionSnapshot,
@@ -32,6 +33,25 @@ describe('applyTeamLeaderRoute', () => {
     expect(r.definition?.tools).toBeUndefined();
     expect(r.definition?.disallowedTools).toEqual(['run_command']);
     expect(r.team).toBe(team);
+  });
+
+  // The role card's maxTurns is the budget for ONE hand-off, written for a
+  // member. Reusing it as the leader's own budget capped the whole run at a
+  // member's allowance — a "产品经理" card with maxTurns 30 gave the leader 30
+  // turns for planning, dispatching, reviewing and reporting.
+  it('gives the leader its own turn budget instead of the member-sized one on the role card', () => {
+    const r = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('lead', { tools: ['team_propose_plan'], maxTurns: 30 }),
+    });
+    expect(r.definition?.maxTurns).toBe(TEAM_LEADER_MAX_TURNS);
+    expect(TEAM_LEADER_MAX_TURNS).toBe(120);
+  });
+
+  it('leaves a non-team route\'s own maxTurns alone', () => {
+    const explicit: RouteResult = { type: 'agent', name: 'a', cleanInput: 'x', definition: def('a', { maxTurns: 30 }) };
+    expect(applyTeamLeaderRoute(explicit, team)).toBe(explicit);
+    expect(applyTeamLeaderRoute(general, null)).toBe(general);
   });
 
   it('leaves explicit skill / @agent routes and un-pinned conversations alone', () => {

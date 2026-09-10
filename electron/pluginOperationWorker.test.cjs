@@ -49,3 +49,35 @@ test('replacing the profile before worker start fails before filesystem mutation
   assert.throws(() => run({ identity: { ino: 99, dev: 1 } }, f.io, f.chdir), /profile changed/);
   assert.deepEqual(f.writes, []);
 });
+
+test('archive checks the confirmed bytes inside the worker, including same-inode rewrites', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const crypto = require('node:crypto');
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'abu-archive-worker-')));
+  const cwd = process.cwd();
+  try {
+    const parent = path.join(home, '.abu/plugin-operations');
+    fs.mkdirSync(parent, { recursive: true });
+    const source = path.join(parent, 'active.enc');
+    fs.writeFileSync(source, 'confirmed');
+    const identity = fs.statSync(home);
+    const original = fs.statSync(source);
+    const fingerprint = crypto.createHash('sha256').update('confirmed').digest('hex');
+    const input = { identity, parent: ['.abu', 'plugin-operations'], action: 'archive', from: 'active.enc', to: 'corrupt-1.enc', source: original, fingerprint };
+    fs.writeFileSync(source, 'different');
+    assert.equal(fs.statSync(source).ino, original.ino);
+    process.chdir(home);
+    assert.throws(() => run(input), /archive source changed/);
+    assert.equal(fs.readFileSync(source, 'utf8'), 'different');
+    assert.equal(fs.existsSync(path.join(parent, 'corrupt-1.enc')), false);
+    fs.writeFileSync(source, 'confirmed');
+    process.chdir(home);
+    assert.throws(() => run({ ...input, to: 'other.enc' }), /invalid archive/);
+    process.chdir(home);
+    run(input);
+    assert.equal(fs.existsSync(source), false);
+    assert.equal(fs.readFileSync(path.join(parent, 'corrupt-1.enc'), 'utf8'), 'confirmed');
+  } finally { process.chdir(cwd); fs.rmSync(home, { recursive: true, force: true }); }
+});

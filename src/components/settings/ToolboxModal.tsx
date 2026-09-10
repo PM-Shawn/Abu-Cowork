@@ -47,6 +47,7 @@ export default function ExtensionsView() {
   const enterpriseMode = useEnterpriseStore(s => s.mode);
   const isEnterprise = enterpriseMode.kind !== 'personal';
 
+  const creatingPlugin = usePluginAuthorStore(s => s.creating);
   const [pluginAddTrigger, setPluginAddTrigger] = useState(0);
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
   const [capabilityScope, setCapabilityScope] = useState<CapabilityScope>('personal');
@@ -165,7 +166,7 @@ export default function ExtensionsView() {
     }
     if (activeTab === 'plugins' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = <ToolboxCreateMenu triggerTestId="plugin-create-trigger" menuTestId="plugin-create-menu" items={[
-        { label: t.toolbox.pluginsCreate, onSelect: () => { void usePluginAuthorStore.getState().create().catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
+        { label: t.toolbox.pluginsCreate, disabled: creatingPlugin, onSelect: () => { void usePluginAuthorStore.getState().create().catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
         { label: t.toolbox.pluginsAddMarketplace, onSelect: () => setPluginAddTrigger(value => value + 1) },
       ]} />;
     }

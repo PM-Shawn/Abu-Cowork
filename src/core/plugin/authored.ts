@@ -33,6 +33,23 @@ export function isSelfAuthoredPlugin(
   return false;
 }
 
+/** Authored installs live under a marketplace named for their author record. */
+export const AUTHORED_MARKET_PREFIX = 'author-';
+
+/**
+ * "The user made this here." Unlike `isSelfAuthoredPlugin` above — which
+ * predates the authoring flow and is no longer wired to anything — this reads
+ * provenance the installer wrote onto the record, so it stays true even when
+ * the author store cannot be read. Anything deriving ownership must use this
+ * one; deriving it from a join against the author list makes a transient read
+ * failure look like a change of provenance.
+ */
+export function isAuthoredInstall(
+  plugin: Pick<InstalledPlugin, 'marketplace' | 'authoringId'>,
+): boolean {
+  return plugin.authoringId !== undefined || plugin.marketplace.startsWith(AUTHORED_MARKET_PREFIX);
+}
+
 /**
  * Installs whose marketplace is no longer in `marketplaces`.
  *
@@ -40,8 +57,11 @@ export function isSelfAuthoredPlugin(
  * — but nothing can update or reinstall it, so the UI needs to say so rather
  * than silently showing it as healthy.
  *
- * The enterprise and built-in markets are exempt: neither can be removed by
- * the user, so neither can produce a genuine orphan. Enterprise's catalog is
+ * The enterprise, built-in and authoring markets are exempt: none can be
+ * removed by the user, so none can produce a genuine orphan. An authored
+ * plugin's marketplace is synthesised from its author record and never appears
+ * in the user's market list, so measuring it against that list would report
+ * every locally created plugin as coming from a market that is gone. Enterprise's catalog is
  * managed elsewhere and deliberately absent from the user's market list. The
  * built-in market is absent for a different reason — it is stripped by the
  * store's `partialize` and re-injected asynchronously after hydration, so
@@ -59,6 +79,7 @@ export function orphanedInstalls(
   return installed.filter(
     (p) =>
       !isEnterpriseInstall(p) &&
+      !isAuthoredInstall(p) &&
       p.marketplace !== BUILTIN_MARKET_NAME &&
       !known.has(p.marketplace),
   );

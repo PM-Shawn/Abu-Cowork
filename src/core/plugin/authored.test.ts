@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { isSelfAuthoredPlugin, orphanedInstalls } from './authored';
+import { isAuthoredInstall, isSelfAuthoredPlugin, orphanedInstalls } from './authored';
 import { BUILTIN_MARKET_NAME } from './builtinMarket';
 import { ENTERPRISE_MARKET_NAME } from './enterpriseMarket';
 import type { InstalledPlugin } from './installedStore';
@@ -62,5 +62,32 @@ describe('orphanedInstalls', () => {
 
   it('returns [] for an empty install list', () => {
     expect(orphanedInstalls([], [{ name: 'here' }])).toEqual([]);
+  });
+});
+
+/**
+ * Regression: orphanedInstalls exempted only the enterprise and built-in
+ * markets, so a locally created plugin — whose synthesised `author-<id>`
+ * marketplace is never in the user's market list — was reported as a market
+ * plugin whose source had disappeared, labelled with the raw author id. The
+ * page's join against the author store hid it, which meant one failed author
+ * read relabelled everything the user had written.
+ */
+describe('isAuthoredInstall', () => {
+  const authored = (over: Partial<InstalledPlugin> = {}) => makePlugin({
+    key: 'mine@author-9f3c', name: 'mine', marketplace: 'author-9f3c',
+    authoringId: '9f3c', ...over,
+  });
+
+  it('reads provenance off the record, not the author list', () => {
+    expect(isAuthoredInstall(authored())).toBe(true);
+    // A record written before authoringId existed still has the marketplace.
+    expect(isAuthoredInstall(authored({ authoringId: undefined }))).toBe(true);
+    expect(isAuthoredInstall(makePlugin({ marketplace: 'community' }))).toBe(false);
+  });
+
+  it('keeps authored installs out of the orphan group with no markets at all', () => {
+    expect(orphanedInstalls([authored()], [])).toEqual([]);
+    expect(orphanedInstalls([authored({ authoringId: undefined })], [])).toEqual([]);
   });
 });

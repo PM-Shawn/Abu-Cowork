@@ -10,6 +10,7 @@ import type { PluginAuthor } from '@/core/plugin/authorBridge';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { Button } from '@/components/ui/button';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import ToolGrid from '@/components/toolbox/ToolGrid';
@@ -27,6 +28,9 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
   const error = usePluginAuthorStore(s => s.error);
   const refresh = usePluginAuthorStore(s => s.refresh);
   const installed = usePluginStore(s => s.installed);
+  const [deleting, setDeleting] = useState<PluginAuthor | null>(null);
+  const deletingRef = useRef(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [selected, setSelected] = useState<PluginAuthor | null>(null);
   const [removing, setRemoving] = useState<InstalledPlugin | null>(null);
   const [plan, setPlan] = useState<{ author: PluginAuthor; state: InstallPlanState } | null>(null);
@@ -92,6 +96,7 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
   };
   const sourceActions = (author: PluginAuthor): InstalledItemMenuAction[] => [
     { id: 'edit', label: tb.pluginsContinueEditing, onSelect: () => edit(author) },
+    ...(!installed.some(item => item.authoringId === author.id || item.key === author.key) ? [{ id: 'delete' as const, label: tb.pluginsDeleteDraft, destructive: true, onSelect: () => setDeleting(author) }] : []),
     { id: 'source', label: tb.pluginsSourceFiles, onSelect: () => { void revealItemInDir(author.sourceDir).catch(report); } },
   ];
   const hasUpdate = (author: PluginAuthor) => Boolean(author.prepared && recordFor(author) && author.prepared.checksum !== recordFor(author)?.checksum);
@@ -119,6 +124,14 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
       authorActions={selected ? sourceActions(selected) : undefined} />
     <InstallDisclosureDialog authoring updating={Boolean(plan && recordFor(plan.author))} open={plan !== null} entryName={plan?.author.name ?? tb.pluginsDraft} state={plan?.state ?? { kind: 'loading' }} installing={busy}
       onCancel={cancel} onConfirm={configuration => { if (plan?.state.kind === 'ready') void confirm(plan.author, plan.state.disclosure, configuration); }} />
+    <ConfirmDialog open={deleting !== null} title={tb.pluginsDeleteDraft} message={<><p>{tb.pluginsDeleteDraftWarning}</p><p className="mt-2 break-all">{deleting?.sourceDir}</p></>}
+      confirmText={tb.pluginsDeleteDraft} cancelText={t.common.cancel} variant="danger" confirmDisabled={deleteBusy}
+      onCancel={() => { if (!deletingRef.current) setDeleting(null); }} onConfirm={() => {
+        if (!deleting || deletingRef.current) return;
+        deletingRef.current = true; setDeleteBusy(true);
+        void usePluginAuthorStore.getState().remove(deleting.id).then(() => { setDeleting(null); setSelected(null); }).catch(report)
+          .finally(() => { deletingRef.current = false; setDeleteBusy(false); });
+      }} />
     <UninstallPluginDialog home={home} target={removing} onClose={() => setRemoving(null)} />
   </div></section>;
 }

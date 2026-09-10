@@ -1,7 +1,7 @@
 import type { MCPServerConfig } from '@/core/mcp/client';
 import { deleteSecret, listSecrets, getSecret, setSecret } from '@/utils/secretStore';
 
-import { hasPluginOperationHost, pluginOperationStatus } from './operationBridge';
+import { hasPluginOperationHost, pluginConfigurationCleanupAllowed } from './operationBridge';
 
 export const PLUGIN_CONFIG_VALUE_LIMIT = 16 * 1024;
 const TOTAL_LIMIT = 64 * 1024;
@@ -52,11 +52,11 @@ export function finishPluginConfiguration(reference?: string): void {
  * an install's success/catch, since its commit response may have been lost. */
 export function sweepPluginConfigurations(liveReferences: () => Iterable<string> | null): Promise<void> {
   const run = cleanupQueue.then(async () => {
-    if (!hasPluginOperationHost() || await pluginOperationStatus() !== null || liveReferences() === null) return;
+    if (!hasPluginOperationHost() || !await pluginConfigurationCleanupAllowed() || liveReferences() === null) return;
     const keys = await listSecrets();
     for (const key of keys ?? []) {
       if (!key.startsWith('plugin-config:')) continue;
-      if (await pluginOperationStatus() !== null) return;
+      if (!await pluginConfigurationCleanupAllowed()) return;
       const live = liveReferences();
       if (live === null) return;
       if (!pendingReferences.has(key) && !new Set(live).has(key)) await deleteSecret(key);

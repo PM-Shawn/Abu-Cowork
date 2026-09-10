@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 vi.mock('@/core/plugin/installedStore', () => ({
@@ -28,12 +28,16 @@ vi.mock('./AuthoredPluginList', () => ({
   ),
 }));
 
+vi.mock('@/core/plugin/operationBridge', async importOriginal => ({ ...(await importOriginal<object>()), archivePluginOperation: vi.fn() }));
+vi.mock('@/stores/pluginStore', async importOriginal => ({ ...(await importOriginal<object>()), bootstrapPluginUpdates: vi.fn() }));
+import { archivePluginOperation } from '@/core/plugin/operationBridge';
+import { getI18n } from '@/i18n';
 import { usePluginStore } from '@/stores/pluginStore';
 import PluginsTab from './PluginsTab';
 
 beforeEach(() => {
   vi.clearAllMocks();
-  usePluginStore.setState({ marketplaces: [], installed: [], loading: false, error: null });
+  usePluginStore.setState({ marketplaces: [], installed: [], loading: false, error: null, recoveryError: null, unreadableOperation: null });
 });
 
 describe('PluginsTab', () => {
@@ -66,4 +70,24 @@ describe('PluginsTab', () => {
     );
     expect(screen.queryByText(/^(插件市场|Marketplace)$/)).toBeNull();
   });
+});
+
+it('archives only after consequence confirmation and retains backup paths afterward', async () => {
+  const backup = '/profile/.abu/plugin-packages/market/demo/.abu-plugin-backup-1';
+  const archivedPath = '/profile/.abu/plugin-operations/corrupt-1.enc';
+  usePluginStore.setState({ recoveryError: 'unreadable', unreadableOperation: { unreadable: true, fingerprint: 'identity', backupPaths: [backup] } });
+  vi.mocked(archivePluginOperation).mockResolvedValue({ archivedPath, backupPaths: [backup] });
+  render(<PluginsTab searchQuery="" />);
+  fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsArchiveContinue }));
+  expect(screen.getByText(getI18n().toolbox.pluginsArchiveWarning)).toBeVisible();
+  expect(archivePluginOperation).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: getI18n().common.cancel }));
+  expect(archivePluginOperation).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsArchiveContinue }));
+  const buttons = screen.getAllByRole('button', { name: getI18n().toolbox.pluginsArchiveContinue });
+  fireEvent.click(buttons[buttons.length - 1]);
+  await waitFor(() => expect(archivePluginOperation).toHaveBeenCalledExactlyOnceWith('identity'));
+  const notice = await screen.findByRole('status');
+  expect(within(notice).getByText(archivedPath)).toBeVisible();
+  expect(within(notice).getByText(backup)).toBeVisible();
 });

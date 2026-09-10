@@ -1960,6 +1960,12 @@ export interface TranslationDict {
     pluginsRefreshMarketplace: string;
     pluginsCachedMarketplace: string;
     pluginsRecoveryNeeded: string;
+    pluginsDeleteDraft: string;
+    pluginsDeleteDraftWarning: string;
+    pluginsJournalUnreadable: string;
+    pluginsArchiveContinue: string;
+    pluginsArchiveWarning: string;
+    pluginsArchivedNotice: string;
     pluginsRetryRecovery: string;
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;

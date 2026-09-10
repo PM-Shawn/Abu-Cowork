@@ -49,7 +49,7 @@ for (const relative of ['.abu', '.abu/plugin-operations']) {
   });
 }
 
-test('tree publication never writes through a replaced parent symlink', () => {
+for (const timing of ['pinned', 'before-entry']) test(`tree publication protects the parent against replacement (${timing})`, () => {
   const { execFileSync } = require('node:child_process');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-tree-boundary-'));
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-tree-outside-'));
@@ -58,24 +58,56 @@ test('tree publication never writes through a replaced parent symlink', () => {
   try {
     execFileSync(process.execPath, ['-e', `
       const fs = require('node:fs');
-      const path = require('node:path');
       const assert = require('node:assert/strict');
+      const path = require('node:path');
       const { run } = require(process.argv[1]);
-      const [home, outside, parent] = process.argv.slice(2);
+      const [home, outside, parent, timing] = process.argv.slice(2);
       process.chdir(home);
       const identity = fs.statSync('.');
       const parentIdentity = fs.statSync(parent);
+      let attempted = false;
+      let replaced = false;
+      const replace = () => {
+        attempted = true;
+        fs.renameSync(parent, parent + '-old');
+        fs.symlinkSync(outside, parent, process.platform === 'win32' ? 'junction' : 'dir');
+        replaced = true;
+      };
       const io = { ...fs, mkdirSync(name, ...args) {
-        if (name === '.incoming') {
-          fs.renameSync(parent, parent + '-old');
-          fs.symlinkSync(outside, parent, 'dir');
+        if (timing === 'pinned' && name === '.incoming') {
+          if (process.platform === 'win32') {
+            // Windows locks cwd against rename. Assert that protection itself,
+            // then let the legitimate publication finish in its original parent.
+            assert.throws(replace, { code: 'EBUSY' });
+            const current = fs.statSync(parent);
+            assert.equal(current.ino, parentIdentity.ino);
+            assert.equal(current.dev, parentIdentity.dev);
+            assert.equal(fs.existsSync(parent + '-old'), false);
+          } else replace();
         }
         return fs.mkdirSync(name, ...args);
       }};
-      assert.throws(() => run({ identity, parent: ['.abu', 'agents'], parentIdentity,
-        action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, io), /parent changed/);
+      const chdir = name => {
+        // Replace after lstat but before entering: no cwd lock protects this
+        // directory yet, so the application's identity check must reject it.
+        if (timing === 'before-entry' && name === 'agents') replace();
+        process.chdir(name);
+      };
+      const publish = () => run({ identity, parent: ['.abu', 'agents'], parentIdentity,
+        action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, io, chdir);
+      if (timing === 'pinned' && process.platform === 'win32') {
+        publish();
+        assert.equal(replaced, false);
+        assert.equal(fs.readFileSync(path.join(parent, 'helper', 'AGENT.md'), 'utf8'), 'approved');
+        assert.equal(fs.existsSync(path.join(parent, '.incoming')), false);
+      } else {
+        assert.throws(publish, timing === 'before-entry' ? /directory changed/ : /parent changed/);
+        assert.equal(replaced, true);
+        assert.equal(fs.existsSync(path.join(parent + '-old', 'helper')), false);
+      }
+      assert.equal(attempted, true);
       assert.deepEqual(fs.readdirSync(outside), []);
-    `, path.join(__dirname, 'pluginOperationWorker.cjs'), home, outside, parent]);
+    `, path.join(__dirname, 'pluginOperationWorker.cjs'), home, outside, parent, timing]);
     assert.deepEqual(fs.readdirSync(outside), []);
   } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
 });

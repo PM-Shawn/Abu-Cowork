@@ -3,6 +3,8 @@ import { useMemo } from 'react';
 import { ShieldAlert, Check, X } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
 import { pendingFor, useTeamConfirmationStore, type TeamConfirmation, type TeamApprovalMode } from '@/stores/teamConfirmationStore';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
@@ -18,6 +20,14 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
   const pending = useTeamConfirmationStore((s) => s.pending);
   const items = useMemo(() => pendingFor(pending, conversationId), [pending, conversationId]);
   const runRules = useTeamConfirmationStore((s) => s.runRules);
+  /**
+   * Read REACTIVELY, not through `getState()`: a row in `pending` is persisted
+   * and can outlive the verdict it was captured under, so the button has to
+   * follow the CURRENT one. Subscribing here also means revoking the site in
+   * Settings › 网站授权 (or blocking it from a dialog in another conversation)
+   * retracts the button live, without this strip remounting.
+   */
+  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
   const rules = Object.entries(runRules).filter(([, rule]) => rule.item.conversationId === conversationId);
   if (items.length === 0 && rules.length === 0) return null;
 
@@ -38,6 +48,43 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
     const selection = useTeamConfirmationStore.getState().selectRetry(item.id, mode);
     if (!selection) return;
     followUp(format(t.team.confirmationApprovedFollowUp, { member: memberLabel(item), detail: item.detail }), selection);
+  };
+  /**
+   * The strip's only SCOPE control. "Allow this retry" and the run rule are
+   * both keyed on the exact parameters, so a form fill — different values on
+   * every call — is asked field by field. A site grant is what the browser
+   * gate actually consults (`registry.ts`'s `granted` disjunct), in a team
+   * conversation like any other.
+   *
+   * It is offered strictly where the desktop dialog would offer it: the
+   * requester has to have allowed a standing grant,
+   * `mayOfferPersistentGrant` may only lower that — never raise it, and the
+   * user must not have BLOCKED the origin. No new authorization semantics
+   * live here.
+   *
+   * The block check is what keeps this surface from being the one place a
+   * verdict can be undone without showing it: a denied site never reaches a
+   * dialog at all, and the Settings row names what it is changing, while this
+   * row's payload is frozen at the moment the call was refused. `'denied'` is
+   * read directly rather than through `getSiteVerdict` on purpose — a block is
+   * absolute in every direction, so none of that function's scoped-grant
+   * qualification applies to it.
+   */
+  const isBlockedSite = (origin: string | undefined) => !!origin && sitePermissions[origin] === 'denied';
+  const canOfferSite = (item: TeamConfirmation) =>
+    (item.kind === 'browser' || item.kind === 'browser-upload')
+    && !!item.browserOrigin
+    && mayOfferPersistentGrant({ level: item.level ?? 'warn', kind: item.kind, allowPersistentGrant: item.allowPersistentGrant })
+    && !isBlockedSite(item.browserOrigin);
+  const allowSite = (item: TeamConfirmation) => {
+    const settings = useSettingsStore.getState();
+    // Belt and braces: the render-time gate above already hides the button, but
+    // a block landing between paint and click must not be overwritten either.
+    if (settings.browserSitePermissions[item.browserOrigin!] === 'denied') return;
+    settings.setBrowserSitePermission(item.browserOrigin!, 'allowed');
+    // The grant covers the SITE from now on; this refused call still needs its
+    // own retry, and it gets the narrowest one.
+    approve(item, 'once');
   };
   const reject = (item: TeamConfirmation) => {
     useTeamConfirmationStore.getState().remove(item.id);
@@ -61,6 +108,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
                 ? (item.additionalCapabilities?.includes('read') ? t.team.confirmationWriteRead : t.team.confirmationWrite)
                 : t.team.confirmationRead}</div>}
               {item.identity && <div>{t.team.confirmationCwd}: <code>{item.identity.cwd ?? t.team.confirmationDefaultCwd}</code></div>}
+              {item.browserOrigin && <div>{t.team.confirmationOrigin}: <code>{item.browserOrigin}</code></div>}
               {isRetryableTeamIdentity(item.identity) && <div>{format(t.team.confirmationRequestOrdinal, { n: item.identity!.requestOrdinal })}</div>}
               {!isRetryableTeamIdentity(item.identity) && <div>{t.team.confirmationLegacy}</div>}
               {item.reason && <span className="ml-1 text-[var(--abu-text-muted)]" title={item.reason}>（{item.reason.slice(0, 40)}{item.reason.length > 40 ? '…' : ''}）</span>}
@@ -82,6 +130,15 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
               aria-label={`${t.team.confirmationApproveRun}: ${item.detail}`}>
               {t.team.confirmationApproveRun}
             </button>
+            {canOfferSite(item) && (
+              <button type="button" disabled={!isRetryableTeamIdentity(item.identity)}
+                onClick={() => allowSite(item)}
+                data-testid="team-confirmation-allow-site"
+                className="shrink-0 rounded-md border px-2 py-0.5 text-caption"
+                aria-label={format(t.team.confirmationAllowSite, { origin: item.browserOrigin! })}>
+                {format(t.team.confirmationAllowSite, { origin: item.browserOrigin! })}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => reject(item)}

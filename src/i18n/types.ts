@@ -3,6 +3,11 @@
  * Provides full type safety and IDE autocompletion for translations
  */
 
+// Type-only: keeps `stopReasonLabel` exhaustive over the stop-reason union, so
+// a new SubagentStopReason member is a compile error here instead of an
+// `undefined` label rendered to the leader.
+import type { SubagentStopReason } from '@/types';
+
 export type SupportedLocale = 'zh-CN' | 'en-US';
 export type LanguageSetting = 'system' | SupportedLocale;
 
@@ -444,6 +449,9 @@ export interface TranslationDict {
       conversation: string;
       free: string;
     };
+    /** An @agent delegate ran out of turns inside the main run (a sentence — the
+     *  card below is for the MAIN loop's own cap). {n} = the delegate's cap. */
+    maxTurnsReached: string;
     // Agent loop turn cap — the notice card the run ends with.
     maxTurns: {
       /** Card title, first time this run chain hits the cap. {n} = the cap. */
@@ -1882,10 +1890,12 @@ export interface TranslationDict {
     confirmationSeparator: string;
     confirmationLeader: string;
     confirmationApproveRun: string;
+    confirmationAllowSite: string;
     confirmationWriteRead: string;
     confirmationWrite: string;
     confirmationRead: string;
     confirmationCwd: string;
+    confirmationOrigin: string;
     confirmationRequestOrdinal: string;
     confirmationDefaultCwd: string;
     confirmationLegacy: string;
@@ -1988,6 +1998,12 @@ export interface TranslationDict {
     pluginsRefreshMarketplace: string;
     pluginsCachedMarketplace: string;
     pluginsRecoveryNeeded: string;
+    pluginsDeleteDraft: string;
+    pluginsDeleteDraftWarning: string;
+    pluginsJournalUnreadable: string;
+    pluginsArchiveContinue: string;
+    pluginsArchiveWarning: string;
+    pluginsArchivedNotice: string;
     pluginsRetryRecovery: string;
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;
@@ -3975,6 +3991,10 @@ export interface TranslationDict {
       /** Declared artifacts missing after the member finished (define-done check). */
       errExpectedFilesMissing: string;
       delegateNoToolCallsNote: string;
+      /** Member stopped before finishing; appended to the hand-off result. {reason} */
+      delegateStoppedNote: string;
+      /** Human label per non-completed stop reason (exhaustive by construction). */
+      stopReasonLabel: Record<Exclude<SubagentStopReason, 'completed'>, string>;
       /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
       delegateUnconfirmedInstructionsNote: string;
       delegateUserInstructionsNote: string;
@@ -4027,6 +4047,8 @@ export interface TranslationDict {
       batchHeader: string;
       /** aggregateBatchResults section title. {n}, {label} */
       batchSectionTitle: string;
+      /** Marks a batch task whose member did not finish. {reason} */
+      batchStoppedSuffix: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
       /** Appended to a member result that made zero tool calls (team leader review). */

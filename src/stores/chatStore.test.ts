@@ -2162,6 +2162,37 @@ describe('chatStore', () => {
       expect(reindex).toBeUndefined();
     });
 
+    // The turn cap ends a run on 'idle', not 'completed' (agentLoop's max_turns
+    // path). That still settles the round's messages, so the catalog row + FTS
+    // body must be re-indexed then too — otherwise search stayed stale until
+    // the next startup reconcile.
+    it('fires the catalog reindex when a running conversation settles back to idle', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationStatus(id, 'running');
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'idle');
+
+      await vi.waitFor(() => {
+        const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+        expect(reindex).toBeDefined();
+        expect((reindex![1] as { convId: string }).convId).toBe(id);
+      });
+    });
+
+    it('does not reindex an idle conversation that was never running', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'idle');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
+    });
+
     // Fix #5: a convId absent from state (e.g. already deleted) must never
     // trigger a reindex call.
     it('does not fire a catalog reindex for a convId absent from state', async () => {

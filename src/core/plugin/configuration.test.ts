@@ -3,9 +3,9 @@ import { finishPluginConfiguration, sweepPluginConfigurations, pluginConfigField
 import { deleteSecret, listSecrets, getSecret, setSecret } from '@/utils/secretStore';
 vi.mock('@/utils/secretStore', () => ({ getSecret: vi.fn(), setSecret: vi.fn(), listSecrets: vi.fn(), deleteSecret: vi.fn() }));
 afterEach(() => vi.restoreAllMocks());
-vi.mock('./operationBridge', () => ({ hasPluginOperationHost: () => true, pluginOperationStatus: vi.fn() }));
-import { pluginOperationStatus } from './operationBridge';
-beforeEach(() => { vi.clearAllMocks(); vi.mocked(pluginOperationStatus).mockResolvedValue(null); vi.mocked(listSecrets).mockResolvedValue([]); vi.mocked(getSecret).mockResolvedValue(null); });
+vi.mock('./operationBridge', () => ({ hasPluginOperationHost: () => true, pluginConfigurationCleanupAllowed: vi.fn() }));
+import { pluginConfigurationCleanupAllowed } from './operationBridge';
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(pluginConfigurationCleanupAllowed).mockResolvedValue(true); vi.mocked(listSecrets).mockResolvedValue([]); vi.mocked(getSecret).mockResolvedValue(null); });
 it('finds only explicit config slots and deduplicates them', () => {
   expect(pluginConfigFields({ a: { env: { TOKEN: '${config.TOKEN}', BASE: '${HOME}' } }, b: { headers: { Authorization: 'Bearer ${config.TOKEN}', Other: '${config.OTHER}' } } })).toEqual(['OTHER', 'TOKEN']);
 });
@@ -53,7 +53,7 @@ it('cleans unreferenced credentials while retaining live and still-saving revisi
   expect(deleteSecret).toHaveBeenCalledWith(pending);
 });
 it('does not collect any revision while a journal needs recovery', async () => {
-  vi.mocked(pluginOperationStatus).mockResolvedValue({ id: 'pending', key: 'demo@market', phase: 'committed' });
+  vi.mocked(pluginConfigurationCleanupAllowed).mockResolvedValue(false);
   vi.mocked(listSecrets).mockResolvedValue(['plugin-config:old', 'plugin-config:new']);
   await sweepPluginConfigurations(() => []);
   expect(deleteSecret).not.toHaveBeenCalled();
@@ -68,4 +68,11 @@ it('bounds configuration fields and values before encryption', async () => {
   expect(() => pluginConfigFields({ a: { env: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`K${i}`, '${config.K' + i + '}'])) } })).toThrow('32 fields');
   await expect(savePluginConfiguration('demo', ['TOKEN'], { TOKEN: 'x'.repeat(16385) })).rejects.toThrow('size limit');
   expect(setSecret).not.toHaveBeenCalled();
+});
+
+it('retains credentials when a corrupt archive still requires manual recovery', async () => {
+  vi.mocked(pluginConfigurationCleanupAllowed).mockResolvedValue(false);
+  vi.mocked(listSecrets).mockResolvedValue(['plugin-config:old']);
+  await sweepPluginConfigurations(() => []);
+  expect(deleteSecret).not.toHaveBeenCalled();
 });

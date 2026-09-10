@@ -12,10 +12,10 @@ function createPluginAuthorHost({ home, session, snapshots, now = () => new Date
   }
   async function dispatch(sender, action, request) {
     if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Plugin author: invalid request');
-    const allowed = { list: [], create: [], bind: ['id', 'conversationId', 'expectedConversationId'], prepare: ['id', 'conversationId'], validated: ['token'] }[action];
+    const allowed = { list: [], create: [], delete: ['id'], bind: ['id', 'conversationId', 'expectedConversationId'], prepare: ['id', 'conversationId'], validated: ['token'] }[action];
     if (!allowed || Object.keys(request).some(key => !allowed.includes(key))) throw new Error('Plugin author: unsupported request');
     if (action === 'create') return call('create', { id: randomId(), createdAt: now() });
-    if (action === 'list' || action === 'bind') return call(action, request);
+    if (action === 'list' || action === 'bind' || action === 'delete') return call(action, request);
     if (action === 'validated') {
       const snapshot = await snapshots.identity(sender, request);
       if (!snapshot.authoringId) throw new Error('Plugin author: snapshot is not authored');

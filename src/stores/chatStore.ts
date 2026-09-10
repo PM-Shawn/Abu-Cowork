@@ -2321,7 +2321,13 @@ export const useChatStore = create<ChatStore>()(
             // transitioning INTO a terminal state — not on a redundant
             // re-set of a status it's already in (e.g. a duplicate
             // 'completed' call), and never for a convId absent from state.
-            shouldReindex = isTerminal && prevStatus !== status;
+            // A run that ends WITHOUT 'completed' still settles this
+            // conversation's messages for the round — the turn cap now lands
+            // on 'idle' (agentLoop's max_turns path), and gating the
+            // write-through on `isTerminal` alone would leave the catalog row
+            // and FTS body stale until the next startup reconcile. Additive:
+            // every transition that re-indexed before still does.
+            shouldReindex = prevStatus !== status && (isTerminal || prevStatus === 'running');
             conv.status = status;
             if (status === 'completed') {
               conv.completedAt = Date.now();

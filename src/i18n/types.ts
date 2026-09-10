@@ -4006,6 +4006,8 @@ export interface TranslationDict {
       batchHeader: string;
       /** aggregateBatchResults section title. {n}, {label} */
       batchSectionTitle: string;
+      /** Marks a batch task whose member did not finish. {reason} */
+      batchStoppedSuffix: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
       /** Appended to a member result that made zero tool calls (team leader review). */

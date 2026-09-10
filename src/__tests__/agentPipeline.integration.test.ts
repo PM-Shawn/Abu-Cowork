@@ -400,6 +400,7 @@ import { LLMError } from '../core/llm/adapter';
 import * as delegatedMediaStore from '../core/subagent/delegatedMediaStore';
 import { executeToolBatch } from '../core/agent/toolExecutor';
 import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
+import { getLanguageSetting, setLanguage } from '../i18n';
 import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';
@@ -1085,6 +1086,47 @@ describe('Agent Pipeline Integration', () => {
 
       expect(result.reason).toBe('max_turns');
       expect(useChatStore.getState().conversations[convId].activeSkills).toEqual([]);
+    });
+
+    // The cap used to end the run as `status: 'completed'` under the copy
+    // "已完成 N 轮执行" — so a leader (and the user) read a run that stopped
+    // mid-task as a finished one. `max_turns` is an INCOMPLETE reason
+    // everywhere else (isIncompleteReason, the scheduler); the chat UI now
+    // says the same thing.
+    it('ends the turn cap as unfinished, not completed (P2)', async () => {
+      useSettingsStore.setState({ agentMaxTurns: 2 });
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const previousLanguage = getLanguageSetting();
+      setLanguage('zh-CN');
+      let result;
+      try {
+        result = await runAgentLoop(convId, 'loop until capped');
+      } finally {
+        setLanguage(previousLanguage);
+      }
+
+      expect(result.reason).toBe('max_turns');
+      const conv = useChatStore.getState().conversations[convId];
+      // Not a terminal 'completed': the task is unfinished and the user can
+      // just keep typing.
+      expect(conv.status).toBe('idle');
+      expect(conv.completedAt).toBeUndefined();
+      const capMsg = conv.messages.at(-1);
+      expect(String(capMsg?.content).startsWith('已达到')).toBe(true);
+      expect(String(capMsg?.content).startsWith('已完成')).toBe(false);
+      expect(String(capMsg?.content)).toContain('未完成');
+      // 'completed' used to be what cleared the per-conversation agent state
+      // (the活动 indicator). Idle must clear it just as thoroughly.
+      expect(useChatStore.getState().agentStates.has(convId)).toBe(false);
     });
 
     it('resets the no-progress counter when a system wake-up rescues the loop (review finding [5])', async () => {

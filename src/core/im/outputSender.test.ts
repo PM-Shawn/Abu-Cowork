@@ -70,6 +70,20 @@ describe('OutputSender.extractAIResponse', () => {
     expect(outputSender.extractAIResponse('conv-1', 'last_message')).toBe('(无结果)');
   });
 
+  it('last_message — skips the turn-cap notice and delivers the real answer', () => {
+    // The notice is `role: 'system'`, so an unattended run that ran into its
+    // cap still pushes what it actually produced. Before the notice became a
+    // card it was an ASSISTANT message, and this extraction pushed the
+    // 「已完成 200 轮」 sentence to IM instead of the partial answer.
+    mockConversation([
+      { role: 'user', content: 'question' },
+      { role: 'assistant', content: 'partial answer' },
+      { role: 'system', content: '' },
+    ]);
+
+    expect(outputSender.extractAIResponse('conv-1', 'last_message')).toBe('partial answer');
+  });
+
   it('full — all messages formatted', () => {
     mockConversation([
       { role: 'user', content: 'q' },

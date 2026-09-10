@@ -27,6 +27,7 @@ import { getCachedTabOrigin, noteBrowserToolOutcome, noteTabOrigin } from '@/cor
 import { useBatchProgressStore } from './batchProgressStore';
 import { subagentTabId, usePreviewStore } from './previewStore';
 import { makeBatchKey } from '@/types';
+import { createMaxTurnsNoticeMessage, MAX_TURNS_NOTICE_ID_PREFIX } from '../core/agent/maxTurnsNotice';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -3084,6 +3085,78 @@ describe('chatStore', () => {
         ),
       ).rejects.toThrow('disk unavailable');
       expect(getToolCall(convId)?.sandboxRecoveryAction).toBeUndefined();
+
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+  });
+
+  describe('max-turns notice', () => {
+    function seedNotice() {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(
+        convId,
+        createMaxTurnsNoticeMessage({
+          id: 'n1',
+          timestamp: FIXED_TIMESTAMP,
+          limit: 200,
+          streak: 1,
+        }),
+      );
+      return convId;
+    }
+
+    function getNotice(convId: string) {
+      return useChatStore.getState().conversations[convId]?.messages[0]?.maxTurnsNotice;
+    }
+
+    it('persists the continue choice on the notice', async () => {
+      const convId = seedNotice();
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockResolvedValue(undefined);
+
+      await useChatStore.getState().setMaxTurnsNoticeAction(
+        convId,
+        `${MAX_TURNS_NOTICE_ID_PREFIX}n1`,
+        'continued',
+      );
+
+      expect(getNotice(convId)?.action).toBe('continued');
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+
+    it('refuses to settle a notice that no longer exists', async () => {
+      const convId = seedNotice();
+
+      await expect(
+        useChatStore.getState().setMaxTurnsNoticeAction(convId, 'max-turns-gone', 'continued'),
+      ).rejects.toThrow('no longer exists');
+    });
+
+    it('does not show the choice in memory when durable persistence fails', async () => {
+      const convId = seedNotice();
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+
+      await expect(
+        useChatStore.getState().setMaxTurnsNoticeAction(
+          convId,
+          `${MAX_TURNS_NOTICE_ID_PREFIX}n1`,
+          'continued',
+        ),
+      ).rejects.toThrow('disk unavailable');
+      expect(getNotice(convId)?.action).toBeUndefined();
 
       vi.mocked(exists).mockReset();
       vi.mocked(readTextFile).mockReset();

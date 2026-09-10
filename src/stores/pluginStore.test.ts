@@ -43,6 +43,7 @@ import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 type MarketplaceRefLike = { name: string; dir: string; builtin?: boolean };
 import { useMCPStore } from './mcpStore';
 import { usePluginStore, bootstrapPluginUpdates } from './pluginStore';
+import { getI18n } from '@/i18n';
 
 const mockDiscoveryRefresh = vi.fn(async () => {});
 const HOME = '/Users/tester';
@@ -66,6 +67,8 @@ function resetStore() {
     updateAvailableCount: 0,
     loading: false,
     error: null,
+    recoveryError: null,
+    unreadableOperation: null,
   });
 }
 
@@ -1008,4 +1011,114 @@ it('retry recovery reaches the host reopen action before reading a closed sessio
     expect(host.mock.calls[0][0]).toBe('recover');
     expect(usePluginStore.getState().recoveryError).toBeNull();
   } finally { global.__ABU_SHELL__ = original; }
+});
+
+/**
+ * `active.enc` — the operation journal — can come back undecryptable: a
+ * restored machine whose keychain entry no longer matches, a half-written file,
+ * a truncated disk. The host then answers `status` with `{ unreadable: true }`
+ * instead of a phase, and neither `recover` nor `commit` can make progress.
+ *
+ * The store must not treat that as "recovery in flight forever" (a silent,
+ * permanently disabled Plugins tab). It degrades: the installed list stays
+ * readable so the user can see what is at stake, the approval gate stays
+ * DISARMED because no read was trusted, and the backup directories are carried
+ * into state so the Plugins tab can offer to archive the journal by hand.
+ */
+const unreadableJournal = { unreadable: true as const, fingerprint: 'journal-identity', backupPaths: ['/backups/weather-1'] };
+const shell = () => globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+
+describe('unreadable operation journal', () => {
+  it('degrades to a readable list, leaves the approval gate disarmed and keeps the backup evidence', async () => {
+    const original = shell().__ABU_SHELL__;
+    const host = vi.fn(async (action: string) => (action === 'status' ? unreadableJournal : null));
+    shell().__ABU_SHELL__ = { pluginOperation: host };
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    usePluginStore.setState({ activationReady: true });
+    try {
+      await usePluginStore.getState().refreshInstalled(HOME);
+
+      const state = usePluginStore.getState();
+      expect(state.unreadableOperation).toEqual(unreadableJournal);
+      expect(state.recoveryError).toBe(getI18n().toolbox.pluginsJournalUnreadable);
+      expect(state.activationReady).toBe(false);
+      // Visible, so the user can judge the damage...
+      expect(state.installed).toEqual([weather]);
+      // ...but nothing that depends on a trusted read may run.
+      expect(setPluginServerNames).not.toHaveBeenCalled();
+      expect(mockDiscoveryRefresh).not.toHaveBeenCalled();
+    } finally { shell().__ABU_SHELL__ = original; }
+  });
+
+  it('keeps the previously known list when the registry is unreadable as well', async () => {
+    const original = shell().__ABU_SHELL__;
+    const host = vi.fn(async (action: string) => (action === 'status' ? unreadableJournal : null));
+    shell().__ABU_SHELL__ = { pluginOperation: host };
+    usePluginStore.setState({ installed: [weather] });
+    vi.mocked(readInstalledResult).mockResolvedValue({ ok: false, error: new Error('installed.json unreadable') });
+    try {
+      await usePluginStore.getState().refreshInstalled(HOME);
+
+      const state = usePluginStore.getState();
+      // A failed read must never be mistaken for "no plugins installed".
+      expect(state.installed).toEqual([weather]);
+      expect(state.unreadableOperation).toEqual(unreadableJournal);
+      expect(state.recoveryError).toBe(getI18n().toolbox.pluginsJournalUnreadable);
+    } finally { shell().__ABU_SHELL__ = original; }
+  });
+
+  it('still fails a strict refresh so callers cannot mistake the pause for a completed scan', async () => {
+    const original = shell().__ABU_SHELL__;
+    const host = vi.fn(async (action: string) => (action === 'status' ? unreadableJournal : null));
+    shell().__ABU_SHELL__ = { pluginOperation: host };
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    try {
+      await expect(usePluginStore.getState().refreshInstalled(HOME, { strict: true }))
+        .rejects.toThrow(/recovery is still pending/);
+      expect(usePluginStore.getState().unreadableOperation).toEqual(unreadableJournal);
+      expect(usePluginStore.getState().activationReady).toBe(false);
+    } finally { shell().__ABU_SHELL__ = original; }
+  });
+});
+
+describe('boot with an unreadable journal', () => {
+  it('reports the journal, publishes the degraded view and never acknowledges', async () => {
+    const original = shell().__ABU_SHELL__;
+    const host = vi.fn(async (action: string) => {
+      // Recovery owns reopening the journal, so it — not `status` — fails first.
+      if (action === 'recover') throw new Error('active.enc: unable to decrypt');
+      return action === 'status' ? unreadableJournal : null;
+    });
+    shell().__ABU_SHELL__ = { pluginOperation: host };
+    vi.mocked(readInstalled).mockResolvedValue([weather]);
+    try {
+      await expect(bootstrapPluginUpdates()).rejects.toThrow(getI18n().toolbox.pluginsJournalUnreadable);
+
+      const state = usePluginStore.getState();
+      // The raw decrypt error is replaced by the actionable one, and the
+      // backup paths survive the boot reset that cleared them a moment earlier.
+      expect(state.recoveryError).toBe(getI18n().toolbox.pluginsJournalUnreadable);
+      expect(state.unreadableOperation).toEqual(unreadableJournal);
+      expect(state.installed).toEqual([weather]);
+      expect(state.activationReady).toBe(false);
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+    } finally { shell().__ABU_SHELL__ = original; }
+  });
+
+  it('rethrows the original recovery failure when the journal itself is readable', async () => {
+    const original = shell().__ABU_SHELL__;
+    const host = vi.fn(async (action: string) => {
+      if (action === 'recover') throw new Error('Plugin operation: session closed');
+      return null;
+    });
+    shell().__ABU_SHELL__ = { pluginOperation: host };
+    try {
+      await expect(bootstrapPluginUpdates()).rejects.toThrow('session closed');
+
+      // No journal damage was diagnosed, so the tab must not offer to archive one.
+      expect(usePluginStore.getState().unreadableOperation).toBeNull();
+      expect(usePluginStore.getState().recoveryError).toMatch(/session closed/);
+      expect(host).not.toHaveBeenCalledWith('ack', expect.anything());
+    } finally { shell().__ABU_SHELL__ = original; }
+  });
 });

@@ -294,6 +294,32 @@ describe('runCommandTool', () => {
     expect(showSandboxBlockedToast).toHaveBeenCalledWith('cp a.txt /etc/b.txt');
   });
 
+  it('does not show the write toast when the sandbox blocked an exec', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      code: 1,
+      stdout: '',
+      stderr: '[sandbox-blocked] command execution blocked by sandbox policy (exec)\n\nzsh:1: operation not permitted: ps',
+    });
+
+    const result = await runCommandTool.execute({ command: 'ps aux | head' }, undefined);
+
+    expect(showSandboxBlockedToast).not.toHaveBeenCalled();
+    // The block still reaches the model through the tool result.
+    expect(result).toContain('[sandbox-blocked] command execution blocked by sandbox policy (exec)');
+  });
+
+  it('does not show the write toast for an unclassified sandbox block', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      code: 1,
+      stdout: '',
+      stderr: '[sandbox-blocked] blocked by sandbox policy (unclassified)\n\noperation not permitted',
+    });
+
+    await runCommandTool.execute({ command: 'weird-tool' }, undefined);
+
+    expect(showSandboxBlockedToast).not.toHaveBeenCalled();
+  });
+
   it('returns task-local recovery metadata for blocked AppleScript instead of a path toast', async () => {
     const reportMetadata = vi.fn();
     const result = await runCommandTool.execute(
@@ -319,7 +345,7 @@ describe('runCommandTool', () => {
       code: 126,
       stdout: '',
       stderr: [
-        '[sandbox-blocked] file write or network access blocked by sandbox policy',
+        '[sandbox-blocked] command execution blocked by sandbox policy (exec)',
         'zsh: operation not permitted: /usr/bin/osascript',
       ].join('\n'),
     });

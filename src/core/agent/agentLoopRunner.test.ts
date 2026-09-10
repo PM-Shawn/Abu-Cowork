@@ -895,6 +895,59 @@ describe('agentLoopRunner', () => {
       );
     });
 
+    it('logs a per-frame summary (never the frame args) when a batch is rejected for raw media payloads', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({
+        runId: 'run-1',
+        frames: [
+          { p: 'chat', m: 'updateToolCall', a: ['conv-1', 'loop-1', { id: 'tc1', isExecuting: false }] },
+          { p: 'chat', m: 'addMessage', a: ['conv-1', { content: [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }] }] },
+        ],
+      });
+
+      await Promise.resolve();
+      expect(applyDeltaFramesMock).not.toHaveBeenCalled();
+      expect(loggerWarnMock).toHaveBeenCalledWith(
+        'agent.delta rejected unsafe media payload',
+        expect.objectContaining({
+          runId: 'run-1',
+          frameCount: 2,
+          frames: [
+            { index: 0, p: 'chat', m: 'updateToolCall', toolCallId: 'tc1' },
+            { index: 1, p: 'chat', m: 'addMessage' },
+          ],
+        }),
+      );
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.agent_delta_rejected',
+        expect.objectContaining({ runId: 'run-1', frameCount: 2 }),
+      );
+      // The summary must never carry frame args (and therefore never a base64 payload).
+      expect(JSON.stringify(loggerWarnMock.mock.calls)).not.toContain('AAAA');
+      expect(JSON.stringify(traceRuntimeEventMock.mock.calls)).not.toContain('AAAA');
+    });
+
+    it('summarizeFramesForLog keeps identity only — real tool-call ids in, message/step ids out', async () => {
+      const { summarizeFramesForLog } = await importFresh();
+
+      expect(summarizeFramesForLog([
+        // Production shape: chatStore.updateToolCall(convId, messageId, toolCallId, result).
+        { p: 'chat', m: 'updateToolCall', a: ['conv-1', 'msg-1', 'tc-real', 'done'] },
+        { p: 'chat', m: 'setMessageToolCalls', a: ['conv-1', 'msg-1', [{ id: 'tc-first' }, { id: 'tc-second' }]] },
+        { p: 'chat', m: 'addMessage', a: ['conv-1', { id: 'msg-1' }] },
+        { p: 'exec', m: 'addStep', a: ['loop-1', { id: 'step-1' }] },
+      ])).toEqual([
+        { index: 0, p: 'chat', m: 'updateToolCall', toolCallId: 'tc-real' },
+        { index: 1, p: 'chat', m: 'setMessageToolCalls', toolCallId: 'tc-first' },
+        { index: 2, p: 'chat', m: 'addMessage' },
+        { index: 3, p: 'exec', m: 'addStep' },
+      ]);
+    });
+
     it('serializes separate frame batches for the same run', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

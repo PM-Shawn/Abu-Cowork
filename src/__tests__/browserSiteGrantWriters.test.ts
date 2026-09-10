@@ -69,6 +69,17 @@ const TEST_VERDICT_HELPER = join('src', 'test', 'browserSiteVerdicts.ts');
  *   clicking in a settings page they navigated to; the add row additionally
  *   refuses to mint `'allowed'` for a high-risk origin, which the dialog also
  *   refuses (`allowPersistentGrant: false`).
+ * - `TeamConfirmationsStrip.tsx` (P1-a) — 「以后都允许该网站」 on a refused
+ *   TEAM request the user is looking at. Same act as the dialog's button,
+ *   in the surface a team run puts the question in: a team conversation
+ *   never opens a dialog, so without this the strip could offer no scope at
+ *   all and a form fill was asked field by field. It is the same decision by
+ *   the same person, and it runs the same floor — `mayOfferPersistentGrant`
+ *   over the requester's `allowPersistentGrant`, which the gate sets from
+ *   `offersPersistentGrant` (no grant for a script, a high-risk page, an
+ *   「每次询问」 row, or an unresolved origin). It grants ONLY the action's
+ *   own origin and never a region's: it is not region-aware below, and the
+ *   payload it reads carries no `browserPageOrigin`.
  *
  * ## The scope is the WIDE default when omitted (round-3 R3-H)
  *
@@ -82,6 +93,7 @@ const TEST_VERDICT_HELPER = join('src', 'test', 'browserSiteVerdicts.ts');
  * enumerated decision as well.
  */
 const PERMITTED_WRITERS = [
+  join('src', 'components', 'chat', 'TeamConfirmationsStrip.tsx'),
   join('src', 'components', 'common', 'CommandConfirmDialog.tsx'),
   join('src', 'components', 'settings', 'sections', 'BrowserPermissionCards.tsx'),
 ];
@@ -130,7 +142,7 @@ function filesMatching(predicate: (source: string) => boolean): string[] {
     .sort();
 }
 
-describe('standing browser site verdicts have exactly two writers', () => {
+describe('standing browser site verdicts have an enumerated set of writers', () => {
   it('finds the files it is asserting about (the scan is not silently empty)', () => {
     const files = sourceFiles();
     expect(files.length).toBeGreaterThan(200);

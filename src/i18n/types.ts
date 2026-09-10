@@ -1857,10 +1857,12 @@ export interface TranslationDict {
     confirmationSeparator: string;
     confirmationLeader: string;
     confirmationApproveRun: string;
+    confirmationAllowSite: string;
     confirmationWriteRead: string;
     confirmationWrite: string;
     confirmationRead: string;
     confirmationCwd: string;
+    confirmationOrigin: string;
     confirmationRequestOrdinal: string;
     confirmationDefaultCwd: string;
     confirmationLegacy: string;
@@ -1963,6 +1965,12 @@ export interface TranslationDict {
     pluginsRefreshMarketplace: string;
     pluginsCachedMarketplace: string;
     pluginsRecoveryNeeded: string;
+    pluginsDeleteDraft: string;
+    pluginsDeleteDraftWarning: string;
+    pluginsJournalUnreadable: string;
+    pluginsArchiveContinue: string;
+    pluginsArchiveWarning: string;
+    pluginsArchivedNotice: string;
     pluginsRetryRecovery: string;
     pluginsDisabledCapability: string;
     pluginsComponentInvalidJson: string;

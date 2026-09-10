@@ -1237,6 +1237,30 @@ describe('full-page screenshot', () => {
       justification: 'the call that shipped',
     })).rejects.toThrow(/Invalid type: expected offscreen\.Reason, found undefined/);
   });
+
+  it('refuses a page that measures no capturable area, before scrolling or capturing anything', async () => {
+    twoTabWindow();
+    // A hidden container, `display:none`, some PDF and embedded views: the page
+    // answers `fullpage_prepare` with a height of zero. `Math.ceil(0 / 500)` is
+    // zero slices, so the loop never runs and the empty list used to reach the
+    // stitcher, where `images[0].naturalWidth` threw `Cannot read properties of
+    // undefined` — a sentence that tells the model nothing, so it retries the
+    // identical capture.
+    browserState.contentAnswers['12:0:fullpage_prepare'] = {
+      data: { scrollHeight: 0, viewportHeight: 500, viewportWidth: 800, scrollX: 0, scrollY: 0 },
+    };
+
+    const response = await request('screenshot_full_page', { tabId: 12 });
+
+    expect(response.success).toBe(false);
+    expect(response.error).toMatch(/no area to capture/i);
+    expect(response.error).toMatch(/screenshot/);
+    // Failing HERE is the point, not merely failing readably: nothing was
+    // captured and the stitcher was never asked, so the caller pays for none of
+    // a scroll it cannot use.
+    expect(browserState.captured).toEqual([]);
+    expect(browserState.stitchRequests).toEqual([]);
+  });
 });
 
 /**

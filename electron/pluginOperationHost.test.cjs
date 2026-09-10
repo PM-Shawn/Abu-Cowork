@@ -222,8 +222,10 @@ test('commit refuses a replaced materialized directory and missing owned agents'
 
 test('missing backup cannot silently accept a replacement as the old version', async () => {
   const f = fixture({ sameVersion: true }); const op = await f.begin(); await f.materialize();
-  const isDemoBackup = key => key.includes('.abu-plugin-backup-') && key.split(path.sep).includes('demo');
-  for (const key of [...f.disk.entries.keys()]) if (isDemoBackup(key)) await f.disk.api.rm(key);
+  const backups = [...f.disk.entries.keys()].filter(key => path.basename(key).startsWith('.abu-plugin-backup-') && path.basename(path.dirname(key)) === 'demo');
+  assert.ok(backups.length > 0, 'the fixture must contain a package backup');
+  for (const key of backups) await f.disk.api.rm(key);
+  assert.ok(backups.every(key => !f.disk.entries.has(key)));
   await assert.rejects(f.host.dispatch(f.sender, 'rollback', op), /backup missing/);
   assert.equal((await f.host.dispatch(f.sender, 'status')).phase, 'prepared');
 });
@@ -353,4 +355,77 @@ test('recovery restarts a session a worker death closed, other actions do not', 
   const idle = stub();
   await assert.rejects(createPluginOperationHost({ ...f.options, session: idle }).dispatch(f.sender, 'status'), /session closed/);
   assert.equal(idle.reopened, 0);
+});
+
+for (const reason of ['decrypt', 'validate']) test(`existing journal ${reason} failure is readable as degraded status and archives without deleting backups`, async () => {
+  const f = fixture(); await f.begin();
+  const journal = path.join(f.home, '.abu', 'plugin-operations', 'active.enc');
+  if (reason === 'validate') f.disk.add(journal, 'file', f.options.encrypt(JSON.stringify({ schema: 99 })));
+  const original = f.disk.read(journal);
+  const host = createPluginOperationHost({ ...f.options, now: () => 1234, ...(reason === 'decrypt' ? { decrypt: () => { throw new Error('secret decryption detail'); } } : {}) });
+  const status = await host.dispatch(f.sender, 'status');
+  assert.equal(status.unreadable, true);
+  assert.equal(status.backupPaths.length, 2);
+  assert.ok(status.backupPaths.every(file => path.basename(file).startsWith('.abu-plugin-backup-')));
+  assert.equal(JSON.stringify(status).includes('secret'), false);
+  assert.equal(await host.external('read', () => 'list'), 'list');
+  for (const action of ['begin', 'recover', 'commit', 'rollback', 'ack']) await assert.rejects(host.dispatch(f.sender, action, {}));
+  await assert.rejects(host.external('upsert', () => assert.fail('must not write')));
+  await assert.rejects(host.assertIdle());
+  await assert.rejects(host.materialize(f.sender, { token: 'token' }));
+  await assert.rejects(host.dispatch(f.sender, 'archive', { fingerprint: 'stale' }), /changed/);
+  await assert.rejects(host.dispatch(f.sender, 'archive', { fingerprint: status.fingerprint, path: '/outside' }), /changed/);
+  const result = await host.dispatch(f.sender, 'archive', { fingerprint: status.fingerprint });
+  assert.equal(path.basename(result.archivedPath), 'corrupt-1234.enc');
+  assert.equal(f.disk.read(result.archivedPath), original);
+  assert.equal(f.disk.entries.has(path.resolve(journal)), false);
+  assert.ok(result.backupPaths.every(file => f.disk.entries.has(file)));
+  assert.equal(await host.dispatch(f.sender, 'status'), null);
+  assert.equal(await host.dispatch(f.sender, 'configurationCleanupAllowed'), false);
+  const restarted = createPluginOperationHost(f.options);
+  assert.equal(await restarted.dispatch(f.sender, 'configurationCleanupAllowed'), false);
+  assert.equal(await host.external('upsert', () => 'allowed'), 'allowed');
+});
+
+test('unsafe journal files and I/O failures are not classified as corrupt content', async () => {
+  const f = fixture(); await f.begin();
+  const journal = '/profile/.abu/plugin-operations/active.enc';
+  f.disk.add(journal, 'link');
+  await assert.rejects(f.host.dispatch(f.sender, 'status'), /invalid journal/);
+  const host = createPluginOperationHost({ ...f.options, fs: { ...f.options.fs, open: async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); } } });
+  f.disk.add(journal, 'file', 'broken');
+  await assert.rejects(host.dispatch(f.sender, 'status'), /denied/);
+});
+
+for (const replaceInode of [false, true]) test(`archive refuses unconfirmed journal ${replaceInode ? 'replacement' : 'rewrite'} during backup enumeration`, async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'abu-archive-binding-')));
+  let host;
+  try {
+    const operations = path.join(home, '.abu', 'plugin-operations');
+    fs.mkdirSync(operations, { recursive: true });
+    fs.mkdirSync(path.join(home, '.abu', 'plugin-packages'));
+    const journal = path.join(operations, 'active.enc');
+    fs.writeFileSync(journal, 'corrupt original');
+    const valid = JSON.stringify({ schema: 1, id: 'a'.repeat(32), kind: 'install', phase: 'prepared', key: next.key, previous: null, next,
+      moves: [], previousRuntime: { enabled: false, servers: {}, disabledSkills: {}, disabledAgents: {} }, nextRuntime: null });
+    let swap = false;
+    host = createPluginOperationHost({ home, encrypt: text => Buffer.from(text), decrypt: bytes => bytes.toString(), fs: { ...fs.promises,
+      readdir: async (...args) => {
+        if (swap) {
+          swap = false;
+          if (replaceInode) { fs.writeFileSync(`${journal}.replacement`, valid); fs.renameSync(`${journal}.replacement`, journal); }
+          else fs.writeFileSync(journal, valid);
+        }
+        return fs.promises.readdir(...args);
+      },
+    } });
+    const status = await host.dispatch({}, 'status');
+    swap = true;
+    await assert.rejects(host.dispatch({}, 'archive', { fingerprint: status.fingerprint }), /archive source changed/);
+    assert.equal(fs.readFileSync(journal, 'utf8'), valid);
+    assert.equal((await host.dispatch({}, 'status')).phase, 'prepared');
+    assert.equal(fs.readdirSync(operations).some(name => name.startsWith('corrupt-')), false);
+  } finally { await host?.shutdown(); fs.rmSync(home, { recursive: true, force: true }); }
 });

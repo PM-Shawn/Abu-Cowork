@@ -1530,7 +1530,9 @@ function registerTauriHost(app, options = {}) {
   ipcMain.handle(PLUGIN_AUTHOR_CHANNEL, async (e, payload) => {
     assertTrustedMainIpcSender(e);
     if (!payload || typeof payload.action !== 'string') throw new Error('Invalid plugin author request');
-    return pluginAuthors.dispatch(e.sender, payload.action, payload.request);
+    return payload.action === 'delete'
+      ? pluginOperations.external('delete', () => pluginAuthors.dispatch(e.sender, payload.action, payload.request))
+      : pluginAuthors.dispatch(e.sender, payload.action, payload.request);
   });
 
   ipcMain.handle(PLUGIN_SNAPSHOT_CHANNEL, async (e, payload = {}) => {

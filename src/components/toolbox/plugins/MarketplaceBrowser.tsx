@@ -13,7 +13,6 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
 import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
-import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { orphanedInstalls } from '@/core/plugin/authored';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { planInstall, releasePreparedInstall, UnsupportedSourceError, type InstallDisclosure } from '@/core/plugin/installer';
@@ -97,7 +96,6 @@ export default function MarketplaceBrowser({
   const tb = t.toolbox;
   const marketplaces = usePluginStore((s) => s.marketplaces);
   const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
-  const authors = usePluginAuthorStore(s => s.authors);
   const installed = usePluginStore((s) => s.installed);
   const install = usePluginStore((s) => s.install);
   const update = usePluginStore((s) => s.update);
@@ -232,8 +230,11 @@ export default function MarketplaceBrowser({
    */
   const marketsHydrated = useMemo(() => marketplaces.some((m) => m.builtin), [marketplaces]);
   const orphans = useMemo(
-    () => (marketsHydrated ? orphanedInstalls(installed, marketplaces).filter(plugin => !authors.some(author => author.key === plugin.key && author.id === plugin.authoringId)) : []),
-    [marketsHydrated, installed, marketplaces, authors],
+    // No join against the author list: orphanedInstalls reads provenance off
+    // the record itself, so a failed author-store read can no longer relabel a
+    // locally created plugin as a market plugin whose source is gone.
+    () => (marketsHydrated ? orphanedInstalls(installed, marketplaces) : []),
+    [marketsHydrated, installed, marketplaces],
   );
 
   const categoryOptions = useMemo(() => {

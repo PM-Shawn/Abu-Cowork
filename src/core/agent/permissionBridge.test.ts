@@ -223,6 +223,27 @@ describe('permissionBridge — UserQuestion queue', () => {
       await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
     });
 
+    it('carries the browser authorization payload into the pending record (P1-a)', async () => {
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      await expect(requestCommandConfirmation({
+        command: 'browser_fill #q',
+        level: 'warn',
+        reason: 'r',
+        kind: 'browser',
+        browserOrigin: 'http://127.0.0.1:8765',
+        browserOperationClass: 'interactive',
+        allowPersistentGrant: true,
+        teamIdentity: { toolName: 'fill', parametersDigest: 'p1', cwd: '/w', loopId: 'loop-team', callId: 'fill-call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 },
+      }, 'loop-team')).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')[0]).toMatchObject({
+        kind: 'browser',
+        browserOrigin: 'http://127.0.0.1:8765',
+        browserOperationClass: 'interactive',
+        allowPersistentGrant: true,
+        level: 'warn',
+      });
+    });
+
     it('names the member from the request when the loop context only knows the parent run (sidecar path)', async () => {
       const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
       setLoopContext('loop-parent', makeTeamCtx('loop-parent', 'conv-team') as never);

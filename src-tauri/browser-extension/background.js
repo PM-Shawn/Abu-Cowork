@@ -32,6 +32,16 @@
     "upload_file"
   ]);
 
+  // src/shared/captureArea.ts
+  function noCaptureAreaRefusal(scrollHeight, viewportHeight) {
+    const measured = (value) => Number.isFinite(value) && value > 0;
+    if (measured(scrollHeight) && measured(viewportHeight)) return null;
+    return `Page reports no area to capture (content ${describe(scrollHeight)} by viewport ${describe(viewportHeight)}). A hidden, zero-height or embedded document has nothing to stitch. Bring the content into view, or use screenshot for the visible area.`;
+  }
+  function describe(value) {
+    return Number.isFinite(value) ? `${value}px` : String(value);
+  }
+
   // src/background/downloads.ts
   function hostOf(url) {
     if (!url) return null;
@@ -1594,6 +1604,8 @@
   async function captureFullPage(tabId2, windowId) {
     const dims = await sendToContentScript(tabId2, "fullpage_prepare", {});
     const { scrollHeight, viewportHeight, viewportWidth, scrollX, scrollY } = dims;
+    const noArea = noCaptureAreaRefusal(scrollHeight, viewportHeight);
+    if (noArea) throw new Error(noArea);
     const sliceCount = Math.ceil(scrollHeight / viewportHeight);
     const slices = [];
     try {

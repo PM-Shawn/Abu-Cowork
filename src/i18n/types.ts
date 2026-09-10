@@ -3,6 +3,11 @@
  * Provides full type safety and IDE autocompletion for translations
  */
 
+// Type-only: keeps `stopReasonLabel` exhaustive over the stop-reason union, so
+// a new SubagentStopReason member is a compile error here instead of an
+// `undefined` label rendered to the leader.
+import type { SubagentStopReason } from '@/types';
+
 export type SupportedLocale = 'zh-CN' | 'en-US';
 export type LanguageSetting = 'system' | SupportedLocale;
 
@@ -3945,6 +3950,10 @@ export interface TranslationDict {
       /** Declared artifacts missing after the member finished (define-done check). */
       errExpectedFilesMissing: string;
       delegateNoToolCallsNote: string;
+      /** Member stopped before finishing; appended to the hand-off result. {reason} */
+      delegateStoppedNote: string;
+      /** Human label per non-completed stop reason (exhaustive by construction). */
+      stopReasonLabel: Record<Exclude<SubagentStopReason, 'completed'>, string>;
       /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
       delegateUnconfirmedInstructionsNote: string;
       delegateUserInstructionsNote: string;

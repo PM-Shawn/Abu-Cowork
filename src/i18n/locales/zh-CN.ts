@@ -3225,6 +3225,8 @@ const zhCN: TranslationDict = {
       errMemberBlocked: 'Error: "{agentName}" 已连续 {n} 次没有完成派活（出错、被停止或超出轮数），本次任务里不能再派给它。换一个队员做这一步，或把这一步标为「受阻」并在汇报里写明原因。',
       errExpectedFilesMissing: 'Error: {agentName} 说做完了，但声明要产出的文件没有出现：{files}。这一步按失败处理。把缺失路径原文告诉它重派一次；再缺就标为「受阻」。它的回复原文：\n{text}',
       delegateNoToolCallsNote: '⚠️ 该队员没有调用任何工具，以上内容未经查证。作为队长请先复核，或让它拿证据再来。',
+      delegateStoppedNote: '⚠️ 该队员未完成任务就停止了（原因：{reason}）。请把它当作未完成处理：重派、拆小或标为受阻，不要当成已完成。',
+      stopReasonLabel: { max_turns: '轮数用尽', aborted: '被打断', error: '出错' },
       delegateUnconfirmedInstructionsNote: '⚠️ 用户在这次派活进行中给 {agentName} 发了 {n} 条追加指令，但没有收到队员模型请求的送达确认（原文）：\n{list}\n这些仍是用户本人的要求，现交回队长处理。请明确汇报尚未确认处理，不要宣称已采纳或已执行；结合已有结果安排后续，并避免重复可能已发生的副作用。',
       delegateUserInstructionsNote: 'ℹ️ 这次派活进行中，用户直接给 {agentName} 发了 {n} 条追加指令（原文）：\n{list}\n这些指令已送达队员的模型请求（不等于已执行），来自用户本人，优先于原任务：不要让队员忽略，也不要当作队员自己的附加输出；把执行结果纳入你的汇报。',
       errMustSpecifyAgent: 'Error: 必须指定 agent_name（用户代理）或 type（系统角色：research/writer/executor）',

@@ -261,6 +261,23 @@ function buildSandboxedArgvCommandSpec(program, args, cwd, extraWritablePaths, s
 
 // ── Sandbox-violation annotation — port of lib.rs's annotate_sandbox_violations ──
 
+// A denied *exec* looks like `zsh:1: operation not permitted: ps` or
+// `bash: /usr/bin/ps: Operation not permitted` — the middle field is the
+// program, so it never contains whitespace. That last detail is what keeps
+// `sh: cannot create /x: operation not permitted` (a write) out of the exec
+// class. Denied reads/writes surface as a different sentence shape, so they
+// are classified after this.
+const SANDBOX_EXEC_DENIAL_PATTERNS = [
+  /^(?:zsh:\d+: )?operation not permitted: \S+/im,
+  /^(?:bash|sh|zsh): [^:\s]+: operation not permitted/im,
+];
+const SANDBOX_WRITE_DENIAL_STDERR = /cannot create|read-only/i;
+const SANDBOX_WRITE_COMMANDS = ['> ', 'tee ', 'cp ', 'mv ', 'mkdir ', 'touch '];
+// Socket-level denials also surface as `operation not permitted`; only these
+// unambiguous markers claim the network class, everything else stays
+// unclassified rather than guessing.
+const SANDBOX_NETWORK_DENIAL_STDERR = /\b(?:socket|connect|network is (?:unreachable|down))\b/i;
+
 function annotateSandboxViolations(stderr, command, sandboxEnabled) {
   const s = stderr || '';
   if (!sandboxEnabled || s.length === 0) return s;
@@ -269,7 +286,14 @@ function annotateSandboxViolations(stderr, command, sandboxEnabled) {
   const reasons = [];
 
   if (lower.includes('operation not permitted')) {
-    if (
+    if (SANDBOX_EXEC_DENIAL_PATTERNS.some((pattern) => pattern.test(s))) {
+      reasons.push('command execution blocked by sandbox policy (exec)');
+    } else if (
+      SANDBOX_WRITE_DENIAL_STDERR.test(s) ||
+      SANDBOX_WRITE_COMMANDS.some((marker) => command.includes(marker))
+    ) {
+      reasons.push('file write blocked by sandbox policy');
+    } else if (
       lower.includes('read') ||
       command.includes('cat ') ||
       command.includes('less ') ||
@@ -277,8 +301,12 @@ function annotateSandboxViolations(stderr, command, sandboxEnabled) {
       command.includes('tail ')
     ) {
       reasons.push('file read blocked by sandbox policy');
+    } else if (SANDBOX_NETWORK_DENIAL_STDERR.test(s)) {
+      reasons.push('network access blocked by sandbox policy');
     } else {
-      reasons.push('file write or network access blocked by sandbox policy');
+      // Nothing in the output identifies the operation — say so instead of
+      // asserting a class the caller would render as a write block.
+      reasons.push('blocked by sandbox policy (unclassified)');
     }
   }
 

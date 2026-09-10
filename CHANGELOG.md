@@ -9,6 +9,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+- **Sandbox blocks say what was actually blocked.** A command the sandbox refused to *run* (a setuid binary such as `ps`) was reported as a blocked file write and raised an "authorize this directory" toast pointing at an unrelated path. Execution denials are now their own class, and a denial the output cannot attribute is reported as unclassified instead of being called a write. The toast is limited to real write blocks — read-only and unclassified blocks no longer raise it — while every block still reaches the agent in the command output.
 - **A built-in expert no longer sends the leader hunting for a file that was never there.** The capability prompt claimed every agent has an `AGENT.md` on disk, so starting a team with a built-in expert made the leader try to read one and then talk its way out of the error. Only user-created agents have a file; the roster in the prompt is now stated as the authoritative source.
 
 ## v0.42.0 · 2026-08-27

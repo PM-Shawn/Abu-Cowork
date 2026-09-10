@@ -4,6 +4,7 @@ import { resolveCommandPython } from '../../../utils/pythonRuntime';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { getWorkspaceReader } from '../../agent/ports/workspaceReader';
 import { getAuthorizedPathsReader } from '../../agent/ports/authorizedPathsReader';
+import { sandboxBlockClass } from '../../sandbox/blockClass';
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
 import {
   detectAppAutomationSandboxBlock,
@@ -154,10 +155,12 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         });
       }
 
-      // File/path blocks keep the existing toast. AppleScript cross-app
-      // blocks render a task-local recovery card instead of a misleading
-      // "authorize this directory" prompt.
-      if (!appAutomationRecovery && sandbox && output.stderr.includes('[sandbox-blocked]')) {
+      // Only a blocked *write* gets the "authorize this directory" toast —
+      // an exec/read/network/unclassified block has no directory to authorize,
+      // so the toast would be misleading. Every class still reaches the model
+      // through the annotated stderr below. AppleScript cross-app blocks render
+      // a task-local recovery card instead.
+      if (!appAutomationRecovery && sandbox && sandboxBlockClass(output.stderr) === 'write') {
         showSandboxBlockedToast(resolvedCommand);
       }
 

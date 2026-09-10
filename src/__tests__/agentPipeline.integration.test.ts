@@ -270,10 +270,6 @@ vi.mock('../core/agent/toolExecutor', () => ({
   }),
 }));
 
-vi.mock('../../utils/platform', () => ({
-  isWindows: vi.fn().mockReturnValue(false),
-}));
-
 vi.mock('../core/capabilities', () => ({
   getBuiltinSearchConfig: vi.fn().mockReturnValue(undefined),
 }));
@@ -381,16 +377,22 @@ vi.mock('../core/skill/toolFilter', () => ({
   parseToolPatterns: vi.fn().mockReturnValue({ inputValidators: new Map() }),
 }));
 
-vi.mock('../../utils/notifications', () => ({
+// These three live at `src/utils/*`. The specifiers used to be copied verbatim
+// from agentLoop.ts (`../../utils/*`), which is right from `src/core/agent/` but
+// resolves to a non-existent `<repo>/utils/*` from here — vitest registered the
+// mocks under a path nothing imports, said nothing, and ran the real modules.
+// The completion case below asserts the interception is live so this cannot rot
+// back silently.
+vi.mock('@/utils/notifications', () => ({
   notifyTaskCompleted: vi.fn(),
   notifyTaskError: vi.fn(),
 }));
 
-vi.mock('../../utils/pathUtils', () => ({
+vi.mock('@/utils/pathUtils', () => ({
   joinPath: vi.fn().mockImplementation((...parts: string[]) => parts.join('/')),
 }));
 
-vi.mock('../../utils/platform', () => ({
+vi.mock('@/utils/platform', () => ({
   isWindows: vi.fn().mockReturnValue(false),
 }));
 
@@ -405,6 +407,9 @@ import type { StreamEvent, Message } from '../types';
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';
 import * as contextManagerModule from '../core/context/contextManager';
 import * as toolSearchModule from '../core/tools/toolSearch';
+import { notifyTaskCompleted } from '@/utils/notifications';
+import { joinPath } from '@/utils/pathUtils';
+import { isWindows } from '@/utils/platform';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 
@@ -423,6 +428,17 @@ describe('Agent Pipeline Integration', () => {
   });
 
   beforeEach(() => {
+    // chatStore.scheduleFlush() batches streamed tokens behind
+    // requestAnimationFrame. This file runs under the `node` environment, which
+    // has no such global, so the first streamed token threw and every turn that
+    // emitted text ended in `error` instead of `completed` — invisibly, because
+    // the assertions only checked that messages existed. Same synchronous stub
+    // subagentMultimodalHandoff.integration.test.ts already uses: no timers, no
+    // clock, flush order stays deterministic.
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      cb(0);
+      return 0;
+    });
     delegatedMediaBytes.clear();
     useChatStore.setState({
       conversations: {},
@@ -451,6 +467,10 @@ describe('Agent Pipeline Integration', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('complete conversation: user message → LLM text response → done', async () => {
     // Set up mock adapter to emit text and done
     mockClaudeChat.mockImplementation(
@@ -473,6 +493,15 @@ describe('Agent Pipeline Integration', () => {
 
     const assistantMsg = conv.messages.find((m) => m.role === 'assistant' && m.content !== '');
     expect(assistantMsg).toBeDefined();
+
+    // Guards the shared `@/utils/*` mocks above: a vi.mock whose specifier does
+    // not resolve is silently ignored, so these would pass through to the real
+    // modules — notifyTaskCompleted would publish on the Notice Bus with a
+    // Date.now() dedup key. Asserting on a non-spy throws, so a broken
+    // specifier fails here loudly instead of degrading into a real call.
+    expect(vi.mocked(notifyTaskCompleted)).toHaveBeenCalledWith(expect.any(String), convId);
+    expect(vi.mocked(joinPath)).toHaveBeenCalled();
+    expect(vi.mocked(isWindows)).toHaveBeenCalled();
   });
 
   it('starts direct @agent delegation with the triggering image turn as ordered MessageContent blocks', async () => {

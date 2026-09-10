@@ -222,7 +222,8 @@ test('commit refuses a replaced materialized directory and missing owned agents'
 
 test('missing backup cannot silently accept a replacement as the old version', async () => {
   const f = fixture({ sameVersion: true }); const op = await f.begin(); await f.materialize();
-  for (const key of [...f.disk.entries.keys()]) if (key.includes('.abu-plugin-backup-') && key.includes('/demo/')) await f.disk.api.rm(key);
+  const isDemoBackup = key => key.includes('.abu-plugin-backup-') && key.split(path.sep).includes('demo');
+  for (const key of [...f.disk.entries.keys()]) if (isDemoBackup(key)) await f.disk.api.rm(key);
   await assert.rejects(f.host.dispatch(f.sender, 'rollback', op), /backup missing/);
   assert.equal((await f.host.dispatch(f.sender, 'status')).phase, 'prepared');
 });

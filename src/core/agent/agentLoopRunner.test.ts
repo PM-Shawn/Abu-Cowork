@@ -994,6 +994,64 @@ describe('agentLoopRunner', () => {
       expect(JSON.stringify(applied)).not.toContain('AAAA');
     });
 
+    // Fix round 1 (Task 3b review): degradation must not neutralise the guard's
+    // trigger while a payload rides along in a key redaction skipped. Both probes
+    // below THREW the guard before degradation (old code => whole batch dropped,
+    // payload never stored) and PASSED it after (=> batch applied with raw base64
+    // in the store). They must now degrade cleanly AND be applied.
+    const SIBLING_PAYLOAD = 'QUJVLVJBVy1CQVNFNjQtUEFZTE9BRC1QUk9CRS1GT1ItVEhFLURFR1JBREFUSU9OLUZJWC1ST1VORC0x';
+    it.each([
+      {
+        name: 'record sibling (alt)',
+        block: {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: SIBLING_PAYLOAD },
+          alt: SIBLING_PAYLOAD,
+        },
+      },
+      {
+        name: 'source sibling (raw)',
+        block: {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: SIBLING_PAYLOAD, raw: SIBLING_PAYLOAD },
+        },
+      },
+      {
+        name: 'recognised detail sibling',
+        block: {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: SIBLING_PAYLOAD },
+          sibling: { mediaType: 'image/png', base64: SIBLING_PAYLOAD },
+        },
+      },
+    ])('degrades and applies a frame whose raw media node carries a $name', async ({ block }) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({
+        runId: 'run-1',
+        frames: [{ p: 'chat', m: 'addMessage', a: ['conv-1', { content: [block] }] }],
+      });
+
+      await vi.waitFor(() => {
+        expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1);
+      });
+      const applied = applyDeltaFramesMock.mock.calls[0][0] as Array<{ a: unknown[] }>;
+      expect(applied).toHaveLength(1);
+      expect(JSON.stringify(applied)).not.toContain(SIBLING_PAYLOAD);
+      expect(loggerWarnMock).toHaveBeenCalledWith(
+        'agent.delta degraded unsafe media payload',
+        expect.objectContaining({ runId: 'run-1', degradedIndexes: [0] }),
+      );
+      expect(loggerWarnMock).not.toHaveBeenCalledWith(
+        'agent.delta dropped unsafe media payload after degradation',
+        expect.anything(),
+      );
+      expect(JSON.stringify(loggerWarnMock.mock.calls)).not.toContain(SIBLING_PAYLOAD);
+    });
+
     it('falls back to dropping the batch when degradation cannot clean a frame', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -1003,8 +1061,11 @@ describe('agentLoopRunner', () => {
       handler({
         runId: 'run-1',
         frames: [
-          // Adversarial shape: redaction rewrites the image block's `source`
-          // but does not walk its sibling keys, so raw base64 survives.
+          // Adversarial shape the redactor still cannot clean: the SAME node is
+          // both a raw-source media block and a raw detail-image block. The
+          // source branch wins, blanks `source.data`, and carries the node's own
+          // `mediaType`/`base64` keys through (that short `base64` is below the
+          // payload-length class), so the post-degradation guard still throws.
           {
             p: 'chat',
             m: 'addMessage',
@@ -1012,7 +1073,8 @@ describe('agentLoopRunner', () => {
               content: [{
                 type: 'image',
                 source: { type: 'base64', data: 'AAAA' },
-                sibling: { mediaType: 'image/png', base64: 'BBBB' },
+                mediaType: 'image/png',
+                base64: 'BBBB',
               }],
             }],
           },

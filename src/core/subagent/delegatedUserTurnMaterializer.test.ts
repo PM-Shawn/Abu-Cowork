@@ -54,6 +54,7 @@ import {
   prepareDelegatedUserTurnForRequest,
   prepareToolResultForSidecarWire,
   redactAbsoluteMediaPaths,
+  redactSidecarValueForWireFailure,
   sidecarValueHasOpaqueMediaRefs,
 } from './delegatedUserTurnMaterializer';
 
@@ -309,6 +310,114 @@ describe('delegated user turn materializer', () => {
     expect(sanitized).toContain('[REDACTED:base64]');
     expect(sanitized).toContain(httpsUrl);
     expect(sanitized).toContain(ordinaryDataText);
+  });
+
+  // Fix round 1 (Task 3b review): degradation must never NEUTRALISE the guard's
+  // trigger while leaving a raw payload behind in a key the redactor skipped.
+  // Before the fix the `hasRawMediaBase64Source` branch spread the record's own
+  // keys (and `source`'s) verbatim, so `alt` / `source.raw` survived un-visited:
+  // the guard stopped throwing (data was blanked) and the batch was APPLIED with
+  // raw base64 in it, where the old whole-batch drop had kept it out entirely.
+  describe('redactSidecarValueForWireFailure media nodes', () => {
+    // 88 chars: below any genuine inline payload is impossible (a 1x1 PNG is
+    // ~96 base64 chars), so this is squarely in the "payload" length class.
+    const PAYLOAD = 'QUJVLVJBVy1CQVNFNjQtUEFZTE9BRC1QUk9CRS1GT1ItVEhFLURFR1JBREFUSU9OLUZJWC1ST1VORC0x';
+
+    it('blanks an unrecognised base64 sibling of a raw image node (record key)', () => {
+      const raw = {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: PAYLOAD },
+        alt: PAYLOAD,
+      };
+      // The raw shape trips the guard, so the old code dropped the whole batch.
+      expect(() => sidecarValueHasOpaqueMediaRefs(raw)).toThrow(/raw base64 crossed the wire/i);
+
+      const safe = redactSidecarValueForWireFailure(raw);
+
+      expect(JSON.stringify(safe)).not.toContain(PAYLOAD);
+      expect(() => sidecarValueHasOpaqueMediaRefs(safe)).not.toThrow();
+      expect((safe as { type: string }).type).toBe('image');
+    });
+
+    it('blanks an unrecognised base64 sibling inside the raw node\'s source', () => {
+      const raw = {
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: PAYLOAD, raw: PAYLOAD },
+      };
+      expect(() => sidecarValueHasOpaqueMediaRefs(raw)).toThrow(/raw base64 crossed the wire/i);
+
+      const safe = redactSidecarValueForWireFailure(raw);
+
+      expect(JSON.stringify(safe)).not.toContain(PAYLOAD);
+      expect(() => sidecarValueHasOpaqueMediaRefs(safe)).not.toThrow();
+    });
+
+    it('cleans a recognised detail-image sibling of a raw image node instead of leaving it to the guard', () => {
+      const safe = redactSidecarValueForWireFailure({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: PAYLOAD },
+        sibling: { mediaType: 'image/png', base64: PAYLOAD },
+      });
+
+      expect(JSON.stringify(safe)).not.toContain(PAYLOAD);
+      expect(() => sidecarValueHasOpaqueMediaRefs(safe)).not.toThrow();
+    });
+
+    it('visits the outputRef carried out of a raw detail-image node', () => {
+      const safe = redactSidecarValueForWireFailure({
+        mediaType: 'image/png',
+        base64: PAYLOAD,
+        outputRef: { relPath: 'a/b.png', leaked: PAYLOAD },
+      });
+
+      expect(JSON.stringify(safe)).not.toContain(PAYLOAD);
+      expect(() => sidecarValueHasOpaqueMediaRefs(safe)).not.toThrow();
+      expect((safe as { outputRef: { relPath: string } }).outputRef.relPath).toBe('a/b.png');
+    });
+
+    it('leaves an opaque delegated media ref inside a raw node untouched (its sha256 is not a payload)', () => {
+      const ref = {
+        type: 'delegated_media_ref',
+        originConversationId: 'conv-1',
+        name: 'safe.png',
+        attachment: {
+          id: `media_${'d'.repeat(64)}`,
+          sha256: 'd'.repeat(64),
+          mediaType: 'image/png',
+          bytes: 6,
+        },
+      };
+      const safe = redactSidecarValueForWireFailure({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: PAYLOAD },
+        ref,
+      }) as { ref: typeof ref };
+
+      expect(JSON.stringify(safe)).not.toContain(PAYLOAD);
+      expect(safe.ref).toEqual(ref);
+    });
+
+    it('does not blank base64-shaped strings outside a media node', () => {
+      const safe = redactSidecarValueForWireFailure({
+        type: 'text',
+        text: PAYLOAD,
+        token: PAYLOAD,
+      }) as { text: string; token: string };
+
+      expect(safe.text).toBe(PAYLOAD);
+      expect(safe.token).toBe(PAYLOAD);
+    });
+
+    it('keeps short labels inside a media node readable', () => {
+      const safe = redactSidecarValueForWireFailure({
+        type: 'image',
+        title: 'screenshot',
+        source: { type: 'base64', media_type: 'image/png', data: PAYLOAD },
+      }) as { title: string; source: { media_type: string } };
+
+      expect(safe.title).toBe('screenshot');
+      expect(safe.source.media_type).toBe('image/png');
+    });
   });
 
   it('keeps generic Unix absolute path redaction while preserving https URLs', () => {

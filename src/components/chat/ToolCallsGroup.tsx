@@ -24,6 +24,34 @@ interface ToolCallsGroupProps {
 // `actionsOnly` mode), so a block wired in here would be unreachable for every
 // tool call a model makes. `MessageGroup` owns it — see `mcpAppSteps` there.
 
+const SANDBOX_BLOCKED_PREFIX = '[sandbox-blocked]';
+
+/**
+ * Split a sandbox-blocked tool result into the reason line and the rest.
+ *
+ * `annotateSandboxViolations` (electron/commandHost.cjs) prepends
+ * `[sandbox-blocked] <reasons>` to the command's *stderr*, and `run_command`
+ * then wraps that stderr in a `stderr:` header block, optionally after
+ * `stdout:` / recovery blocks. So the marker sits at an arbitrary line index —
+ * locate it instead of assuming line 0, and keep every other line as detail.
+ */
+function splitSandboxBlockedResult(result: string): { reason: string; details: string } | null {
+  const lines = result.split('\n');
+  const markerIndex = lines.findIndex((line) => line.startsWith(SANDBOX_BLOCKED_PREFIX));
+  if (markerIndex === -1) return null;
+
+  // A bare marker carries no reasons to highlight — leave it in the plain block.
+  const reason = lines[markerIndex].slice(SANDBOX_BLOCKED_PREFIX.length).trim();
+  if (!reason) return null;
+
+  // Drop the marker line plus the blank separator the annotator inserts after it.
+  const restStart = lines[markerIndex + 1] === '' ? markerIndex + 2 : markerIndex + 1;
+  return {
+    reason,
+    details: [...lines.slice(0, markerIndex), ...lines.slice(restStart)].join('\n'),
+  };
+}
+
 type ToolResultImageBlock = Extract<ToolResultContent, { type: 'image' }>;
 type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
 
@@ -186,6 +214,12 @@ function ToolCallItem({
   const isExecuting = toolCall.isExecuting && !awaitingUser;
   const [batchResultExpanded, setBatchResultExpanded] = useState(false);
   const isCompleted = toolCall.result !== undefined;
+  const sandboxBlocked = useMemo(
+    () => (showDetails && toolCall.result !== undefined
+      ? splitSandboxBlockedResult(toolCall.result)
+      : null),
+    [showDetails, toolCall.result],
+  );
 
   return (
     <div className={cn("border-b border-[var(--abu-border-subtle)]", isLast && "border-b-0")}>
@@ -279,15 +313,15 @@ function ToolCallItem({
                     && !toolCall.hideScreenshot && (
                     <ScreenshotThumbnail resultContent={toolCall.resultContent} conversationId={conversationId} />
                   )}
-                  {toolCall.result.includes('[sandbox-blocked]') ? (
+                  {sandboxBlocked ? (
                     <div className="space-y-1.5">
                       <div className="px-2 py-1.5 rounded bg-[var(--abu-danger-bg)] border border-[var(--abu-danger)]">
-                        <p className="text-caption font-mono text-[var(--abu-danger)] leading-relaxed">
-                          {toolCall.result.split('\n')[0].replace('[sandbox-blocked] ', '')}
+                        <p data-testid="sandbox-blocked-reason" className="text-caption font-mono text-[var(--abu-danger)] leading-relaxed">
+                          {sandboxBlocked.reason}
                         </p>
                       </div>
-                      <pre className="text-caption font-mono text-[#b5c9a8]/70 whitespace-pre-wrap break-words leading-relaxed max-h-24 overflow-y-auto">
-                        {toolCall.result.split('\n').slice(2).join('\n')}
+                      <pre data-testid="sandbox-blocked-details" className="text-caption font-mono text-[#b5c9a8]/70 whitespace-pre-wrap break-words leading-relaxed max-h-24 overflow-y-auto">
+                        {sandboxBlocked.details}
                       </pre>
                     </div>
                   ) : (

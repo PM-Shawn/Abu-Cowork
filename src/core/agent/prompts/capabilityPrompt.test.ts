@@ -16,7 +16,8 @@ describe('capabilityPrompt — extension directory facts', () => {
   it('forbids hand-building an agent path and names the roster as authoritative', () => {
     const prompt = getCapabilityPrompt();
     expect(prompt).toContain('Do NOT construct a filesystem path from an agent name');
-    expect(prompt).toContain('Built-in agents and team members have NO file there');
+    expect(prompt).toContain('Built-in agents have NO file there.');
+    expect(prompt).not.toContain('team members have NO file');
     expect(prompt).toContain('the Available Agents list in this prompt is authoritative');
   });
 

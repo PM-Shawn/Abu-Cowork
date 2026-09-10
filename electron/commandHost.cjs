@@ -267,12 +267,60 @@ function buildSandboxedArgvCommandSpec(program, args, cwd, extraWritablePaths, s
 // `sh: cannot create /x: operation not permitted` (a write) out of the exec
 // class. Denied reads/writes surface as a different sentence shape, so they
 // are classified after this.
+//
+// ⚠️ The first shape is AMBIGUOUS under zsh, which is the shell this host
+// runs commands through (`$SHELL -lc <command>`): a denied *redirect target*
+// produces the very same sentence. Verified under real seatbelt on macOS 15:
+//   deny file-write* (subpath "/private/tmp/sbxtest") + `echo x > .../f`
+//     => `zsh:1: operation not permitted: /private/tmp/sbxtest/f`   (a WRITE)
+//   deny process-exec* (literal "/bin/ps")            + `ps aux`
+//     => `zsh:1: operation not permitted: ps`                       (an EXEC)
+// The stderr alone cannot separate them, so the captured subject is checked
+// against the command: if it is a write target there, the block is a write.
 const SANDBOX_EXEC_DENIAL_PATTERNS = [
-  /^(?:zsh:\d+: )?operation not permitted: \S+/im,
-  /^(?:bash|sh|zsh): [^:\s]+: operation not permitted/im,
+  /^(?:zsh:\d+: )?operation not permitted: (\S+)/im,
+  /^(?:bash|sh|zsh): ([^:\s]+): operation not permitted/im,
 ];
+// Same ambiguity for EACCES-shaped denials: `zsh:1: permission denied: <path>`
+// is emitted for a denied redirect target AND for a denied exec (verified
+// firsthand, see the report), and `cp: <path>: Permission denied` for a copy.
+const SANDBOX_ACCESS_DENIAL_PATTERNS = [
+  /^(?:zsh:\d+: )?permission denied: (\S+)/im,
+  /^(?:bash|sh|zsh|cp|mv|tee|touch|mkdir): ([^:\s]+): permission denied/im,
+];
+const SANDBOX_WRITE_REASON = 'file write blocked by sandbox policy';
 const SANDBOX_WRITE_DENIAL_STDERR = /cannot create|read-only/i;
 const SANDBOX_WRITE_COMMANDS = ['> ', 'tee ', 'cp ', 'mv ', 'mkdir ', 'touch '];
+
+/** Escape a shell-reported path/word for literal use inside a RegExp. */
+function escapeRegExpLiteral(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** First capture of whichever pattern matches, or `null` when none does. */
+function denialSubject(stderr, patterns) {
+  for (const pattern of patterns) {
+    const match = pattern.exec(stderr);
+    if (match) return match[1];
+  }
+  return null;
+}
+
+/**
+ * True when `subject` — the path/word a shell names in a denial sentence — is
+ * something the command was trying to WRITE: a redirect target (`> path`,
+ * `>>path`, `> "path"`) or the target of cp/mv/tee/touch/mkdir. The
+ * write-command form requires the subject to appear *after* the command name
+ * so a denied `cp` binary (subject `cp`) is not mistaken for its own target.
+ */
+function isWriteTargetInCommand(subject, command) {
+  if (!subject || !command) return false;
+  const literal = escapeRegExpLiteral(subject);
+  if (new RegExp(`>>?\\s*['"]?${literal}`).test(command)) return true;
+  return new RegExp(`\\b(?:cp|mv|tee|touch|mkdir)\\b[^|;&]*\\s['"]?${literal}['"]?(?:\\s|$)`).test(
+    command,
+  );
+}
 // Socket-level denials also surface as `operation not permitted`; only these
 // unambiguous markers claim the network class, everything else stays
 // unclassified rather than guessing.
@@ -286,13 +334,20 @@ function annotateSandboxViolations(stderr, command, sandboxEnabled) {
   const reasons = [];
 
   if (lower.includes('operation not permitted')) {
-    if (SANDBOX_EXEC_DENIAL_PATTERNS.some((pattern) => pattern.test(s))) {
+    const execSubject = denialSubject(s, SANDBOX_EXEC_DENIAL_PATTERNS);
+    // An exec-shaped sentence whose subject is a write target of the command
+    // is really a denied write (zsh emits one sentence for both) — fall
+    // through to the write class instead of claiming execution was blocked.
+    const subjectIsWriteTarget = isWriteTargetInCommand(execSubject, command);
+
+    if (execSubject !== null && !subjectIsWriteTarget) {
       reasons.push('command execution blocked by sandbox policy (exec)');
     } else if (
+      subjectIsWriteTarget ||
       SANDBOX_WRITE_DENIAL_STDERR.test(s) ||
       SANDBOX_WRITE_COMMANDS.some((marker) => command.includes(marker))
     ) {
-      reasons.push('file write blocked by sandbox policy');
+      reasons.push(SANDBOX_WRITE_REASON);
     } else if (
       lower.includes('read') ||
       command.includes('cat ') ||
@@ -317,7 +372,15 @@ function annotateSandboxViolations(stderr, command, sandboxEnabled) {
     reasons.push('domain not in network whitelist');
   }
   if (lower.includes('permission denied') && !lower.includes('sudo')) {
-    reasons.push('access denied — possibly blocked by sandbox policy');
+    // Same subject-vs-command check as above: an EACCES-shaped denial naming
+    // a write target of the command is a blocked write (and so keeps the
+    // "authorize this directory" toast). Anything else stays unattributed.
+    const accessSubject = denialSubject(s, SANDBOX_ACCESS_DENIAL_PATTERNS);
+    if (isWriteTargetInCommand(accessSubject, command)) {
+      if (!reasons.includes(SANDBOX_WRITE_REASON)) reasons.push(SANDBOX_WRITE_REASON);
+    } else {
+      reasons.push('access denied — possibly blocked by sandbox policy');
+    }
   }
 
   if (reasons.length === 0) return s;

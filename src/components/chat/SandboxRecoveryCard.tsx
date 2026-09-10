@@ -214,7 +214,7 @@ export default function SandboxRecoveryCard({
           type="button"
           onClick={() => void continueWithComputerUse()}
           disabled={processing}
-          className="btn-primary inline-flex h-8 items-center gap-1.5 px-3 text-minor disabled:opacity-60"
+          className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-[var(--abu-clay)] text-white transition-colors hover:bg-[var(--abu-clay-hover)] px-3 text-minor font-medium disabled:cursor-default disabled:opacity-60"
         >
           {processing
             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -225,7 +225,7 @@ export default function SandboxRecoveryCard({
           type="button"
           onClick={() => void stopTask()}
           disabled={processing}
-          className="btn-secondary h-8 px-3 text-minor disabled:opacity-60"
+          className="inline-flex h-8 items-center rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] px-3 text-minor font-medium disabled:cursor-default disabled:opacity-60"
         >
           {t.sandbox.appAutomationStop}
         </button>
@@ -249,7 +249,7 @@ export default function SandboxRecoveryCard({
           <button
             type="button"
             onClick={() => useSettingsStore.getState().openSystemSettings('sandbox')}
-            className="btn-secondary mt-2 inline-flex h-8 items-center gap-1.5 px-3 text-minor"
+            className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] px-3 text-minor font-medium"
           >
             <Settings className="h-3.5 w-3.5" />
             {t.sandbox.appAutomationOpenSettings}

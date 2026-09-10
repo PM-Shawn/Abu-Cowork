@@ -1596,7 +1596,6 @@ export interface TranslationDict {
     revoke: string;
     appAutomationTitle: string;
     appAutomationDescription: string;
-    appAutomationConnectorPending: string;
     appAutomationUseComputer: string;
     appAutomationStop: string;
     appAutomationAdvanced: string;

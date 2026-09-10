@@ -46,19 +46,24 @@ export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext 
   // for the old board flow must not shrink it. `disallowedTools` still applies.
   // `maxTurns` gets a FLOOR rather than the same treatment: a member-sized card
   // value (e.g. 30, the budget for ONE hand-off) must not cap a leader that
-  // plans, dispatches, reviews every result and reports — so an explicit card
+  // plans, dispatches, reviews every result and reports — so a positive card
   // value is raised to at least TEAM_LEADER_MAX_TURNS. A card with NO maxTurns
   // keeps none, so the user's global 最大轮次 setting (and the 200 default)
   // still decide, exactly as for any other root run — writing 120 there would
-  // silently override whatever the user configured.
+  // silently override whatever the user configured. A card value <= 0 is the
+  // user's explicit opt-in to UNLIMITED turns (resolveMaxTurns treats <= 0 as
+  // Infinity); the floor must not clamp that down to 120, so it passes through
+  // unchanged.
   const { tools: _memberTools, maxTurns: cardMaxTurns, ...leaderAsRoot } = team.leader;
+  let definition = leaderAsRoot as typeof leaderAsRoot & { maxTurns?: number };
+  if (cardMaxTurns !== undefined) {
+    definition = { ...leaderAsRoot, maxTurns: cardMaxTurns > 0 ? Math.max(cardMaxTurns, TEAM_LEADER_MAX_TURNS) : cardMaxTurns };
+  }
   return {
     ...route,
     type: 'agent',
     name: team.leader.name,
-    definition: cardMaxTurns === undefined
-      ? leaderAsRoot
-      : { ...leaderAsRoot, maxTurns: Math.max(cardMaxTurns, TEAM_LEADER_MAX_TURNS) },
+    definition,
     team,
   };
 }

@@ -57,6 +57,17 @@ describe('applyTeamLeaderRoute', () => {
     expect(r.definition?.maxTurns).toBe(300);
   });
 
+  // maxTurns: 0 is the card's explicit opt-in to UNLIMITED turns
+  // (resolveMaxTurns treats any value <= 0 as Infinity, loopGuards.ts). The
+  // floor must not clamp that down to 120 — 0 is not "no maxTurns".
+  it('leaves an explicit unlimited (0) card budget unlimited', () => {
+    const r = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('lead', { maxTurns: 0 }),
+    });
+    expect(r.definition?.maxTurns).toBe(0);
+  });
+
   // A card with no maxTurns must stay that way: resolveMaxTurns ranks
   // definition > global, so writing the floor here would silently override the
   // user's global 最大轮次 setting and lower the bare-card default from 200.

@@ -15,14 +15,17 @@ export const TEAM_MAX_DISPATCHES_PER_RUN = 40;
 /** A member that fails this many hand-offs in a row is blocked for the run. */
 export const TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER = 3;
 /**
- * Turns the LEADER itself may take in one run — its own budget, never the
- * member-sized `maxTurns` on its role card. A leader spends turns on planning,
- * dispatching, reviewing every result and reporting; a member's 30-turn card
- * capped the whole run at one hand-off's allowance. 120 sits above
- * TEAM_MAX_DISPATCHES_PER_RUN (40 hand-offs, so ~3 turns per hand-off for
- * dispatch + review + follow-up) and below WorkBuddy's 150-200 orchestrator
- * budget; TEAM_MAX_DISPATCHES_PER_RUN stays the bound that actually stops a
- * runaway run.
+ * FLOOR for the leader's own turn budget, applied ONLY over an explicit
+ * `maxTurns` on its role card. A leader spends turns on planning, dispatching,
+ * reviewing every result and reporting; a member-sized 30-turn card capped the
+ * whole run at one hand-off's allowance, so such a value is raised to this
+ * number. A leader card with NO maxTurns is left alone — the user's global
+ * 最大轮次 setting (and DEFAULT_MAX_TURNS) still decide, as for any root run.
+ *
+ * 120 sits above TEAM_MAX_DISPATCHES_PER_RUN (40 hand-offs, so ~3 turns per
+ * hand-off for dispatch + review + follow-up) and below WorkBuddy's 150-200
+ * orchestrator budget; TEAM_MAX_DISPATCHES_PER_RUN stays the bound that
+ * actually stops a runaway run.
  */
 export const TEAM_LEADER_MAX_TURNS = 120;
 

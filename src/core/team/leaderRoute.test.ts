@@ -38,14 +38,32 @@ describe('applyTeamLeaderRoute', () => {
   // The role card's maxTurns is the budget for ONE hand-off, written for a
   // member. Reusing it as the leader's own budget capped the whole run at a
   // member's allowance — a "产品经理" card with maxTurns 30 gave the leader 30
-  // turns for planning, dispatching, reviewing and reporting.
-  it('gives the leader its own turn budget instead of the member-sized one on the role card', () => {
+  // turns for planning, dispatching, reviewing and reporting. TEAM_LEADER_MAX_TURNS
+  // is a FLOOR over that card value, not a replacement for it.
+  it('raises a member-sized card budget to the leader floor', () => {
     const r = applyTeamLeaderRoute(general, {
       ...team,
       leader: def('lead', { tools: ['team_propose_plan'], maxTurns: 30 }),
     });
     expect(r.definition?.maxTurns).toBe(TEAM_LEADER_MAX_TURNS);
     expect(TEAM_LEADER_MAX_TURNS).toBe(120);
+  });
+
+  it('keeps a card budget that is already above the leader floor', () => {
+    const r = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('lead', { maxTurns: 300 }),
+    });
+    expect(r.definition?.maxTurns).toBe(300);
+  });
+
+  // A card with no maxTurns must stay that way: resolveMaxTurns ranks
+  // definition > global, so writing the floor here would silently override the
+  // user's global 最大轮次 setting and lower the bare-card default from 200.
+  it('leaves a card without maxTurns unset so the global setting still decides', () => {
+    const r = applyTeamLeaderRoute(general, team);
+    expect(r.definition?.maxTurns).toBeUndefined();
+    expect(r.definition && 'maxTurns' in r.definition).toBe(false);
   });
 
   it('leaves a non-team route\'s own maxTurns alone', () => {

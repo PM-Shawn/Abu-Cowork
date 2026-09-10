@@ -44,15 +44,21 @@ export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext 
   // The leader runs as the root agent: it needs the root roster (delegate_to_agent,
   // run_agent_batch, report_plan, …), so a member-style `tools` whitelist written
   // for the old board flow must not shrink it. `disallowedTools` still applies.
-  // `maxTurns` goes the same way as `tools`: it is the budget for ONE hand-off,
-  // written for a member. As the root agent the leader plans, dispatches,
-  // reviews every result and reports, so it gets its own budget instead.
-  const { tools: _memberTools, maxTurns: _memberTurns, ...leaderAsRoot } = team.leader;
+  // `maxTurns` gets a FLOOR rather than the same treatment: a member-sized card
+  // value (e.g. 30, the budget for ONE hand-off) must not cap a leader that
+  // plans, dispatches, reviews every result and reports — so an explicit card
+  // value is raised to at least TEAM_LEADER_MAX_TURNS. A card with NO maxTurns
+  // keeps none, so the user's global 最大轮次 setting (and the 200 default)
+  // still decide, exactly as for any other root run — writing 120 there would
+  // silently override whatever the user configured.
+  const { tools: _memberTools, maxTurns: cardMaxTurns, ...leaderAsRoot } = team.leader;
   return {
     ...route,
     type: 'agent',
     name: team.leader.name,
-    definition: { ...leaderAsRoot, maxTurns: TEAM_LEADER_MAX_TURNS },
+    definition: cardMaxTurns === undefined
+      ? leaderAsRoot
+      : { ...leaderAsRoot, maxTurns: Math.max(cardMaxTurns, TEAM_LEADER_MAX_TURNS) },
     team,
   };
 }

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { homeDir } from '@tauri-apps/api/path';
-import { bindPluginAuthor, validatePluginAuthor, createPluginAuthor, listPluginAuthors, preparePluginAuthor, type PluginAuthor } from '@/core/plugin/authorBridge';
+import { deletePluginAuthor, bindPluginAuthor, validatePluginAuthor, createPluginAuthor, listPluginAuthors, preparePluginAuthor, type PluginAuthor } from '@/core/plugin/authorBridge';
 import { planPreparedInstall, releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { useChatStore } from './chatStore';
 import { useSettingsStore } from './settingsStore';
@@ -8,6 +8,8 @@ import { getI18n, format } from '@/i18n';
 
 interface PluginAuthorState {
   authors: PluginAuthor[];
+  creating: boolean;
+  remove: (id: string) => Promise<void>;
   error: string | null;
   refresh: () => Promise<void>;
   create: () => Promise<void>;
@@ -27,16 +29,21 @@ async function openAuthor(author: PluginAuthor) {
   useSettingsStore.getState().closeExtensions();
 }
 export const usePluginAuthorStore = create<PluginAuthorState>((set, get) => ({
-  authors: [], error: null,
+  authors: [], error: null, creating: false,
+  remove: async id => { await deletePluginAuthor(id); await get().refresh(); },
   refresh: async () => {
     try { set({ authors: await listPluginAuthors(), error: null }); }
     catch (error) { set({ error: String(error) }); throw error; }
   },
   create: async () => {
+    if (get().creating) return;
+    set({ creating: true });
+    try {
     const author = await createPluginAuthor();
     await get().refresh();
     await openAuthor(author);
     await get().refresh();
+    } finally { set({ creating: false }); }
   },
   edit: async author => { await openAuthor(author); await get().refresh(); },
   prepare: async identity => {

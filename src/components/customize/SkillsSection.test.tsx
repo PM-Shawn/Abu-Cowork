@@ -34,6 +34,9 @@ const meta = (name: string, source: SkillMetadata['source']): SkillMetadata =>
 
 const CATALOG: SkillMetadata[] = [
   meta('my-notes', 'user'),
+  // Shares a name with a builtin marketplace template while living in the
+  // user's own directory — the case the inlined edit/delete condition missed.
+  meta('docx', 'user'),
   meta('auto-thing', 'workspace-auto'),
   meta('cross-client', 'standard'),
   meta('team-rules', 'project'),
@@ -189,5 +192,31 @@ describe('SkillsSection · disabled plugin ownership', () => {
     const toggle = switchFor('weather-report');
     expect(toggle.getAttribute('aria-checked')).toBe('true');
     expect((toggle as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+/**
+ * Regression: the edit/delete condition was inlined at two call sites and lost
+ * isSystemSkill's template-name branch, so a user-directory skill named after a
+ * builtin template became editable and deletable.
+ */
+describe('SkillsSection · system skill protection', () => {
+  const openMenu = async (name: string) => {
+    render(<SkillsSection />);
+    fireEvent.click(await screen.findByText(name));
+    fireEvent.click(screen.getByTestId('skill-detail-menu'));
+  };
+
+  it('withholds edit and delete from a user skill that shares a builtin template name', async () => {
+    await openMenu('docx');
+    expect(screen.getByText(tb().exportSkill)).toBeVisible();
+    expect(screen.queryByText(tb().skillEdit)).toBeNull();
+    expect(screen.queryByText(tb().uninstall)).toBeNull();
+  });
+
+  it('still offers them for an ordinary user skill', async () => {
+    await openMenu('my-notes');
+    expect(screen.getByText(tb().skillEdit)).toBeVisible();
+    expect(screen.getByText(tb().uninstall)).toBeVisible();
   });
 });

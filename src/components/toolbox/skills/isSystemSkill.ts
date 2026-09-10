@@ -15,3 +15,17 @@ const systemSkillNames = new Set(
 export function isSystemSkill(skill: Skill): boolean {
   return skill.filePath.includes('builtin-skills') || systemSkillNames.has(skill.name);
 }
+
+/**
+ * "The user can edit or delete this." Ships-with-Abu is only half the answer:
+ * a plugin's or the organization's skill is someone else's file too. Inlining
+ * the source checks at each call site silently dropped the template-name half
+ * of isSystemSkill, which made a user-directory skill sharing a builtin
+ * template's name editable and deletable — so both halves live here now.
+ */
+export function isUserOwnedSkill(skill: Skill): boolean {
+  return skill.source !== 'builtin'
+    && skill.source !== 'plugin'
+    && skill.source !== 'enterprise'
+    && !isSystemSkill(skill);
+}

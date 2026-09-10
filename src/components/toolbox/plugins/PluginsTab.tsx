@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { homeDir } from '@tauri-apps/api/path';
 import { resolveBuiltinMarketDir } from '@/core/plugin/builtinMarket';
 import { Button } from '@/components/ui/button';
 import { bootstrapPluginUpdates, usePluginStore } from '@/stores/pluginStore';
 import { useI18n } from '@/i18n';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { archivePluginOperation } from '@/core/plugin/operationBridge';
 import AuthoredPluginList from './AuthoredPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
@@ -23,6 +25,10 @@ export default function PluginsTab({ searchQuery, addTrigger = 0 }: PluginsTabPr
   const [addOpen, setAddOpen] = useState(false);
   useEffect(() => { if (addTrigger > 0) setAddOpen(true); }, [addTrigger]);
   const [recovering, setRecovering] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const archiving = useRef(false);
+  const [archiveResult, setArchiveResult] = useState<{ archivedPath: string; backupPaths: string[] } | null>(null);
+  const unreadable = usePluginStore(s => s.unreadableOperation);
   const recoveryError = usePluginStore(s => s.recoveryError);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const ensureBuiltinMarketplace = usePluginStore((s) => s.ensureBuiltinMarketplace);
@@ -57,10 +63,26 @@ export default function PluginsTab({ searchQuery, addTrigger = 0 }: PluginsTabPr
       {recoveryError && <div role="alert" className="mx-8 mb-4 rounded-xl border border-[var(--abu-border)] p-4">
         <p className="text-body text-[var(--abu-text-primary)]">{t.toolbox.pluginsRecoveryNeeded}</p>
         <p className="mt-1 break-words text-minor text-[var(--abu-text-muted)]">{recoveryError}</p>
-        <Button size="sm" className="mt-3" disabled={recovering} onClick={() => {
+        {unreadable && <ul className="mt-2 max-h-40 overflow-y-auto text-minor break-all">{unreadable.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>}
+        {unreadable ? <Button size="sm" className="mt-3" disabled={recovering} onClick={() => setArchiveOpen(true)}>{t.toolbox.pluginsArchiveContinue}</Button> : <Button size="sm" className="mt-3" disabled={recovering} onClick={() => {
           setRecovering(true);
           void bootstrapPluginUpdates().catch(() => {}).finally(() => setRecovering(false));
-        }}>{t.toolbox.pluginsRetryRecovery}</Button>
+        }}>{t.toolbox.pluginsRetryRecovery}</Button>}
+      </div>}
+      <ConfirmDialog open={archiveOpen && unreadable !== null} title={t.toolbox.pluginsArchiveContinue}
+        message={<><p>{t.toolbox.pluginsArchiveWarning}</p><ul className="mt-2 max-h-40 overflow-y-auto break-all">{unreadable?.backupPaths.map(file => <li key={file}>{file}</li>)}</ul></>}
+        confirmText={t.toolbox.pluginsArchiveContinue} cancelText={t.common.cancel} confirmDisabled={recovering}
+        onCancel={() => { if (!archiving.current) setArchiveOpen(false); }} onConfirm={() => {
+          if (!unreadable || archiving.current) return;
+          archiving.current = true; setRecovering(true);
+          void archivePluginOperation(unreadable.fingerprint).then(async result => {
+            setArchiveResult(result); setArchiveOpen(false); await bootstrapPluginUpdates();
+          }).catch(error => usePluginStore.setState({ recoveryError: String(error) }))
+            .finally(() => { archiving.current = false; setRecovering(false); });
+        }} />
+      {archiveResult && <div role="status" className="mx-8 mb-4 rounded-xl border border-[var(--abu-border)] p-4 text-minor break-all">
+        <p>{t.toolbox.pluginsArchivedNotice}</p><p>{archiveResult.archivedPath}</p>
+        <ul className="max-h-40 overflow-y-auto">{archiveResult.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>
       </div>}
       {home !== null && <>
         <AuthoredPluginList home={home} searchQuery={searchQuery} />

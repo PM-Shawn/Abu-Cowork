@@ -216,6 +216,15 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
     reason: info.reason,
     member: agentName,
     identity: info.teamIdentity,
+    // Authorization PAYLOAD, not identity (see `TeamConfirmation`): the strip
+    // needs the origin and the requester's persistence ceiling to offer the
+    // same per-site grant the desktop dialog offers. Dropping them is what
+    // left a team run with nothing but "allow this one retry", so filling a
+    // form asked once per field.
+    browserOrigin: info.browserOrigin,
+    browserOperationClass: info.browserOperationClass,
+    allowPersistentGrant: info.allowPersistentGrant,
+    level: info.level,
   });
   if (teamDecision !== 'ask') return teamDecision === 'approved';
   return approvalBridge.request('command', {

@@ -15,7 +15,9 @@ export interface PluginOperationResult {
   expectedRuntime?: PluginRuntimeSnapshot;
   installed?: boolean;
 }
-type Action = 'begin' | 'commit' | 'rollback' | 'recover' | 'ack' | 'status';
+export interface UnreadablePluginOperation { unreadable: true; fingerprint: string; backupPaths: string[] }
+export type PluginOperationStatus = Pick<PluginOperationResult, 'id' | 'key' | 'phase'> | UnreadablePluginOperation | null;
+type Action = 'begin' | 'commit' | 'rollback' | 'recover' | 'ack' | 'status' | 'archive' | 'configurationCleanupAllowed';
 type Bridge = (action: Action, request: object) => Promise<unknown>;
 function bridge(): Bridge {
   const host = (globalThis as typeof globalThis & { __ABU_SHELL__?: { pluginOperation?: Bridge } }).__ABU_SHELL__;
@@ -40,8 +42,8 @@ export async function rollbackPluginOperation(id: string): Promise<PluginOperati
 export async function recoverPluginOperation(key?: string): Promise<PluginOperationResult | null> {
   return await bridge()('recover', key ? { key } : {}) as PluginOperationResult | null;
 }
-export async function pluginOperationStatus(): Promise<Pick<PluginOperationResult, 'id' | 'key' | 'phase'> | null> {
-  return await bridge()('status', {}) as Pick<PluginOperationResult, 'id' | 'key' | 'phase'> | null;
+export async function pluginOperationStatus(): Promise<PluginOperationStatus> {
+  return await bridge()('status', {}) as PluginOperationStatus;
 }
 export async function acknowledgePluginOperation(id: string): Promise<void> {
   await bridge()('ack', { id });
@@ -85,4 +87,12 @@ export async function runPluginOperation<T>(ports: {
     }
     throw error;
   }
+}
+
+export async function archivePluginOperation(fingerprint: string): Promise<{ archivedPath: string; backupPaths: string[] }> {
+  return await bridge()('archive', { fingerprint }) as { archivedPath: string; backupPaths: string[] };
+}
+
+export async function pluginConfigurationCleanupAllowed(): Promise<boolean> {
+  return await bridge()('configurationCleanupAllowed', {}) === true;
 }

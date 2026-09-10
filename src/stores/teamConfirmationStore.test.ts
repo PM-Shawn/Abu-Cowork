@@ -24,6 +24,19 @@ describe('teamConfirmationStore', () => {
     expect(confirmationKey(item)).toBe(confirmationKey({ ...item, detail: 'translated label' } as TeamConfirmationInput));
   });
 
+  it('confirmationKey ignores browser authorization payload fields', () => {
+    const base = { conversationId: 'c1', member: 'A', kind: 'browser' as const,
+      identity: { toolName: 'browser_fill', parametersDigest: 'd1', cwd: '/w', loopId: 'l', callId: 'c', dispatchId: 'x', dispatchFingerprint: 'f', requestOrdinal: 1 } };
+    const withPayload = { ...base, browserOrigin: 'http://127.0.0.1:8765', browserOperationClass: 'interactive' as const, allowPersistentGrant: true, level: 'warn' as const };
+    expect(confirmationKey(withPayload)).toBe(confirmationKey(base));
+    // The payload must survive the store so the strip can offer a site grant.
+    const stored = store().add({ ...withPayload, detail: 'fill #q' })!;
+    expect(stored.browserOrigin).toBe('http://127.0.0.1:8765');
+    expect(stored.browserOperationClass).toBe('interactive');
+    expect(stored.allowPersistentGrant).toBe(true);
+    expect(stored.level).toBe('warn');
+  });
+
   it('deduplicates only the same originating call; parallel identical calls remain separate', () => {
     const first = store().add(item)!;
     expect(store().add(item)).toBeNull();

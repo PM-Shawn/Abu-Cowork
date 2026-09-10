@@ -991,3 +991,21 @@ describe('recovery hydration must complete before journal acknowledgement', () =
     } finally { global.__ABU_SHELL__ = original; }
   });
 });
+
+it('retry recovery reaches the host reopen action before reading a closed session', async () => {
+  const global = globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+  const original = global.__ABU_SHELL__;
+  let closed = true;
+  const host = vi.fn(async (action: string) => {
+    if (action === 'recover') { closed = false; return null; }
+    if (closed) throw new Error('Plugin operation: session closed');
+    return null;
+  });
+  global.__ABU_SHELL__ = { pluginOperation: host };
+  vi.mocked(readInstalledResult).mockResolvedValue({ ok: true, plugins: [] });
+  try {
+    await bootstrapPluginUpdates();
+    expect(host.mock.calls[0][0]).toBe('recover');
+    expect(usePluginStore.getState().recoveryError).toBeNull();
+  } finally { global.__ABU_SHELL__ = original; }
+});

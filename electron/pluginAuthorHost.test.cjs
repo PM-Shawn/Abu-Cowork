@@ -80,3 +80,31 @@ test('conversation rebinding requires the expected previous identity', async () 
   await host.dispatch({}, 'bind', { id: author.id, conversationId: 'two', expectedConversationId: 'one' });
   await assert.rejects(host.dispatch({}, 'bind', { id: author.id, conversationId: 'three', expectedConversationId: 'one' }), /binding changed/);
 }));
+
+test('draft deletion removes only metadata and rejects path overrides', async () => fixture(async ({ host }) => {
+  const author = await host.dispatch({}, 'create', {});
+  packageAt(author.sourceDir);
+  await assert.rejects(host.dispatch({}, 'delete', { id: author.id, sourceDir: author.sourceDir }), /unsupported request/);
+  await host.dispatch({}, 'delete', { id: author.id });
+  assert.deepEqual(await host.dispatch({}, 'list', {}), []);
+  assert.ok(fs.existsSync(path.join(author.sourceDir, '.abu-plugin', 'plugin.json')));
+}));
+for (const legacy of [false, true]) test(`installed ${legacy ? 'legacy key' : 'authoring ID'} blocks draft deletion in worker`, async () => fixture(async ({ home, host }) => {
+  const sender = {};
+  const author = await host.dispatch(sender, 'create', {});
+  packageAt(author.sourceDir);
+  const prepared = await host.dispatch(sender, 'prepare', { id: author.id });
+  await host.dispatch(sender, 'validated', { token: prepared.snapshot.token });
+  const directory = path.join(home, '.abu', 'plugin-packages');
+  fs.mkdirSync(directory, { recursive: true });
+  const record = { name: legacy ? 'hello' : 'other', marketplace: legacy ? author.marketplace : 'other-market', version: '1', contributed: { skills: [], mcpServers: [] } };
+  record.key = `${record.name}@${record.marketplace}`;
+  if (!legacy) record.authoringId = author.id;
+  fs.writeFileSync(path.join(directory, 'installed.json'), JSON.stringify([record]));
+  await assert.rejects(host.dispatch(sender, 'delete', { id: author.id }), /uninstall/);
+  assert.equal((await host.dispatch(sender, 'list', {})).length, 1);
+  assert.ok(fs.existsSync(author.sourceDir));
+  fs.writeFileSync(path.join(directory, 'installed.json'), 'broken');
+  await assert.rejects(host.dispatch(sender, 'delete', { id: author.id }));
+  assert.equal((await host.dispatch(sender, 'list', {})).length, 1);
+}));

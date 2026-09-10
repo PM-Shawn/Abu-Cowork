@@ -585,6 +585,54 @@ function trustedDeltaFramesForSession(session: RunSession, frames: PortFrame[]):
   return frames.filter((frame) => isDeltaFrameTrustedForSession(frame, session));
 }
 
+/** chat-port frames whose third arg identifies the tool call being mutated (see chatDelta.ts signatures). */
+const TOOL_CALL_FRAME_METHODS = new Set([
+  'updateToolCall',
+  'appendMessageToolCall',
+  'appendToolCallContext',
+  'setMessageToolCalls',
+]);
+const TOOL_CALL_FRAME_ARG_INDEX = 2;
+
+function toolCallIdFromObject(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as { id?: unknown; toolCallId?: unknown };
+  if (typeof record.id === 'string' && record.id) return record.id;
+  if (typeof record.toolCallId === 'string' && record.toolCallId) return record.toolCallId;
+  return undefined;
+}
+
+function toolCallIdFromFrame(frame: PortFrame): string | undefined {
+  if (frame.p !== 'chat' || !TOOL_CALL_FRAME_METHODS.has(frame.m)) return undefined;
+  const arg = frame.a[TOOL_CALL_FRAME_ARG_INDEX];
+  if (typeof arg === 'string') return arg || undefined;
+  if (Array.isArray(arg)) {
+    for (const entry of arg) {
+      const id = toolCallIdFromObject(entry);
+      if (id) return id;
+    }
+    return undefined;
+  }
+  return toolCallIdFromObject(arg);
+}
+
+/**
+ * Identity-only summary of a frame batch for logs: port, method, position and
+ * (when the method carries one) the tool call id. Frame args are NEVER
+ * serialized — a rejected batch is rejected precisely because it may carry a
+ * raw base64 media payload.
+ */
+export function summarizeFramesForLog(
+  frames: readonly PortFrame[],
+): Array<{ index: number; p: string; m: string; toolCallId?: string }> {
+  return frames.map((frame, index) => {
+    const toolCallId = toolCallIdFromFrame(frame);
+    return toolCallId === undefined
+      ? { index, p: frame.p, m: frame.m }
+      : { index, p: frame.p, m: frame.m, toolCallId };
+  });
+}
+
 /** `agent.delta` (NOTIFICATION) → {runId, frames} → applyDeltaFrames. Unknown runId → silent drop (3a discipline, matches handleSubagentAbort's unknown-runId no-op). */
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
@@ -627,6 +675,12 @@ function handleAgentDelta(rawParams: unknown): void {
     logger.warn('agent.delta rejected unsafe media payload', {
       runId: params.runId,
       error: err instanceof Error ? err.message : String(err),
+      frameCount: frames.length,
+      frames: summarizeFramesForLog(frames),
+    });
+    traceRuntimeEvent('renderer.agent_delta_rejected', {
+      runId: params.runId,
+      frameCount: frames.length,
     });
     return;
   }

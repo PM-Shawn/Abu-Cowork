@@ -55,6 +55,13 @@ function createOperationSession(home) {
   function reopen() {
     if (disposed || pending.size) return false;
     if (!closed) return true;
+    // Only once the previous worker is really gone. `closed` is set from the
+    // exit handler, so it normally already has; an 'error' without an exit is
+    // the case this guards. The lease would refuse a live owner anyway (its
+    // retry loop waits for release), but not re-spawning against a running
+    // worker keeps "no journal read before the old writes finish" an explicit
+    // ordering rather than an incidental one.
+    if (child && child.exitCode === null && child.signalCode === null) return false;
     generation++;
     closed = false; startup = undefined; child = undefined;
     exitPromise = undefined; anchors = undefined;

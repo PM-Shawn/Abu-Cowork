@@ -64,9 +64,11 @@ function run(input, io = fs, chdir = process.chdir) {
   } else throw new Error('Plugin operation: unsupported mutation');
   if (!same(parent, io.statSync('.'))) throw new Error('Plugin operation: directory changed');
   // Directory fsync makes a completed rename durable on platforms supporting it.
+  // Windows is not one of them; see pluginLease.syncDirectory.
+  if (process.platform === 'win32') return;
   let fd;
   try { fd = io.openSync('.', 'r'); io.fsyncSync(fd); } catch (e) {
-    if (!['EINVAL', 'EPERM', 'EISDIR', 'ENOTSUP'].includes(e.code)) throw e;
+    if (!['EINVAL', 'EPERM', 'EACCES', 'EBADF', 'EISDIR', 'ENOTSUP'].includes(e.code)) throw e;
   } finally { if (fd !== undefined) io.closeSync(fd); }
 }
 function mutate({ home, ...input }) {

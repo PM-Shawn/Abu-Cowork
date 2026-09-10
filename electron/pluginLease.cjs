@@ -2,8 +2,14 @@
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 
+/** EPERM means the PID belongs to another user. Our lease holders are always
+ * same-uid children of this app, so that PID has been recycled and the lease
+ * naming it is stale — treating it as alive locked the profile until someone
+ * deleted the directory by hand. Unknown errno stays conservative (alive).
+ */
 const isAlive = pid => {
-  try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; }
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error.code !== 'ESRCH' && error.code !== 'EPERM'; }
 };
 const same = (a, b) => a && b && a.ino === b.ino && a.dev === b.dev && !a.isSymbolicLink?.();
 const busy = () => Object.assign(new Error('Plugin registry: another write is active or interrupted; recovery required'), { code: 'PLUGIN_LEASE_BUSY' });
@@ -21,9 +27,13 @@ function acquireLease(io = fs, chdir = process.chdir, pid = process.pid, alive =
   const prepared = `.installed-lock-prepared-${token}`;
   const marker = `owner-${pid}-${token}`;
   function syncDirectory() {
+    // Windows has no directory-fsync equivalent: FlushFileBuffers on a read
+    // handle fails, and this call sits on every registry write, so a throw here
+    // would take the whole plugin subsystem down on that platform.
+    if (process.platform === 'win32') return;
     let fd;
     try { fd = io.openSync('.', 'r'); io.fsyncSync(fd); }
-    catch (error) { if (!['EINVAL', 'EPERM', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error; }
+    catch (error) { if (!['EINVAL', 'EPERM', 'EACCES', 'EBADF', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error; }
     finally { if (fd !== undefined) io.closeSync(fd); }
   }
   function enter(name) {
@@ -86,4 +96,4 @@ function acquireLease(io = fs, chdir = process.chdir, pid = process.pid, alive =
   }
   throw busy();
 }
-module.exports = { acquireLease };
+module.exports = { acquireLease, isAlive };

@@ -23,6 +23,7 @@ import { skillLoader } from '@/core/skill/loader';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import type { DraftRecord } from '@/core/skill/drafts';
 import SkillsSection from './SkillsSection';
 
@@ -140,4 +141,53 @@ describe('SkillsSection · sourceFilter="mine"', () => {
     expect(screen.queryByText(tb().uninstall)).toBeNull();
   });
 
+});
+
+/**
+ * The list deliberately includes skills whose owning plugin is switched off, so
+ * they stay discoverable. The card must not also claim they are active: the
+ * model's strict getAvailableSkills() has already dropped them, so a green
+ * switch and a live 试用 button would be the UI lying about what Abu can see.
+ */
+describe('SkillsSection · disabled plugin ownership', () => {
+  const activation = (enabled: boolean) => ({
+    'weather@market': {
+      enabled, root: '/skills/weather-report', skillDirs: ['/skills/weather-report'],
+      legacySkills: false, agentFiles: [], mcpServers: [],
+    },
+  });
+  const switchFor = (name: string) => {
+    const card = screen.getByText(name).closest('[role="button"]');
+    if (!card) throw new Error(`no card for ${name}`);
+    return within(card as HTMLElement).getByRole('switch');
+  };
+
+  it('shows the skill as off and locks its switch while the owning plugin is disabled', async () => {
+    usePluginStore.setState({ activationByKey: activation(false), activationReady: true });
+    render(<SkillsSection />);
+    await screen.findByText('weather-report');
+    const toggle = switchFor('weather-report');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect((toggle as HTMLButtonElement).disabled).toBe(true);
+    // A skill nobody owns is unaffected.
+    expect(switchFor('my-notes').getAttribute('aria-checked')).toBe('true');
+    expect((switchFor('my-notes') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('blocks the trial button and says why', async () => {
+    usePluginStore.setState({ activationByKey: activation(false), activationReady: true });
+    render(<SkillsSection />);
+    fireEvent.click(await screen.findByText('weather-report'));
+    expect(screen.getByText(tb().skillPluginDisabled)).toBeTruthy();
+    expect((screen.getByText(tb().menuTrial).closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('leaves the switch on once the owning plugin is enabled', async () => {
+    usePluginStore.setState({ activationByKey: activation(true), activationReady: true });
+    render(<SkillsSection />);
+    await screen.findByText('weather-report');
+    const toggle = switchFor('weather-report');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect((toggle as HTMLButtonElement).disabled).toBe(false);
+  });
 });

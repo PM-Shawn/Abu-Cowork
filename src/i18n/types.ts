@@ -2231,6 +2231,7 @@ export interface TranslationDict {
     skillSourceBuiltin: string;
     skillSourceUser: string;
     skillSourcePlugin: string;
+    skillPluginDisabled: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;

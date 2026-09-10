@@ -292,11 +292,6 @@ const SANDBOX_WRITE_REASON = 'file write blocked by sandbox policy';
 const SANDBOX_WRITE_DENIAL_STDERR = /cannot create|read-only/i;
 const SANDBOX_WRITE_COMMANDS = ['> ', 'tee ', 'cp ', 'mv ', 'mkdir ', 'touch '];
 
-/** Escape a shell-reported path/word for literal use inside a RegExp. */
-function escapeRegExpLiteral(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /** First capture of whichever pattern matches, or `null` when none does. */
 function denialSubject(stderr, patterns) {
   for (const pattern of patterns) {
@@ -306,20 +301,120 @@ function denialSubject(stderr, patterns) {
   return null;
 }
 
+// Commands whose *arguments* name something they create/overwrite. cp/mv only
+// write their LAST argument (the others are sources it merely reads), which is
+// why they are kept apart from the "any argument" set.
+const SANDBOX_WRITE_LAST_ARG_COMMANDS = new Set(['cp', 'mv']);
+const SANDBOX_WRITE_ANY_ARG_COMMANDS = new Set(['tee', 'touch', 'mkdir']);
+
+/**
+ * Split a command line into simple-command segments on the separators that
+ * end one command and start another. Write-target rules are evaluated per
+ * segment so a `mkdir` on line 1 cannot claim a denial that came from line 2.
+ */
+function splitCommandSegments(command) {
+  return command.split(/[\n\r;|&]+/);
+}
+
+/**
+ * Tokenize one segment into its words and its redirect targets, honouring
+ * quotes and backslash escapes so `> "/tmp/my dir/f"` yields ONE target.
+ * A word directly after `>`/`>>` is a redirect target, not an argument.
+ */
+function tokenizeSegment(segment) {
+  const words = [];
+  const redirectTargets = [];
+  let current = '';
+  let started = false;
+  let quote = null;
+  let pendingRedirect = false;
+
+  const flush = () => {
+    if (!started) return;
+    if (pendingRedirect) {
+      redirectTargets.push(current);
+      pendingRedirect = false;
+    } else {
+      words.push(current);
+    }
+    current = '';
+    started = false;
+  };
+
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else current += ch;
+      started = true;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      started = true;
+      continue;
+    }
+    if (ch === '\\' && i + 1 < segment.length) {
+      current += segment[i + 1];
+      started = true;
+      i += 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flush();
+      continue;
+    }
+    if (ch === '>' || ch === '<') {
+      flush();
+      if (ch === '>' && segment[i + 1] === '>') i += 1;
+      // `<` reads, so its operand is deliberately left an ordinary word.
+      pendingRedirect = ch === '>';
+      continue;
+    }
+    current += ch;
+    started = true;
+  }
+  flush();
+  return { words, redirectTargets };
+}
+
+/**
+ * True when the shell-reported `subject` names `target`. A denial sentence is
+ * captured with `\S+`, so a quoted path containing spaces arrives truncated at
+ * its first space (`> "/tmp/my dir/f"` is reported as `/tmp/my`) — matching the
+ * target's own first whitespace-delimited chunk accepts that without letting an
+ * unrelated shorter word (`ps` vs `psout.txt`) prefix-match.
+ */
+function subjectNamesTarget(subject, target) {
+  return target === subject || target.split(/\s/)[0] === subject;
+}
+
 /**
  * True when `subject` — the path/word a shell names in a denial sentence — is
- * something the command was trying to WRITE: a redirect target (`> path`,
- * `>>path`, `> "path"`) or the target of cp/mv/tee/touch/mkdir. The
- * write-command form requires the subject to appear *after* the command name
- * so a denied `cp` binary (subject `cp`) is not mistaken for its own target.
+ * something the command was trying to WRITE. Evaluated per simple-command
+ * segment: within a segment the subject counts when it is a `>`/`>>` target,
+ * the last argument of `cp`/`mv`, or any argument of `tee`/`touch`/`mkdir`.
+ * The command word must be the segment's first token (optionally after
+ * `sudo`), so `grep cp notes.txt` does not read as a copy.
  */
 function isWriteTargetInCommand(subject, command) {
   if (!subject || !command) return false;
-  const literal = escapeRegExpLiteral(subject);
-  if (new RegExp(`>>?\\s*['"]?${literal}`).test(command)) return true;
-  return new RegExp(`\\b(?:cp|mv|tee|touch|mkdir)\\b[^|;&]*\\s['"]?${literal}['"]?(?:\\s|$)`).test(
-    command,
-  );
+  for (const segment of splitCommandSegments(command)) {
+    const { words, redirectTargets } = tokenizeSegment(segment);
+    if (redirectTargets.some((target) => subjectNamesTarget(subject, target))) return true;
+    let head = 0;
+    if (words[head] === 'sudo') head += 1;
+    if (words[head] === undefined) continue;
+    const name = words[head].split('/').pop();
+    const args = words.slice(head + 1);
+    if (SANDBOX_WRITE_LAST_ARG_COMMANDS.has(name)) {
+      const last = args[args.length - 1];
+      if (last !== undefined && subjectNamesTarget(subject, last)) return true;
+    } else if (SANDBOX_WRITE_ANY_ARG_COMMANDS.has(name)) {
+      if (args.some((arg) => subjectNamesTarget(subject, arg))) return true;
+    }
+  }
+  return false;
 }
 // Socket-level denials also surface as `operation not permitted`; only these
 // unambiguous markers claim the network class, everything else stays

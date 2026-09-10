@@ -136,6 +136,77 @@ test('a denied `cp` binary is an exec, not its own write target', () => {
   assert.ok(!line.includes('file write'), line);
 });
 
+/**
+ * Multi-segment commands. The subject in a denial sentence comes from ONE
+ * simple command, so the write-target rules are evaluated per segment: a
+ * `mkdir`/`cp` on an earlier line must not claim a denial raised by a later
+ * one. All four stderr strings below are the same real `ps` exec denial.
+ */
+
+test('a write command on an earlier line does not swallow a later exec denial', () => {
+  const line = reasonLine('zsh:1: operation not permitted: ps', 'mkdir -p /tmp/out\nps aux > /tmp/out/p.txt');
+  assert.match(line, /\(exec\)/);
+  assert.ok(!line.includes('file write'), line);
+});
+
+test('a cp on an earlier line does not swallow a later exec denial', () => {
+  const line = reasonLine('zsh:1: operation not permitted: ps', 'cp a b\nps aux');
+  assert.match(line, /\(exec\)/);
+  assert.ok(!line.includes('file write'), line);
+});
+
+test('a write command word used as an argument (grep cp) is not a copy', () => {
+  const line = reasonLine('zsh:1: operation not permitted: ps', 'grep cp notes.txt\nps aux');
+  assert.match(line, /\(exec\)/);
+  assert.ok(!line.includes('file write'), line);
+});
+
+test('a redirect target that merely starts with the subject is not a match', () => {
+  const line = reasonLine('zsh:1: operation not permitted: ps', 'cat /etc/hosts >psout.txt\nps aux');
+  assert.match(line, /\(exec\)/);
+  assert.ok(!line.includes('file write'), line);
+});
+
+test('a write on a later line is still a write', () => {
+  const line = reasonLine(
+    'zsh:1: operation not permitted: /tmp/out/f',
+    'mkdir -p /tmp/out\necho x > /tmp/out/f',
+  );
+  assert.match(line, /file write blocked/);
+  assert.ok(!line.includes('(exec)'), line);
+});
+
+/**
+ * A quoted redirect target containing spaces is reported truncated at the
+ * first space (the denial sentence is captured with `\S+`), so the subject is
+ * `/tmp/my` for target `/tmp/my dir/f`. Matching the target's first chunk is
+ * what accepts this without letting `ps` match `psout.txt` above.
+ */
+test('a quoted redirect target with spaces is still a write', () => {
+  const line = reasonLine('zsh:1: operation not permitted: /tmp/my', 'echo x > "/tmp/my dir/f"');
+  assert.match(line, /file write blocked/);
+  assert.ok(!line.includes('(exec)'), line);
+});
+
+/**
+ * cp/mv write only their LAST argument; the others are sources they read. A
+ * denial naming a source is therefore a read denial, not a write — and must
+ * not raise the "authorize this directory" toast, whose path would point at
+ * the unrelated destination.
+ */
+
+test('an EACCES on a cp SOURCE is not a write', () => {
+  const line = reasonLine('zsh:1: permission denied: /tmp/ro/src', 'cp /tmp/ro/src /tmp/dst');
+  assert.match(line, /access denied — possibly blocked/);
+  assert.ok(!line.includes('file write'), line);
+});
+
+test('a "Permission denied" from cp naming its SOURCE is not a write', () => {
+  const line = reasonLine('cp: /tmp/ro/src: Permission denied', 'cp /tmp/ro/src /tmp/dst');
+  assert.match(line, /access denied — possibly blocked/);
+  assert.ok(!line.includes('file write'), line);
+});
+
 test('DNS failures stay classified as network', () => {
   const line = reasonLine('curl: (6) Could not resolve host', 'curl a');
   assert.match(line, /network/);

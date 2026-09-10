@@ -9,6 +9,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+### 🐛 Fixes
+
+- **Team runs: browser approvals can now be granted per site from the confirmation strip.** The row shows which member asked and for which site, and a new "always allow this site" button writes the site grant instead of approving one retry at a time — so filling a form no longer asks once per field. It is offered only where a standing grant is allowed at all (never for a high-risk page, a script, or a request without a resolved origin).
+
 ## v0.42.0 · 2026-08-27
 
 ### ✨ Features

@@ -64,10 +64,13 @@ describe('composer toolbar in a narrow pane', () => {
 
     // The label is display:none at narrow widths, which takes it out of the
     // accessibility tree too — so the name must not depend on it.
+    // The name matches the visible label, and must NOT pick up the title's
+    // "默认权限模式: …" phrasing — that belongs to the settings dialog control,
+    // and sharing it makes getByRole ambiguous across the two (which is exactly
+    // how tests/e2e/security-settings.spec.ts broke).
     const { settings } = getI18n();
-    const chip = screen.getByRole('button', {
-      name: `${settings.permissionMode}: ${settings.permissionModeStandard}`,
-    });
+    const chip = screen.getByRole('button', { name: settings.permissionModeStandard });
+    expect(chip).toHaveAttribute('title', `${settings.permissionMode}: ${settings.permissionModeStandard}`);
     expect(chip.querySelector('.\\@max-\\[420px\\]\\:hidden')).not.toBeNull();
   });
 

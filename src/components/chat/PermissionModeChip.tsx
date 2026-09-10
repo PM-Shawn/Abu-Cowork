@@ -77,7 +77,14 @@ export default function PermissionModeChip({ conversationId }: Props) {
       <button
         onClick={() => setOpen((v) => !v)}
         title={`${t.settings.permissionMode}: ${currentLabel}`}
-        aria-label={`${t.settings.permissionMode}: ${currentLabel}`}
+        /* Just the mode, matching the visible label — NOT the title's
+           "默认权限模式: …" phrasing, which is the settings dialog control's
+           accessible name and would make `getByRole` ambiguous across the two
+           (tests/e2e/security-settings.spec.ts locates it by exactly that).
+           The name here is unchanged from when it came from the label text;
+           the point of spelling it out is that the label goes display:none at
+           narrow widths, which would otherwise take the name with it. */
+        aria-label={currentLabel}
         className={cn(
           'btn-ghost flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 py-1 text-minor font-normal transition-colors hover:bg-[var(--abu-bg-hover)]',
           MODE_CHIP_COLOR[effectiveMode] ?? MODE_CHIP_COLOR.standard

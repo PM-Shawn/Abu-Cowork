@@ -147,7 +147,7 @@ Ordinary commands (run_command) can be run directly; just report the result afte
 ## Extension directory structure
 Abu's extensions live under the ${abuDir} folder in the user's home directory:
 - **skills/** — user-created skills; each skill has a SKILL.md file, path: ${skillPathTmpl}SKILL.md
-- **agents/** — the agents directory; each agent has an AGENT.md file, path: ${agentPathTmpl}AGENT.md
+- **agents/** — user-created agents; each has an AGENT.md file at ${agentPathTmpl}AGENT.md. Built-in agents have NO file there. Do NOT construct a filesystem path from an agent name: the Available Agents list in this prompt is authoritative, and an agent that appears there needs no file read to be used.
 
 An activated skill's own instructions are already injected into your context by use_skill — you do NOT need to read its SKILL.md. To read a skill's **supporting** files, use the read_skill_file tool with the skill's name; it locates the file wherever the skill actually lives. Do NOT construct a filesystem path from the skill name: a plugin's skills live outside ${abuDir}skills/ (under the installed plugin package), so a hand-built ${skillPathTmpl} path would be wrong for them.
 

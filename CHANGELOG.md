@@ -9,6 +9,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ## Unreleased
 
+### 🐛 Fixes
+
+- **Plugin drafts can be deleted, and an unreadable operation journal no longer freezes plugin management.** A draft created by mistake can now be removed from Extensions → Plugins → Mine. Only the record goes: the source directory under `~/Abu Plugins` stays, and the confirmation says so, shows the exact path, and warns that this release cannot re-adopt that directory. Deleting a draft whose plugin is installed is refused in the privileged host, not merely hidden in the interface, and the create entry is disabled while a draft is being created so a double click cannot leave a second dead card. Separately, when `active.enc` cannot be decrypted or fails validation, installing, updating, uninstalling and listing no longer stop altogether: the plugins page explains the state, lists the `.abu-plugin-backup-*` directories that still hold previous versions, and offers **Archive and continue**, which renames the journal to `corrupt-<timestamp>.enc` — nothing is deleted and no old version is silently restored. The plugin authoring skill now states the exact package name and that it cannot be changed afterwards before the first preparation, and the backup-protection test that matched no path at all on Windows now filters on path components instead of a hardcoded `/demo/`.
+
 ## v0.42.0 · 2026-08-27
 
 ### ✨ Features

@@ -16,4 +16,18 @@ describe('rootManifestCount', () => {
       expect(rootManifestCount(['SKILL.md', other])).toBe(2);
     },
   );
+
+  it.each(['./SKILL.md', '/SKILL.md', 'a//../SKILL.md', 'x/../SKILL.md', '.\\SKILL.md'])(
+    'counts %s, which the disk resolves to the root SKILL.md',
+    (other) => {
+      expect(rootManifestCount(['SKILL.md', other])).toBe(2);
+    },
+  );
+
+  it.each(['SKILL.md.', 'SKILL.md ', 'SKILL.md. .', 'SKILL.md::$DATA'])(
+    'counts %s, which NTFS writes onto SKILL.md',
+    (other) => {
+      expect(rootManifestCount(['SKILL.md', other])).toBe(2);
+    },
+  );
 });

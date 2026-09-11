@@ -9,7 +9,7 @@
 
 import { fetch } from '@tauri-apps/plugin-http';
 import { gunzipSync, strFromU8 } from 'fflate';
-import { writeFile, mkdir, exists } from '@tauri-apps/plugin-fs';
+import { writeFile, mkdir, exists, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { parse as parseYaml } from 'yaml';
@@ -184,6 +184,7 @@ export async function installSkillFromNpm(
         await writeFile(targetPath, entry.data);
         files.push(relativePath);
       }
+      await assertStagedManifestIs(stagingDir, skillName);
     },
   });
 
@@ -378,6 +379,22 @@ export function stripPrefix(path: string, prefix: string): string {
     return path.slice(prefix.length);
   }
   return path;
+}
+
+/**
+ * The manifest that goes live is whatever the disk made of the written
+ * entries, so it must declare the name that was checked — before the staging
+ * directory is swapped in. Holds for any path resolution a disk applies,
+ * including ones `rootManifestCount` does not model.
+ */
+export async function assertStagedManifestIs(stagingDir: string, checkedName: string): Promise<void> {
+  const landed = extractNameFromSkillMd(await readTextFile(joinPath(stagingDir, 'SKILL.md')));
+  if (landed !== checkedName) {
+    throw new NpmInstallError(
+      'AMBIGUOUS_SKILL_MD',
+      `The SKILL.md written to disk declares "${landed ?? ''}", not the checked name "${checkedName}"`,
+    );
+  }
 }
 
 /** The skill-relative paths of the files the write loop will write, in archive order. */

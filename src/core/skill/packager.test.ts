@@ -18,8 +18,10 @@ import {
   ConflictError,
   SkillPackSymlinkError,
   UnsafeSkillNameError,
+  AmbiguousManifestError,
 } from './packager';
 import { SkillPolicyDeniedError } from './skillPolicy';
+import { getI18n } from '@/i18n';
 
 // The organization's skill blacklist hook: allows everything but one name.
 vi.mock('@/core/enterprise/policy/matcher', () => ({
@@ -254,7 +256,11 @@ describe('unpackSkill', () => {
       'skill.md': VALID_SKILL_MD.replace('name: test-skill', 'name: blocked-skill'),
     });
 
-    await expect(unpackSkill(zip, '/home/.abu/skills')).rejects.toThrow(/more than one SKILL\.md/);
+    const err = await unpackSkill(zip, '/home/.abu/skills').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AmbiguousManifestError);
+    // Shown in the upload toast as-is, so it is the locale's text.
+    expect((err as Error).message).toBe(getI18n().toolbox.importAmbiguousManifest);
     expect(mockWriteFile).not.toHaveBeenCalled();
   });
 

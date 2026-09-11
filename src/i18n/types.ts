@@ -2244,6 +2244,8 @@ export interface TranslationDict {
     importUnsafeName: string;
     /** {name} — the organization's policy blocks the imported skill's name. */
     importPolicyDenied: string;
+    /** The package has more than one SKILL.md at its root. */
+    importAmbiguousManifest: string;
     /** {n}, {names} — entries packSkill will not put in an exported archive. */
     exportSymlinkRefused: string;
     manualAdd: string;

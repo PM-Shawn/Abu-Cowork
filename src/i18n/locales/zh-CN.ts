@@ -1774,6 +1774,7 @@ const zhCN: TranslationDict = {
     importSymlinkRootRefused: '这个文件夹本身是一个指向别处的链接（{path}），阿布不会导入它——它看上去装着的东西其实都在别处。请直接选择链接指向的那个文件夹。',
     importUnsafeName: '这个技能包在 SKILL.md 里声明的名字不是一个合法的文件夹名（"{name}"）——它会把文件写到技能目录之外。阿布已拒绝安装。',
     importPolicyDenied: '所在组织的策略不允许技能名 "{name}"，没有安装。',
+    importAmbiguousManifest: '这个技能包的根目录里有不止一个 SKILL.md，无法确定装进来的是哪个技能，阿布已拒绝安装。',
     exportSymlinkRefused: '已拒绝导出：这个技能文件夹里有 {n} 个阿布不会打包的条目——{names}。符号链接会把它指向的那个文件（很可能在文件夹之外）以一个看起来正常的名字塞进技能包，你分享出去的包就会夹带别处的内容。请把它们换成真实文件后再导出。',
     manualAdd: '手动配置',
     // Skill detail & editor

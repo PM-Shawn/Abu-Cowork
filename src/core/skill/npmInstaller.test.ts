@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { gzipSync } from 'fflate';
 import { fetch } from '@tauri-apps/plugin-http';
-import { exists, mkdir, writeFile, remove, rename } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, writeFile, remove, rename, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
 // ── Mocks ──────────────────────────────────────────────────────────
@@ -20,6 +20,7 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
     writeFile: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     rename: vi.fn().mockResolvedValue(undefined),
+    readTextFile: vi.fn(),
   };
 });
 
@@ -38,6 +39,7 @@ const mockMkdir = vi.mocked(mkdir);
 const mockWriteFile = vi.mocked(writeFile);
 const mockRemove = vi.mocked(remove);
 const mockRename = vi.mocked(rename);
+const mockReadTextFile = vi.mocked(readTextFile);
 const mockHomeDir = vi.mocked(homeDir);
 
 // ── A disk small enough to assert against ──────────────────────────
@@ -73,6 +75,11 @@ function useFakeDisk() {
     return undefined as never;
   });
   mockExists.mockImplementation(async (p: string | URL) => underPrefix(String(p)).length > 0);
+  mockReadTextFile.mockImplementation(async (p: string | URL) => {
+    const content = disk.files.get(String(p));
+    if (content === undefined) throw new Error(`ENOENT: ${String(p)}`);
+    return content;
+  });
   mockRemove.mockImplementation(async (p: string | URL) => {
     for (const gone of underPrefix(String(p))) {
       disk.dirs.delete(gone);
@@ -220,7 +227,7 @@ describe('installSkillFromNpm', () => {
   // The name is read from the first SKILL.md, but every entry is written in
   // archive order — a second manifest at the same path (tar allows repeats;
   // `skill.md` is the same file on APFS / NTFS) would be the one that goes live.
-  it.each(['package/SKILL.md', 'package/skill.md'])(
+  it.each(['package/SKILL.md', 'package/skill.md', 'package/./SKILL.md'])(
     'refuses a package whose later %s would replace the checked manifest, writing nothing',
     async (second) => {
       useFakeDisk();
@@ -235,6 +242,17 @@ describe('installSkillFromNpm', () => {
       expect(liveEntries()).toEqual([]);
     },
   );
+
+  it('does not go live when the manifest that landed on disk declares another name', async () => {
+    // Stands in for any path resolution a disk applies that the up-front count
+    // does not model: whatever SKILL.md ended up in staging is what would go live.
+    useFakeDisk();
+    serve(tgz({ 'package/SKILL.md': '---\nname: my-skill\n---\n# body' }));
+    mockReadTextFile.mockResolvedValueOnce('---\nname: blocked-skill\n---\n# body');
+
+    await expect(installSkillFromNpm('evil')).rejects.toMatchObject({ code: 'AMBIGUOUS_SKILL_MD' });
+    expect(liveEntries()).toEqual([]);
+  });
 });
 
 /**

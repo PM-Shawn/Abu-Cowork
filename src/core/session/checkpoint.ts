@@ -17,7 +17,7 @@
  *   app startup           → findOrphanedCheckpoints() → show recovery UI
  */
 
-import { exists, readTextFile, writeTextFile, remove, readDir } from '@tauri-apps/plugin-fs';
+import { exists, readTextFile, writeTextFile, remove, readDir, mkdir } from '@tauri-apps/plugin-fs';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 
@@ -70,7 +70,6 @@ export async function writeCheckpoint(cp: Checkpoint): Promise<void> {
     // Ensure directory exists
     const dir = path.substring(0, path.lastIndexOf('/'));
     if (!(await exists(dir))) {
-      const { mkdir } = await import('@tauri-apps/plugin-fs');
       await mkdir(dir, { recursive: true });
     }
     await writeTextFile(path, JSON.stringify(cp));

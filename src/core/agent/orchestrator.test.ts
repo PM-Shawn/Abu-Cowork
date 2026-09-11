@@ -659,3 +659,22 @@ describe('routeInput', () => {
     expect(result.type).toBe('general');
   });
 });
+
+describe('buildSystemPrompt - memory index under concurrency', () => {
+  // Regression (TESTING.md §3): two conversations building their prompt at the
+  // same time used to race a dynamic `import('../memdir/scan')` from this one
+  // module; vitest served the second importer the REAL scan module, so its
+  // prompt silently lost the mocked index.
+  it('injects the mocked index into both concurrently built prompts', async () => {
+    mockLoadMemoryIndex.mockResolvedValue('- CONCURRENT-INDEX-MARKER');
+    const route = routeInput('你好');
+
+    const [a, b] = await Promise.all([
+      buildSystemPrompt(route, 'base prompt', 'conv-a'),
+      buildSystemPrompt(route, 'base prompt', 'conv-b'),
+    ]);
+
+    expect(a).toContain('CONCURRENT-INDEX-MARKER');
+    expect(b).toContain('CONCURRENT-INDEX-MARKER');
+  });
+});

@@ -14,7 +14,7 @@
  * Node.js" pre-flight error when connecting an npx/node-based MCP server.
  */
 
-import { resolveResource } from '@tauri-apps/api/path';
+import { resolveResource, resolve } from '@tauri-apps/api/path';
 import { exists } from '@tauri-apps/plugin-fs';
 import { hasElectronCommandHost } from './electronHost';
 import { isWindows } from './platform';
@@ -55,7 +55,6 @@ export async function getEmbeddedNodePath(): Promise<string | null> {
       ];
   for (const candidate of devCandidates) {
     try {
-      const { resolve } = await import('@tauri-apps/api/path');
       const path = await resolve(candidate);
       if (path && await exists(path)) {
         cachedPath = path;

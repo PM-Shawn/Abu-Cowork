@@ -1,4 +1,5 @@
 import type { SubagentDefinition, Skill, ToolExecutionContext } from '../../types';
+import { loadMemoryIndex } from '../memdir/scan';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
 import {
@@ -677,8 +678,6 @@ Use the python3 command — the system will automatically use the built-in Pytho
   // into top slots regardless of relevance to the current query.
   if (!isForkContext) {
     try {
-      const { loadMemoryIndex } = await import('../memdir/scan');
-
       const [globalIndex, wsIndex] = await Promise.all([
         loadMemoryIndex(null),
         workspacePath ? loadMemoryIndex(workspacePath) : Promise.resolve(''),

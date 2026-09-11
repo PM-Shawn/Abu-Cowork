@@ -152,6 +152,17 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-row-数据小队').textContent).toContain('1 名成员');
   });
 
+  it('teams tab: the card labels an unresolvable leader as invalid, matching the detail', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('校对', { roleId: 'r-mem' });
+    discoveryState.agents = [{ name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-gone-lead', memberRoleIds: ['r-gone-lead', 'r-mem'], createdAt: 1 }] });
+    render(<TeamView />);
+    const card = screen.getByTestId('team-row-数据小队');
+    expect(card.textContent).toContain('已失效');
+    expect(card.textContent).toContain('1 名成员');
+  });
+
   it('teams tab: the detail labels an unresolvable member as invalid and removes it on request', () => {
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });

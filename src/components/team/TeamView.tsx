@@ -290,6 +290,10 @@ export default function TeamView() {
   const activeTeamTab: TeamTab = persistedTeamTab === 'teams' ? 'teams' : 'members';
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
+  // Roles resolve through the agent registry, which is not a React-reactive
+  // source; subscribe to discovery so the card grid re-renders when the roster
+  // changes (same reason useConversationTeam subscribes — useTeamDispatches.ts).
+  const discoveredAgents = useDiscoveryStore((s) => s.agents);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const createConversation = useChatStore((s) => s.createConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
@@ -316,6 +320,14 @@ export default function TeamView() {
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
   const activeTeams = teams;
+
+  // `_agents` is unused by value — it exists only to make `discoveredAgents`
+  // a visible input of this derived text, so the caller's subscription to the
+  // discovery store isn't dead code from the compiler's point of view.
+  const cardSummary = (team: Team, _agents: typeof discoveredAgents) => format(t.team.teamRowSummary, {
+    leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalid,
+    count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length),
+  });
 
   const navItems = [
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
@@ -405,10 +417,7 @@ export default function TeamView() {
                       id: team.id,
                       testId: `team-row-${team.name}`,
                       name: team.name,
-                      description: format(t.team.teamRowSummary, {
-                        leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalid,
-                        count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length),
-                      }),
+                      description: cardSummary(team, discoveredAgents),
                       avatar: <TeamAvatar avatar={team.avatar} />,
                     }}
                     onClick={() => setDetailTeam(team)}

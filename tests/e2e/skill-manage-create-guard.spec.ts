@@ -273,7 +273,9 @@ test('skill_manage create refuses a built-in skill name and creates a fresh one'
 
   const created = latestToolResult(mock.taskBodies[3]);
   expect(created.success, JSON.stringify(created)).toBe(true);
-  expect(created.path).toBe(path.join(skillsDir, freshName, 'SKILL.md'));
+  // The app joins paths with `/` on every platform; Node's path.join uses `\` on Windows.
+  const slashes = (p: string) => p.replace(/\\/g, '/');
+  expect(slashes(String(created.path))).toBe(slashes(path.join(skillsDir, freshName, 'SKILL.md')));
   expect(fs.readFileSync(path.join(skillsDir, freshName, 'SKILL.md'), 'utf8')).toContain(`name: ${freshName}`);
   // The refused creates wrote nothing beside it.
   expect(fs.readdirSync(skillsDir).sort()).toEqual([freshName, 'taken'].sort());

@@ -4039,6 +4039,8 @@ export interface TranslationDict {
       // use_skill
       /** Skill already active in this conversation. {skillName} */
       skillAlreadyActive: string;
+      /** use_skill / skill_view: the organization's skill blacklist names this skill, so it cannot be used. {skillName} */
+      skillBlockedByPolicy: string;
       /** Skill loaded. {name}, {description} */
       skillLoaded: string;
       /** Context line appended after skillLoaded. {context} */

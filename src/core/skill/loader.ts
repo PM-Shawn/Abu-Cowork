@@ -8,6 +8,7 @@ import { sanitizePath } from '../memdir/paths';
 import { pluginSkillLocations } from '../plugin/skillRoots';
 import { scanPluginPackage } from '../plugin/fsOps';
 import { isEnterpriseModuleActive } from '../enterprise/entitlement';
+import { isSkillNameAllowed } from './skillNamePolicy';
 
 /**
  * Normalize tool list: accept both YAML array (Abu format) and
@@ -335,7 +336,19 @@ export class SkillLoader {
     return skill && this.isUsable(skill) ? skill : null;
   }
 
-  private isUsable(skill: Skill, includeDisabledPlugins = false): boolean {
+  /**
+   * The one gate every listing and lookup below goes through.
+   *
+   * A name the organization's skill blacklist blocks is refused first, and
+   * regardless of `includeDisabledPlugins`: the console promises such a skill
+   * does not appear in the client at all — not even as a disabled entry — and
+   * that holds however its SKILL.md reached disk. The policy is asked on every
+   * call, so a policy change applies to the next lookup without a rescan.
+   * `includePolicyBlocked` is for bookkeeping that must see every skill on
+   * disk (plugin activation), never for listing or running one.
+   */
+  private isUsable(skill: Skill, includeDisabledPlugins = false, includePolicyBlocked = false): boolean {
+    if (!includePolicyBlocked && !isSkillNameAllowed(skill.name)) return false;
     if (!includeDisabledPlugins && !isPluginSkillAllowed(skill)) return false;
     return skill.source !== 'enterprise' || isEnterpriseModuleActive('skills');
   }
@@ -348,10 +361,12 @@ export class SkillLoader {
    * index or agent-facing skill list. Pass `{ includeDrafts: true }` to
    * surface them (for the Settings → Skills → Drafts tab).
    */
-  getAvailableSkills(options: { includeDrafts?: boolean; includeDisabledPlugins?: boolean } = {}): SkillMetadata[] {
+  getAvailableSkills(
+    options: { includeDrafts?: boolean; includeDisabledPlugins?: boolean; includePolicyBlocked?: boolean } = {},
+  ): SkillMetadata[] {
     const includeDrafts = options.includeDrafts ?? false;
     return Array.from(this.skills.values())
-      .filter((skill) => this.isUsable(skill, options.includeDisabledPlugins) && (includeDrafts || skill.source !== 'draft'))
+      .filter((skill) => this.isUsable(skill, options.includeDisabledPlugins, options.includePolicyBlocked) && (includeDrafts || skill.source !== 'draft'))
       .map((skill) => {
         // Omit runtime-only fields not part of SkillMetadata
         const { content, filePath, skillDir, ...meta } = skill;
@@ -371,15 +386,27 @@ export class SkillLoader {
     return this.nameClaims;
   }
 
+  /**
+   * Whether the organization's skill blacklist blocks `name`. For telling the
+   * model a skill it asked for by name is blocked rather than missing, and for
+   * noticing when a policy change alters which scanned skills are hidden.
+   */
+  isBlockedByPolicy(name: string): boolean {
+    return !isSkillNameAllowed(name);
+  }
+
   /** Get full draft entries (includes content) for the review UI. */
   getDraftSkills(): Skill[] {
-    return Array.from(this.skills.values()).filter((s) => s.source === 'draft');
+    return Array.from(this.skills.values()).filter((s) => s.source === 'draft' && this.isUsable(s, true));
   }
 
   /** Get full skill by name */
-  getSkill(name: string, options: { includeDisabledPlugins?: boolean } = {}): Skill | undefined {
+  getSkill(
+    name: string,
+    options: { includeDisabledPlugins?: boolean; includePolicyBlocked?: boolean } = {},
+  ): Skill | undefined {
     const skill = this.skills.get(name);
-    return skill && this.isUsable(skill, options.includeDisabledPlugins) ? skill : undefined;
+    return skill && this.isUsable(skill, options.includeDisabledPlugins, options.includePolicyBlocked) ? skill : undefined;
   }
 
   /** Re-read a single skill from disk to get latest content */
@@ -394,7 +421,8 @@ export class SkillLoader {
       if (skill) {
         skill.source = existing.source;
         this.skills.set(skill.name, skill);
-        return skill;
+        // The file may now declare a different name — one the policy blocks.
+        return this.isUsable(skill) ? skill : undefined;
       }
     } catch { /* file might have been deleted */ }
     return this.isUsable(existing) ? existing : undefined;

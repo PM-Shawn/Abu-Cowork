@@ -21,7 +21,11 @@ import type { SubagentMetadata } from '../types';
 import type { InstalledPlugin } from '../core/plugin/installedStore';
 
 vi.mock('../core/skill/loader', () => ({
-  skillLoader: { discoverSkills: vi.fn().mockResolvedValue([]) },
+  skillLoader: {
+    discoverSkills: vi.fn().mockResolvedValue([]),
+    getNameClaims: vi.fn().mockReturnValue([]),
+    isBlockedByPolicy: vi.fn().mockReturnValue(false),
+  },
 }));
 vi.mock('../core/agent/registry', () => ({
   agentRegistry: { discoverAgents: vi.fn() },
@@ -32,6 +36,8 @@ vi.mock('../core/plugin/installedStore', () => ({
 }));
 
 import { agentRegistry } from '../core/agent/registry';
+import { skillLoader } from '../core/skill/loader';
+import { useEnterpriseStore } from './enterpriseStore';
 import { readInstalled } from '../core/plugin/installedStore';
 import { useDiscoveryStore, applyPluginAgentSources } from './discoveryStore';
 
@@ -168,5 +174,36 @@ describe('strict recovery discovery', () => {
     vi.mocked(agentRegistry.discoverAgents).mockRejectedValueOnce(new Error('scan unavailable'));
     await expect(useDiscoveryStore.getState().refresh(null, { strict: true })).rejects.toThrow('scan unavailable');
     expect(useDiscoveryStore.getState().isLoading).toBe(false);
+  });
+});
+
+describe('discovery follows a skill blacklist change', () => {
+  it('rescans when, and only when, the set of blocked scanned skills changes', async () => {
+    let blocked = new Set<string>();
+    vi.mocked(skillLoader.getNameClaims).mockReturnValue([
+      { name: 'a', source: 'user' },
+      { name: 'b', source: 'project-standard' },
+      { name: 'b', source: 'user' },
+    ]);
+    vi.mocked(skillLoader.isBlockedByPolicy).mockImplementation((name) => blocked.has(name));
+    vi.mocked(agentRegistry.discoverAgents).mockResolvedValue([]);
+    await useDiscoveryStore.getState().refresh();
+    const discover = vi.mocked(skillLoader.discoverSkills);
+    discover.mockClear();
+
+    // An enterprise-store change that blocks nothing new (a heartbeat).
+    useEnterpriseStore.setState({});
+    expect(discover).not.toHaveBeenCalled();
+
+    blocked = new Set(['b']);
+    useEnterpriseStore.setState({});
+    expect(discover).toHaveBeenCalledTimes(1);
+
+    useEnterpriseStore.setState({});
+    expect(discover).toHaveBeenCalledTimes(1);
+
+    blocked = new Set();
+    useEnterpriseStore.setState({});
+    expect(discover).toHaveBeenCalledTimes(2);
   });
 });

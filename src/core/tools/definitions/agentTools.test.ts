@@ -16,7 +16,7 @@ vi.mock('../../skill/loader', async () => {
   const actual = await vi.importActual<typeof import('../../skill/loader')>('../../skill/loader');
   return {
     parseSkillFile: actual.parseSkillFile,
-    skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn() },
+    skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn(), isBlockedByPolicy: vi.fn().mockReturnValue(false) },
   };
 });
 vi.mock('../../agent/registry', async () => {
@@ -1201,4 +1201,22 @@ it('does not auto-enable a child skill when runtime resolution refuses it', asyn
   const result = await useSkillTool.execute({ skill_name: 'closed-skill' });
   expect(result).toContain('not found');
   expect(toggleSkillEnabled).not.toHaveBeenCalled();
+});
+
+it('tells the model a blacklisted skill is blocked by the organization, without listing the others or enabling it', async () => {
+  const { useSettingsStore } = await import('@/stores/settingsStore');
+  const { skillLoader } = await import('@/core/skill/loader');
+  const { getI18n, format } = await import('@/i18n');
+  const toggleSkillEnabled = vi.fn();
+  vi.mocked(useSettingsStore.getState).mockReturnValue({ disabledSkills: ['blocked'], toggleSkillEnabled } as unknown as ReturnType<typeof useSettingsStore.getState>);
+  vi.mocked(skillLoader.getSkill).mockReturnValue(undefined);
+  vi.mocked(skillLoader.isBlockedByPolicy).mockImplementation((name) => name === 'blocked');
+  vi.mocked(skillLoader.getAvailableSkills).mockClear();
+
+  const result = await useSkillTool.execute({ skill_name: '/blocked' });
+
+  expect(result).toBe(format(getI18n().toolResult.agent.skillBlockedByPolicy, { skillName: 'blocked' }));
+  expect(skillLoader.getAvailableSkills).not.toHaveBeenCalled();
+  expect(toggleSkillEnabled).not.toHaveBeenCalled();
+  vi.mocked(skillLoader.isBlockedByPolicy).mockReturnValue(false);
 });

@@ -6,6 +6,7 @@ import { agentRegistry } from '../core/agent/registry';
 import { readInstalled, readInstalledResult, type InstalledPlugin } from '../core/plugin/installedStore';
 import { useSettingsStore } from './settingsStore';
 import { useWorkspaceStore } from './workspaceStore';
+import { useEnterpriseStore } from './enterpriseStore';
 
 /**
  * Resolve every agent's plugin provenance against `installed.json`.
@@ -98,6 +99,18 @@ export type DiscoveryStore = DiscoveryState & DiscoveryActions;
 // just after that install already ran an explicit refresh(), so re-scanning again
 // would be redundant. Module-level (not store state) to avoid extra re-renders.
 let lastRefreshAt = 0;
+
+/**
+ * The scanned skill names the organization's skill blacklist hides, as one
+ * comparable string. The loader filters at lookup time, so a policy change
+ * applies to every live lookup at once; `skills` above is the one cached
+ * projection, and it is refreshed when this set changes.
+ */
+function blockedSkillSignature(): string {
+  const names = new Set(skillLoader.getNameClaims().map((claim) => claim.name));
+  return [...names].filter((name) => skillLoader.isBlockedByPolicy(name)).sort().join('\n');
+}
+let lastBlockedSkills = '';
 export function getLastDiscoveryRefreshAt(): number {
   return lastRefreshAt;
 }
@@ -137,6 +150,7 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
       }
 
       set({ skills, agents: applyPluginAgentSources(agents, installedPlugins), isLoading: false });
+      lastBlockedSkills = blockedSkillSignature();
     } catch (err) {
       console.warn('Discovery refresh failed:', err);
       set({ isLoading: false });
@@ -160,4 +174,16 @@ useWorkspaceStore.subscribe((state) => {
     lastWorkspaceForDiscovery = state.currentPath;
     void useDiscoveryStore.getState().refresh();
   }
+});
+
+// ── Re-discover when the organization's skill blacklist changes ─────────
+//
+// The policy arrives with the enterprise heartbeat, so the store changes far
+// more often than the policy does; only a change in which scanned skills are
+// hidden rescans. Registered once per process, like the workspace one above.
+useEnterpriseStore.subscribe(() => {
+  const next = blockedSkillSignature();
+  if (next === lastBlockedSkills) return;
+  lastBlockedSkills = next;
+  void useDiscoveryStore.getState().refresh();
 });

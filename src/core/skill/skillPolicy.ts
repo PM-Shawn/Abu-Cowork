@@ -8,9 +8,10 @@
  * writer now applies: no write may leave a SKILL.md that answers to a blocked
  * name. Removing a skill is never refused.
  *
- * ⚠️ Writers only. A skill that reaches disk some other way (a repository's
- * committed skills, one installed before the policy arrived) is not filtered
- * at load time yet.
+ * This is the writers' half. The loader's half — a skill that reaches disk
+ * some other way (a repository's committed skills, one installed before the
+ * policy arrived) is never listed or run — asks the same hook through the
+ * `skillNamePolicy` port, which the sidecar bundle can swap out.
  */
 
 import { getCurrentPolicy } from '@/core/enterprise/policy/enforcer';

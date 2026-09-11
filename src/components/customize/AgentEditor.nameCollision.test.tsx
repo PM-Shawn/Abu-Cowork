@@ -16,6 +16,7 @@ import type { SubagentDefinition, SubagentMetadata } from '@/types';
 
 vi.mock('@/utils/itemStorage', () => ({
   ITEM_EXISTS_CODE: 'ITEM_EXISTS',
+  ITEM_NAME_INVALID_CODE: 'ITEM_NAME_INVALID',
   saveItemToAbuDir: vi.fn(async () => undefined),
 }));
 
@@ -156,6 +157,43 @@ describe('AgentEditor — a new or renamed agent cannot take another agent\'s na
 
     await waitFor(() => expect(takenHint()).not.toBeNull());
     expect(onSave).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(true);
+  });
+});
+
+describe('AgentEditor — a save failure is never silent', () => {
+  const failedHint = () => screen.queryByText(getI18n().toolbox.itemSaveFailed);
+  const formatHint = () => screen.queryByText(getI18n().toolbox.nameFormatHint);
+
+  it('shows a save-failed message under Save, stays open, and clears it on a successful retry', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(saveItemToAbuDir).mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    const onSave = vi.fn(async () => undefined);
+    render(<AgentEditor agent={reviewer} onClose={vi.fn()} onSave={onSave} />);
+
+    expect(failedHint()).toBeNull();
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(failedHint()).not.toBeNull());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(false); // the user can retry
+
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(failedHint()).toBeNull();
+  });
+
+  it('shows the name-format hint when the disk refuses the name as not a folder name', async () => {
+    // An unchanged name is never re-validated, so a hand-edited frontmatter
+    // name reaches the save as it is; the storage layer refuses it.
+    const handEdited: SubagentDefinition = { ...reviewer, name: 'team/reviewer' };
+    vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'team/reviewer', description: '' }]);
+    vi.mocked(saveItemToAbuDir).mockRejectedValueOnce(Object.assign(new Error('invalid'), { code: 'ITEM_NAME_INVALID' }));
+    render(<AgentEditor agent={handEdited} onClose={vi.fn()} onSave={vi.fn(async () => undefined)} />);
+
+    expect(formatHint()).toBeNull();
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(formatHint()).not.toBeNull());
+    expect(failedHint()).toBeNull();
     expect(saveButton().disabled).toBe(true);
   });
 });

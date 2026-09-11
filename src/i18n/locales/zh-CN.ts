@@ -1640,6 +1640,7 @@ const zhCN: TranslationDict = {
     nameFormatHint: '仅允许小写字母、数字和连字符，且不能以连字符开头或结尾',
     agentNameTakenHint: '已有同名专家，换个名字吧',
     skillNameTakenHint: '已有同名技能，换个名字吧',
+    itemSaveFailed: '保存失败，请重试',
     aiAssistedCreate: 'AI 辅助生成自定义技能',
     installFailed: '安装失败',
     // npm registry install

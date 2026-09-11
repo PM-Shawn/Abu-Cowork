@@ -1639,6 +1639,7 @@ const enUS: TranslationDict = {
     nameFormatHint: 'Only lowercase letters, numbers, and hyphens allowed. Cannot start or end with a hyphen.',
     agentNameTakenHint: 'An expert with this name already exists. Try a different name.',
     skillNameTakenHint: 'A skill with this name already exists. Try a different name.',
+    itemSaveFailed: 'Save failed. Please try again.',
     aiAssistedCreate: 'AI-assisted custom skill creation',
     installFailed: 'Install failed',
     // npm registry install

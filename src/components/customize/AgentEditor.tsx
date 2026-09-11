@@ -9,7 +9,7 @@ import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import { useSettingsStore, getActiveProvider } from '@/stores/settingsStore';
 import { navigateToChatWithInput } from '@/utils/navigation';
 import { useItemName, isItemNameTaken } from '@/hooks/useItemName';
-import { saveItemToAbuDir, ITEM_EXISTS_CODE } from '@/utils/itemStorage';
+import { saveItemToAbuDir, ITEM_EXISTS_CODE, ITEM_NAME_INVALID_CODE } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
 import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
@@ -47,6 +47,13 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   // snapshot): shown with the same hint as a registry collision.
   const [refusedName, setRefusedName] = useState<string | null>(null);
   const nameConflict = nameValid && (nameTaken || refusedName === name.trim());
+  // The name the disk refused as not one plain folder name. The format check
+  // blocks such names first, but an unchanged name is never re-checked — a
+  // hand-edited frontmatter `name:` reaches the save as it is.
+  const [invalidName, setInvalidName] = useState<string | null>(null);
+  const nameRefusedAsInvalid = invalidName === name.trim();
+  // Any other save failure: shown under the Save button, cleared on retry.
+  const [saveFailed, setSaveFailed] = useState(false);
   const [description, setDescription] = useState(agent?.description ?? '');
   const [avatar, setAvatar] = useState(agent?.avatar ?? '');
   const [model, setModel] = useState(() => {
@@ -136,12 +143,14 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       return false;
     }
     setSaving(true);
+    setSaveFailed(false);
     try {
       const metadata = buildMetadata();
       const md = serializeAgentMd(metadata, systemPrompt);
       const oldPath = (agent?.filePath && nameChanged) ? agent.filePath : undefined;
-      // A letter-case-only rename targets this agent's own folder on
-      // case-insensitive file systems, so it must be allowed to overwrite.
+      // A letter-case-only rename moves this agent's own folder: on the
+      // case-insensitive file systems the manifest already "at" the target is
+      // its own, so the must-be-new probe would wrongly refuse it.
       const mustBeNew = !agent || (nameChanged && trimmed.toLowerCase() !== agent.name.toLowerCase());
       await saveItemToAbuDir('agents', 'AGENT.md', trimmed, md, oldPath, { mustBeNew });
       await onSave();
@@ -151,7 +160,12 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
         setRefusedName(trimmed);
         return false;
       }
+      if ((err as { code?: unknown })?.code === ITEM_NAME_INVALID_CODE) {
+        setInvalidName(trimmed);
+        return false;
+      }
       console.error('[AgentEditor] Save failed:', err);
+      setSaveFailed(true);
       return false;
     } finally {
       setSaving(false);
@@ -164,7 +178,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
     navigateToChatWithInput(format(t.toolbox.agentTestPrompt, { name: name.trim() }));
   };
 
-  const isValid = nameValid && !nameConflict;
+  const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -177,7 +191,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
           <ArrowLeft className="h-4 w-4" />
         </button>
         <h2 className="text-body font-semibold text-[var(--abu-text-primary)] flex-1">{t.toolbox.agentEditorTitle}</h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-x-2 gap-y-1">
           <button
             onClick={handleSave}
             disabled={!isValid || saving}
@@ -194,6 +208,9 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
             <Play className="h-3.5 w-3.5" />
             {t.toolbox.agentSaveAndTest}
           </button>
+          {saveFailed && (
+            <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
+          )}
         </div>
       </div>
 
@@ -216,10 +233,10 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 placeholder="my-agent"
                 className={cn(
                   'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                  name.trim() && (!nameValid || nameConflict) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
+                  name.trim() && (!nameValid || nameConflict || nameRefusedAsInvalid) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
                 )}
               />
-              {name.trim() && !nameValid && (
+              {name.trim() && (!nameValid || nameRefusedAsInvalid) && (
                 <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
               )}
               {nameConflict && (

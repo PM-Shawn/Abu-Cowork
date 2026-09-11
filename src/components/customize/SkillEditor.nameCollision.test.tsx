@@ -13,6 +13,7 @@ import type { Skill, SkillMetadata } from '@/types';
 
 vi.mock('@/utils/itemStorage', () => ({
   ITEM_EXISTS_CODE: 'ITEM_EXISTS',
+  ITEM_NAME_INVALID_CODE: 'ITEM_NAME_INVALID',
   saveItemToAbuDir: vi.fn(async () => undefined),
 }));
 
@@ -120,5 +121,19 @@ describe('SkillEditor — a new or renamed skill cannot take another skill\'s na
 
     await waitFor(() => expect(takenHint()).not.toBeNull());
     expect(onSave).not.toHaveBeenCalled();
+  });
+});
+
+describe('SkillEditor — a save failure is never silent', () => {
+  it('shows a save-failed message under Save and stays open', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(saveItemToAbuDir).mockRejectedValueOnce(new Error('EACCES: permission denied'));
+    const onSave = vi.fn(async () => undefined);
+    render(<SkillEditor skill={summarize} onClose={vi.fn()} onSave={onSave} />);
+
+    fireEvent.click(saveButton());
+    await waitFor(() => expect(screen.queryByText(getI18n().toolbox.itemSaveFailed)).not.toBeNull());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(saveButton().disabled).toBe(false);
   });
 });

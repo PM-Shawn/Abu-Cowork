@@ -2100,6 +2100,7 @@ export interface TranslationDict {
     nameFormatHint: string;
     agentNameTakenHint: string;
     skillNameTakenHint: string;
+    itemSaveFailed: string;
     aiAssistedCreate: string;
     installFailed: string;
     // npm registry install

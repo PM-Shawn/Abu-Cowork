@@ -4,7 +4,7 @@ import { useI18n } from '@/i18n';
 import { serializeSkillMd, skillLoader } from '@/core/skill/loader';
 import { navigateToChatWithInput } from '@/utils/navigation';
 import { useItemName, isItemNameTaken } from '@/hooks/useItemName';
-import { saveItemToAbuDir, ITEM_EXISTS_CODE } from '@/utils/itemStorage';
+import { saveItemToAbuDir, ITEM_EXISTS_CODE, ITEM_NAME_INVALID_CODE } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
@@ -41,6 +41,13 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
   // SKILL.md is already on disk there): shown with the same hint.
   const [refusedName, setRefusedName] = useState<string | null>(null);
   const nameConflict = nameValid && (nameTaken || refusedName === name.trim());
+  // The name the disk refused as not one plain folder name. The format check
+  // blocks such names first, but an unchanged name is never re-checked — a
+  // hand-edited frontmatter `name:` reaches the save as it is.
+  const [invalidName, setInvalidName] = useState<string | null>(null);
+  const nameRefusedAsInvalid = invalidName === name.trim();
+  // Any other save failure: shown under the Save button, cleared on retry.
+  const [saveFailed, setSaveFailed] = useState(false);
   const [description, setDescription] = useState(skill?.description ?? '');
   const [license, setLicense] = useState(skill?.license ?? '');
   const [trigger, setTrigger] = useState(skill?.trigger ?? '');
@@ -90,12 +97,14 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
       return false;
     }
     setSaving(true);
+    setSaveFailed(false);
     try {
       const metadata = buildMetadata();
       const md = serializeSkillMd(metadata, content);
       const oldPath = (skill?.filePath && nameChanged) ? skill.filePath : undefined;
-      // A letter-case-only rename targets this skill's own folder on
-      // case-insensitive file systems, so it must be allowed to overwrite.
+      // A letter-case-only rename moves this skill's own folder: on the
+      // case-insensitive file systems the manifest already "at" the target is
+      // its own, so the must-be-new probe would wrongly refuse it.
       const mustBeNew = !skill || (nameChanged && trimmed.toLowerCase() !== skill.name.toLowerCase());
       await saveItemToAbuDir('skills', 'SKILL.md', trimmed, md, oldPath, { mustBeNew });
       await onSave();
@@ -105,7 +114,12 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
         setRefusedName(trimmed);
         return false;
       }
+      if ((err as { code?: unknown })?.code === ITEM_NAME_INVALID_CODE) {
+        setInvalidName(trimmed);
+        return false;
+      }
       console.error('[SkillEditor] Save failed:', err);
+      setSaveFailed(true);
       return false;
     } finally {
       setSaving(false);
@@ -118,7 +132,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
     navigateToChatWithInput(`/${name.trim()} `);
   };
 
-  const isValid = nameValid && !nameConflict;
+  const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -131,7 +145,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
           <ArrowLeft className="h-4 w-4" />
         </button>
         <h2 className="text-body font-semibold text-[var(--abu-text-primary)] flex-1">{t.toolbox.skillEditorTitle}</h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-x-2 gap-y-1">
           <button
             onClick={handleSave}
             disabled={!isValid || saving}
@@ -148,6 +162,9 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
             <Play className="h-3.5 w-3.5" />
             {t.toolbox.skillSaveAndTest}
           </button>
+          {saveFailed && (
+            <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
+          )}
         </div>
       </div>
 
@@ -165,10 +182,10 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
               placeholder="my-skill"
               className={cn(
                 'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                name.trim() && (!nameValid || nameConflict) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
+                name.trim() && (!nameValid || nameConflict || nameRefusedAsInvalid) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
               )}
             />
-            {name.trim() && !nameValid && (
+            {name.trim() && (!nameValid || nameRefusedAsInvalid) && (
               <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
             )}
             {nameConflict && (

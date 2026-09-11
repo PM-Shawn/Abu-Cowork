@@ -87,6 +87,30 @@ function memberOption(a: SubagentDefinition): SearchSelectOption {
   return { value: a.name, label: a.name, description: a.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
 }
 
+/**
+ * Primary line for each invalid member, so two of them never read the same.
+ * `builtin:<name>` / `plugin:<name>` ids (roleIdentity's name-keyed families)
+ * still spell the name; a `role-…` id carries none, so those are numbered
+ * 1-based among themselves, in stored order.
+ */
+function invalidMemberLabels(roleIds: string[], named: string, numbered: string): string[] {
+  let unnamed = 0;
+  return roleIds.map((id) => {
+    const name = /^(?:builtin|plugin):(.+)$/.exec(id)?.[1];
+    return name ? format(named, { name }) : format(numbered, { n: String(++unnamed) });
+  });
+}
+
+/** Two-line label of an invalid member row: which one, then why (muted caption). */
+function InvalidMemberText({ label, reason }: { label: string; reason: string }) {
+  return (
+    <span className="min-w-0 flex-1">
+      <span className="block truncate text-body text-[var(--abu-danger)]">{label}</span>
+      <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{reason}</span>
+    </span>
+  );
+}
+
 // ---------------------------------------------------------------- Team dialog
 
 function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
@@ -235,28 +259,33 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
                 testId="team-members-select"
               />
             </div>
-            {invalidMemberRoleIds.length > 0 && (
-              <div className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 space-y-1.5">
-                <div className="text-caption text-[var(--abu-text-secondary)]">{t.team.editInvalidMembers}</div>
-                {invalidMemberRoleIds.map((id) => (
-                  <div key={id} className="flex items-center gap-2" data-testid={`team-edit-invalid-${id}`}>
-                    <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-                    <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-danger)]">{t.team.memberInvalid}</span>
-                    <Button
-                      size="icon-xs"
-                      variant="ghost"
-                      aria-label={t.team.memberInvalidRemove}
-                      title={t.team.memberInvalidRemove}
-                      onClick={() => setInvalidMemberRoleIds((prev) => prev.filter((x) => x !== id))}
-                      data-testid={`team-edit-invalid-remove-${id}`}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))}
-              </div>
-            )}
           </>
+        )}
+        {/* Outside the pool branch: a team whose every agent is gone still
+            needs its ghosts listed — and removable — while the pool is empty. */}
+        {invalidMemberRoleIds.length > 0 && (
+          <div className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 space-y-1.5">
+            <div className="text-caption text-[var(--abu-text-secondary)]">{t.team.editInvalidMembers}</div>
+            {invalidMemberLabels(invalidMemberRoleIds, t.team.memberInvalidNamed, t.team.memberInvalidNumbered).map((label, i) => {
+              const id = invalidMemberRoleIds[i];
+              return (
+                <div key={id} className="flex items-center gap-2" data-testid={`team-edit-invalid-${id}`}>
+                  <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                  <InvalidMemberText label={label} reason={t.team.memberInvalidReason} />
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={t.team.memberInvalidRemove}
+                    title={t.team.memberInvalidRemove}
+                    onClick={() => setInvalidMemberRoleIds((prev) => prev.filter((x) => x !== id))}
+                    data-testid={`team-edit-invalid-remove-${id}`}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
         )}
 
         <div className="flex items-center justify-between rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5">
@@ -323,6 +352,18 @@ export default function TeamView() {
   const [confirmDeleteTeam, setConfirmDeleteTeam] = useState<Team | null>(null);
 
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
+
+  // `manualCreateTrigger` is a counter AgentsSection acts on whenever it mounts
+  // with a value > 0 — without a reset, returning to 队员 replays the last
+  // 手动创建 as a blank editor. Same reset ToolboxModal does on its tab change.
+  // `onSwitchToMembers` still opens it once: the tab switch and the bump share
+  // a commit, and the section's (child) effect runs before this (parent) reset.
+  const lastView = useRef(activeTeamTab);
+  useEffect(() => {
+    if (lastView.current === activeTeamTab) return;
+    lastView.current = activeTeamTab;
+    setManualCreateTrigger(0);
+  }, [activeTeamTab]);
 
   const activeTeams = teams;
 
@@ -501,6 +542,7 @@ export default function TeamView() {
           const members = memberIds.map((id) => ({ id, agent: resolveRoleId(id) ?? undefined }));
           const validMembers = members.filter((m) => m.agent);
           const invalidMembers = members.filter((m) => !m.agent);
+          const invalidLabels = invalidMemberLabels(invalidMembers.map((m) => m.id), t.team.memberInvalidNamed, t.team.memberInvalidNumbered);
           const removeInvalid = (roleId: string) => {
             useTeamStore.getState().updateTeam(detailTeam.id, { memberRoleIds: detailTeam.memberRoleIds.filter((id) => id !== roleId) });
             setDetailTeam(useTeamStore.getState().teams.find((team) => team.id === detailTeam.id) ?? null);
@@ -535,10 +577,10 @@ export default function TeamView() {
                   ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoMembers}</div>
                   : <div className="space-y-0.5">
                       {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.memberInvalid)}</div>)}
-                      {invalidMembers.map((m) => (
+                      {invalidMembers.map((m, i) => (
                         <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
                           <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-                          <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-danger)]">{t.team.memberInvalid}</span>
+                          <InvalidMemberText label={invalidLabels[i]} reason={t.team.memberInvalidReason} />
                           <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>
                         </div>
                       ))}

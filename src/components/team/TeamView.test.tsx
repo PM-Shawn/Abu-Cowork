@@ -89,10 +89,22 @@ vi.mock('@/core/team/roleIdentity', () => ({
     Object.values(registryAgents).find((a) => (a.roleId ?? `builtin:${a.name}`) === roleId) ?? null,
 }));
 
-// AgentsSection drags in the whole toolbox world — stub it.
-vi.mock('@/components/customize/AgentsSection', () => ({
-  default: () => <div data-testid="agents-section" />,
-}));
+// AgentsSection drags in the whole toolbox world — stub it. The stub keeps the
+// real component's one contract with TeamView: it opens a blank editor from an
+// effect whenever it sees `manualCreateTrigger > 0` (counted in `editorOpens`),
+// and exposes the value it received as `data-trigger`.
+const editorOpens = vi.fn();
+vi.mock('@/components/customize/AgentsSection', async () => {
+  const { useEffect } = await import('react');
+  return {
+    default: function AgentsSectionStub({ manualCreateTrigger }: { manualCreateTrigger?: number }) {
+      useEffect(() => {
+        if (manualCreateTrigger && manualCreateTrigger > 0) editorOpens();
+      }, [manualCreateTrigger]);
+      return <div data-testid="agents-section" data-trigger={String(manualCreateTrigger ?? 0)} />;
+    },
+  };
+});
 
 import TeamView from './TeamView';
 
@@ -292,5 +304,91 @@ describe('TeamView', () => {
     settingsState.activeTeamTab = 'members';
     render(<TeamView />);
     expect(screen.getByTestId('agents-section')).toBeTruthy();
+  });
+
+  it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', () => {
+    settingsState.activeTeamTab = 'members';
+    // The settings mock is a plain object, so a tab click needs a rerender to show.
+    const { rerender } = render(<TeamView />);
+    fireEvent.click(screen.getByTestId('member-create-trigger'));
+    fireEvent.click(screen.getByText('手动创建'));
+    expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('1');
+    expect(editorOpens).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByText('团队'));
+    rerender(<TeamView />);
+    fireEvent.click(screen.getByText('队员'));
+    rerender(<TeamView />);
+    expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
+    expect(editorOpens).toHaveBeenCalledTimes(1);
+  });
+
+  it('team dialog: 新建队员 switches to 队员 and opens the blank editor exactly once', () => {
+    // The tab switch and the trigger bump land in one commit: the section mounts
+    // with the bumped value and opens the editor before the tab-change reset runs.
+    settingsState.activeTeamTab = 'teams';
+    const { rerender } = render(<TeamView />);
+    fireEvent.click(screen.getAllByText('新建团队')[0]);
+    fireEvent.click(screen.getByText('新建队员'));
+    expect(screen.getByTestId('agents-section')).toBeTruthy();
+    expect(editorOpens).toHaveBeenCalledTimes(1);
+    // …and the reset means a later return to 队员 does not open it again.
+    fireEvent.click(screen.getByText('团队'));
+    rerender(<TeamView />);
+    fireEvent.click(screen.getByText('队员'));
+    rerender(<TeamView />);
+    expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
+    expect(editorOpens).toHaveBeenCalledTimes(1);
+  });
+
+  it('teams tab: two unnamed invalid members are numbered apart, with the reason as a caption', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'role-a', 'role-b'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    const first = screen.getByTestId('team-member-invalid-role-a');
+    const second = screen.getByTestId('team-member-invalid-role-b');
+    expect(first.textContent).toContain('已失效成员 1');
+    expect(second.textContent).toContain('已失效成员 2');
+    for (const row of [first, second]) expect(row.textContent).toContain('专家已删除、修改，或所属插件已停用');
+    // Same labels in the edit dialog.
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByTestId('team-edit-invalid-role-a').textContent).toContain('已失效成员 1');
+    expect(screen.getByTestId('team-edit-invalid-role-b').textContent).toContain('已失效成员 2');
+    expect(screen.getByTestId('team-edit-invalid-role-b').textContent).toContain('专家已删除、修改，或所属插件已停用');
+  });
+
+  it('teams tab: an invalid member whose id carries a name is shown by that name', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'plugin:x', 'role-a'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.getByTestId('team-member-invalid-plugin:x').textContent).toContain('「x」已失效');
+    // Numbering counts only the unnamed ones.
+    expect(screen.getByTestId('team-member-invalid-role-a').textContent).toContain('已失效成员 1');
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByTestId('team-edit-invalid-plugin:x').textContent).toContain('「x」已失效');
+  });
+
+  it('team dialog: with an empty member pool an invalid member is still listed and removable', async () => {
+    settingsState.activeTeamTab = 'teams';
+    // No live agent at all: the leader and the member are both gone.
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-gone-lead', memberRoleIds: ['r-gone-lead', 'role-a'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByText('新建队员')).toBeTruthy();
+    expect(screen.getByTestId('team-edit-invalid-role-a').textContent).toContain('已失效成员 1');
+    fireEvent.click(screen.getByTestId('team-edit-invalid-remove-role-a'));
+    expect(screen.queryByTestId('team-edit-invalid-role-a')).toBeNull();
+    fireEvent.click(screen.getByTestId('team-save'));
+    await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-gone-lead']));
   });
 });

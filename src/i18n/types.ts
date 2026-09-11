@@ -1882,6 +1882,12 @@ export interface TranslationDict {
     /** Detail / edit row for a stored member no live agent answers to. */
     memberInvalid: string;
     memberInvalidShort: string;
+    /** Primary line of an invalid row whose stored id still spells the name (`builtin:` / `plugin:`). */
+    memberInvalidNamed: string;
+    /** Primary line of an invalid row with no recoverable name; `{n}` is 1-based among those rows. */
+    memberInvalidNumbered: string;
+    /** Muted caption under an invalid row: why it is invalid. */
+    memberInvalidReason: string;
     memberInvalidRemove: string;
     editInvalidMembers: string;
     teamsEmpty: string;

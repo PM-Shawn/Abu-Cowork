@@ -1,13 +1,18 @@
 // @vitest-environment happy-dom
 /**
- * The editor writes `~/.abu/agents/<name>/AGENT.md` unconditionally, and a
- * rename deletes the old folder. Before this guard, 手动创建 with an existing
+ * The editor used to write `~/.abu/agents/<name>/AGENT.md` unconditionally and
+ * delete the old folder on rename. Before this guard, 手动创建 with an existing
  * expert's name silently replaced that expert (prompt and team identity gone),
  * and renaming A onto B's name replaced B and deleted A. A user agent named
  * like a builtin also shadowed it for every team pointing at `builtin:<name>`.
  * A new or renamed agent must therefore refuse any name another agent already
  * uses — compared case-insensitively, because the folders live on
  * case-insensitive file systems — without ever colliding with itself.
+ *
+ * Saving now never deletes: it writes in place, or moves the agent's own
+ * folder to its name (itemStorage.test.ts). The last block runs the real
+ * storage layer to pin what an edit does when the folder is not named after
+ * the agent.
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -21,6 +26,8 @@ vi.mock('@/utils/itemStorage', () => ({
 }));
 
 import { saveItemToAbuDir } from '@/utils/itemStorage';
+import { exists, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
+import { homeDir } from '@tauri-apps/api/path';
 import { agentRegistry } from '@/core/agent/registry';
 import { getI18n } from '@/i18n';
 import AgentEditor from './AgentEditor';
@@ -195,5 +202,79 @@ describe('AgentEditor — a save failure is never silent', () => {
     await waitFor(() => expect(formatHint()).not.toBeNull());
     expect(failedHint()).toBeNull();
     expect(saveButton().disabled).toBe(true);
+  });
+});
+
+describe('AgentEditor — editing an existing agent saves through its own folder (real storage layer)', () => {
+  const HOME = '/Users/tester';
+  const failedHint = () => screen.queryByText(getI18n().toolbox.itemSaveFailed);
+
+  beforeEach(async () => {
+    // The fs underneath stays the global plugin-fs mock.
+    const actual = await vi.importActual<{ saveItemToAbuDir: typeof saveItemToAbuDir }>('@/utils/itemStorage');
+    vi.mocked(saveItemToAbuDir).mockImplementation(actual.saveItemToAbuDir);
+    vi.mocked(homeDir).mockResolvedValue(HOME);
+  });
+
+  afterEach(() => {
+    vi.mocked(saveItemToAbuDir).mockImplementation(async () => undefined);
+    vi.mocked(exists).mockResolvedValue(false);
+  });
+
+  /** `exists` answers true for exactly these paths. */
+  const onDisk = (...paths: string[]) => vi.mocked(exists).mockImplementation(async (p) => paths.includes(String(p)));
+
+  it('an ordinary edit (folder named after the agent) writes in place — no move, no removal', async () => {
+    onDisk(`${HOME}/.abu/agents/reviewer`, `${HOME}/.abu/agents/reviewer/AGENT.md`);
+    const onSave = vi.fn(async () => undefined);
+    render(<AgentEditor agent={reviewer} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/reviewer/AGENT.md`, expect.stringContaining('name: reviewer'));
+    expect(rename).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('a project-level agent is only copied into ~/.abu — its own folder is never moved or removed', async () => {
+    const projectAgent: SubagentDefinition = { ...reviewer, filePath: '/work/repo/.abu/agents/reviewer/AGENT.md' };
+    onDisk('/work/repo/.abu/agents/reviewer');
+    const onSave = vi.fn(async () => undefined);
+    render(<AgentEditor agent={projectAgent} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/reviewer/AGENT.md`, expect.any(String));
+    expect(rename).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('an agent whose folder is not named after it is moved to its name when that folder is free', async () => {
+    const mismatched: SubagentDefinition = { ...reviewer, name: 'writer', filePath: `${HOME}/.abu/agents/old-writer/AGENT.md` };
+    onDisk(`${HOME}/.abu/agents/old-writer`);
+    const onSave = vi.fn(async () => undefined);
+    render(<AgentEditor agent={mismatched} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/agents/old-writer`, `${HOME}/.abu/agents/writer`);
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/writer/AGENT.md`, expect.stringContaining('name: writer'));
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('when its name\'s folder holds another agent, the save fails visibly and that agent\'s file is untouched', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const mismatched: SubagentDefinition = { ...reviewer, name: 'writer', filePath: `${HOME}/.abu/agents/old-writer/AGENT.md` };
+    onDisk(`${HOME}/.abu/agents/old-writer`, `${HOME}/.abu/agents/writer`, `${HOME}/.abu/agents/writer/AGENT.md`);
+    // What the host does for a move onto a non-empty folder (fsHost rename → fs.renameSync).
+    vi.mocked(rename).mockRejectedValueOnce(new Error('ENOTEMPTY: directory not empty'));
+    const onSave = vi.fn(async () => undefined);
+    render(<AgentEditor agent={mismatched} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(failedHint()).not.toBeNull());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 });

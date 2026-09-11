@@ -1,10 +1,15 @@
 // @vitest-environment happy-dom
 /**
- * Same data-loss path as the agent editor: the skill editor writes
- * `~/.abu/skills/<name>/SKILL.md` unconditionally and deletes the old folder on
+ * Same data-loss path as the agent editor: the skill editor used to write
+ * `~/.abu/skills/<name>/SKILL.md` unconditionally and delete the old folder on
  * rename, so creating a skill under an existing skill's name (or renaming onto
  * one) silently replaced it. A new or renamed skill must refuse any name
  * another skill already uses — case-insensitively — without colliding with itself.
+ *
+ * Saving now never deletes: it writes in place, or moves the skill's own
+ * folder (scripts/ and references/ included) to its name — itemStorage.test.ts.
+ * The last block runs the real storage layer for an edit whose folder is not
+ * named after the skill.
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -18,6 +23,8 @@ vi.mock('@/utils/itemStorage', () => ({
 }));
 
 import { saveItemToAbuDir } from '@/utils/itemStorage';
+import { exists, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
+import { homeDir } from '@tauri-apps/api/path';
 import { skillLoader } from '@/core/skill/loader';
 import { getI18n } from '@/i18n';
 import SkillEditor from './SkillEditor';
@@ -135,5 +142,65 @@ describe('SkillEditor — a save failure is never silent', () => {
     await waitFor(() => expect(screen.queryByText(getI18n().toolbox.itemSaveFailed)).not.toBeNull());
     expect(onSave).not.toHaveBeenCalled();
     expect(saveButton().disabled).toBe(false);
+  });
+});
+
+describe('SkillEditor — editing an existing skill saves through its own folder (real storage layer)', () => {
+  const HOME = '/Users/tester';
+
+  beforeEach(async () => {
+    const actual = await vi.importActual<{ saveItemToAbuDir: typeof saveItemToAbuDir }>('@/utils/itemStorage');
+    vi.mocked(saveItemToAbuDir).mockImplementation(actual.saveItemToAbuDir);
+    vi.mocked(homeDir).mockResolvedValue(HOME);
+  });
+
+  afterEach(() => {
+    vi.mocked(saveItemToAbuDir).mockImplementation(async () => undefined);
+    vi.mocked(exists).mockResolvedValue(false);
+  });
+
+  const onDisk = (...paths: string[]) => vi.mocked(exists).mockImplementation(async (p) => paths.includes(String(p)));
+  const mismatched: Skill = {
+    ...summarize,
+    filePath: `${HOME}/.abu/skills/summarize-old/SKILL.md`,
+    skillDir: `${HOME}/.abu/skills/summarize-old`,
+  };
+
+  it('an ordinary edit (folder named after the skill) writes in place — no move, no removal', async () => {
+    onDisk(`${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize/SKILL.md`);
+    const onSave = vi.fn(async () => undefined);
+    render(<SkillEditor skill={summarize} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String));
+    expect(rename).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('a skill whose folder is not named after it is moved (with its scripts) to its name when that folder is free', async () => {
+    onDisk(`${HOME}/.abu/skills/summarize-old`);
+    const onSave = vi.fn(async () => undefined);
+    render(<SkillEditor skill={mismatched} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize-old`, `${HOME}/.abu/skills/summarize`);
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String));
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('when its name\'s folder holds another skill, the save fails visibly and that skill\'s file is untouched', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    onDisk(`${HOME}/.abu/skills/summarize-old`, `${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize/SKILL.md`);
+    vi.mocked(rename).mockRejectedValueOnce(new Error('ENOTEMPTY: directory not empty'));
+    const onSave = vi.fn(async () => undefined);
+    render(<SkillEditor skill={mismatched} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(screen.queryByText(getI18n().toolbox.itemSaveFailed)).not.toBeNull());
+    expect(onSave).not.toHaveBeenCalled();
+    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
   });
 });

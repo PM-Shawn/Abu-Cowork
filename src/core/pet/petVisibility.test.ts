@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { setPetVisible, hidePet } from './petVisibility';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 // Local proxy lets each test control resolve/reject independently.
 const invoke = vi.fn();
@@ -8,6 +9,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...
 describe('petVisibility', () => {
   beforeEach(() => {
     invoke.mockReset();
+    useSettingsStore.setState({ petPosition: null });
   });
 
   describe('setPetVisible(true)', () => {
@@ -16,6 +18,21 @@ describe('petVisibility', () => {
       const result = await setPetVisible(true);
       expect(invoke).toHaveBeenCalledWith('pet_show');
       expect(result).toBe(true);
+    });
+
+    it('hands pet_show the saved position so the window is created there (no jump)', async () => {
+      invoke.mockResolvedValue(undefined);
+      useSettingsStore.setState({ petPosition: { x: 480, y: 360 } });
+      await setPetVisible(true);
+      expect(invoke).toHaveBeenCalledWith('pet_show', { position: { x: 480, y: 360 } });
+    });
+
+    it('omits a corrupt saved position instead of sending it', async () => {
+      invoke.mockResolvedValue(undefined);
+      useSettingsStore.setState({ petPosition: { x: Number.NaN, y: 1 } });
+      await setPetVisible(true);
+      expect(invoke).toHaveBeenCalledWith('pet_show');
+      expect(invoke.mock.calls[0]).toHaveLength(1);
     });
   });
 

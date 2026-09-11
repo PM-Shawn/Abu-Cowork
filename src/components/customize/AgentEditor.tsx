@@ -149,10 +149,10 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       const md = serializeAgentMd(metadata, systemPrompt);
       // Always the file being edited, renamed or not: its folder need not be
       // named after the agent, so an unchanged name could still point at another
-      // agent's folder. saveItemToAbuDir writes in place when the folder already
-      // matches, moves the agent's own ~/.abu folder to the name otherwise (a
-      // move onto an occupied folder fails instead of overwriting), and only
-      // copies from anywhere else.
+      // agent's folder. saveItemToAbuDir writes this agent's own file in place,
+      // wherever it lives (a project agent stays in its project), and on a
+      // rename moves its folder to the name within the same parent (a move
+      // onto an occupied folder fails instead of overwriting).
       const oldPath = agent?.filePath;
       // A letter-case-only rename moves this agent's own folder: on the
       // case-insensitive file systems the manifest already "at" the target is

@@ -27,6 +27,13 @@ export interface TeamRouteContext {
   leader: SubagentDefinition;
   /** Roster the leader may delegate to — never includes the leader itself. */
   members: SubagentDefinition[];
+  /**
+   * Stored member roleIds that no live agent answers to (deleted, edited
+   * before role-id survived edits, or a plugin update). Leader excluded.
+   * Informational only — `captureTeamExecutionSnapshot` builds the roster
+   * gate from `members` and never from this list.
+   */
+  unresolvedMemberRoleIds?: string[];
   leaderNote?: string;
   /** Strict team: the leader must wait for the user's go-ahead after planning. */
   requirePlanApproval?: boolean;
@@ -92,6 +99,10 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
     for (const m of team.members) {
       lines.push(`- ${m.name}: ${m.description}`);
     }
+  }
+  const unresolved = team.unresolvedMemberRoleIds?.length ?? 0;
+  if (unresolved > 0) {
+    lines.push(`- (${unresolved} member${unresolved === 1 ? '' : 's'} of this team could not be resolved — deleted or changed since the team was set up. They cannot be dispatched to. Plan with the members listed above and tell the user the team roster needs attention in the team settings.)`);
   }
   if (team.leaderNote?.trim()) {
     lines.push('');

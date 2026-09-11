@@ -132,6 +132,21 @@ describe('roster guard + prompt blocks', () => {
     expect(block).toContain('never tell the member to ignore it');
   });
 
+  it('role block tells the leader how many members could not be resolved, and stays silent when all resolve', () => {
+    const withGap = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')], unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
+    expect(withGap).toContain('2 members of this team could not be resolved');
+    expect(withGap).toContain('- a: a desc');
+    const intact = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')], unresolvedMemberRoleIds: [] });
+    expect(intact).not.toContain('could not be resolved');
+  });
+
+  it('unresolved members never change the roster gate (fail-closed regression)', () => {
+    const ctx = { teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')], unresolvedMemberRoleIds: ['r-gone'] };
+    expect(captureTeamExecutionSnapshot('t', ctx)).toEqual({ teamRoster: ['a'], teamRequirePlanApproval: false });
+    expect(() => captureTeamExecutionSnapshot('t', null)).toThrow();
+    expect(captureTeamExecutionSnapshot(undefined, null)).toEqual({ teamRoster: undefined, teamRequirePlanApproval: undefined });
+  });
+
   it('available-agents text lists only members (null when the team has none)', () => {
     const text = buildTeamAvailableAgentsText({ teamId: 't', teamName: 'x', leader: def('lead'), members: [def('a')] }, () => '[tools]');
     expect(text).toContain('- a: a desc [tools]');

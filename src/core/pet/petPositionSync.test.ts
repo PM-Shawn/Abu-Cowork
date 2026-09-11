@@ -28,6 +28,8 @@ describe('petPositionSync', () => {
         { x: '1', y: 2 },
         { x: Number.NaN, y: 2 },
         { x: 1, y: Number.POSITIVE_INFINITY },
+        { x: 1e300, y: 2 },
+        { x: 1, y: -1_000_001 },
       ]) {
         expect(parsePetPosition(bad)).toBeNull();
       }

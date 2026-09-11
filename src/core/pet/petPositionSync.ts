@@ -23,11 +23,15 @@ export interface PetPosition {
   y: number;
 }
 
-/** A finite `{ x, y }` from an event payload or a persisted value, else null. */
+/** Same bound the host's placement check uses (electron/windowPlacement.cjs). */
+const MAX_ABS_COORD = 1_000_000;
+
+/** A finite, in-bounds `{ x, y }` from an event payload or a persisted value, else null. */
 export function parsePetPosition(value: unknown): PetPosition | null {
   if (!value || typeof value !== 'object') return null;
   const { x, y } = value as Record<string, unknown>;
   if (typeof x !== 'number' || typeof y !== 'number') return null;
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (Math.abs(x) > MAX_ABS_COORD || Math.abs(y) > MAX_ABS_COORD) return null;
   return { x, y };
 }

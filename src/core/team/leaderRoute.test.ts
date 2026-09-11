@@ -140,6 +140,15 @@ describe('roster guard + prompt blocks', () => {
     expect(intact).not.toContain('could not be resolved');
   });
 
+  it('role block gives one coherent line when every member is unresolved', () => {
+    const allGone = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [], unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
+    expect(allGone).toContain('none available — all 2 members of this team could not be resolved');
+    expect(allGone).not.toContain('no members yet');
+    expect(allGone).not.toContain('Plan with the members listed above');
+    const oneGone = buildTeamRoleBlock({ teamId: 't', teamName: '数据小队', leader: def('lead'), members: [], unresolvedMemberRoleIds: ['r-gone'] });
+    expect(oneGone).toContain('all 1 member of this team could not be resolved');
+  });
+
   it('unresolved members never change the roster gate (fail-closed regression)', () => {
     const ctx = { teamId: 't', teamName: '数据小队', leader: def('lead'), members: [def('a')], unresolvedMemberRoleIds: ['r-gone'] };
     expect(captureTeamExecutionSnapshot('t', ctx)).toEqual({ teamRoster: ['a'], teamRequirePlanApproval: false });

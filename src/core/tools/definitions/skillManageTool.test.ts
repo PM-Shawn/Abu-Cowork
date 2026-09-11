@@ -68,7 +68,6 @@ vi.mock('@/core/enterprise/policy/matcher', async (importOriginal) => ({
 // Import the mocked versions so tests can assert on them
 import { atomicWrite, atomicWriteWithBackup, restoreFromBackup } from '../../../utils/atomicFs';
 import { SkillPolicyDeniedError } from '../../skill/skillPolicy';
-import { getI18n, format } from '../../../i18n';
 
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockExists = vi.mocked(exists);

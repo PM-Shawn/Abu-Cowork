@@ -127,6 +127,12 @@ function parseSkillHooks(
 
 export class SkillLoader {
   private skills: Map<string, Skill> = new Map();
+  /**
+   * Every skill the last scan found, in scan order — including the ones the
+   * first-win rule dropped from `skills` because an earlier directory had the
+   * same name. See {@link getNameClaims}.
+   */
+  private nameClaims: Array<{ name: string; source: SkillSource }> = [];
   /** Last workspace this loader was discovered against (null = global-only). */
   private currentWorkspace: string | null = null;
 
@@ -152,6 +158,7 @@ export class SkillLoader {
    */
   async discoverSkills(workspacePath?: string | null): Promise<SkillMetadata[]> {
     this.skills.clear();
+    this.nameClaims = [];
     this.currentWorkspace = workspacePath ?? null;
 
     const home = await homeDir();
@@ -268,6 +275,7 @@ export class SkillLoader {
         const path = joinPath(dir, filename);
         const skill = parseSkillFile(await readTextFile(path), path);
         if (skill) {
+          this.nameClaims.push({ name: skill.name, source: 'plugin' });
           if (!this.skills.has(skill.name)) this.skills.set(skill.name, { ...skill, source: 'plugin' });
           break;
         }
@@ -303,6 +311,7 @@ export class SkillLoader {
             const raw = await readTextFile(skillPath);
             const skill = parseSkillFile(raw, skillPath);
             if (skill) {
+              this.nameClaims.push({ name: skill.name, source });
               // Earlier directories take priority — don't overwrite
               if (!this.skills.has(skill.name)) {
                 skill.source = source;
@@ -349,6 +358,17 @@ export class SkillLoader {
         void content; void filePath; void skillDir;
         return meta;
       });
+  }
+
+  /**
+   * Every name the last scan found a skill under, with the directory kind it
+   * came from — skills of disabled plugins, drafts, and skills the first-win
+   * rule shadowed included. For a writer checking whether a name is free:
+   * `getSkill` answers only for the usable skill that won the name, so it
+   * cannot see a disabled plugin's skill, or a built-in one a draft hides.
+   */
+  getNameClaims(): ReadonlyArray<{ name: string; source: SkillSource }> {
+    return this.nameClaims;
   }
 
   /** Get full draft entries (includes content) for the review UI. */

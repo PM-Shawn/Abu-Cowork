@@ -44,7 +44,7 @@
 import { readTextFile, exists, mkdir, readDir } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
-import type { ToolDefinition, SkillMetadata, Skill, ToolExecutionContext, InteractiveNoticeCard } from '../../../types';
+import type { ToolDefinition, SkillMetadata, SkillSource, Skill, ToolExecutionContext, InteractiveNoticeCard } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import {
@@ -64,6 +64,7 @@ import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { writeDraft, writeSkillDirect, rejectDraft } from '../../skill/drafts';
 import { appendHistoryEntry, writeTombstone, newTurnId } from '../../skill/history';
 import { joinPath, normalizeSeparators } from '../../../utils/pathUtils';
+import { isItemNameTaken } from '../../../utils/validation';
 import { sanitizePath } from '../../memdir/paths';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -459,6 +460,59 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
 
 // ── Action: create ──────────────────────────────────────────────────────
 
+/**
+ * Skill sources a created skill must never take the name of, in any letter
+ * case: create writes to workspace-auto (or its drafts/), which the loader
+ * scans before them, so the new skill would hide that one in this workspace.
+ */
+const RESERVED_SKILL_SOURCES: ReadonlySet<SkillSource> = new Set<SkillSource>(['builtin', 'plugin', 'enterprise']);
+
+/** The workspace-auto subfolder drafts live in (see drafts.ts) — never a skill's folder. */
+const DRAFTS_DIRNAME = 'drafts';
+
+async function folderNames(dir: string): Promise<string[]> {
+  try {
+    return (await readDir(dir)).filter((entry) => entry.isDirectory).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * May `create` take `name` in this workspace? Every skill the loader scanned
+ * counts (`getNameClaims`), not just the one `getSkill` resolves the name to —
+ * that one skips disabled plugins' skills and any skill a same-name draft
+ * shadows.
+ *
+ * - `in-use`: a built-in / plugin (disabled included) / enterprise skill has
+ *   the name in any letter case; another skill, or a folder in the
+ *   workspace-auto or drafts dir, has it in other letter case (the same folder
+ *   on macOS / Windows); a workspace-auto folder of that name is already
+ *   there — its SKILL.md filed under another name, or none; or the name is
+ *   `drafts`, the folder the drafts live in. Writing would replace or hide
+ *   what is there.
+ * - `exists`: one of the user's skills has exactly this name. Changing it is
+ *   patch / edit's job.
+ *
+ * A draft of exactly this name is the one claim create takes over: a proposal
+ * supersedes it, a direct create moves it to the trash.
+ */
+async function checkCreateName(name: string, workspacePath: string): Promise<'in-use' | 'exists' | null> {
+  const claims = skillLoader.getNameClaims();
+  const reserved = claims.filter((claim) => RESERVED_SKILL_SOURCES.has(claim.source)).map((claim) => claim.name);
+  if (isItemNameTaken(name, null, [...reserved, DRAFTS_DIRNAME])) return 'in-use';
+
+  const skillsDir = await getWorkspaceAutoSkillsDir(workspacePath);
+  const autoFolders = await folderNames(skillsDir);
+  const draftFolders = await folderNames(joinPath(skillsDir, DRAFTS_DIRNAME));
+  if (isItemNameTaken(name, name, [...claims.map((claim) => claim.name), ...autoFolders, ...draftFolders])) {
+    return 'in-use';
+  }
+
+  if (claims.some((claim) => claim.name === name && claim.source !== 'draft')) return 'exists';
+  return autoFolders.includes(name) ? 'in-use' : null;
+}
+
 async function createAction(input: Record<string, unknown>, context?: ToolExecutionContext): Promise<ActionResult> {
   const t = getI18n().toolResult.skill;
   const name = input.name as string;
@@ -469,8 +523,8 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
   if (nameErr) return { success: false, error: nameErr };
   // Before either branch below: a draft under a blocked name is still a skill
   // under that name, one click away from being accepted.
-  const refused = policyRefusal(name);
-  if (refused) return refused;
+  const policyRefused = policyRefusal(name);
+  if (policyRefused) return policyRefused;
 
   if (!content) {
     return { success: false, error: 'create requires content (the SKILL.md body)' };
@@ -512,15 +566,13 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
 
   const workspacePath = requireWorkspace(context);
 
-  // Name collision: abort if a non-draft skill with this name already exists.
+  // Name collision: abort unless nothing but a same-name draft claims the name.
   // Drafts with the same name are allowed to be overwritten (superseded).
-  const existing = skillLoader.getSkill(name);
-  if (existing && existing.source !== 'draft') {
-    return {
-      success: false,
-      error: `skill "${name}" already exists (source=${existing.source}). Use patch or edit to modify, or pick a different name.`,
-    };
+  const refused = await checkCreateName(name, workspacePath);
+  if (refused !== null) {
+    return { success: false, error: format(refused === 'in-use' ? t.errNameInUse : t.errSkillExists, { name }) };
   }
+  const existing = skillLoader.getSkill(name);
 
   const serialized = serializeSkillMd(frontmatter, content);
 
@@ -654,6 +706,8 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
       error: `write failed: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
+  // The folder appeared after the check (another loop creating this name).
+  if (directResult === null) return { success: false, error: format(t.errNameInUse, { name }) };
 
   // Refresh both skill discovery (for main skills list UI) and drafts
   // store (in case we swept a same-name draft above). discoveryStore's
@@ -1210,7 +1264,7 @@ export const skillManageTool: ToolDefinition = {
   description:
     'Manage skills (the agent\'s procedural memory). 7 actions:' +
     '\n- **install**: Install a skill from an external source (npm package name / local path / URL / GitHub link) into the user\'s "My Skills"' +
-    '\n- **create**: Create a new skill (required: name + content + frontmatter.description)' +
+    '\n- **create**: Create a new skill (required: name + content + frontmatter.description). A name another skill already uses — built-in, plugin (even a disabled one), enterprise, the user\'s own, or one differing only in letter case — is refused; to change an existing skill, use patch or edit' +
     '\n- **patch**: Edit an existing skill in place using fuzzy find-and-replace (old_string → new_string)' +
     '\n- **edit**: Full-file replacement (more reliable than patch — use edit for large-scale changes, do not force them into patch)' +
     '\n- **write_file**: Add or overwrite a supporting file in a skill (references / templates / scripts / assets)' +

@@ -512,14 +512,24 @@ function fsDispatch(app, cmd, payload) {
       const options = JSON.parse(h.options || '{}');
       const resolved = resolveScoped(app, p, options.baseDir);
       const buf = Buffer.from(body);
-      const exists = fs.existsSync(resolved);
       // Honor Tauri's create/createNew: create:false rejects a missing file
       // (used as an existence guard); createNew rejects an existing file.
-      if (options.create === false && !exists) {
-        throw new Error(`fs: file does not exist and create is false: ${resolved}`);
+      // createNew is the plugin's `create_new` (O_EXCL): the create itself is
+      // the check, so a file that appears after any probe is never
+      // overwritten — callers rely on it to refuse someone else's item.
+      if (options.createNew) {
+        try {
+          fs.writeFileSync(resolved, buf, { flag: options.append ? 'ax' : 'wx' });
+        } catch (err) {
+          if (err && err.code === 'EEXIST') {
+            throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
+          }
+          throw err;
+        }
+        return null;
       }
-      if (options.createNew && exists) {
-        throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
+      if (options.create === false && !fs.existsSync(resolved)) {
+        throw new Error(`fs: file does not exist and create is false: ${resolved}`);
       }
       if (options.append) {
         fs.appendFileSync(resolved, buf);

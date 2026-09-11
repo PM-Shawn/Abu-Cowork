@@ -562,9 +562,10 @@ async function folderNames(dir: string): Promise<string[]> {
  *
  * - `in-use`: a built-in / plugin item owns the name, another item's name
  *   differs from it only in letter case (the same folder on macOS / Windows),
- *   or the registry resolves it to an item that does not live at `filePath`
- *   (project-level, …) — writing would replace or hide that item. Refused
- *   whatever `overwrite` says.
+ *   the registry resolves it to an item that does not live at `filePath`
+ *   (project-level, …), or the manifest at `filePath` is filed under another
+ *   name — writing would replace or hide that item. Refused whatever
+ *   `overwrite` says.
  * - `exists`: the manifest is already there and the caller did not say
  *   `overwrite` — creating must never silently replace an existing item.
  *
@@ -589,6 +590,12 @@ async function checkSaveTarget(
   // A plugin's AGENT.md the registry has not listed (yet): still the plugin's.
   const existingAgent = isSkill ? null : parseAgentFile(existingRaw, filePath);
   if (existingAgent && isPluginOwnedAgent(existingAgent)) return { refused: 'in-use' };
+  // The manifest in that folder is filed under another name (hand-made
+  // `foo/AGENT.md` with `name: bar`): replacing it would make `bar` vanish,
+  // though nothing in this call named `bar`. A manifest that no longer parses
+  // is filed under no name, so it stays replaceable (and its identity carried).
+  const existingName = isSkill ? parseSkillFile(existingRaw, filePath)?.name : existingAgent?.name;
+  if (existingName !== undefined && existingName !== name) return { refused: 'in-use' };
   return overwrite ? { refused: null, existingRaw } : { refused: 'exists' };
 }
 

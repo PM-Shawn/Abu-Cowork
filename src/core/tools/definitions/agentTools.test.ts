@@ -995,6 +995,18 @@ describe('save_agent / save_skill name guard', () => {
       expectNothingWritten();
     });
 
+    // Hand-made `foo/AGENT.md` with `name: bar`: the registry lists `bar`, and
+    // replacing that file would make `bar` vanish although nothing said `bar`.
+    it.each([true, undefined])('refuses a folder whose manifest names a different agent (overwrite: %s)', async (overwrite) => {
+      givenOnDisk(AGENTS_DIR, { foo: agentMd('bar') });
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'bar', description: '' }]);
+
+      const result = await saveAgentTool.execute({ name: 'foo', content: agentMd('foo'), ...(overwrite ? { overwrite } : {}) });
+
+      expect(result).toBe(inUse(label(), 'foo'));
+      expectNothingWritten();
+    });
+
     it('refuses a listed agent\'s exact name when its file is not the one this tool would write (project-level)', async () => {
       vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'reviewer', description: '' }]);
 
@@ -1143,6 +1155,15 @@ describe('save_agent / save_skill name guard', () => {
 
       expect(await saveSkillTool.execute({ name, content: skillMd(name), overwrite: true })).toBe(inUse(label(), name));
       expect(skillLoader.getAvailableSkills).toHaveBeenCalledWith({ includeDrafts: true, includeDisabledPlugins: true });
+      expectNothingWritten();
+    });
+
+    it('refuses overwriting a folder whose SKILL.md names a different skill', async () => {
+      givenOnDisk(SKILLS_DIR, { 'git-commit': skillMd('commit-helper') }, 'SKILL.md');
+      vi.mocked(skillLoader.getAvailableSkills).mockReturnValue([{ name: 'commit-helper', description: '', source: 'user' }]);
+
+      expect(await saveSkillTool.execute({ name: 'git-commit', content: skillMd('git-commit'), overwrite: true }))
+        .toBe(inUse(label(), 'git-commit'));
       expectNothingWritten();
     });
 

@@ -87,7 +87,7 @@ describe('SandboxRecoveryCard', () => {
     expect(screen.getByRole('heading', { name: /Shell sandbox blocked cross-app control/i })).toBeInTheDocument();
     expect(screen.getByText(/Notes/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Continue with Computer Use/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Keep sandbox and stop/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Stop task/i })).toBeInTheDocument();
   });
 
   it('continues the same conversation with a Computer Use-only instruction', async () => {
@@ -122,7 +122,7 @@ describe('SandboxRecoveryCard', () => {
     });
     renderCard();
 
-    await user.click(screen.getByRole('button', { name: /Keep sandbox and stop/i }));
+    await user.click(screen.getByRole('button', { name: /Stop task/i }));
 
     expect(mockCancelStreaming).toHaveBeenCalledWith('conv-1');
     expect(mockSetAction).toHaveBeenCalledWith('conv-1', 'msg-1', 'tc-1', 'stopped');
@@ -135,7 +135,7 @@ describe('SandboxRecoveryCard', () => {
       .mockReturnValue(false);
     renderCard();
 
-    await user.click(screen.getByRole('button', { name: /Keep sandbox and stop/i }));
+    await user.click(screen.getByRole('button', { name: /Stop task/i }));
 
     expect(mockCancelStreaming).toHaveBeenCalledWith('conv-1');
     expect(mockIsConversationRunningInSidecar).toHaveBeenCalledTimes(2);
@@ -147,7 +147,7 @@ describe('SandboxRecoveryCard', () => {
     renderCard();
 
     await user.click(screen.getByRole('button', { name: /Advanced/i }));
-    expect(screen.getByText(/Abu will not turn it off automatically/i)).toBeInTheDocument();
+    expect(screen.getByText(/also disables network isolation/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Open security settings/i }));
     expect(mockOpenSystemSettings).toHaveBeenCalledWith('sandbox');

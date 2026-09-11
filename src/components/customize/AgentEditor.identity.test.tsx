@@ -57,5 +57,6 @@ describe('AgentEditor — identity fields survive a save', () => {
     await waitFor(() => expect(vi.mocked(saveItemToAbuDir)).toHaveBeenCalledTimes(1));
     const md = vi.mocked(saveItemToAbuDir).mock.calls[0][3];
     expect(md).not.toMatch(/role-id:/);
+    expect(md).not.toMatch(/created:/);
   });
 });

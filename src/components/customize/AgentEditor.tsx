@@ -86,9 +86,11 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       category: category.trim() || undefined,
       tags: tags.length > 0 ? tags : undefined,
       // Identity is not an editable field either: `roleId` is what every team
-      // membership points at, `createdAt` drives the newest-first sort. A new
-      // agent has neither; both are minted elsewhere (first team membership /
-      // first save) and only ever carried over here — never regenerated.
+      // membership points at (minted by ensureRoleId on first team membership),
+      // `createdAt` drives the newest-first sort. Neither is ever regenerated
+      // here — both are carried over verbatim when present. (Today nothing
+      // mints `createdAt` for editor-created agents; that is a separate gap,
+      // not this editor's job.)
       roleId: agent?.roleId,
       createdAt: agent?.createdAt,
       // Provenance is not an editable field: carried over verbatim so a save

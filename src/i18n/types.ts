@@ -3,6 +3,11 @@
  * Provides full type safety and IDE autocompletion for translations
  */
 
+// Type-only: keeps `stopReasonLabel` exhaustive over the stop-reason union, so
+// a new SubagentStopReason member is a compile error here instead of an
+// `undefined` label rendered to the leader.
+import type { SubagentStopReason } from '@/types';
+
 export type SupportedLocale = 'zh-CN' | 'en-US';
 export type LanguageSetting = 'system' | SupportedLocale;
 
@@ -444,8 +449,34 @@ export interface TranslationDict {
       conversation: string;
       free: string;
     };
-    // Agent loop max turns
+    /** An @agent delegate ran out of turns inside the main run (a sentence — the
+     *  card below is for the MAIN loop's own cap). {n} = the delegate's cap. */
     maxTurnsReached: string;
+    // Agent loop turn cap — the notice card the run ends with.
+    maxTurns: {
+      /** Card title, first time this run chain hits the cap. {n} = the cap. */
+      title: string;
+      /** Card title from the second consecutive cap onwards. {n} = the cap. */
+      titleAgain: string;
+      /** Card body, first time. */
+      body: string;
+      /** Card body from the second consecutive cap onwards. */
+      bodyAgain: string;
+      /** Primary/secondary action: resume the unfinished task. */
+      continueAction: string;
+      /** Button label while the previous run is being wound down. */
+      continuing: string;
+      /** Action: jump to the 「最大轮次」 setting. */
+      adjustAction: string;
+      /** Settled state left in the transcript after 「继续执行」. */
+      continued: string;
+      /** The user message the continue button dispatches. */
+      continuePrompt: string;
+      /** Toast title when continuing fails. */
+      continueFailedTitle: string;
+      /** Toast body when continuing fails. */
+      continueFailed: string;
+    };
     // Agent loop no-progress guard (model stuck emitting unparseable tool calls)
     noProgressStopped: string;
     // Agent loop semantic guard (well-formed but repetitive/meta-only calls)
@@ -1411,6 +1442,13 @@ export interface TranslationDict {
     closeWindowBehavior: string;
     composerEnterBehavior: string;
     composerEnterBehaviorDesc: string;
+    /** Global turn cap for a single run (settings › general). */
+    agentMaxTurns: string;
+    agentMaxTurnsDesc: string;
+    /** One dropdown option. {n} = the number of turns. */
+    agentMaxTurnsOption: string;
+    /** Shown only when a cap of "no cap" is already in force from outside the UI. */
+    agentMaxTurnsUnlimited: string;
     composerEnterSends: string;
     /** `{modifier}` = ⌘ / Ctrl. */
     composerEnterNewline: string;
@@ -1596,7 +1634,6 @@ export interface TranslationDict {
     revoke: string;
     appAutomationTitle: string;
     appAutomationDescription: string;
-    appAutomationConnectorPending: string;
     appAutomationUseComputer: string;
     appAutomationStop: string;
     appAutomationAdvanced: string;
@@ -1828,6 +1865,8 @@ export interface TranslationDict {
     fieldLeaderNoteHint: string;
     fieldLeaderNotePlaceholder: string;
     teamRowSummary: string;
+    /** Singular of `teamRowSummary`, for exactly one member. */
+    teamRowSummaryOne: string;
     detailStartChat: string;
     detailLeader: string;
     detailMembers: string;
@@ -1842,6 +1881,17 @@ export interface TranslationDict {
     detailEdit: string;
     aiCreateTeamPrompt: string;
     unknownMember: string;
+    /** Detail / edit row for a stored member no live agent answers to. */
+    memberInvalid: string;
+    memberInvalidShort: string;
+    /** Primary line of an invalid row whose stored id still spells the name (`builtin:` / `plugin:`). */
+    memberInvalidNamed: string;
+    /** Primary line of an invalid row with no recoverable name; `{n}` is 1-based among those rows. */
+    memberInvalidNumbered: string;
+    /** Muted caption under an invalid row: why it is invalid. */
+    memberInvalidReason: string;
+    memberInvalidRemove: string;
+    editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
     /** Follow-up chips under a finished team turn. */
@@ -1852,10 +1902,12 @@ export interface TranslationDict {
     confirmationSeparator: string;
     confirmationLeader: string;
     confirmationApproveRun: string;
+    confirmationAllowSite: string;
     confirmationWriteRead: string;
     confirmationWrite: string;
     confirmationRead: string;
     confirmationCwd: string;
+    confirmationOrigin: string;
     confirmationRequestOrdinal: string;
     confirmationDefaultCwd: string;
     confirmationLegacy: string;
@@ -2046,6 +2098,9 @@ export interface TranslationDict {
     createWithAbu: string;
     createManually: string;
     nameFormatHint: string;
+    agentNameTakenHint: string;
+    skillNameTakenHint: string;
+    itemSaveFailed: string;
     aiAssistedCreate: string;
     installFailed: string;
     // npm registry install
@@ -2103,6 +2158,8 @@ export interface TranslationDict {
     connecting: string;
     reconnecting: string;
     disconnected: string;
+    /** MCP server status after its connection failed. */
+    connectionError: string;
     connect: string;
     disconnect: string;
     add: string;
@@ -2118,6 +2175,8 @@ export interface TranslationDict {
     sourceProject: string;
     sourceUser: string;
     sourceUnknown: string;
+    // Generic "Description" label used in the agent/skill/MCP detail views
+    detailDescription: string;
     builtinSkills: string;
     builtinAgents: string;
     noSkillsFound: string;
@@ -2291,6 +2350,11 @@ export interface TranslationDict {
     agentFromPlugin: string;
     agentFromPluginEditDisabled: string;
     agentFromPluginDeleteDisabled: string;
+    /** Deleting an agent that one or more teams reference. */
+    agentDeleteInTeamsTitle: string;
+    agentDeleteInTeamsMessage: string;
+    agentDeleteLeaderInTeamsMessage: string;
+    agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;
     agentEditorTitle: string;
@@ -2707,6 +2771,13 @@ export interface TranslationDict {
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
+    /** Singular form of teamMemberBarCollapsed, used when the count is exactly 1. */
+    teamMemberBarCollapsedOne: string;
+    /** Member strip pill: N stored members no live agent answers to. */
+    teamMemberBarUnresolved: string;
+    /** Singular form of teamMemberBarUnresolved, used when the count is exactly 1. */
+    teamMemberBarUnresolvedOne: string;
+    teamMemberBarUnresolvedHint: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;
@@ -3194,10 +3265,8 @@ export interface TranslationDict {
   // About
   about: {
     feedback: string;
-    wechatSectionTitle: string;
-    feedbackDesc: string;
-    sponsor: string;
-    sponsorDesc: string;
+    /** 版本 page header description. */
+    versionDescription: string;
     deviceId: string;
     deviceIdHint: string;
     copied: string;
@@ -3207,6 +3276,34 @@ export interface TranslationDict {
     licenseLinkLabel: string;
     disclaimerTitle: string;
     disclaimerClose: string;
+  };
+
+  // 「关于作者」 page
+  author: {
+    title: string;
+    name: string;
+    tagline: string;
+    role: string;
+    vibe: string;
+    build: string;
+    contactTitle: string;
+    wechatLabel: string;
+    /** One line under the tile. */
+    wechatCaption: string;
+    /** Fuller sentence shown in the zoomed view. */
+    wechatCaptionFull: string;
+    sponsorLabel: string;
+    sponsorCaption: string;
+    sponsorCaptionFull: string;
+    xiaohongshu: string;
+    x: string;
+    github: string;
+    website: string;
+    zoomHint: string;
+    /** Feedback page footer: the question … */
+    feedbackLink: string;
+    /** … and the link that answers it. */
+    feedbackLinkAction: string;
   };
 
   // First-launch disclaimer banner
@@ -3253,6 +3350,10 @@ export interface TranslationDict {
     browserDenied: string;
     selfExtensionReason: string;
     selfExtensionDenied: string;
+    /** save_agent approval summary mode: no AGENT.md on disk under that name — a new expert. */
+    selfExtensionSaveAgentNew: string;
+    /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
+    selfExtensionSaveAgentReplace: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;
@@ -3951,6 +4052,10 @@ export interface TranslationDict {
       /** Declared artifacts missing after the member finished (define-done check). */
       errExpectedFilesMissing: string;
       delegateNoToolCallsNote: string;
+      /** Member stopped before finishing; appended to the hand-off result. {reason} */
+      delegateStoppedNote: string;
+      /** Human label per non-completed stop reason (exhaustive by construction). */
+      stopReasonLabel: Record<Exclude<SubagentStopReason, 'completed'>, string>;
       /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
       delegateUnconfirmedInstructionsNote: string;
       delegateUserInstructionsNote: string;
@@ -3963,8 +4068,39 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
-      /** Error: unsafe file path. {p} */
+      /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */
       errUnsafeFilePath: string;
+      /**
+       * Error: nothing written — a `files` entry names the manifest itself,
+       * which is written only from `content` (checked). {p}, {fileName}
+       */
+      errFileIsManifest: string;
+      /** Error: nothing written — `files[index]` is not a {path, content} pair of strings with a non-empty path. {index} */
+      errInvalidFileEntry: string;
+      /**
+       * Error: save_agent wrote nothing — the AGENT.md frontmatter does not
+       * read back (via the registry's parser) with the identity it must carry,
+       * or cannot be read at all. Tells the model to resend plain YAML. {name}
+       */
+      errAgentFrontmatterInvalid: string;
+      /**
+       * Error: nothing written — the name belongs to a built-in or plugin item,
+       * or to another item whose name differs only in letter case (the same
+       * folder on macOS / Windows). {label}, {name}
+       */
+      errNameInUse: string;
+      /**
+       * Error: nothing written — an item with this name already exists and the
+       * call did not pass `overwrite: true`. Tells the model to pass it only
+       * when the user asked to change that item. {label}, {name}
+       */
+      errItemExists: string;
+      /**
+       * Error: nothing written — the frontmatter `name` in the manifest differs
+       * from the name parameter (the registry keys items by the frontmatter
+       * name). {label}, {name}, {found}, {fileName}
+       */
+      errManifestNameMismatch: string;
       /** Attached-files section header + list. {list} */
       savedFileList: string;
       /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */
@@ -4003,6 +4139,8 @@ export interface TranslationDict {
       batchHeader: string;
       /** aggregateBatchResults section title. {n}, {label} */
       batchSectionTitle: string;
+      /** Marks a batch task whose member did not finish. {reason} */
+      batchStoppedSuffix: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
       /** Appended to a member result that made zero tool calls (team leader review). */
@@ -4065,6 +4203,20 @@ export interface TranslationDict {
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
+      /**
+       * Error: create wrote nothing — the name belongs to a built-in, plugin
+       * (disabled included) or enterprise skill, to another skill or folder
+       * whose name differs only in letter case (the same folder on macOS /
+       * Windows), or to a folder already in this workspace's skills dir.
+       * {name}
+       */
+      errNameInUse: string;
+      /**
+       * Error: create wrote nothing — one of the user's skills already has
+       * this name. Points the model at patch / edit for a change the user
+       * asked for. {name}
+       */
+      errSkillExists: string;
     };
     // manage_mcp_server
     system: {

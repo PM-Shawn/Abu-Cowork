@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
-import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
+import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
@@ -59,8 +60,12 @@ function EmptyState({ icon: Icon, title, hint, action }: {
 function useMemberPool(): SubagentDefinition[] {
   const { agents } = useDiscoveryStore();
   const disabledAgents = useSettingsStore((s) => s.disabledAgents);
-  const [full, setFull] = useState<SubagentDefinition[]>([]);
-  useEffect(() => {
+  // getAgent hides every file-backed agent until plugin records are ready,
+  // which at launch lands after discovery — so readiness is a dependency too.
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
+  // Computed during render (not in an effect) so a readiness flip reaches the
+  // edit dialog's re-seed in the same commit, with the pool it was waiting for.
+  return useMemo(() => {
     const disabled = new Set(disabledAgents ?? []);
     const list: SubagentDefinition[] = [];
     for (const meta of agents) {
@@ -69,21 +74,44 @@ function useMemberPool(): SubagentDefinition[] {
       if (a.name === 'abu' || a.managed || disabled.has(a.name)) continue;
       list.push(a);
     }
-    setFull(list);
-  }, [agents, disabledAgents]);
-  return full;
+    return list;
+  }, [agents, disabledAgents, pluginRecordsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: string): string {
-  return agents.find((a) => effectiveRoleId(a) === roleId)?.name ?? fallback;
-}
-
-function roleAgent(agents: SubagentDefinition[], roleId: string): SubagentDefinition | undefined {
-  return agents.find((a) => effectiveRoleId(a) === roleId);
+  // Match the frontmatter `roleId` as well as the effective one: a team saved
+  // before plugin agents got synthetic `plugin:<name>` ids still stores the
+  // legacy `role-…` id for them. Without this the member drops out of the
+  // picker (and can be re-added as a duplicate); with it the id self-heals —
+  // saving rewrites the membership with `ensureRoleId`'s current id.
+  return agents.find((a) => effectiveRoleId(a) === roleId || a.roleId === roleId)?.name ?? fallback;
 }
 
 function memberOption(a: SubagentDefinition): SearchSelectOption {
   return { value: a.name, label: a.name, description: a.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
+}
+
+/**
+ * Primary line for each invalid member, so two of them never read the same.
+ * Name-keyed ids (`builtin:` / `plugin:`) still spell the name; a `role-…` id
+ * carries none, so those are numbered 1-based among themselves, in stored order.
+ */
+function invalidMemberLabels(roleIds: string[], named: string, numbered: string): { id: string; label: string }[] {
+  let unnamed = 0;
+  return roleIds.map((id) => {
+    const name = roleIdAgentName(id);
+    return { id, label: name ? format(named, { name }) : format(numbered, { n: String(++unnamed) }) };
+  });
+}
+
+/** Two-line label of an invalid member row: which one, then why (muted caption). */
+function InvalidMemberText({ label, reason }: { label: string; reason: string }) {
+  return (
+    <span className="min-w-0 flex-1">
+      <span className="block truncate text-body text-[var(--abu-danger)]">{label}</span>
+      <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{reason}</span>
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------- Team dialog
@@ -97,6 +125,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
   const agents = useMemberPool();
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
 
   const [name, setName] = useState('');
   const [leaderName, setLeaderName] = useState<string>('');
@@ -105,32 +134,47 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const [requireApproval, setRequireApproval] = useState(false);
   const [avatar, setAvatar] = useState('');
   const [saving, setSaving] = useState(false);
-  // Members whose agent is disabled / deleted / managed cannot be shown in the
-  // picker, but they are still part of the team: keep their roleIds and write
-  // them back on save instead of silently dropping them.
+  // Members not offered by the picker fall into two very different buckets:
+  // - hidden: the agent exists but is disabled / managed — still a real member,
+  //   kept and written back untouched;
+  // - invalid: no live agent answers to the roleId at all (deleted, or edited
+  //   before role-id survived edits). Shown below the picker with a remove
+  //   action; kept on save unless the user removes it — never dropped silently.
   const [hiddenMemberRoleIds, setHiddenMemberRoleIds] = useState<string[]>([]);
+  const [invalidMemberRoleIds, setInvalidMemberRoleIds] = useState<string[]>([]);
   // The pool refreshes (new array identity) whenever discovery re-runs — including
   // ensureRoleId's own refresh during save. Seed from it once per open, via a ref,
   // so a refresh never wipes what the user has typed.
   const agentsRef = useRef(agents);
   useEffect(() => { agentsRef.current = agents; }, [agents]);
 
+  // Which team the form was seeded for, and whether plugin records were ready
+  // then. Before they are, file-backed experts resolve to nothing, so a dialog
+  // opened during launch seeds real members as invalid; it is re-seeded once
+  // when the records turn ready — never on a later ready→not-ready blip (a
+  // plugin install), which would wipe what the user has typed.
+  const seeded = useRef<{ team: Team | null; ready: boolean } | null>(null);
   useEffect(() => {
-    if (!open) return;
+    if (!open) { seeded.current = null; return; }
+    const prev = seeded.current;
+    if (prev && prev.team === team && (prev.ready || !pluginRecordsReady)) return;
+    seeded.current = { team, ready: pluginRecordsReady };
     const pool = agentsRef.current;
     if (team) {
       setName(team.name);
       setLeaderName(roleLabel(pool, team.leaderRoleId, ''));
       const members = team.memberRoleIds.filter((id) => id !== team.leaderRoleId);
       setMemberNames(members.map((id) => roleLabel(pool, id, '')).filter(Boolean));
-      setHiddenMemberRoleIds(members.filter((id) => !roleLabel(pool, id, '')));
+      const notInPicker = members.filter((id) => !roleLabel(pool, id, ''));
+      setHiddenMemberRoleIds(notInPicker.filter((id) => resolveRoleId(id) !== null));
+      setInvalidMemberRoleIds(notInPicker.filter((id) => resolveRoleId(id) === null));
       setLeaderNote(team.leaderNote ?? '');
       setRequireApproval(team.requirePlanApproval === true);
       setAvatar(team.avatar ?? '');
     } else {
-      setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
+      setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setInvalidMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
     }
-  }, [open, team]);
+  }, [open, team, pluginRecordsReady]);
 
   // A leader whose agent is currently hidden keeps its roleId; the team stays editable.
   const leaderKept = !leaderName && !!team?.leaderRoleId;
@@ -147,7 +191,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         return roleId;
       };
       const leaderRoleId = leaderName ? await resolve(leaderName) : (team as Team).leaderRoleId;
-      const memberRoleIds: string[] = [...hiddenMemberRoleIds.filter((id) => id !== leaderRoleId)];
+      const memberRoleIds: string[] = [...hiddenMemberRoleIds, ...invalidMemberRoleIds].filter((id) => id !== leaderRoleId);
       for (const n of memberNames) {
         if (n === leaderName) continue;
         memberRoleIds.push(await resolve(n));
@@ -230,6 +274,31 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
             </div>
           </>
         )}
+        {/* Outside the pool branch: a team whose every agent is gone still
+            needs its ghosts listed — and removable — while the pool is empty. */}
+        {invalidMemberRoleIds.length > 0 && (
+          <div className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 space-y-1.5">
+            <div className="text-caption text-[var(--abu-text-secondary)]">{t.team.editInvalidMembers}</div>
+            {invalidMemberLabels(invalidMemberRoleIds, t.team.memberInvalidNamed, t.team.memberInvalidNumbered).map(({ id, label }) => {
+              return (
+                <div key={id} className="flex items-center gap-2" data-testid={`team-edit-invalid-${id}`}>
+                  <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                  <InvalidMemberText label={label} reason={t.team.memberInvalidReason} />
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={t.team.memberInvalidRemove}
+                    title={t.team.memberInvalidRemove}
+                    onClick={() => setInvalidMemberRoleIds((prev) => prev.filter((x) => x !== id))}
+                    data-testid={`team-edit-invalid-remove-${id}`}
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div className="flex items-center justify-between rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5">
           <div className="min-w-0 pr-3">
@@ -267,6 +336,13 @@ export default function TeamView() {
   const activeTeamTab: TeamTab = persistedTeamTab === 'teams' ? 'teams' : 'members';
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
+  // Roles resolve through the agent registry, which is not a React-reactive
+  // source; subscribe to discovery so the card grid re-renders when the roster
+  // changes (same reason useConversationTeam subscribes — useTeamDispatches.ts).
+  const discoveredAgents = useDiscoveryStore((s) => s.agents);
+  // …and file-backed experts only resolve once plugin records are ready, which
+  // at launch lands after discovery: re-render the cards and the open detail then.
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const createConversation = useChatStore((s) => s.createConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
@@ -292,8 +368,32 @@ export default function TeamView() {
 
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
+  // `manualCreateTrigger` is a counter AgentsSection acts on whenever it mounts
+  // with a value > 0 — without a reset, returning to 队员 replays the last
+  // 手动创建 as a blank editor. Same reset ToolboxModal does on its tab change.
+  // `onSwitchToMembers` still opens it once: the tab switch and the bump share
+  // a commit, and the section's (child) effect runs before this (parent) reset.
+  const lastView = useRef(activeTeamTab);
+  useEffect(() => {
+    if (lastView.current === activeTeamTab) return;
+    lastView.current = activeTeamTab;
+    setManualCreateTrigger(0);
+  }, [activeTeamTab]);
+
   const activeTeams = teams;
-  const agents = useMemberPool();
+
+  // `_agents` / `_ready` are unused by value — they exist only to make
+  // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
+  // text, so the subscriptions aren't dead code from the compiler's point of view.
+  // The card's leader slot is one segment of a ` · ` summary line, so it takes
+  // the short label; the explanatory clause lives in the detail and the editor.
+  const cardSummary = (team: Team, _agents: typeof discoveredAgents, _ready: boolean) => {
+    const count = team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length;
+    return format(count === 1 ? t.team.teamRowSummaryOne : t.team.teamRowSummary, {
+      leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalidShort,
+      count: String(count),
+    });
+  };
 
   const navItems = [
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
@@ -383,10 +483,7 @@ export default function TeamView() {
                       id: team.id,
                       testId: `team-row-${team.name}`,
                       name: team.name,
-                      description: format(t.team.teamRowSummary, {
-                        leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
-                        count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId).length),
-                      }),
+                      description: cardSummary(team, discoveredAgents, pluginRecordsReady),
                       avatar: <TeamAvatar avatar={team.avatar} />,
                     }}
                     onClick={() => setDetailTeam(team)}
@@ -457,8 +554,17 @@ export default function TeamView() {
       >
         {detailTeam && (() => {
           const memberIds = detailTeam.memberRoleIds.filter((id) => id !== detailTeam.leaderRoleId);
-          const leader = roleAgent(agents, detailTeam.leaderRoleId);
-          const members = memberIds.map((id) => ({ id, agent: roleAgent(agents, id) }));
+          // Same predicate the run uses (resolveRoleId), so the count here never
+          // disagrees with the "队员 · N" the workspace tab shows mid-run.
+          const leader = resolveRoleId(detailTeam.leaderRoleId) ?? undefined;
+          const leaderGhostName = leader ? undefined : roleIdAgentName(detailTeam.leaderRoleId);
+          const members = memberIds.map((id) => ({ id, agent: resolveRoleId(id) ?? undefined }));
+          const validMembers = members.filter((m) => m.agent);
+          const invalidMembers = invalidMemberLabels(members.filter((m) => !m.agent).map((m) => m.id), t.team.memberInvalidNamed, t.team.memberInvalidNumbered);
+          const removeInvalid = (roleId: string) => {
+            useTeamStore.getState().updateTeam(detailTeam.id, { memberRoleIds: detailTeam.memberRoleIds.filter((id) => id !== roleId) });
+            setDetailTeam(useTeamStore.getState().teams.find((team) => team.id === detailTeam.id) ?? null);
+          };
           // Skills live on each member, not on the team — the union answers
           // "what can this team actually do" without opening every member.
           const skills = [...new Set([leader, ...members.map((m) => m.agent)]
@@ -481,13 +587,34 @@ export default function TeamView() {
             <div className="space-y-5">
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
-                {row(leader, t.team.unknownMember)}
+                {leader
+                  ? row(leader, t.team.memberInvalid)
+                  : (
+                    // Same two-line ghost as the members below, named when the id
+                    // carries a name. No 移除: a leader is replaced via 编辑.
+                    <div className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid="team-leader-invalid">
+                      <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                      <InvalidMemberText
+                        label={leaderGhostName ? format(t.team.memberInvalidNamed, { name: leaderGhostName }) : t.team.memberInvalidShort}
+                        reason={t.team.memberInvalidReason}
+                      />
+                    </div>
+                  )}
               </div>
               <div>
-                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{format(t.team.detailMembers, { count: String(memberIds.length) })}</div>
-                {memberIds.length === 0
+                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{format(t.team.detailMembers, { count: String(validMembers.length) })}</div>
+                {validMembers.length === 0 && invalidMembers.length === 0
                   ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoMembers}</div>
-                  : <div className="space-y-0.5">{members.map((m) => <div key={m.id}>{row(m.agent, t.team.unknownMember)}</div>)}</div>}
+                  : <div className="space-y-0.5">
+                      {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.memberInvalid)}</div>)}
+                      {invalidMembers.map((m) => (
+                        <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
+                          <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                          <InvalidMemberText label={m.label} reason={t.team.memberInvalidReason} />
+                          <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>
+                        </div>
+                      ))}
+                    </div>}
               </div>
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailPlanApproval}</div>

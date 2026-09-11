@@ -4,7 +4,8 @@ export type ChatTurnScrollIntentSource =
   | 'regenerate'
   | 'run-retry'
   | 'queue-resume'
-  | 'sandbox-recovery';
+  | 'sandbox-recovery'
+  | 'max-turns-notice';
 
 export interface ChatTurnScrollIntent {
   conversationId: string;

@@ -18,11 +18,13 @@ import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import CompactDivider from './CompactDivider';
 import BrowserRunReportCard from './BrowserRunReportCard';
+import MaxTurnsNoticeCard from './MaxTurnsNoticeCard';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
+import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
@@ -1551,6 +1553,11 @@ export default function ChatView({
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider message={group[0]} />
+              ) : group.length === 1 && isMaxTurnsNoticeMessage(group[0]) ? (
+                // The turn-cap notice. Its own group by construction: the
+                // marker carries no loopId, and `groupMessagesByLoop` starts a
+                // fresh group at every message without one.
+                <MaxTurnsNoticeCard conversationId={activeConv.id} message={group[0]} />
               ) : group.length === 1 && isBrowserRunReportMessage(group[0]) ? (
                 // U7 — the unattended run's report card. Its own group by
                 // construction: the marker carries no loopId, and

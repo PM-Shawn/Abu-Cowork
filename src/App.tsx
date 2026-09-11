@@ -21,6 +21,7 @@ import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
 import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
+import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync';
 import RightPanel from '@/components/panel/RightPanel';
 import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
@@ -413,6 +414,25 @@ function App() {
     listen('pet-open-state-changed', (event) => {
       const { open } = event.payload as { open: boolean };
       useSettingsStore.getState().setPetOpen(open);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // Pet window reports where it was left; this window owns the persisted
+  // value (the pet's own copy of the settings store is stale — see
+  // core/pet/petPositionSync.ts).
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen(PET_POSITION_EVENT, (event) => {
+      const position = parsePetPosition(event.payload);
+      if (position) useSettingsStore.getState().setPetPosition(position);
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;

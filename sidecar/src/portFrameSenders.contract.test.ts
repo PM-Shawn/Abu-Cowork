@@ -182,3 +182,56 @@ describe('portFrameSenders wire contract — fixture completeness', () => {
     expect(fixtureMethods).toEqual(expectedGenericMethods);
   });
 });
+
+/**
+ * The SENDER decides whether a tool result needs media preparation; the
+ * RECEIVER (`sidecarValueHasOpaqueMediaRefs`) throws on any raw base64 that
+ * arrives anyway. A sender predicate narrower than that guard is how raw
+ * payloads reach the wire in the first place, so this pins the invariant
+ * directly: for every shape the receiver rejects, the sender must not take
+ * its no-media fast path.
+ */
+describe('portFrameSenders inline-media predicate — never narrower than the receiver guard', () => {
+  const RAW_B64 = 'QUJVLVJBVy1CQVNFNjQ=';
+  const MEDIA_SHAPES = [
+    {
+      name: 'image.source.data',
+      resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: RAW_B64 } }],
+    },
+    {
+      name: 'document.source.data',
+      resultContent: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: RAW_B64 } }],
+    },
+    {
+      name: 'nested imageData',
+      resultContent: [{ type: 'text', text: 'see below', imageData: { mediaType: 'image/png', base64: RAW_B64 } }],
+    },
+    {
+      name: 'bare detail image payload',
+      resultContent: [{ mediaType: 'image/png', base64: RAW_B64 }],
+    },
+  ];
+
+  beforeEach(() => {
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValue({
+      id: 'media_contract',
+      sha256: 'd'.repeat(64),
+      mediaType: 'image/png',
+      bytes: 8,
+    });
+  });
+
+  it.each(MEDIA_SHAPES)('$name never reaches the wire as raw base64', async ({ resultContent }) => {
+    // The receiver would reject this payload outright.
+    expect(() => sidecarValueHasOpaqueMediaRefs(resultContent)).toThrow();
+
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((f) => frames.push(f));
+    delta.updateToolCall('conv-1', 'm1', 'tc1', 'done', resultContent as never, false);
+
+    await vi.waitFor(() => expect(frames).toHaveLength(1));
+    expect(JSON.stringify(frames)).not.toContain(RAW_B64);
+    expect(() => sidecarValueHasOpaqueMediaRefs(frames)).not.toThrow();
+  });
+});

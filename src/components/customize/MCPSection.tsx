@@ -935,7 +935,7 @@ function serverStatusMeta(
   const statusLabel = isReconnecting ? t.toolbox.reconnecting
     : isConnecting ? t.toolbox.connecting
     : isConnected ? t.toolbox.connected
-    : status === 'error' ? 'Error'
+    : status === 'error' ? t.toolbox.connectionError
     : t.toolbox.disconnected;
   const statusColor = isReconnecting ? 'text-[var(--abu-warning)]'
     : isConnecting ? 'text-[var(--abu-warning)]'
@@ -1037,7 +1037,7 @@ function TemplateDetail({
     <>
       {/* Description */}
       <div className="mb-5">
-        <span className="text-minor text-[var(--abu-text-muted)]">Description</span>
+        <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.detailDescription}</span>
         <p className="text-body text-[var(--abu-text-primary)] mt-1">{pickLocale(locale, template.description, template.descriptionEn)}</p>
       </div>
 

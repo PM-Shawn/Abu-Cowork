@@ -3,6 +3,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
 import type { TeamRouteContext } from '@/core/team/leaderRoute';
 import { collectMemberDispatches, summarizeByMember, type MemberDispatch, type MemberSummary } from './teamDispatches';
@@ -20,8 +21,13 @@ export function useConversationTeam(conversationId: string): TeamRouteContext | 
   // after launch/reopen; without this dependency a reopened team conversation
   // stayed at "队员 · 0" (retest G1, 2026-09-07).
   const agents = useDiscoveryStore((s) => s.agents);
-  // `teams` / `agents` are the reactive dependencies; resolveTeamRouteContext reads through the stores.
-  return useMemo(() => resolveTeamRouteContext(teamId), [teamId, teams, agents]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Until the first successful installed.json read the registry hides every
+  // file-backed agent (activationPolicy fails closed), and at launch discovery
+  // publishes BEFORE that read — so readiness must be a dependency too, or a
+  // restored team conversation keeps its user experts listed as unavailable.
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
+  // `teams` / `agents` / `pluginRecordsReady` are the reactive dependencies; resolveTeamRouteContext reads through the stores.
+  return useMemo(() => resolveTeamRouteContext(teamId), [teamId, teams, agents, pluginRecordsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 /**

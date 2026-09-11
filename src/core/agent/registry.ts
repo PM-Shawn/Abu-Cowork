@@ -64,7 +64,9 @@ export function formatAgentSource(source: SubagentMetadata['source']): string | 
  * Parse an AGENT.md file: YAML frontmatter + system prompt body
  */
 export function parseAgentFile(raw: string, filePath: string): SubagentDefinition | null {
-  const match = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
+  // CRLF-aware at both fences: a `\r` left on the last frontmatter line would
+  // read back as part of that line's value (`role-id: "x\r"`, `created: "1\r"`).
+  const match = raw.match(/^---[^\S\r\n]*\r?\n([\s\S]*?)\r?\n---[^\S\r\n]*\r?\n([\s\S]*)$/);
   if (!match) return null;
 
   try {

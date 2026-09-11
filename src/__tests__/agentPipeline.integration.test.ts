@@ -302,6 +302,13 @@ vi.mock('../core/llm/modelCapabilities', () => ({
     },
   ),
   deriveUiCaps: vi.fn().mockReturnValue([]),
+  // subagentLoop's per-turn starvation check — reached as soon as a delegate
+  // run takes a tool_use turn, so the factory has to provide it. Mirror the
+  // real (pure) implementation rather than stubbing a constant.
+  isReasoningStarvation: vi.fn().mockImplementation(
+    (stopReason: string, contentLength: number, toolCallCount: number) =>
+      (stopReason === 'max_tokens' || stopReason === 'length') && contentLength === 0 && toolCallCount === 0,
+  ),
 }));
 
 vi.mock('../core/tools/toolNames', () => ({
@@ -402,6 +409,8 @@ import { LLMError } from '../core/llm/adapter';
 import * as delegatedMediaStore from '../core/subagent/delegatedMediaStore';
 import { executeToolBatch } from '../core/agent/toolExecutor';
 import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
+import { getLanguageSetting, setLanguage } from '../i18n';
+import * as notifications from '../utils/notifications';
 import type { StreamEvent, Message } from '../types';
 // Mocked module reference — used to override token estimator per-test
 import * as tokenEstimatorModule from '../core/context/tokenEstimator';
@@ -410,6 +419,7 @@ import * as toolSearchModule from '../core/tools/toolSearch';
 import { notifyTaskCompleted } from '@/utils/notifications';
 import { joinPath } from '@/utils/pathUtils';
 import { isWindows } from '@/utils/platform';
+import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 
@@ -1114,6 +1124,105 @@ describe('Agent Pipeline Integration', () => {
 
       expect(result.reason).toBe('max_turns');
       expect(useChatStore.getState().conversations[convId].activeSkills).toEqual([]);
+    });
+
+    // The cap used to end the run as `status: 'completed'` under the copy
+    // "已完成 N 轮执行" — so a leader (and the user) read a run that stopped
+    // mid-task as a finished one. `max_turns` is an INCOMPLETE reason
+    // everywhere else (isIncompleteReason, the scheduler); the chat UI now
+    // says the same thing.
+    it('ends the turn cap as unfinished, not completed (P2)', async () => {
+      useSettingsStore.setState({ agentMaxTurns: 2 });
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const previousLanguage = getLanguageSetting();
+      setLanguage('zh-CN');
+      let result;
+      try {
+        result = await runAgentLoop(convId, 'loop until capped');
+      } finally {
+        setLanguage(previousLanguage);
+      }
+
+      expect(result.reason).toBe('max_turns');
+      const conv = useChatStore.getState().conversations[convId];
+      // Not a terminal 'completed': the task is unfinished and the user can
+      // just keep typing.
+      expect(conv.status).toBe('idle');
+      expect(conv.completedAt).toBeUndefined();
+      // The cap now ends in a notice CARD (a `max-turns-` marker with the cap
+      // it hit), not a sentence — so nothing here can read as "已完成" either.
+      const capMsg = conv.messages.at(-1)!;
+      expect(isMaxTurnsNoticeMessage(capMsg)).toBe(true);
+      expect(capMsg.maxTurnsNotice).toEqual({ limit: 2, streak: 1 });
+      expect(String(capMsg.content)).not.toContain('已完成');
+      // 'completed' used to be what cleared the per-conversation agent state
+      // (the活动 indicator). Idle must clear it just as thoroughly.
+      expect(useChatStore.getState().agentStates.has(convId)).toBe(false);
+    });
+
+    // The `@agent` route runs the child through runSubagent directly, so it
+    // never passes through `delegate_to_agent` and never gets that tool's
+    // `delegateStoppedNote`. It used to post the child's raw partial text as
+    // the assistant answer and go idle in silence — the user read a truncated
+    // answer as the final one.
+    it('tells the user when an @agent delegate ran out of turns', async () => {
+      const { routeInput } = await import('../core/agent/orchestrator');
+      vi.mocked(routeInput).mockReturnValueOnce({
+        type: 'delegate', cleanInput: 'Do the long thing.', name: 'abu',
+        delegateAgent: { name: 'researcher', description: 'research', systemPrompt: 'research', filePath: '__preset__' },
+      } as never);
+      // Same recipe as the main-loop cap above: a small global cap plus an
+      // adapter that never stops calling tools. subagentLoop.ts resolves the
+      // same global setting (definition > global > default), and the delegate
+      // card carries no maxTurns of its own, so the child's cap is 2.
+      useSettingsStore.setState({ agentMaxTurns: 2 });
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'text', text: `partial ${calls}` });
+          onEvent({ type: 'tool_use', id: `d-${calls}`, name: 'read_file', input: { path: '/x' } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      // This file's `vi.mock('../../utils/notifications')` never resolves from
+      // src/__tests__/, so the real facade runs — spy on it locally instead of
+      // repairing a shared mock the other tests in this file already run without.
+      const completedSpy = vi.spyOn(notifications, 'notifyTaskCompleted').mockResolvedValue(undefined);
+
+      const convId = useChatStore.getState().createConversation();
+      const previousLanguage = getLanguageSetting();
+      setLanguage('zh-CN');
+      let result;
+      try {
+        result = await runAgentLoop(convId, 'Do the long thing.');
+      } finally {
+        setLanguage(previousLanguage);
+        completedSpy.mockRestore();
+      }
+
+      expect(result.reason).toBe('max_turns');
+      const conv = useChatStore.getState().conversations[convId];
+      // Unfinished, not finished: no green "done", no completion notification.
+      expect(conv.status).toBe('idle');
+      expect(completedSpy).not.toHaveBeenCalled();
+      // The cap note comes AFTER the partial result, and carries the number the
+      // child actually ran with.
+      const assistantMsgs = conv.messages.filter((m) => m.role === 'assistant');
+      const capMsg = assistantMsgs.at(-1);
+      expect(String(capMsg?.content)).toBe('已达到 2 轮上限，任务未完成。直接发送消息即可继续。');
+      expect(assistantMsgs.length).toBeGreaterThanOrEqual(2);
+      expect(String(assistantMsgs.at(-2)?.content)).not.toContain('已达到');
     });
 
     it('resets the no-progress counter when a system wake-up rescues the loop (review finding [5])', async () => {

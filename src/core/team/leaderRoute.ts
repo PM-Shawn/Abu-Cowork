@@ -15,7 +15,7 @@
  * context lives in `teamRouteResolver.ts`, which only the shell-side
  * entryOrchestration imports.
  */
-import { TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER, TEAM_MAX_DISPATCHES_PER_RUN } from './teamRunBounds';
+import { TEAM_LEADER_MAX_TURNS, TEAM_MAX_CONSECUTIVE_FAILURES_PER_MEMBER, TEAM_MAX_DISPATCHES_PER_RUN } from './teamRunBounds';
 import { STALL_STOP_MINUTES } from './stallThreshold';
 import type { SubagentDefinition, ToolExecutionContext } from '@/types';
 import type { RouteResult } from '@/core/agent/orchestrator';
@@ -27,6 +27,13 @@ export interface TeamRouteContext {
   leader: SubagentDefinition;
   /** Roster the leader may delegate to — never includes the leader itself. */
   members: SubagentDefinition[];
+  /**
+   * Stored member roleIds that no live agent answers to (deleted, edited
+   * before role-id survived edits, or a plugin update). Leader excluded.
+   * Informational only — `captureTeamExecutionSnapshot` builds the roster
+   * gate from `members` and never from this list.
+   */
+  unresolvedMemberRoleIds?: string[];
   leaderNote?: string;
   /** Strict team: the leader must wait for the user's go-ahead after planning. */
   requirePlanApproval?: boolean;
@@ -44,12 +51,26 @@ export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext 
   // The leader runs as the root agent: it needs the root roster (delegate_to_agent,
   // run_agent_batch, report_plan, …), so a member-style `tools` whitelist written
   // for the old board flow must not shrink it. `disallowedTools` still applies.
-  const { tools: _memberTools, ...leaderAsRoot } = team.leader;
+  // `maxTurns` gets a FLOOR rather than the same treatment: a member-sized card
+  // value (e.g. 30, the budget for ONE hand-off) must not cap a leader that
+  // plans, dispatches, reviews every result and reports — so a positive card
+  // value is raised to at least TEAM_LEADER_MAX_TURNS. A card with NO maxTurns
+  // keeps none, so the user's global 最大轮次 setting (and the 200 default)
+  // still decide, exactly as for any other root run — writing 120 there would
+  // silently override whatever the user configured. A card value <= 0 is the
+  // user's explicit opt-in to UNLIMITED turns (resolveMaxTurns treats <= 0 as
+  // Infinity); the floor must not clamp that down to 120, so it passes through
+  // unchanged.
+  const { tools: _memberTools, maxTurns: cardMaxTurns, ...leaderAsRoot } = team.leader;
+  let definition = leaderAsRoot as typeof leaderAsRoot & { maxTurns?: number };
+  if (cardMaxTurns !== undefined) {
+    definition = { ...leaderAsRoot, maxTurns: cardMaxTurns > 0 ? Math.max(cardMaxTurns, TEAM_LEADER_MAX_TURNS) : cardMaxTurns };
+  }
   return {
     ...route,
     type: 'agent',
     name: team.leader.name,
-    definition: leaderAsRoot,
+    definition,
     team,
   };
 }
@@ -72,12 +93,21 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push(`You are ${team.leader.name}, the leader of this team. The user talks only to you, in this conversation, and you answer for the whole team.`);
   lines.push('');
   lines.push('Team members (delegate only to these, by exact name):');
-  if (team.members.length === 0) {
+  const unresolved = team.unresolvedMemberRoleIds?.length ?? 0;
+  const unresolvedNoun = `member${unresolved === 1 ? '' : 's'}`;
+  if (team.members.length === 0 && unresolved > 0) {
+    // One line, not "no members yet" plus "the members listed above": the team
+    // has members, none of them can be reached.
+    lines.push(`- (none available — all ${unresolved} ${unresolvedNoun} of this team could not be resolved (deleted or changed since the team was set up). Do the work yourself and tell the user the team roster needs attention in the team settings.)`);
+  } else if (team.members.length === 0) {
     lines.push('- (no members yet — do the work yourself and tell the user the team has no members)');
   } else {
     for (const m of team.members) {
       lines.push(`- ${m.name}: ${m.description}`);
     }
+  }
+  if (unresolved > 0 && team.members.length > 0) {
+    lines.push(`- (${unresolved} ${unresolvedNoun} of this team could not be resolved — deleted or changed since the team was set up. They cannot be dispatched to. Plan with the members listed above and tell the user the team roster needs attention in the team settings.)`);
   }
   if (team.leaderNote?.trim()) {
     lines.push('');

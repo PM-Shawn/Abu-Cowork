@@ -11,6 +11,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { SubagentDefinition } from '@/types';
 
 vi.mock('@/utils/itemStorage', () => ({
+  ITEM_EXISTS_CODE: 'ITEM_EXISTS',
   saveItemToAbuDir: vi.fn(async () => '/Users/tester/.abu/agents/reviewer/AGENT.md'),
 }));
 

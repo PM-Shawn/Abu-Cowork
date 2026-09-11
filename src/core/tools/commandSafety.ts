@@ -6,6 +6,7 @@
 import { getI18n } from '../../i18n';
 import { isWindows } from '../../utils/platform';
 import { isReadOnlyCommand } from './readOnlyDetector';
+import type { BrowserOperationClass } from '../permissions/browserToolPolicy';
 
 export type DangerLevel = 'safe' | 'warn' | 'danger' | 'block';
 
@@ -18,6 +19,7 @@ export interface CommandAnalysis {
 }
 
 export interface ConfirmationInfo {
+  teamIdentity?: import('../agent/teamConfirmationIdentity').TeamConfirmationIdentity;
   command: string;
   level: DangerLevel;
   reason: string;
@@ -27,13 +29,51 @@ export interface ConfirmationInfo {
    * the same decision, and describing all three as "命令" leaves the user
    * unable to judge what they are agreeing to. Defaults to 'command' so every
    * existing caller keeps its current wording.
+   *
+   * `'browser-upload'` is a browser action in every other respect — it takes
+   * the same origin fields, offers the same site grant, blocks the same site
+   * — but it is the one whose consequence leaves the machine, so it gets its
+   * own question and its own verb rather than 「浏览器操作: <tool name>」 over
+   * 「确认执行」 (acceptance F5).
    */
-  kind?: 'command' | 'browser' | 'self-extension';
+  kind?: 'command' | 'browser' | 'browser-upload' | 'self-extension';
+  /**
+   * Upload confirmations only: how many files this call would send. The
+   * dialog puts it in the question ("上传 2 个文件到 …"), which is the part a
+   * person reads before the list.
+   */
+  browserUploadFileCount?: number;
   /**
    * Browser confirmations only: the exact origin the action targets, when it
    * could be resolved. Lets the dialog offer "always allow this site".
    */
   browserOrigin?: string;
+  /**
+   * Browser confirmations only: the OTHER sites this page embeds as regions
+   * the automation can address (iframes), when there are any.
+   *
+   * A cross-origin region is authorized on its own account — a grant for the
+   * page does not cover it — but asking region by region turns one form into a
+   * wall of prompts. So the ask names them together and "always allow" writes
+   * a grant for each named origin SEPARATELY (never a wildcard), which is what
+   * keeps per-origin authorization honest and the prompt count at one.
+   *
+   * Only origins the browser confirmed appear here: a region this channel
+   * cannot see into reports an origin the embedding page could have authored,
+   * and nothing may be granted on the strength of that.
+   */
+  browserEmbeddedOrigins?: string[];
+  /**
+   * Browser confirmations only: the origin of the PAGE, when the action's own
+   * target is a region inside it.
+   *
+   * `browserOrigin` is where the action EXECUTES, which for a frame-targeted
+   * call is the third-party region — so on its own it leaves the dialog saying
+   * `vendor.example.net` to a user who is looking at `oa.example.com`, with
+   * the page they are actually on named nowhere. Absent when the two are the
+   * same site, which is every non-frame call.
+   */
+  browserPageOrigin?: string;
   /**
    * Browser confirmations only: whether the dialog may offer a persistent
    * per-site grant. False for scripting tools (execute_js) and for actions
@@ -43,6 +83,30 @@ export interface ConfirmationInfo {
    * guess.
    */
   allowPersistentGrant?: boolean;
+  /**
+   * Browser confirmations only: which operation class the action belongs to.
+   * Carried so a callback that is NOT the desktop dialog — an unattended
+   * tier's auto-approve callback, a future IM approval round-trip — can apply
+   * the operation-class policy itself instead of trusting that whoever built
+   * the request already did. Absent means "unclassified", and every consumer
+   * treats that as the strictest class.
+   */
+  browserOperationClass?: BrowserOperationClass;
+  /**
+   * Set when the requester has ALREADY refused this action and is calling the
+   * callback only so the run can ACCOUNT for the refusal — the scheduler turns
+   * these into its "blocked acting on example.com" run-result line, which is
+   * the only way a 3am task explains itself.
+   *
+   * It is a notification, not a request. The return value is not consulted,
+   * and a callback that sees this field must not treat it as an approval
+   * prompt — in particular it must never forward it to a human approval
+   * channel, since the decision is already made and asking would be a lie.
+   * Holds the user-facing reason for the refusal.
+   */
+  deniedNotice?: string;
+  /** Sub-agent that raised the request (display only), when known. */
+  agentName?: string;
 }
 
 /**

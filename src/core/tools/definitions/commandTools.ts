@@ -4,6 +4,7 @@ import { resolveCommandPython } from '../../../utils/pythonRuntime';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { getWorkspaceReader } from '../../agent/ports/workspaceReader';
 import { getAuthorizedPathsReader } from '../../agent/ports/authorizedPathsReader';
+import { sandboxBlockClass } from '../../sandbox/blockClass';
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
 import {
   detectAppAutomationSandboxBlock,
@@ -112,16 +113,22 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         return formatAppAutomationRecovery(preflightAppAutomationRecovery);
       }
 
-      // Use conversation-scoped workspace from context; fall back to global store
-      // only if context is absent (e.g. direct invocation outside agent loop).
+      // Use the shell/session-owned workspace from context. Scoped unattended
+      // runs fail closed when that trusted value is null/absent; only
+      // unscoped interactive/direct invocations may fall back to the global
+      // workspace reader.
       // The fallback must not fail the command: in the sidecar the bare getter
       // resolves an ambient-run mirror and THROWS outside a registered run —
       // treat that as "no workspace" (cwd-less spawn), matching the shell's
       // no-workspace behavior instead of erroring before the spawn.
-      const workspacePath = context?.workspacePath ?? safeGlobalWorkspacePath();
-      const authorizedPaths = sandbox ? await getAuthorizedPathsReader().getAuthorizedWritablePaths() : [];
+      const workspacePath = context?.authorizationScopeId !== undefined
+        ? (context.workspacePath ?? null)
+        : (context?.workspacePath ?? safeGlobalWorkspacePath());
+      const authorizedPaths = sandbox
+        ? await getAuthorizedPathsReader().getAuthorizedWritablePaths(context?.authorizationScopeId)
+        : [];
       const extraWritablePaths = [
-        ...(workspacePath ? [workspacePath] : []),
+        ...(context?.authorizationScopeId === undefined && workspacePath ? [workspacePath] : []),
         ...authorizedPaths,
       ];
 
@@ -148,10 +155,12 @@ This tool is suitable for: moving/copying/renaming files (mv/cp), package manage
         });
       }
 
-      // File/path blocks keep the existing toast. AppleScript cross-app
-      // blocks render a task-local recovery card instead of a misleading
-      // "authorize this directory" prompt.
-      if (!appAutomationRecovery && sandbox && output.stderr.includes('[sandbox-blocked]')) {
+      // Only a blocked *write* gets the "authorize this directory" toast —
+      // an exec/read/network/unclassified block has no directory to authorize,
+      // so the toast would be misleading. Every class still reaches the model
+      // through the annotated stderr below. AppleScript cross-app blocks render
+      // a task-local recovery card instead.
+      if (!appAutomationRecovery && sandbox && sandboxBlockClass(output.stderr) === 'write') {
         showSandboxBlockedToast(resolvedCommand);
       }
 

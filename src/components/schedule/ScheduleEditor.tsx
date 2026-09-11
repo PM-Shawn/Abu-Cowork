@@ -1,4 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useTeamStore } from '@/stores/teamStore';
+import TeamAvatar from '@/components/team/TeamAvatar';
+import { SearchSelect } from '@/components/ui/search-select';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -48,6 +51,10 @@ export default function ScheduleEditor() {
   const [minute, setMinute] = useState(0);
   const [dayOfWeek, setDayOfWeek] = useState(1);
   const [skillName, setSkillName] = useState('');
+  // Team executor (labs-gated): when set, the prompt is handed to this team
+  // as a task goal instead of running a plain conversation.
+  const [teamId, setTeamId] = useState('');
+  const teams = useTeamStore((store) => store.teams);
   const [workspacePath, setWorkspacePath] = useState('');
   const [projectId, setProjectId] = useState('');
   const [outputChannelId, setOutputChannelId] = useState('');
@@ -67,6 +74,7 @@ export default function ScheduleEditor() {
       setMinute(editingTask.schedule.time?.minute ?? 0);
       setDayOfWeek(editingTask.schedule.dayOfWeek ?? 1);
       setSkillName(editingTask.skillName ?? '');
+      setTeamId(editingTask.teamId ?? '');
       setWorkspacePath(editingTask.workspacePath ?? '');
       setProjectId(editingTask.projectId ?? '');
       setOutputChannelId(editingTask.outputChannelId ?? '');
@@ -82,6 +90,7 @@ export default function ScheduleEditor() {
       setMinute(0);
       setDayOfWeek(1);
       setSkillName('');
+      setTeamId('');
       setWorkspacePath('');
       setProjectId('');
       setOutputChannelId('');
@@ -134,7 +143,8 @@ export default function ScheduleEditor() {
   const showDaySelector = frequency === 'weekly';
 
   const handleSave = () => {
-    if (!name.trim() || !prompt.trim()) return;
+    if (!name.trim()) return;
+    if (!prompt.trim()) return;
 
     const schedule: ScheduleConfig = {
       frequency,
@@ -152,6 +162,7 @@ export default function ScheduleEditor() {
         name: name.trim(),
         description: description.trim() || undefined,
         prompt: prompt.trim(),
+        teamId: teamId || undefined,
         schedule,
         skillName: skillName || undefined,
         workspacePath: effectiveWorkspace || undefined,
@@ -166,6 +177,7 @@ export default function ScheduleEditor() {
         name: name.trim(),
         description: description.trim() || undefined,
         prompt: prompt.trim(),
+        teamId: teamId || undefined,
         schedule,
         skillName: skillName || undefined,
         workspacePath: effectiveWorkspace || undefined,
@@ -226,7 +238,28 @@ export default function ScheduleEditor() {
             />
           </div>
 
-          {/* Task prompt */}
+          {/* Team executor: the run becomes a scheduled conversation pinned to the team */}
+          {teams.length > 0 && (
+            <div>
+              <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
+                {t.schedule.teamExecutor}
+              </label>
+              <SearchSelect
+                value={teamId || null}
+                onChange={(v) => setTeamId(v === teamId ? '' : v)}
+                options={[
+                  { value: '', label: t.schedule.teamExecutorNone },
+                  ...teams.map((team) => ({ value: team.id, label: team.name, icon: <TeamAvatar avatar={team.avatar} size="sm" /> })),
+                ]}
+                placeholder={t.schedule.teamExecutorNone}
+                searchPlaceholder={t.schedule.teamExecutorSearch}
+                emptyText={t.schedule.teamExecutorEmpty}
+                testId="schedule-team-select"
+              />
+              <p className="text-caption text-[var(--abu-text-tertiary)] mt-1">{t.schedule.teamExecutorHint}</p>
+            </div>
+          )}
+
           <div>
             <label className="block text-body font-medium text-[var(--abu-text-primary)] mb-1.5">
               {t.schedule.taskPrompt}

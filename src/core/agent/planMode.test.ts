@@ -1,7 +1,7 @@
 /**
  * Tests for planMode.ts — Plan Mode state management and gate decision logic.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import {
   getPlanMode,
   setPlanMode,
@@ -13,6 +13,16 @@ import {
   type PlanModeState,
 } from './planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+
+let agentToolsModule: typeof import('../tools/definitions/agentTools');
+let orchestrationToolsModule: typeof import('../tools/definitions/orchestrationTools');
+
+beforeAll(async () => {
+  [agentToolsModule, orchestrationToolsModule] = await Promise.all([
+    import('../tools/definitions/agentTools'),
+    import('../tools/definitions/orchestrationTools'),
+  ]);
+});
 
 // ── State Map ──
 
@@ -216,6 +226,21 @@ describe('evaluatePlanGate', () => {
       expect(result.reason).toBeDefined();
     });
 
+    it.each([
+      [TOOL_NAMES.DELEGATE_TO_AGENT, () => agentToolsModule.delegateToAgentTool],
+      [TOOL_NAMES.RUN_AGENT_BATCH, () => orchestrationToolsModule.runAgentBatchTool],
+    ] as const)('blocks %s using its real tool definition', (toolName, loadTool) => {
+      const tool = loadTool();
+      const result = evaluatePlanGate({
+        toolName,
+        toolReadOnly: tool.readOnly,
+        planMode: 'planning',
+      });
+
+      expect(result.allow).toBe(false);
+      expect(result.reason).toBeDefined();
+    });
+
     it('blocks an arbitrary unknown write tool', () => {
       const result = evaluatePlanGate({
         toolName: 'delete_database',
@@ -346,5 +371,16 @@ describe('READONLY_FALLBACK_TOOLS', () => {
     expect(READONLY_FALLBACK_TOOLS.has(TOOL_NAMES.WRITE_FILE)).toBe(false);
     expect(READONLY_FALLBACK_TOOLS.has(TOOL_NAMES.RUN_COMMAND)).toBe(false);
     expect(READONLY_FALLBACK_TOOLS.has(TOOL_NAMES.EDIT_FILE)).toBe(false);
+  });
+});
+
+describe('strict team startup regression (F3)', () => {
+  it('cannot bypass plan approval by dispatching before report_plan or after a reset', () => {
+    clearPlanMode('strict-team');
+    const request = { toolName: TOOL_NAMES.DELEGATE_TO_AGENT, toolReadOnly: false, planMode: getPlanMode('strict-team'), requirePlanApproval: true };
+    expect(evaluatePlanGate(request).allow).toBe(false);
+    expect(evaluatePlanGate({ ...request, toolName: TOOL_NAMES.WRITE_FILE }).allow).toBe(false);
+    expect(evaluatePlanGate({ ...request, toolName: TOOL_NAMES.REPORT_PLAN }).allow).toBe(true);
+    expect(evaluatePlanGate({ ...request, planMode: 'approved' }).allow).toBe(true);
   });
 });

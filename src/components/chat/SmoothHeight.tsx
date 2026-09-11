@@ -21,7 +21,7 @@ const DURATION_MS = 280;
  * the last message group (the completion fold replacing the expanded thinking
  * block) clamps scrollTop instantly — the whole view visibly jumps DOWN. The
  * mount direction is covered by .block-expand-enter, but the fold is a
- * component *swap* (TaskBlock unmounts, the "已处理 Xs" header mounts), so no
+ * component *swap* (TaskBlock unmounts, the "用时 Xs" header mounts), so no
  * CSS enter/exit animation on either component can bridge it. Animating the
  * measured height of the region that contains the swap can.
  *

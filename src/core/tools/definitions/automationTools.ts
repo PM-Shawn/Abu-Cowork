@@ -273,26 +273,14 @@ export const manageTriggerTool: ToolDefinition = {
       source_interval: { type: 'number', description: 'Polling interval in seconds (required when source_type=cron, minimum 10)' },
       debounce_enabled: { type: 'boolean', description: 'Whether to enable debounce (default: true)' },
       debounce_seconds: { type: 'number', description: 'Debounce time window in seconds (default: 300)' },
-      capability: {
-        type: 'string',
-        enum: ['read_tools', 'safe_tools', 'full', 'custom'],
-        description: 'Capability level (default: read_tools). read_tools=read-only analysis; safe_tools=read/write workspace + safe commands; full=almost all operations; custom=custom allowlist',
-      },
-      allowed_commands: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Command allowlist, glob patterns (used when capability=custom, e.g. ["npm run *", "git pull"])',
-      },
-      allowed_paths: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Path allowlist, auto-authorized at runtime (used when capability=custom)',
-      },
-      allowed_tools: {
-        type: 'array',
-        items: { type: 'string' },
-        description: 'Tool allowlist (used when capability=custom, e.g. ["read_file", "http_fetch"])',
-      },
+      // allowed_commands / allowed_paths / allowed_tools are deliberately NOT
+      // exposed. A trigger's capability tier is already model-locked, but a
+      // legacy `custom` trigger's allowlist IS its ceiling: buildTriggerRun-
+      // PermissionCeiling() reads action.permissions verbatim, so letting the
+      // model rewrite those three fields let it widen its own unattended
+      // ceiling from e.g. {allowedTools:['read_file']} to ['*'] without ever
+      // touching `capability`. Host-owned means host-owned. This version has
+      // no UI editor; changes require an administrator or manual config edit.
       trigger_id: { type: 'string', description: 'Trigger ID (required for update/delete/pause/resume)' },
       status_filter: {
         type: 'string',
@@ -335,18 +323,12 @@ export const manageTriggerTool: ToolDefinition = {
           field: input.filter_field as string | undefined,
         };
 
-        // Build action with capability
-        const capabilityInput = input.capability as string | undefined;
+        // Build action without a model-controlled capability. New triggers
+        // therefore take the safest default in triggerPermission.ts.
         const triggerAction: TriggerAction = {
           prompt,
           skillName: input.skill_name as string | undefined,
           workspacePath: input.workspace_path as string | undefined,
-          capability: (capabilityInput as TriggerAction['capability']) ?? undefined,
-          permissions: capabilityInput === 'custom' ? {
-            allowedCommands: input.allowed_commands as string[] | undefined,
-            allowedPaths: input.allowed_paths as string[] | undefined,
-            allowedTools: input.allowed_tools as string[] | undefined,
-          } : undefined,
         };
 
         // Build debounce
@@ -423,6 +405,7 @@ export const manageTriggerTool: ToolDefinition = {
 
         resultLines.push(
           format(t.capLevelLine, { label: capLabel }),
+          t.triggerCapabilityUiNotice,
           format(t.filterLine, { filter: `${filterType}${filter.keywords ? ` [${filter.keywords.join(', ')}]` : ''}` }),
           format(t.debounceLine, { value: debounce.enabled ? format(t.debounceSeconds, { seconds: debounce.windowSeconds }) : t.debounceOff }),
         );
@@ -483,20 +466,21 @@ export const manageTriggerTool: ToolDefinition = {
         const updateData: Record<string, unknown> = {};
         if (input.name !== undefined) updateData.name = input.name;
         if (input.description !== undefined) updateData.description = input.description;
-        if (input.prompt !== undefined || input.skill_name !== undefined || input.workspace_path !== undefined || input.capability !== undefined) {
-          const updatedCapability = input.capability !== undefined
-            ? (input.capability as TriggerAction['capability'])
-            : existing.action.capability;
+        const hasActionUpdate =
+          input.prompt !== undefined ||
+          input.skill_name !== undefined ||
+          input.workspace_path !== undefined;
+
+        if (hasActionUpdate) {
+          // capability AND permissions are both carried over untouched. The
+          // model may restate a trigger's prompt/skill/workspace; it may never
+          // restate the authority that trigger runs under.
           updateData.action = {
             prompt: (input.prompt as string) ?? existing.action.prompt,
             skillName: input.skill_name !== undefined ? input.skill_name : existing.action.skillName,
             workspacePath: input.workspace_path !== undefined ? input.workspace_path : existing.action.workspacePath,
-            capability: updatedCapability,
-            permissions: updatedCapability === 'custom' ? {
-              allowedCommands: input.allowed_commands !== undefined ? input.allowed_commands : existing.action.permissions?.allowedCommands,
-              allowedPaths: input.allowed_paths !== undefined ? input.allowed_paths : existing.action.permissions?.allowedPaths,
-              allowedTools: input.allowed_tools !== undefined ? input.allowed_tools : existing.action.permissions?.allowedTools,
-            } : existing.action.permissions,
+            capability: existing.action.capability,
+            permissions: existing.action.permissions,
           };
         }
         if (input.filter_type !== undefined || input.filter_keywords !== undefined || input.filter_pattern !== undefined || input.filter_field !== undefined) {
@@ -515,7 +499,10 @@ export const manageTriggerTool: ToolDefinition = {
         }
 
         store.updateTrigger(triggerId, updateData as Parameters<typeof store.updateTrigger>[1]);
-        return format(t.triggerUpdated, { name: (input.name as string) || existing.name, id: triggerId });
+        return [
+          format(t.triggerUpdated, { name: (input.name as string) || existing.name, id: triggerId }),
+          t.triggerCapabilityUiNotice,
+        ].join('\n');
       }
 
       case 'delete': {

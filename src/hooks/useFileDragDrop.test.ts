@@ -8,8 +8,25 @@ type TestRuntime = typeof globalThis & {
   __ABU_SHELL__?: {
     mainSupervisesSidecar?: boolean;
     getPathForFile?: (file: File) => string;
+    authorizeUserAttachment?: (file: File, request: { mediaType: 'application/pdf'; maxBytes?: number }) => Promise<{
+      token: string;
+      name: string;
+      mediaType: 'application/pdf';
+      expiresAt: number;
+    }>;
+    readUserAttachment?: (request: { token: string }) => Promise<Uint8Array>;
   };
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 function dragEvent(files: File[] = [], types: string[] = ['Files']) {
   const currentTarget = document.createElement('div');
@@ -86,5 +103,43 @@ describe('useFileDragDrop', () => {
 
     act(() => result.current.dropTargetProps.onDragLeave?.(dragEvent()));
     expect(result.current.isDragging).toBe(false);
+  });
+
+
+
+  it('reports a failed Electron PDF authorization and always closes its admission gate', async () => {
+    const auth = deferred<never>();
+    runtime.__ABU_SHELL__!.authorizeUserAttachment = vi.fn(() => auth.promise);
+    runtime.__ABU_SHELL__!.readUserAttachment = vi.fn();
+    const onDrop = vi.fn();
+    const finishAdmission = vi.fn();
+    const onAdmissionError = vi.fn();
+    const useHookWithAdmission = useFileDragDrop as unknown as (
+      handler: typeof onDrop,
+      options: {
+        onAdmissionStart: () => () => void;
+        onAdmissionError: () => void;
+      },
+    ) => ReturnType<typeof useFileDragDrop>;
+    const { result } = renderHook(() => useHookWithAdmission(onDrop, {
+      onAdmissionStart: () => finishAdmission,
+      onAdmissionError,
+    }));
+
+    act(() => {
+      result.current.dropTargetProps.onDrop?.(dragEvent([
+        new File([new TextEncoder().encode('%PDF-1.7\n%%EOF')], 'blocked.pdf', { type: 'application/pdf' }),
+      ]));
+    });
+
+    await act(async () => {
+      auth.reject(new Error('native authorization failed'));
+      await auth.promise.catch(() => undefined);
+      await Promise.resolve();
+    });
+
+    expect(onDrop).not.toHaveBeenCalled();
+    expect(onAdmissionError).toHaveBeenCalledTimes(1);
+    expect(finishAdmission).toHaveBeenCalledTimes(1);
   });
 });

@@ -19,7 +19,7 @@ import { createPortSlot } from './portSlot';
  */
 export interface AuthorizedPathsReader {
   /** Mirrors `pathSafety.ts`'s `getAuthorizedWritablePaths()`. */
-  getAuthorizedWritablePaths(): Promise<string[]>;
+  getAuthorizedWritablePaths(scopeId?: string): Promise<string[]>;
 }
 
 /** Default in-process implementation wrapping the real (synchronous)
@@ -28,7 +28,7 @@ export interface AuthorizedPathsReader {
  *  an IPC/RPC-backed implementation. */
 export function createInProcessAuthorizedPathsReader(): AuthorizedPathsReader {
   return {
-    getAuthorizedWritablePaths: async () => getAuthorizedWritablePaths(),
+    getAuthorizedWritablePaths: async (scopeId?: string) => getAuthorizedWritablePaths(scopeId),
   };
 }
 

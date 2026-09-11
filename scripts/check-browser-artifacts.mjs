@@ -8,7 +8,9 @@
  *                                     (the extension AND, injected into an
  *                                      isolated world, the built-in browser)
  *   abu-browser-bridge/src/tools.ts → electron/browser-runtime/dist/server.mjs
+ *                                     electron/browser-runtime/dist/queryJsWorker.mjs
  *                                     electron/chrome-bridge-runtime/dist/server.mjs
+ *                                     electron/chrome-bridge-runtime/dist/queryJsWorker.mjs
  *
  * Editing a source without rebuilding leaves the running app on the old code.
  * That is not hypothetical: a round of this work shipped a tool-description
@@ -45,8 +47,26 @@ export const ARTIFACTS = [
     rebuild: 'npm run build:electron-browser-runtime',
   },
   {
+    artifact: 'electron/browser-runtime/dist/queryJsWorker.mjs',
+    sources: [
+      'abu-browser-bridge/src/queryJsWorker.mjs',
+      'package-lock.json',
+      'scripts/build-electron-browser-runtime.mjs',
+    ],
+    rebuild: 'npm run build:electron-browser-runtime',
+  },
+  {
     artifact: 'electron/chrome-bridge-runtime/dist/server.mjs',
     sources: ['abu-browser-bridge/src'],
+    rebuild: 'npm run build:electron-browser-runtime',
+  },
+  {
+    artifact: 'electron/chrome-bridge-runtime/dist/queryJsWorker.mjs',
+    sources: [
+      'abu-browser-bridge/src/queryJsWorker.mjs',
+      'package-lock.json',
+      'scripts/build-electron-chrome-bridge-runtime.mjs',
+    ],
     rebuild: 'npm run build:electron-browser-runtime',
   },
 ];

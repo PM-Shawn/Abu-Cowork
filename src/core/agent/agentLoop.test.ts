@@ -1,16 +1,100 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   buildUserMessageContent,
   isInteractiveDesktop,
   shouldComputeProposalSignal,
   isIncompleteReason,
+  mapSubagentStopReason,
   isVisionUnsupportedError,
   getCapabilityPrompt,
   resolveTools,
   buildVolatileContextTail,
+  buildDirectDelegateSubagentOptions,
+  buildInterruptedToolCallContext,
+  buildToolRosterUpdateMessage,
+  resolveToolContextWorkspacePath,
+  runAgentLoop,
 } from './agentLoop';
-import type { ToolDefinition } from '../../types';
+import { trimOldScreenshots } from '../context/contextManager';
+import type { Message, ToolDefinition, ToolResultContent } from '../../types';
 import type { ToolInvoker } from './ports/toolInvoker';
+import {
+  getConversationReader,
+  setConversationReader,
+} from './ports/conversationReader';
+import {
+  getAbortRegistry,
+  setAbortRegistry,
+} from './ports/abortRegistry';
+import {
+  clearInputQueue,
+  getQueuedInputs,
+  subscribeToInputQueue,
+} from './userInputQueue';
+
+describe('runAgentLoop live-run queue ownership', () => {
+  const conversationId = 'conv-live-observer-failure';
+  const defaultConversationReader = getConversationReader();
+  const defaultAbortRegistry = getAbortRegistry();
+
+  afterEach(() => {
+    setConversationReader(defaultConversationReader);
+    setAbortRegistry(defaultAbortRegistry);
+    clearInputQueue(conversationId);
+  });
+
+  it('returns enqueued after queue observers throw', async () => {
+    setConversationReader({
+      getConversation: () => ({
+        id: conversationId,
+        title: 'running conversation',
+        status: 'running',
+        messages: [],
+      }) as never,
+      getIndexEntry: () => undefined,
+      getThinkingStartTime: () => null,
+    });
+    setAbortRegistry({
+      hasAbortController: () => true,
+      getAbortController: () => new AbortController(),
+      clearAbortController: () => undefined,
+    });
+    const healthySubscriber = vi.fn();
+    const unsubscribeThrowing = subscribeToInputQueue(() => {
+      throw new Error('broken queue observer');
+    });
+    const unsubscribeHealthy = subscribeToInputQueue(healthySubscriber);
+
+    try {
+      await expect(runAgentLoop(conversationId, 'follow-up')).resolves.toEqual({ reason: 'enqueued' });
+      expect(getQueuedInputs(conversationId).map((item) => item.text)).toEqual(['follow-up']);
+      expect(healthySubscriber).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribeThrowing();
+      unsubscribeHealthy();
+    }
+  });
+
+});
+
+describe('buildToolRosterUpdateMessage', () => {
+  it('marks the roster-change user-context message as hidden system input', () => {
+    expect(buildToolRosterUpdateMessage({
+      loopId: 'loop-1',
+      addedToolNames: ['delegate_to_agent'],
+      removedToolNames: ['run_agent_batch'],
+      id: 'roster-1',
+      timestamp: 123,
+    })).toMatchObject({
+      id: 'roster-1',
+      role: 'user',
+      loopId: 'loop-1',
+      timestamp: 123,
+      isSystem: true,
+      content: expect.stringContaining('delegate_to_agent'),
+    });
+  });
+});
 
 // escalateMaxOutputTokens / shouldContinueTruncatedToolCalls moved to
 // loopGuards.ts + loopGuards.test.ts (P1-3a-pre): they're pure and shared
@@ -43,6 +127,11 @@ describe('isInteractiveDesktop', () => {
 
   it('trigger-run conversation → false', () => {
     expect(isInteractiveDesktop({}, { triggerId: 'trigger-7' })).toBe(false);
+  });
+
+  it('scope-only and ceiling-only runs are background even without conversation metadata', () => {
+    expect(isInteractiveDesktop({ authorizationScopeId: 'scope-1' }, {})).toBe(false);
+    expect(isInteractiveDesktop({ runPermissionCeiling: {} as never }, {})).toBe(false);
   });
 
   it('absent conversation record (shouldn’t happen, defensive) → falls through to options-only check', () => {
@@ -184,6 +273,163 @@ describe('resolveTools · per-run restrictions', () => {
     expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file', 'read_skill_file']);
     expect(resolved.deferredTools).toEqual([]);
   });
+
+  it('keeps conditional loading for an exact scheduler runtime snapshot', () => {
+    const tools = [
+      makeTool('read_file'),
+      makeTool('write_file'),
+      makeTool('github__list_repositories'),
+    ];
+    const invoker: ToolInvoker = {
+      getAllTools: () => tools,
+      executeAnyTool: async () => 'ok',
+      toolResultToString: String,
+    };
+
+    const resolved = resolveTools(
+      invoker,
+      { type: 'general', name: 'abu', cleanInput: 'summarize repositories' },
+      false,
+      undefined,
+      {
+        userInput: 'summarize repositories',
+        computerUseEnabled: false,
+        activeSkills: [],
+        turnCount: 1,
+      },
+      ['read_file', 'github__list_repositories'],
+      undefined,
+      true,
+    );
+
+    expect(resolved.tools.map((tool) => tool.name)).toEqual(['read_file']);
+    expect(resolved.deferredTools.map((tool) => tool.name)).toEqual(['github__list_repositories']);
+  });
+});
+
+describe('buildDirectDelegateSubagentOptions', () => {
+  it('carries the parent unattended authorization scope into direct @agent delegation', () => {
+    const controller = new AbortController();
+    const agent = {
+      name: 'researcher',
+      description: 'research',
+      systemPrompt: 'research',
+    };
+    const settingsReader = { getSnapshot: () => ({}) };
+    const runPermissionCeiling = { version: 1, source: 'trigger', capability: 'safe_tools' } as never;
+
+    const preloadedSkills = {
+      text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nbody',
+      resolved: ['weekly-report'],
+      missing: [],
+      truncated: [],
+    };
+
+    const params = buildDirectDelegateSubagentOptions({
+      agent,
+      task: 'look this up',
+      // Shell-resolved by entryOrchestration and carried on the route; the
+      // sidecar-run venue has no populated skill loader of its own.
+      preloadedSkills,
+      parentConversationSummary: 'parent context',
+      signal: controller.signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      onProgress: undefined,
+      imContext: undefined,
+      parentConversationId: 'conv-1',
+      settingsReader,
+    } as never, {
+      allowedTools: ['read_*'],
+      blockedTools: ['run_command'],
+      authorizationScopeId: 'scope-parent',
+      runPermissionCeiling,
+    }, null);
+
+    expect(params).toEqual(expect.objectContaining({
+      agent,
+      task: 'look this up',
+      preloadedSkills,
+      parentConversationId: 'conv-1',
+      settingsReader,
+      allowedTools: ['read_*'],
+      blockedTools: ['run_command'],
+      authorizationScopeId: 'scope-parent',
+      runPermissionCeiling,
+      workspaceReader: expect.any(Object),
+    }));
+    expect(params.workspaceReader?.getCurrentPath()).toBeNull();
+  });
+});
+
+describe('buildInterruptedToolCallContext', () => {
+  it('keeps a mixed completed/interrupted message eligible for id-based screenshot trimming', () => {
+    const image = (data: string): ToolResultContent => ({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data },
+    });
+    const interrupted = buildInterruptedToolCallContext({
+      id: 'tc-aborted',
+      name: 'read_file',
+      input: { path: '/tmp/aborted.png' },
+    });
+    const message: Message = {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: '',
+      timestamp: 1,
+      toolCalls: [
+        { id: 'tc-old', name: 'read_file', input: {}, result: 'old', resultContent: [image('old')] },
+        { id: 'tc-aborted', name: 'read_file', input: {}, result: interrupted.result, isError: true },
+        { id: 'tc-new-1', name: 'read_file', input: {}, result: 'new-1', resultContent: [image('new-1')] },
+        { id: 'tc-new-2', name: 'read_file', input: {}, result: 'new-2', resultContent: [image('new-2')] },
+      ],
+      // Completion order deliberately differs from request order. The
+      // interrupted row must still carry its id or the whole context side is
+      // conservatively left untrimmed.
+      toolCallsForContext: [
+        { id: 'tc-new-1', name: 'read_file', input: {}, result: 'new-1', resultContent: [image('new-1')] },
+        interrupted,
+        { id: 'tc-old', name: 'read_file', input: {}, result: 'old', resultContent: [image('old')] },
+        { id: 'tc-new-2', name: 'read_file', input: {}, result: 'new-2', resultContent: [image('new-2')] },
+      ],
+    };
+
+    const [trimmed] = trimOldScreenshots([message], 60);
+    const contextById = new Map(trimmed.toolCallsForContext?.map((call) => [call.id, call]));
+
+    expect(interrupted.id).toBe('tc-aborted');
+    expect(contextById.get('tc-old')?.resultContent).toEqual([]);
+    expect(contextById.get('tc-new-1')?.resultContent).toHaveLength(1);
+    expect(contextById.get('tc-new-2')?.resultContent).toHaveLength(1);
+    expect(contextById.get('tc-aborted')).toEqual(interrupted);
+  });
+});
+
+describe('resolveToolContextWorkspacePath', () => {
+  it('fails closed to null for scoped unattended runs with no IM or conversation workspace', () => {
+    expect(resolveToolContextWorkspacePath(
+      { authorizationScopeId: 'scope-1' },
+      { workspacePath: null },
+      '/Users/test/global-workspace',
+    )).toBeNull();
+  });
+
+  it('treats an empty authorization scope as explicit and still fails closed', () => {
+    expect(resolveToolContextWorkspacePath(
+      { authorizationScopeId: '' },
+      { workspacePath: null },
+      '/Users/test/global-workspace',
+    )).toBeNull();
+  });
+
+  it('keeps the legacy global fallback when no authorization scope is present', () => {
+    expect(resolveToolContextWorkspacePath(
+      {},
+      { workspacePath: null },
+      '/Users/test/global-workspace',
+    )).toBe('/Users/test/global-workspace');
+  });
 });
 
 // Task #51 · Stricter gate for post-loop proposal signal. Adds a
@@ -269,6 +515,15 @@ describe('isIncompleteReason', () => {
   it('is false for error', () => {
     expect(isIncompleteReason('error')).toBe(false);
   });
+});
+
+describe('mapSubagentStopReason', () => {
+  it.each(['completed', 'aborted', 'error', 'max_turns'] as const)(
+    'preserves the structured @agent terminal reason %s',
+    (reason) => {
+      expect(mapSubagentStopReason(reason)).toBe(reason);
+    },
+  );
 });
 
 describe('getCapabilityPrompt — visual-output variant selection', () => {

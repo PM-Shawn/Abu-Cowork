@@ -32,12 +32,16 @@ import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
 import { setLoopContext, clearLoopContext } from './permissionBridge';
 import type { EventRouter } from './eventRouter';
+import type { IMContext } from './orchestrator';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 import { isMacOS } from '../../utils/platform';
 import { isToolResultError } from './toolResultErrors';
+import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
+import { firstImageContent } from '../tools/toolResultContent';
+import { snapshotResultImage } from '../session/outputSnapshots';
 
 const logger = createLogger('toolExecutor');
 
@@ -83,6 +87,23 @@ export interface ToolBatchParams {
   /** Per-run execution whitelist. Pattern matching follows skill allowedTools
    * semantics and is enforced before hooks or tool invocation. */
   allowedTools?: string[];
+  /** Headless IM context to pass through delegate tools into subagent runs. */
+  imContext?: IMContext;
+  /**
+   * F1 — where an unattended run may ask, published on the loop context so
+   * gates that build their own approval request (the browser gate) can reach
+   * the automation's own chat instead of refusing with `no_binding`.
+   *
+   * REQUIRED, `| undefined` rather than `?:`, and deliberately so (batch-8
+   * review F8-6). The two end-to-end pins for this field install their own
+   * `LoopContext`, so deleting the production hand-off at `agentLoop.ts`'s
+   * `executeToolBatch` call left `tsc` and all 8000+ tests green while every
+   * unattended browser 「每次询问」 in the real app fell back to `no_binding`.
+   * A caller that has no target must now say so out loud; a caller that
+   * forgets fails typecheck. Cheaper than the harness the alternative needed,
+   * and `npm run verify` covers it for free.
+   */
+  unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext | undefined;
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
@@ -157,12 +178,13 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     .filter(tool => tool.execution?.presentation === 'computer-use')
     .map(tool => tool.name));
   const isComputerTool = (tc: ToolCall) => computerToolNames.has(tc.name);
+  const isScopedRun = toolContext.authorizationScopeId !== undefined;
 
   // Update the assistant message with tool calls
   chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
 
   // Execute tools in parallel using Promise.allSettled
-  chatDelta.setAgentStatus('tool-calling', `${collectedToolCalls.length} tools`);
+  chatDelta.setAgentStatus(conversationId, 'tool-calling', `${collectedToolCalls.length} tools`);
 
   // Expose loop context for delegate_to_agent tool (per-loop, supports concurrent agents)
   setLoopContext(loopId, {
@@ -176,6 +198,14 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     toolCallToStepId,
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
+    imContext: params.imContext,
+    unattendedApproval: params.unattendedApproval,
+    authorizationScopeId: params.toolContext.authorizationScopeId,
+    runPermissionCeiling: params.toolContext.runPermissionCeiling,
+    initiatedBy: params.toolContext.initiatedBy,
+    reportBrowserDenial: params.toolContext.reportBrowserDenial,
+    reportBrowserAllow: params.toolContext.reportBrowserAllow,
+    imReplyTarget: params.toolContext.imReplyTarget,
   });
 
   let completedCount = 0;
@@ -214,6 +244,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       toolName: tc.name,
       toolInput: tc.input,
       abortSignal: abortController.signal,
+      toolContext,
     } as PreToolCallEvent);
 
     if (preEvent.blocked) {
@@ -236,6 +267,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       toolName: tc.name,
       toolReadOnly: undefined,
       planMode: getPlanMode(conversationId),
+      requirePlanApproval: toolContext?.teamRequirePlanApproval && toolContext.interactionMode !== 'background',
     });
     if (!planGate.allow) {
       return { id: tc.id, result: planGate.reason ?? '计划模式:已拦截写操作', resultContent: undefined, error: true, duration: 0 };
@@ -251,11 +283,33 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
     const startTime = Date.now();
     let metadata: ToolExecutionMetadata | undefined;
+    const checkpointMetadata = (next: ToolExecutionMetadata): void => {
+      metadata = {
+        ...metadata,
+        ...next,
+      };
+      chatDelta.checkpointToolCallMetadata(conversationId, assistantMsgId, tc.id, metadata);
+    };
     // Observability: record this tool execution as a span (no-op when disabled)
     const toolSpan = startToolSpan(conversationId, { name: tc.name, input: effectiveInput });
     try {
-      // Race tool execution against abort signal so stop button works during long-running tools (e.g. MCP)
-      const rawResult: ToolResult = await new Promise<ToolResult>((resolve, reject) => {
+      const invokeTool = () => toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
+        ...toolContext,
+        toolCallId: tc.id,
+        assistantMessageId: assistantMsgId,
+        abortSignal: abortController.signal,
+        reportMetadata: checkpointMetadata,
+      }, contextUsagePercent);
+
+      // Foreground Stop keeps its long-standing responsive detach behavior.
+      // A scoped/background run is an authority owner, however: its caller
+      // must not release the scope or start the next session turn while the
+      // already-started MCP/HTTP/native operation is still alive. Keep the
+      // original promise joined in that case; UI terminalization is handled
+      // independently by the shell-side runner.
+      const rawResult: ToolResult = isScopedRun
+        ? await invokeTool()
+        : await new Promise<ToolResult>((resolve, reject) => {
         if (abortController.signal.aborted) {
           reject(new DOMException('Aborted', 'AbortError'));
           return;
@@ -268,17 +322,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
           }
         };
         abortController.signal.addEventListener('abort', onAbort, { once: true });
-        toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
-          ...toolContext,
-          toolCallId: tc.id,
-          abortSignal: abortController.signal,
-          reportMetadata: (next) => {
-            metadata = {
-              ...metadata,
-              ...next,
-            };
-          },
-        }, contextUsagePercent)
+        invokeTool()
           .then((result) => {
             if (!settled) {
               settled = true;
@@ -293,11 +337,11 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
               reject(err);
             }
           });
-      });
+        });
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus(conversationId, 'tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       // Extract string for display/hooks; keep rich content for LLM
       const resultStr = toolInvoker.toolResultToString(rawResult);
@@ -306,7 +350,14 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const requiresUserRecovery = Boolean(
         metadata?.sandboxRecovery || metadata?.requiresUserRecovery,
       );
-      const executionError = requiresUserRecovery
+      const structuredSubagentFailure = metadata?.subagentStopReason !== undefined
+        && metadata.subagentStopReason !== 'completed';
+      const batchTerminalFailure = batchSummaryHasNonSuccess(metadata?.batchTerminalSummary);
+      // Computer tools report failures as result-string envelopes rather than
+      // throwing, so their error flag must also read the result text.
+      const isError = requiresUserRecovery
+        || structuredSubagentFailure
+        || batchTerminalFailure
         || (isComputerTool(tc) && isToolResultError(resultStr));
       // Emit postToolCall hook
       await emitHook({
@@ -317,16 +368,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         toolInput: effectiveInput,
         abortSignal: abortController.signal,
         result: resultStr,
-        error: executionError,
+        error: isError,
         durationMs,
+        toolContext,
       });
-      logger.info('Tool executed', { toolName: tc.name, durationMs, error: executionError });
+      logger.info('Tool executed', { toolName: tc.name, durationMs, error: isError });
       toolSpan.end({ output: resultStr });
       return {
         id: tc.id,
         result: resultStr,
         resultContent,
-        error: executionError,
+        error: isError,
         duration: durationMs / 1000,
         metadata,
       };
@@ -339,7 +391,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const durationMs = Date.now() - startTime;
       completedCount++;
       if (totalCount > 1) {
-        chatDelta.setAgentStatus('tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
+        chatDelta.setAgentStatus(conversationId, 'tool-calling', `${completedCount}/${totalCount}: ${tc.name}`);
       }
       const errorMsg = err instanceof Error ? err.message : String(err);
       // Emit postToolCall hook for errors too
@@ -353,6 +405,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         result: `Error: ${errorMsg}`,
         error: true,
         durationMs,
+        toolContext,
       });
       logger.info('Tool executed', { toolName: tc.name, durationMs, error: true });
       toolSpan.end({ output: `Error: ${errorMsg}`, level: 'ERROR', statusMessage: errorMsg });
@@ -583,6 +636,32 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
             result: toolResult,
           }, workspacePath).catch((e) => logger.warn('snapshot tool output failed', { tool: matchedTc.name, err: e }));
         }).catch(() => {});
+
+        const image = firstImageContent(resultContent);
+        if (image) {
+          // A scoped/background run must not re-read a user path after its
+          // authority owner can be released. Persist the immutable bytes the
+          // tool already returned and join that internal write before the
+          // batch settles. Foreground runs retain the existing non-blocking
+          // path-copy behavior.
+          const sourcePath = !isScopedRun
+            && matchedTc.name === TOOL_NAMES.READ_FILE
+            && typeof matchedTc.input.path === 'string'
+            ? matchedTc.input.path
+            : undefined;
+          const isPersistedExplicitScreenshot = matchedTc.name === TOOL_NAMES.COMPUTER
+            && matchedTc.input.action === 'screenshot'
+            && resultContent?.some((block) => block.type === 'text' && block.text.includes('Screenshot saved to:'));
+          if (!isPersistedExplicitScreenshot) {
+            const snapshotPromise = snapshotResultImage(conversationId, id, image, sourcePath)
+              .catch((e) => logger.warn('snapshot tool result image failed', { tool: matchedTc.name, err: e }));
+            if (isScopedRun) {
+              await snapshotPromise;
+            } else {
+              void snapshotPromise;
+            }
+          }
+        }
       }
 
       chatDelta.updateToolCall(

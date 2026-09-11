@@ -15,14 +15,18 @@
  *
  * The fix: every layer painted above the chrome declares `data-electron-no-drag`
  * on its root, which the stylesheet turns into `-webkit-app-region: no-drag`
- * for the root and every descendant, subtracting the overlay from the lane.
+ * for that root only. The root's own rectangle already subtracts the whole
+ * overlay from the lane, and the rule deliberately stops there: stamping
+ * no-drag onto descendants too let a tall scrolled conversation contribute its
+ * un-clipped layout rectangle back into the title bar (fixed in 6239c807), so
+ * an overlay's buttons carry no app-region of their own.
  *
  * This test reproduces the reported viewport (1200x745 — 1080p at 150%) in an
  * isolated Electron instance, then asserts the close button is genuinely
- * hit-testable: it resolves to `no-drag`, no drag layer is painted above it,
- * and `elementFromPoint` returns the button itself. `src/__tests__/
- * overlayDragRegions.test.ts` guards the same invariant statically for every
- * other overlay in the tree.
+ * hit-testable: the point it occupies resolves to `no-drag`, no drag layer is
+ * painted above it, and `elementFromPoint` returns the button itself.
+ * `src/__tests__/overlayDragRegions.test.ts` guards the same invariant
+ * statically for every other overlay in the tree.
  */
 import { expect, test } from '@playwright/test';
 import type { ElectronApplication, Page } from 'playwright';
@@ -30,6 +34,7 @@ import {
   appRegionAt,
   closeAbuElectron,
   createElectronDataRoot,
+  dismissFirstRunOverlays,
   launchAbuElectron,
   removeElectronDataRoot,
   type ElectronDataRoot,
@@ -43,24 +48,6 @@ const REPORTED_VIEWPORT = { width: 1200, height: 745 };
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
-/** A fresh data root shows the first-run guide, which covers the whole window. */
-async function dismissFirstRunOverlays(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    Object.assign(persisted.state, {
-      guideShown: true,
-      guideOpen: false,
-      hasAcknowledgedDisclaimer: true,
-      hasRunSensitiveAudit_v015: true,
-    });
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await page.reload();
-  await waitForApp(page);
 }
 
 let app: ElectronApplication | undefined;
@@ -128,9 +115,12 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
       };
     });
 
-    // The marker plus its descendant rule is what hands the clicks back.
+    // The marker on the overlay ROOT is the entire mechanism: its rectangle
+    // covers the button, so the button needs no region of its own. Asserting
+    // the button stays `none` is the regression guard for 6239c807 — putting
+    // the descendant rule back would leak overlay geometry into the title bar.
     expect(hitTest.scrimAppRegion).toBe('no-drag');
-    expect(hitTest.closeAppRegion).toBe('no-drag');
+    expect(hitTest.closeAppRegion).toBe('none');
     expect(hitTest.receivesHit).toBe(true);
     // The authoritative check: Chromium unions/subtracts in DOCUMENT order, so
     // ask the resolver that models that, not the stacking order.

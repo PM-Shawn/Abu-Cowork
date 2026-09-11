@@ -157,6 +157,40 @@ describe('autoCompact', () => {
       }
     });
 
+    it('treats content-policy rejections as ordinary failures with the five-minute breaker', () => {
+      vi.useFakeTimers();
+      try {
+        const tracker = new AutoCompactTracker();
+        tracker.recordFailure('content_policy');
+        expect(tracker.isDisabled()).toBe(false);
+        tracker.recordFailure('content_policy');
+        expect(tracker.isDisabled()).toBe(false);
+        tracker.recordFailure('content_policy');
+        expect(tracker.isDisabled()).toBe(true);
+
+        vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+        expect(tracker.isDisabled()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps authentication failures on the thirty-minute disable path', () => {
+      vi.useFakeTimers();
+      try {
+        const tracker = new AutoCompactTracker();
+        tracker.recordFailure('authentication');
+        expect(tracker.isDisabled()).toBe(true);
+
+        vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+        expect(tracker.isDisabled()).toBe(true);
+        vi.advanceTimersByTime(25 * 60 * 1000);
+        expect(tracker.isDisabled()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('tracks warning level', () => {
       const tracker = new AutoCompactTracker();
       expect(tracker.getLastLevel()).toBe(0);

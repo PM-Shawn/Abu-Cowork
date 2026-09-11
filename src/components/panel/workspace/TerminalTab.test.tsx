@@ -175,18 +175,23 @@ describe('TerminalTab theming', () => {
     // covers both, regardless of how slow the runner is. The previous
     // real-time waitFor (even at 12s) still lost this race once on a
     // contended Windows runner; event ordering cannot.
-    await act(async () => {
-      document.documentElement.classList.add('dark');
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(terminalInstances[0].options.theme).toEqual(expectedTheme(DARK_VARS));
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        document.documentElement.classList.add('dark');
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(terminalInstances[0].options.theme).toEqual(expectedTheme(DARK_VARS));
 
-    // Still the same single terminal instance — no dispose/recreate cycle.
-    expect(terminalInstances).toHaveLength(1);
-    const spawnCallsAfter = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_spawn').length;
-    const killCallsAfter = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_kill').length;
-    expect(spawnCallsAfter).toBe(spawnCallsBefore);
-    expect(killCallsAfter).toBe(killCallsBefore);
+      // Still the same single terminal instance — no dispose/recreate cycle.
+      expect(terminalInstances).toHaveLength(1);
+      const spawnCallsAfter = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_spawn').length;
+      const killCallsAfter = invoke.mock.calls.filter(([cmd]) => cmd === 'pty_kill').length;
+      expect(spawnCallsAfter).toBe(spawnCallsBefore);
+      expect(killCallsAfter).toBe(killCallsBefore);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -316,11 +321,19 @@ describe('TerminalTab selection → add to chat', () => {
     terminalInstances[0].selection = '   \n  ';
     const host = container.querySelector('div.overflow-hidden') as HTMLDivElement;
 
-    fireEvent.mouseUp(host, { button: 0, clientX: 50, clientY: 50 });
+    vi.useFakeTimers();
+    try {
+      fireEvent.mouseUp(host, { button: 0, clientX: 50, clientY: 50 });
 
-    // Debounce window (120 ms) must elapse before asserting absence.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const t = getI18n();
-    expect(screen.queryByRole('button', { name: new RegExp(t.reference.addToChat) })).toBeNull();
+      // Advance exactly through the component's 120 ms debounce without making
+      // the suite depend on runner speed or wall-clock scheduling.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120);
+      });
+      const t = getI18n();
+      expect(screen.queryByRole('button', { name: new RegExp(t.reference.addToChat) })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

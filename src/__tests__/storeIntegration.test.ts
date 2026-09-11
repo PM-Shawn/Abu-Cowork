@@ -27,11 +27,9 @@ describe('Store Integration', () => {
     useChatStore.setState({
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     useTaskExecutionStore.setState({
       executions: {},
@@ -214,18 +212,22 @@ describe('Store Integration', () => {
 
   // ── Agent status transitions ──
   describe('agent status', () => {
-    it('tracks global agent status', () => {
-      expect(useChatStore.getState().agentStatus).toBe('idle');
+    it('tracks agent status per conversation', () => {
+      const convId = useChatStore.getState().createConversation();
 
-      useChatStore.getState().setAgentStatus('thinking');
-      expect(useChatStore.getState().agentStatus).toBe('thinking');
+      expect(useChatStore.getState().agentStates.has(convId)).toBe(false);
 
-      useChatStore.getState().setAgentStatus('tool-calling', 'read_file');
-      expect(useChatStore.getState().agentStatus).toBe('tool-calling');
-      expect(useChatStore.getState().currentTool).toBe('read_file');
+      useChatStore.getState().setAgentStatus(convId, 'thinking');
+      expect(useChatStore.getState().agentStates.get(convId)?.status).toBe('thinking');
 
-      useChatStore.getState().setAgentStatus('idle');
-      expect(useChatStore.getState().agentStatus).toBe('idle');
+      useChatStore.getState().setAgentStatus(convId, 'tool-calling', 'read_file');
+      expect(useChatStore.getState().agentStates.get(convId)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'read_file',
+      });
+
+      useChatStore.getState().setAgentStatus(convId, 'idle');
+      expect(useChatStore.getState().agentStates.has(convId)).toBe(false);
     });
   });
 });

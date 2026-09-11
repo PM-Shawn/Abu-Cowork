@@ -14,7 +14,7 @@ describe('createInProcessConversationReader', () => {
     useChatStore.setState({
       conversations: {},
       conversationIndex: {},
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
   });
 
@@ -55,10 +55,14 @@ describe('createInProcessConversationReader', () => {
     expect(reader.getIndexEntry('does-not-exist')).toBeUndefined();
   });
 
-  it('getThinkingStartTime() mirrors the global chatStore scalar', () => {
-    useChatStore.setState({ thinkingStartTime: 12345 });
+  it('getThinkingStartTime() returns the addressed conversation thinking timestamp', () => {
+    const c1 = useChatStore.getState().createConversation();
+    const c2 = useChatStore.getState().createConversation();
+    useChatStore.getState().setAgentStatus(c1, 'thinking');
+    useChatStore.getState().setAgentStatus(c2, 'idle');
     const reader = createInProcessConversationReader();
-    expect(reader.getThinkingStartTime()).toBe(12345);
+    expect(reader.getThinkingStartTime(c1)).not.toBeNull();
+    expect(reader.getThinkingStartTime(c2)).toBeNull();
   });
 
   it('reflects store updates on the next call (not cached at construction time)', () => {
@@ -100,6 +104,6 @@ describe('getConversationReader / setConversationReader', () => {
     };
     setConversationReader(stub);
     expect(getConversationReader()).toBe(stub);
-    expect(getConversationReader().getThinkingStartTime()).toBe(999);
+    expect(getConversationReader().getThinkingStartTime('c1')).toBe(999);
   });
 });

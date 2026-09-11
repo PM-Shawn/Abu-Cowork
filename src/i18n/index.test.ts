@@ -83,6 +83,40 @@ describe('i18n', () => {
       const t = getI18n();
       expect(t.sidebar).toBeDefined();
     });
+
+    it('provides the complete context breakdown labels in both locales', () => {
+      setLanguage('zh-CN');
+      expect(getI18n().chat.contextBreakdown).toEqual({
+        title: '上下文构成',
+        systemPrompt: '系统提示词',
+        tools: '工具',
+        mcp: 'MCP',
+        skills: '技能',
+        conversation: '对话',
+        free: '剩余',
+      });
+
+      setLanguage('en-US');
+      expect(getI18n().chat.contextBreakdown).toEqual({
+        title: 'Context breakdown',
+        systemPrompt: 'System prompt',
+        tools: 'Tools',
+        mcp: 'MCP',
+        skills: 'Skills',
+        conversation: 'Conversation',
+        free: 'Free',
+      });
+    });
+
+    it('provides scoped no-workspace command guidance in both locales', () => {
+      setLanguage('zh-CN');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('完全自主');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('工作区路径');
+
+      setLanguage('en-US');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('Full Autonomy');
+      expect(getI18n().toolErrors.scopedRunNoWorkspaceCommand).toContain('workspace path');
+    });
   });
 
   // ── getLocale ──

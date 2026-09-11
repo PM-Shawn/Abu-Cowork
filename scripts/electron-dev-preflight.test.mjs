@@ -8,6 +8,7 @@ import {
   formatPreflightFailure,
   inspectElectronDevArtifacts,
   inspectElectronDevDependencies,
+  inspectGitHooks,
 } from './electron-dev-preflight.mjs';
 
 function fixture() {
@@ -113,12 +114,47 @@ test('reports every generated runtime needed by a complete Electron dev launch',
         '内置 Node',
         '内置 Python',
         'Abu-Browser 运行时',
+        'Abu-Browser query_js Worker',
         'Abu-Chrome-Bridge 运行时',
+        'Abu-Chrome-Bridge query_js Worker',
         'Abu-Chrome-Bridge 扩展',
         '电脑操控原生辅助程序',
         '沙箱启动器',
       ]
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('reports the pre-commit hook as missing when .husky/_ was never generated', () => {
+  const root = fixture();
+  try {
+    mkdirSync(path.join(root, '.husky'), { recursive: true });
+    writeFileSync(path.join(root, '.husky', 'pre-commit'), 'npx lint-staged\n');
+
+    const issues = inspectGitHooks(root);
+    assert.deepEqual(issues.map((issue) => issue.code), ['missing-git-hooks']);
+    assert.match(issues[0].message, /npx husky/);
+    assert.match(
+      formatPreflightFailure({ issues, nodeModulesIsSymlink: false }),
+      /npx husky/
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('accepts an installed husky hook and ignores repos without a tracked hook', () => {
+  const root = fixture();
+  try {
+    assert.deepEqual(inspectGitHooks(root), []);
+
+    mkdirSync(path.join(root, '.husky', '_'), { recursive: true });
+    writeFileSync(path.join(root, '.husky', 'pre-commit'), 'npx lint-staged\n');
+    writeFileSync(path.join(root, '.husky', '_', 'pre-commit'), '. "$(dirname "$0")/h"\n');
+    assert.deepEqual(inspectGitHooks(root), []);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

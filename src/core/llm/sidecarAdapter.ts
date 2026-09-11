@@ -15,8 +15,14 @@
  */
 
 import type { LLMAdapter, ChatOptions, LLMErrorCode, AdapterKind } from './adapter';
-import { LLMError } from './adapter';
-import type { Message, StreamEvent } from '../../types';
+import {
+  isLLMErrorCode,
+  isUpstreamErrorDetails,
+  LLMError,
+  normalizeUpstreamErrorDetails,
+  sanitizeUntrustedLlmErrorText,
+} from './adapter';
+import type { Message, StreamEvent, UpstreamErrorDetails } from '../../types';
 import { request, notifySidecar, onSidecarNotification, SidecarRpcError } from '../sidecar/sidecarManager';
 import { createLogger } from '../logging/logger';
 
@@ -43,11 +49,72 @@ interface LlmChatMetaNotificationParams {
 }
 
 interface SidecarLlmErrorData {
-  name?: string;
-  code?: string;
+  name: 'LLMError';
+  code?: LLMErrorCode;
   retryable?: boolean;
   retryAfterMs?: number;
+  statusCode?: number;
+  upstream?: UpstreamErrorDetails;
   message?: string;
+}
+
+const SIDECAR_LLM_ERROR_DATA_KEYS = new Set([
+  'name',
+  'code',
+  'retryable',
+  'retryAfterMs',
+  'statusCode',
+  'upstream',
+  'message',
+]);
+const WIRE_RETRYABLE_LLM_CODES: ReadonlySet<LLMErrorCode> = new Set([
+  'rate_limit',
+  'overloaded',
+  'server_error',
+  'network_error',
+]);
+const WIRE_HTTP_STATUS_BY_CODE: Partial<Record<LLMErrorCode, ReadonlySet<number>>> = {
+  authentication: new Set([401, 403]),
+  content_policy: new Set([403]),
+  context_too_long: new Set([400]),
+  invalid_request: new Set([400]),
+  not_found: new Set([404]),
+  overloaded: new Set([503, 529]),
+  rate_limit: new Set([429]),
+  server_error: new Set([500, 502]),
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isSidecarLlmErrorData(value: unknown): value is SidecarLlmErrorData {
+  if (!isRecord(value) || value.name !== 'LLMError') return false;
+  if (Object.keys(value).some((key) => !SIDECAR_LLM_ERROR_DATA_KEYS.has(key))) return false;
+  if (value.code !== undefined && !isLLMErrorCode(value.code)) return false;
+  if (value.retryable !== undefined && typeof value.retryable !== 'boolean') return false;
+  if (value.retryable === true && (!value.code || !WIRE_RETRYABLE_LLM_CODES.has(value.code))) return false;
+  if (value.retryAfterMs !== undefined
+    && (!Number.isFinite(value.retryAfterMs as number) || (value.retryAfterMs as number) < 0 || value.retryable !== true)) {
+    return false;
+  }
+  if (value.statusCode !== undefined
+    && (!Number.isInteger(value.statusCode) || (value.statusCode as number) < 100 || (value.statusCode as number) > 599)) {
+    return false;
+  }
+  if (value.upstream !== undefined && !isUpstreamErrorDetails(value.upstream)) return false;
+  if (value.statusCode !== undefined && isUpstreamErrorDetails(value.upstream)
+    && value.statusCode !== value.upstream.status) {
+    return false;
+  }
+  const effectiveStatus = typeof value.statusCode === 'number'
+    ? value.statusCode
+    : isUpstreamErrorDetails(value.upstream) ? value.upstream.status : undefined;
+  if (value.code && effectiveStatus !== undefined) {
+    const allowedStatuses = WIRE_HTTP_STATUS_BY_CODE[value.code];
+    if (allowedStatuses && !allowedStatuses.has(effectiveStatus)) return false;
+  }
+  return value.message === undefined || typeof value.message === 'string';
 }
 
 function isLlmEventParams(v: unknown): v is LlmEventNotificationParams {
@@ -75,22 +142,36 @@ function reconstructError(err: unknown): LLMError {
   // re-wrap it as a generic network_error.
   if (err instanceof LLMError) return err;
   if (err instanceof SidecarRpcError) {
-    const data = err.data as SidecarLlmErrorData | undefined;
-    if (data?.name === 'LLMError') {
-      return new LLMError(data.message ?? err.message, (data.code as LLMErrorCode | undefined) ?? 'unknown', {
+    const data = err.data;
+    if (isSidecarLlmErrorData(data)) {
+      const upstream = normalizeUpstreamErrorDetails(data.upstream);
+      const code = data.code ?? 'unknown';
+      const message = upstream?.summary
+        ?? sanitizeUntrustedLlmErrorText(data.message, code);
+      return new LLMError(message, code, {
         retryable: data.retryable,
         retryAfterMs: data.retryAfterMs,
+        statusCode: typeof data.statusCode === 'number' ? data.statusCode : undefined,
+        upstream,
       });
+    }
+    if (isRecord(data) && data.name === 'LLMError') {
+      // A malformed LLM-shaped response is protocol corruption, not a basis
+      // for trusting retryability or provider text supplied by the wire.
+      return new LLMError('Invalid sidecar LLM error response', 'unknown', { retryable: false });
     }
     // The sidecar threw something that wasn't an LLMError (e.g. a bug in the
     // adapter, an unexpected exception) — surface as a retryable transport
     // failure rather than silently losing the shape withRetry expects.
-    return new LLMError(data?.message ?? err.message, 'network_error', { retryable: true });
+    return new LLMError('Sidecar request failed', 'network_error', { retryable: true });
   }
   // Not even a SidecarRpcError — e.g. the manager's request() rejected for a
   // transport reason (see the close-mid-stream case handled in chat() below,
   // and this is the generic fallback for anything else unexpected).
-  const message = err instanceof Error ? err.message : String(err);
+  const message = sanitizeUntrustedLlmErrorText(
+    err instanceof Error ? err.message : String(err),
+    'Sidecar transport failed',
+  );
   return new LLMError(message, 'network_error', { retryable: true });
 }
 

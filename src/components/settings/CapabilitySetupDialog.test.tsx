@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import {
@@ -8,6 +8,8 @@ import {
   requestCapabilitySetup,
 } from '@/core/capabilityPlugins/setupBridge';
 import CapabilitySetupDialog from './CapabilitySetupDialog';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
+import ImageLightbox from '@/components/chat/ImageLightbox';
 
 const restartAppMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('@/core/updates/checker', () => ({
@@ -42,6 +44,7 @@ describe('CapabilitySetupDialog', () => {
   beforeEach(() => {
     initLanguage('en-US');
     drainCapabilitySetupRequests();
+    useImageLightboxStore.getState().close();
     localStorage.clear();
     restartAppMock.mockClear();
   });
@@ -65,6 +68,7 @@ describe('CapabilitySetupDialog', () => {
 
   afterEach(() => {
     drainCapabilitySetupRequests();
+    useImageLightboxStore.getState().close();
     cleanup();
   });
 
@@ -96,6 +100,76 @@ describe('CapabilitySetupDialog', () => {
 
     await expect(resultPromise).resolves.toBe(false);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('uses the first Escape to close a visible lightbox without denying setup', async () => {
+    let settled = false;
+    const resultPromise = requestCapabilitySetup('chrome', {
+      conversationId: 'conversation-overlay',
+      toolCallId: 'tool-overlay',
+      interactionMode: 'foreground',
+    }).finally(() => {
+      settled = true;
+    });
+    useImageLightboxStore.getState().open([
+      { id: 'image-1', data: 'cG5n', mediaType: 'image/png' },
+    ], 0);
+
+    render(<CapabilitySetupDialog />);
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(useImageLightboxStore.getState().isOpen).toBe(false);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await expect(resultPromise).resolves.toBe(false);
+  });
+
+  it('hands focus from a closing lightbox to asynchronously requested setup', async () => {
+    render(
+      <>
+        <button type="button">image opener</button>
+        <textarea data-chat-composer aria-label="chat composer" />
+        <ImageLightbox />
+        <CapabilitySetupDialog />
+      </>,
+    );
+    const opener = screen.getByRole('button', { name: 'image opener' });
+    const composer = screen.getByRole('textbox', { name: 'chat composer' });
+    opener.focus();
+    act(() => {
+      useImageLightboxStore.getState().open([
+        { id: 'handoff-image', data: 'iVBORw0KGgo=', mediaType: 'image/png' },
+      ], 0, opener);
+    });
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Image preview' })).toBeInTheDocument();
+    });
+
+    let resultPromise!: Promise<boolean>;
+    act(() => {
+      resultPromise = requestCapabilitySetup('chrome', {
+        conversationId: 'conversation-focus-handoff',
+        toolCallId: 'tool-focus-handoff',
+        interactionMode: 'foreground',
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Image preview' })).not.toBeInTheDocument();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    });
+    await Promise.resolve();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+    expect(opener).not.toHaveFocus();
+
+    fireEvent.click(screen.getByRole('button', { name: 'cancel setup' }));
+    await expect(resultPromise).resolves.toBe(false);
+    await waitFor(() => {
+      expect(composer).toHaveFocus();
+    });
   });
 
   it('stores a minimal recovery token before a task-requested relaunch', async () => {

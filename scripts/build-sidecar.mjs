@@ -82,6 +82,10 @@ const packageJson = JSON.parse(readFileSync(path.resolve(root, 'package.json'), 
  */
 const SHIM_TARGETS = [
   { real: path.resolve(srcDir, 'core/logging/logger.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/logger.ts') },
+  // Capture native-command ownership at registration time so out-of-band
+  // AbortSignal callbacks can re-enter the correct ALS context. The renderer
+  // implementation remains a browser-safe identity wrapper.
+  { real: path.resolve(srcDir, 'core/tools/helpers/taskCommandInvoke.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/taskCommandInvokeRun.ts') },
   { real: path.resolve(srcDir, 'core/observability/compatEvents.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/compatEvents.ts') },
   { real: path.resolve(srcDir, 'core/llm/tauriFetch.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/tauriFetch.ts') },
   // P1-3a additions (docs/2026-07-19-phase1-p3-loop-migration-staging.md §2
@@ -174,6 +178,11 @@ const SHIM_TARGETS = [
   // saveUserImagesToDisk() for every sidecar-run main loop even though its
   // underlying fs/path calls work fine. See sessionDirRun.ts.
   { real: path.resolve(srcDir, 'core/session/sessionDir.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/sessionDirRun.ts') },
+  // Renderer delegated-media persistence is intentionally Electron-preload
+  // only. A sidecar-run loop uses this app-data/Node-fs implementation at the
+  // same opaque ref location instead of pulling @tauri-apps/plugin-fs back
+  // through outputSnapshots.ts.
+  { real: path.resolve(srcDir, 'core/subagent/delegatedMediaStore.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/delegatedMediaStoreRun.ts') },
   // P1-3B-4 fix — real forwarding shim (drainQueuedInputs/clearInputQueue →
   // input.consumed notify, everything else pass-through) so mid-task queued
   // input works for a sidecar-run main loop — see userInputQueueRun.ts.

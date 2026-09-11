@@ -50,7 +50,8 @@ import {
 } from '@tauri-apps/plugin-fs';
 
 import { atomicWrite, restoreFromBackup } from '../../utils/atomicFs';
-import { joinPath } from '../../utils/pathUtils';
+import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
+import { isSafeSkillDirName } from './skillDirName';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -209,6 +210,60 @@ export async function writeTombstone(
 
 // ── Revert ─────────────────────────────────────────────────────────────
 
+/**
+ * Absolute path of `relPath` under `skillDir`, or null unless the skill owns
+ * EVERY segment of it.
+ *
+ * `.history/index.jsonl` lives inside the skill directory, so everything read
+ * out of it is package content: the loader scans `{workspace}/.abu/skills` as
+ * source `project` and `git clone` carries that file like any other, while the
+ * npm and URL installers write `.history/` straight into the staged skill. The
+ * History menu item is offered for every skill regardless of source
+ * (`SkillsSection.tsx`), so reverting a turn somebody else authored is one
+ * click — and a revert `remove`s and writes the paths it reads there.
+ *
+ * Neither layer below catches an escape: `joinPath` does not collapse `..`
+ * (src/utils/pathUtils.ts), and the privileged host only asks whether the
+ * RESOLVED path lands under an allowed root — `$HOME` among them, with the
+ * `.abu` root basename as its only removal denial. So `../../../Documents` is
+ * screened here or not at all.
+ *
+ * Per SEGMENT, with the predicate the installers already apply to a name they
+ * turn into a directory: it rejects `.`/`..`, separators, NUL and control
+ * characters, so an empty segment (a leading `/`, or `//`) is refused too and
+ * an absolute path cannot masquerade as a relative one.
+ */
+function resolveOwnedPath(skillDir: string, relPath: string): string | null {
+  const segments = normalizeSeparators(relPath).split('/');
+  if (!segments.every((segment) => isSafeSkillDirName(segment))) return null;
+  return joinPath(skillDir, ...segments);
+}
+
+/**
+ * Is `snapshotPath` a file inside `skillDir`?
+ *
+ * The other half of the same trust. A genuine snapshot pointer is either the
+ * `.backup.<ts>` that `atomicWriteWithBackup` left beside its target or a
+ * tombstone under `.history/tombstones/` — both inside the skill. An
+ * attacker-chosen one is an arbitrary read (`removed` copies the snapshot's
+ * bytes over the target) followed by `remove` of somebody else's file, and on
+ * the `modified` branch `restoreFromBackup` moves it.
+ *
+ * Absolute and compared against the skill root, because that is the shape the
+ * field carries; every segment below the root is then subject to the same
+ * per-segment rule as {@link resolveOwnedPath}, so `<skillDir>/../../x` is not
+ * a way back out.
+ */
+function isOwnedSnapshot(skillDir: string, snapshotPath: string): boolean {
+  const root = normalizeSeparators(skillDir).replace(/\/+$/, '');
+  const full = normalizeSeparators(snapshotPath);
+  if (root.length === 0 || !full.startsWith(`${root}/`)) return false;
+  return full
+    .slice(root.length + 1)
+    .split('/')
+    .every((segment) => isSafeSkillDirName(segment));
+}
+
 export interface RevertResult {
   ok: boolean;
   restored: number;
@@ -246,18 +301,33 @@ export async function revertTurn(
   let restored = 0;
 
   for (const change of entry.files) {
-    const targetPath = joinPath(skillDir, change.relPath);
+    // Both paths come out of a file INSIDE the skill directory, i.e. out of
+    // package content — see {@link resolveOwnedPath}. Screened before either is
+    // handed to `remove`, `atomicWrite` or `restoreFromBackup`.
+    const targetPath = resolveOwnedPath(skillDir, change.relPath);
+    if (!targetPath) {
+      failed.push({ relPath: change.relPath, reason: 'path is not inside the skill directory' });
+      continue;
+    }
+    const snapshotPath =
+      change.snapshotPath !== null && isOwnedSnapshot(skillDir, change.snapshotPath)
+        ? change.snapshotPath
+        : null;
+    if (change.snapshotPath !== null && snapshotPath === null) {
+      failed.push({ relPath: change.relPath, reason: 'snapshot is not inside the skill directory' });
+      continue;
+    }
     try {
       if (change.action === 'modified') {
-        if (!change.snapshotPath) {
+        if (!snapshotPath) {
           failed.push({ relPath: change.relPath, reason: 'snapshot missing' });
           continue;
         }
-        if (!(await exists(change.snapshotPath).catch(() => false))) {
+        if (!(await exists(snapshotPath).catch(() => false))) {
           failed.push({ relPath: change.relPath, reason: 'backup file no longer exists' });
           continue;
         }
-        await restoreFromBackup(targetPath, change.snapshotPath);
+        await restoreFromBackup(targetPath, snapshotPath);
         restored++;
       } else if (change.action === 'created') {
         // Revert of a create = delete the file. If it's already gone,
@@ -267,19 +337,19 @@ export async function revertTurn(
         }
         restored++;
       } else if (change.action === 'removed') {
-        if (!change.snapshotPath) {
+        if (!snapshotPath) {
           failed.push({ relPath: change.relPath, reason: 'tombstone missing' });
           continue;
         }
-        if (!(await exists(change.snapshotPath).catch(() => false))) {
+        if (!(await exists(snapshotPath).catch(() => false))) {
           failed.push({ relPath: change.relPath, reason: 'tombstone no longer exists' });
           continue;
         }
-        const content = await readTextFile(change.snapshotPath);
+        const content = await readTextFile(snapshotPath);
         await atomicWrite(targetPath, content);
         // Consume the tombstone — prevents the same entry from being
         // reverted twice against itself.
-        await remove(change.snapshotPath).catch(() => {});
+        await remove(snapshotPath).catch(() => {});
         restored++;
       }
     } catch (err) {

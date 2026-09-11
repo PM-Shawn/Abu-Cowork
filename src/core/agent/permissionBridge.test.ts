@@ -16,6 +16,10 @@ import {
   findQuestionOwningMessage,
   setLoopContext,
   clearLoopContext,
+  requestCommandConfirmation,
+  resolveCommandConfirmation,
+  getPendingCommandConfirmation,
+  drainConfirmationQueue,
   getLoopContextForConversation,
   requestFilePermission,
   resolveFilePermission,
@@ -25,6 +29,14 @@ import {
 } from './permissionBridge';
 import { usePermissionStore } from '../../stores/permissionStore';
 import type { Message, UserQuestionPayload, UserQuestionResult } from '../../types';
+import {
+  checkReadPath,
+  checkWritePath,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  revokeWorkspace,
+  isInScopedAuthorizedWorkspace,
+} from '../tools/pathSafety';
 
 const MINIMAL_PAYLOAD: UserQuestionPayload = {
   questions: [
@@ -161,6 +173,134 @@ describe('permissionBridge — UserQuestion queue', () => {
     });
   });
 
+  describe('team conversations never block on a confirmation (block O)', () => {
+    const makeTeamCtx = (loopId: string, conversationId: string, agentName?: string) => ({
+      loopId,
+      conversationId,
+      agentName,
+      commandConfirmCallback: async () => false,
+      filePermissionCallback: async () => false,
+      signal: new AbortController().signal,
+      eventRouter: {} as never,
+      toolCallToStepId: new Map(),
+    });
+
+    beforeEach(async () => {
+      const { useChatStore } = await import('../../stores/chatStore');
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
+      useChatStore.setState({
+        conversations: {
+          'conv-team': { id: 'conv-team', title: 't', teamId: 'team-1', createdAt: 1, updatedAt: 1, status: 'running', messages: [] },
+          'conv-plain': { id: 'conv-plain', title: 'p', createdAt: 1, updatedAt: 1, status: 'running', messages: [] },
+        },
+      } as never);
+      setLoopContext('loop-team', makeTeamCtx('loop-team', 'conv-team', 'zz发布员') as never);
+      setLoopContext('loop-plain', makeTeamCtx('loop-plain', 'conv-plain') as never);
+    });
+    afterEach(() => {
+      clearLoopContext('loop-team');
+      clearLoopContext('loop-plain');
+      drainConfirmationQueue();
+      drainFilePermissionQueue();
+    });
+
+    it('refuses a command now, records it as pending, and lets an approved identical request through once', async () => {
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      const info = { command: 'npm publish', level: 'danger' as const, reason: '发布到公网', teamIdentity: { toolName: 'run_command', parametersDigest: 'p', cwd: '/a', loopId: 'loop-team', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+      const pending = pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team');
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({ kind: 'command', detail: 'npm publish', member: 'zz发布员', reason: '发布到公网' });
+      expect(getPendingCommandConfirmation()).toBeNull();
+      // A retry does not pile up duplicates.
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')).toHaveLength(1);
+
+      const id = useTeamConfirmationStore.getState().selectRetry(pending[0].id, 'once');
+      useTeamConfirmationStore.getState().beginRetry('conv-team', 'loop-team', id);
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(true);
+      await expect(requestCommandConfirmation(info, 'loop-team')).resolves.toBe(false);
+    });
+
+    it('carries the browser authorization payload into the pending record (P1-a)', async () => {
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      await expect(requestCommandConfirmation({
+        command: 'browser_fill #q',
+        level: 'warn',
+        reason: 'r',
+        kind: 'browser',
+        browserOrigin: 'http://127.0.0.1:8765',
+        browserOperationClass: 'interactive',
+        allowPersistentGrant: true,
+        teamIdentity: { toolName: 'fill', parametersDigest: 'p1', cwd: '/w', loopId: 'loop-team', callId: 'fill-call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 },
+      }, 'loop-team')).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')[0]).toMatchObject({
+        kind: 'browser',
+        browserOrigin: 'http://127.0.0.1:8765',
+        browserOperationClass: 'interactive',
+        allowPersistentGrant: true,
+        level: 'warn',
+      });
+    });
+
+    it('names the member from the request when the loop context only knows the parent run (sidecar path)', async () => {
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      setLoopContext('loop-parent', makeTeamCtx('loop-parent', 'conv-team') as never);
+      try {
+        await expect(requestCommandConfirmation({ command: 'npm publish', level: 'danger', reason: 'r', agentName: 'zz发布员' }, 'loop-parent')).resolves.toBe(false);
+        await expect(requestFilePermission({ path: '/tmp/out/x.md', capability: 'write', toolName: 'write_file', agentName: 'zz撰写员' }, 'loop-parent')).resolves.toBe(false);
+        const pending = pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team');
+        expect(pending.map((item) => item.member)).toEqual(['zz发布员', 'zz撰写员']);
+      } finally {
+        clearLoopContext('loop-parent');
+      }
+    });
+
+    it('file retry grants only its call scope, never another member or conversation (F2)', async () => {
+      const { useTeamConfirmationStore } = await import('../../stores/teamConfirmationStore');
+      const { useChatStore } = await import('../../stores/chatStore');
+      useChatStore.setState({ conversations: { ...useChatStore.getState().conversations,
+        'conv-other': { id: 'conv-other', title: 'other', teamId: 'team-1', createdAt: 1, updatedAt: 1, status: 'running', messages: [] },
+      } });
+      setLoopContext('loop-other', makeTeamCtx('loop-other', 'conv-other', 'zz发布员') as never);
+      const scopeA = createAuthorizationScope();
+      const scopeB = createAuthorizationScope();
+      const path = '/external-team-review/report.md';
+      const request = { path, capability: 'write' as const, toolName: 'write_file',
+        teamAuthorizationScopeId: scopeA,
+        teamIdentity: { toolName: 'write_file', parametersDigest: 'write-report-content', cwd: '/project', loopId: 'loop-team', callId: 'file-call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 } };
+      try {
+        expect(await requestFilePermission(request, 'loop-team')).toBe(false);
+        const pending = Object.values(useTeamConfirmationStore.getState().pending)[0];
+        const selection = useTeamConfirmationStore.getState().selectRetry(pending.id, 'once');
+        useTeamConfirmationStore.getState().beginRetry('conv-team', 'loop-team', selection);
+        expect(await requestFilePermission({ ...request, agentName: 'other-member' }, 'loop-team')).toBe(false);
+        expect(await requestFilePermission({ ...request, teamAuthorizationScopeId: scopeB }, 'loop-other')).toBe(false);
+        expect(await requestFilePermission(request, 'loop-team')).toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'write', scopeA)).toBe(true);
+        expect(isInScopedAuthorizedWorkspace(path, 'write', scopeB)).toBe(false);
+        expect(usePermissionStore.getState().hasPermission(path, 'write')).toBe(false);
+        expect(await requestFilePermission(request, 'loop-team')).toBe(false);
+      } finally {
+        disposeAuthorizationScope(scopeA); disposeAuthorizationScope(scopeB); clearLoopContext('loop-other');
+      }
+    });
+
+    it('records file access as pending and leaves plain conversations on the dialog path', async () => {
+      const { useTeamConfirmationStore, pendingFor } = await import('../../stores/teamConfirmationStore');
+      await expect(requestFilePermission({ path: '/tmp/out/report.md', capability: 'write', toolName: 'write_file' }, 'loop-team')).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-team')[0]).toMatchObject({ kind: 'file', path: '/tmp/out/report.md', capability: 'write' });
+      expect(getPendingFilePermission()).toBeNull();
+
+      const plain = requestCommandConfirmation({ command: 'rm -rf x', level: 'danger', reason: 'r' }, 'loop-plain');
+      expect(getPendingCommandConfirmation()?.conversationId).toBe('conv-plain');
+      resolveCommandConfirmation(false);
+      await expect(plain).resolves.toBe(false);
+      expect(pendingFor(useTeamConfirmationStore.getState().pending, 'conv-plain')).toEqual([]);
+    });
+  });
+
   describe('findQuestionOwningMessage', () => {
     const makeMsg = (id: string, toolCalls: Array<{ id: string; name: string }>): Message => ({
       id,
@@ -245,5 +385,115 @@ describe('permissionBridge — resolveFilePermission pending guard (F1 regressio
     // Second resolve: nothing pending anymore — must not re-grant.
     resolveFilePermission(true, '/ws/double', ['write'], 'always');
     expect(usePermissionStore.getState().hasPermission('/ws/double', 'write')).toBe(false);
+  });
+
+  it('syncs an existing permission into the loopId-owned scope, not the first ambient loop context', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-owned/out.md';
+    const scopeA = createAuthorizationScope();
+    const scopeB = createAuthorizationScope();
+    setLoopContext('loop-a', {
+      loopId: 'loop-a',
+      conversationId: 'conv-a',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: scopeA,
+    } as unknown as LoopContext);
+    setLoopContext('loop-b', {
+      loopId: 'loop-b',
+      conversationId: 'conv-b',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: scopeB,
+    } as unknown as LoopContext);
+    usePermissionStore.getState().grantPermission(path, ['write'], 'session');
+
+    try {
+      await expect(requestFilePermission({ path, capability: 'write', toolName: 'write_file' }, 'loop-b')).resolves.toBe(true);
+
+      expect((await checkWritePath(path, scopeB)).allowed).toBe(true);
+      expect((await checkWritePath(path, scopeA)).allowed).toBe(false);
+    } finally {
+      clearLoopContext('loop-a');
+      clearLoopContext('loop-b');
+      disposeAuthorizationScope(scopeA);
+      disposeAuthorizationScope(scopeB);
+    }
+  });
+
+  it('syncs an existing read permission into the run scope without granting write', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-read/notes.md';
+    const scopeId = createAuthorizationScope();
+    setLoopContext('loop-read-only', {
+      loopId: 'loop-read-only',
+      conversationId: 'conv-read-only',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: scopeId,
+    } as unknown as LoopContext);
+    usePermissionStore.getState().grantPermission(path, ['read'], 'session');
+
+    try {
+      await expect(requestFilePermission({ path, capability: 'read', toolName: 'read_file' }, 'loop-read-only')).resolves.toBe(true);
+
+      expect((await checkReadPath(path, scopeId)).allowed).toBe(true);
+      expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
+    } finally {
+      clearLoopContext('loop-read-only');
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+
+  it('syncs a global read grant without widening it to write', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-global-read/notes.md';
+
+    try {
+      usePermissionStore.getState().grantPermission(path, ['read'], 'session');
+      expect((await checkReadPath(path)).allowed).toBe(true);
+      expect((await checkWritePath(path)).allowed).toBe(false);
+
+      // Simulate pathSafety state being rebuilt independently: the bridge's
+      // fast path must preserve the requested capability when it re-syncs.
+      revokeWorkspace(path);
+      await expect(requestFilePermission({
+        path,
+        capability: 'read',
+        toolName: 'read_file',
+      })).resolves.toBe(true);
+      expect((await checkReadPath(path)).allowed).toBe(true);
+      expect((await checkWritePath(path)).allowed).toBe(false);
+    } finally {
+      usePermissionStore.getState().revokePermission(path);
+      revokeWorkspace(path);
+    }
+  });
+
+  it('treats an empty authorization scope as explicit and never syncs existing grants globally', async () => {
+    const path = '/Users/testuser/Projects/permission-bridge-empty/notes.md';
+    setLoopContext('loop-empty-scope', {
+      loopId: 'loop-empty-scope',
+      conversationId: 'conv-empty-scope',
+      toolCallToStepId: new Map(),
+      authorizationScopeId: '',
+    } as unknown as LoopContext);
+    usePermissionStore.setState({
+      sessionGrants: {
+        [path]: {
+          path,
+          grantedAt: 0,
+          expiresAt: null,
+          capabilities: ['read'],
+          duration: 'session',
+        },
+      },
+      persistedGrants: {},
+      pendingRequest: null,
+    });
+
+    try {
+      await expect(requestFilePermission({ path, capability: 'read', toolName: 'read_file' }, 'loop-empty-scope')).resolves.toBe(true);
+
+      expect((await checkReadPath(path, '')).allowed).toBe(false);
+      expect((await checkWritePath(path)).allowed).toBe(false);
+    } finally {
+      clearLoopContext('loop-empty-scope');
+      usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+    }
   });
 });

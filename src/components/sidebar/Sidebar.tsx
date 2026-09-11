@@ -5,9 +5,10 @@ import { useProjectStore } from '@/stores/projectStore';
 import { useNoticeBadgeStore } from '@/stores/noticeBadgeStore';
 import { useInboxStore } from '@/stores/inboxStore';
 import { useI18n } from '@/i18n';
+import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
-import { Plus, Workflow, Wrench, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal } from 'lucide-react';
+import { Plus, Workflow, UsersRound, Trash2, Download, Pencil, Undo2, FolderInput, FolderClosed, ChevronRight, Minus, CheckSquare, Inbox, ListTree, ArrowLeft, MoreHorizontal , Puzzle } from 'lucide-react';
 import GuideModal from '@/components/common/GuideModal';
 import ProfileEditModal from '@/components/common/ProfileEditModal';
 import AccountMenu from '@/components/sidebar/AccountMenu';
@@ -83,7 +84,8 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
   const exportConversation = useChatStore((s) => s.exportConversation);
   const importConversation = useChatStore((s) => s.importConversation);
   const loadConversation = useChatStore((s) => s.loadConversation);
-  const openToolbox = useSettingsStore((s) => s.openToolbox);
+  const openExtensions = useSettingsStore((s) => s.openExtensions);
+  const openTeam = useSettingsStore((s) => s.openTeam);
   const openAutomation = useSettingsStore((s) => s.openAutomation);
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
@@ -365,16 +367,30 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           </>
         )}
         <button
-          onClick={() => { openToolbox(); setShowFileTree(false); }}
+          onClick={() => { openTeam(); setShowFileTree(false); }}
           className={cn(
             'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
-            viewMode === 'toolbox'
+            viewMode === 'team'
+              ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+              : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
+          )}
+          data-testid="sidebar-team"
+        >
+          <UsersRound className={cn('h-[18px] w-[18px]', viewMode === 'team' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+          <span>{t.sidebar.team}</span>
+        </button>
+        <button
+          onClick={() => { openExtensions(); setShowFileTree(false); }}
+          className={cn(
+            'btn-ghost flex items-center gap-3 w-full px-3 py-2.5 text-body rounded-lg',
+            viewMode === 'extensions'
               ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
               : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
           )}
         >
-          <Wrench className={cn('h-[18px] w-[18px]', viewMode === 'toolbox' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
-          <span>{t.sidebar.toolbox}</span>
+          <Puzzle className={cn('h-[18px] w-[18px]', viewMode === 'extensions' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-tertiary)]')} strokeWidth={1.75} />
+          <span className="flex-1 text-left">{t.sidebar.extensions}</span>
+          <PluginUpdateBadge testId="extensions-update-badge" />
         </button>
         <button
           onClick={() => { openAutomation(); setShowFileTree(false); }}

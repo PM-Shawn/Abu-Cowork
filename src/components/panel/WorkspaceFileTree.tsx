@@ -27,6 +27,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useToastStore } from '@/stores/toastStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode } from '@/stores/composerDraftStore';
 import { useWorkspaceTree, type WorkspaceTreeEntry } from '@/hooks/useWorkspaceTree';
 import { joinPath, getBaseName, getParentDir, normalizeSeparators } from '@/utils/pathUtils';
 
@@ -442,12 +444,18 @@ export default function WorkspaceFileTree() {
     }
   };
 
-  // "Add to chat" — pushes the path into chatStore's pendingAttachmentPaths
-  // ephemeral buffer; ChatInput drains it into its local files/images
-  // attachment state (same mechanism used for doc-preview pendingReferences).
+  // "Add to chat" — pushes an explicitly workspace-scoped path into
+  // chatStore's ephemeral pendingAttachmentRequests buffer. ChatInput drains
+  // only the records for the draft key active when the user clicked.
   const handleAddToChat = (entry: WorkspaceTreeEntry) => {
     setContextMenu(null);
-    useChatStore.getState().addPendingAttachment(entry.path);
+    const chatState = useChatStore.getState();
+    const draftScope = getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode);
+    chatState.addPendingAttachment({
+      path: entry.path,
+      draftKey: getComposerDraftKey(chatState.activeConversationId, draftScope),
+      readScope: 'workspace',
+    });
     useToastStore.getState().addToast({ type: 'success', title: t.panel.fileTree.addedToChat });
   };
 

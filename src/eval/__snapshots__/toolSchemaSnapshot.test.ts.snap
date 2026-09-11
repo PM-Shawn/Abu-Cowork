@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `44`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `45`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
@@ -84,6 +84,7 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "paramNames": [
       "agent_name",
       "context",
+      "expected_files",
       "task",
       "type",
     ],
@@ -213,6 +214,7 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "name": "manage_mcp_server",
     "paramNames": [
       "action",
+      "args",
       "env",
       "headers",
       "name",
@@ -247,10 +249,6 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "name": "manage_trigger",
     "paramNames": [
       "action",
-      "allowed_commands",
-      "allowed_paths",
-      "allowed_tools",
-      "capability",
       "debounce_enabled",
       "debounce_seconds",
       "description",
@@ -273,6 +271,11 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "requiredParams": [
       "action",
     ],
+  },
+  {
+    "name": "plugin_prepare",
+    "paramNames": [],
+    "requiredParams": [],
   },
   {
     "name": "process_image",
@@ -388,6 +391,7 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "content",
       "files",
       "name",
+      "overwrite",
     ],
     "requiredParams": [
       "name",

@@ -30,7 +30,9 @@ import { appDataDir, homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators, getBaseName } from '@/utils/pathUtils';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { base64ToUint8Array } from '@/utils/base64';
+import { RESULT_IMAGE_EXTENSIONS } from '@/utils/imageMediaTypes';
 import type { ToolCall } from '@/types';
+import type { ToolResultImage } from '../tools/toolResultContent';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('outputSnapshots');
@@ -50,9 +52,10 @@ const MANIFEST_VERSION = 1 as const;
 // ────────────────────────────────────────────────────────────────────────────
 
 export type SnapshotSource = 'tool-output' | 'user-upload' | 'code-save';
+type SnapshotSkipReason = 'oversized' | 'copy-failed' | 'write-failed';
 
 export interface SnapshotEntry {
-  /** Normalized absolute path of the original file (manifest index key) */
+  /** Normalized original path or stable tool-result:// identity (manifest index key). */
   originalPath: string;
   /** Filename for display */
   basename: string;
@@ -81,12 +84,12 @@ export interface SnapshotEntry {
    */
   refKind: string;
   /** Reason snapshotRelPath is empty. Only set when not snapshotted. */
-  skipReason?: 'oversized' | 'copy-failed';
+  skipReason?: SnapshotSkipReason;
 }
 
 export interface OutputManifest {
   version: typeof MANIFEST_VERSION;
-  /** Keyed by normalizedOriginalPath */
+  /** Keyed by SnapshotEntry.originalPath. */
   entries: Record<string, SnapshotEntry>;
 }
 
@@ -144,6 +147,13 @@ async function getOutputsDir(convId: string): Promise<string> {
 /** Normalize a path to canonical form (forward slashes, no trailing slash). */
 function normalizePath(p: string): string {
   return normalizeSeparators(p).replace(/\/+$/, '');
+}
+
+function normalizeOutputRelPath(relPath: string): string | null {
+  const normalized = normalizeSeparators(relPath).replace(/^\/+/, '').replace(/\/+$/, '');
+  const segments = normalized.split('/');
+  if (!normalized || normalized.startsWith('/') || segments.some((segment) => segment === '.' || segment === '..')) return null;
+  return normalized;
 }
 
 /** Check if a path looks like an absolute filesystem path (Unix or Windows). */
@@ -210,10 +220,7 @@ async function safeStat(path: string) {
 // Manifest read/write (cached + atomic)
 // ────────────────────────────────────────────────────────────────────────────
 
-async function loadManifest(convId: string): Promise<OutputManifest> {
-  const cached = manifestCache.get(convId);
-  if (cached) return cached;
-
+async function readManifestFromDisk(convId: string): Promise<OutputManifest> {
   const dir = await getOutputsDir(convId);
   const path = joinPath(dir, 'manifest.json');
   let manifest: OutputManifest = { version: MANIFEST_VERSION, entries: {} };
@@ -226,10 +233,35 @@ async function loadManifest(convId: string): Promise<OutputManifest> {
         manifest = parsed;
       }
     }
-  } catch (e) {
-    logger.warn('manifest load failed, falling back to empty', { convId, err: e });
+  } catch (error) {
+    logger.warn('manifest load failed, falling back to empty', {
+      convId,
+      errorKind: error instanceof Error ? error.name : 'unknown',
+    });
   }
 
+  return manifest;
+}
+
+async function loadManifest(convId: string): Promise<OutputManifest> {
+  const cached = manifestCache.get(convId);
+  if (cached) return cached;
+
+  const manifest = await readManifestFromDisk(convId);
+  manifestCache.set(convId, manifest);
+  return manifest;
+}
+
+/**
+ * Bypass the process-local manifest cache and refresh it from disk.
+ *
+ * Sidecar snapshot writers and renderer storage writers do not share memory;
+ * conversationStorage calls this immediately before dehydrating inline
+ * tool-result images so a sidecar-written manifest entry can become visible
+ * without imposing disk I/O on every ordinary message write.
+ */
+export async function refreshOutputManifest(convId: string): Promise<OutputManifest> {
+  const manifest = await readManifestFromDisk(convId);
   manifestCache.set(convId, manifest);
   return manifest;
 }
@@ -270,11 +302,14 @@ function buildEntry(
   mtime: number,
   meta: SnapshotMeta,
   snapshotRelPath: string,
-  skipReason?: 'oversized' | 'copy-failed',
+  options: {
+    basename?: string;
+    skipReason?: SnapshotSkipReason;
+  } = {},
 ): SnapshotEntry {
   return {
     originalPath: normalized,
-    basename: getBaseName(normalized),
+    basename: options.basename ?? getBaseName(normalized),
     snapshotRelPath,
     size,
     originalMtime: mtime,
@@ -282,7 +317,7 @@ function buildEntry(
     source: meta.source,
     refId: meta.refId,
     refKind: meta.refKind,
-    ...(skipReason ? { skipReason } : {}),
+    ...(options.skipReason ? { skipReason: options.skipReason } : {}),
   };
 }
 
@@ -315,48 +350,65 @@ export async function snapshotFile(
     return null;
   }
 
-  return withConvLock(convId, async () => {
-    const outputsDir = await getOutputsDir(convId);
-    // Idempotency guard: don't snapshot files already inside outputs/
-    // (prevents recursion when AI writes directly to the session output dir)
-    if (normalized.startsWith(outputsDir)) return null;
+  return withConvLock(convId, () => snapshotFileNormalized(convId, normalized, meta));
+}
 
-    const st = await safeStat(normalized);
-    if (!st || !st.isFile) return null;
+/** snapshotFile copy route once its path is normalized and conversation lock held. */
+async function snapshotFileNormalized(
+  convId: string,
+  normalized: string,
+  meta: SnapshotMeta,
+  identityPath: string = normalized,
+  targetBasename: string = getBaseName(normalized),
+): Promise<SnapshotEntry | null> {
+  const outputsDir = await getOutputsDir(convId);
+  // Idempotency guard: don't snapshot files already inside outputs/
+  // (prevents recursion when AI writes directly to the session output dir)
+  if (identityPath === normalized && normalized.startsWith(outputsDir)) return null;
 
-    const mtimeMs = st.mtime ? st.mtime.getTime() : 0;
+  const st = await safeStat(normalized);
+  if (!st || !st.isFile) return null;
 
-    // Oversized check
-    if (st.size > MAX_FILE_BYTES) {
-      logger.info('snapshot skipped: oversized', { convId, path: normalized, size: st.size });
-      return await recordEntry(
-        convId,
-        buildEntry(normalized, st.size, mtimeMs, meta, '', 'oversized'),
-      );
-    }
+  const mtimeMs = st.mtime ? st.mtime.getTime() : 0;
 
-    // Copy
-    const subdir = joinPath(outputsDir, 'files', hashPath(normalized));
-    const basename = getBaseName(normalized);
-    const dest = joinPath(subdir, basename);
-    try {
-      if (!(await exists(subdir))) {
-        await mkdir(subdir, { recursive: true });
-      }
-      await copyFile(normalized, dest);
-    } catch (e) {
-      logger.warn('snapshot copy failed', { convId, src: normalized, err: e });
-      return await recordEntry(
-        convId,
-        buildEntry(normalized, st.size, mtimeMs, meta, '', 'copy-failed'),
-      );
-    }
-
+  // Oversized check
+  if (st.size > MAX_FILE_BYTES) {
+    logger.info('snapshot skipped: oversized', { convId, path: normalized, size: st.size });
     return await recordEntry(
       convId,
-      buildEntry(normalized, st.size, mtimeMs, meta, `files/${hashPath(normalized)}/${basename}`),
+      buildEntry(identityPath, st.size, mtimeMs, meta, '', {
+        basename: targetBasename,
+        skipReason: 'oversized',
+      }),
     );
-  });
+  }
+
+  // Copy
+  const identityHash = hashPath(identityPath);
+  const subdir = joinPath(outputsDir, 'files', identityHash);
+  const dest = joinPath(subdir, targetBasename);
+  try {
+    if (!(await exists(subdir))) {
+      await mkdir(subdir, { recursive: true });
+    }
+    await copyFile(normalized, dest);
+  } catch (e) {
+    logger.warn('snapshot copy failed', { convId, src: normalized, err: e });
+    return await recordEntry(
+      convId,
+      buildEntry(identityPath, st.size, mtimeMs, meta, '', {
+        basename: targetBasename,
+        skipReason: 'copy-failed',
+      }),
+    );
+  }
+
+  return await recordEntry(
+    convId,
+    buildEntry(identityPath, st.size, mtimeMs, meta, `files/${identityHash}/${targetBasename}`, {
+      basename: targetBasename,
+    }),
+  );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -411,6 +463,99 @@ export async function snapshotUserUpload(
     source: 'user-upload',
     refId: messageId,
     refKind: kind,
+  });
+}
+
+/**
+ * Persist an image returned in a tool result.
+ *
+ * A read_file result can retain the original path and therefore uses the same
+ * copy-based snapshot route as every other filesystem file. Computer-use
+ * screenshots have no source path, so their base64 bytes are materialised
+ * directly under the ordinary outputs/files/{hash}/ layout instead.
+ */
+export async function snapshotResultImage(
+  convId: string,
+  toolCallId: string,
+  imageBlock: ToolResultImage,
+  sourcePath?: string,
+): Promise<void> {
+  if (!toolCallId || !imageBlock.base64) return;
+  const imageBase64 = imageBlock.base64;
+
+  const extension = RESULT_IMAGE_EXTENSIONS[imageBlock.mediaType.toLowerCase()];
+  if (!extension) {
+    logger.warn('[snapshot] unsupported result image media type', { mediaType: imageBlock.mediaType });
+    return;
+  }
+
+  const meta: SnapshotMeta = {
+    source: 'tool-output',
+    refId: toolCallId,
+    refKind: 'result-image',
+  };
+  const originalPath = `tool-result://${toolCallId}`;
+  const hash = hashPath(originalPath);
+  // Never use the provider-controlled toolCallId as a path segment. Its stable
+  // identity lives in the manifest; the hashed directory + fixed basename keep
+  // `..`, slashes and platform-invalid characters out of the filesystem path.
+  const basename = `result.${extension}`;
+
+  await withConvLock(convId, async () => {
+    const manifest = await loadManifest(convId);
+    const alreadySnapshotted = Object.values(manifest.entries).some(
+      (entry) => entry.source === meta.source && entry.refId === meta.refId && entry.refKind === meta.refKind,
+    );
+    if (alreadySnapshotted) return;
+
+    if (sourcePath) {
+      const expanded = await expandTilde(sourcePath);
+      const normalized = normalizePath(expanded);
+      if (!isAbsolutePath(normalized)) {
+        logger.warn('[snapshot] rejected non-absolute result image path', { sourcePath, normalized });
+      } else {
+        await snapshotFileNormalized(convId, normalized, meta, originalPath, basename);
+        return;
+      }
+    }
+
+    let decodedSize = 0;
+    try {
+      const bytes = base64ToUint8Array(imageBase64);
+      decodedSize = bytes.byteLength;
+      if (decodedSize > MAX_FILE_BYTES) {
+        logger.info('[snapshot] result image skipped: oversized', {
+          convId,
+          toolCallId,
+          size: decodedSize,
+        });
+        await recordEntry(convId, buildEntry(originalPath, decodedSize, 0, meta, '', {
+          basename,
+          skipReason: 'oversized',
+        }));
+        return;
+      }
+
+      const outputsDir = await getOutputsDir(convId);
+      const subdir = joinPath(outputsDir, 'files', hash);
+      const targetPath = joinPath(subdir, basename);
+      if (!(await exists(subdir))) await mkdir(subdir, { recursive: true });
+      await writeFile(targetPath, bytes);
+      await recordEntry(convId, buildEntry(
+        originalPath,
+        decodedSize,
+        0,
+        meta,
+        `files/${hash}/${basename}`,
+        { basename },
+      ));
+    } catch (e) {
+      logger.warn('[snapshot] result image write failed', { convId, toolCallId, err: e });
+      await recordEntry(convId, buildEntry(originalPath, decodedSize, 0, meta, '', {
+        basename,
+        skipReason: 'write-failed',
+      }));
+    }
   });
 }
 
@@ -530,6 +675,61 @@ export async function resolveFileSource(
   return { status: 'missing', basename, originalPath };
 }
 
+/**
+ * Resolve a persisted tool-result outputRef by its path relative to outputs/.
+ * This is intentionally separate from manifest path lookup: outputRef is already
+ * the post-snapshot identity, so basename fallback would risk loading the wrong
+ * file when two tool images share a filename.
+ */
+export async function resolveOutputRefSource(
+  convId: string | undefined,
+  relPath: string,
+): Promise<ResolvedSource> {
+  const normalizedRelPath = normalizeOutputRelPath(relPath);
+  const basename = getBaseName(normalizedRelPath ?? relPath);
+  if (!convId || !normalizedRelPath) {
+    return { status: 'missing', basename, originalPath: relPath };
+  }
+
+  try {
+    const outputsDir = await getOutputsDir(convId);
+    const fullPath = joinPath(outputsDir, normalizedRelPath);
+    const normalizedFullPath = normalizePath(fullPath);
+    const normalizedOutputsDir = normalizePath(outputsDir);
+    if (!normalizedFullPath.startsWith(`${normalizedOutputsDir}/`)) {
+      return { status: 'missing', basename, originalPath: relPath };
+    }
+    if (await exists(fullPath)) {
+      return { status: 'available', path: fullPath, isFromSnapshot: true };
+    }
+  } catch {
+    // fall through to missing
+  }
+
+  return { status: 'missing', basename, originalPath: relPath };
+}
+
+/**
+ * Synchronous dehydration guard for conversationStorage. Storage refreshes the
+ * process-local manifest cache from disk before serializing inline tool-result
+ * images, then uses this exact-entry lookup while cloning the message for disk.
+ */
+export function findToolResultImageSnapshot(convId: string | undefined, toolCallId: string): SnapshotEntry | null {
+  if (!convId || !toolCallId) return null;
+  const manifest = manifestCache.get(convId);
+  const entry = manifest?.entries[`tool-result://${toolCallId}`];
+  if (
+    entry
+    && entry.source === 'tool-output'
+    && entry.refId === toolCallId
+    && entry.refKind === 'result-image'
+    && entry.snapshotRelPath
+  ) {
+    return entry;
+  }
+  return null;
+}
+
 
 // ────────────────────────────────────────────────────────────────────────────
 // Cleanup
@@ -582,10 +782,13 @@ export async function readSnapshotBytes(convId: string, snapshotRelPath: string)
   const outputsDir = await getOutputsDir(convId);
   const fullPath = joinPath(outputsDir, snapshotRelPath);
   // Defense-in-depth: ensure the resolved path stays inside outputsDir
-  if (!normalizePath(fullPath).startsWith(normalizePath(outputsDir))) return null;
+  const normalizedOutputsDir = `${normalizePath(outputsDir)}/`;
+  const normalizedFullPath = normalizePath(fullPath);
+  if (normalizedFullPath !== normalizePath(outputsDir) && !normalizedFullPath.startsWith(normalizedOutputsDir)) return null;
   try {
     if (!(await exists(fullPath))) return null;
-    return await readFile(fullPath);
+    const bytes = await readFile(fullPath);
+    return bytes;
   } catch {
     return null;
   }
@@ -677,9 +880,14 @@ export async function installSharedAttachments(
 export const __testing = {
   hashPath,
   normalizePath,
+  normalizeOutputRelPath,
   isAbsolutePath,
   loadManifest,
+  refreshOutputManifest,
   saveManifest,
+  setManifest: (convId: string, manifest: OutputManifest) => {
+    manifestCache.set(convId, manifest);
+  },
   resetCaches: () => {
     manifestCache.clear();
     convLocks.clear();

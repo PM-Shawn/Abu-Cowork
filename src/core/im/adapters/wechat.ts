@@ -17,6 +17,7 @@ import { writeFile } from '@tauri-apps/plugin-fs';
 import { readFile } from '../../tools/fsBridge';
 import { authorizeWorkspace } from '../../tools/pathSafety';
 import { getBaseName } from '../../../utils/pathUtils';
+import { uint8ArrayToBase64 } from '@/utils/base64';
 import { homeDir } from '@tauri-apps/api/path';
 import { isWindows } from '../../../utils/platform';
 import type { ImageAttachment } from '../../../types';
@@ -399,16 +400,6 @@ async function downloadAndDecryptMedia(
   return { path, bytes: decrypted };
 }
 
-// Encode raw bytes to a base64 string (no data: prefix) for ImageAttachment.data.
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000; // avoid call-stack limits on large inputs
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-
 // Map a WeChat image file extension to an ImageAttachment media type.
 function imageMediaTypeFor(ext: string): ImageAttachment['mediaType'] {
   switch (ext.toLowerCase()) {
@@ -606,14 +597,24 @@ export class WeChatInboundAdapter implements InboundAdapter {
           if (this.seenMessageIds.has(msg.message_id)) continue; // already handled
           this.seenMessageIds.add(msg.message_id);
 
-          sharedContextTokens.set(msg.from_user_id, msg.context_token);
-          persistSharedContextTokens();
-          // Await, do NOT fire-and-forget: handleMessage downloads+decrypts media
-          // for image/file items, so a text message sent right after a photo would
-          // otherwise overtake it and reach the agent first. WeChat's ordering is
-          // meaningful ("<photo>" then "describe this"), so a batch must be
-          // dispatched strictly in order.
-          await this.handleMessage(msg);
+          try {
+            sharedContextTokens.set(msg.from_user_id, msg.context_token);
+            persistSharedContextTokens();
+            // Await, do NOT fire-and-forget: handleMessage downloads+decrypts media
+            // for image/file items, so a text message sent right after a photo would
+            // otherwise overtake it and reach the agent first. WeChat's ordering is
+            // meaningful ("<photo>" then "describe this"), so a batch must be
+            // dispatched strictly in order.
+            await this.handleMessage(msg);
+          } catch (err) {
+            // The response cursor has already advanced. Isolate a bad message so
+            // it cannot strand every later message in the same response; rolling
+            // the cursor back would instead redeliver messages already dispatched.
+            wechatLog.error('inbound message processing failed', {
+              message_id: msg.message_id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
         }
 
         failCount = 0;
@@ -654,7 +655,7 @@ export class WeChatInboundAdapter implements InboundAdapter {
               );
               images.push({
                 id: `wechat-img-${msg.message_id}-ref-${images.length}`,
-                data: bytesToBase64(bytes),
+                data: uint8ArrayToBase64(bytes),
                 mediaType: imageMediaTypeFor('jpg'),
               });
               wechatLog.warn('inbound quoted image decoded ok', { bytes: bytes.length });
@@ -689,14 +690,6 @@ export class WeChatInboundAdapter implements InboundAdapter {
         }
         case 2: {
           try {
-            // Ground-truth diagnostic: dump the real inbound image_item shape so
-            // we can see exactly which fields the server sends vs what we read.
-            wechatLog.warn('inbound image_item shape', {
-              keys: Object.keys(item.image_item ?? {}),
-              mediaKeys: Object.keys(item.image_item?.media ?? {}),
-              hasAeskey: Boolean(item.image_item?.aeskey),
-              raw: JSON.stringify(item.image_item).slice(0, 400),
-            });
             const media = item.image_item.media;
             if (!media?.encrypt_query_param && !media?.full_url) throw new Error('image_item has no media ref');
             const { bytes } = await downloadAndDecryptMedia(
@@ -706,10 +699,10 @@ export class WeChatInboundAdapter implements InboundAdapter {
             );
             images.push({
               id: `wechat-img-${msg.message_id}-${images.length}`,
-              data: bytesToBase64(bytes),
+              data: uint8ArrayToBase64(bytes),
               mediaType: imageMediaTypeFor('jpg'),
             });
-            wechatLog.warn('inbound image decoded ok', { bytes: images[images.length - 1]?.data.length ?? 0 });
+            wechatLog.debug('inbound image decoded ok', { bytes: images[images.length - 1]?.data.length ?? 0 });
             // No text placeholder on success: the image block itself is what the
             // model sees, and a literal "[图片]" marker alongside it reads as a
             // failed attachment ("the image didn't load") and makes the model

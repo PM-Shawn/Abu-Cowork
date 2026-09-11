@@ -17,6 +17,8 @@ import { useIMChannelStore } from '@/stores/imChannelStore';
 import { cn } from '@/lib/utils';
 import TriggerRunHistory from './TriggerRunHistory';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
+import type { TriggerCapability } from '@/types/trigger';
+import { normalizeTriggerCapability } from '@/core/trigger/triggerCapability';
 
 export default function TriggerDetail() {
   const { t } = useI18n();
@@ -37,6 +39,7 @@ export default function TriggerDetail() {
   if (!trigger) return null;
 
   const isPaused = trigger.status === 'paused';
+  const effectiveCapability = normalizeTriggerCapability(trigger.action.capability);
   const serverPort = triggerEngine.getServerPort() ?? 18080;
   const endpoint = `http://localhost:${serverPort}/trigger/${trigger.id}`;
   const curlExample = `curl -X POST ${endpoint} \\\n  -H "Content-Type: application/json" \\\n  -d '{"data": {"content": "test message"}}'`;
@@ -87,6 +90,13 @@ export default function TriggerDetail() {
   } else if (trigger.filter.type === 'regex') {
     filterDesc = `${t.trigger.filterRegex}: ${trigger.filter.pattern}`;
   }
+
+  const capabilityLabels: Record<TriggerCapability, string> = {
+    read_tools: t.trigger.capabilityReadTools,
+    safe_tools: t.trigger.capabilitySafeTools,
+    full: t.trigger.capabilityFull,
+    custom: t.trigger.capabilityCustomLegacy,
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -148,6 +158,10 @@ export default function TriggerDetail() {
             <div className="flex items-center justify-between">
               <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.filter}</span>
               <span className="text-body text-[var(--abu-text-primary)]">{filterDesc}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.capability}</span>
+              <span className="text-body text-[var(--abu-text-primary)]">{capabilityLabels[effectiveCapability]}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-body text-[var(--abu-text-tertiary)]">{t.trigger.debounce}</span>

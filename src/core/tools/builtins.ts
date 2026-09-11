@@ -1,4 +1,5 @@
 // Path safety checks are now handled centrally in registry.ts executeAnyTool
+import { preparePluginTool } from './definitions/pluginTools';
 import { toolRegistry } from './registry';
 
 // --- File tools ---
@@ -11,7 +12,11 @@ import { runCommandTool } from './definitions/commandTools';
 // save_skill was deprecated in favor of skill_manage (Module E self-evolution).
 // save_agent is kept — no equivalent agent_manage yet.
 import { useSkillTool, delegateToAgentTool, readSkillFileTool, saveAgentTool, requestWorkspaceTool } from './definitions/agentTools';
-export { clearAllSkillHooks, clearSkillHooksByConversation } from './definitions/agentTools';
+export {
+  clearAllSkillHooks,
+  clearSkillHooksByConversation,
+  clearSkillHooksByLoop,
+} from './definitions/agentTools';
 
 // --- Automation tools ---
 import { manageScheduledTaskTool, manageTriggerTool, manageFileWatchTool } from './definitions/automationTools';
@@ -58,6 +63,7 @@ export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/co
 import { sendFileTool } from './definitions/imTools';
 
 export function registerBuiltinTools(): void {
+  toolRegistry.register(preparePluginTool);
   toolRegistry.register(getSystemInfoTool);
   toolRegistry.register(readFileTool);
   toolRegistry.register(writeFileTool);

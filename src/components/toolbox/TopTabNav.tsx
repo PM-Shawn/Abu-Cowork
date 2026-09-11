@@ -7,6 +7,9 @@ export interface TopTabNavItem<T extends string = string> {
   id: T;
   label: string;
   icon: LucideIcon;
+  /** Optional trailing adornment (e.g. an update-count badge). Rendered after
+   *  the label, inside the tab button, so it moves with the tab. */
+  badge?: ReactNode;
 }
 
 interface TopTabNavProps<T extends string> {
@@ -63,6 +66,7 @@ export default function TopTabNav<T extends string>({
                 isActive ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]'
               )} />
               <span>{item.label}</span>
+              {item.badge}
             </button>
           );
         })}
@@ -76,7 +80,7 @@ export default function TopTabNav<T extends string>({
   // the cards below.
   if (belowChrome) {
     return (
-      <nav {...windowDragRowProps()} className="shrink-0 pt-12 pb-3 px-8">
+      <nav {...windowDragRowProps()} data-testid="top-tab-nav" className="shrink-0 pt-12 pb-3 px-8">
         <div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
           {content}
         </div>
@@ -87,6 +91,7 @@ export default function TopTabNav<T extends string>({
   return (
     <nav
       {...windowDragRowProps()}
+      data-testid="top-tab-nav"
       className={cn(
         'shrink-0 flex items-center justify-between gap-3 pt-3 pb-2 pr-4',
         sidebarCollapsed ? 'pl-[184px]' : 'pl-4'

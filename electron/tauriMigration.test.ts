@@ -52,6 +52,25 @@ function canCreateFileSymlinks(): boolean {
 // assertion on hosts that can actually construct the fixture.
 const symlinkIt = canCreateFileSymlinks() ? it : it.skip;
 
+// The Notice SQLite tests below carry an explicit per-test ceiling instead of
+// the suite default 5 s. vitest.config.ts keeps `testTimeout` at 5 s on purpose
+// (hung async tests fail fast) — do NOT raise it globally to fix these.
+//
+// Why these tests are different: their bodies are synchronous and always run
+// to completion — vitest only compares elapsed time *after* a sync body
+// returns, so the ceiling can never interrupt a hang here; it only decides how
+// slow is "too slow". Each of them opens and closes a real WAL database 7–12
+// times (fixture writer, integrity checks, VACUUM INTO, install, read-back),
+// and every open/close of a WAL database creates and deletes its -wal/-shm
+// sidecars. On the windows-latest runner that churn hits a heavy I/O tail:
+// SQLite's win32 VFS silently sleeps up to ~1.4 s per open/delete/access that
+// fails with a sharing/access violation (os_win.c winRetryIoerr: 10 retries of
+// 25·(1+n) ms — typically an antivirus scan still holding a fresh file). Across
+// 33 CI executions the file measured 2–13 s when passing and 23–30 s whenever
+// one of these tests tipped over 5 s, against 0.5 s for the whole file on
+// macOS; every failure was `Test timed out`, never an assertion. Issue #241.
+const NOTICE_SQLITE_TEST_TIMEOUT_MS = 60_000;
+
 let root: string;
 let tauriDir: string;
 let electronDir: string;
@@ -298,7 +317,7 @@ describe('runTauriMigration', () => {
     expect(fs.existsSync(path.join(tauriDir, 'secrets.bin'))).toBe(true);
   });
 
-  it('snapshots a real WAL Notice SQLite database with audit and pending inbox rows', () => {
+  it('snapshots a real WAL Notice SQLite database with audit and pending inbox rows', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     const source = seedNoticeDatabase(tauriDir, 'tauri');
     // Keep a read transaction only to retain the just-written WAL after the
@@ -335,7 +354,7 @@ describe('runTauriMigration', () => {
     expect(summary.sentinelWritten).toBe(true);
   });
 
-  it('backs up an existing Electron Notice database before source-authoritative replacement', () => {
+  it('backs up an existing Electron Notice database before source-authoritative replacement', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     const source = seedNoticeDatabase(tauriDir, 'tauri');
     const electron = seedNoticeDatabase(electronDir, 'electron');
@@ -362,7 +381,7 @@ describe('runTauriMigration', () => {
     ]);
   });
 
-  it('does not replay a closed real Notice SQLite fixture after a completed v3 migration', () => {
+  it('does not replay a closed real Notice SQLite fixture after a completed v3 migration', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     const source = seedNoticeDatabase(tauriDir, 'closed');
     source.db.close();
@@ -376,7 +395,7 @@ describe('runTauriMigration', () => {
     ]);
   });
 
-  it('fails closed on an invalid Notice SQLite source and retries after it is repaired', () => {
+  it('fails closed on an invalid Notice SQLite source and retries after it is repaired', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     fs.writeFileSync(path.join(tauriDir, NOTICE_DB_FILENAME), 'not a sqlite database');
 
@@ -399,7 +418,7 @@ describe('runTauriMigration', () => {
     ]);
   });
 
-  it('upgrades a trusted v2 marker by migrating only Notice data and preserves Electron RC data', () => {
+  it('upgrades a trusted v2 marker by migrating only Notice data and preserves Electron RC data', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
     const sourceNotice = seedNoticeDatabase(tauriDir, 'v2-tauri');
@@ -437,7 +456,7 @@ describe('runTauriMigration', () => {
     expect(runWith(store, { sourceWins: true })).toMatchObject({ skipped: 'already-migrated' });
   });
 
-  it('merges trusted-v2 Notice data into the Electron baseline without replacing newer audit or inbox state', () => {
+  it('merges trusted-v2 Notice data into the Electron baseline without replacing newer audit or inbox state', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
     const source = seedNoticeDatabase(tauriDir, 'tauri');
@@ -490,7 +509,7 @@ describe('runTauriMigration', () => {
     ]);
   });
 
-  it('retries a trusted v2 Notice-only upgrade without replaying files or secrets', () => {
+  it('retries a trusted v2 Notice-only upgrade without replaying files or secrets', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
     fs.mkdirSync(path.join(electronDir, 'conversations', 'conv1'), { recursive: true });
@@ -523,7 +542,7 @@ describe('runTauriMigration', () => {
     ).toBe('electron-rc-preserved');
   });
 
-  it('does not shortcut an incomplete v2 marker', () => {
+  it('does not shortcut an incomplete v2 marker', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     const legacyFingerprint = sourceInventoryV2(tauriDir).fingerprint;
     const sourceNotice = seedNoticeDatabase(tauriDir, 'fallback');
@@ -545,7 +564,7 @@ describe('runTauriMigration', () => {
     expect(store.stored.get('provider:claude')).toBe('sk-ant-123');
   });
 
-  it('does not shortcut a v2 marker whose legacy source fingerprint changed', () => {
+  it('does not shortcut a v2 marker whose legacy source fingerprint changed', { timeout: NOTICE_SQLITE_TEST_TIMEOUT_MS }, () => {
     seedTauriDir();
     writeCompleteV2Sentinel('not-the-current-v2-source');
     const sourceNotice = seedNoticeDatabase(tauriDir, 'fingerprint-fallback');

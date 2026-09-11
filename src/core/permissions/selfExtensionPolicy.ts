@@ -1,29 +1,46 @@
 /**
  * Self-extension consequence classification.
  *
- * Abu lets the agent grow its own capabilities — create subagents, install MCP
- * servers, rewrite its persona. That is a real product strength, but all three
- * write durable state that shapes every later turn, and the model can be
+ * Abu lets the agent grow its own capabilities and automations — create
+ * subagents, install MCP servers, rewrite its persona, and schedule future
+ * unattended work. These operations write durable state that shapes later
+ * turns or runs, and the model can be
  * steered by whatever it just read (a web page, a document, a tool result).
  * Without a gate, one injected instruction buys a persistent foothold: an MCP
  * server that spawns processes, a subagent with an attacker-authored system
  * prompt, or a rewritten persona that survives into every future conversation.
  *
  * Skills already got this treatment (draft queue + content guard + audited
- * history). These three took the same kind of write with none of it.
+ * history). Durable automation writes need the same consequence gate.
  *
  * Unlike browser automation there is no per-conversation grant: these are rare,
  * deliberate acts, so each one is worth its own confirmation.
  */
 
 import { TOOL_NAMES } from '../tools/toolNames';
+import { getI18n } from '../../i18n';
 
 /** manage_mcp_server actions that add a server (and therefore spawn processes or reach a URL). */
 const MCP_INSTALLING_ACTIONS = new Set(['install', 'add_custom', 'ensure']);
+const AUTOMATION_MANAGER_TOOLS = new Set<string>([
+  TOOL_NAMES.MANAGE_TRIGGER,
+  TOOL_NAMES.MANAGE_SCHEDULED_TASK,
+  TOOL_NAMES.MANAGE_FILE_WATCH,
+]);
 
 export interface SelfExtensionAction {
   /** Short, human-readable description of what is about to be written. */
   summary: string;
+}
+
+/** What the caller read from disk about the call, for summaries that depend on it. */
+export interface SelfExtensionFacts {
+  /**
+   * save_agent: an AGENT.md already exists where this call would write
+   * (`saveAgentWouldReplace`). Anything but an explicit `false` reads as a
+   * replace — never the model's `overwrite` flag.
+   */
+  saveAgentReplaces?: boolean;
 }
 
 /**
@@ -33,10 +50,15 @@ export interface SelfExtensionAction {
 export function classifySelfExtension(
   name: string,
   input: Record<string, unknown>,
+  facts: SelfExtensionFacts = {},
 ): SelfExtensionAction | null {
   if (name === TOOL_NAMES.SAVE_AGENT) {
+    // The user approving this is the one check on the model's claim that they
+    // asked to change an existing expert, so the summary says which it is.
+    const t = getI18n().commandConfirm;
+    const mode = facts.saveAgentReplaces === false ? t.selfExtensionSaveAgentNew : t.selfExtensionSaveAgentReplace;
     const agentName = typeof input.name === 'string' ? input.name : '';
-    return { summary: agentName ? `save_agent: ${agentName}` : 'save_agent' };
+    return { summary: agentName ? `save_agent (${mode}): ${agentName}` : `save_agent (${mode})` };
   }
 
   if (name === TOOL_NAMES.UPDATE_SOUL) {
@@ -50,6 +72,14 @@ export function classifySelfExtension(
       ? input.name
       : typeof input.query === 'string' ? input.query : '';
     return { summary: target ? `manage_mcp_server (${action}): ${target}` : `manage_mcp_server (${action})` };
+  }
+
+  if (AUTOMATION_MANAGER_TOOLS.has(name)) {
+    const action = typeof input.action === 'string' ? input.action : '';
+    // Listing is observational. Everything else fails closed so a newly added
+    // mutation cannot silently escape the durable-state gate.
+    if (action === 'list') return null;
+    return { summary: action ? `${name} (${action})` : name };
   }
 
   return null;

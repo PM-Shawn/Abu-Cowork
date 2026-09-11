@@ -1,25 +1,198 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resolveTriggerCallbacks } from './triggerPermission';
 import { matchesToolName } from '../skill/toolFilter';
-import { checkReadPath, checkWritePath, revokeWorkspace } from '../tools/pathSafety';
+import {
+  authorizeWorkspace,
+  checkReadPath,
+  checkWritePath,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
+  revokeWorkspace,
+} from '../tools/pathSafety';
+import { usePermissionStore } from '../../stores/permissionStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
+import {
+  __resetUnattendedConfirmationForTests,
+  setUnattendedConfirmationResolver,
+} from '../permissions/unattendedConfirmation';
 
 describe('resolveTriggerCallbacks', () => {
-  it('carries a custom trigger tool whitelist to the agent run', () => {
-    const callbacks = resolveTriggerCallbacks({
-      prompt: 'read only',
-      capability: 'custom',
-      permissions: { allowedTools: ['read_*', 'http_fetch'] },
-    });
+  function resolveForTest(action: Parameters<typeof resolveTriggerCallbacks>[0]) {
+    const scopeId = createAuthorizationScope();
+    const callbacks = resolveTriggerCallbacks(action, { authorizationScopeId: scopeId });
+    return {
+      callbacks,
+      scopeId,
+      dispose: () => disposeAuthorizationScope(scopeId),
+    };
+  }
 
-    expect(callbacks.allowedTools).toEqual(['read_*', 'http_fetch']);
-    expect(callbacks.blockedTools).toContain('request_workspace');
+  // A trigger run whose confirmation seam has no conversationId can never be
+  // asked anything: the approval channel has no chat to look up and no id to
+  // put on the fallback notice, so every confirmation dies silently.
+  it('threads the run conversation into the confirmation seam', async () => {
+    const seen: (string | undefined)[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request.conversationId);
+      return { approved: false, reason: 'no' };
+    });
+    const scopeId = createAuthorizationScope();
+    try {
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'x', capability: 'safe_tools' },
+        { authorizationScopeId: scopeId, conversationId: 'conv-trigger-1' },
+      );
+      await callbacks.commandConfirmCallback({
+        command: 'ls', level: 'warn', reason: 'because',
+      });
+      expect(seen).toEqual(['conv-trigger-1']);
+    } finally {
+      __resetUnattendedConfirmationForTests();
+      disposeAuthorizationScope(scopeId);
+    }
   });
 
-  // read_tools is the exception since RB-02 — see the read_tools write
-  // ceiling block below. The confirming tiers stay callback-driven.
-  it('does not create a whitelist for the confirming capability levels', () => {
-    expect(resolveTriggerCallbacks({ prompt: 'safe', capability: 'safe_tools' }).allowedTools).toBeUndefined();
-    expect(resolveTriggerCallbacks({ prompt: 'full', capability: 'full' }).allowedTools).toBeUndefined();
+  /*
+    A trigger run binds no IM session to its conversation, so until the engine
+    started building one from the trigger's own output config, 「每次询问」 in
+    the automatic-tasks column refused itself with `no_binding` — the same gap
+    the scheduler had. Both tiers that reach the seam (`read_tools` and
+    `safe_tools`; `full` and `custom` answer inline and never get here) must
+    forward it, or the tier a user picked would silently decide whether they
+    can be asked at all.
+  */
+  it.each(['read_tools', 'safe_tools'] as const)(
+    'threads the approval target and the trigger name into the seam (%s)',
+    async (capability) => {
+      const seen: { imTarget?: unknown; runLabel?: string }[] = [];
+      setUnattendedConfirmationResolver(async (request) => {
+        seen.push({ imTarget: request.imTarget, runLabel: request.runLabel });
+        return { approved: false, reason: 'no', audit: {} };
+      });
+      const scopeId = createAuthorizationScope();
+      try {
+        const callbacks = resolveTriggerCallbacks(
+          { prompt: 'x', capability },
+          {
+            authorizationScopeId: scopeId,
+            conversationId: 'conv-trigger-2',
+            imTarget: {
+              platform: 'feishu',
+              channelId: 'ch-trigger',
+              chatId: 'oc_ops',
+              chatIdType: 'chat_id',
+              senderId: 'ou_li',
+            },
+            runLabel: '磁盘告警',
+          },
+        );
+        await callbacks.commandConfirmCallback({
+          command: 'ls', level: 'warn', reason: 'because',
+        });
+        expect(seen).toEqual([{
+          imTarget: {
+            platform: 'feishu',
+            channelId: 'ch-trigger',
+            chatId: 'oc_ops',
+            chatIdType: 'chat_id',
+            senderId: 'ou_li',
+          },
+          runLabel: '磁盘告警',
+        }]);
+      } finally {
+        __resetUnattendedConfirmationForTests();
+        disposeAuthorizationScope(scopeId);
+      }
+    },
+  );
+
+  // No output channel on the trigger → nothing handed over, and the seam keeps
+  // its old fallback-then-refuse behavior rather than a guessed chat.
+  it('hands over no target when the caller supplies none', async () => {
+    const seen: (unknown)[] = [];
+    setUnattendedConfirmationResolver(async (request) => {
+      seen.push(request.imTarget);
+      return { approved: false, reason: 'no', audit: {} };
+    });
+    const scopeId = createAuthorizationScope();
+    try {
+      const callbacks = resolveTriggerCallbacks(
+        { prompt: 'x', capability: 'safe_tools' },
+        { authorizationScopeId: scopeId, conversationId: 'conv-trigger-3' },
+      );
+      await callbacks.commandConfirmCallback({
+        command: 'ls', level: 'warn', reason: 'because',
+      });
+      expect(seen).toEqual([undefined]);
+    } finally {
+      __resetUnattendedConfirmationForTests();
+      disposeAuthorizationScope(scopeId);
+    }
+  });
+
+  it('carries a custom trigger tool whitelist to the agent run', () => {
+    const { callbacks, dispose } = resolveForTest({
+        prompt: 'read only',
+        capability: 'custom',
+        permissions: { allowedTools: ['read_*', 'http_fetch'] },
+      });
+    try {
+      expect(callbacks.allowedTools).toEqual(['read_*', 'http_fetch']);
+      expect(callbacks.blockedTools).toContain('request_workspace');
+    } finally {
+      dispose();
+    }
+  });
+
+  it('caps safe_tools at a shared positive roster while leaving full unrestricted', () => {
+    const safe = resolveForTest({ prompt: 'safe', capability: 'safe_tools' });
+    const full = resolveForTest({ prompt: 'full', capability: 'full' });
+    try {
+      expect(safe.callbacks.allowedTools).not.toContain('run_command');
+      expect(safe.callbacks.allowedTools).toContain('write_file');
+      expect(safe.callbacks.allowedTools).not.toContain('manage_mcp_server');
+      expect(full.callbacks.allowedTools).toBeUndefined();
+    } finally {
+      safe.dispose();
+      full.dispose();
+    }
+  });
+
+  it('fails closed for source-invalid persisted capabilities', () => {
+    const { callbacks, dispose } = resolveForTest({ prompt: 'read', capability: 'chat_only' as never });
+    try {
+      expect(callbacks.allowedTools).toContain('read_file');
+      expect(callbacks.allowedTools).not.toContain('run_command');
+      expect(callbacks.blockedTools.some((p) => matchesToolName('abu-browser__navigate', p))).toBe(true);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('fails closed for malformed persisted custom arrays without throwing matchers', async () => {
+    const malformedTools = resolveForTest({
+      prompt: 'custom',
+      capability: 'custom',
+      permissions: { allowedTools: [42] as never },
+    });
+    const malformedCommands = resolveForTest({
+      prompt: 'custom',
+      capability: 'custom',
+      permissions: { allowedCommands: [42] as never },
+    });
+    try {
+      const allowedTools = malformedTools.callbacks.allowedTools ?? [];
+      expect(allowedTools.some((p) => matchesToolName('read_file', p))).toBe(false);
+      await expect(malformedCommands.callbacks.commandConfirmCallback({
+        command: 'npm run build',
+        level: 'safe',
+        reason: 'safe',
+      })).resolves.toBe(false);
+    } finally {
+      malformedTools.dispose();
+      malformedCommands.dispose();
+    }
   });
 
   // b4ce62e8 closed this hole on the scheduler side and its own note flagged
@@ -36,23 +209,136 @@ describe('resolveTriggerCallbacks', () => {
     });
 
     it('read_tools authorizes its workspace read-only — writes inside it stay blocked', async () => {
-      resolveTriggerCallbacks({ prompt: 'read', capability: 'read_tools', workspacePath: WS });
+      const { scopeId, dispose } = resolveForTest({ prompt: 'read', capability: 'read_tools', workspacePath: WS });
 
-      expect((await checkReadPath(`${WS}/notes.md`)).allowed).toBe(true);
-      expect((await checkWritePath(`${WS}/evil.sh`)).allowed).toBe(false);
+      try {
+        expect((await checkReadPath(`${WS}/notes.md`, scopeId)).allowed).toBe(true);
+        expect((await checkWritePath(`${WS}/evil.sh`, scopeId)).allowed).toBe(false);
+      } finally {
+        dispose();
+      }
     });
 
     it('a trigger with no capability field (defaults to read_tools) gets the same read-only grant', async () => {
-      resolveTriggerCallbacks({ prompt: 'read', workspacePath: WS });
+      const { scopeId, dispose } = resolveForTest({ prompt: 'read', workspacePath: WS });
 
-      expect((await checkWritePath(`${WS}/evil.sh`)).allowed).toBe(false);
+      try {
+        expect((await checkWritePath(`${WS}/evil.sh`, scopeId)).allowed).toBe(false);
+      } finally {
+        dispose();
+      }
     });
 
     it('safe_tools and full still get read+write in their workspace', async () => {
       for (const capability of ['safe_tools', 'full'] as const) {
         revokeWorkspace(WS);
-        resolveTriggerCallbacks({ prompt: 'x', capability, workspacePath: WS });
-        expect((await checkWritePath(`${WS}/out.txt`)).allowed, capability).toBe(true);
+        const { scopeId, dispose } = resolveForTest({ prompt: 'x', capability, workspacePath: WS });
+        try {
+          expect((await checkWritePath(`${WS}/out.txt`, scopeId)).allowed, capability).toBe(true);
+        } finally {
+          dispose();
+        }
+      }
+    });
+
+    it('read_tools uses its run scope instead of inheriting a standing global write grant', async () => {
+      const scopeId = createAuthorizationScope();
+      authorizeWorkspace(WS, ['read', 'write']);
+      try {
+        resolveTriggerCallbacks(
+          { prompt: 'read', capability: 'read_tools', workspacePath: WS },
+          { authorizationScopeId: scopeId },
+        );
+
+        expect((await checkReadPath(`${WS}/notes.md`, scopeId)).allowed).toBe(true);
+        expect((await checkWritePath(`${WS}/evil.sh`, scopeId)).allowed).toBe(false);
+        expect((await checkWritePath(`${WS}/interactive.md`)).allowed).toBe(true);
+      } finally {
+        disposeAuthorizationScope(scopeId);
+        revokeWorkspace(WS);
+      }
+    });
+  });
+
+  describe('run-scoped file callbacks do not import standing global grants', () => {
+    beforeEach(() => {
+      usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+    });
+
+    it('read_tools refuses a globally granted read outside its declared workspace', async () => {
+      const path = '/Users/testuser/Desktop/trigger-read-only.md';
+      const { callbacks, scopeId, dispose } = resolveForTest({
+        prompt: 'read',
+        capability: 'read_tools',
+        workspacePath: '/Users/testuser/Projects/trigger-read-workspace',
+      });
+      usePermissionStore.getState().grantPermission(path, ['read'], 'session');
+
+      try {
+        await expect(callbacks.filePermissionCallback({
+          path,
+          capability: 'read',
+          toolName: 'read_file',
+        })).resolves.toBe(false);
+
+        expect((await checkReadPath(path, scopeId)).allowed).toBe(false);
+      } finally {
+        dispose();
+        revokeWorkspace(path);
+        usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+      }
+    });
+
+    it('safe_tools refuses a globally granted path outside its declared workspace', async () => {
+      const path = '/Users/testuser/Desktop/trigger-safe-read.md';
+      const { callbacks, scopeId, dispose } = resolveForTest({
+        prompt: 'safe',
+        capability: 'safe_tools',
+        workspacePath: '/Users/testuser/Projects/trigger-safe-workspace',
+      });
+      usePermissionStore.getState().grantPermission(path, ['read', 'write'], 'session');
+
+      try {
+        await expect(callbacks.filePermissionCallback({
+          path,
+          capability: 'write',
+          toolName: 'write_file',
+        })).resolves.toBe(false);
+
+        expect((await checkReadPath(path, scopeId)).allowed).toBe(false);
+        expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
+      } finally {
+        dispose();
+        revokeWorkspace(path);
+        usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
+      }
+    });
+
+    it('custom refuses a globally granted path outside its explicit allowlist', async () => {
+      const path = '/Users/testuser/Desktop/trigger-custom-write.md';
+      const { callbacks, scopeId, dispose } = resolveForTest({
+        prompt: 'custom',
+        capability: 'custom',
+        permissions: {
+          allowedPaths: ['/Users/testuser/Projects/only-this-path'],
+          allowedTools: ['write_file'],
+        },
+      });
+      usePermissionStore.getState().grantPermission(path, ['read', 'write'], 'session');
+
+      try {
+        await expect(callbacks.filePermissionCallback({
+          path,
+          capability: 'write',
+          toolName: 'write_file',
+        })).resolves.toBe(false);
+
+        expect((await checkReadPath(path, scopeId)).allowed).toBe(false);
+        expect((await checkWritePath(path, scopeId)).allowed).toBe(false);
+      } finally {
+        dispose();
+        revokeWorkspace(path);
+        usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
       }
     });
   });
@@ -66,30 +352,42 @@ describe('resolveTriggerCallbacks', () => {
   // read-only tier has no browser access, period.
   describe('read_tools browser ceiling', () => {
     it('blocks every browser-automation tool via a namespace wildcard — including navigate and read-only tools', () => {
-      const { blockedTools } = resolveTriggerCallbacks({ prompt: 'read', capability: 'read_tools' });
+      const { callbacks: { blockedTools }, dispose } = resolveForTest({ prompt: 'read', capability: 'read_tools' });
 
-      // click/fill/select/keyboard/execute_js/navigate are the enumerated
-      // STATE_CHANGING_TOOLS; snapshot/screenshot/get_tabs stand in for the
-      // read-only tools this module never enumerates (they're registered
-      // dynamically by the browser servers) — the wildcard has to catch
-      // those too, not just the known state-changing set.
-      for (const tool of ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate', 'snapshot', 'screenshot', 'get_tabs']) {
-        expect(blockedTools.some((p) => matchesToolName(`abu-browser__${tool}`, p)), tool).toBe(true);
-        expect(blockedTools.some((p) => matchesToolName(`abu-browser-bridge__${tool}`, p)), tool).toBe(true);
+      try {
+        // click/fill/select/keyboard/execute_js/navigate are the enumerated
+        // STATE_CHANGING_TOOLS; snapshot/screenshot/get_tabs stand in for the
+        // read-only tools this module never enumerates (they're registered
+        // dynamically by the browser servers) — the wildcard has to catch
+        // those too, not just the known state-changing set.
+        for (const tool of ['click', 'fill', 'select', 'keyboard', 'execute_js', 'navigate', 'snapshot', 'query_js', 'screenshot', 'get_tabs']) {
+          expect(blockedTools.some((p) => matchesToolName(`abu-browser__${tool}`, p)), tool).toBe(true);
+          expect(blockedTools.some((p) => matchesToolName(`abu-browser-bridge__${tool}`, p)), tool).toBe(true);
+        }
+      } finally {
+        dispose();
       }
     });
 
     it('leaves the higher tiers untouched', () => {
       for (const capability of ['safe_tools', 'full'] as const) {
-        const { blockedTools } = resolveTriggerCallbacks({ prompt: 'x', capability });
-        expect(blockedTools.some((p) => matchesToolName('abu-browser__click', p)), capability).toBe(false);
-        expect(blockedTools.some((p) => matchesToolName('abu-browser__navigate', p)), capability).toBe(false);
+        const { callbacks: { blockedTools }, dispose } = resolveForTest({ prompt: 'x', capability });
+        try {
+          expect(blockedTools.some((p) => matchesToolName('abu-browser__click', p)), capability).toBe(false);
+          expect(blockedTools.some((p) => matchesToolName('abu-browser__navigate', p)), capability).toBe(false);
+        } finally {
+          dispose();
+        }
       }
     });
 
     it('applies to a task that predates the capability field (defaults to read_tools)', () => {
-      const { blockedTools } = resolveTriggerCallbacks({ prompt: 'x' });
-      expect(blockedTools.some((p) => matchesToolName('abu-browser__click', p))).toBe(true);
+      const { callbacks: { blockedTools }, dispose } = resolveForTest({ prompt: 'x' });
+      try {
+        expect(blockedTools.some((p) => matchesToolName('abu-browser__click', p))).toBe(true);
+      } finally {
+        dispose();
+      }
     });
   });
 
@@ -99,8 +397,12 @@ describe('resolveTriggerCallbacks', () => {
   // callback never runs and `touch` / `mkdir` / `cp` wrote unasked. The
   // roster is what actually holds the "changes nothing" promise.
   describe('read_tools write ceiling', () => {
-    const allowedFor = (capability: 'read_tools' | 'safe_tools' | 'full') =>
-      resolveTriggerCallbacks({ prompt: 'x', capability }).allowedTools;
+    const allowedFor = (capability: 'read_tools' | 'safe_tools' | 'full') => {
+      const { callbacks, dispose } = resolveForTest({ prompt: 'x', capability });
+      const allowedTools = callbacks.allowedTools;
+      dispose();
+      return allowedTools;
+    };
 
     it('caps the tier at a positive roster instead of relying on the deny callback', () => {
       const allowed = allowedFor('read_tools');
@@ -135,8 +437,101 @@ describe('resolveTriggerCallbacks', () => {
     });
 
     it('applies to a task that predates the capability field (defaults to read_tools)', () => {
-      const allowed = resolveTriggerCallbacks({ prompt: 'x' }).allowedTools ?? [];
+      const { callbacks, dispose } = resolveForTest({ prompt: 'x' });
+      const allowed = callbacks.allowedTools ?? [];
+      dispose();
       expect(allowed.some((p) => matchesToolName('run_command', p))).toBe(false);
     });
+  });
+});
+
+// The trigger tiers are the twin of `authGate`'s IM tiers, and carried the
+// same shape of hole: `full` answered every confirmation with "allowed unless
+// hard-blocked", which for a browser confirmation meant page scripting ran in
+// an unattended trigger with nobody approving it. A tier is a ceiling — it may
+// only remove authority — so the browser operation-class policy is evaluated
+// independently of the tier.
+describe('resolveTriggerCallbacks — tiers cannot loosen the browser operation policy', () => {
+  const scriptingConfirm = {
+    command: 'Browser action: abu-browser__execute_js',
+    level: 'warn' as const,
+    reason: 'runs a script in the page',
+    kind: 'browser' as const,
+    browserOperationClass: 'scripting' as const,
+    browserOrigin: 'https://allowed.com',
+  };
+
+  function callbacksFor(capability: 'full' | 'custom' | 'read_tools' | 'safe_tools') {
+    const scopeId = createAuthorizationScope();
+    const callbacks = resolveTriggerCallbacks(
+      capability === 'custom'
+        ? { prompt: 'x', capability, permissions: { allowedCommands: ['*'] } }
+        : { prompt: 'x', capability },
+      { authorizationScopeId: scopeId },
+    );
+    return { callbacks, dispose: () => disposeAuthorizationScope(scopeId) };
+  }
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      browserSitePermissions: { 'https://allowed.com': 'allowed' },
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: false,
+    });
+    __resetUnattendedConfirmationForTests();
+  });
+
+  it('full denies execute_js under the default policy', async () => {
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+    dispose();
+  });
+
+  it('custom denies a browser action even with a wide-open command allowlist', async () => {
+    const { callbacks, dispose } = callbacksFor('custom');
+    await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
+    dispose();
+  });
+
+  it('full still approves an interactive action the unattended policy allows', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback({
+      ...scriptingConfirm,
+      browserOperationClass: 'interactive',
+    })).resolves.toBe(true);
+    dispose();
+  });
+
+  it('full and custom answer no to a refusal notice', async () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    for (const capability of ['full', 'custom'] as const) {
+      const { callbacks, dispose } = callbacksFor(capability);
+      await expect(callbacks.commandConfirmCallback({
+        command: 'ls',
+        level: 'safe',
+        reason: '',
+        deniedNotice: 'the gate already refused this',
+      })).resolves.toBe(false);
+      dispose();
+    }
+  });
+
+  it('full leaves non-browser commands at its own answer', async () => {
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback({
+      command: 'ls', level: 'safe', reason: '',
+    })).resolves.toBe(true);
+    dispose();
+  });
+
+  it('read_tools and safe_tools stay fail-closed through the unattended seam', async () => {
+    for (const capability of ['read_tools', 'safe_tools'] as const) {
+      const { callbacks, dispose } = callbacksFor(capability);
+      await expect(callbacks.commandConfirmCallback({
+        command: 'ls', level: 'safe', reason: '',
+      })).resolves.toBe(false);
+      dispose();
+    }
   });
 });

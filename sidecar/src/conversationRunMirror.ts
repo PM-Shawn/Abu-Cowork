@@ -51,8 +51,14 @@
  */
 import type { ChatDelta } from '@/core/agent/ports/chatDelta';
 import type { ConversationReader } from '@/core/agent/ports/conversationReader';
+import {
+  batchSummaryHasNonSuccess,
+  mergeBatchTerminalSummaries,
+  normalizeBatchTerminalSummary,
+} from '@/core/agent/batchTerminalSummary';
 import type { Conversation, Message, AgentStatus, ToolCall } from '@/types';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
+import { appendBoundedSubagentToolCall } from '@/core/session/durableToolResultContent';
 
 export interface ConversationRunMirrorSeed {
   conversation: Conversation;
@@ -76,6 +82,11 @@ export interface ConversationRunMirror {
   getWorkspacePathSnapshot(): string | null;
 }
 
+function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
+  return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
+    || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+}
+
 export function createConversationRunMirror(
   conversationId: string,
   seed: ConversationRunMirrorSeed,
@@ -87,7 +98,7 @@ export function createConversationRunMirror(
   const reader: ConversationReader = {
     getConversation: (convId) => (convId === conversationId ? conversation : undefined),
     getIndexEntry: (convId) => (convId === conversationId ? indexEntry : undefined),
-    getThinkingStartTime: () => thinkingStartTime,
+    getThinkingStartTime: (convId) => (convId === conversationId ? thinkingStartTime : null),
   };
 
   function findTarget(msgId: string | undefined): Message | undefined {
@@ -191,7 +202,57 @@ export function createConversationRunMirror(
             tc.sandboxRecovery = metadata.sandboxRecovery;
             tc.isError = true;
           }
+          if (
+            metadata?.subagentStopReason
+            && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+          ) {
+            tc.subagentStopReason = metadata.subagentStopReason;
+            tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+          }
+          const incomingSummary = normalizeBatchTerminalSummary(metadata?.batchTerminalSummary, {
+            conversationId,
+            assistantMessageId: messageId,
+            batchToolCallId: toolCallId,
+          });
+          if (incomingSummary) {
+            tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+            if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+            else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+          }
           tc.isExecuting = false;
+        }
+        break;
+      }
+      case 'checkpointToolCallMetadata': {
+        const [, messageId, toolCallId, metadata] = args as [
+          string,
+          string,
+          string,
+          import('@/types').ToolExecutionMetadata,
+        ];
+        const msg = conversation.messages.find((m) => m.id === messageId);
+        const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
+        if (!tc) break;
+        if (
+          metadata.subagentStopReason
+          && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+        ) {
+          tc.subagentStopReason = metadata.subagentStopReason;
+          tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+        }
+        const incomingSummary = normalizeBatchTerminalSummary(metadata.batchTerminalSummary, {
+          conversationId,
+          assistantMessageId: messageId,
+          batchToolCallId: toolCallId,
+        });
+        if (incomingSummary) {
+          tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+          if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+          else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+        }
+        if (tc.name === 'run_command' && metadata.sandboxRecovery) {
+          tc.sandboxRecovery = metadata.sandboxRecovery;
+          tc.isError = true;
         }
         break;
       }
@@ -219,6 +280,21 @@ export function createConversationRunMirror(
         }
         break;
       }
+      case 'appendMessageToolCall': {
+        // Subagent image persistence (hidden + fromSubagent entry) — mirrored
+        // so a later ledger checkpoint of this message carries it too, instead
+        // of clobbering the shell's applied copy. Same loopId scan + same
+        // duplicate-id guard as chatStore's action.
+        const [, loopId, toolCall] = args as [string, string, ToolCall];
+        for (let i = conversation.messages.length - 1; i >= 0; i--) {
+          const msg = conversation.messages[i];
+          if (msg.role === 'assistant' && msg.loopId === loopId) {
+            msg.toolCalls = appendBoundedSubagentToolCall(msg.toolCalls, toolCall).toolCalls;
+            break;
+          }
+        }
+        break;
+      }
       case 'setConversationStatus': {
         const [, status] = args as [string, Conversation['status']];
         conversation.status = status;
@@ -231,7 +307,8 @@ export function createConversationRunMirror(
         break;
       }
       case 'setAgentStatus': {
-        const [status] = args as [AgentStatus, string | undefined, string | undefined];
+        const [convId, status] = args as [string, AgentStatus, string | undefined, string | undefined];
+        if (convId !== conversationId) break;
         if (status === 'thinking') thinkingStartTime = Date.now();
         else if (status === 'idle') thinkingStartTime = null;
         break;

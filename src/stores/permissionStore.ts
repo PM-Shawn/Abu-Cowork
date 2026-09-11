@@ -5,6 +5,14 @@ import { authorizeWorkspace, revokeWorkspace } from '../core/tools/pathSafety';
 
 export type PermissionDuration = 'once' | 'session' | '24h' | 'always';
 
+function workspaceCapabilities(
+  capabilities: PermissionGrant['capabilities'],
+): ('read' | 'write')[] {
+  return capabilities.filter((capability): capability is 'read' | 'write' => (
+    capability === 'read' || capability === 'write'
+  ));
+}
+
 export interface PermissionGrant {
   path: string;
   grantedAt: number;
@@ -102,8 +110,13 @@ export const usePermissionStore = create<PermissionStore>()(
           duration,
         };
 
-        // Sync to pathSafety's authorizedWorkspaces
-        authorizeWorkspace(normalizedPath);
+        // Sync only file capabilities to pathSafety. Falling back to
+        // authorizeWorkspace's read+write default would widen a read-only UI
+        // approval into write authority; execute is not a path capability.
+        const pathCapabilities = workspaceCapabilities(capabilities);
+        if (pathCapabilities.length > 0) {
+          authorizeWorkspace(normalizedPath, pathCapabilities);
+        }
 
         set((state) => {
           // 'always' and '24h' are persisted
@@ -186,7 +199,10 @@ export const usePermissionStore = create<PermissionStore>()(
           state.persistedGrants = cleanupExpiredGrants(state.persistedGrants);
           // Sync all valid persisted grants to pathSafety's authorizedWorkspaces
           for (const grant of Object.values(state.persistedGrants)) {
-            authorizeWorkspace(grant.path);
+            const pathCapabilities = workspaceCapabilities(grant.capabilities);
+            if (pathCapabilities.length > 0) {
+              authorizeWorkspace(grant.path, pathCapabilities);
+            }
           }
         }
       },

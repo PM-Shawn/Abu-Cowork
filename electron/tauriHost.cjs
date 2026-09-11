@@ -46,8 +46,38 @@ const {
   migrateWindowsSecrets,
   finalizeTauriLocalStorageMigration,
 } = require('./tauriLocalStorageMigration.cjs');
+const {
+  DEVICE_ID_CHANNEL,
+  resolveDeviceId,
+} = require('./deviceIdStore.cjs');
 const { updaterDispatch, UPDATER_MISS } = require('./updaterHost.cjs');
-const { fsDispatch, FS_MISS } = require('./fsHost.cjs');
+const { fsDispatch, FS_MISS, canonicalizeForPathPolicy } = require('./fsHost.cjs');
+const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
+const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
+const { createOperationSession } = require('./pluginOperationSession.cjs');
+const { PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost } = require('./pluginRegistryHost.cjs');
+const { PLUGIN_AUTHOR_CHANNEL, createPluginAuthorHost } = require('./pluginAuthorHost.cjs');
+const { PLUGIN_OPERATION_CHANNEL, createPluginOperationHost } = require('./pluginOperationHost.cjs');
+const {
+  SAVE_IMAGE_ATTACHMENT_CHANNEL,
+  saveImageAttachment,
+} = require('./imageSaveHost.cjs');
+const {
+  AUTHORIZE_USER_ATTACHMENT_CHANNEL,
+  READ_USER_ATTACHMENT_CHANNEL,
+  RELEASE_USER_ATTACHMENT_CHANNEL,
+  SELECT_USER_ATTACHMENTS_CHANNEL,
+  authorizeUserAttachment,
+  readUserAttachment,
+  releaseUserAttachment,
+  selectUserAttachments,
+} = require('./userAttachmentHost.cjs');
+const {
+  PERSIST_DELEGATED_MEDIA_CHANNEL,
+  READ_DELEGATED_MEDIA_CHANNEL,
+  persistDelegatedMedia,
+  readDelegatedMedia,
+} = require('./delegatedMediaHost.cjs');
 const {
   fsWatchDispatch,
   FS_WATCH_MISS,
@@ -63,8 +93,14 @@ const {
   getRuntimeDiagnostics,
   runtimeState,
 } = require('./runtimeObservability.cjs');
+const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { popupWindowsMenu, syncMainWindowChromeTheme } = require('./windowChrome.cjs');
+const {
+  physicalPositionOf,
+  resolveWindowPosition,
+  wireWindowMoveEvent,
+} = require('./windowPlacement.cjs');
 const {
   nativeHelperDispatch,
   NATIVE_HELPER_MISS,
@@ -120,6 +156,7 @@ const {
 } = require('./globalShortcutHost.cjs');
 const {
   assertTrustedIpcSender,
+  assertTrustedMainIpcSender,
   validateInvokePayload,
   assertResourceOwner,
 } = require('./securityBoundary.cjs');
@@ -149,6 +186,21 @@ function getMigrationStartupBlock() {
 
 function isMigrationStartupPending() {
   return migrationStartupPending;
+}
+
+// Real-Electron E2E runs cannot answer native modal dialogs — Playwright
+// drives only web contents — so on a host where the OS permissions ARE
+// granted (hosted CI runners with SIP disabled), a Computer Use approval
+// dialog would block a headless run forever. This explicit env flag makes the
+// three Computer Use approval prompts auto-DECLINE instead. Deny, never
+// approve: the flag can only refuse capability, so a stray variable in a
+// user's environment cannot grant anything. Packaged builds additionally
+// require ABU_PACKAGED_E2E, the same guard as ABU_E2E_APP_DATA_ROOT in
+// main.cjs.
+const E2E_DECLINE_CU_APPROVALS_ENV = 'ABU_E2E_DECLINE_CU_APPROVALS';
+function shouldAutoDeclineCuApprovals(app) {
+  if (process.env[E2E_DECLINE_CU_APPROVALS_ENV] !== '1') return false;
+  return !app.isPackaged || process.env.ABU_PACKAGED_E2E === '1';
 }
 
 function showMigrationRetryDialog(app) {
@@ -236,6 +288,7 @@ function wireWindowEvents(win) {
   setMainWindow(win);
   win.on('focus', () => emitEvent('tauri://focus', null));
   win.on('blur', () => emitEvent('tauri://blur', null));
+  wireWindowMoveEvent(win, { screen, emitWindowEvent });
   // Preventable close (slice D), guarded twice:
   //  - `quitting`: a REAL quit (OS Cmd+Q / menu Quit → before-quit, or app_exit)
   //    must NOT be prevented, or the app becomes un-quittable.
@@ -431,11 +484,14 @@ const subscriptions = new Map();
  * invoked with a Tauri Event object: {event, id, payload}.
  * @param {string} event
  * @param {unknown} payload
+ * @param {import('electron').WebContents} [onlySender] restrict delivery to
+ *   subscriptions registered by this renderer (per-window events).
  */
-function deliver(event, payload) {
+function deliver(event, payload, onlySender) {
   let delivered = 0;
   for (const [eventId, sub] of subscriptions) {
     if (sub.event !== event) continue;
+    if (onlySender && sub.sender !== onlySender) continue;
     if (!sub.sender || sub.sender.isDestroyed()) {
       subscriptions.delete(eventId);
       continue;
@@ -465,6 +521,21 @@ function deliver(event, payload) {
  */
 function emitEvent(event, payload) {
   return deliver(event, payload);
+}
+
+/**
+ * Per-window variant of emitEvent for Tauri's window-scoped events
+ * (`tauri://move`): only `win`'s own renderer receives it, the way
+ * `getCurrentWindow().onMoved()` in Tauri only hears its own window. Each
+ * subscription it can reach was admitted by the per-label listen allowlist in
+ * securityBoundary.cjs when the renderer registered it.
+ * @param {import('electron').BrowserWindow} win
+ * @param {string} event
+ * @param {unknown} payload
+ */
+function emitWindowEvent(win, event, payload) {
+  if (!win || win.isDestroyed()) return 0;
+  return deliver(event, payload, win.webContents);
 }
 
 /**
@@ -559,7 +630,8 @@ const WINDOW_DISPATCH_MISS = Symbol('window-dispatch-miss');
  *   window that sent this invoke (resolved via
  *   `BrowserWindow.fromWebContents(e.sender)` in the ipcMain handler below).
  *   Used only for the read/per-window-state commands (set_title, is_focused,
- *   outer_position) — see module header on why: `@tauri-apps/api`'s
+ *   outer_position, set_position, show, unminimize, set_focus) — see module
+ *   header on why: `@tauri-apps/api`'s
  *   `getCurrentWindow()` targets "whichever window is asking" (e.g. the pet
  *   window reading its OWN position for placement math), but every window
  *   shares the same preload.cjs, which hardcodes
@@ -668,10 +740,36 @@ function windowDispatch(app, cmd, args, callerWin) {
       // getPosition() is device-independent (DIP). Scale by the window's
       // display factor so HiDPI consumers (pet placement, popover anchoring,
       // window position persist/restore) aren't off by the scale factor.
-      const [x, y] = queryWin.getPosition();
-      const sf = screen.getDisplayMatching(queryWin.getBounds()).scaleFactor || 1;
-      return { x: Math.round(x * sf), y: Math.round(y * sf) };
+      // Same rule as the tauri://move payload and set_position's inverse
+      // (electron/windowPlacement.cjs), so a saved position round-trips.
+      return physicalPositionOf(screen, queryWin);
     }
+    case 'plugin:window|set_position': {
+      // The pet restores / edge-snaps its OWN window. Strictly the caller —
+      // no fall back to the main window like the read commands: the pet may
+      // invoke this, and must never be able to move another window.
+      // Physical or Logical; kept at least partly on a display (a saved
+      // position may belong to a monitor that is gone).
+      const target = callerWin && !callerWin.isDestroyed() ? callerWin : null;
+      if (!target) return null;
+      const [width, height] = target.getSize();
+      const current = screen.getDisplayMatching(target.getBounds());
+      const { x, y } = resolveWindowPosition(screen, a.value, { width, height }, current);
+      target.setPosition(x, y);
+      return null;
+    }
+    case 'plugin:window|show':
+      // getCurrentWindow().show()/unminimize()/setFocus() — the notification
+      // click's "bring the window forward". Caller-aware (it is "this
+      // window"); only the unrestricted main window may invoke them.
+      if (queryWin) queryWin.show();
+      return null;
+    case 'plugin:window|unminimize':
+      if (queryWin && queryWin.isMinimized()) queryWin.restore();
+      return null;
+    case 'plugin:window|set_focus':
+      if (queryWin) queryWin.focus();
+      return null;
     case 'plugin:window|primary_monitor': {
       // Tauri's Monitor: size/position/workArea in PHYSICAL px + scaleFactor.
       // Electron's Display gives them in DIP, so scale up. IMPORTANT: @tauri-apps/
@@ -762,6 +860,19 @@ function dispatch(app, cmd, args) {
 
 /** @param {import('electron').App} app */
 function registerTauriHost(app, options = {}) {
+  const pluginOperationSession = createOperationSession(app.getPath('home'));
+  const pluginSnapshots = createPluginSnapshotHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.mutate(input) });
+  const pluginAuthors = createPluginAuthorHost({ home: app.getPath('home'), session: pluginOperationSession, snapshots: pluginSnapshots });
+  const pluginRegistry = createPluginRegistryHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.registry(input) });
+  const { safeStorage } = require('electron');
+  const pluginOperations = createPluginOperationHost({
+    home: app.getPath('home'), registry: pluginRegistry, snapshots: pluginSnapshots, session: pluginOperationSession,
+    encrypt: raw => {
+      if (!safeStorage.isEncryptionAvailable() || safeStorage.getSelectedStorageBackend?.() === 'basic_text') throw new Error('Plugin operation: secure storage unavailable');
+      return safeStorage.encryptString(raw);
+    },
+    decrypt: bytes => safeStorage.decryptString(bytes),
+  });
   migrationStartupBlock = null;
   migrationStartupPending = false;
   migrationBackupPath = null;
@@ -807,6 +918,7 @@ function registerTauriHost(app, options = {}) {
     getNativeHelperGeneration,
     killNativeHelper,
     requestTaskApproval: async ({ target, mode }) => {
+      if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const modeLabel = mode === 'autonomous'
         ? (isZh ? '完全自主' : 'Full Autonomy')
@@ -838,6 +950,7 @@ function registerTauriHost(app, options = {}) {
       return result.response === 0;
     },
     requestAppApproval: async ({ target, classification, scope, permissionMode }) => {
+      if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const canControl = scope === 'ui-control';
       const title = isZh
@@ -908,6 +1021,7 @@ function registerTauriHost(app, options = {}) {
       return result.response === 0;
     },
     requestActionApproval: async ({ target, consequence }) => {
+      if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const options = buildActionApprovalDialogOptions({
         isZh,
@@ -1163,11 +1277,54 @@ function registerTauriHost(app, options = {}) {
     }
   });
 
+  // Analytics device_id: file-backed so a reinstall / cleared Chromium profile
+  // does not mint a new id and inflate the console's device count. preload
+  // hands over whatever localStorage currently holds and writes the answer
+  // back, keeping the renderer's getDeviceId() synchronous — see
+  // electron/deviceIdStore.cjs for the precedence rules.
+  ipcMain.on(DEVICE_ID_CHANNEL, (e, request) => {
+    try {
+      assertTrustedIpcSender(e);
+      // ORDERING GUARD, not defensive noise. On a Tauri-transition launch the
+      // real id arrives via the localStorage migration ABOVE. While that plan
+      // is still `pending` (offered but not finalized — the renderer failed to
+      // write, or never acknowledged) localStorage does not yet hold the
+      // user's Tauri id, so minting here would persist a NEW id to disk and,
+      // on the retry launch that finally imports the real one, the file would
+      // win and overwrite it. That is precisely the "every user is suddenly
+      // new" artifact this whole change exists to prevent. Skip this launch;
+      // preload falls back to localStorage-only and the next launch persists.
+      if (localStorageMigration?.status === 'pending') {
+        e.returnValue = null;
+        return;
+      }
+      e.returnValue = resolveDeviceId({
+        dir: abuAppDataDir(app),
+        localStorageId: request?.localStorageId,
+      });
+    } catch {
+      // Telemetry identity must never be able to block boot.
+      e.returnValue = null;
+    }
+  });
+
   // Any real quit (OS Cmd+Q / menu Quit / app_exit's app.quit()) flips the
   // isQuitting guard BEFORE the window 'close' fires, so the preventable-close
   // handler lets the quit through instead of cancelling it — otherwise Cmd+Q
   // with closeAction='minimize' would just hide the window and never quit.
-  app.on('before-quit', () => {
+  let pluginRegistryQuitReady = false;
+  let pluginRegistryQuitPending = false;
+  app.on('before-quit', (event) => {
+    if (!pluginRegistryQuitReady) {
+      event.preventDefault();
+      if (!pluginRegistryQuitPending) {
+        pluginRegistryQuitPending = true;
+        void pluginOperations.shutdown().then(() => pluginRegistry.shutdown()).finally(() => {
+          pluginRegistryQuitReady = true;
+          app.quit();
+        });
+      }
+    }
     quitting = true;
     // No orphans: tear down every live browser WebContentsView (same
     // no-orphan intent as ptyHost's killAllPtys / mcpBridge's
@@ -1238,6 +1395,12 @@ function registerTauriHost(app, options = {}) {
       // just returns the value, so it resolves before reaching the caller.
       const desktopResult = desktopDispatch(app, cmd, { args: a, body, headers, event: e });
       if (desktopResult !== DESKTOP_MISS) return desktopResult;
+      // Plugin remote git fetch (B2-A) — `plugin_git_fetch` clones a remote
+      // plugin source into the plugin-packages root, sha-pinned. Privileged
+      // (spawns git, writes fs); the renderer only names the source + dest,
+      // both re-validated here. Returns a Promise; this handler awaits it.
+      const pluginGitResult = pluginGitDispatch(cmd, { args: a }, { packagesRoot: path.join(app.getPath('home'), '.abu', 'plugin-packages') });
+      if (pluginGitResult !== PLUGIN_GIT_MISS) return pluginGitResult;
       // Preview server (slice F13) — get_preview_server_info/register_preview_root/
       // unregister_preview_root, backed by a real loopback Node http server
       // (electron/previewServer.cjs) since the frontend hardcodes the `http://`
@@ -1434,6 +1597,82 @@ function registerTauriHost(app, options = {}) {
     return getRuntimeDiagnostics();
   });
 
+  ipcMain.handle(FS_CANONICALIZE_FOR_POLICY_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    if (
+      request?.followFinalSymlink !== undefined
+      && typeof request.followFinalSymlink !== 'boolean'
+    ) {
+      throw new Error('fs: followFinalSymlink must be a boolean');
+    }
+    return canonicalizeForPathPolicy(
+      request?.path,
+      request?.followFinalSymlink !== false,
+    );
+  });
+
+  ipcMain.handle(SAVE_IMAGE_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return saveImageAttachment(app, e, request, { dialog, BrowserWindow });
+  });
+
+  ipcMain.handle(PLUGIN_REGISTRY_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return pluginOperations.external(payload.action, () => pluginRegistry.dispatch(payload.action, payload.request));
+  });
+
+  ipcMain.handle(PLUGIN_OPERATION_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return pluginOperations.dispatch(e.sender, payload.action, payload.request);
+  });
+
+  ipcMain.handle(PLUGIN_AUTHOR_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid plugin author request');
+    return payload.action === 'delete'
+      ? pluginOperations.external('delete', () => pluginAuthors.dispatch(e.sender, payload.action, payload.request))
+      : pluginAuthors.dispatch(e.sender, payload.action, payload.request);
+  });
+
+  ipcMain.handle(PLUGIN_SNAPSHOT_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    if (!['prepare', 'inspect', 'read', 'validate', 'materialize', 'release'].includes(payload.action)) {
+      throw new Error('Plugin snapshot: unsupported action');
+    }
+    if (payload.action === 'materialize') return pluginOperations.materialize(e.sender, payload.request);
+    return pluginSnapshots[payload.action](e.sender, payload.request);
+  });
+
+  ipcMain.handle(READ_USER_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return readUserAttachment(e, request);
+  });
+
+  ipcMain.handle(RELEASE_USER_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return releaseUserAttachment(e, request);
+  });
+
+  ipcMain.handle(AUTHORIZE_USER_ATTACHMENT_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return authorizeUserAttachment(e, request);
+  });
+
+  ipcMain.handle(SELECT_USER_ATTACHMENTS_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return selectUserAttachments(e, request, { dialog });
+  });
+
+  ipcMain.handle(PERSIST_DELEGATED_MEDIA_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return persistDelegatedMedia(abuAppDataDir(app), request);
+  });
+
+  ipcMain.handle(READ_DELEGATED_MEDIA_CHANNEL, async (e, request = {}) => {
+    assertTrustedMainIpcSender(e);
+    return readDelegatedMedia(abuAppDataDir(app), request);
+  });
+
   ipcMain.handle(SIDECAR_BRIDGE_STATE_CHANNEL, async (e, query = {}) => {
     assertTrustedIpcSender(e);
     const afterSequence = Number.isSafeInteger(query?.afterSequence) && query.afterSequence >= 0
@@ -1450,6 +1689,7 @@ function getStubbedCommands() {
 
 module.exports = {
   registerTauriHost,
+  shouldAutoDeclineCuApprovals,
   osInternals,
   baseDir,
   dispatch,
@@ -1466,5 +1706,19 @@ module.exports = {
   getMigrationBackupPath: () => migrationBackupPath,
   hasListeners,
   wireWindowEvents,
+  emitWindowEvent,
   requestAppExit,
+  __test: {
+    windowDispatch,
+    WINDOW_DISPATCH_MISS,
+    /** Register a subscription exactly as `plugin:event|listen` does. */
+    subscribe(event, callbackId, sender) {
+      const id = nextEventId++;
+      subscriptions.set(id, { event, callbackId, sender });
+      return id;
+    },
+    clearSubscriptions() {
+      subscriptions.clear();
+    },
+  },
 };

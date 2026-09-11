@@ -1,9 +1,11 @@
+import { useTeamConfirmationStore } from './teamConfirmationStore';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import { current } from 'immer';
-import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult } from '../types';
+import { current, enableMapSet } from 'immer';
+import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult, UpstreamErrorDetails } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
+import type { MaxTurnsNoticeAction } from '../core/agent/maxTurnsNotice';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
 import { useTaskExecutionStore } from './taskExecutionStore';
@@ -13,20 +15,84 @@ import { clearPlanMode } from '../core/agent/planMode';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
+import { getMessageText } from '../core/context/contextUtils';
+
+/**
+ * A later execution snapshot that arrives without child steps must not
+ * discard the children an earlier one recorded (the sidecar's mirror never
+ * has the shell-only delegate children). Matched by step id, then tool_use id.
+ */
+export function keepExistingChildSteps(
+  previous: readonly ExecutionStepSnapshot[] | undefined,
+  next: ExecutionStepSnapshot[],
+): ExecutionStepSnapshot[] {
+  if (!previous?.length) return next;
+  return next.map((step) => {
+    if (step.childSteps?.length) return step;
+    const old = previous.find((p) => p.id === step.id)
+      ?? (step.toolCallId ? previous.find((p) => p.toolCallId === step.toolCallId) : undefined);
+    return old?.childSteps?.length ? { ...step, childSteps: old.childSteps } : step;
+  });
+}
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import { getI18n } from '../i18n';
 import { TOOL_NAMES } from '../core/tools/toolNames';
+import {
+  batchSummaryHasNonSuccess,
+  mergeBatchTerminalSummaries,
+  normalizeBatchTerminalSummary,
+} from '../core/agent/batchTerminalSummary';
 import { resetSessionPromotions } from '../core/tools/toolSearch';
 import {
   clearConversationComposerDraft,
   getComposerDraftScopeForEnterpriseMode,
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
+import { useWorkProcessFoldStore } from './workProcessFoldStore';
+import { useBatchProgressStore } from './batchProgressStore';
+import { usePreviewStore } from './previewStore';
+import { clearBrowserReclaim, disposeOwnedBrowserViews } from '../core/browser/browserViewLifecycle';
+import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
+import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../core/llm/adapter';
+import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
+
+enableMapSet();
+
+export type PendingAttachmentReadScope = 'workspace';
+
+export interface PendingAttachmentRequest {
+  path: string;
+  draftKey: string;
+  readScope: PendingAttachmentReadScope;
+}
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+}
+
+/**
+ * Ceiling for the undrained composer-append buffer (UTF-8 bytes). Matches the
+ * per-message cap an MCP App interface is held to (`MAX_APP_MESSAGE_BYTES`),
+ * so a sender that queues messages faster than `ChatInput` drains them cannot
+ * grow the draft without bound.
+ */
+const MAX_PENDING_INPUT_APPEND_BYTES = 4 * 1024;
+
+/** Cut `text` to `maxBytes` of UTF-8 without splitting a code point. */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  if (encoder.encode(text).length <= maxBytes) return text;
+  let used = 0;
+  let out = '';
+  for (const char of text) {
+    const size = encoder.encode(char).length;
+    if (used + size > maxBytes) break;
+    used += size;
+    out += char;
+  }
+  return out;
 }
 
 const ACTIVE_RUN_STATES = new Set<Message['runState']>(['pending', 'accepted', 'running', 'recovering']);
@@ -36,6 +102,12 @@ const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'connection-failed',
   'interrupted',
 ]);
+const RUN_FAILURE_STATES = new Set<Message['runState']>(['failed', 'connection-failed']);
+
+function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
+  return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
+    || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+}
 
 function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
   if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
@@ -54,14 +126,43 @@ function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<s
   };
 }
 
+function safeRunErrorFallback(errorDetails?: UpstreamErrorDetails): string {
+  const statusFallback = errorDetails
+    ? `HTTP ${errorDetails.status}`
+    : getI18n().chat.errorEmptyBody;
+  return errorDetails?.summary
+    ? sanitizeUntrustedLlmErrorText(errorDetails.summary, statusFallback)
+    : statusFallback;
+}
+
+function sanitizeRunError(value: unknown, errorDetails?: UpstreamErrorDetails): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  return sanitizeUntrustedLlmErrorText(value, safeRunErrorFallback(errorDetails));
+}
+
+function enforceRunErrorState(message: Message): Message {
+  if (RUN_FAILURE_STATES.has(message.runState)) return message;
+  const { runError: _runError, runErrorDetails: _runErrorDetails, ...withoutRunError } = message;
+  return withoutRunError as Message;
+}
+
 /** Extra safety net for messages coming in via import — ensures no streaming
  * flag survives even if the source bundle was built by a broken exporter.
  * Pass the bundle's `collectAnsweredLoopIds` so a stale-active row whose loop
  * demonstrably replied is inferred completed here too — without it, the same
  * ledger that loads clean from disk imports branded "发送失败". */
 export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
-  return recoverInterruptedUserRun({
-    ...msg,
+  const {
+    runErrorDetails: untrustedRunErrorDetails,
+    runError: untrustedRunError,
+    ...messageWithoutErrorDetails
+  } = msg;
+  const runErrorDetails = normalizeUpstreamErrorDetails(untrustedRunErrorDetails);
+  const runError = sanitizeRunError(untrustedRunError, runErrorDetails);
+  return enforceRunErrorState(recoverInterruptedUserRun({
+    ...messageWithoutErrorDetails,
+    ...(runError ? { runError } : {}),
+    ...(runErrorDetails ? { runErrorDetails } : {}),
     isStreaming: false,
     toolCalls: msg.toolCalls?.map((tc) => {
       const {
@@ -71,7 +172,7 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
       } = tc;
       return { ...safeToolCall, isExecuting: false };
     }),
-  }, answeredLoopIds);
+  }, answeredLoopIds));
 }
 
 /** A non-ghost assistant row: real text, tool activity, or thinking. Shared
@@ -112,6 +213,13 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
   const answeredLoopIds = collectAnsweredLoopIds(messages);
   return messages
     .map((msg) => {
+      const {
+        runErrorDetails: untrustedRunErrorDetails,
+        runError: untrustedRunError,
+        ...messageWithoutErrorDetails
+      } = msg;
+      const runErrorDetails = normalizeUpstreamErrorDetails(untrustedRunErrorDetails);
+      const runError = sanitizeRunError(untrustedRunError, runErrorDetails);
       const toolCalls = msg.toolCalls?.map((tc) => {
         const safeToRetryRecovery =
           tc.sandboxRecoveryAction === 'pending'
@@ -126,11 +234,13 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
             : tc.sandboxRecoveryAction,
         };
       });
-      return recoverInterruptedUserRun({
-        ...msg,
+      return enforceRunErrorState(recoverInterruptedUserRun({
+        ...messageWithoutErrorDetails,
+        ...(runError ? { runError } : {}),
+        ...(runErrorDetails ? { runErrorDetails } : {}),
         isStreaming: false,
         toolCalls,
-      }, answeredLoopIds);
+      }, answeredLoopIds));
     })
     .filter(msg => msg.role !== 'assistant' || isSubstantiveAssistant(msg));
 }
@@ -432,6 +542,59 @@ export function flushTokenBuffer(convId?: string, msgId?: string) {
   });
 }
 
+export interface ConversationAgentState {
+  status: AgentStatus;
+  currentTool: string | null;
+  retryInfo: RetryInfo | null;
+  thinkingStartTime: number | null;
+  activeAgentNames: string[];
+}
+
+export const IDLE_AGENT_STATE: ConversationAgentState = {
+  status: 'idle',
+  currentTool: null,
+  retryInfo: null,
+  thinkingStartTime: null,
+  activeAgentNames: [],
+};
+
+export function getConversationAgentState(
+  agentStates: Map<string, ConversationAgentState>,
+  conversationId: string | null | undefined,
+): ConversationAgentState {
+  if (!conversationId) return IDLE_AGENT_STATE;
+  return agentStates.get(conversationId) ?? IDLE_AGENT_STATE;
+}
+
+function isIdleAgentState(state: ConversationAgentState): boolean {
+  return state.status === 'idle'
+    && state.currentTool === null
+    && state.retryInfo === null
+    && state.thinkingStartTime === null
+    && state.activeAgentNames.length === 0;
+}
+
+function removeConversationAgentState(
+  agentStates: Map<string, ConversationAgentState>,
+  conversationId: string,
+): Map<string, ConversationAgentState> {
+  if (!agentStates.has(conversationId)) return agentStates;
+  const next = new Map(agentStates);
+  next.delete(conversationId);
+  return next;
+}
+
+function upsertConversationAgentState(
+  agentStates: Map<string, ConversationAgentState>,
+  conversationId: string,
+  nextState: ConversationAgentState,
+): Map<string, ConversationAgentState> {
+  const next = new Map(agentStates);
+  if (isIdleAgentState(nextState)) next.delete(conversationId);
+  else next.set(conversationId, nextState);
+  return next;
+}
+
 // Note: Old localStorage persistence limits (MAX_CONVERSATIONS, MAX_MESSAGES_PER_CONVERSATION,
 // KEEP_FIRST_MESSAGES, stripImageDataForPersist) removed in v4.
 // Messages are now persisted to JSONL files — no localStorage size constraints.
@@ -444,10 +607,8 @@ interface ChatState {
    *  Only contains the active conversation + LRU cache of recent ones (~5). */
   conversations: Record<string, Conversation>;
   activeConversationId: string | null;
-  agentStatus: AgentStatus;
-  currentTool: string | null;
-  /** Live retry state (null when not retrying) — drives the "正在重试" strip. */
-  retryInfo: RetryInfo | null;
+  /** Per-conversation live agent state. Ephemeral; never persisted. */
+  agentStates: Map<string, ConversationAgentState>;
   // Token usage tracking
   currentUsage: TokenUsage | null;
   // Pending input for prefilling the chat input (REPLACES the current draft)
@@ -472,15 +633,12 @@ interface ChatState {
   // one-shot buffer (mirrors pendingInput): ChatInput drains it into local
   // state then clears. NOT persisted.
   pendingReferences: ChatReference[];
-  // Pending file paths injected from the workspace file tree's "Add to chat"
-  // context menu item. Ephemeral one-shot buffer (mirrors pendingReferences):
-  // ChatInput drains it into its local files/images attachment state via
-  // processFilePaths, then clears. NOT persisted.
-  pendingAttachmentPaths: string[];
-  // Thinking timer
-  thinkingStartTime: number | null;
-  // Track multiple concurrent active agents
-  activeAgentNames: string[];
+  // Pending file attachments injected from the workspace file tree's "Add to
+  // chat" context menu item. Ephemeral one-shot buffer (mirrors
+  // pendingReferences): ChatInput drains only the records for its own
+  // draftKey into local attachment state via processFilePaths, then clears
+  // that draft bucket. NOT persisted.
+  pendingAttachmentRequests: PendingAttachmentRequest[];
   /** Bumped whenever a conversation's outputs manifest materially changes
    *  from outside the snapshot hot path — currently: after
    *  installSharedAttachments writes newly imported files. FileAttachment
@@ -492,15 +650,21 @@ interface ChatState {
    *  Consumed by createConversation() and applied as the new conversation's initial
    *  permissionMode. Does NOT modify the global settingsStore default. Ephemeral. */
   pendingPermissionMode: PermissionMode | undefined;
+  /** Team picked in the composer before a conversation exists (welcome page);
+   *  consumed by createConversation, mirrors pendingPermissionMode. */
+  pendingTeamId: string | undefined;
 }
 
 interface ChatActions {
-  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
+  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; teamId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
   startNewConversation: () => void;
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
   setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
+  /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
+  setConversationTeamId: (convId: string, teamId: string | undefined) => void;
+  setPendingTeamId: (teamId: string | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
   setPendingPermissionMode: (mode: PermissionMode | undefined) => void;
   deleteConversation: (id: string) => void;
@@ -514,6 +678,7 @@ interface ChatActions {
   setLastMessageContent: (convId: string, content: string, msgId?: string) => void;
   finishStreaming: (convId: string, msgId?: string) => void;
   updateToolCall: (convId: string, messageId: string, toolCallId: string, result: string, resultContent?: ToolResultContent[], isError?: boolean, hideScreenshot?: boolean, metadata?: ToolExecutionMetadata) => void;
+  checkpointToolCallMetadata: (convId: string, messageId: string, toolCallId: string, metadata: ToolExecutionMetadata) => void;
   /**
    * Persist the user's click on an interactive notice card attached to a
    * tool call (see `ToolCall.noticeCardAction`). Called from the card
@@ -521,7 +686,23 @@ interface ChatActions {
    * through to disk via replaceMessageById so reload keeps the state.
    */
   setToolCallNoticeCardAction: (convId: string, messageId: string, toolCallId: string, action: NoticeCardAction) => void;
+  /**
+   * Record the MCP Apps interface a tool step turned out to have
+   * (`ToolCall.ui`). Written once by `ToolCallsGroup` the first time the step
+   * renders, because `ToolDefinition.ui` lives only in the renderer's MCP
+   * client — it never reaches the sidecar loop that creates the tool call.
+   * No-op when the step already carries the same `ui`.
+   */
+  setToolCallAppUi: (convId: string, messageId: string, toolCallId: string, ui: NonNullable<ToolCall['ui']>) => void;
+  /**
+   * Persist the MCP App interface's `ui/update-model-context` text on a step.
+   * Overwrite semantics (spec §4.3: each update replaces the last), capped by
+   * the caller. No-op when the step already carries the same text.
+   */
+  setToolCallModelContext: (convId: string, messageId: string, toolCallId: string, modelContext: string) => void;
   setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
+  /** Settle a turn-cap notice card so the choice survives a reload. */
+  setMaxTurnsNoticeAction: (convId: string, messageId: string, action: MaxTurnsNoticeAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
    * Stash a post-loop proposal signal on the conversation so the next
@@ -538,6 +719,7 @@ interface ChatActions {
     patch: {
       state: NonNullable<Message['runState']>;
       error?: string;
+      errorDetails?: UpstreamErrorDetails;
       content?: Message['content'];
       skill?: Message['skill'];
       delegateAgent?: Message['delegateAgent'];
@@ -561,7 +743,7 @@ interface ChatActions {
    * "user enqueued more input while the turn ended without tool calls" rescue
    * path) — kept as a narrow, purpose-specific action rather than generalizing
    * `finishStreaming` because callers here intentionally do NOT want the
-   * disk-persistence / agentStatus/retryInfo side effects `finishStreaming` has.
+   * disk-persistence / per-conversation agent-state cleanup `finishStreaming` has.
    */
   setMessageStreamingFlag: (convId: string, messageId: string, streaming: boolean) => void;
   /**
@@ -576,6 +758,14 @@ interface ChatActions {
    */
   setMessageToolCalls: (convId: string, messageId: string, toolCalls: ToolCall[]) => void;
   appendToolCallContext: (convId: string, loopId: string, context: ToolCallForContext) => void;
+  /**
+   * Append one EXTRA tool call entry to the last assistant message of the
+   * given loop — used to persist a subagent's image-bearing tool call
+   * (`hidden` + `fromSubagent`, see the ToolCall type doc) so child-step
+   * image backfill has a payload to join on after reload. Same
+   * loopId-targeting as `appendToolCallContext`.
+   */
+  appendMessageToolCall: (convId: string, loopId: string, toolCall: ToolCall) => void;
   setExecutionStepsSnapshot: (convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void;
   setPlannedStepsSnapshot: (convId: string, loopId: string, steps: PlannedStep[]) => void;
 
@@ -610,17 +800,17 @@ interface ChatActions {
    */
   deactivateConversationSkills: (convId: string) => void;
 
-  setAgentStatus: (status: AgentStatus, tool?: string, agentName?: string) => void;
-  setRetryInfo: (info: RetryInfo | null) => void;
-  removeActiveAgent: (agentName: string) => void;
+  setAgentStatus: (convId: string, status: AgentStatus, tool?: string, agentName?: string) => void;
+  setRetryInfo: (convId: string, info: RetryInfo | null) => void;
+  removeActiveAgent: (convId: string, agentName: string) => void;
   setCurrentUsage: (usage: TokenUsage | null) => void;
   setPendingInput: (text: string | null) => void;
   setPendingSearchJump: (v: { convId: string; query: string } | null) => void;
   appendPendingInput: (text: string | null) => void;
   addPendingReference: (ref: ChatReference) => void;
   clearPendingReferences: () => void;
-  addPendingAttachment: (path: string) => void;
-  clearPendingAttachments: () => void;
+  addPendingAttachment: (request: PendingAttachmentRequest) => void;
+  clearPendingAttachments: (draftKey?: string) => void;
   setPendingAgent: (agentName: string | null) => void;
   setConversationStatus: (convId: string, status: ConversationStatus) => void;
   clearCompletedStatus: (convId: string) => void;
@@ -670,9 +860,7 @@ export const useChatStore = create<ChatStore>()(
       conversationIndex: {} as Record<string, ConversationMeta>,
       conversations: {},
       activeConversationId: null,
-      agentStatus: 'idle' as AgentStatus,
-      currentTool: null,
-      retryInfo: null,
+      agentStates: new Map(),
       currentUsage: null,
       outputsRev: {} as Record<string, number>,
       pendingInput: null,
@@ -680,10 +868,9 @@ export const useChatStore = create<ChatStore>()(
       pendingAgentName: null,
       pendingSearchJump: null,
       pendingReferences: [],
-      pendingAttachmentPaths: [],
+      pendingAttachmentRequests: [],
       pendingPermissionMode: undefined,
-      thinkingStartTime: null,
-      activeAgentNames: [],
+      pendingTeamId: undefined,
 
       createConversation: (workspacePath, options) => {
         const id = generateId();
@@ -697,6 +884,11 @@ export const useChatStore = create<ChatStore>()(
           const project = useProjectStore.getState().getProjectByWorkspace(workspacePath);
           if (project) resolvedProjectId = project.id;
         }
+        // The welcome-page chip belongs to the conversation the user is about
+        // to open. Background creators (scheduler / trigger / IM / watcher /
+        // project click) pass skipActivate and must neither inherit nor clear it.
+        const consumePendingTeam = !options?.skipActivate;
+        const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
         const meta: ConversationMeta = {
           id,
           title: getDefaultConvTitle(),
@@ -706,6 +898,7 @@ export const useChatStore = create<ChatStore>()(
           workspacePath: workspacePath ?? null,
           ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
           ...(options?.triggerId ? { triggerId: options.triggerId } : {}),
+          ...(initialTeamId ? { teamId: initialTeamId } : {}),
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
         };
@@ -722,6 +915,7 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = id;
           }
           state.pendingPermissionMode = undefined;
+          if (consumePendingTeam) state.pendingTeamId = undefined;
         });
         // Sync index to disk (fire-and-forget). Also write-through the SQLite
         // catalog (message-storage P0) — best-effort, reconcile is the net.
@@ -848,6 +1042,29 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      setConversationTeamId: (convId, teamId) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.teamId = teamId;
+          }
+          if (state.conversationIndex[convId]) {
+            state.conversationIndex[convId].teamId = teamId;
+          }
+        });
+        // Persist to disk index (same path as the per-conversation model pin)
+        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
+      setPendingTeamId: (teamId) => {
+        set((state) => {
+          state.pendingTeamId = teamId;
+        });
+      },
+
       setConversationPermissionMode: (convId, mode) => {
         set((state) => {
           const conv = state.conversations[convId];
@@ -890,9 +1107,31 @@ export const useChatStore = create<ChatStore>()(
         }
         // Clean up per-conversation state in external modules
         clearInputQueue(id);
+        useTeamConfirmationStore.getState().clearConversation(id);
         clearSkillHooksByConversation(id);
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
+        useWorkProcessFoldStore.getState().clearConversation(id);
+        // Browser-automation observability (batch 1 fix-wave): per-conversation
+        // repeat/fallback trackers and the tab→origin cache in
+        // core/observability/browserSignals.ts would otherwise accumulate one
+        // dead entry per deleted conversation forever in a long-lived session.
+        clearBrowserToolTrackers(id);
+        // Workspace subagent tabs are conversation-owned. Close them before
+        // clearing their ephemeral batches so the active view lease is
+        // released synchronously and no clickable dead tab survives deletion.
+        usePreviewStore.getState().closeSubagentTabsForConversation(id);
+        // Browser tabs an agent adopted for this conversation are owned by the
+        // tab RECORD, so dropping it here is what destroys the native view.
+        // Without this the view keeps running with no strip anywhere able to
+        // show or close it: the tab is invisible in every other conversation,
+        // and this one is about to stop existing.
+        usePreviewStore.getState().closeOwnedTabsForConversation(id);
+        // ...and the same for main-side views this renderer holds no record of
+        // (a headless fallback view, an adoption still in flight). Fire-and-
+        // forget, failure-swallowed, like the disk cleanups below.
+        disposeOwnedBrowserViews(id);
+        useBatchProgressStore.getState().clearConversation(id);
         clearConversationComposerDraft(
           id,
           getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode),
@@ -939,9 +1178,11 @@ export const useChatStore = create<ChatStore>()(
         const nextActiveId = wasActive
           ? findNextActiveConversation(get().conversationIndex, id)
           : null;
+        const nextAgentStates = removeConversationAgentState(get().agentStates, id);
         set((state) => {
           delete state.conversations[id];
           delete state.conversationIndex[id];
+          state.agentStates = nextAgentStates;
           if (state.activeConversationId === id) {
             state.activeConversationId = nextActiveId;
           }
@@ -1069,6 +1310,18 @@ export const useChatStore = create<ChatStore>()(
             if (meta) await updateIndexEntry(meta);
           }),
         );
+        // N7 — the user closing an agent's browser tab makes the host refuse to
+        // open another one until they speak again; writing to the conversation
+        // is them speaking. This is the one place every send path commits a user
+        // message (the sidecar dispatch in agentLoopRunner and agentLoop's
+        // in-process fallbacks all land here), so the signal is taken here
+        // rather than duplicated per path. `isSystem` messages ride the `user`
+        // role but are the app waking itself up — they must not hand the browser
+        // back on the user's behalf. Fire-and-forget: a send never waits on, or
+        // fails because of, browser bookkeeping.
+        if (message.role === 'user' && !message.isSystem) {
+          clearBrowserReclaim(convId);
+        }
         // Snapshot any user-uploaded files (currently only images with filePath).
         // Fire-and-forget — must never block the UI flow.
         // ★ Architecture contract: when adding new content types with stripForDisk
@@ -1112,15 +1365,14 @@ export const useChatStore = create<ChatStore>()(
       finishStreaming: (convId, msgId) => {
         // Flush any buffered tokens before marking streaming complete
         flushTokenBuffer(convId, msgId);
+        const nextAgentStates = removeConversationAgentState(get().agentStates, convId);
         set((state) => {
           const target = findTargetMessage(
             state.conversations[convId]?.messages,
             msgId ?? FALLBACK_LAST,
           );
           if (target) target.isStreaming = false;
-          state.agentStatus = 'idle';
-          state.currentTool = null;
-          state.retryInfo = null;
+          state.agentStates = nextAgentStates;
         });
         // Persist the final completed message to disk.
         // When msgId is provided, we must replace by id (not "last line") because the
@@ -1160,6 +1412,23 @@ export const useChatStore = create<ChatStore>()(
               if (isError) tc.isError = true;
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
+              if (
+                metadata?.subagentStopReason
+                && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+              ) {
+                tc.subagentStopReason = metadata.subagentStopReason;
+                tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+              }
+              const incomingSummary = normalizeBatchTerminalSummary(metadata?.batchTerminalSummary, {
+                conversationId: convId,
+                assistantMessageId: messageId,
+                batchToolCallId: toolCallId,
+              });
+              if (incomingSummary) {
+                tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+                if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+                else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+              }
 
               // Lift notice_card out of the tool's JSON result into a
               // first-class field on the tool call so the chat renderer
@@ -1194,6 +1463,41 @@ export const useChatStore = create<ChatStore>()(
         // every earlier result, so appending here would cost O(N²) bytes within
         // a single tool-heavy turn. The turn-boundary checkpoint in agentLoop is
         // what commits the batch to the ledger.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+            snapshotMessageRevision(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      checkpointToolCallMetadata: (convId, messageId, toolCallId, metadata) => {
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (
+            metadata.subagentStopReason
+            && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
+          ) {
+            tc.subagentStopReason = metadata.subagentStopReason;
+            tc.isError = metadata.subagentStopReason !== 'completed' || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
+          }
+          const incomingSummary = normalizeBatchTerminalSummary(metadata.batchTerminalSummary, {
+            conversationId: convId,
+            assistantMessageId: messageId,
+            batchToolCallId: toolCallId,
+          });
+          if (incomingSummary) {
+            tc.batchTerminalSummary = mergeBatchTerminalSummaries(tc.batchTerminalSummary, incomingSummary);
+            if (batchSummaryHasNonSuccess(tc.batchTerminalSummary)) tc.isError = true;
+            else if (!toolCallHasNonSuccessMetadata(tc)) tc.isError = false;
+          }
+          if (tc.name === TOOL_NAMES.RUN_COMMAND && metadata.sandboxRecovery) {
+            tc.sandboxRecovery = metadata.sandboxRecovery;
+            tc.isError = true;
+          }
+        });
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
           import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
@@ -1251,6 +1555,49 @@ export const useChatStore = create<ChatStore>()(
         }
       },
 
+      setToolCallAppUi: (convId, messageId, toolCallId, ui) => {
+        let changed = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (tc.ui?.server === ui.server && tc.ui?.resourceUri === ui.resourceUri) return;
+          tc.ui = ui;
+          changed = true;
+        });
+        if (!changed) return;
+        // Persist so a reopened conversation still knows this step had an
+        // interface even if the server is gone. Same write-through as
+        // setToolCallNoticeCardAction above.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
+      setToolCallModelContext: (convId, messageId, toolCallId, modelContext) => {
+        let changed = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          const tc: ToolCall | undefined = msg?.toolCalls?.find((t) => t.id === toolCallId);
+          if (!tc) return;
+          if (tc.modelContext === modelContext) return;
+          tc.modelContext = modelContext;
+          changed = true;
+        });
+        if (!changed) return;
+        // Write-through so the appendix survives a reload — the model only
+        // sees it on the next turn, which may be after a restart.
+        const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (updatedMsg) {
+          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
+            replaceMessageById(convId, updatedMsg).catch(() => {});
+          });
+        }
+      },
+
       setToolCallSandboxRecoveryAction: async (convId, messageId, toolCallId, action) => {
         const currentMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         const currentToolCall = currentMsg?.toolCalls?.find((t) => t.id === toolCallId);
@@ -1279,6 +1626,34 @@ export const useChatStore = create<ChatStore>()(
         });
         if (!updated) {
           throw new Error(`Sandbox recovery tool call "${toolCallId}" no longer exists`);
+        }
+      },
+
+      setMaxTurnsNoticeAction: async (convId, messageId, action) => {
+        const currentMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (!currentMsg?.maxTurnsNotice) {
+          throw new Error(`Max-turns notice "${messageId}" no longer exists`);
+        }
+        // Write-through BEFORE the in-memory flip, exactly as the sandbox
+        // recovery card does: a card that looked settled but wasn't persisted
+        // would come back actionable after a reload and continue a second time.
+        const persistedMsg: Message = {
+          ...currentMsg,
+          maxTurnsNotice: { ...currentMsg.maxTurnsNotice, action },
+        };
+        const { replaceMessageByIdStrict } = await import('../core/session/conversationStorage');
+        await replaceMessageByIdStrict(convId, persistedMsg);
+
+        let updated = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          if (msg?.maxTurnsNotice) {
+            msg.maxTurnsNotice.action = action;
+            updated = true;
+          }
+        });
+        if (!updated) {
+          throw new Error(`Max-turns notice "${messageId}" no longer exists`);
         }
       },
 
@@ -1312,8 +1687,13 @@ export const useChatStore = create<ChatStore>()(
           } else {
             delete message.runEndedAt;
           }
-          if (patch.error) message.runError = patch.error;
+          const errorDetails = normalizeUpstreamErrorDetails(patch.errorDetails);
+          const isFailure = RUN_FAILURE_STATES.has(patch.state);
+          const runError = isFailure ? sanitizeRunError(patch.error, errorDetails) : undefined;
+          if (runError) message.runError = runError;
           else delete message.runError;
+          if (isFailure && errorDetails) message.runErrorDetails = errorDetails;
+          else delete message.runErrorDetails;
           if ('content' in patch && patch.content !== undefined) message.content = patch.content;
           if ('skill' in patch) message.skill = patch.skill;
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;
@@ -1460,7 +1840,28 @@ export const useChatStore = create<ChatStore>()(
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           if (msg) {
-            msg.toolCalls = toolCalls;
+            // Wholesale replacement, with one exception: fields the sender
+            // cannot know about. This frame is built in the sidecar from the
+            // model's tool calls, so it never carries `ui` (resolved from the
+            // renderer's MCP client at render time) or `modelContext` (written
+            // by an MCP App through the bridge). Assigning it verbatim would
+            // blank an interface that is already on screen — the same class of
+            // regression `sandboxRecoveryAction` had on the disk side, see
+            // `preservePersistedSandboxRecoveryActions` in conversationStorage.
+            // An incoming value still wins; only absence falls back.
+            const previousById = new Map((msg.toolCalls ?? []).map((tc) => [tc.id, tc]));
+            msg.toolCalls = toolCalls.map((tc) => {
+              const previous = previousById.get(tc.id);
+              if (!previous) return tc;
+              const ui = tc.ui ?? previous.ui;
+              const modelContext = tc.modelContext ?? previous.modelContext;
+              if (ui === tc.ui && modelContext === tc.modelContext) return tc;
+              return {
+                ...tc,
+                ...(ui ? { ui } : {}),
+                ...(modelContext !== undefined ? { modelContext } : {}),
+              };
+            });
             msg.isStreaming = false;
           }
         });
@@ -1518,6 +1919,46 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      appendMessageToolCall: (convId, loopId, toolCall) => {
+        let targetMsgId: string | undefined;
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (!conv) return;
+          // Same backward loopId scan as appendToolCallContext above.
+          for (let i = conv.messages.length - 1; i >= 0; i--) {
+            const m = conv.messages[i];
+            if (m.role === 'assistant' && m.loopId === loopId) {
+              // Canonical admission boundary: the sidecar frame path can
+              // re-deliver, and image-bearing child steps can otherwise grow
+              // this repeatedly-snapshotted message without bound. The helper
+              // deduplicates by the app-scoped id and retains only the newest
+              // bounded rich payloads while leaving ordinary parent calls
+              // untouched.
+              const appended = appendBoundedSubagentToolCall(
+                m.toolCalls as ToolCall[] | undefined,
+                toolCall,
+              );
+              if (appended.appended) {
+                m.toolCalls = appended.toolCalls;
+                targetMsgId = m.id;
+              }
+              break;
+            }
+          }
+        });
+        // Persist immediately — same crash-safety rationale (and same stream-
+        // snapshot channel) as updateToolCall above: this fires mid-turn,
+        // before any turn-boundary checkpoint would carry it to disk.
+        if (targetMsgId) {
+          const msg = get().conversations[convId]?.messages.find((m) => m.id === targetMsgId);
+          if (msg) {
+            import('../core/session/conversationStorage').then(({ snapshotMessageRevision }) => {
+              snapshotMessageRevision(convId, msg).catch(() => {});
+            });
+          }
+        }
+      },
+
       setExecutionStepsSnapshot: (convId, loopId, steps) => {
         let targetMsgId: string | undefined;
         set((state) => {
@@ -1527,7 +1968,7 @@ export const useChatStore = create<ChatStore>()(
           for (let i = conv.messages.length - 1; i >= 0; i--) {
             const m = conv.messages[i];
             if (m.role === 'assistant' && m.loopId === loopId) {
-              m.executionSteps = steps;
+              m.executionSteps = keepExistingChildSteps(m.executionSteps, steps);
               targetMsgId = m.id;
               break;
             }
@@ -1548,6 +1989,22 @@ export const useChatStore = create<ChatStore>()(
 
       setPlannedStepsSnapshot: (convId, loopId, steps) => {
         let targetMsgId: string | undefined;
+        // Team conversations remember the split on the Team record so the
+        // leader can reuse it next time as reference input (block S).
+        const teamId = get().conversations[convId]?.teamId;
+        if (teamId && steps.length > 0) {
+          const firstUser = get().conversations[convId]?.messages.find((m) => m.role === 'user' && !m.isSystem);
+          const request = firstUser ? getMessageText(firstUser.content).trim().slice(0, 300) : '';
+          import('./teamStore').then(({ useTeamStore }) => {
+            useTeamStore.getState().updateTeam(teamId, {
+              lastPlan: {
+                request,
+                steps: steps.map((s) => (s.owner ? `${s.description} @${s.owner}` : s.description)),
+                savedAt: Date.now(),
+              },
+            });
+          }).catch(() => {});
+        }
         set((state) => {
           const conv = state.conversations[convId];
           if (!conv) return;
@@ -1645,6 +2102,8 @@ export const useChatStore = create<ChatStore>()(
           invoke('window_show').catch(() => {});
         }).catch(() => {});
 
+        const agentStateBeforeCancel = getConversationAgentState(get().agentStates, convId);
+        const nextAgentStates = removeConversationAgentState(get().agentStates, convId);
         const cancelledMsgIds = new Set<string>();
         set((state) => {
           const messages = state.conversations[convId]?.messages;
@@ -1680,7 +2139,7 @@ export const useChatStore = create<ChatStore>()(
             // thinkingDuration is the canonical "thinking done" signal in both
             // MessageGroup's synth path and workflowExtractor's legacy path.
             if (lastMsg.thinking && lastMsg.thinkingDuration === undefined) {
-              const start = state.thinkingStartTime;
+              const start = agentStateBeforeCancel.thinkingStartTime;
               lastMsg.thinkingDuration = start
                 ? Math.max(1, Math.round((Date.now() - start) / 1000))
                 : 1;
@@ -1706,10 +2165,7 @@ export const useChatStore = create<ChatStore>()(
               if (toolCallMutated) cancelledMsgIds.add(message.id);
             }
           }
-          state.agentStatus = 'idle';
-          state.currentTool = null;
-          state.retryInfo = null;
-          state.thinkingStartTime = null;
+          state.agentStates = nextAgentStates;
         });
 
         // Persist the stop mutation (terminal + cancelled tool calls) — without
@@ -1757,40 +2213,55 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      setRetryInfo: (info) => {
-        set((state) => {
-          state.retryInfo = info;
+      setRetryInfo: (convId, info) => {
+        if (!get().conversations[convId]) return;
+        const currentAgentState = getConversationAgentState(get().agentStates, convId);
+        const nextAgentState: ConversationAgentState = {
+          ...currentAgentState,
+          activeAgentNames: [...currentAgentState.activeAgentNames],
+          retryInfo: info,
+        };
+        set({
+          agentStates: upsertConversationAgentState(get().agentStates, convId, nextAgentState),
         });
       },
 
-      setAgentStatus: (status, tool, agentName) => {
-        set((state) => {
-          state.agentStatus = status;
-          state.currentTool = tool ?? null;
+      setAgentStatus: (convId, status, tool, agentName) => {
+        if (!get().conversations[convId]) return;
+        const currentAgentState = getConversationAgentState(get().agentStates, convId);
+        const activeAgentNames = [...currentAgentState.activeAgentNames];
+        if (agentName && status === 'tool-calling' && !activeAgentNames.includes(agentName)) {
+          activeAgentNames.push(agentName);
+        }
+
+        const nextAgentState: ConversationAgentState = {
+          status,
+          currentTool: tool ?? null,
           // A resumed stream (any non-retry status) means a prior retry
           // succeeded — clear the retry strip so it doesn't linger.
-          if (status !== 'rate-limited') {
-            state.retryInfo = null;
-          }
-          // Track concurrent active agents
-          if (agentName && status === 'tool-calling') {
-            if (!state.activeAgentNames.includes(agentName)) {
-              state.activeAgentNames.push(agentName);
-            }
-          }
-          // Track thinking start time
-          if (status === 'thinking') {
-            state.thinkingStartTime = Date.now();
-          } else if (status === 'idle') {
-            state.thinkingStartTime = null;
-            state.activeAgentNames = [];
-          }
+          retryInfo: status === 'rate-limited' ? currentAgentState.retryInfo : null,
+          thinkingStartTime: status === 'thinking'
+            ? Date.now()
+            : status === 'idle'
+              ? null
+              : currentAgentState.thinkingStartTime,
+          activeAgentNames: status === 'idle' ? [] : activeAgentNames,
+        };
+
+        set({
+          agentStates: upsertConversationAgentState(get().agentStates, convId, nextAgentState),
         });
       },
 
-      removeActiveAgent: (agentName) => {
-        set((state) => {
-          state.activeAgentNames = state.activeAgentNames.filter(n => n !== agentName);
+      removeActiveAgent: (convId, agentName) => {
+        const currentAgentState = get().agentStates.get(convId);
+        if (!currentAgentState) return;
+        const nextAgentState: ConversationAgentState = {
+          ...currentAgentState,
+          activeAgentNames: currentAgentState.activeAgentNames.filter(n => n !== agentName),
+        };
+        set({
+          agentStates: upsertConversationAgentState(get().agentStates, convId, nextAgentState),
         });
       },
 
@@ -1814,7 +2285,19 @@ export const useChatStore = create<ChatStore>()(
 
       appendPendingInput: (text) => {
         set((state) => {
-          state.pendingInputAppend = text;
+          if (text === null) {
+            state.pendingInputAppend = null;
+            return;
+          }
+          // APPEND, not overwrite. `ChatInput` drains this buffer in an effect,
+          // so two writes can land before the first is consumed — an MCP App
+          // interface sending two `ui/message` calls in a row, or a widget and
+          // an app writing at once. Clobbering there would silently swallow the
+          // first message. Capped so a busy sender cannot grow the buffer
+          // without bound before the composer gets a chance to drain it.
+          const previous = state.pendingInputAppend;
+          const merged = previous ? `${previous}\n${text}` : text;
+          state.pendingInputAppend = truncateUtf8(merged, MAX_PENDING_INPUT_APPEND_BYTES);
         });
       },
 
@@ -1830,20 +2313,27 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      addPendingAttachment: (path) => {
+      addPendingAttachment: (request) => {
         set((state) => {
           // Dedup: "Add to chat" on the same file twice (before the drain runs)
           // must not buffer it twice — images carry no path once decoded, so the
           // ChatInput drain can't dedup them downstream.
-          if (!state.pendingAttachmentPaths.includes(path)) {
-            state.pendingAttachmentPaths.push(path);
+          const exists = state.pendingAttachmentRequests.some((pending) => (
+            pending.path === request.path
+              && pending.draftKey === request.draftKey
+              && pending.readScope === request.readScope
+          ));
+          if (!exists) {
+            state.pendingAttachmentRequests.push(request);
           }
         });
       },
 
-      clearPendingAttachments: () => {
+      clearPendingAttachments: (draftKey) => {
         set((state) => {
-          state.pendingAttachmentPaths = [];
+          state.pendingAttachmentRequests = draftKey === undefined
+            ? []
+            : state.pendingAttachmentRequests.filter((request) => request.draftKey !== draftKey);
         });
       },
 
@@ -1855,7 +2345,14 @@ export const useChatStore = create<ChatStore>()(
 
       setConversationStatus: (convId, status) => {
         let shouldReindex = false;
+        const isTerminal = status === 'completed' || status === 'error';
+        const nextAgentStates = isTerminal
+          ? removeConversationAgentState(get().agentStates, convId)
+          : get().agentStates;
         set((state) => {
+          if (isTerminal) {
+            state.agentStates = nextAgentStates;
+          }
           const conv = state.conversations[convId];
           if (conv) {
             const prevStatus = conv.status;
@@ -1863,12 +2360,17 @@ export const useChatStore = create<ChatStore>()(
             // partial assistant reply are already appended to messages.jsonl
             // by the time a turn ends in error, but without this the
             // conversation was never indexed until the next restart.
-            const isTerminal = status === 'completed' || status === 'error';
             // Fix #5: only fire when the conversation actually exists AND is
             // transitioning INTO a terminal state — not on a redundant
             // re-set of a status it's already in (e.g. a duplicate
             // 'completed' call), and never for a convId absent from state.
-            shouldReindex = isTerminal && prevStatus !== status;
+            // A run that ends WITHOUT 'completed' still settles this
+            // conversation's messages for the round — the turn cap now lands
+            // on 'idle' (agentLoop's max_turns path), and gating the
+            // write-through on `isTerminal` alone would leave the catalog row
+            // and FTS body stale until the next startup reconcile. Additive:
+            // every transition that re-indexed before still does.
+            shouldReindex = prevStatus !== status && (isTerminal || prevStatus === 'running');
             conv.status = status;
             if (status === 'completed') {
               conv.completedAt = Date.now();
@@ -2128,6 +2630,7 @@ export const useChatStore = create<ChatStore>()(
               imPlatform: meta.imPlatform,
               scheduledTaskId: meta.scheduledTaskId,
               triggerId: meta.triggerId,
+              teamId: meta.teamId,
               projectId: meta.projectId,
               readOnly: meta.readOnly,
               importedFrom: meta.importedFrom,
@@ -2161,6 +2664,7 @@ export const useChatStore = create<ChatStore>()(
                 imPlatform: meta.imPlatform,
                 scheduledTaskId: meta.scheduledTaskId,
                 triggerId: meta.triggerId,
+                teamId: meta.teamId,
                 projectId: meta.projectId,
                 readOnly: meta.readOnly,
                 importedFrom: meta.importedFrom,
@@ -2193,13 +2697,22 @@ export const useChatStore = create<ChatStore>()(
             // Don't unload conversations with running status
             if (state.conversations[id]?.status === 'running') continue;
             delete state.conversations[id];
+            // Drop the conversation's live agent state together with its
+            // record. Every writer (`setAgentStatus`/`setRetryInfo`) refuses
+            // to touch a conversation that is no longer loaded, so an entry
+            // left behind here can never be cleared again: it retains memory
+            // for the process lifetime AND resurrects a stale non-idle status
+            // strip the next time that conversation is loaded and viewed.
+            // Same class of leak the computerUseStatus per-conversation map
+            // had to fix after PR #209/#216.
+            state.agentStates = removeConversationAgentState(state.agentStates, id);
           }
         });
       },
     })),
     {
       name: 'abu-chat',
-      version: 7,
+      version: 12,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2216,6 +2729,26 @@ export const useChatStore = create<ChatStore>()(
         // payload — persisted state (conversationIndex) is unchanged, so this is a
         // no-op bump that just guards against older builds mis-reading the schema.
         if (version < 7) { /* no transform needed */ }
+        // v7 → v8: added the unattended browser run report card (U7) — an
+        // append-only Message (id prefix `browser-run-report-`) carrying an
+        // optional `browserRunReport` snapshot. Messages live in JSONL, not in
+        // the persisted `conversationIndex`, so there is nothing to transform.
+        // (The team branch used v8 for teamTaskId; both were no-transform.)
+        if (version < 8) { /* no transform needed */ }
+        // v8 → v9: added teamId on Conversation/ConversationMeta (optional field;
+        // absent = ordinary chat, present = the main loop runs as that team's
+        // leader. Nothing to transform for pre-team conversations).
+        if (version < 9) { /* no transform needed */ }
+        // v9 → v10: teamTaskId removed with the task board (optional, never written
+        // by the in-conversation team; stale values are simply ignored).
+        if (version < 10) { /* no transform needed */ }
+        // v10 → v11: merge of the two v8 lineages above (no transform).
+        if (version < 11) { /* no transform needed */ }
+        // v11 → v12: added the turn-cap notice card — an append-only Message
+        // (id prefix `max-turns-`) carrying an optional `maxTurnsNotice`
+        // payload. Messages live in JSONL, not in the persisted
+        // `conversationIndex`, so there is nothing to transform.
+        if (version < 12) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

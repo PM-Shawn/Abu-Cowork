@@ -104,6 +104,20 @@ export async function readDir(path: string): Promise<FsDirEntry[]> {
   }));
 }
 
+/**
+ * The same truncation `electron/fsHost.cjs` does, for the same reason: Tauri's
+ * Rust `plugin:fs` derives every timestamp with `as_millis()` (truncating),
+ * while Node's `Stats.mtime` is `new Date(Math.round(mtimeMs))`. Two shims of
+ * one contract must not disagree by a millisecond — the upload identity pin
+ * compares this value against `Math.floor(stat.mtimeMs)` in another tier
+ * (acceptance F1).
+ */
+function msecOrNull(ms: number): Date | null {
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(Math.floor(ms));
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
 export interface FsFileInfo {
   isFile: boolean;
   isDirectory: boolean;
@@ -122,9 +136,9 @@ export async function stat(path: string): Promise<FsFileInfo> {
     isDirectory: s.isDirectory(),
     isSymlink: false,
     size: s.size,
-    mtime: Number.isFinite(s.mtimeMs) ? s.mtime : null,
-    atime: Number.isFinite(s.atimeMs) ? s.atime : null,
-    birthtime: Number.isFinite(s.birthtimeMs) ? s.birthtime : null,
+    mtime: msecOrNull(s.mtimeMs),
+    atime: msecOrNull(s.atimeMs),
+    birthtime: msecOrNull(s.birthtimeMs),
     readonly: (s.mode & 0o200) === 0,
   };
 }
@@ -143,9 +157,9 @@ export async function lstat(path: string): Promise<FsFileInfo> {
     isDirectory: s.isDirectory(),
     isSymlink: s.isSymbolicLink(),
     size: s.size,
-    mtime: Number.isFinite(s.mtimeMs) ? s.mtime : null,
-    atime: Number.isFinite(s.atimeMs) ? s.atime : null,
-    birthtime: Number.isFinite(s.birthtimeMs) ? s.birthtime : null,
+    mtime: msecOrNull(s.mtimeMs),
+    atime: msecOrNull(s.atimeMs),
+    birthtime: msecOrNull(s.birthtimeMs),
     readonly: (s.mode & 0o200) === 0,
   };
 }

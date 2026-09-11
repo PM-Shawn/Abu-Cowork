@@ -1,11 +1,13 @@
 import { ListChecks, AppWindow, SquareTerminal } from 'lucide-react';
-import { usePreviewStore } from '@/stores/previewStore';
+import { usePreviewStore, useVisibleTabs, workspaceTabButtonId, workspaceTabPanelId } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import TabStrip from './TabStrip';
 import SummaryBody from './SummaryBody';
 import PreviewPanel from '../PreviewPanel';
 import TerminalTab from './TerminalTab';
 import BrowserTab from './BrowserTab';
+import SubagentTab from './SubagentTab';
+import TeamTab from './TeamTab';
 
 /**
  * Empty state shown when every tab is closed (TRAE "从这里开始"): a launcher
@@ -50,26 +52,50 @@ function WorkspaceEmptyState() {
  * launcher. See docs/2026-07-17-workspace-tabs-design.md.
  */
 export default function WorkspacePanel() {
+  // Bodies are mounted for EVERY tab (keep-alive), including browser tabs
+  // adopted for another conversation — their native view must survive. What
+  // this conversation may *see* is `visibleTabs`; a foreign tab is therefore
+  // never the active one, so its panel stays `hidden` and BrowserTab reads the
+  // zero rect that hides its native layer.
   const tabs = usePreviewStore((s) => s.tabs);
+  const visibleTabs = useVisibleTabs();
   const activeTabId = usePreviewStore((s) => s.activeTabId);
+  const empty = visibleTabs.length === 0;
 
   return (
     <div className="flex flex-col h-full">
       <TabStrip />
-      {tabs.length === 0 ? (
-        <WorkspaceEmptyState />
-      ) : (
-        <div className="flex-1 min-h-0 relative">
+      {empty && <WorkspaceEmptyState />}
+      {tabs.length > 0 && (
+        <div
+          className="flex-1 min-h-0 relative"
+          hidden={empty}
+          // Inline display (not just `hidden`): a hidden body area must be
+          // laid out at zero size, which is the only signal that takes the
+          // native browser layer down with it.
+          style={empty ? { display: 'none' } : undefined}
+        >
           {tabs.map((tab) => (
-            <div key={tab.id} hidden={tab.id !== activeTabId} className="h-full">
+            <div
+              key={tab.id}
+              id={workspaceTabPanelId(tab.id)}
+              role="tabpanel"
+              aria-labelledby={workspaceTabButtonId(tab.id)}
+              hidden={tab.id !== activeTabId}
+              className="h-full"
+            >
               {tab.kind === 'summary' ? (
                 <SummaryBody />
               ) : tab.kind === 'preview' ? (
                 <PreviewPanel filePath={tab.filePath} tabId={tab.id} embedded />
               ) : tab.kind === 'terminal' ? (
                 <TerminalTab tabId={tab.id} />
-              ) : (
+              ) : tab.kind === 'browser' ? (
                 <BrowserTab tabId={tab.id} url={tab.url} />
+              ) : tab.kind === 'team' ? (
+                <TeamTab conversationId={tab.conversationId} />
+              ) : (
+                <SubagentTab identity={tab.identity} taskIndex={tab.taskIndex} title={tab.title} />
               )}
             </div>
           ))}

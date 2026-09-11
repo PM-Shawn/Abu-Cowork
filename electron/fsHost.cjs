@@ -188,7 +188,7 @@ function backupPathFor(target) {
 
 /** Allowed root prefixes (macOS/Linux), mirroring capabilities/default.json. */
 function allowedRoots() {
-  return [
+  const declared = [
     os.homedir(), // $HOME/** (includes the app data dir under Application Support)
     os.tmpdir(), // $TEMP/**
     '/tmp',
@@ -199,6 +199,25 @@ function allowedRoots() {
   ]
     .filter((r) => typeof r === 'string' && r.length > 0)
     .map((r) => path.resolve(r));
+
+  // A root can itself live behind a symlink: on macOS `os.tmpdir()` is
+  // `/var/folders/<…>/T` and `/var` links to `/private/var`. Callers hand us
+  // the CANONICAL target of an approved path — the renderer pins every file
+  // tool to `pathCheck.resolvedPath` — which is lexically OUTSIDE the
+  // unresolved spelling of its own root, so the lexical gate below refused
+  // reads and writes anywhere under the macOS temp dir. The hand-written
+  // '/private/tmp' entry above patched exactly one instance of this; resolve
+  // the rest instead. Both spellings name the same directory, so the canonical
+  // containment check in assertAllowed() is unaffected.
+  const resolved = declared.map((root) => {
+    try {
+      return fs.realpathSync.native(root);
+    } catch {
+      return root; // a root that does not exist cannot widen anything
+    }
+  });
+
+  return [...new Set([...declared, ...resolved])];
 }
 
 function isPathWithin(candidate, root) {
@@ -258,6 +277,32 @@ function canonicalizeForScope(resolvedPath, followFinalSymlink = true) {
   }
 }
 
+function resolveValidatedPath(rawPath) {
+  if (typeof rawPath !== 'string' || rawPath.length === 0) {
+    throw new Error('fs: path must be a non-empty string');
+  }
+  if (rawPath.includes('\0')) throw new Error('fs: path must not contain NUL');
+  if (Buffer.byteLength(rawPath, 'utf8') > 32 * 1024) {
+    throw new Error('fs: path is too long');
+  }
+  return path.resolve(rawPath);
+}
+
+/**
+ * Resolve a renderer policy-check path through every existing symlink while
+ * preserving a missing write tail. The normal filesystem dispatcher still
+ * performs its own independent check at operation time; this endpoint only
+ * gives pathSafety the canonical value it needs to compare against the
+ * narrower run/workspace authorization scope.
+ */
+function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
+  const norm = resolveValidatedPath(rawPath);
+  // Windows capabilities intentionally remain broad, but policy decisions must
+  // still see junction/reparse-point targets rather than the lexical spelling.
+  if (process.platform === 'win32') return canonicalizeForScope(norm, followFinalSymlink);
+  return assertAllowed(norm, { followFinalSymlink });
+}
+
 /**
  * Refuse a path that escapes the capability scope either lexically or after
  * resolving symlinks. Checking only path.resolve() is insufficient: an allowed
@@ -272,14 +317,7 @@ function canonicalizeForScope(resolvedPath, followFinalSymlink = true) {
  * @returns {string} normalized absolute path
  */
 function assertAllowed(resolvedPath, opts) {
-  if (typeof resolvedPath !== 'string' || resolvedPath.length === 0) {
-    throw new Error('fs: path must be a non-empty string');
-  }
-  if (resolvedPath.includes('\0')) throw new Error('fs: path must not contain NUL');
-  if (Buffer.byteLength(resolvedPath, 'utf8') > 32 * 1024) {
-    throw new Error('fs: path is too long');
-  }
-  const norm = path.resolve(resolvedPath);
+  const norm = resolveValidatedPath(resolvedPath);
   if (process.platform === 'win32') return norm; // windows-extras.json = ** (allow-all)
 
   const roots = allowedRoots();
@@ -324,8 +362,35 @@ function resolveScoped(app, p, baseDirNum, opts) {
   return assertAllowed(resolved, opts);
 }
 
-function dateOrNull(value) {
-  return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : null;
+/**
+ * A timestamp on the wire, in the SAME integer milliseconds the real plugin
+ * produces.
+ *
+ * Tauri's Rust `plugin:fs` builds every FileInfo timestamp with
+ * `SystemTime::duration_since(UNIX_EPOCH).as_millis()` (`commands.rs:1721`),
+ * and `as_millis()` **truncates** the sub-millisecond remainder. Node's
+ * `Stats.mtime` is `new Date(Math.round(mtimeMs))` — it **rounds**. Shimming
+ * the plugin with Node's `Date` therefore hands the frontend a value that is
+ * one millisecond LATER than the plugin's for every file whose mtime has a
+ * fractional part of .5 ms or more (measured: 11 of 20 freshly written files
+ * on APFS).
+ *
+ * That one millisecond is not cosmetic: `upload_file` freezes the approved
+ * file's identity from this value in the renderer gate and the main process
+ * re-derives it with `Math.floor(stat.mtimeMs)` before sending the bytes
+ * (`browserHost.cjs` `readApprovedUploadFile`). Rounding on one side and
+ * flooring on the other made roughly half of all uploads of an UNCHANGED file
+ * refuse themselves with 「changed on disk」 (acceptance F1).
+ *
+ * So the truncation happens here, once, at the only place that still sees the
+ * float — not at each of the tiers that consume the value.
+ */
+function msecOrNull(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(Math.floor(ms));
+  // An out-of-range stamp makes an Invalid Date, whose `toISOString()` throws.
+  // `dateOrNull` used to swallow that case by testing `getTime()`; keep doing so.
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
 /** Convert Node's fs.Stats into @tauri-apps/plugin-fs FileInfo wire shape. */
@@ -336,9 +401,9 @@ function toFileInfo(info) {
     isDirectory: info.isDirectory(),
     isSymlink: info.isSymbolicLink(),
     size: info.size,
-    mtime: dateOrNull(info.mtime),
-    atime: dateOrNull(info.atime),
-    birthtime: dateOrNull(info.birthtime),
+    mtime: msecOrNull(info.mtimeMs),
+    atime: msecOrNull(info.atimeMs),
+    birthtime: msecOrNull(info.birthtimeMs),
     readonly: unix ? (info.mode & 0o222) === 0 : false,
     fileAttributes: null,
     dev: unix ? info.dev : null,
@@ -603,5 +668,6 @@ module.exports = {
   FS_MISS,
   assertAllowed,
   canonicalizeForScope,
+  canonicalizeForPathPolicy,
   toFileInfo,
 };

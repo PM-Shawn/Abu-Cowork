@@ -26,6 +26,8 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
 
 import { buildShareBundle, SHARE_SCHEMA_VERSION } from './shareBundle';
 import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
+import { createMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
+import { createBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 
 function makeConv(messages: Message[], overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -116,6 +118,71 @@ describe('buildShareBundle', () => {
     expect(JSON.stringify(bundle)).toContain('[REDACTED:anthropic-key]');
   });
 
+  it('allowlists and redacts provider error details before sharing', async () => {
+    const secret = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
+    const conv = makeConv([
+      {
+        id: 'failed-valid',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 1,
+        runState: 'failed',
+        runError: `provider echoed ${secret}`,
+        runErrorDetails: {
+          status: 403,
+          error_type: `governance.${secret}`,
+          traceId: secret,
+          summary: `provider echoed ${secret}`,
+        },
+      },
+      {
+        id: 'failed-malformed',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 2,
+        runState: 'failed',
+        runErrorDetails: {
+          status: 403,
+          rawBody: `private prompt and ${secret}`,
+        } as never,
+      },
+      {
+        id: 'failed-legacy-raw-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 3,
+        runState: 'failed',
+        runError: '{"private":"legacy provider body without a credential pattern"}',
+      },
+      {
+        id: 'completed-with-stale-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: 4,
+        runState: 'completed',
+        runError: 'must not survive a completed row',
+        runErrorDetails: { status: 403 },
+      },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+    const serialized = JSON.stringify(bundle);
+
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain('private prompt');
+    expect(serialized).not.toContain('rawBody');
+    expect(serialized).not.toContain('legacy provider body without a credential pattern');
+    expect(bundle.messages[0].runError).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[0].runErrorDetails?.error_type).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[0].runErrorDetails?.traceId).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[0].runErrorDetails?.summary).toContain('[REDACTED:anthropic-key]');
+    expect(bundle.messages[1].runErrorDetails).toBeUndefined();
+    expect(bundle.messages[2].runError).toBe('Provider request failed');
+    expect(bundle.messages[3].runError).toBeUndefined();
+    expect(bundle.messages[3].runErrorDetails).toBeUndefined();
+    expect(bundle.stats.redactionCount).toBeGreaterThanOrEqual(4);
+  });
+
   it('clears isStreaming flags and tool-call execution state', async () => {
     const conv = makeConv([
       {
@@ -178,6 +245,57 @@ describe('buildShareBundle', () => {
     expect(bundle.messages).toHaveLength(2);
     expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
     expect(JSON.stringify(bundle)).not.toContain('SENTINEL_SUMMARY_do_not_leak_this_verbatim');
+  });
+
+  it('drops turn-cap notices so an export has no blank bubble where a card was', async () => {
+    const notice = createMaxTurnsNoticeMessage({
+      id: 'n1',
+      timestamp: 3,
+      limit: 200,
+      streak: 1,
+    });
+    const conv = makeConv([
+      { id: 'real-1', role: 'user', content: 'real question', timestamp: 1 },
+      notice,
+      { id: 'real-2', role: 'assistant', content: 'real answer', timestamp: 4 },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+
+    expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
+  });
+
+  it('drops unattended run report cards and never leaks the origins they visited', async () => {
+    // Same hazard as the compact-boundary marker above: the payload lives
+    // outside `content`, so `redactText` never sees it — and what it holds is
+    // the list of (often internal) hosts the overnight run visited.
+    const card = createBrowserRunReportMessage({
+      id: 'card-1',
+      timestamp: 3,
+      report: {
+        v: 1,
+        outcome: 'completed',
+        actions: { total: 1, failed: 0 },
+        sites: [{ origin: 'https://SENTINEL-intranet.internal', actions: 1, failures: 0 }],
+        denials: [],
+        problems: [],
+        approvals: { approved: 0, declined: 0, timedOut: 0, unreachable: 0 },
+        blockedPages: 0,
+        skippedByMasterSwitch: false,
+        nextSteps: [],
+        omitted: { sites: 0, problems: 0 },
+      },
+    });
+    const conv = makeConv([
+      { id: 'real-1', role: 'user', content: 'real question', timestamp: 1 },
+      card,
+      { id: 'real-2', role: 'assistant', content: 'real answer', timestamp: 4 },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+
+    expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
+    expect(JSON.stringify(bundle)).not.toContain('SENTINEL-intranet.internal');
   });
 
   it('does not mutate the source conversation object', async () => {

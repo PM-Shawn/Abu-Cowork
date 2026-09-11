@@ -26,6 +26,10 @@ export const SUBAGENT_UI_STRING_KEYS = [
   'chat.subagent.cancelled',
   'chat.subagent.hookBlocked',
   'chat.subagent.noContent',
+  'chat.subagent.delegatedVisionUnsupported',
+  'chat.subagent.delegatedDocumentUnsupported',
+  'chat.subagent.delegatedMediaLimitExceeded',
+  'chat.subagent.delegatedMediaInvalid',
   'chat.errorEmptyBody',
 ] as const;
 
@@ -48,6 +52,10 @@ interface I18nSourceShape {
       cancelled: string;
       hookBlocked: string;
       noContent: string;
+      delegatedVisionUnsupported: string;
+      delegatedDocumentUnsupported: string;
+      delegatedMediaLimitExceeded: string;
+      delegatedMediaInvalid: string;
     };
     errorEmptyBody: string;
   };
@@ -62,6 +70,10 @@ export function buildSubagentUiStrings(t: I18nSourceShape): SubagentUiStrings {
     'chat.subagent.cancelled': t.chat.subagent.cancelled,
     'chat.subagent.hookBlocked': t.chat.subagent.hookBlocked,
     'chat.subagent.noContent': t.chat.subagent.noContent,
+    'chat.subagent.delegatedVisionUnsupported': t.chat.subagent.delegatedVisionUnsupported,
+    'chat.subagent.delegatedDocumentUnsupported': t.chat.subagent.delegatedDocumentUnsupported,
+    'chat.subagent.delegatedMediaLimitExceeded': t.chat.subagent.delegatedMediaLimitExceeded,
+    'chat.subagent.delegatedMediaInvalid': t.chat.subagent.delegatedMediaInvalid,
     'chat.errorEmptyBody': t.chat.errorEmptyBody,
   };
 }

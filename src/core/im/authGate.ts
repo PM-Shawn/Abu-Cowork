@@ -9,10 +9,13 @@
 
 import type { IMChannel, IMCapabilityLevel } from '../../types/imChannel';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
-import { usePermissionStore } from '../../stores/permissionStore';
-import { authorizeWorkspace } from '../tools/pathSafety';
 import { listAllBrowserToolPatterns } from '../permissions/browserToolPolicy';
-import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
+import {
+  createUnattendedConfirmation,
+  mayUnattendedTierApproveBrowser,
+  type UnattendedImTarget,
+} from '../permissions/unattendedConfirmation';
+import { getReadOnlyRunToolAllowlist, getSafeRunToolAllowlist } from '../permissions/runPermissionCeiling';
 import { TOOL_NAMES } from '../tools/toolNames';
 
 export type AuthResult =
@@ -44,45 +47,70 @@ export function resolveCapability(
  * Build agentLoop callbacks for the given capability level.
  * Reuses existing permission infrastructure.
  */
-export function getCallbacksForLevel(level: IMCapabilityLevel): {
+export function getCallbacksForLevel(
+  level: IMCapabilityLevel,
+  /** Run provenance for the unattended confirmation seam — where an approval
+   *  request would be delivered, once there is one to deliver. */
+  run?: { conversationId?: string; imTarget?: UnattendedImTarget },
+): {
   disableTools?: boolean;
   commandConfirmCallback: (info: ConfirmationInfo) => Promise<boolean>;
   filePermissionCallback: FilePermissionCallback;
 } {
+  const denyingConfirm = (tier: IMCapabilityLevel) => createUnattendedConfirmation({
+    source: 'im',
+    ...(run?.conversationId !== undefined ? { conversationId: run.conversationId } : {}),
+    ...(run?.imTarget !== undefined ? { imTarget: run.imTarget } : {}),
+    onDenied: (reason, info) => {
+      console.log(`[IM] ${tier}: denied "${info.command}" (${reason})`);
+    },
+  });
   switch (level) {
     case 'chat_only':
       return {
         disableTools: true,
-        commandConfirmCallback: async () => false,
+        commandConfirmCallback: denyingConfirm('chat_only'),
         filePermissionCallback: async () => false,
       };
     case 'read_tools':
       return {
-        commandConfirmCallback: async () => false,
+        commandConfirmCallback: denyingConfirm('read_tools'),
         filePermissionCallback: async (req) => req.capability === 'read',
       };
     case 'safe_tools':
       return {
-        commandConfirmCallback: async (info) => {
-          // Only allow commands classified as 'safe' by commandSafety (same as trigger behavior)
-          const allowed = info.level === 'safe';
-          if (!allowed) {
-            console.log(`[IM] safe_tools: denied ${info.level} command "${info.command}"`);
-          }
-          return allowed;
-        },
-        filePermissionCallback: async (request) => {
-          const permStore = usePermissionStore.getState();
-          if (permStore.hasPermission(request.path, request.capability)) {
-            authorizeWorkspace(request.path);
-            return true;
-          }
-          return false;
-        },
+        commandConfirmCallback: denyingConfirm('safe_tools'),
+        // channelRouter pre-authorizes this run's declared workspace in its
+        // scoped map. Reaching the callback means the request is outside that
+        // scope; never import a standing desktop/global permission into IM.
+        filePermissionCallback: async () => false,
       };
     case 'full':
       return {
-        commandConfirmCallback: async () => true,
+        // A capability tier is a CEILING — it may only remove authority, never
+        // add it. This callback used to be `async () => true`, which meant a
+        // chat message on a `full` channel auto-approved EVERY browser
+        // confirmation, `execute_js` included: arbitrary code inside the
+        // user's logged-in sessions, approved by nobody. The browser
+        // operation-class policy is therefore evaluated here independently of
+        // the tier, so `full` can never be looser than that policy, read for
+        // an unattended run, says. (`registry.ts` also decides this before any
+        // callback runs;
+        // this is the second lock, so a future gate refactor or a new caller
+        // of `getCallbacksForLevel` cannot reopen the hole.)
+        commandConfirmCallback: async (info) => {
+          // A refusal notice is not a request (see `deniedNotice`) — the
+          // decision is already made, so the tier answers "no" and only logs.
+          if (info.deniedNotice !== undefined) {
+            console.log(`[IM] full: denied "${info.command}" (${info.deniedNotice})`);
+            return false;
+          }
+          if (info.kind === 'browser' && !mayUnattendedTierApproveBrowser(info)) {
+            console.log(`[IM] full: browser action "${info.command}" denied by the unattended browser policy`);
+            return false;
+          }
+          return true;
+        },
         filePermissionCallback: async () => true,
       };
   }
@@ -107,7 +135,8 @@ export function getCallbacksForLevel(level: IMCapabilityLevel): {
  *   site grant — at tool-list level.
  * - `chat_only` also gets the patterns for consistency, though
  *   `getCallbacksForLevel` already disables tools entirely for it.
- * - `safe_tools` / `full` are unchanged: `request_workspace` only.
+ * - `safe_tools` needs no browser block patterns here because its positive
+ *   roster omits the whole browser namespace. `full` is unrestricted here.
  */
 export function getBlockedToolsForLevel(level: IMCapabilityLevel): string[] {
   // `ask_user_question` renders a blocking selection card that only the desktop
@@ -130,13 +159,15 @@ export function getBlockedToolsForLevel(level: IMCapabilityLevel): string[] {
  * `commandConfirmCallback` above is never consulted for a workspace-internal
  * command the strategy already resolved to 'allow'.
  *
- * Returns `undefined` — not `[]` — for the tiers that carry no allowlist:
+ * Returns `undefined` — not `[]` — for `full`, the one tier with no allowlist:
  * every enforcement point treats an EMPTY array as "no restriction"
- * (`allowedTools?.length &&  ...`), so an empty array would read as
- * unrestricted rather than as "nothing allowed". `chat_only` is deliberately
- * absent for the same reason: `getCallbacksForLevel` disables tools outright
- * for it, and handing it a read allowlist here could only ever widen that.
+ * (`allowedTools?.length && ...`), so an empty array would read as
+ * unrestricted rather than as "nothing allowed". `chat_only` therefore uses
+ * an explicit deny-all sentinel even though its callbacks also disable tools.
  */
 export function getAllowedToolsForLevel(level: IMCapabilityLevel): string[] | undefined {
-  return level === 'read_tools' ? [...READ_ONLY_TOOL_ALLOWLIST] : undefined;
+  if (level === 'chat_only') return ['__chat_only_no_tools__'];
+  if (level === 'read_tools') return getReadOnlyRunToolAllowlist();
+  if (level === 'safe_tools') return getSafeRunToolAllowlist();
+  return undefined;
 }

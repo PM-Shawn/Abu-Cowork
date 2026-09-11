@@ -1,8 +1,11 @@
-import { invoke } from '@tauri-apps/api/core';
-import type { ToolExecutionContext } from '../../../types';
-import { hasElectronCommandHost } from '../../../utils/electronHost';
+import type { ToolExecutionContext } from '@/types';
+import { createLogger } from '@/core/logging/logger';
+import { hasElectronCommandHost } from '@/utils/electronHost';
+import { captureTaskCommandInvoke } from '@/core/tools/helpers/taskCommandInvoke';
 
-export { hasElectronCommandHost } from '../../../utils/electronHost';
+export { hasElectronCommandHost } from '@/utils/electronHost';
+
+const logger = createLogger('scoped-command');
 
 export class TaskCommandAbortedError extends Error {
   constructor() {
@@ -36,20 +39,28 @@ export async function invokeTaskCommand<T>(
     throw new TaskCommandAbortedError();
   }
 
+  const taskInvoke = captureTaskCommandInvoke(context?.loopId);
   const commandId = hasElectronCommandHost()
     ? makeCommandId(options?.commandIdPrefix ?? 'task-command')
     : undefined;
   let keepAbortListener = false;
 
   const abortCommand = () => {
-    if (commandId) invoke('abort_command', { commandId }).catch(() => {});
+    if (commandId) {
+      taskInvoke('abort_command', { commandId }).catch((error: unknown) => {
+        logger.warn('abort_command dispatch failed', {
+          commandId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
     abortSignal?.removeEventListener('abort', abortCommand);
   };
 
   if (commandId) abortSignal?.addEventListener('abort', abortCommand, { once: true });
 
   try {
-    const result = await invoke<T>(cmd, {
+    const result = await taskInvoke<T>(cmd, {
       ...(commandId ? { commandId } : {}),
       ...args,
     });

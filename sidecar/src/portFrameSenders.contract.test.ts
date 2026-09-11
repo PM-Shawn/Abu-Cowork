@@ -13,17 +13,26 @@
  * somewhere is red". Not runtime validation, not codegen — a plain
  * data-driven pin.
  */
-import { describe, it, expect } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPort } from './portFrameSenders';
 import type { PortFrame } from './portFrameCoalescer';
 import { CHAT_CONTRACT_FIXTURES, EXEC_CONTRACT_FIXTURES } from '@/core/agent/__contractFixtures__/portFrameFixtures';
 import { createInProcessChatDelta } from '@/core/agent/ports/chatDelta';
 import { createInProcessExecutionPort } from '@/core/agent/ports/executionPort';
+import { sidecarValueHasOpaqueMediaRefs } from '@/core/subagent/delegatedUserTurnMaterializer';
+
+const delegatedMediaStoreMocks = vi.hoisted(() => ({
+  persistDelegatedMedia: vi.fn(),
+  readDelegatedMedia: vi.fn(),
+}));
+
+vi.mock('@/core/subagent/delegatedMediaStore', () => delegatedMediaStoreMocks);
 
 /** Methods with their own dedicated special-case test above (id-preserving
  *  or signature-translating) — deliberately excluded from the generic
  *  fixture's completeness check, not just forgotten. */
 const CHAT_SPECIAL_CASED = new Set(['cancelStreaming']);
+const CHAT_SENDER_MEDIA_PREPARED = new Set(['appendMessageToolCall']);
 const EXEC_SPECIAL_CASED = new Set([
   'createExecution',
   // Reads never travel as frames at all (see frameApplier.ts's module doc) —
@@ -33,14 +42,79 @@ const EXEC_SPECIAL_CASED = new Set([
 ]);
 
 describe('portFrameSenders wire contract — chat (generic dispatch)', () => {
-  it.each(CHAT_CONTRACT_FIXTURES)('$method pushes {p:"chat", m:"$method", a: <fixture args, same order>}', ({ method, args }) => {
+  beforeEach(() => {
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
+  });
+
+  it('covers setContextUsage frames both with and without a breakdown payload', () => {
+    const usageFixtures = CHAT_CONTRACT_FIXTURES
+      .filter(({ method }) => method === 'setContextUsage')
+      .map(({ args }) => args[1] as Record<string, unknown>);
+
+    expect(usageFixtures).toHaveLength(2);
+    expect(usageFixtures.some((usage) => 'breakdown' in usage)).toBe(true);
+    expect(usageFixtures.some((usage) => !('breakdown' in usage))).toBe(true);
+  });
+
+  it.each(CHAT_CONTRACT_FIXTURES.filter(({ method }) => !CHAT_SENDER_MEDIA_PREPARED.has(method)))('$method pushes {p:"chat", m:"$method", a: <fixture args, same order>}', ({ method, args }) => {
     const frames: PortFrame[] = [];
     const delta = createFrameChatDelta((f) => frames.push(f)) as unknown as Record<string, (...a: unknown[]) => unknown>;
 
     expect(typeof delta[method]).toBe('function');
     delta[method](...args);
 
+    // Media-free frames travel verbatim — including absolute paths in tool
+    // inputs (the shell owns the filesystem; redaction is for media transport).
     expect(frames).toEqual([{ p: 'chat', m: method, a: args }]);
+    if (method === 'setContextUsage') {
+      const usage = frames[0].a[1] as Record<string, unknown>;
+      expect(usage).toMatchObject({
+        percent: expect.any(Number),
+        tokensUsed: expect.any(Number),
+        tokensMax: expect.any(Number),
+        messageCountAtPublish: expect.any(Number),
+      });
+      if ('breakdown' in (args[1] as Record<string, unknown>)) {
+        expect(usage).toMatchObject({
+          breakdown: {
+            version: 1,
+            systemPrompt: expect.any(Number),
+            tools: expect.any(Number),
+            mcp: expect.any(Number),
+            skills: expect.any(Number),
+            conversation: expect.any(Number),
+          },
+        });
+      } else {
+        expect(usage).not.toHaveProperty('breakdown');
+      }
+    }
+  });
+
+  it('appendMessageToolCall persists inline media as an opaque ref before pushing the fixture frame', async () => {
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValueOnce({
+      id: 'media_contract_tool_call',
+      sha256: 'b'.repeat(64),
+      mediaType: 'image/png',
+      bytes: 2,
+    });
+    const fixture = CHAT_CONTRACT_FIXTURES.find(({ method }) => method === 'appendMessageToolCall');
+    expect(fixture).toBeDefined();
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((f) => frames.push(f));
+
+    delta.appendMessageToolCall(...fixture!.args as Parameters<typeof delta.appendMessageToolCall>);
+    await delta.drain();
+
+    expect(frames).toHaveLength(1);
+    expect(frames[0].p).toBe('chat');
+    expect(frames[0].m).toBe('appendMessageToolCall');
+    expect(frames[0].a.slice(0, 2)).toEqual(fixture!.args.slice(0, 2));
+    const wire = JSON.stringify(frames[0]);
+    expect(wire).not.toContain('aGk=');
+    expect(wire).not.toContain('/tmp/shot.png');
+    expect(sidecarValueHasOpaqueMediaRefs(frames[0])).toBe(true);
   });
 });
 
@@ -97,7 +171,7 @@ describe('portFrameSenders wire contract — fixture completeness', () => {
   it('the shared fixture covers every generic-dispatch ChatDelta method (all of them, minus the special-cased ones)', () => {
     const realMethods = new Set(Object.keys(createInProcessChatDelta()));
     const expectedGenericMethods = [...realMethods].filter((m) => !CHAT_SPECIAL_CASED.has(m)).sort();
-    const fixtureMethods = CHAT_CONTRACT_FIXTURES.map((f) => f.method).sort();
+    const fixtureMethods = [...new Set(CHAT_CONTRACT_FIXTURES.map((f) => f.method))].sort();
     expect(fixtureMethods).toEqual(expectedGenericMethods);
   });
 
@@ -106,5 +180,58 @@ describe('portFrameSenders wire contract — fixture completeness', () => {
     const expectedGenericMethods = [...realMethods].filter((m) => !EXEC_SPECIAL_CASED.has(m)).sort();
     const fixtureMethods = EXEC_CONTRACT_FIXTURES.map((f) => f.method).sort();
     expect(fixtureMethods).toEqual(expectedGenericMethods);
+  });
+});
+
+/**
+ * The SENDER decides whether a tool result needs media preparation; the
+ * RECEIVER (`sidecarValueHasOpaqueMediaRefs`) throws on any raw base64 that
+ * arrives anyway. A sender predicate narrower than that guard is how raw
+ * payloads reach the wire in the first place, so this pins the invariant
+ * directly: for every shape the receiver rejects, the sender must not take
+ * its no-media fast path.
+ */
+describe('portFrameSenders inline-media predicate — never narrower than the receiver guard', () => {
+  const RAW_B64 = 'QUJVLVJBVy1CQVNFNjQ=';
+  const MEDIA_SHAPES = [
+    {
+      name: 'image.source.data',
+      resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: RAW_B64 } }],
+    },
+    {
+      name: 'document.source.data',
+      resultContent: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: RAW_B64 } }],
+    },
+    {
+      name: 'nested imageData',
+      resultContent: [{ type: 'text', text: 'see below', imageData: { mediaType: 'image/png', base64: RAW_B64 } }],
+    },
+    {
+      name: 'bare detail image payload',
+      resultContent: [{ mediaType: 'image/png', base64: RAW_B64 }],
+    },
+  ];
+
+  beforeEach(() => {
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValue({
+      id: 'media_contract',
+      sha256: 'd'.repeat(64),
+      mediaType: 'image/png',
+      bytes: 8,
+    });
+  });
+
+  it.each(MEDIA_SHAPES)('$name never reaches the wire as raw base64', async ({ resultContent }) => {
+    // The receiver would reject this payload outright.
+    expect(() => sidecarValueHasOpaqueMediaRefs(resultContent)).toThrow();
+
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((f) => frames.push(f));
+    delta.updateToolCall('conv-1', 'm1', 'tc1', 'done', resultContent as never, false);
+
+    await vi.waitFor(() => expect(frames).toHaveLength(1));
+    expect(JSON.stringify(frames)).not.toContain(RAW_B64);
+    expect(() => sidecarValueHasOpaqueMediaRefs(frames)).not.toThrow();
   });
 });

@@ -16,11 +16,10 @@
  * `runSubagent()` call — so a session that ran ONLY a main loop (no subagent)
  * left `hook.emit` unregistered entirely, and the first tool call's
  * `preToolCall` hook came back `-32601 Method not found: hook.emit`. Both
- * handlers are STATELESS — they call the global shell `emitHook`, and the
- * event carries its own `conversationId`, so there is no per-run routing to
- * do (unlike `tool.invoke`, which needs its `runId`-keyed source router). A
- * single neutral, idempotent registration therefore serves every run, and
- * both runners call it from their own `ensureHandlersRegistered()`.
+ * handlers share one registration, but every event is still authenticated by
+ * its active runId before it can reach the global hook registry. The matching
+ * runner supplies the shell-owned AbortSignal and tool context; wire context
+ * is never authority-bearing.
  *
  * Hook direction/kind rationale (unchanged from the original subagent path):
  * only `preToolCall` has its RETURN VALUE consumed by the loop
@@ -30,11 +29,14 @@
 import { onSidecarRequest, onSidecarNotification, SidecarRequestError } from '../sidecar/sidecarManager';
 import { emitHook } from './lifecycleHooks';
 import type { HookEvent, PreToolCallEvent, PostToolCallEvent } from './lifecycleHooks';
+import type { ToolExecutionContext } from '../../types';
 
 type ToolHookEvent = PreToolCallEvent | PostToolCallEvent;
 
 export interface HookSignalSource {
+  has(runId: string): boolean;
   getAbortSignal(runId: string): AbortSignal | undefined;
+  getToolContext?: (runId: string) => ToolExecutionContext | undefined;
 }
 
 const signalSources = new Map<string, HookSignalSource>();
@@ -43,24 +45,40 @@ export function registerHookSignalSource(name: string, source: HookSignalSource)
   signalSources.set(name, source);
 }
 
-function resolveAbortSignal(runId: unknown): AbortSignal | undefined {
-  if (typeof runId !== 'string') return undefined;
+function resolveRunSource(runId: string): HookSignalSource | undefined {
   for (const source of signalSources.values()) {
-    const signal = source.getAbortSignal(runId);
-    if (signal) return signal;
+    if (source.has(runId)) return source;
   }
   return undefined;
 }
 
-function attachAbortSignal(event: HookEvent, runId: unknown): HookEvent {
+function attachTrustedContext(
+  event: HookEvent,
+  runId: string,
+  source: HookSignalSource,
+): HookEvent | undefined {
   if (event.type !== 'preToolCall' && event.type !== 'postToolCall') return event;
-  const abortSignal = resolveAbortSignal(runId);
-  return abortSignal ? { ...event, abortSignal } : event;
+  const abortSignal = source.getAbortSignal(runId);
+  const toolContext = source.getToolContext?.(runId);
+  // Tool hooks can execute skill commands, so an active run without a trusted
+  // shell context is not safe to broadcast. Do not fall back to the hook's
+  // activation context or to anything supplied over the wire.
+  if (!toolContext) return undefined;
+  const { toolContext: _wireToolContext, ...rest } = event;
+  return {
+    ...rest,
+    ...(abortSignal ? { abortSignal } : {}),
+    ...(toolContext ? { toolContext } : {}),
+  } as ToolHookEvent;
 }
 
 function withoutAbortSignal(event: HookEvent): HookEvent {
   if (event.type !== 'preToolCall' && event.type !== 'postToolCall') return event;
-  const { abortSignal: _abortSignal, ...wireEvent } = event;
+  const {
+    abortSignal: _abortSignal,
+    toolContext: _toolContext,
+    ...wireEvent
+  } = event;
   return wireEvent as ToolHookEvent;
 }
 
@@ -69,14 +87,29 @@ async function handleHookEmit(rawParams: unknown): Promise<unknown> {
   if (!params?.event) {
     throw new SidecarRequestError(-32602, 'Invalid hook.emit params: event is required');
   }
-  const result = await emitHook(attachAbortSignal(params.event, params.runId));
+  if (typeof params.runId !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid hook.emit params: runId is required');
+  }
+  const source = resolveRunSource(params.runId);
+  if (!source) {
+    throw new SidecarRequestError(-32000, `Unknown hook runId: ${params.runId}`);
+  }
+  const trustedEvent = attachTrustedContext(params.event, params.runId, source);
+  if (!trustedEvent) {
+    throw new SidecarRequestError(-32000, `Trusted hook context is unavailable: ${params.runId}`);
+  }
+  const result = await emitHook(trustedEvent);
   return withoutAbortSignal(result);
 }
 
 function handleHookNotify(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; event?: HookEvent } | null;
-  if (!params?.event) return;
-  void emitHook(attachAbortSignal(params.event, params.runId));
+  if (!params?.event || typeof params.runId !== 'string') return;
+  const source = resolveRunSource(params.runId);
+  if (!source) return;
+  const trustedEvent = attachTrustedContext(params.event, params.runId, source);
+  if (!trustedEvent) return;
+  void emitHook(trustedEvent);
 }
 
 let registered = false;

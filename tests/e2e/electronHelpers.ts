@@ -10,6 +10,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { expect } from '@playwright/test';
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
 
 /**
@@ -25,6 +26,8 @@ const SIDECAR_ID = 'abu-sidecar';
 const { withoutLiveEvalCredential } = createRequire(import.meta.url)('../../scripts/computer-use-live-eval.cjs') as {
   withoutLiveEvalCredential: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
 };
+const READY_TIMEOUT = 45_000;
+const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
 export interface ElectronDataRoot {
   rootDir: string;
@@ -63,7 +66,46 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
 }
 
 /**
+ * Child env for the Electron launch. Starts from process.env, then strips
+ * every `*_proxy` / `*_PROXY` variable and pins NO_PROXY to loopback, keeping
+ * the launch hermetic against the developer shell's proxy state: the suite
+ * only ever talks to per-test localhost mock servers, so no spec legitimately
+ * needs a proxy, while a shell `http_proxy` (e.g. a local Clash on
+ * 127.0.0.1:7897) was observed on 2026-08-30 to stall the sidecar's loopback
+ * SSE stream until the 90s test timeout. Stripping (rather than only setting
+ * NO_PROXY) also covers HTTP clients that honor `http_proxy` but not
+ * `no_proxy`. CI runners set no proxy vars, so this is a no-op there.
+ */
+function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/_proxy$/i.test(key)) delete env[key];
+  }
+  env.NO_PROXY = '127.0.0.1,localhost';
+  env.no_proxy = '127.0.0.1,localhost';
+  env[E2E_APP_DATA_ROOT_ENV] = dataRoot.appDataDir;
+  env[E2E_SIDECAR_CRASH_TOKEN_ENV] = dataRoot.sidecarCrashToken;
+  // Native modal dialogs cannot be driven by Playwright. On hosts where
+  // the OS grants Computer Use permissions (hosted CI runners), the CU
+  // approval prompts would block a headless run forever — this makes them
+  // auto-DECLINE (fail-closed; see tauriHost.cjs).
+  env.ABU_E2E_DECLINE_CU_APPROVALS = '1';
+  // Reveal windows with showInactive() (and hide the macOS Dock icon) so a
+  // full suite run — ~40 launches — does not steal focus on a developer
+  // machine. Windows are still real and rendered: drag-region and
+  // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
+  env.ABU_E2E_QUIET_WINDOW = '1';
+  return env;
+}
+
+/**
  * Launch electron/main.cjs with fully isolated Chromium userData and appData.
+ *
+ * `--lang=zh-CN` pins the renderer's `navigator.language` (and therefore the
+ * i18n system's resolved locale — see src/i18n/index.ts detectSystemLocale)
+ * to zh-CN regardless of the host OS language. The suite asserts the zh-CN
+ * UI; without this, an English-locale host (hosted CI runners, contributors'
+ * machines) renders the en-US UI and every Chinese-text locator times out.
  *
  * main.cjs calls `app.requestSingleInstanceLock()`; if a second instance's
  * lock loses the race against an already-running instance sharing the same
@@ -82,16 +124,139 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
   fs.mkdirSync(dataRoot.userDataDir, { recursive: true });
   fs.mkdirSync(dataRoot.appDataDir, { recursive: true });
   const app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`],
+    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`, '--lang=zh-CN'],
     cwd: REPO_ROOT,
-    env: {
-      ...withoutLiveEvalCredential(process.env),
-      [E2E_APP_DATA_ROOT_ENV]: dataRoot.appDataDir,
-      [E2E_SIDECAR_CRASH_TOKEN_ENV]: dataRoot.sidecarCrashToken,
-    },
+    // buildLaunchEnv isolates the profile and strips proxies; the live-eval
+    // credential must never reach a launched shell either.
+    env: withoutLiveEvalCredential(buildLaunchEnv(dataRoot)),
     timeout: 60_000,
   });
-  return { app, ...dataRoot };
+  // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
+  // doc above invites, and which already carries an `app` key) would otherwise
+  // have the stale, already-exited app spread over the new one — producing an
+  // ElectronApplication whose process() throws and a firstWindow() that hangs
+  // until timeout.
+  return { ...dataRoot, app };
+}
+
+async function reloadAndWaitForApp(page: Page): Promise<void> {
+  await page.reload();
+  await page.waitForLoadState('domcontentloaded');
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+}
+
+/** Persist the common first-run acknowledgements used by Electron E2E journeys. */
+export async function dismissFirstRunOverlays(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+    Object.assign(persisted.state, {
+      guideShown: true,
+      guideOpen: false,
+      hasAcknowledgedDisclaimer: true,
+      hasRunSensitiveAudit_v015: true,
+    });
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+  });
+  await reloadAndWaitForApp(page);
+}
+
+export interface LocalMockProviderOptions {
+  apiKey?: string;
+  contextWindowSize?: number;
+  maxOutputTokens?: number;
+  modelId?: string;
+  modelLabel?: string;
+  permissionMode?: 'standard' | null;
+  providerId?: string;
+  providerName?: string;
+  supportsReasoning?: boolean | null;
+  supportsTools?: boolean;
+}
+
+/** Configure an isolated loopback provider while preserving each spec's metadata. */
+export async function configureLocalMockProvider(
+  page: Page,
+  baseUrl: string,
+  options: LocalMockProviderOptions = {},
+): Promise<void> {
+  const {
+    apiKey = 'abu-e2e-test-key-not-a-real-secret',
+    contextWindowSize,
+    maxOutputTokens,
+    modelId = 'abu-e2e-local-model',
+    modelLabel = 'Abu E2E deterministic model',
+    permissionMode = null,
+    providerId = 'abu-e2e-local-provider',
+    providerName = 'Abu E2E loopback mock',
+    supportsReasoning = false,
+    supportsTools = false,
+  } = options;
+
+  await page.evaluate((configuration) => {
+    const raw = window.localStorage.getItem('abu-settings');
+    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+    const state = persisted.state;
+    const declaredCapabilities = configuration.supportsReasoning === null
+      ? { supportsTools: configuration.supportsTools }
+      : {
+          supportsReasoning: configuration.supportsReasoning,
+          supportsTools: configuration.supportsTools,
+        };
+
+    state.providers = [{
+      id: configuration.providerId,
+      source: 'custom',
+      name: configuration.providerName,
+      enabled: true,
+      apiFormat: 'openai-compatible',
+      baseUrl: configuration.baseUrl,
+      apiKey: configuration.apiKey,
+      models: [{
+        id: configuration.modelId,
+        label: configuration.modelLabel,
+        isCustom: true,
+        declaredCapabilities,
+      }],
+      defaultModelId: configuration.modelId,
+      status: 'verified',
+      sortOrder: 0,
+      userAdded: true,
+      declaredCapabilities,
+    }];
+    state.activeModel = { providerId: configuration.providerId, modelId: configuration.modelId };
+    state.recentModels = [];
+    state.favoriteModels = [];
+    state.guideShown = true;
+    state.guideOpen = false;
+    state.hasAcknowledgedDisclaimer = true;
+    state.hasRunSensitiveAudit_v015 = true;
+    if (configuration.permissionMode !== null) state.permissionMode = configuration.permissionMode;
+    if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
+    if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
+
+    // Write `persisted` back whole, version untouched. Stamping a literal here
+    // (this line carried a stale `version: 42` through four store bumps) makes
+    // zustand replay the migration chain over the state we just injected on the
+    // reload below — so a future migrate branch that rewrites one of these
+    // fields would silently clobber every spec's provider setup.
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+  }, {
+    apiKey,
+    baseUrl,
+    contextWindowSize,
+    maxOutputTokens,
+    modelId,
+    modelLabel,
+    permissionMode,
+    providerId,
+    providerName,
+    supportsReasoning,
+    supportsTools,
+  });
+  await reloadAndWaitForApp(page);
 }
 
 /**

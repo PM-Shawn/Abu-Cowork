@@ -11,6 +11,7 @@ import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
   createElectronDataRoot,
+  dismissFirstRunOverlays,
   launchAbuElectron,
   removeElectronDataRoot,
   type ElectronDataRoot,
@@ -22,23 +23,6 @@ const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
-async function dismissFirstRunOverlays(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    Object.assign(persisted.state, {
-      guideShown: true,
-      guideOpen: false,
-      hasAcknowledgedDisclaimer: true,
-      hasRunSensitiveAudit_v015: true,
-    });
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await page.reload();
-  await waitForApp(page);
 }
 
 let app: ElectronApplication | undefined;

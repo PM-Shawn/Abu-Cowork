@@ -26,7 +26,7 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     locale: 'zh-CN',
     t: {
-      common: { appName: 'Abu', appSlogan: 'Your desktop agent' },
+      common: { appName: 'Abu', appSlogan: 'Your desktop agent', version: '版本' },
       updates: {
         currentVersion: '当前版本',
         checkForUpdates: '检查更新',
@@ -49,6 +49,7 @@ vi.mock('@/i18n', () => ({
       },
       about: {
         deviceId: '设备 ID',
+        versionDescription: '当前版本与更新',
         disclaimerLink: '免责声明',
         disclaimerTitle: '免责声明',
         disclaimerFullSuffix: '全文',
@@ -131,7 +132,7 @@ describe('AboutSection — update status caption (three-state)', () => {
     resetUpdateState(null);
     vi.mocked(checkForUpdate).mockImplementation(async () => {
       useSettingsStore.getState().setUpdaterUnsupported(true);
-      return null;
+      return { kind: 'disabled' };
     });
     render(<AboutSection />);
 
@@ -143,10 +144,9 @@ describe('AboutSection — update status caption (three-state)', () => {
   });
 
   it('clicking 检查更新 on a disabled build never marks "just checked"', async () => {
-    // The disabled marker resolves null just like "confirmed current"; the
-    // just-checked state must stay reserved for real feed comparisons.
+    // The just-checked state must stay reserved for real feed comparisons.
     resetUpdateState(true);
-    vi.mocked(checkForUpdate).mockResolvedValue(null);
+    vi.mocked(checkForUpdate).mockResolvedValue({ kind: 'disabled' });
     const user = userEvent.setup();
     render(<AboutSection />);
 
@@ -157,6 +157,43 @@ describe('AboutSection — update status caption (three-state)', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText('刚刚已检查')).not.toBeInTheDocument();
     expect(screen.queryByText('已是最新版本')).not.toBeInTheDocument();
+  });
+
+  it('clicking 检查更新 marks a feed-confirmed current version as just checked', async () => {
+    resetUpdateState(false);
+    vi.mocked(checkForUpdate).mockResolvedValue({ kind: 'up-to-date' });
+    const user = userEvent.setup();
+    render(<AboutSection />);
+
+    await user.click(screen.getByText('检查更新'));
+
+    expect(await screen.findByText('· 刚刚已检查')).toBeInTheDocument();
+  });
+
+  it('preserves the existing checked caption when a supported updater check fails', async () => {
+    resetUpdateState(false);
+    vi.mocked(checkForUpdate).mockResolvedValue({ kind: 'error', updaterUnsupported: false });
+    const user = userEvent.setup();
+    render(<AboutSection />);
+
+    await user.click(screen.getByText('检查更新'));
+
+    expect(await screen.findByText('· 刚刚已检查')).toBeInTheDocument();
+    expect(screen.queryByText('检查更新失败')).not.toBeInTheDocument();
+  });
+
+  it('preserves the unsupported caption when a disabled updater check fails', async () => {
+    resetUpdateState(true);
+    vi.mocked(checkForUpdate).mockResolvedValue({ kind: 'error', updaterUnsupported: true });
+    const user = userEvent.setup();
+    render(<AboutSection />);
+
+    await user.click(screen.getByText('检查更新'));
+
+    expect(
+      await screen.findByText('此安装包不支持自动更新，请前往官网下载最新版本'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('刚刚已检查')).not.toBeInTheDocument();
   });
 
   it('does not probe on mount when the support state is already known', () => {

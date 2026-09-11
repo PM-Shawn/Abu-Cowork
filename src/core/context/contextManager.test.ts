@@ -7,6 +7,7 @@ import {
 } from './contextManager';
 import { normalizeMessages } from '../llm/messageNormalizer';
 import { estimateMessageTokens, estimateTokens } from './tokenEstimator';
+import { clearLogs, getRecentLogs } from '../logging/logger';
 import type { Message } from '../../types';
 
 let messageSequence = 0;
@@ -181,6 +182,63 @@ describe('contextManager', () => {
       expect(compressed?.toolCalls).toBeUndefined();
     });
 
+    it('excludes subagent-recorded tool calls from fallback compression summaries', () => {
+      const messages: Message[] = [];
+      for (let i = 0; i < 7; i++) {
+        messages.push(makeMsg('user', `Question ${i}`));
+        const assistant = makeMsg('assistant', `Answer ${i}: ${'x'.repeat(1_000)}`);
+        if (i === 1) {
+          messages.push({
+            ...assistant,
+            toolCalls: [
+              { id: 'parent-tool', name: 'read_file', input: {}, result: 'parent result' },
+              {
+                id: 'child-tool',
+                name: 'computer_screenshot',
+                input: {},
+                result: 'child result',
+                hidden: true,
+                fromSubagent: true,
+              },
+            ],
+          });
+        } else {
+          messages.push(assistant);
+        }
+      }
+
+      const result = prepareContextMessages(messages, systemPrompt, 2_000, 100);
+      const compressed = result.find((message) => (
+        message.role === 'assistant' && typeof message.content === 'string'
+          && message.content.includes('Answer 1:')
+      ));
+
+      expect(compressed?.content).toContain('[read_file]');
+      expect(compressed?.content).not.toContain('[computer_screenshot]');
+    });
+
+    it('does not summarize orphaned subagent-recorded tool calls into LLM context', () => {
+      const messages: Message[] = [
+        makeMsg('user', 'Start'),
+        {
+          ...makeMsg('assistant', ''),
+          toolCalls: [{
+            id: 'child-tool',
+            name: 'abu-browser__screenshot',
+            input: {},
+            hidden: true,
+            fromSubagent: true,
+          }],
+        },
+      ];
+
+      const result = enforceContextBudget(messages, systemPrompt, 200, 50);
+
+      expect(JSON.stringify(result.messages)).not.toContain('[abu-browser__screenshot]');
+      expect(JSON.stringify(result.messages)).not.toContain('tool results lost during context compression');
+      expect(result.messages[1]?.toolCalls).toEqual(messages[1].toolCalls);
+    });
+
     it('truncates a giant latest tool result and preserves the outbound invariant', () => {
       const messages: Message[] = [
         makeMsg('user', 'Inspect the file'),
@@ -276,6 +334,33 @@ describe('contextManager', () => {
       expect(independentlyEstimated).toBeLessThanOrEqual(result.inputBudget);
     },
   );
+
+  it('rejects a near-limit latest user turn whose delegated image refs would exceed the input budget', () => {
+    const delegatedRefs = Array.from({ length: 20 }, (_, index) => ({
+      type: 'delegated_media_ref',
+      originConversationId: 'conv-parent',
+      attachment: {
+        id: `media_${index}`,
+        sha256: `${index}`.padStart(64, 'a'),
+        mediaType: 'image/png',
+        bytes: 123,
+      },
+    }));
+    const messages: Message[] = [{
+      id: 'latest-user',
+      role: 'user',
+      timestamp: 1_800_000_000_000,
+      content: [
+        { type: 'text', text: 'Please inspect every delegated image.' },
+        ...delegatedRefs,
+      ] as unknown as Message['content'],
+    }];
+
+    expect(() => enforceContextBudget(messages, systemPrompt, 33_000, 1_000))
+      .toThrow(ContextBudgetError);
+    expect(() => enforceContextBudget(messages, systemPrompt, 33_000, 1_000))
+      .toThrow(/INPUT_TOO_LARGE/);
+  });
 });
 
 // trimOldScreenshots drops all but the most recent few screenshots. That policy
@@ -327,12 +412,10 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     expect(wire).not.toContain('screenshot(s) removed from history');
   });
 
-  // The strip indices come from msg.toolCalls but are reused against
-  // toolCallsForContext at the same position, and the two are built by different
-  // producers (request order vs eventRouter's completion order under
-  // Promise.allSettled). If they ever disagree, the note must stay quiet rather
-  // than tell the model "[0 screenshot(s) removed…]".
-  it('says nothing when the targeted call had no images', () => {
+  // Legacy toolCallsForContext entries can lack ids. In that case the whole
+  // context side stays untouched rather than guessing from request-order indices,
+  // and no bogus "[0 screenshot(s) removed…]" note reaches the model.
+  it('says nothing when legacy context calls cannot be matched safely', () => {
     const call = { id: 'tc-x', name: 'read_file', input: {}, result: 'file contents', resultContent: [] };
     const withImage = screenshotTurn('img', 'q');
     const mismatched = {
@@ -343,5 +426,127 @@ describe('trimOldScreenshots — the model is told what happened', () => {
 
     const out = trimOldScreenshots([mismatched, ...many], 90);
     expect(JSON.stringify(out)).not.toContain('[0 screenshot(s) removed');
+  });
+
+  // Subagent-recorded entries (fromSubagent) never reach the LLM — they are
+  // the display/backfill persistence home for a child step's image. Counting
+  // them against the screenshot budget would strip REAL screenshots the model
+  // can still see, to make room for pictures it never sees.
+  it('ignores fromSubagent entries: they neither consume the budget nor get stripped', () => {
+    const subagentEntry = {
+      id: 'tc-sub',
+      name: 'computer',
+      input: {},
+      result: 'Image: /tmp/sub.png',
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'SUBAGENT_SHOT' } },
+      ],
+      hidden: true,
+      fromSubagent: true,
+    };
+    // 2 real screenshots + 1 subagent entry under a tight budget that keeps 2.
+    // Without the skip, the subagent entry would push the older real one out.
+    const twoReal = [screenshotTurn('r1', 'REAL_OLD'), screenshotTurn('r2', 'REAL_NEW')];
+    const withSubagent = {
+      ...twoReal[0],
+      toolCalls: [...(twoReal[0].toolCalls ?? []), subagentEntry],
+    } as Message;
+
+    const out = trimOldScreenshots([withSubagent, twoReal[1]], 90);
+    const raw = JSON.stringify(out);
+    expect(raw).toContain('REAL_OLD');
+    expect(raw).toContain('REAL_NEW');
+    expect(raw).toContain('SUBAGENT_SHOT');
+    expect(raw).not.toContain('screenshot(s) removed from history');
+  });
+
+  it('matches completion-order context calls by tool_use id', () => {
+    const imageCall = (id: string, marker: string) => ({
+      id,
+      name: 'computer',
+      input: {},
+      result: marker,
+      resultContent: [
+        { type: 'text' as const, text: marker },
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: marker } },
+      ],
+    });
+    const textCall = { id: 'text', name: 'read_file', input: {}, result: 'text result', resultContent: [] };
+    const message: Message = {
+      ...makeMsg('assistant', 'Parallel tools finished'),
+      // Model request order: the oldest screenshot is "a" at index 1.
+      toolCalls: [textCall, imageCall('a', 'a'), imageCall('b', 'b'), imageCall('c', 'c')],
+      // Completion order differs, putting "a" at index 2.
+      toolCallsForContext: [imageCall('c', 'c'), imageCall('b', 'b'), imageCall('a', 'a'), textCall],
+    };
+
+    const out = trimOldScreenshots([message], 90);
+    const contextCalls = out[0].toolCallsForContext!;
+
+    expect(contextCalls[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(contextCalls[1].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(contextCalls[2].resultContent?.some((block) => block.type === 'image')).toBe(false);
+    expect(contextCalls[2].result).toContain('screenshot(s) removed from history');
+  });
+
+  it('retains a message context intact when legacy calls lack tool_use ids', () => {
+    clearLogs();
+    const imageCall = (id: string, marker: string) => ({
+      id,
+      name: 'computer',
+      input: {},
+      result: marker,
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: marker } },
+      ],
+    });
+    const message: Message = {
+      ...makeMsg('assistant', 'Legacy context'),
+      toolCalls: [imageCall('a', 'a'), imageCall('b', 'b'), imageCall('c', 'c')],
+      toolCallsForContext: [
+        { name: 'computer', input: {}, result: 'a', resultContent: imageCall('a', 'a').resultContent },
+        imageCall('b', 'b'),
+        imageCall('c', 'c'),
+      ],
+    };
+
+    const out = trimOldScreenshots([message], 90);
+
+    expect(out[0].toolCalls?.[0].resultContent?.some((block) => block.type === 'image')).toBe(false);
+    expect(out[0].toolCallsForContext?.[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(getRecentLogs({ module: 'contextManager' })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Skipped trimming tool call context without tool_use ids' }),
+    ]));
+  });
+
+  it('retains message context when the request-order side lacks a tool_use id', () => {
+    clearLogs();
+    const imageCall = (id: string, marker: string) => ({
+      id,
+      name: 'computer',
+      input: {},
+      result: marker,
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: marker } },
+      ],
+    });
+    const legacyRequestCall = { ...imageCall('a', 'a'), id: undefined };
+    const message: Message = {
+      ...makeMsg('assistant', 'Legacy request call'),
+      toolCalls: [
+        legacyRequestCall as unknown as NonNullable<Message['toolCalls']>[number],
+        imageCall('b', 'b'),
+        imageCall('c', 'c'),
+      ],
+      toolCallsForContext: [imageCall('a', 'a'), imageCall('b', 'b'), imageCall('c', 'c')],
+    };
+
+    const out = trimOldScreenshots([message], 90);
+
+    expect(out[0].toolCalls?.[0].resultContent?.some((block) => block.type === 'image')).toBe(false);
+    expect(out[0].toolCallsForContext?.[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
+    expect(getRecentLogs({ module: 'contextManager' })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Skipped trimming tool call context without tool_use ids' }),
+    ]));
   });
 });

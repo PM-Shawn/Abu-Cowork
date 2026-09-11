@@ -8,6 +8,13 @@ import type { UpdateDownloadProgress, UpdateInfo } from './types';
 
 export type { UpdateDownloadProgress, UpdateInfo } from './types';
 
+export type UpdateCheckResult =
+  | { kind: 'update'; info: UpdateInfo }
+  | { kind: 'up-to-date' }
+  | { kind: 'disabled' }
+  | { kind: 'throttled' }
+  | { kind: 'error'; updaterUnsupported: boolean | null };
+
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // Release metadata feed published to OSS by the release pipeline
@@ -143,13 +150,13 @@ async function enrichReleaseNotes(rawNotes: string): Promise<{ notes: string; ur
 export async function checkForUpdate(
   force = false,
   opts: { silent?: boolean } = {},
-): Promise<UpdateInfo | null> {
+): Promise<UpdateCheckResult> {
   const store = useSettingsStore.getState();
   const { silent = false } = opts;
 
   if (!force) {
     const elapsed = Date.now() - store.lastUpdateCheck;
-    if (elapsed < CHECK_INTERVAL_MS) return null;
+    if (elapsed < CHECK_INTERVAL_MS) return { kind: 'throttled' };
   }
 
   if (!silent) store.setUpdateChecking(true);
@@ -169,7 +176,7 @@ export async function checkForUpdate(
       store.setUpdaterUnsupported(true);
       store.setUpdateInfo(null);
       _pendingUpdate = null;
-      return null;
+      return { kind: 'disabled' };
     }
     store.setUpdaterUnsupported(false);
 
@@ -187,7 +194,7 @@ export async function checkForUpdate(
     if (!update) {
       store.setUpdateInfo(null);
       _pendingUpdate = null;
-      return null;
+      return { kind: 'up-to-date' };
     }
 
     _pendingUpdate = update;
@@ -215,10 +222,13 @@ export async function checkForUpdate(
       });
     }
 
-    return info;
+    return { kind: 'update', info };
   } catch (err) {
     console.warn('[Update] Check failed:', err);
-    return null;
+    return {
+      kind: 'error',
+      updaterUnsupported: useSettingsStore.getState().updaterUnsupported,
+    };
   } finally {
     if (!silent) store.setUpdateChecking(false);
   }

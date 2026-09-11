@@ -5,13 +5,8 @@ import { exists, stat } from '../fsBridge';
 import { sendIMFile } from '../../im/streamingReply';
 import { WECHAT_MAX_OUTBOUND_BYTES } from '../../im/adapters/wechat';
 import { getBaseName } from '../../../utils/pathUtils';
+import { formatFileSize } from '@/utils/formatFileSize';
 import type { IMPlatform } from '../../../types/im';
-
-function formatBytes(n: number): string {
-  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}MB`;
-  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
-  return `${n}B`;
-}
 
 /**
  * send_file — deliver a local file (image / document) to the current IM user.
@@ -67,8 +62,8 @@ export const sendFileTool: ToolDefinition = {
       }
       if (info.size > WECHAT_MAX_OUTBOUND_BYTES) {
         return format(t.sendFileTooLarge, {
-          size: formatBytes(info.size),
-          max: formatBytes(WECHAT_MAX_OUTBOUND_BYTES),
+          size: formatFileSize(info.size),
+          max: formatFileSize(WECHAT_MAX_OUTBOUND_BYTES),
         });
       }
 

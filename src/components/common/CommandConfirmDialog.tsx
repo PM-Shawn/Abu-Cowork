@@ -1,7 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import { AlertTriangle, ShieldAlert, ShieldX, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
 import type { DangerLevel } from '@/core/tools/commandSafety';
@@ -11,12 +11,37 @@ export interface CommandConfirmRequest {
   level: DangerLevel;
   reason: string;
   /** Selects the wording — see ConfirmationInfo.kind. */
-  kind?: 'command' | 'browser' | 'self-extension';
+  kind?: 'command' | 'browser' | 'browser-upload' | 'self-extension';
+  /** Upload confirmations: how many files — see ConfirmationInfo.browserUploadFileCount. */
+  browserUploadFileCount?: number;
   /** Browser confirmations: exact origin of the action, when resolved. */
   browserOrigin?: string;
+  /**
+   * Browser confirmations: the OTHER sites this page embeds as regions the
+   * automation can address — see `ConfirmationInfo.browserEmbeddedOrigins`.
+   * Named in the ask, and granted individually by "always allow".
+   */
+  browserEmbeddedOrigins?: string[];
+  /**
+   * Browser confirmations: the origin of the PAGE, when the action's own
+   * target is a region inside it — see `ConfirmationInfo.browserPageOrigin`.
+   */
+  browserPageOrigin?: string;
   /** Browser confirmations: whether "always allow this site" may be offered. */
   allowPersistentGrant?: boolean;
 }
+
+/**
+ * How many embedded regions one dialog will list — and therefore how many one
+ * click will grant.
+ *
+ * An ordinary portal page can embed dozens of third-party frames (the frame
+ * listing itself only stops at 40), and a prompt that printed all of them
+ * would be asking for consent to a wall of text nobody reads. What is not
+ * listed is not granted: the overflow is counted, said out loud, and left for
+ * a separate ask.
+ */
+const MAX_LISTED_EMBEDDED_ORIGINS = 5;
 
 interface CommandConfirmDialogProps {
   request: CommandConfirmRequest;
@@ -68,6 +93,44 @@ export default function CommandConfirmDialog({
   const config = levelConfig[request.level];
   const Icon = config.icon;
   const isBlocked = request.level === 'block';
+  /**
+   * An upload is a browser action wearing its own wording (acceptance F5).
+   *
+   * Every site-scoped affordance below — the standing grant, the embedded
+   * region list, the block-this-site row — reads the SAME predicate, because
+   * an upload targets an origin exactly the way a click does. Only the
+   * question, the line under it and the confirm verb change; splitting the
+   * predicate instead of naming it is how an upload would have quietly lost
+   * its「禁止此网站」 row.
+   */
+  const isBrowserKind = request.kind === 'browser' || request.kind === 'browser-upload';
+  const isUpload = request.kind === 'browser-upload';
+  /**
+   * The site an upload names in its question: a HOSTNAME, and only that.
+   *
+   * `browserPageOrigin` is present exactly when the action's target is a
+   * region embedded in some other page, so it is what tells the reader that
+   * the files are going somewhere the page merely hosts — the one distinction
+   * that changes whether an upload is what they meant.
+   */
+  const uploadHost = (() => {
+    if (!request.browserOrigin) return t.commandConfirm.browserUploadHostThisSite;
+    let host = request.browserOrigin;
+    try {
+      host = new URL(request.browserOrigin).hostname || request.browserOrigin;
+    } catch {
+      // A target we cannot parse is shown verbatim rather than dropped: the
+      // user still has to be told where the files are going.
+    }
+    return request.browserPageOrigin !== undefined
+      ? format(t.commandConfirm.browserUploadHostEmbedded, { host })
+      : host;
+  })();
+  const uploadCount = request.browserUploadFileCount ?? 0;
+  const uploadTitle = format(
+    uploadCount === 1 ? t.commandConfirm.browserUploadTitleOne : t.commandConfirm.browserUploadTitle,
+    { count: String(uploadCount), host: uploadHost },
+  );
   // "Always allow this site": persist the verdict, then resolve like a normal
   // confirm. The persistent grant is the dialog's own side effect — the
   // approval pipeline stays a plain boolean.
@@ -75,20 +138,96 @@ export default function CommandConfirmDialog({
   // is the floor that high-consequence actions can never rise above. Both must
   // agree before a "forever" button appears.
   const offerSiteGrant =
-    request.kind === 'browser' && !!request.browserOrigin && mayOfferPersistentGrant(request);
+    isBrowserKind && !!request.browserOrigin && mayOfferPersistentGrant(request);
+  /**
+   * The other sites this page embeds as regions the automation can address.
+   *
+   * They are authorized on their OWN account — a grant for the page does not
+   * cover them — so the user has to see them before approving, and "always
+   * allow" writes a separate grant for each. Asking region by region would
+   * turn one form into a wall of prompts; a wildcard would make the grant mean
+   * something the user never agreed to. Naming them here is what keeps both
+   * from happening.
+   */
+  const allEmbeddedOrigins = isBrowserKind
+    // Never the action's own target: for a frame-targeted action that origin
+    // IS one of the page's regions, and counting it twice made the button
+    // promise one more region than the click covers.
+    ? (request.browserEmbeddedOrigins ?? []).filter((o) => o !== request.browserOrigin)
+    : [];
+  /** The regions this dialog names — and, exactly, the ones it grants. */
+  const embeddedOrigins = allEmbeddedOrigins.slice(0, MAX_LISTED_EMBEDDED_ORIGINS);
+  const unlistedEmbeddedCount = allEmbeddedOrigins.length - embeddedOrigins.length;
   const handleAlwaysAllowSite = useCallback(() => {
+    const store = useSettingsStore.getState();
+    /**
+     * Which of these grants the user gave DIRECTLY, and — for the rest — WHICH
+     * PAGE they gave it on.
+     *
+     * `browserPageOrigin` is set only when the action's own target is a region
+     * inside some other page, so its presence is exactly the question "is the
+     * origin this dialog is about the page the user is on?". Absent, the
+     * dialog's own origin IS the page — which makes it both the direct grant
+     * above and the page every merged region grant below is scoped to.
+     *
+     * A region grant is the user allowing a site because the page in front of
+     * them embeds it. That is real consent, and it is consent for THIS page:
+     * it stays valid inside this page's embedded regions whoever is watching,
+     * and is not a standing grant for visiting that site on its own. See
+     * `settingsStore`'s `browserSiteGrantViaEmbed`.
+     */
+    const pageOrigin = request.browserPageOrigin ?? request.browserOrigin;
+    const viaEmbedPage = pageOrigin !== undefined ? { viaEmbedPage: pageOrigin } : undefined;
     if (request.browserOrigin) {
-      useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'allowed');
+      store.setBrowserSitePermission(
+        request.browserOrigin,
+        'allowed',
+        request.browserPageOrigin !== undefined ? viaEmbedPage : undefined,
+      );
+    }
+    // One click, one grant per origin — written individually, never as a
+    // pattern, so what is stored is exactly the list the user just read. The
+    // cap is applied HERE as well as in the list, from the same array: a grant
+    // that reached past what the dialog printed would be a wildcard wearing a
+    // count.
+    // With no page origin to scope them to there is nothing honest to write:
+    // an unscoped grant would be wider than the click, and a made-up page
+    // narrower. Unreachable from the UI (the button only appears once
+    // `request.browserOrigin` is known), and fail-closed if it ever is not.
+    for (const embedded of viaEmbedPage === undefined ? [] : embeddedOrigins) {
+      store.setBrowserSitePermission(embedded, 'allowed', viaEmbedPage);
     }
     onConfirm();
-  }, [request.browserOrigin, onConfirm]);
+  // `embeddedOrigins` is derived from the same request fields each render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request.browserOrigin, request.browserPageOrigin, request.browserEmbeddedOrigins, onConfirm]);
+  // ...and say what the verdict opens. A scripting dialog may never mint this
+  // verdict (Ruling-I: one click must not open both the attended no-dialog door
+  // and the automatic-task scripting door), but the click/fill dialog mints the
+  // very same one — and once the scripting row is set to 'allow', an 'allowed'
+  // site is the entire remaining precondition on both of those doors
+  // (`registry.ts`'s `scriptAllowedByPolicy` / `decideBrowserOperation`). The
+  // grant is unchanged; only the label stops understating it, and only in the
+  // configuration where the second door actually exists.
+  const scriptingPolicy = useSettingsStore((s) => s.browserOperationPolicy.scripting);
+  // Two independent facts about the SAME click: how many sites it covers, and
+  // whether it also opens the scripting door. Composed rather than enumerated
+  // — as a nested ternary the regions branch short-circuited the scripting one
+  // and the warning silently disappeared on any page with an iframe (round-2
+  // F2), which is precisely the configuration where the click grants most.
+  const alwaysAllowSiteBase = embeddedOrigins.length > 0
+    ? format(t.commandConfirm.browserAlwaysAllowSiteWithEmbedded, { count: embeddedOrigins.length })
+    : t.commandConfirm.browserAlwaysAllowSite;
+  const alwaysAllowSiteLabel = scriptingPolicy === 'allow'
+    ? `${alwaysAllowSiteBase}${t.commandConfirm.browserAlwaysAllowSiteScriptsSuffix}`
+    : alwaysAllowSiteBase;
 
   // "Block this site" is the mirror of "always allow", and it is offered
   // wherever an origin is known — including the cases that may NOT be granted
   // permanently (scripting tools, block-level actions). Tightening is always
   // safe to make one click away; the asymmetry is deliberate, since the only
   // way a user can currently stop being asked is to approve.
-  const offerSiteBlock = request.kind === 'browser' && !!request.browserOrigin;
+  const offerSiteBlock = isBrowserKind && !!request.browserOrigin;
   const handleBlockSite = useCallback(() => {
     if (request.browserOrigin) {
       useSettingsStore.getState().setBrowserSitePermission(request.browserOrigin, 'denied');
@@ -128,18 +267,22 @@ export default function CommandConfirmDialog({
             </div>
             <div className="flex-1 min-w-0">
               <h2 className="text-h-md font-semibold text-[var(--abu-text-primary)]">
-                {request.kind === 'browser'
-                  ? t.commandConfirm.browserTitle
-                  : request.kind === 'self-extension'
-                    ? t.commandConfirm.selfExtensionTitle
-                    : t.commandConfirm[config.titleKey]}
+                {isUpload
+                  ? uploadTitle
+                  : request.kind === 'browser'
+                    ? t.commandConfirm.browserTitle
+                    : request.kind === 'self-extension'
+                      ? t.commandConfirm.selfExtensionTitle
+                      : t.commandConfirm[config.titleKey]}
               </h2>
               <p className="text-body text-[var(--abu-text-tertiary)] mt-0.5">
-                {request.kind === 'browser'
-                  ? t.commandConfirm.browserDescription
-                  : request.kind === 'self-extension'
-                    ? t.commandConfirm.selfExtensionDescription
-                    : t.commandConfirm[config.descKey]}
+                {isUpload
+                  ? t.commandConfirm.browserUploadDescription
+                  : request.kind === 'browser'
+                    ? t.commandConfirm.browserDescription
+                    : request.kind === 'self-extension'
+                      ? t.commandConfirm.selfExtensionDescription
+                      : t.commandConfirm[config.descKey]}
               </p>
             </div>
           </div>
@@ -153,6 +296,30 @@ export default function CommandConfirmDialog({
               {request.command}
             </code>
           </div>
+
+          {/* Which PAGE this is happening on. For an action aimed into a
+              third-party region the command line above names the REGION, and
+              without this the user would be approving something for a page the
+              dialog never mentions. */}
+          {isBrowserKind
+            && request.browserPageOrigin
+            && request.browserPageOrigin !== request.browserOrigin && (
+            <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
+              {format(t.commandConfirm.browserPageOrigin, { origin: request.browserPageOrigin })}
+            </p>
+          )}
+
+          {/* The page's embedded regions — named before, not after, the click
+              that would authorize them. Capped: what is not printed here is
+              not granted, and the overflow says so rather than going quiet. */}
+          {embeddedOrigins.length > 0 && (
+            <p className="mt-3 text-minor text-[var(--abu-text-tertiary)] leading-relaxed break-all">
+              {format(t.commandConfirm.browserEmbeddedOrigins, { origins: embeddedOrigins.join('、') })}
+              {unlistedEmbeddedCount > 0 && (
+                <> {format(t.commandConfirm.browserEmbeddedOriginsMore, { count: unlistedEmbeddedCount })}</>
+              )}
+            </p>
+          )}
 
           {/* Reason */}
           {request.reason && (
@@ -186,7 +353,11 @@ export default function CommandConfirmDialog({
                   : 'bg-[var(--abu-text-primary)] hover:bg-[var(--abu-text-secondary)]'
               } text-white`}
             >
-              {offerSiteGrant ? t.commandConfirm.browserAllowOnce : t.commandConfirm.confirm}
+              {isUpload
+                ? (offerSiteGrant
+                    ? t.commandConfirm.browserUploadConfirmOnce
+                    : t.commandConfirm.browserUploadConfirm)
+                : offerSiteGrant ? t.commandConfirm.browserAllowOnce : t.commandConfirm.confirm}
             </Button>
           )}
           {!isBlocked && offerSiteGrant && (
@@ -199,7 +370,7 @@ export default function CommandConfirmDialog({
               className="flex-1 h-10 text-body border-[var(--abu-border-hover)] hover:bg-[var(--abu-bg-muted)]"
               title={request.browserOrigin}
             >
-              {t.commandConfirm.browserAlwaysAllowSite}
+              {alwaysAllowSiteLabel}
             </Button>
           )}
           </div>

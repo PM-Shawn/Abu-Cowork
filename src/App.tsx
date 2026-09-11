@@ -9,23 +9,25 @@ import { traceErrorBoundaryCatch } from '@/core/observability/runtimeTrace';
 import { subscribeShellCrashReports } from '@/core/observability/shellCrashReports';
 import Sidebar from '@/components/sidebar/Sidebar';
 import ChatView from '@/components/chat/ChatView';
+import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
-import ToolboxView from '@/components/settings/ToolboxModal';
+import ExtensionsView from '@/components/settings/ToolboxModal';
+import TeamView from '@/components/team/TeamView';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
 import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
+import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync';
 import RightPanel from '@/components/panel/RightPanel';
-import { usePreviewStore } from '@/stores/previewStore';
+import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
 import ToastContainer from '@/components/common/ToastContainer';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
-import { installLargeWriteGuard } from '@/core/agent/hooks/largeWriteGuard';
 import { initPlatform } from '@/utils/platform';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
@@ -67,21 +69,20 @@ import { installNoticeFocusSync } from '@/core/notice/focusSync';
 import { drainInbox } from '@/core/notice/inbox';
 import { startPetStatusBridge, resyncPetStatus } from '@/core/pet/petStatusBridge';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
+import { startTeamStallWatchdog } from '@/core/team/stallWatchdog';
+import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
 import { triggerEngine } from '@/core/trigger/triggerEngine';
 import { imChannelRouter } from '@/core/im/channelRouter';
 import { startTraySync, stopTraySync } from '@/core/im/traySync';
 import { startInboundDispatcher, stopInboundDispatcher } from '@/core/im/inboundDispatcher';
+import { installImApprovalResolver } from '@/core/im/pendingApprovals';
 import { startFeishuWsManager, stopFeishuWsManager } from '@/core/im/feishuWsManager';
 import { startWeChatManager, stopWeChatManager } from '@/core/im/wechatConnectionManager';
 import { loadIMPlugins } from '@/core/im/pluginLoader';
 import { stopAllHeartbeats } from '@/core/im/pluginHeartbeat';
 import { reconcileIMSessions } from '@/core/im/sessionReconcile';
-import { initMCPStoreSync, cleanupMCPStoreSync } from '@/stores/mcpStore';
 import { provisionFirstPartyMCPServers } from '@/core/agent/mcpDiscovery';
-import {
-  initBuiltinBrowserRuntime,
-  cleanupBuiltinBrowserRuntime,
-} from '@/core/browser/builtinBrowserRuntime';
+import { startCapabilityRuntimes } from '@/core/plugin/bootstrapRuntimes';
 import { initFileWatchers, stopAllWatchers } from '@/core/agent/fileWatcher';
 import { startRegistryWatcher, stopRegistryWatcher } from '@/core/skill/registryWatcher';
 import { getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest } from '@/core/agent/permissionBridge';
@@ -162,8 +163,12 @@ function App() {
   // Preview split (TRAE-style): when the workspace panel has WIDE content
   // (preview/browser/terminal — not the narrow summary tab), the chat column
   // takes a stable, resizable width and the workspace flex-fills the rest.
-  const hasAnyTab = usePreviewStore((s) => s.tabs.length > 0);
-  const hasWideContent = usePreviewStore((s) => s.tabs.some((t) => t.kind !== 'summary'));
+  // `visibleTabs`: a browser tab adopted for another conversation stays alive
+  // in the store but must not size or reveal THIS conversation's panel.
+  const hasAnyTab = useHasTabs();
+  const hasWideContent = usePreviewStore(
+    (s) => s.tabs.some((t) => t.kind !== 'summary' && isTabVisibleFor(t, s.currentConversationId)),
+  );
   const chatWidth = usePreviewStore((s) => s.chatWidth);
   const viewportWidth = useViewportWidth();
   const showTodosInbox = useLabsFlag(LABS_TODOS_INBOX);
@@ -323,14 +328,47 @@ function App() {
   // WebContentsView into the normal workspace. Keeping this in the existing
   // BrowserTab UI gives users a visible address bar, history controls, and a
   // close button while the agent operates the page.
+  //
+  // `ownerId` is the conversation main created the view for. It is what keeps a
+  // background conversation's adoption out of whatever conversation happens to
+  // be on screen; absent (legacy owner) means "any conversation may see it".
   useEffect(() => {
     if (!isTauriEnv()) return;
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<{ id: string; url: string }>('browser://automation-open', (event) => {
-      const { id, url } = event.payload ?? {};
+    listen<{ id: string; url: string; ownerId?: string }>('browser://automation-open', (event) => {
+      const { id, url, ownerId } = event.payload ?? {};
       if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
-      usePreviewStore.getState().openBrowser(typeof url === 'string' ? url : 'about:blank', id);
+      usePreviewStore.getState().openBrowser(
+        typeof url === 'string' ? url : 'about:blank',
+        id,
+        typeof ownerId === 'string' && ownerId ? ownerId : undefined,
+      );
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // ...and the matching withdrawal. Main cancels an adoption whose run was
+  // stopped, or whose owning conversation was deleted, and can no longer let
+  // this tab exist: the invitation was already sent, so without this the
+  // renderer would keep (or create) a tab record whose owner conversation is
+  // gone — invisible in every strip, closable from none, and still mounted.
+  // Dropping the record is also what destroys any native view already built for
+  // it (previewStore commits every removal through closeBrowserViews).
+  useEffect(() => {
+    if (!isTauriEnv()) return;
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen<{ id: string }>('browser://automation-cancel', (event) => {
+      const { id } = event.payload ?? {};
+      if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
+      usePreviewStore.getState().closeAdoptedBrowserTab(id);
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;
@@ -354,7 +392,7 @@ function App() {
         (conversationId && store.conversations[conversationId] ? conversationId : null) ??
         store.activeConversationId ??
         store.createConversation(null);
-      runAgentLoopDispatched(convId, text).catch((err) => {
+      runAgentLoopDispatched(convId, text, { initiatedBy: 'user' }).catch((err) => {
         console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });
     }).then((fn) => {
@@ -376,6 +414,25 @@ function App() {
     listen('pet-open-state-changed', (event) => {
       const { open } = event.payload as { open: boolean };
       useSettingsStore.getState().setPetOpen(open);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenFn = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlistenFn?.();
+    };
+  }, []);
+
+  // Pet window reports where it was left; this window owns the persisted
+  // value (the pet's own copy of the settings store is stale — see
+  // core/pet/petPositionSync.ts).
+  useEffect(() => {
+    let unlistenFn: (() => void) | null = null;
+    let cancelled = false;
+    listen(PET_POSITION_EVENT, (event) => {
+      const position = parsePetPosition(event.payload);
+      if (position) useSettingsStore.getState().setPetPosition(position);
     }).then((fn) => {
       if (cancelled) fn();
       else unlistenFn = fn;
@@ -431,11 +488,8 @@ function App() {
 
   useEffect(() => {
     registerBuiltinTools();
-    installLargeWriteGuard();
-    refreshDiscovery();
     provisionFirstPartyMCPServers();
-    initMCPStoreSync();
-    initBuiltinBrowserRuntime();
+    const stopCapabilityRuntimes = startCapabilityRuntimes();
 
     // Hydrate API keys from the encrypted secret store. During Phase 2 the
     // plaintext apiKey is still persisted via localStorage as a fallback,
@@ -524,8 +578,7 @@ function App() {
     });
 
     return () => {
-      void cleanupBuiltinBrowserRuntime();
-      cleanupMCPStoreSync();
+      stopCapabilityRuntimes();
       stopAllWatchers();
       stopRegistryWatcher();
       import('@/stores/skillDraftsStore').then(({ stopDraftsSweeper }) => stopDraftsSweeper()).catch(() => {});
@@ -542,6 +595,7 @@ function App() {
       schedulerEngine.start();
       triggerEngine.start();
       imChannelRouter.start();
+      startTeamStallWatchdog();
       reconcileIMSessions();
       // Migrate old memory systems (entries.json / memory.md) to memdir (.md files),
       // then run the one-shot secret sweep over existing memories — global dir,
@@ -608,10 +662,19 @@ function App() {
             isRecoveryNotice: true,
           });
           await clearCheckpoint(cp.conversationId);
+          // A team run continues on its own from where it stopped (block R);
+          // an ordinary conversation still waits for the user.
+          void resumeTeamRunAfterRestart(cp.conversationId, cp.turnCount);
           // Do NOT auto-navigate — app always starts on welcome screen.
           // The recovery message is visible when user clicks the conversation in sidebar.
         }
       }).catch(() => {});
+      // Give unattended runs a way to ask. Until this is installed the
+      // confirmation seam keeps its fail-closed default ("nobody to ask, so
+      // no"), so this must run alongside the inbound dispatcher that delivers
+      // the answers — an approval channel with no listener would hang every
+      // request until it timed out.
+      installImApprovalResolver();
       startInboundDispatcher();
       startTraySync();
       startFeishuWsManager();
@@ -859,7 +922,8 @@ function App() {
                 style={previewSplit ? { width: previewChatWidth } : undefined}
               >
                 {viewMode === 'automation' && <AutomationView />}
-                {viewMode === 'toolbox' && <ToolboxView />}
+                {viewMode === 'extensions' && <ExtensionsView />}
+                {viewMode === 'team' && <TeamView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}
                 {(viewMode === 'chat' || !viewMode) && (
@@ -879,6 +943,8 @@ function App() {
         {mac && <WindowTitleBar {...windowTitleBarProps} />}
 
         <ToastContainer />
+
+        <ImageLightbox />
 
         <ConversationSearchModal open={searchModalOpen} onClose={() => setSearchModalOpen(false)} />
 

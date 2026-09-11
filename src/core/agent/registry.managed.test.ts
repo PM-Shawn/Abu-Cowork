@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AgentRegistry } from './registry'
+import { AgentRegistry, getBuiltinAgentNames } from './registry'
 import type { SubagentDefinition } from '@/types'
 
 function definition(ready = true): SubagentDefinition {
@@ -45,5 +45,41 @@ describe('managed Agent registry', () => {
     expect(registry.hasLocal('org-reviewer')).toBe(true)
     expect(registry.getAgent('org-reviewer')?.systemPrompt).toBe('Local prompt.')
     expect(registry.getAvailableAgents().filter(item => item.name === 'org-reviewer')).toHaveLength(1)
+  })
+})
+
+describe('builtin Agent tool boundaries', () => {
+  const registry = new AgentRegistry()
+  ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+
+  it.each([
+    ['高级开发工程师', 'abu-browser__*'],
+    ['高级开发工程师', 'abu-browser-bridge__*'],
+    ['产品经理', 'abu-browser__*'],
+    ['产品经理', 'abu-browser-bridge__*'],
+    ['HR 招聘官', 'abu-browser__*'],
+    ['HR 招聘官', 'abu-browser-bridge__*'],
+    ['公众号编辑', 'write_file'],
+    ['公众号编辑', 'edit_file'],
+    ['公众号编辑', 'list_directory'],
+    ['数据分析师', 'abu-browser__*'],
+    ['数据分析师', 'abu-browser-bridge__*'],
+  ])('%s retains the declared %s capability', (name, tool) => {
+    expect(registry.getAgent(name)?.tools).toContain(tool)
+  })
+})
+
+describe('getBuiltinAgentNames', () => {
+  it('lists exactly the agents registerBuiltins registers', () => {
+    // The plugin installer refuses a package agent whose name is a built-in,
+    // and it reads that answer from this set instead of building a registry.
+    // A built-in added to `registerBuiltins` but not to the set would leave a
+    // name a package could quietly take over, so the two are pinned together.
+    const registry = new AgentRegistry()
+    ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+
+    expect([...getBuiltinAgentNames()].sort()).toEqual(
+      registry.getAvailableAgents().map(agent => agent.name).sort(),
+    )
   })
 })

@@ -8,10 +8,12 @@ import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { useI18n, format } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
@@ -38,9 +40,20 @@ function extractAttachments(text: string): { cleanText: string; attachmentPaths:
 }
 
 /** Image thumbnail that loads from base64 data, disk filePath, or snapshot fallback */
-function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 'image' }> }) {
+type UserImageBlock = Extract<MessageContent, { type: 'image' }>;
+
+function UserImageThumbnail({
+  image,
+  images,
+  index,
+  messageId,
+}: {
+  image: UserImageBlock;
+  images: UserImageBlock[];
+  index: number;
+  messageId: string;
+}) {
   const { t } = useI18n();
-  const openPreview = usePreviewStore.getState().openPreview;
   const conversationId = useChatStore((s) => s.activeConversationId) ?? undefined;
   const workspacePath = useChatStore((s) => {
     const id = s.activeConversationId;
@@ -48,7 +61,6 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
   });
   const hasData = !!image.source.data;
   const [diskSrc, setDiskSrc] = useState<string | null>(null);
-  const [effectivePath, setEffectivePath] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
 
   useEffect(() => {
@@ -65,7 +77,6 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
         setExpired(true);
         return;
       }
-      setEffectivePath(resolved.path);
       try {
         const url = await loadLocalImage(resolved.path);
         if (cancelled) { URL.revokeObjectURL(url); return; }
@@ -101,13 +112,28 @@ function UserImageThumbnail({ image }: { image: Extract<MessageContent, { type: 
   }
 
   return (
-    <div
-      className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-border-subtle)] cursor-pointer hover:border-[var(--abu-border-hover)] transition-colors"
-      onClick={() => openPreview(effectivePath || image.filePath || src)}
+    <button
+      type="button"
+      className="w-8 h-8 rounded overflow-hidden border border-[var(--abu-border-subtle)] hover:border-[var(--abu-border-hover)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
+      onClick={(event) => {
+        useImageLightboxStore.getState().open(
+          images.map((item, imageIndex) => ({
+            id: `${messageId}:image:${imageIndex}`,
+            data: item.source.data,
+            mediaType: item.source.media_type,
+            filePath: item.filePath,
+            conversationId,
+            workspacePath,
+          })),
+          index,
+          event.currentTarget,
+        );
+      }}
       title={t.chat.clickToViewFull}
+      aria-label={t.chat.clickToViewFull}
     >
       <img src={src} alt="" className="w-full h-full object-cover" />
-    </div>
+    </button>
   );
 }
 
@@ -460,7 +486,6 @@ export default function MessageBubble({
 
   const handleSaveEdit = async (newContent: string) => {
     if (!convId) return;
-    // Preserve image blocks from original message content
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
     setIsEditing(false);
 
@@ -471,7 +496,11 @@ export default function MessageBubble({
       // edited resend stays on the same agent / skill — otherwise the message
       // falls back to the default `general` route and the expert is lost.
       const routedContent = reattachRoutingPrefix(newContent, message);
-      await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'edit-resend' });
+      await runAgentLoopDispatched(convId, routedContent, {
+        initiatedBy: 'user',
+        ...(imageAttachments ? { images: imageAttachments } : {}),
+      });
     };
 
     // `message` is a user message and, per the invariant documented on
@@ -504,10 +533,11 @@ export default function MessageBubble({
 
     const proceed = async () => {
       useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
       await runAgentLoopDispatched(
         convId,
         routedContent,
-        imageAttachments ? { images: imageAttachments } : undefined,
+        { initiatedBy: 'user', ...(imageAttachments ? { images: imageAttachments } : {}) },
       );
     };
 
@@ -556,13 +586,16 @@ export default function MessageBubble({
       // turn stays on the same route — the user message stored content is
       // post-routing cleanInput, so the prefix is otherwise lost.
       const routedContent = reattachRoutingPrefix(userContent, targetUserMsg);
-      // Preserve image blocks from original user message
       const imageAttachments = rebuildImageAttachments(targetUserMsg.content, `regen-${Date.now()}`);
 
       const proceed = async () => {
         // Delete from user message onwards and regenerate
         useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
-        await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
+        announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });
+        await runAgentLoopDispatched(convId, routedContent, {
+          initiatedBy: 'user',
+          ...(imageAttachments ? { images: imageAttachments } : {}),
+        });
       };
 
       const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);
@@ -597,14 +630,20 @@ export default function MessageBubble({
     // Extract file attachments from user message text
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
-      <div className="flex justify-end w-full group">
+      <div className="flex justify-end w-full group" data-message-id={message.id}>
         {rewindConfirmDialog}
         <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
           {/* Image thumbnails — above the text bubble */}
           {imageBlocks.length > 0 && !isEditing && (
             <div className="flex flex-wrap justify-end gap-1.5">
               {imageBlocks.map((img, idx) => (
-                <UserImageThumbnail key={idx} image={img} />
+                <UserImageThumbnail
+                  key={`${message.id}:image:${idx}`}
+                  image={img}
+                  images={imageBlocks}
+                  index={idx}
+                  messageId={message.id}
+                />
               ))}
             </div>
           )}
@@ -681,7 +720,7 @@ export default function MessageBubble({
                   communicates that work is in progress; only actionable failures belong
                   under the user's message. */}
               {hasRunFailure && (
-                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]" title={message.runError}>
+                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
                   <span>
                     {message.runState === 'failed' && t.chat.runFailed}
                     {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
@@ -691,6 +730,31 @@ export default function MessageBubble({
                       <RefreshCw className="h-3 w-3" />
                       {t.chat.runRetry}
                     </Button>
+                  )}
+                </div>
+              )}
+              {hasRunFailure && message.runErrorDetails && (
+                <div
+                  role="alert"
+                  className="max-w-2xl space-y-1.5 rounded-lg border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2 text-minor text-[var(--abu-text-primary)]"
+                >
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-caption">
+                    <span>HTTP {message.runErrorDetails.status}</span>
+                    {message.runErrorDetails.error_type && (
+                      <span className="break-all">
+                        error_type: <span>{message.runErrorDetails.error_type}</span>
+                      </span>
+                    )}
+                    {message.runErrorDetails.traceId && (
+                      <span className="break-all">
+                        traceId: <span>{message.runErrorDetails.traceId}</span>
+                      </span>
+                    )}
+                  </div>
+                  {message.runErrorDetails.summary && (
+                    <p className="break-words text-[var(--abu-text-secondary)]">
+                      {message.runErrorDetails.summary}
+                    </p>
                   )}
                 </div>
               )}
@@ -728,7 +792,7 @@ export default function MessageBubble({
         )}
         {/* Tool calls - grouped in a single collapsible block */}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <ToolCallsGroup toolCalls={message.toolCalls} />
+          <ToolCallsGroup toolCalls={message.toolCalls} conversationId={convId} />
         )}
         {/* Inline images from non-CU tool results (e.g. read_file QR codes) */}
         {message.toolCalls && message.toolCalls.length > 0 && (
@@ -783,7 +847,7 @@ export default function MessageBubble({
         )}
         {/* Tool calls - grouped in a single collapsible block */}
         {message.toolCalls && message.toolCalls.length > 0 && (
-          <ToolCallsGroup toolCalls={message.toolCalls} />
+          <ToolCallsGroup toolCalls={message.toolCalls} conversationId={convId} />
         )}
         {/* Inline images from non-CU tool results (e.g. read_file QR codes) */}
         {message.toolCalls && message.toolCalls.length > 0 && (

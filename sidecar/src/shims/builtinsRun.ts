@@ -11,14 +11,10 @@
  * exact redirect target, per this batch's coordinator). This shim redirects
  * the WHOLE module specifier, same as every other `SHIM_TARGETS` entry.
  *
- * Consumed export surface verified precisely (not guessed): `grep -n
- * "tools/builtins" src/core/agent/{agentLoop,toolExecutor,eventRouter}.ts`
- * → exactly 3 names — `clearAllSkillHooks` (agentLoop.ts) and
+ * The live sidecar import surface is
+ * `clearSkillHooksByLoop` (agentLoop.ts) plus
  * `setComputerUseBatchMode`/`setSkipAutoScreenshot` (toolExecutor.ts).
- * `clearSkillHooksByConversation` (builtins.ts's other re-export from
- * `agentTools.ts`) has exactly one importer repo-wide —
- * `src/stores/chatStore.ts` (shell-only, never reaches the sidecar bundle) —
- * so it's correctly omitted rather than speculatively duplicated.
+ * `clearAllSkillHooks` remains as a compatibility export for older callers.
  *
  * ── `setComputerUseBatchMode`/`setSkipAutoScreenshot` → real forwarding
  * shim ────────────────────────────────────────────────────────────────────
@@ -33,50 +29,11 @@
  * setSkipAutoScreenshot(args[0] as boolean)`) — already fully covered
  * shell-side, no new wiring needed for these two.
  *
- * ── `clearAllSkillHooks` → real forwarding shim, NEW shell-side wiring
- * required (flagged prominently) ─────────────────────────────────────────
- * Read the real implementation (`agentTools.ts:20-30`): a module-level
- * `Map<string, () => void>` (`skillHookCleanups`), populated ONLY inside the
- * `use_skill` tool's `execute()` body (via `activateSkillHooks(skill)` from
- * `../../skill/skillHooks`). Since ALL tool execution — including
- * `use_skill`'s — always reverses to the shell via `tool.invoke` (never runs
- * in-process sidecar-side, per this whole batch's established design), a
- * purely LOCAL sidecar-side reimplementation of `skillHookCleanups` would be
- * permanently empty: nothing sidecar-side ever populates it, so
- * `clearAllSkillHooks()` would be a silent, always-a-no-op stub — exactly
- * the "silent no-op for behavior-bearing code" pattern this batch forbids
- * (skill-scoped PreToolUse/PostToolUse hooks activated during a sidecar-run
- * main loop would never get cleaned up at loop end, leaking across turns).
- *
- * So this forwards a NEW reverse NOTIFICATION, `skillHooks.clearAll`
- * (`{ runId }`, dual-context runId resolution — same pattern as
- * `permissionBridgeRun.ts`'s `resolveRunId()`), to the shell's REAL
- * `clearAllSkillHooks` (`agentTools.ts`'s real Map, which IS correctly
- * populated — `use_skill`'s execute() runs shell-side). ⚠️ **This requires a
- * new shell-side handler that does NOT exist yet** —
- * `src/core/agent/agentLoopRunner.ts` has no `skillHooks.clearAll` entry in
- * its `ensureHandlersRegistered()` as of this writing. Per this card's
- * explicit "don't touch agentLoopRunner.ts unless necessary, and describe
- * precisely if you do" instruction, and given a concurrent session is
- * actively wiring `build-sidecar.mjs`/related files in parallel with this
- * batch, the safest choice is to document the exact one-handler addition
- * needed rather than editing that file myself:
- *
- * ```ts
- * // in agentLoopRunner.ts's ensureHandlersRegistered():
- * onSidecarNotification('skillHooks.clearAll', handleSkillHooksClearAll);
- *
- * function handleSkillHooksClearAll(rawParams: unknown): void {
- *   const params = rawParams as { runId?: unknown } | null;
- *   if (!params || typeof params.runId !== 'string') return;
- *   clearAllSkillHooks(); // import { clearAllSkillHooks } from '../tools/builtins';
- * }
- * ```
- *
- * Mirrors `plan.clear`'s exact shape (single param, single real function
- * call, no allowlist needed since there's only one action) — `runId` is
- * informational only, same discipline as `approval.drain`'s, since
- * `skillHookCleanups` is a single GLOBAL map, not per-run.
+ * Skill hooks live in the shell because `use_skill` executes there. Both
+ * cleanup exports therefore forward the legacy `skillHooks.clearAll` wire
+ * notification with only the trusted run-context id. The shell handler maps
+ * that id back to its session-owned conversation and drops unknown/stale ids;
+ * the sidecar's conversation argument is deliberately not authority-bearing.
  */
 import { sendNotification } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
@@ -96,17 +53,20 @@ function resolveRunId(): string {
   }
 }
 
-/**
- * ⚠️ See module doc — requires a NOT-YET-BUILT shell-side
- * `skillHooks.clearAll` handler in `agentLoopRunner.ts` to actually take
- * effect. The notification is sent regardless (fire-and-forget, matching
- * every other `cu.setState`/`approval.drain`-style forward in this batch);
- * until that handler exists, this notification is silently dropped by
- * `sidecarManager.ts`'s "no registered handler for this notification
- * method" no-op path (same as any unrecognized notification method today).
- */
-export function clearAllSkillHooks(): void {
+function notifySkillHookCleanup(): void {
   sendNotification('skillHooks.clearAll', { runId: resolveRunId() });
+}
+
+export function clearSkillHooksByConversation(_conversationId: string): void {
+  notifySkillHookCleanup();
+}
+
+export function clearSkillHooksByLoop(_loopId: string): void {
+  notifySkillHookCleanup();
+}
+
+export function clearAllSkillHooks(): void {
+  notifySkillHookCleanup();
 }
 
 function setState(action: string, value: boolean): void {

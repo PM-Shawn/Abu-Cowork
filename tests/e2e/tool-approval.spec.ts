@@ -11,6 +11,7 @@ import path from 'node:path';
 import type { ElectronApplication, Page } from 'playwright';
 import {
   closeAbuElectron,
+  configureLocalMockProvider,
   createElectronDataRoot,
   launchAbuElectron,
   removeElectronDataRoot,
@@ -19,9 +20,29 @@ import {
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
+/**
+ * The task-local capability dialog keeps the "start setup" wording as its
+ * own accessible name (`settings.capabilityChromeSetupTitle`), but since the
+ * Capabilities rebuild the page it hosts is the ordinary Chrome capability
+ * detail page, headed by the capability itself
+ * (`settings.capabilityMyChrome`) rather than by the setup phrase. Assert
+ * both, so the test still proves it is the Chrome setup that opened.
+ */
+const CAPABILITY_SETUP_DIALOG = /^(连接我的 Chrome|Connect My Chrome)$/;
+const MY_CHROME_HEADING = /^(我的 Chrome|My Chrome)$/;
 const TEST_API_KEY = 'abu-e2e-tool-approval-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-e2e-tool-approval-model';
 const PROVIDER_ID = 'abu-e2e-tool-approval-provider';
+const LOCAL_MOCK_PROVIDER_OPTIONS = {
+  apiKey: TEST_API_KEY,
+  modelId: TEST_MODEL_ID,
+  modelLabel: 'Abu E2E deterministic tool model',
+  permissionMode: 'standard',
+  providerId: PROVIDER_ID,
+  providerName: 'Abu E2E loopback tool provider',
+  supportsReasoning: null,
+  supportsTools: true,
+} as const;
 
 interface MockRequest {
   authorization: string | undefined;
@@ -180,48 +201,6 @@ async function waitForApp(page: Page): Promise<void> {
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
-async function configureLocalMockProvider(page: Page, baseUrl: string): Promise<void> {
-  await page.evaluate(({ baseUrl, testApiKey, testModelId, providerId }) => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    const state = persisted.state;
-
-    state.providers = [{
-      id: providerId,
-      source: 'custom',
-      name: 'Abu E2E loopback tool provider',
-      enabled: true,
-      apiFormat: 'openai-compatible',
-      baseUrl,
-      apiKey: testApiKey,
-      models: [{
-        id: testModelId,
-        label: 'Abu E2E deterministic tool model',
-        isCustom: true,
-        declaredCapabilities: { supportsTools: true },
-      }],
-      defaultModelId: testModelId,
-      status: 'verified',
-      sortOrder: 0,
-      userAdded: true,
-      declaredCapabilities: { supportsTools: true },
-    }];
-    state.activeModel = { providerId, modelId: testModelId };
-    state.recentModels = [];
-    state.favoriteModels = [];
-    state.permissionMode = 'standard';
-    state.guideShown = true;
-    state.guideOpen = false;
-    state.hasAcknowledgedDisclaimer = true;
-    state.hasRunSensitiveAudit_v015 = true;
-
-    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
-  }, { baseUrl, testApiKey: TEST_API_KEY, testModelId: TEST_MODEL_ID, providerId: PROVIDER_ID });
-  await page.reload();
-  await waitForApp(page);
-}
-
 function dialogTitle(page: Page) {
   return page.getByRole('heading', { name: /^(操作确认|Confirm Action)$/ });
 }
@@ -345,7 +324,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
 
     const prompt = `abu-e2e-confirm-command-${randomUUID()}`;
     await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(prompt);
@@ -391,7 +370,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
 
     await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(`abu-e2e-cancel-command-${randomUUID()}`);
     await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
@@ -444,7 +423,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
 
     await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(
       `abu-e2e-native-browser-approval-${randomUUID()}`,
@@ -497,7 +476,7 @@ test.describe.serial('Electron run_command approval E2E', () => {
     app = launched.app;
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
-    await configureLocalMockProvider(page, mock.baseUrl);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
 
     await page.getByPlaceholder(CHAT_PLACEHOLDER).fill(
       `abu-e2e-task-local-capability-${randomUUID()}`,
@@ -507,8 +486,9 @@ test.describe.serial('Electron run_command approval E2E', () => {
     await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
     const setupDialog = page.getByRole('dialog');
     await expect(setupDialog).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(setupDialog).toHaveAttribute('aria-label', CAPABILITY_SETUP_DIALOG);
     await expect(
-      setupDialog.getByText(/^(连接我的 Chrome|Connect My Chrome)$/),
+      setupDialog.getByRole('heading', { name: MY_CHROME_HEADING }),
     ).toBeVisible();
 
     await setupDialog.getByRole('button', {

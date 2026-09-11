@@ -5,13 +5,23 @@ on:
     branches: [dev, main]
   pull_request:
     branches: [main, dev]
+    # Re-evaluate body/label-based gate exemptions when their inputs change.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Least privilege, job-scoped: only this job's coverage comment and junit
+    # check need write on PRs/checks; nothing here needs contents write.
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Fail fast if closed-source enterprise modules leaked into this public
       # repo (open-core boundary). Runs before npm so a build/test pass can't
@@ -29,7 +39,21 @@ jobs:
 
       - name: Install dependencies
         id: install
-        run: npm ci
+        # abu-browser-bridge is its own package; its query_js tests build the
+        # sandbox worker with esbuild resolving linkedom/ses from the bridge's
+        # local node_modules, so it needs an install of its own.
+        # abu-chrome-extension likewise: `npm run typecheck` compiles it, and its
+        # `chrome.*` globals come from @types/chrome in the extension's own
+        # node_modules (typecheck:browser-extension in package.json).
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci)
+
+      # The quarantine SLA meta-test reads this so the 28-day window advances
+      # on every CI run without any Date.now() inside the test.
+      - name: Set quarantine SLA as-of date
+        run: echo "QUARANTINE_ASOF=$(date -u +%F)" >> "$GITHUB_ENV"
 
       # Gate steps run independently of EACH OTHER (so one red stage doesn't mask
       # another) but are skipped when install failed or the job was cancelled —
@@ -49,13 +73,87 @@ jobs:
       # and add unnecessary latency.
 
       - name: Test with coverage
+        id: test
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run test:coverage
 
+      - name: Changed-lines coverage (80%)
+        if: ${{ github.event_name == 'pull_request' && !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          DIFF_BASE: ${{ github.event.pull_request.base.sha }}
+        run: npm run coverage:changed -- --base "$DIFF_BASE"
+
+      - name: Test-infra scripts (node:test)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run test:infra
+
+      - name: Electron host UI tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run electron:host-ui-test
+
+      - name: TESTING.md inventory is up to date
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run test:inventory:check
+
+      # ── Reports: always published, even when the test step is red ──
+      - name: Upload coverage report
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+      - name: Upload test results (junit)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 14
+
+      # The two steps below write through GITHUB_TOKEN (checks / PR comments).
+      # That token is read-only on Dependabot PRs (same-repo branch, but
+      # dependabot's token) and on fork PRs, so the actions would fail with
+      # "Resource not accessible by integration" and red the whole job — which
+      # would also silently disable dependabot-auto-merge (it waits on `check`).
+      # Skip them there; the artifact uploads and job summary need no token.
+      - name: Test report (junit → check)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: dorny/test-reporter@v2
+        with:
+          name: Vitest results
+          path: test-results/junit.xml
+          reporter: java-junit
+          fail-on-error: false
+          # Default (true) posts the report to the run's job summary and creates no
+          # check run, so it never shows up in the PR's checks list.
+          use-actions-summary: false
+
+      - name: Coverage summary (job summary)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          node -e '
+            const s = require("./coverage/coverage-summary.json").total;
+            const row = (k) => `| ${k} | ${s[k].pct}% (${s[k].covered}/${s[k].total}) |`;
+            console.log("### Coverage\n\n| Metric | Value |\n|---|---|");
+            for (const k of ["statements","branches","functions","lines"]) console.log(row(k));
+          ' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Coverage comment on PR
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: davelosert/vitest-coverage-report-action@v2
+        with:
+          json-summary-path: coverage/coverage-summary.json
+          json-final-path: coverage/coverage-final.json
+          file-coverage-mode: changes
+
       - name: Build frontend
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build
 
       - name: Verify Chrome extension bundle is in sync with source
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         shell: bash
         run: |
           # Rebuild the extension from source in a clean env, then compare the
@@ -63,7 +161,7 @@ jobs:
           # Any drift means someone changed abu-chrome-extension/src/ (or
           # abu-browser-shared/types.ts) without rebuilding + syncing the
           # committed artifact — so the released app would ship a stale extension.
-          (cd abu-chrome-extension && npm ci && npm run build)
+          npm run build:electron-browser-runtime
 
           # .map files excluded: non-behavioral, sourcemap paths can have minor
           # environmental variance. .js/.html/manifest.json are what users run.
@@ -82,3 +180,71 @@ jobs:
             exit 1
           fi
           echo "OK: Chrome extension bundle matches source"
+
+          # Only stamp the tracked copy after the comparison succeeds. Copying
+          # resources here would hide precisely the drift this gate must catch.
+          node --input-type=module -e "import { recordSourceDigest } from './scripts/check-browser-artifacts.mjs'; recordSourceDigest('src-tauri/browser-extension/content.js');"
+          npm run check:browser-artifacts
+
+  # Windows unit tests — ADVISORY for now. This suite has never run on Windows
+  # in CI; the first runs will surface path-sensitive tests. Triage them
+  # (skipIf(process.platform === 'win32') + issue) and then drop
+  # continue-on-error in a follow-up PR. See docs/abu-testing-optimization-plan-2026-09.md A4.
+  test-windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        shell: bash
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
+      - name: Set quarantine SLA as-of date
+        shell: bash
+        run: echo "QUARANTINE_ASOF=$(date -u +%F)" >> "$GITHUB_ENV"
+      # The config's junit reporter writes test-results/junit.xml; the artifact
+      # name (test-results-windows) disambiguates it from the Linux run. A CLI
+      # --outputFile would be inert here: in Vitest 4.1 a named --reporter keeps
+      # its config-file options, and JUnitReporter reads options.outputFile first.
+      - name: Unit tests (no coverage)
+        shell: bash
+        run: npx vitest run
+      - name: Upload Windows test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-windows
+          path: test-results/
+          retention-days: 14
+
+  # Dependency vulnerability scan. Fails on any high/critical production
+  # finding that is not covered by an unexpired entry in
+  # .github/npm-audit-allowlist.json (scripts/npm-audit-check.mjs) — the
+  # allowlist exists because some advisories have no patched version at all.
+  # Not a required status check yet (branch protection only requires `check`).
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: npm audit (production deps, high+, allowlist-aware)
+        run: |
+          # npm audit exits non-zero whenever it finds anything; the checker decides.
+          npm audit --omit=dev --json > audit.json || true
+          node scripts/npm-audit-check.mjs audit.json | tee -a "$GITHUB_STEP_SUMMARY"
+          status=${PIPESTATUS[0]}
+          exit "$status"

@@ -28,6 +28,7 @@ import {
   appRegionAt,
   closeAbuElectron,
   createElectronDataRoot,
+  dismissFirstRunOverlays,
   launchAbuElectron,
   removeElectronDataRoot,
   type ElectronDataRoot,
@@ -41,23 +42,6 @@ const BAND_Y = 25;
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
-async function dismissFirstRunOverlays(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    Object.assign(persisted.state, {
-      guideShown: true,
-      guideOpen: false,
-      hasAcknowledgedDisclaimer: true,
-      hasRunSensitiveAudit_v015: true,
-    });
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await page.reload();
-  await waitForApp(page);
 }
 
 let app: ElectronApplication | undefined;
@@ -112,10 +96,10 @@ test.describe.serial('Electron macOS title band', () => {
 
     // A second view, reached through its own layout path (TopTabNav), so the
     // fix is not silently welcome-screen-only.
-    await page.getByRole('button', { name: /^(工具箱|Toolbox)$/ }).click();
-    await expect(page.getByRole('button', { name: /^(工具箱|Toolbox)$/ })).toBeVisible();
+    await page.getByRole('button', { name: /^(扩展|Extensions)$/ }).click();
+    await expect(page.getByRole('button', { name: /^(扩展|Extensions)$/ })).toBeVisible();
     for (const x of cardXs) {
-      expect(await appRegionAt(page, x, BAND_Y), `toolbox view at x=${x}`).toBe('drag');
+      expect(await appRegionAt(page, x, BAND_Y), `extensions view at x=${x}`).toBe('drag');
     }
   });
 });

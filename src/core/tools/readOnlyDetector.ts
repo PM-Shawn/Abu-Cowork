@@ -105,6 +105,9 @@ const WRITE_INDICATORS: RegExp[] = [
   /\bmv\s/, /\bcp\s/, /\bchmod\s/, /\bchown\s/,
   /\bsudo\s/, /\bkill\s/, /\bpkill\s/, /\bkillall\s/,
   /\btee\s/, // tee writes to file
+  /\b(?:Set|Add|Clear)-Content\b/i,
+  /\b(?:New|Remove|Copy|Move)-Item\b/i,
+  /\bOut-File\b/i,
 
   // Package management (write operations)
   /\bnpm\s+install\b/, /\bnpm\s+uninstall\b/, /\bnpm\s+update\b/,
@@ -117,16 +120,17 @@ const WRITE_INDICATORS: RegExp[] = [
 
 /**
  * Split a compound command into individual segments.
- * Handles: &&, ||, ;, | (pipe)
+ * Handles: &&, ||, ;, | (pipe), and a single shell background separator `&`.
  *
  * Note: Pipes are tricky — `grep foo | sort` is read-only, but
  * `grep foo | tee output.txt` is not. We check each segment individually.
  */
 function splitCommandSegments(command: string): string[] {
-  // Simple split on && || ; |
+  // A single `&` is a command boundary too. Do not split fd redirects such as
+  // `2>&1`, `<&3`, or `&>file`; those are handled by the redirect checks.
   // This is not a full parser, but covers common cases
   return command
-    .split(/\s*(?:&&|\|\||;|\|)\s*/)
+    .split(/\s*(?:&&|\|\||;|\||(?<![&<>])&(?![&>]))\s*/)
     .map(s => s.trim())
     .filter(s => s.length > 0);
 }

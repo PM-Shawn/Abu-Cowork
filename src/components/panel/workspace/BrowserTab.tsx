@@ -6,6 +6,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useI18n } from '@/i18n';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -33,6 +34,35 @@ import { createDomElementReference, type BrowserElementPayload } from '@/types/c
 
 const browserLogger = createLogger('browser-tab');
 const BROWSER_CREATE_RETRY_DELAYS_MS = [250, 500, 1_000] as const;
+
+/**
+ * Size a native view gets when it is created while its placeholder is not laid
+ * out. Matches `browserHost.cjs`'s own headless fallback so an agent-adopted
+ * background tab renders at a realistic viewport instead of 1×1.
+ */
+const HIDDEN_CREATE_FALLBACK_SIZE = { width: 1024, height: 768 } as const;
+
+/**
+ * The width/height to create the native view at.
+ *
+ * A tab created hidden (adopted in the background, or living behind an
+ * inactive keep-alive tab) hangs under a `display:none` ancestor, so its
+ * placeholder rect is all zeros. Clamping that to 1×1 produced a real 1×1
+ * webview: the page laid out at one pixel, and `syncBounds` — which returns
+ * early while invisible — never corrected it until the tab was shown.
+ *
+ * A real, non-collapsed rect always wins; the fallback only fills in for a
+ * collapsed axis, so the visible create path is untouched.
+ */
+function resolveCreateSize(rect: { width: number; height: number }): {
+  width: number;
+  height: number;
+} {
+  return {
+    width: rect.width >= 1 ? rect.width : HIDDEN_CREATE_FALLBACK_SIZE.width,
+    height: rect.height >= 1 ? rect.height : HIDDEN_CREATE_FALLBACK_SIZE.height,
+  };
+}
 
 function resolveInspectTheme() {
   const styles = getComputedStyle(document.documentElement);
@@ -73,6 +103,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // App-global modals (close-window dialog) sit above the chat column but the
   // native webview would still paint over them — treat like a blocking approval.
   const appModalOpen = usePreviewStore((s) => s.appModalOpen);
+  const lightboxOpen = useImageLightboxStore((s) => s.isOpen);
   const activeConversationId = useChatStore((s) => s.activeConversationId);
   const commandApproval = useSyncExternalStore(
     subscribeToCommandConfirmation,
@@ -123,6 +154,8 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const shownRef = useRef(false);   // is it currently shown?
   const desiredVisibleRef = useRef(false);
   const visibilityOperationRef = useRef<Promise<void> | null>(null);
+  const visibilityGenerationRef = useRef(0);
+  const overlayCapturePendingRef = useRef<number | null>(null);
   const createRetryCountRef = useRef(0);
   const createRetryTimerRef = useRef<number | null>(null);
   const navigationGenerationRef = useRef(0);
@@ -131,6 +164,19 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // Holds the initial URL for the mount effect (read once); never reassigned
   // during render (that would trip react-hooks/refs).
   const committedUrlRef = useRef(committedUrl);
+  // N3: last time this tab told the main process "the user is here" via the
+  // React-layer toolbar (address bar / back / forward / reload). Throttled to
+  // one IPC call per 500ms so a typing storm in the address bar does not spam
+  // `browser_note_user_interaction`.
+  const lastNoteUserInteractionAtRef = useRef(0);
+  // Address-bar draft protection: while the input is focused, or holds an
+  // uncommitted edit, a programmatic navigation (`browser://nav/*`) must not
+  // rewrite the bound value — real-device acceptance (2026-09-01, G6/G7)
+  // showed the agent's resumed navigation silently wiping a half-typed draft.
+  // `committedUrl` still tracks the real page underneath; the input resyncs on
+  // blur once it is clean (untouched, emptied, or reverted).
+  const addressFocusedRef = useRef(false);
+  const addressDirtyRef = useRef(false);
 
   // Freeze-frame shown while the native view is hidden for an overlay. The
   // native view paints above React, so hiding it for a modal/menu would flash
@@ -147,24 +193,37 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   // the interval below retries instead of permanently believing the view moved.
   const reconcileNativeVisibility = useCallback(() => {
     if (!createdRef.current || visibilityOperationRef.current) return;
+    const generation = visibilityGenerationRef.current;
 
     const operation = (async () => {
-      while (createdRef.current) {
+      while (createdRef.current && generation === visibilityGenerationRef.current) {
         const desired = desiredVisibleRef.current;
         if (shownRef.current === desired) return;
         if (!desired) {
           if (hiddenForOverlayRef.current) {
             // Capture BEFORE hiding — a hidden view has no compositor frame.
             // Best-effort: a null capture just falls back to the blank pane.
+            overlayCapturePendingRef.current = generation;
             try {
               const frame = await invoke<string | null>('browser_capture', { id: tabId });
-              if (typeof frame === 'string' && frame.startsWith('data:image/')) {
+              if (
+                hiddenForOverlayRef.current
+                && typeof frame === 'string'
+                && frame.startsWith('data:image/')
+              ) {
                 setFreezeFrame(frame);
               }
             } catch {
               /* keep whatever frame we already have */
+            } finally {
+              if (overlayCapturePendingRef.current === generation) {
+                overlayCapturePendingRef.current = null;
+              }
             }
-            if (!createdRef.current) return;
+            if (
+              !createdRef.current
+              || generation !== visibilityGenerationRef.current
+            ) return;
             // Overlay may have closed while capturing — re-check before hiding.
             if (desiredVisibleRef.current !== desired) continue;
           } else {
@@ -178,7 +237,10 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
         } catch {
           return;
         }
-        if (!createdRef.current) return;
+        if (
+          !createdRef.current
+          || generation !== visibilityGenerationRef.current
+        ) return;
         shownRef.current = desired;
         if (desired) setFreezeFrame(null);
       }
@@ -200,13 +262,16 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     const r = el.getBoundingClientRect();
     // A CSS-hidden ancestor (inactive keep-alive tab) yields a zero rect; a
     // full-window modal should also force-hide even though the rect is valid.
-    const overlayActive = systemSettingsOpen || menuOpen || blockingApprovalOpen;
+    const overlayActive = systemSettingsOpen || menuOpen || blockingApprovalOpen || lightboxOpen;
     const onScreen = r.width >= 1 && r.height >= 1 && el.offsetParent !== null;
     const visible = onScreen && !overlayActive;
 
     // Record WHY we are hiding: only "on screen but covered by an overlay"
     // warrants the freeze-frame capture in reconcileNativeVisibility.
-    hiddenForOverlayRef.current = onScreen && overlayActive;
+    // The image lightbox is opaque and must become interactive immediately.
+    // Skip the pre-hide capture for it: a native WebContentsView paints above
+    // React and would otherwise keep receiving clicks while capturePage waits.
+    hiddenForOverlayRef.current = onScreen && overlayActive && !lightboxOpen;
     desiredVisibleRef.current = visible;
     reconcileNativeVisibility();
     if (!visible) {
@@ -223,6 +288,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     systemSettingsOpen,
     menuOpen,
     blockingApprovalOpen,
+    lightboxOpen,
     reconcileNativeVisibility,
   ]);
 
@@ -242,20 +308,22 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
             && el.offsetParent !== null
             && !systemSettingsOpen
             && !menuOpen
-            && !blockingApprovalOpen;
+            && !blockingApprovalOpen
+            && !lightboxOpen;
           const electronHost = hasElectronCommandHost();
           desiredVisibleRef.current = initiallyVisible;
           // Electron can create the native child view hidden, preventing even a
           // single frame from painting above a dialog that was already open.
           // Tauri keeps its historical create-then-hide contract.
           shownRef.current = electronHost ? initiallyVisible : true;
+          const createSize = resolveCreateSize(r);
           await invoke('browser_create', {
             id: tabId,
             url: targetUrl,
             x: r.left,
             y: r.top,
-            width: Math.max(r.width, 1),
-            height: Math.max(r.height, 1),
+            width: createSize.width,
+            height: createSize.height,
             ...(electronHost ? { visible: initiallyVisible } : {}),
           });
           lastBoundsRef.current = { x: r.left, y: r.top, w: r.width, h: r.height };
@@ -296,6 +364,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       systemSettingsOpen,
       menuOpen,
       blockingApprovalOpen,
+      lightboxOpen,
     ],
   );
 
@@ -340,7 +409,9 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       const unlisten = await listen<string>(`browser://nav/${tabId}`, (e) => {
         const u = e.payload;
         if (u && u !== 'about:blank') {
-          setAddressInput(u);
+          if (!addressFocusedRef.current && !addressDirtyRef.current) {
+            setAddressInput(u);
+          }
           setCommittedUrl(u);
           updateBrowserUrl(tabId, u);
         }
@@ -376,7 +447,12 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       disposed = true;
       navUnlisten?.();
       elementUnlisten?.();
-      void invoke('browser_close', { id: tabId }).catch(() => {});
+      // Unmount is NOT a close. The native view's lifetime belongs to the tab
+      // record in previewStore (which destroys it when the tab is really
+      // closed); this component can unmount while the tab stays open, and an
+      // agent's page / login state / half-filled form must survive that.
+      // Hide instead, and let the remount reconcile visibility.
+      void invoke('browser_hide', { id: tabId }).catch(() => {});
       createdRef.current = false;
       shownRef.current = false;
       desiredVisibleRef.current = false;
@@ -406,11 +482,54 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     };
   }, [syncBounds, systemSettingsOpen, blockingApprovalOpen]);
 
+  // A menu/settings overlay may already be waiting on a slow capture when the
+  // opaque image lightbox takes over. Do not let that older freeze-frame
+  // operation keep the native WebContentsView above the lightbox: issue an
+  // immediate hide in parallel, then let the serial reconciler converge from
+  // the actual result.
   useEffect(() => {
-    if (!inspecting || !(systemSettingsOpen || menuOpen || blockingApprovalOpen)) return;
+    if (
+      !lightboxOpen
+      || !createdRef.current
+      || !shownRef.current
+      || overlayCapturePendingRef.current === null
+    ) return;
+
+    // The IPC promise itself cannot be cancelled. Supersede its state machine
+    // so a late capture result cannot hide/show the view after this handoff.
+    visibilityGenerationRef.current += 1;
+    visibilityOperationRef.current = null;
+    desiredVisibleRef.current = false;
+    hiddenForOverlayRef.current = false;
+    setFreezeFrame(null);
+    void invoke('browser_hide', { id: tabId }).then(() => {
+      if (!createdRef.current) return;
+      shownRef.current = false;
+      reconcileNativeVisibility();
+    }).catch(() => {
+      reconcileNativeVisibility();
+    });
+  }, [lightboxOpen, reconcileNativeVisibility, tabId]);
+
+  useEffect(() => {
+    if (!inspecting || !(systemSettingsOpen || menuOpen || blockingApprovalOpen || lightboxOpen)) return;
     setInspecting(false);
     void invoke('browser_inspect_set', { id: tabId, enabled: false, labels: inspectLabelsRef.current }).catch(() => {});
-  }, [blockingApprovalOpen, inspecting, menuOpen, systemSettingsOpen, tabId]);
+  }, [blockingApprovalOpen, inspecting, lightboxOpen, menuOpen, systemSettingsOpen, tabId]);
+
+  // N3: the guest webContents only tells the main process the user is here
+  // via `before-input-event`/`focus` — the toolbar's own React controls
+  // (address bar, back/forward/reload) live in the MAIN window and never
+  // touch it, so using them was invisible to the takeover backoff (R4) and
+  // automation could act mid-navigation. Fire-and-forget, catch-swallow: this
+  // is a best-effort presence ping, never something the UI should surface an
+  // error for. Throttled to at most one call per 500ms per tab.
+  const noteUserInteraction = useCallback(() => {
+    const now = Date.now();
+    if (now - lastNoteUserInteractionAtRef.current < 500) return;
+    lastNoteUserInteractionAtRef.current = now;
+    void invoke('browser_note_user_interaction', { id: tabId }).catch(() => {});
+  }, [tabId]);
 
   const toggleInspect = useCallback(async () => {
     const next = !inspecting;
@@ -428,6 +547,7 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const commit = (raw: string) => {
     const trimmed = raw.trim();
     if (!trimmed) return;
+    addressDirtyRef.current = false;
     const normalized = normalizeBrowserUrl(trimmed);
     setAddressInput(normalized);
     setCommittedUrl(normalized);
@@ -450,17 +570,17 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
     <div className="flex flex-col h-full">
       <div className="flex items-center gap-1.5 shrink-0 px-2 py-1.5 border-b border-[var(--abu-bg-pressed)] bg-[var(--abu-bg-subtle)]">
         <ToolbarTooltip content={t.workspace.browser.back}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_back', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_back', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
             <ArrowLeft className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </ToolbarTooltip>
         <ToolbarTooltip content={t.workspace.browser.forward}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_forward', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_forward', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
             <ArrowRight className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </ToolbarTooltip>
         <ToolbarTooltip content={t.workspace.browser.reload}>
-          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void invoke('browser_reload', { id: tabId }).catch(() => {})} className="text-[var(--abu-text-tertiary)]">
+          <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => { noteUserInteraction(); void invoke('browser_reload', { id: tabId }).catch(() => {}); }} className="text-[var(--abu-text-tertiary)]">
             <RotateCw className="w-3.5 h-3.5" strokeWidth={1.5} />
           </Button>
         </ToolbarTooltip>
@@ -469,9 +589,33 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           ref={addressInputRef}
           value={addressInput}
           placeholder={t.workspace.browser.addressPlaceholder}
-          onChange={(e) => setAddressInput(e.target.value)}
+          onFocus={() => { addressFocusedRef.current = true; noteUserInteraction(); }}
+          onBlur={() => {
+            addressFocusedRef.current = false;
+            // A clean, emptied, or reverted input resumes following the page;
+            // a real uncommitted draft survives blur (acceptance G6/G7).
+            if (
+              !addressDirtyRef.current
+              || !addressInput.trim()
+              || addressInput === committedUrl
+            ) {
+              addressDirtyRef.current = false;
+              setAddressInput(committedUrl);
+            }
+          }}
+          onChange={(e) => {
+            addressDirtyRef.current = true;
+            noteUserInteraction();
+            setAddressInput(e.target.value);
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commit(addressInput);
+            if (e.key === 'Escape') {
+              // Standard browser behavior — and the only way out of a held
+              // draft without committing it: show the page's real URL again.
+              addressDirtyRef.current = false;
+              setAddressInput(committedUrl);
+            }
           }}
           className="flex-1 h-7 text-minor"
         />

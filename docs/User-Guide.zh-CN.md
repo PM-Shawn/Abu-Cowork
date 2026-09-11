@@ -299,3 +299,6 @@ Abu 不会把整个工作区自动上传到 Abu 自有服务器，但完成任�
 ---
 
 仍无法解决时，请在 [GitHub Issues](https://github.com/PM-Shawn/Abu-Cowork/issues) 提交可复现的问题。不要公开 API Key、访问令牌、内部地址或包含敏感信息的诊断材料。
+
+
+[个人插件：创建、使用与维护](../PLUGINS.zh-CN.md)

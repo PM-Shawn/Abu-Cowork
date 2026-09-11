@@ -12,6 +12,7 @@ const vm = require('node:vm');
 const {
   registerPrivilegedWebContents,
   assertTrustedIpcSender,
+  assertTrustedMainIpcSender,
   validateInvokePayload,
   assertResourceOwner,
   canonicalFilePage,
@@ -78,6 +79,22 @@ test('registered main-frame sender on exact file page is accepted, ignoring quer
   registerPrivilegedWebContents(wc, page);
 
   assert.doesNotThrow(() => assertTrustedIpcSender(trustedEvent(wc, `${page}?next=2#other`)));
+});
+
+test('main-only direct IPC accepts main and rejects other privileged windows', () => {
+  const mainPage = fileUrl('main.html');
+  const main = new FakeWebContents(mainPage);
+  registerPrivilegedWebContents(main, mainPage, { label: 'main' });
+
+  const petPage = fileUrl('pet.html');
+  const pet = new FakeWebContents(petPage);
+  registerPrivilegedWebContents(pet, petPage, { label: 'pet' });
+
+  assert.doesNotThrow(() => assertTrustedMainIpcSender(trustedEvent(main)));
+  assert.throws(
+    () => assertTrustedMainIpcSender(trustedEvent(pet)),
+    /main window/
+  );
 });
 
 test('Windows drive and UNC paths are recognized as file pages before URL parsing', () => {
@@ -285,6 +302,42 @@ test('pet, overlay, and stop-button windows only receive their required commands
   );
 });
 
+test('the pet may move itself and report where, but not raise or focus windows', () => {
+  const pet = trustedRecord('pet');
+  const petPosition = { label: 'main', value: { position: { type: 'Physical', x: 480, y: 360 } } };
+  assert.doesNotThrow(() =>
+    validateInvokePayload(pet, { cmd: 'plugin:window|set_position', args: petPosition })
+  );
+  assert.doesNotThrow(() =>
+    validateInvokePayload(pet, { cmd: 'plugin:event|listen', args: { event: 'tauri://move', handler: 1 } })
+  );
+  assert.doesNotThrow(() =>
+    validateInvokePayload(pet, { cmd: 'plugin:event|emit', args: { event: 'pet-position-changed', payload: { x: 1, y: 2 } } })
+  );
+  for (const cmd of ['plugin:window|show', 'plugin:window|unminimize', 'plugin:window|set_focus']) {
+    assert.throws(() => validateInvokePayload(pet, { cmd, args: { label: 'main' } }), /cannot invoke/);
+  }
+  // A non-finite coordinate never reaches the handler.
+  assert.throws(
+    () =>
+      validateInvokePayload(pet, {
+        cmd: 'plugin:window|set_position',
+        args: { label: 'main', value: { Physical: { x: Number.NaN, y: 0 } } },
+      }),
+    /must be finite/
+  );
+  // The other restricted windows gain nothing.
+  for (const label of ['overlay', 'stop-button']) {
+    for (const cmd of ['plugin:window|set_position', 'plugin:window|show', 'plugin:window|set_focus']) {
+      assert.throws(() => validateInvokePayload(trustedRecord(label), { cmd, args: { label: 'main' } }), /cannot invoke/);
+    }
+  }
+  // The main window stays unrestricted for the notification-click commands.
+  for (const cmd of ['plugin:window|show', 'plugin:window|unminimize', 'plugin:window|set_focus']) {
+    assert.doesNotThrow(() => validateInvokePayload(trustedRecord('main'), { cmd, args: { label: 'main' } }));
+  }
+});
+
 test('main renderer cannot invoke privileged Computer Use commands without a session token', () => {
   const record = trustedRecord('main');
   for (const cmd of ['mouse_click', 'ax_press', 'capture_screen']) {
@@ -468,20 +521,55 @@ test('resources cannot be released by another IPC sender', () => {
 test('preload exposes only narrow file, diagnostics, and receive-only sidecar bridges', async () => {
   const exposed = new Map();
   const sent = [];
+  const invoked = [];
+  let holdImageSave = false;
+  let resolveHeldImageSave;
   const ipcListeners = new Map();
-  const nativeFile = { name: 'report.pdf' };
+  const nativeFile = { name: 'report.png' };
   const webUtils = {
     getPathForFile(file) {
+      if (file !== nativeFile) return '';
       assert.equal(file, nativeFile);
-      return '/native/report.pdf';
+      return '/native/report.png';
     },
   };
   const ipcRenderer = {
     invoke: async (channel, payload) => {
+      invoked.push({ channel, payload });
+      if (channel === 'abu:fs-canonicalize-for-policy') return `/canonical${payload.path}`;
       if (channel === 'abu:runtime-diagnostics') return { schemaVersion: 1 };
       if (channel === 'abu:sidecar-bridge-state') {
         return { version: 1, lastSequence: payload.afterSequence };
       }
+      if (channel === 'abu:save-image-attachment') {
+        if (holdImageSave) {
+          return new Promise((resolve) => {
+            resolveHeldImageSave = resolve;
+          });
+        }
+        return { saved: true, fileName: 'image.png' };
+      }
+      if (channel === 'abu:authorize-user-attachment') return {
+        token: 't'.repeat(32),
+        name: payload.name,
+        mediaType: payload.mediaType,
+        expiresAt: 2_000,
+      };
+      if (channel === 'abu:select-user-attachments') return [{
+        token: 's'.repeat(32),
+        name: 'selected.png',
+        mediaType: 'image/png',
+        expiresAt: 2_000,
+      }];
+      if (channel === 'abu:read-user-attachment') return new Uint8Array([137, 80, 78, 71]);
+      if (channel === 'abu:release-user-attachment') return { released: true };
+      if (channel === 'abu:persist-delegated-media') return {
+        id: 'media_test',
+        sha256: 'a'.repeat(64),
+        mediaType: payload.mediaType,
+        bytes: payload.bytes.byteLength,
+      };
+      if (channel === 'abu:read-delegated-media') return new Uint8Array([1, 2, 3]);
       return undefined;
     },
     on: (channel, callback) => ipcListeners.set(channel, callback),
@@ -509,14 +597,294 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
 
   const shellBridge = exposed.get('__ABU_SHELL__');
   assert.deepEqual(Object.keys(shellBridge).sort(), [
+    'authorizeUserAttachment',
+    'canonicalizePathForPolicy',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
     'mainSupervisesSidecar',
+    'persistDelegatedMedia',
+    'pluginAuthor',
+    'pluginOperation',
+    'pluginRegistry',
+    'pluginSnapshot',
+    'readDelegatedMedia',
+    'readUserAttachment',
     'recordRuntimeEvent',
+    'releaseUserAttachment',
+    'saveImageAttachment',
+    'selectUserAttachments',
     'subscribeSidecarEvents',
   ]);
-  assert.equal(shellBridge.getPathForFile(nativeFile), '/native/report.pdf');
+  assert.equal(
+    await shellBridge.canonicalizePathForPolicy('/native/report.png'),
+    '/canonical/native/report.png',
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked[0])), {
+    channel: 'abu:fs-canonicalize-for-policy',
+    payload: { path: '/native/report.png', followFinalSymlink: true },
+  });
+  assert.equal(shellBridge.getPathForFile(nativeFile), '/native/report.png');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await shellBridge.authorizeUserAttachment(nativeFile, {
+      mediaType: 'image/png',
+      maxBytes: 1024,
+    }))),
+    {
+      token: 't'.repeat(32),
+      name: 'report.png',
+      mediaType: 'image/png',
+      expiresAt: 2_000,
+    },
+  );
+  const authorizeInvoke = invoked.find(({ channel }) => channel === 'abu:authorize-user-attachment');
+  assert.deepEqual(JSON.parse(JSON.stringify(authorizeInvoke)), {
+    channel: 'abu:authorize-user-attachment',
+    payload: {
+      path: '/native/report.png',
+      name: 'report.png',
+      mediaType: 'image/png',
+      maxBytes: 1024,
+    },
+  });
+  assert.deepEqual(
+    await shellBridge.saveImageAttachment({
+      data: new Uint8Array([1, 2, 3]),
+      mediaType: 'image/png',
+      suggestedName: 'image.png',
+    }),
+    { saved: true, fileName: 'image.png' },
+  );
+  const imageSaveInvoke = invoked.find(({ channel }) => channel === 'abu:save-image-attachment');
+  assert.equal(imageSaveInvoke.channel, 'abu:save-image-attachment');
+  assert.equal(imageSaveInvoke.payload.mediaType, 'image/png');
+  assert.deepEqual(Array.from(imageSaveInvoke.payload.data), [1, 2, 3]);
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      data: new Uint8Array([1]),
+      mediaType: 'image/png',
+      destinationPath: '/renderer-chosen/path.png',
+    }),
+    /does not accept destinationPath/,
+  );
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      sourcePath: '/renderer/reopen.png',
+      mediaType: 'image/png',
+    }),
+    /does not accept sourcePath/,
+  );
+  assert.throws(
+    () => shellBridge.saveImageAttachment({ data: new Uint8Array(), mediaType: 'image/png' }),
+    /data is invalid/,
+  );
+  const imageInvokeCountBeforeOversizedBacking = invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length;
+  const oversizedBackingView = new Uint8Array(
+    new ArrayBuffer(32 * 1024 * 1024 + 1),
+    0,
+    1,
+  );
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      data: oversizedBackingView,
+      mediaType: 'image/png',
+    }),
+    /data is invalid/,
+  );
+  assert.equal(invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length, imageInvokeCountBeforeOversizedBacking);
+
+  holdImageSave = true;
+  const firstPendingSave = shellBridge.saveImageAttachment({
+    data: new Uint8Array([1, 2, 3]),
+    mediaType: 'image/png',
+  });
+  const saveInvokeCount = invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length;
+  assert.throws(
+    () => shellBridge.saveImageAttachment({
+      data: new Uint8Array([4, 5, 6]),
+      mediaType: 'image/png',
+    }),
+    /already in progress/,
+  );
+  assert.equal(invoked.filter(({ channel }) => (
+    channel === 'abu:save-image-attachment'
+  )).length, saveInvokeCount);
+  resolveHeldImageSave({ saved: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(await firstPendingSave)), { saved: false });
+  holdImageSave = false;
+  await assert.doesNotReject(shellBridge.saveImageAttachment({
+    data: new Uint8Array([7, 8, 9]),
+    mediaType: 'image/png',
+  }));
+  assert.deepEqual(
+    Array.from(await shellBridge.readUserAttachment({
+      token: 'r'.repeat(32),
+    })),
+    [137, 80, 78, 71],
+  );
+  const readInvoke = invoked.find(({ channel }) => channel === 'abu:read-user-attachment');
+  assert.deepEqual(JSON.parse(JSON.stringify(readInvoke)), {
+    channel: 'abu:read-user-attachment',
+    payload: {
+      token: 'r'.repeat(32),
+    },
+  });
+  const readInvokeCount = invoked.filter(({ channel }) => (
+    channel === 'abu:read-user-attachment'
+  )).length;
+  assert.throws(
+    () => shellBridge.readUserAttachment({
+      token: 'r'.repeat(32),
+      leak: true,
+    }),
+    /does not accept leak/,
+  );
+  assert.throws(
+    () => shellBridge.readUserAttachment({
+      path: '/native/report.png',
+      mediaType: 'image/png',
+    }),
+    /does not accept path/,
+  );
+  assert.throws(
+    () => shellBridge.readUserAttachment({
+      token: 'short',
+    }),
+    /token is invalid/,
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await shellBridge.releaseUserAttachment({
+      token: 'q'.repeat(32),
+    }))),
+    { released: true },
+  );
+  const releaseInvoke = invoked.find(({ channel }) => channel === 'abu:release-user-attachment');
+  assert.deepEqual(JSON.parse(JSON.stringify(releaseInvoke)), {
+    channel: 'abu:release-user-attachment',
+    payload: {
+      token: 'q'.repeat(32),
+    },
+  });
+  assert.throws(
+    () => shellBridge.releaseUserAttachment({
+      token: 'q'.repeat(32),
+      path: '/native/report.png',
+    }),
+    /does not accept path/,
+  );
+  assert.throws(
+    () => shellBridge.releaseUserAttachment({
+      token: 'short',
+    }),
+    /token is invalid/,
+  );
+  assert.throws(
+    () => shellBridge.authorizeUserAttachment(nativeFile, {
+      mediaType: 'application/pdf',
+    }),
+    /media type is unsupported/,
+  );
+  assert.throws(
+    () => shellBridge.authorizeUserAttachment({ name: 'synthetic.png' }, {
+      mediaType: 'image/png',
+    }),
+    /native path is unavailable/,
+  );
+  assert.throws(
+    () => shellBridge.selectUserAttachments({ mediaTypes: ['application/pdf'] }),
+    /media types are unsupported/,
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await shellBridge.selectUserAttachments({ mediaTypes: ['image/png'] }))),
+    [{
+      token: 's'.repeat(32),
+      name: 'selected.png',
+      mediaType: 'image/png',
+      expiresAt: 2_000,
+    }],
+  );
+  const imageSelectInvoke = invoked.find(({ channel, payload }) => (
+    channel === 'abu:select-user-attachments'
+      && Array.isArray(payload?.mediaTypes)
+      && payload.mediaTypes.includes('image/png')
+  ));
+  assert.deepEqual(JSON.parse(JSON.stringify(imageSelectInvoke)), {
+    channel: 'abu:select-user-attachments',
+    payload: { mediaTypes: ['image/png'] },
+  });
+  assert.equal(invoked.filter(({ channel }) => (
+    channel === 'abu:read-user-attachment'
+  )).length, readInvokeCount);
+  assert.deepEqual(JSON.parse(JSON.stringify(await shellBridge.persistDelegatedMedia({
+    conversationId: 'conv_1',
+    mediaType: 'image/png',
+    bytes: new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+  }))), {
+    id: 'media_test',
+    sha256: 'a'.repeat(64),
+    mediaType: 'image/png',
+    bytes: 8,
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(await shellBridge.persistDelegatedMedia({
+    conversationId: 'conv_1',
+    mediaType: 'application/pdf',
+    bytes: new Uint8Array([37, 80, 68, 70, 45, 49]),
+  }))), {
+    id: 'media_test',
+    sha256: 'a'.repeat(64),
+    mediaType: 'application/pdf',
+    bytes: 6,
+  });
+  const delegatedPdfPersistInvoke = invoked.filter(({ channel, payload }) => (
+    channel === 'abu:persist-delegated-media'
+      && payload.mediaType === 'application/pdf'
+  )).at(-1);
+  assert.deepEqual(delegatedPdfPersistInvoke.channel, 'abu:persist-delegated-media');
+  assert.deepEqual(delegatedPdfPersistInvoke.payload.conversationId, 'conv_1');
+  assert.deepEqual(Array.from(delegatedPdfPersistInvoke.payload.bytes), [37, 80, 68, 70, 45, 49]);
+  assert.deepEqual(delegatedPdfPersistInvoke.payload.mediaType, 'application/pdf');
+  assert.deepEqual(JSON.parse(JSON.stringify({
+    channel: delegatedPdfPersistInvoke.channel,
+    payload: {
+      conversationId: delegatedPdfPersistInvoke.payload.conversationId,
+      mediaType: delegatedPdfPersistInvoke.payload.mediaType,
+    },
+  })), {
+    channel: 'abu:persist-delegated-media',
+    payload: {
+      conversationId: 'conv_1',
+      mediaType: 'application/pdf',
+    },
+  });
+  assert.throws(
+    () => shellBridge.persistDelegatedMedia({
+      conversationId: 'conv_1',
+      mediaType: 'application/pdf',
+      bytes: new Uint8Array(4 * 1024 * 1024),
+    }),
+    /bytes are too large/,
+  );
+  const largeBacking = new ArrayBuffer(128 * 1024 * 1024 + 1);
+  const largeBackingView = new Uint8Array(largeBacking, 64, 8);
+  largeBackingView.set([137, 80, 78, 71, 13, 10, 26, 10]);
+  await shellBridge.persistDelegatedMedia({
+    conversationId: 'conv_1',
+    mediaType: 'image/png',
+    bytes: largeBackingView,
+  });
+  const delegatedPersistInvoke = invoked.filter(({ channel }) => channel === 'abu:persist-delegated-media').at(-1);
+  assert.deepEqual(Array.from(delegatedPersistInvoke.payload.bytes), [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(delegatedPersistInvoke.payload.bytes.buffer.byteLength, 8);
+  assert.deepEqual(Array.from(await shellBridge.readDelegatedMedia({
+    conversationId: 'conv_1',
+    ref: { id: 'media_test', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 8 },
+  })), [1, 2, 3]);
   shellBridge.recordRuntimeEvent({ event: 'renderer.test', runId: 'run-1' });
   assert.deepEqual(JSON.parse(JSON.stringify(sent)), [{
     channel: 'abu:runtime-event',

@@ -26,7 +26,8 @@
  *     resolvedCreds, toolList, planMode?, locale }
  */
 import type {
-  ImageAttachment,
+  SubagentStopReason,
+  ToolExecutionMetadata,
   ToolDefinition,
   ToolResult,
   ToolExecutionContext,
@@ -38,16 +39,19 @@ import type { PromptSection } from '@/core/llm/promptSections';
 import type { ConversationMeta } from '@/core/session/conversationStorage';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { ExecutionPort } from '@/core/agent/ports/executionPort';
+import type { ChatDelta } from '@/core/agent/ports/chatDelta';
 import type { AbortRegistry } from '@/core/agent/ports/abortRegistry';
 import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { PlanModeState } from '@/core/agent/planMode';
 import { runAgentLoop, type AgentLoopOptions, type AgentLoopResult } from '@/core/agent/agentLoop';
+import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import {
   createAgentRunTerminal,
   type AgentRunTerminal,
 } from '@/core/agent/agentRunTerminal';
+import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
 import { enqueueUserInputWithId } from '@/core/agent/userInputQueue';
 import { applyPlanModeState } from '@/core/agent/planMode';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -57,11 +61,17 @@ import { RpcError } from './protocol';
 import { sendRequest, sendNotification, setPreRequestFlush } from './rpcClient';
 import { agentRunContext, type AgentRunContext } from './agentRunContext';
 import { createPortFrameCoalescer, type PortFrame } from './portFrameCoalescer';
-import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPort } from './portFrameSenders';
+import { createFrameChatDelta, createFrameExecutionPort, createFrameScratchpadPort, type FrameChatDelta } from './portFrameSenders';
 import { createConversationRunMirror, type ConversationPatch } from './conversationRunMirror';
 import { seedSettingsMirrorIfEmpty, getSettingsMirrorReader, applySettingsSnapshot } from './settingsMirror';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './localTools';
+import { LOCAL_PATH_BOUND_TOOLS } from './localPathBoundTools';
 import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from './runtimeTrace';
+import {
+  materializeSidecarMediaRefsForShell,
+  sidecarValueHasOpaqueMediaRefs,
+} from '@/core/subagent/delegatedUserTurnMaterializer';
+import { formatLlmTerminalError, LLMError, normalizeUpstreamErrorDetails } from '@/core/llm/adapter';
 
 /** Sidecar-local declaration — never imported from shell-side code (same "src/ never runtime-imports sidecar/, and vice versa across this boundary" discipline `frameApplier.ts`/`subagentHost.ts` already document). */
 interface SerializableToolDefinition {
@@ -79,6 +89,8 @@ interface CapsSnapshotEntry {
   isReasoningModel?: boolean;
 }
 
+const REVERSE_TOOL_MEDIA_DISPLAY_ERROR = 'Error: Could not prepare sidecar tool media for display.';
+
 export interface AgentRunParams {
   runId: string;
   clientMessageId?: string;
@@ -86,10 +98,14 @@ export interface AgentRunParams {
   conversationId: string;
   userMessage: string;
   options: {
-    images?: ImageAttachment[];
     blockedTools?: string[];
     allowedTools?: string[];
+    authorizationScopeId?: string;
+    runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
+    workspacePathSnapshot?: string | null;
     imContext?: IMContext;
+    /** Who started the run (`'user'` | `'automation'`); see RunInitiator. */
+    initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
     prePersistedUserMessageId?: string;
   };
   orchestration: { route: RouteResult; systemPromptSections: PromptSection[] };
@@ -143,6 +159,21 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   )) {
     throw new RpcError(-32602, 'Invalid params: options.prePersistedUserMessageId must be a non-empty string');
   }
+  if (options.authorizationScopeId !== undefined && (typeof options.authorizationScopeId !== 'string' || !options.authorizationScopeId)) {
+    throw new RpcError(-32602, 'Invalid params: options.authorizationScopeId must be a non-empty string');
+  }
+  if (
+    options.runPermissionCeiling !== undefined
+    && !isRunPermissionCeiling(options.runPermissionCeiling)
+  ) {
+    throw new RpcError(-32602, 'Invalid params: options.runPermissionCeiling must be a valid run permission ceiling');
+  }
+  if (options.workspacePathSnapshot !== undefined && options.workspacePathSnapshot !== null && typeof options.workspacePathSnapshot !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: options.workspacePathSnapshot must be a string or null');
+  }
+  if (options.initiatedBy !== undefined && options.initiatedBy !== 'user' && options.initiatedBy !== 'automation') {
+    throw new RpcError(-32602, "Invalid params: options.initiatedBy must be 'user' or 'automation'");
+  }
   if (!isRecord(orchestration) || !isRecord((orchestration as { route?: unknown }).route)) {
     throw new RpcError(-32602, 'Invalid params: orchestration.route must be an object');
   }
@@ -159,14 +190,122 @@ function parseAgentRunParams(params: unknown): AgentRunParams {
   return params as unknown as AgentRunParams;
 }
 
+function digestRunPayload(value: string): string {
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    left = Math.imul(left ^ code, 0x01000193);
+    right = Math.imul(right ^ code, 0x85ebca6b);
+  }
+  return `rrp1-${value.length.toString(16)}-${(left >>> 0).toString(16).padStart(8, '0')}${(right >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+function canonicalizeForRunDigest(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeForRunDigest);
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      if (key === 'payloadDigest' || record[key] === undefined) continue;
+      out[key] = canonicalizeForRunDigest(record[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+export function buildAgentRunPayloadDigest(params: unknown): string {
+  return digestRunPayload(JSON.stringify(canonicalizeForRunDigest(params)));
+}
+
+function assertAgentRunDigest(params: AgentRunParams): void {
+  if (!params.clientMessageId || !params.payloadDigest) {
+    throw new RpcError(-32602, 'Invalid params: agent.run requires clientMessageId and payloadDigest');
+  }
+  if (buildAgentRunPayloadDigest(params) !== params.payloadDigest) {
+    throw new RpcError(-32602, 'Invalid params: payloadDigest does not match agent.run params');
+  }
+}
+
+/**
+ * Strip every LOCAL-ONLY field before a tool context crosses the wire.
+ *
+ * Named explicitly rather than left to `JSON.stringify` dropping functions
+ * incidentally: the two browser-denial reporters are a shell-owned
+ * authorization seam (`ToolExecutionContext.reportBrowserDenial`), and "it
+ * happens to serialize away" is not a boundary — the moment one of them became
+ * a serializable value it would silently start travelling. R2, U4 re-review.
+ */
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
   const {
     abortSignal: _abortSignal,
     reportMetadata: _reportMetadata,
+    reportBrowserDenial: _reportBrowserDenial,
+    reportBrowserAllow: _reportBrowserAllow,
     ...wireContext
   } = context;
   return wireContext;
+}
+
+function isSubagentStopReason(value: unknown): value is SubagentStopReason {
+  return value === 'completed' || value === 'aborted' || value === 'error' || value === 'max_turns';
+}
+
+function parseToolExecutionMetadata(
+  value: unknown,
+  expectedBatchIdentity?: { conversationId?: string; batchToolCallId?: string },
+): ToolExecutionMetadata | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
+  const metadata: ToolExecutionMetadata = {};
+  if (value.subagentStopReason !== undefined) {
+    if (!isSubagentStopReason(value.subagentStopReason)) {
+      throw new RpcError(-32603, 'Invalid tool.invoke subagent metadata envelope');
+    }
+    metadata.subagentStopReason = value.subagentStopReason;
+  }
+  if (value.batchTerminalSummary !== undefined) {
+    const summary = normalizeBatchTerminalSummary(value.batchTerminalSummary, expectedBatchIdentity);
+    if (!summary) {
+      throw new RpcError(-32603, 'Invalid tool.invoke batch summary envelope');
+    }
+    metadata.batchTerminalSummary = summary;
+  }
+  if (value.sandboxRecovery !== undefined) {
+    if (!isRecord(value.sandboxRecovery) || value.sandboxRecovery.kind !== 'app-automation') {
+      throw new RpcError(-32603, 'Invalid tool.invoke sandbox recovery envelope');
+    }
+    metadata.sandboxRecovery = typeof value.sandboxRecovery.targetApp === 'string'
+      ? { kind: 'app-automation', targetApp: value.sandboxRecovery.targetApp }
+      : { kind: 'app-automation' };
+  }
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
+function unwrapToolInvokeResult(response: unknown, context: ToolExecutionContext | undefined): ToolResult {
+  if (!isRecord(response)) return response as ToolResult;
+  if (!('result' in response)) {
+    throw new RpcError(-32603, 'Invalid tool.invoke metadata envelope');
+  }
+  const result = response.result;
+  if (typeof result !== 'string' && !Array.isArray(result)) {
+    throw new RpcError(-32603, 'Invalid tool.invoke result in subagent metadata envelope');
+  }
+  const metadata = parseToolExecutionMetadata(
+    response.metadata ?? (
+      response.subagentStopReason !== undefined
+        ? { subagentStopReason: response.subagentStopReason }
+        : undefined
+    ),
+    {
+      conversationId: context?.conversationId,
+      batchToolCallId: context?.toolCallId,
+    },
+  );
+  if (metadata) context?.reportMetadata?.(metadata);
+  return result as ToolResult;
 }
 
 function parseAbortParams(params: unknown): { runId: string } {
@@ -227,7 +366,10 @@ function parseAbortParams(params: unknown): { runId: string } {
  *     once-UI behavior — same fail-closed discipline as before, just no
  *     longer bucketed together with an explicit deny.
  */
-type LocalApprovalOutcome = { decision: 'allow' } | { decision: 'deny'; reason: string } | { decision: 'unavailable' };
+type LocalApprovalOutcome =
+  | { decision: 'allow'; executionPath?: string }
+  | { decision: 'deny'; reason: string }
+  | { decision: 'unavailable' };
 
 /**
  * P1-3d-3 (docs/2026-07-21-phase1-p3d-tool-migration-design.md §3) — asks
@@ -268,7 +410,19 @@ async function checkLocalToolApproval(
     // never as an allow.
     return { decision: 'unavailable' };
   }
-  if (isRecord(result) && result.decision === 'allow') return { decision: 'allow' };
+  if (isRecord(result) && result.decision === 'allow') {
+    const executionPath = typeof result.executionPath === 'string' && result.executionPath.length > 0
+      ? result.executionPath
+      : undefined;
+    // File tools execute in this process, after shell-side path validation.
+    // Without the canonical path from that ACK, executing the original
+    // lexical path would reopen the symlink-retarget race. Treat the ACK as
+    // unusable and let the reverse path perform a fresh approval+execution.
+    if (LOCAL_PATH_BOUND_TOOLS.has(toolName) && !executionPath) {
+      return { decision: 'unavailable' };
+    }
+    return executionPath ? { decision: 'allow', executionPath } : { decision: 'allow' };
+  }
   if (isRecord(result) && result.decision === 'deny') {
     // Mirror registry.ts's executeAnyTool default exactly (`approval.reason
     // ?? \`Error: tool "${name}" was denied\``) so a deny surfaces the same
@@ -283,7 +437,30 @@ async function checkLocalToolApproval(
   return { decision: 'unavailable' };
 }
 
-function createReverseToolInvoker(runId: string, initialTools: SerializableToolDefinition[]): ToolInvoker {
+async function materializeReverseToolResultForSidecarProvider(
+  result: ToolResult,
+  conversationId: string,
+  signal: AbortSignal | undefined,
+): Promise<ToolResult> {
+  let hasOpaqueMediaRefs: boolean;
+  try {
+    hasOpaqueMediaRefs = sidecarValueHasOpaqueMediaRefs(result);
+  } catch {
+    return REVERSE_TOOL_MEDIA_DISPLAY_ERROR;
+  }
+  if (!hasOpaqueMediaRefs) return result;
+  try {
+    return await materializeSidecarMediaRefsForShell(result, conversationId, signal) as ToolResult;
+  } catch {
+    return REVERSE_TOOL_MEDIA_DISPLAY_ERROR;
+  }
+}
+
+function createReverseToolInvoker(
+  runId: string,
+  initialTools: SerializableToolDefinition[],
+  mediaOriginConversationId: string,
+): ToolInvoker {
   let cache: SerializableToolDefinition[] = initialTools;
 
   function toFullTools(list: SerializableToolDefinition[]): ToolDefinition[] {
@@ -348,8 +525,25 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
           return approval.reason;
         }
         if (approval.decision === 'allow') {
+          // Stop can win in the microtask gap after the shell's allow ACK is
+          // received but before this local execute() begins. The shell's
+          // post-approval barrier protects ACK creation; this second,
+          // sidecar-local barrier protects ACK consumption.
+          if (context?.abortSignal?.aborted) {
+            const error = new Error('Tool execution aborted');
+            error.name = 'AbortError';
+            throw error;
+          }
           try {
-            return await executeLocalTool(name, input, context as ToolExecutionContext | undefined, contextUsagePercent);
+            const approvedInput = approval.executionPath
+              ? { ...input, path: approval.executionPath }
+              : input;
+            return await executeLocalTool(
+              name,
+              approvedInput,
+              context as ToolExecutionContext | undefined,
+              contextUsagePercent,
+            );
           } catch (err) {
             // A throw here means executeLocalTool's OWN dispatch layer failed
             // (NOT a normal tool-level error — those are already caught
@@ -372,14 +566,19 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
         // path below is always safe (nothing to double-execute, and no UI
         // has fired yet for this call).
       }
-      const result = (await sendRequest('tool.invoke', {
+      const response = await sendRequest('tool.invoke', {
         runId,
         toolName: name,
         input,
         context: toWireToolContext(context as ToolExecutionContext | undefined),
-      })) as ToolResult;
+      });
+      const result = unwrapToolInvokeResult(response, context as ToolExecutionContext | undefined);
       if (name === TOOL_NAMES.MANAGE_MCP_SERVER) refreshInBackground();
-      return result;
+      return await materializeReverseToolResultForSidecarProvider(
+        result,
+        mediaOriginConversationId,
+        (context as ToolExecutionContext | undefined)?.abortSignal,
+      );
     },
     toolResultToString,
   };
@@ -387,6 +586,15 @@ function createReverseToolInvoker(runId: string, initialTools: SerializableToolD
 
 interface ActiveRun {
   conversationId: string;
+  /** The loop's internal loopId — identical to the runId by the P1-3B-3B
+   *  convention (see handleAgentRun's `loopId: runId` option). Stored so
+   *  cross-surface writers (subagentHost's image persistence) can target
+   *  the loop's message without re-deriving the convention. */
+  loopId: string;
+  /** This run's frame-sender ChatDelta — writes through it reach the run's
+   *  conversation mirror AND the shell, in frame order, so they survive the
+   *  ledger checkpoint (a shell-only write would be clobbered by it). */
+  chatDelta: FrameChatDelta;
   controllers: Map<string, AbortController>;
   coalescer: ReturnType<typeof createPortFrameCoalescer>;
   applyConvPatch: (patch: ConversationPatch) => void;
@@ -394,6 +602,30 @@ interface ActiveRun {
 }
 
 const activeRuns = new Map<string, ActiveRun>();
+
+/**
+ * Find the ACTIVE main-loop run for a conversation, exposing just the pieces
+ * a cross-surface writer needs: its frame ChatDelta and loopId.
+ *
+ * Consumer: subagentHost's image persistence. A delegate's subagent runs via
+ * its OWN subagent.run RPC while the parent loop runs here — for the
+ * subagent's image-bearing tool call to survive the parent run's ledger
+ * checkpoint, the `appendMessageToolCall` write must originate on THIS side
+ * (mirror + frame), not shell-only. The one-live-run-per-conversation
+ * invariant (agentLoopRunner's concurrency guard) makes the first match the
+ * only match. Returns undefined when the parent loop is not sidecar-run —
+ * the shell-side append is authoritative there.
+ */
+export function findActiveRunDeltaForConversation(
+  conversationId: string,
+): { chatDelta: ChatDelta; loopId: string } | undefined {
+  for (const run of activeRuns.values()) {
+    if (run.conversationId === conversationId) {
+      return { chatDelta: run.chatDelta, loopId: run.loopId };
+    }
+  }
+  return undefined;
+}
 
 export interface AgentStartAck {
   version: 1;
@@ -480,6 +712,7 @@ export function handleAgentStart(rawParams: unknown): AgentStartAck {
   if (!params.clientMessageId || !params.payloadDigest) {
     throw new RpcError(-32602, 'Invalid params: agent.start requires clientMessageId and payloadDigest');
   }
+  assertAgentRunDigest(params);
   pruneRunRegistry();
   const existing = runRegistry.get(params.runId);
   if (existing) {
@@ -547,10 +780,22 @@ function flushAllCoalescers(): void {
 setPreRequestFlush(flushAllCoalescers);
 
 export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
-  const params = parseAgentRunParams(rawParams);
-  const { runId, conversationId } = params;
+  const rawParsedParams = parseAgentRunParams(rawParams);
+  assertAgentRunDigest(rawParsedParams);
+  const { runId } = rawParsedParams;
   const startedAt = Date.now();
   const registryEntry = runRegistry.get(runId);
+  if (!registryEntry) {
+    throw new RpcError(-32602, `Invalid params: agent.run requires prior agent.start for runId "${runId}"`);
+  }
+  if (
+    registryEntry.payloadDigest !== rawParsedParams.payloadDigest
+    || registryEntry.clientMessageId !== rawParsedParams.clientMessageId
+  ) {
+    throw new RpcError(-32602, `Conflicting agent.run for runId "${runId}"`);
+  }
+  const params = registryEntry.params;
+  const { conversationId } = params;
   if (registryEntry?.state === 'terminal' && registryEntry.terminal) {
     return registryEntry.terminal.result;
   }
@@ -559,7 +804,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     const terminal = createAgentRunTerminal(runId, result);
     rememberTerminal(runId, terminal);
     sendNotification('agent.terminal', terminal);
-    return result;
+    return terminal.result;
   }
   if (registryEntry) registryEntry.state = 'running';
   traceSidecarRuntimeEvent('sidecar.agent_run_received', {
@@ -603,11 +848,12 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   });
 
   const chatDelta = createFrameChatDelta(push, mirror.applyChatDeltaWrite);
-  const scratchpadPort = createFrameScratchpadPort(push);
+  const pushOrdered = (frame: PortFrame): void => chatDelta.pushTransportFrame(frame);
+  const scratchpadPort = createFrameScratchpadPort(pushOrdered);
 
   // ── ExecutionPort + plannedSteps patch mirror (item 6 — see design gap
   // escalated in P1-3B-2-REPORT.md §2b / this batch's report §6) ──────────
-  const innerExecPort = createFrameExecutionPort(push);
+  const innerExecPort = createFrameExecutionPort(push, chatDelta.pushTransportTask);
   const executionsByConv = new Map<string, TaskExecution>();
   const executionPort: ExecutionPort = {
     ...innerExecPort,
@@ -625,6 +871,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   // ── AbortRegistry — sidecar-local Map, lazily-created controllers, same
   // contract as the in-process store (design doc §3 "abortRegistry" row) ──
   const controllers = new Map<string, AbortController>();
+  const createdControllers = new Set<AbortController>();
   const abortRegistry: AbortRegistry = {
     hasAbortController: (convId) => controllers.has(convId),
     getAbortController: (convId) => {
@@ -632,6 +879,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       if (!c) {
         c = new AbortController();
         controllers.set(convId, c);
+        createdControllers.add(c);
       }
       return c;
     },
@@ -679,7 +927,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
   const workspaceReader: WorkspaceReader = { getCurrentPath: () => mirror.getWorkspacePathSnapshot() };
 
   // ── ToolInvoker — reverse tool.invoke + live-with-background-refresh list
-  const toolInvoker = createReverseToolInvoker(runId, params.toolList);
+  const toolInvoker = createReverseToolInvoker(runId, params.toolList, conversationId);
 
   const runCtx: AgentRunContext = {
     runId,
@@ -694,7 +942,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     toolInvoker,
     resolvedCreds: params.resolvedCreds,
     locale: params.locale,
-    pushFrame: push,
+    pushFrame: pushOrdered,
   };
 
   if (params.planMode) applyPlanModeState(conversationId, params.planMode);
@@ -714,6 +962,8 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
 
   activeRuns.set(runId, {
     conversationId,
+    loopId: runId,
+    chatDelta,
     controllers,
     coalescer,
     applyConvPatch: mirror.applyConvPatch,
@@ -728,10 +978,12 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
 
   try {
     const options: AgentLoopOptions = {
-      images: params.options.images,
       blockedTools: params.options.blockedTools,
       allowedTools: params.options.allowedTools,
+      authorizationScopeId: params.options.authorizationScopeId,
+      runPermissionCeiling: params.options.runPermissionCeiling,
       imContext: params.options.imContext,
+      initiatedBy: params.options.initiatedBy,
       prePersistedUserMessageId: params.options.prePersistedUserMessageId,
       settingsReader: getSettingsMirrorReader(),
       orchestration: params.orchestration,
@@ -764,11 +1016,12 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
     // Terminal fact is ordered AFTER every final delta frame and BEFORE the
     // RPC response. If that response is lost, the shell can still settle the
     // run from this idempotent notification without re-executing any work.
+    await chatDelta.drain();
     coalescer.flush();
     const terminal = createAgentRunTerminal(runId, result);
     rememberTerminal(runId, terminal);
     sendNotification('agent.terminal', terminal);
-    return result;
+    return terminal.result;
   } catch (error) {
     traceSidecarRuntimeEvent('sidecar.agent_run_failed', {
       runId,
@@ -778,22 +1031,53 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
       errorType: sidecarRuntimeErrorType(error),
       durationMs: Date.now() - startedAt,
     });
+    await chatDelta.drain();
     coalescer.flush();
-    const message = error instanceof Error ? error.message : String(error);
+    const upstream = error instanceof LLMError
+      ? normalizeUpstreamErrorDetails(error.upstream)
+      : undefined;
+    const message = error instanceof LLMError
+      ? formatLlmTerminalError(error)
+      : error instanceof Error ? error.message : String(error);
     const terminal = createAgentRunTerminal(
       runId,
-      { reason: 'error', error: message },
+      {
+        reason: 'error',
+        error: message,
+        messageTaken: true,
+        ...(upstream ? { upstream } : {}),
+      },
       {
         errorType: sidecarRuntimeErrorType(error),
         message,
-        ...(error instanceof Error && error.stack ? { stack: error.stack } : {}),
+        ...(error instanceof Error && !(error instanceof LLMError) && error.stack
+          ? { stack: error.stack }
+          : {}),
+        ...(upstream ? { upstream } : {}),
       },
     );
     rememberTerminal(runId, terminal);
     sendNotification('agent.terminal', terminal);
+    if (error instanceof LLMError) {
+      throw new RpcError(-32000, message, {
+        name: 'LLMError',
+        code: error.code,
+        retryable: error.retryable,
+        statusCode: error.statusCode,
+        message,
+        ...(upstream ? { upstream } : {}),
+      });
+    }
     throw error;
   } finally {
     coalescer.flush();
+    if (params.options.authorizationScopeId !== undefined) {
+      for (const controller of createdControllers) {
+        if (!controller.signal.aborted) {
+          controller.abort(new Error('Scoped agent run finished'));
+        }
+      }
+    }
     activeRuns.delete(runId);
   }
 }
@@ -870,7 +1154,7 @@ export interface AgentAbortAck {
  * shell receives this response and performs its own idempotent finalization.
  * Unknown/already-finished runIds are still safe and idempotent.
  */
-export function handleAgentAbort(rawParams: unknown): AgentAbortAck {
+export async function handleAgentAbort(rawParams: unknown): Promise<AgentAbortAck> {
   const { runId } = parseAbortParams(rawParams);
   const run = activeRuns.get(runId);
   traceSidecarRuntimeEvent('sidecar.agent_abort_received', {
@@ -888,6 +1172,7 @@ export function handleAgentAbort(rawParams: unknown): AgentAbortAck {
   }
   run.coalescer.flush();
   run.controllers.get(run.conversationId)?.abort();
+  await run.chatDelta.drain();
   run.coalescer.flush();
   traceSidecarRuntimeEvent('sidecar.agent_abort_ack_ready', {
     runId,
@@ -927,10 +1212,19 @@ export function handleStateExecPatch(rawParams: unknown): void {
   run.applyExecPatch(run.conversationId, rawParams.plannedSteps as PlannedStep[]);
 }
 
-/** `{ settings }` — sidecar-GLOBAL settings mirror push, see `settingsMirror.ts`. Not per-run, so not routed through `activeRuns`. */
+/**
+ * `{ settings, revision }` — sidecar-GLOBAL settings mirror push, see
+ * `settingsMirror.ts`. Not per-run, so not routed through `activeRuns`.
+ *
+ * `revision` is the shell's monotonic push counter and is REQUIRED: a push that
+ * cannot be ordered against the mirror's current contents is dropped rather
+ * than applied, because applying one is how a stale snapshot restores a
+ * permission the user just removed (see `settingsMirror.ts`'s doc).
+ */
 export function handleStateSettings(rawParams: unknown): void {
   if (!isRecord(rawParams) || !isRecord(rawParams.settings)) return;
-  applySettingsSnapshot(rawParams.settings as unknown as SettingsState);
+  if (typeof rawParams.revision !== 'number') return;
+  applySettingsSnapshot(rawParams.settings as unknown as SettingsState, rawParams.revision);
 }
 
 /** `{ conversationId, mode }` — mirror-apply (no re-notify — `planMode.ts`'s `applyPlanModeState` doesn't fire `onPlanModeChange`, per P1-3b-2's design). */

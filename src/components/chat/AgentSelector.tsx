@@ -3,6 +3,9 @@ import { AtSign, Check, ChevronDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import type { SubagentMetadata } from '@/types';
+import { getAgentToolSummary } from '@/utils/agentToolPresentation';
+import { getAllTools } from '@/core/tools/registry';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 
 interface AgentSelectorProps {
   agents: SubagentMetadata[];
@@ -25,6 +28,7 @@ export default function AgentSelector({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  const knownToolNames = getAllTools().map((tool) => tool.name);
 
   // Filter out abu (the default fallback agent) and any user-disabled agents
   const available = agents.filter(
@@ -106,6 +110,12 @@ export default function AgentSelector({
               )}
               {available.map((a) => {
                 const isActive = selected?.name === a.name;
+                const toolSummary = getAgentToolSummary(a.tools, a.disallowedTools, knownToolNames);
+                const toolLabel = toolSummary.invalidField
+                  ? t.toolbox.agentInvalidTools
+                  : toolSummary.isUnrestricted
+                    ? t.toolbox.agentAllTools
+                    : t.toolbox.toolCount.replace('{count}', String(toolSummary.toolNames.length));
                 return (
                   <button
                     key={a.name}
@@ -126,6 +136,20 @@ export default function AgentSelector({
                         )}>
                           {a.name}
                         </span>
+                        <span
+                          className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                          title={toolSummary.invalidField ? t.toolbox.agentInvalidTools : toolSummary.toolNames.join(', ')}
+                        >
+                          {toolLabel}
+                        </span>
+                        {isPluginOwnedAgent(a) && (
+                          <span
+                            data-testid="agent-source-plugin"
+                            className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                          >
+                            {t.chat.pickAgentPluginTag}
+                          </span>
+                        )}
                         {isActive && <Check className="h-3 w-3 text-[var(--abu-clay)] shrink-0" />}
                       </div>
                       <p className="text-caption text-[var(--abu-text-tertiary)] mt-0.5 line-clamp-2 leading-snug">

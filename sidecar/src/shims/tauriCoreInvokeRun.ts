@@ -18,8 +18,10 @@
  *
  * `invoke(cmd, args)` forwards as the `native.invoke` REQUEST — verified
  * against `agentLoopRunner.ts`'s `handleNativeInvoke`: params
- * `{ cmd: string, args?: Record<string, unknown> }`, response is whatever
- * the real Tauri `invoke(cmd, args)` resolved to shell-side. Fail-closed
+ * `{ runId: string, cmd: string, args?: Record<string, unknown> }`, response
+ * is whatever the real Tauri `invoke(cmd, args)` resolved to shell-side. The
+ * ambient runId lets the shell retain the owning run until the native request
+ * settles. Fail-closed
  * server-side (an unlisted `cmd` is REJECTED by the shell handler, not
  * silently forwarded) — this shim does not duplicate that allowlist
  * client-side; it just forwards and lets the shell enforce it once, in one
@@ -37,7 +39,36 @@
  * from this redirect target) rather than silently resolving to `undefined`.
  */
 import { sendRequest } from '../rpcClient';
+import { agentRunContext } from '../agentRunContext';
+import { subagentRunContext } from '../subagentRunContext';
+
+const CLEANUP_COMMANDS: ReadonlySet<string> = new Set([
+  'abort_command',
+  'ax_close_session',
+  'computer_use_end_task',
+]);
+
+/**
+ * Cleanup-only fallback for callbacks that already captured their owning
+ * runId but execute without an ambient AsyncLocalStorage store. The shell
+ * still validates both the run owner and its native-command allowlist.
+ */
+export async function invokeCleanupForCapturedRun<T>(
+  runId: string,
+  cmd: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
+  if (!runId || !CLEANUP_COMMANDS.has(cmd)) {
+    throw new Error(`[sidecar] explicit native.invoke owner override is restricted to cleanup commands: ${cmd}`);
+  }
+  console.error('[sidecar:native.invoke] cleanup dispatch used an explicit captured run owner', { runId, cmd });
+  return sendRequest('native.invoke', { runId, cmd, args }) as Promise<T>;
+}
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  return sendRequest('native.invoke', { cmd, args }) as Promise<T>;
+  const runId = agentRunContext.getStore()?.runId ?? subagentRunContext.getStore()?.runId;
+  if (!runId) {
+    throw new Error('[sidecar] native.invoke called outside an agent/subagent run context');
+  }
+  return sendRequest('native.invoke', { runId, cmd, args }) as Promise<T>;
 }

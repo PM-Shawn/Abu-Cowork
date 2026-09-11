@@ -15,6 +15,7 @@ import {
   readComposerDraft,
   useComposerDraftStore,
   WELCOME_COMPOSER_DRAFT_KEY,
+  registerComposerDraftResourceDisposer,
   writeComposerDraft,
   writePersistedComposerText,
 } from './composerDraftStore';
@@ -152,6 +153,24 @@ describe('composerDraftStore', () => {
     expect(useComposerDraftStore.getState().drafts[key]).toBeUndefined();
   });
 
+  it('disposes token resources when a rich draft is explicitly cleared', () => {
+    const dispose = vi.fn();
+    const unregister = registerComposerDraftResourceDisposer(dispose);
+    const key = getComposerDraftKey('token-clear');
+    writeComposerDraft(key, draft('', {
+      files: [{ id: 'pdf', token: 'trusted-token', name: 'plan.pdf' }],
+    }));
+
+    clearComposerDraft(key);
+
+    expect(dispose).toHaveBeenCalledWith({
+      kind: 'file-token',
+      token: 'trusted-token',
+      file: { id: 'pdf', token: 'trusted-token', name: 'plan.pdf' },
+    });
+    unregister();
+  });
+
   it('does not resurrect a deleted conversation draft from a stale UI flush', () => {
     const conversationId = 'deleted';
     const key = getComposerDraftKey(conversationId);
@@ -163,6 +182,26 @@ describe('composerDraftStore', () => {
 
     expect(readComposerDraft(key)).toEqual(draft(''));
     expect(useComposerDraftStore.getState().drafts[key]).toBeUndefined();
+  });
+
+  it('disposes token resources from a stale write after a conversation draft tombstone', () => {
+    const dispose = vi.fn();
+    const unregister = registerComposerDraftResourceDisposer(dispose);
+    const conversationId = 'late-token';
+    const key = getComposerDraftKey(conversationId);
+
+    clearConversationComposerDraft(conversationId);
+    writeComposerDraft(key, draft('', {
+      files: [{ id: 'late-pdf', token: 'late-token', name: 'late.pdf' }],
+    }));
+
+    expect(readComposerDraft(key)).toEqual(draft(''));
+    expect(dispose).toHaveBeenCalledWith({
+      kind: 'file-token',
+      token: 'late-token',
+      file: { id: 'late-pdf', token: 'late-token', name: 'late.pdf' },
+    });
+    unregister();
   });
 
   it('clears a deleted conversation draft from every known account scope', () => {

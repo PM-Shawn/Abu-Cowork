@@ -46,12 +46,10 @@ describe('applyDeltaFrames', () => {
       conversations: {},
       conversationIndex: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
       pendingInputAppend: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
     useTaskExecutionStore.setState({ executions: {}, activeExecutionId: null, loopIdIndex: {} });
     useScratchpadStore.setState({ entries: {}, order: [] });
@@ -101,6 +99,82 @@ describe('applyDeltaFrames', () => {
       expect(msg.content).toBe('部分输出');
       expect(msg.stopReason).toBe('user');
       expect(msg.isStreaming).toBe(false);
+    });
+
+    it('setExecutionStepsSnapshot frame grafts SHELL-side child steps missing from the sidecar snapshot', async () => {
+      // A sidecar-run loop's snapshot comes from ITS execution mirror, which
+      // never saw the child steps the shell EventRouter created for a
+      // delegate's subagent tools (delegate_to_agent executes shell-side).
+      // The applier must merge them in before the snapshot is stored, or the
+      // whole child timeline — subagent images included — vanishes on replay.
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(convId, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+      });
+      // Shell-side execution state, exactly as agentLoopRunner's shell
+      // EventRouter would have built it during the run.
+      await applyDeltaFrames([
+        { p: 'exec', m: 'createExecution', a: [convId, 'loop-1'] },
+        {
+          p: 'exec',
+          m: 'addStep',
+          a: ['loop-1', { id: 'step-delegate', executionId: 'loop-1', type: 'delegate', label: 'Delegate', status: 'running', toolName: 'delegate_to_agent', toolInput: {}, source: 'agent', detailBlocks: [] }],
+        },
+      ]);
+      useTaskExecutionStore.getState().addChildStep('loop-1', 'step-delegate', {
+        id: 'child-1', executionId: 'loop-1', toolCallId: 'toolu_sub_1', type: 'tool', label: 'Screenshot',
+        status: 'completed', toolName: 'computer', toolInput: {}, source: 'agent',
+        detailBlocks: [{ id: 'child-1-image', stepId: 'child-1', type: 'image', label: 'Image', content: 'Image: /tmp/s.png', isTruncated: false, isExpanded: true }],
+      });
+
+      // The sidecar's snapshot: bare delegate step, no childSteps.
+      await applyDeltaFrames([
+        {
+          p: 'chat',
+          m: 'setExecutionStepsSnapshot',
+          a: [convId, 'loop-1', [{ id: 'step-delegate', toolCallId: 'tc-d', type: 'delegate', label: 'Delegate', status: 'completed', toolName: 'delegate_to_agent' }]],
+        },
+      ]);
+
+      const stored = useChatStore.getState().conversations[convId].messages[0].executionSteps;
+      expect(stored).toHaveLength(1);
+      expect(stored![0].childSteps).toHaveLength(1);
+      expect(stored![0].childSteps![0]).toMatchObject({
+        id: 'child-1',
+        toolCallId: 'toolu_sub_1',
+        toolName: 'computer',
+      });
+      expect(stored![0].childSteps![0].detailBlocks?.[0]).toMatchObject({ id: 'child-1-image', type: 'image' });
+    });
+
+    it('session frames keep the shell-grafted execution steps a sidecar mirror copy lacks (retest G1)', async () => {
+      const convId = useChatStore.getState().createConversation();
+      const grafted = [{ id: 's1', toolCallId: 'call-1', type: 'delegate' as const, label: '委派', status: 'completed' as const, toolName: 'delegate_to_agent',
+        childSteps: [{ id: 'c1', type: 'tool' as const, label: 'sleep', status: 'completed' as const, toolName: 'run_command' }] }];
+      useChatStore.getState().addMessage(convId, { id: 'a1', role: 'assistant', content: '完成', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1', executionSteps: grafted, plannedSteps: [{ index: 1, description: 'x', status: 'completed' }] });
+      const mirrorCopy = { id: 'a1', role: 'assistant' as const, content: '完成', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1', usage: { inputTokens: 1, outputTokens: 1 } };
+      await applyDeltaFrames([
+        { p: 'session', m: 'replaceMessageById', a: [convId, mirrorCopy] },
+        { p: 'session', m: 'snapshotMessageRevision', a: [convId, { ...mirrorCopy, executionSteps: [{ ...grafted[0], childSteps: [] }] }] },
+      ]);
+      expect(replaceMessageByIdMock.mock.calls[0][1]).toMatchObject({ id: 'a1', usage: { inputTokens: 1 }, executionSteps: grafted, plannedSteps: [{ index: 1 }] });
+      expect(snapshotMessageRevisionMock.mock.calls[0][1]).toMatchObject({ executionSteps: grafted });
+    });
+
+    it('setExecutionStepsSnapshot frame leaves a snapshot untouched when it already carries child steps', async () => {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(convId, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+      });
+      const snapWithChildren = [{
+        id: 'step-delegate', type: 'delegate' as const, label: 'Delegate', status: 'completed' as const, toolName: 'delegate_to_agent',
+        childSteps: [{ id: 'child-authoritative', type: 'tool' as const, label: 'X', status: 'completed' as const, toolName: 'computer' }],
+      }];
+      await applyDeltaFrames([
+        { p: 'chat', m: 'setExecutionStepsSnapshot', a: [convId, 'loop-1', snapWithChildren] },
+      ]);
+      const stored = useChatStore.getState().conversations[convId].messages[0].executionSteps;
+      expect(stored![0].childSteps![0].id).toBe('child-authoritative');
     });
   });
 

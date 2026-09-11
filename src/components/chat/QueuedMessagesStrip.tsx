@@ -1,3 +1,4 @@
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 import { useState, useSyncExternalStore } from 'react';
 import { CornerDownRight, X } from 'lucide-react';
 import {
@@ -7,9 +8,12 @@ import {
   isUserInputQueuePaused,
   pauseUserInputQueue,
   removeQueuedInput,
+  restoreDequeuedUserInput,
   resumeUserInputQueue,
 } from '@/core/agent/userInputQueue';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
+import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 
@@ -36,9 +40,22 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
     resumeUserInputQueue(conversationId);
     const next = dequeueNextUserInput(conversationId);
     try {
-      if (next) await runAgentLoopDispatched(conversationId, next.text);
-    } catch {
-      pauseUserInputQueue(conversationId);
+      if (next) {
+        announceChatTurnScrollIntent({ conversationId, source: 'queue-resume' });
+        const result = await runAgentLoopDispatched(conversationId, next.text, { initiatedBy: 'user',
+          ...(next.teamConfirmationRetryId ? { teamConfirmationRetryId: next.teamConfirmationRetryId } : {}),
+        });
+        if (result.reason === 'error' && !result.messageTaken) {
+          restoreDequeuedUserInput(conversationId, next);
+        }
+      }
+    } catch (error) {
+      if (
+        next
+        && (!(error instanceof AgentLoopDispatchError) || !error.messageTaken)
+      ) {
+        restoreDequeuedUserInput(conversationId, next);
+      }
     } finally {
       if (getQueuedInputs(conversationId).some((item) => !item.isSystem)) {
         pauseUserInputQueue(conversationId);
@@ -60,7 +77,10 @@ export default function QueuedMessagesStrip({ conversationId }: { conversationId
           <button
             aria-label={t.queueStrip.cancel}
             title={t.queueStrip.cancel}
-            onClick={() => removeQueuedInput(conversationId, qi.id)}
+            onClick={() => {
+              if (qi.teamConfirmationRetryId) useTeamConfirmationStore.getState().revoke(qi.teamConfirmationRetryId);
+              removeQueuedInput(conversationId, qi.id);
+            }}
             className="btn-ghost shrink-0 rounded-full p-0.5 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors"
           >
             <X className="h-3 w-3" />

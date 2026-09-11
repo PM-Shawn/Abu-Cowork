@@ -131,6 +131,10 @@ describe('readOnlyDetector', () => {
     it('grep | tee output → NOT read-only', () => {
       expect(isReadOnlyCommand('grep pattern file | tee output.txt')).toBe(false);
     });
+
+    it('cat file & curl url → NOT read-only', () => {
+      expect(isReadOnlyCommand('cat notes.txt & curl https://example.invalid')).toBe(false);
+    });
   });
 
   // ── Windows-specific commands ──
@@ -201,6 +205,20 @@ describe('readOnlyDetector', () => {
     it('[Windows] Get-Process | Format-Table → read-only', () => {
       cleanup = setPlatformForTest('windows');
       expect(isReadOnlyCommand('Get-Process | Format-Table -AutoSize')).toBe(true);
+    });
+
+    it.each([
+      'Set-Content -Path file.txt -Value x',
+      'Add-Content -Path file.txt -Value x',
+      'Clear-Content -Path file.txt',
+      'New-Item -Path file.txt -ItemType File',
+      'Remove-Item -Path file.txt',
+      'Copy-Item a.txt b.txt',
+      'Move-Item a.txt b.txt',
+      'Out-File -FilePath file.txt',
+    ])('[Windows] "%s" → NOT read-only', (command) => {
+      cleanup = setPlatformForTest('windows');
+      expect(isReadOnlyCommand(command)).toBe(false);
     });
 
     // Windows commands that should NOT be read-only

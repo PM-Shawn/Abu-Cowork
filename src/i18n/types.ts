@@ -3,6 +3,11 @@
  * Provides full type safety and IDE autocompletion for translations
  */
 
+// Type-only: keeps `stopReasonLabel` exhaustive over the stop-reason union, so
+// a new SubagentStopReason member is a compile error here instead of an
+// `undefined` label rendered to the leader.
+import type { SubagentStopReason } from '@/types';
+
 export type SupportedLocale = 'zh-CN' | 'en-US';
 export type LanguageSetting = 'system' | SupportedLocale;
 
@@ -135,7 +140,9 @@ export interface TranslationDict {
     automation: string;
     scheduledTasks: string;
     triggers: string;
-    toolbox: string;
+    /** Sidebar entry for the Extensions view (插件 / 技能 / 连接器). */
+    extensions: string;
+    team: string;
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
@@ -283,6 +290,7 @@ export interface TranslationDict {
     runRecovering: string;
     runFailed: string;
     runConnectionFailed: string;
+    contentPolicyRejected: string;
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
@@ -313,6 +321,55 @@ export interface TranslationDict {
     htmlWidgetDownload: string;
     htmlWidgetViewCode: string;
     htmlWidgetViewPreview: string;
+    // ── MCP Apps (connector-provided interfaces, spec io.modelcontextprotocol/ui) ──
+    /** Muted line while the connector's ui:// resource is being fetched. */
+    mcpAppLoading: string;
+    /** Muted line under the plain tool result when the interface could not be
+     *  fetched, was not an MCP App resource, or never completed its handshake. */
+    mcpAppLoadFailed: string;
+    /** Muted line on replay when the connector that owns the interface is
+     *  offline. `{server}` is the MCP server name. */
+    mcpAppNotConnected: string;
+    /** Button on a collapsed placeholder past the concurrent-app cap. */
+    mcpAppLoadPlaceholder: string;
+    /** One-line disclosure that the resource asked for capabilities Abu does
+     *  not grant (a dedicated sandbox `domain`, device `permissions`). */
+    mcpAppUnsupportedMeta: string;
+    /** Same line, for domains the host refused to put in the CSP.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppIgnoredDomains: string;
+    /** Suffix appended to that list when it was truncated. */
+    mcpAppIgnoredDomainsMore: string;
+    /** Same line, for the third-party origins the host DID put in the CSP —
+     *  with `connect-src 'none'` an `img-src` origin is still an outbound
+     *  channel, so who the interface may reach is worth showing.
+     *  `{domains}` is a comma-separated, truncated list. */
+    mcpAppAllowedDomains: string;
+    /** Collapsed audit row under the tool card: the app called a tool of its
+     *  own server. `{tool}` is the tool name. */
+    mcpAppAuditRow: string;
+    /** Label above the arguments the app passed in that audit row. */
+    mcpAppAuditArgs: string;
+    /** Label above the result summary in that audit row. */
+    mcpAppAuditResult: string;
+    /** Muted status line once the app hit the per-minute call budget. */
+    mcpAppRateLimited: string;
+    /** Expander title for the text the app added to the model's context. */
+    mcpAppModelContext: string;
+    /** Accessible label / tooltip for the button that leaves fullscreen. */
+    mcpAppExitFullscreen: string;
+    /** Title of the consent dialog an app-initiated `ui/open-link` must pass. */
+    mcpAppOpenLinkTitle: string;
+    /** Confirm button of that dialog. */
+    mcpAppOpenLinkConfirm: string;
+    /** Audit-row label for an `ui/open-link` attempt (whatever the outcome). */
+    mcpAppAuditOpenLink: string;
+    /** Audit outcome: the user agreed and the link went to the browser. */
+    mcpAppOutcomeOpened: string;
+    /** Audit outcome: the user said no. */
+    mcpAppOutcomeDeclined: string;
+    /** Audit outcome: the host refused it (bad scheme, or too long). */
+    mcpAppOutcomeRejected: string;
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;
@@ -338,14 +395,29 @@ export interface TranslationDict {
     feedbackNegative: string;
     saveAndResend: string;
     clickToViewFull: string;
+    imagePreviewTitle: string;
+    downloadImage: string;
+    previousImage: string;
+    nextImage: string;
+    imageCounter: string;
+    imageSaveDone: string;
+    imageSaveFailed: string;
+    imageSaveTooLarge: string;
     imageExpired: string;
+    imageLoading: string;
+    imageUnavailable: string;
+    imageRetry: string;
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
+    composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
     // Agent selector in toolbar
     pickAgent: string;
     pickAgentEmpty: string;
     pickAgentClear: string;
+    /** Trailing tag on a plugin-contributed agent's row in the @ picker. */
+    pickAgentPluginTag: string;
     // Conversation ID badge
     copyConvIdTooltip: string;
     copyConvIdCopied: string;
@@ -368,8 +440,43 @@ export interface TranslationDict {
     contextTooltipCompressing: string;
     contextTooltipUsage: string;
     contextTooltipSubtitle: string;
-    // Agent loop max turns
+    contextBreakdown: {
+      title: string;
+      systemPrompt: string;
+      tools: string;
+      mcp: string;
+      skills: string;
+      conversation: string;
+      free: string;
+    };
+    /** An @agent delegate ran out of turns inside the main run (a sentence — the
+     *  card below is for the MAIN loop's own cap). {n} = the delegate's cap. */
     maxTurnsReached: string;
+    // Agent loop turn cap — the notice card the run ends with.
+    maxTurns: {
+      /** Card title, first time this run chain hits the cap. {n} = the cap. */
+      title: string;
+      /** Card title from the second consecutive cap onwards. {n} = the cap. */
+      titleAgain: string;
+      /** Card body, first time. */
+      body: string;
+      /** Card body from the second consecutive cap onwards. */
+      bodyAgain: string;
+      /** Primary/secondary action: resume the unfinished task. */
+      continueAction: string;
+      /** Button label while the previous run is being wound down. */
+      continuing: string;
+      /** Action: jump to the 「最大轮次」 setting. */
+      adjustAction: string;
+      /** Settled state left in the transcript after 「继续执行」. */
+      continued: string;
+      /** The user message the continue button dispatches. */
+      continuePrompt: string;
+      /** Toast title when continuing fails. */
+      continueFailedTitle: string;
+      /** Toast body when continuing fails. */
+      continueFailed: string;
+    };
     // Agent loop no-progress guard (model stuck emitting unparseable tool calls)
     noProgressStopped: string;
     // Agent loop semantic guard (well-formed but repetitive/meta-only calls)
@@ -383,7 +490,11 @@ export interface TranslationDict {
     gatewayUnreachable: string;
     /** Sidecar process exited mid-task and automatic recovery has started. */
     sidecarInterrupted: string;
+    /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
+    sidecarUnavailable: string;
     messageSaveFailed: string;
+    /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
+    browserDeniedAbort: string;
     attachmentDuringRun: string;
     conversationBusy: string;
     /** Model likely doesn't support image/vision input. */
@@ -410,10 +521,29 @@ export interface TranslationDict {
     toolsRemoved: string;
     /** Tool-update notice footer. */
     toolsUpdatedFooter: string;
+    /** Composer rejected an out-of-scope direct PDF attachment. {name} */
+    unsupportedDocumentAttachment: string;
+    /** Composer is still admitting pasted/dropped/picked attachments. */
+    attachmentAdmissionPending: string;
+    /** Composer has an in-flight initial send for this draft. */
+    sendAlreadyPending: string;
+    /** Toast after a direct instruction was queued for a running team member. */
+    memberInstructionSent: string;
+    /** Composer failed to admit an attachment. */
+    attachmentAdmissionFailed: string;
+    /** Accessible name for the skill/agent suggestion listbox. */
+    composerSuggestions: string;
+    suggestionSectionTeams: string;
+    suggestionSectionAgents: string;
+    suggestionSectionSkills: string;
     /** Subagent (subagentLoop.ts) result/status strings. */
     subagent: {
       /** Subagent task was cancelled. */
       taskCancelled: string;
+      /** User content wrapping a direct instruction to a running team member. */
+      memberInstruction: string;
+      /** Abort reason attached when the stall watchdog stops a hand-off. */
+      stalledStopped: string;
       /** Output repeatedly hit the token limit; result may be incomplete. */
       outputLimitIncomplete: string;
       /** Subagent stopped: repeated incomplete tool calls / truncated output. */
@@ -424,8 +554,33 @@ export interface TranslationDict {
       hookBlocked: string;
       /** Subagent produced no content. */
       noContent: string;
+      /** Delegated images need a vision-capable target model. */
+      delegatedVisionUnsupported: string;
+      /** Delegated documents need a target model with document blocks. */
+      delegatedDocumentUnsupported: string;
+      /** Delegated attachment metadata exceeded the safe request envelope. */
+      delegatedMediaLimitExceeded: string;
+      /** Delegated-media envelope failed structural validation. */
+      delegatedMediaInvalid: string;
+      /** Required MCP tools are unavailable before delegation. {agentName} {requirements} {servers} */
+      mcpRequiredUnavailable: string;
+      /** Agent tools frontmatter contains non-string entries. {agentName} {positions} */
+      invalidToolDeclarations: string;
+      /** Agent tools frontmatter is not an array. {agentName} */
+      invalidToolsField: string;
+      /** Agent tools frontmatter contains blank entries. {agentName} {positions} */
+      invalidEmptyToolDeclarations: string;
+      /** Agent disallowed-tools frontmatter contains non-string entries. {agentName} {positions} */
+      invalidDisallowedToolDeclarations: string;
+      /** Agent disallowed-tools frontmatter is not an array. {agentName} */
+      invalidDisallowedToolsField: string;
+      /** Agent disallowed-tools frontmatter contains blank entries. {agentName} {positions} */
+      invalidEmptyDisallowedToolDeclarations: string;
     };
-    // Work-process fold label (Codex-style turn collapse). {duration} = e.g. "1m 4s"
+    // Work-process status line / fold label (Codex-style). {duration} = e.g. "1m 4s".
+    // working/workingFor = in-run divider (ticking); workedFor = settled fold header.
+    working: string;
+    workingFor: string;
     workedFor: string;
     stoppedAfter: string;
     // Usage chip
@@ -573,6 +728,7 @@ export interface TranslationDict {
     skillDraftReady: string;
     imInbound: string;
     updateAvailable: string;
+    stuckDetection: string;
   };
 
   // Scratchpad entry titles (scratchpadStore.ts)
@@ -619,10 +775,199 @@ export interface TranslationDict {
     turnLabel: string;
     /** "✓ {n} 个子任务完成" — completion summary */
     completionSummary: string;
+    /** "⚠ {done} 个完成，{failed} 个失败" */
+    completionWithErrors: string;
+    /** Mixed terminal summary. {summary} */
+    mixedSummary: string;
+    /** Persisted summary unavailable/partial. */
+    unknownSummary: string;
+    /** Fallback row title. */
+    taskFallback: string;
+    /** Unknown task status. */
+    statusUnknown: string;
+    /** Open child agent task row accessible label. */
+    openTaskLabel: string;
+    /** Fold header aggregate for child agents. {total} {summary} */
+    foldBatchAggregate: string;
+    batchStatusSucceededCount: string;
+    batchStatusFailedCount: string;
+    batchStatusStoppedCount: string;
+    batchStatusIncompleteCount: string;
+    batchStatusRunningCount: string;
+    batchStatusUnknownCount: string;
     /** "展开" */
     expand: string;
     /** "收起" */
     collapse: string;
+    /** "{n} 个工具" */
+    toolCount: string;
+    /** "{n} tokens" */
+    tokenCount: string;
+  };
+
+  /**
+   * The unattended browser run report card (U7).
+   *
+   * Rendered from a FROZEN snapshot stored on the message, but localized at
+   * render time from the machine codes in it — so a report written while the
+   * app was in Chinese reads correctly after the user switches to English.
+   *
+   * `reason.*` and `step.*` are two renderings of ONE taxonomy
+   * (`BrowserDenialReasonCode`): a short label for the blocked-actions list,
+   * and the actionable instruction for the "what to do now" list. They are not
+   * a second vocabulary — a code with no entry in both is a compile error.
+   */
+  browserRunReport: {
+    /** Card title. */
+    title: string;
+    /** Outcome badge. */
+    outcome: {
+      completed: string;
+      /** Delivered, but the gate refused at least one state-changing action. */
+      completedWithRefusals: string;
+      /** Hit the turn cap — possibly incomplete. */
+      incomplete: string;
+      /** Stopped itself after repeated refusals (U4). */
+      abortedDenials: string;
+      aborted: string;
+      error: string;
+      noProgress: string;
+    };
+    /** Prominent line when the master switch blocked everything. */
+    masterSwitchOff: string;
+    /** "完成 {total} 个浏览器动作，{failed} 个失败" */
+    actionsSummary: string;
+    /** "完成 {total} 个浏览器动作" */
+    actionsSummaryClean: string;
+    /** No action got through at all. */
+    noActions: string;
+    /**
+     * "运行了 {count} 次脚本" — how many of the actions were page SCRIPTS.
+     * Shown only when > 0; automatic-task scripting is off unless the user
+     * opted in (2026-09-04 ruling), so this line is the run saying out loud
+     * that code executed inside a logged-in session.
+     */
+    scriptRuns: string;
+    sitesTitle: string;
+    /** "{actions} 次动作 · {failures} 次失败" */
+    siteCounts: string;
+    /** "{actions} 次动作" */
+    siteCountsClean: string;
+    /** "另有 {count} 个站点" */
+    moreSites: string;
+    deniedTitle: string;
+    /** "{count} 次" */
+    occurrenceCount: string;
+    problemsTitle: string;
+    /** "另有 {count} 类问题" */
+    moreProblems: string;
+    approvalsTitle: string;
+    /** "批准 {approved} 次 · 拒绝 {declined} 次" */
+    approvalsSummary: string;
+    /** "{count} 次没人回复" */
+    approvalsTimeout: string;
+    /** "{count} 次没能送达" */
+    approvalsUnreachable: string;
+    /** "最后一次决定 {time}" */
+    approvalsLastDecision: string;
+    /** "{count} 次被页面拦住（验证码 / 频率限制等）" */
+    blockedPages: string;
+    nextStepsTitle: string;
+    /** Section header over the files this run downloaded (T6 / R-1). */
+    artifactsTitle: string;
+    /** "另有 {count} 个文件未列出" */
+    moreArtifacts: string;
+    /** Tooltip on an artifact row — click opens it in the preview panel. */
+    artifactOpenHint: string;
+    /** Label of the reveal-in-folder button on an artifact row. */
+    artifactReveal: string;
+    /** Short label per denial reason code. */
+    reason: {
+      masterSwitchOff: string;
+      siteDenied: string;
+      highRiskSite: string;
+      policyDenied: string;
+      enterprisePolicyDenied: string;
+      capabilityDenied: string;
+      originUnverified: string;
+      loginRequired: string;
+      siteNotAllowed: string;
+      approvalRefused: string;
+      userCancelled: string;
+    };
+    /** The actionable instruction per next-step code. */
+    step: {
+      enableMasterSwitch: string;
+      allowSite: string;
+      unblockSite: string;
+      doHighRiskYourself: string;
+      signInThenRerun: string;
+      relaxPolicy: string;
+      raiseCapability: string;
+      answerApproval: string;
+      runWhileWatching: string;
+    };
+    /** Human wording for `classifyBrowserToolError`'s closed class set. */
+    errorClass: {
+      timeout: string;
+      notConnected: string;
+      notFound: string;
+      locatorAmbiguous: string;
+      aborted: string;
+      unknownError: string;
+    };
+  };
+
+  /**
+   * The one-line summary an unattended run sends to its OWN IM channel,
+   * whatever way it ended (F7). Codes → sentences; the codes themselves are
+   * what the run records, so a language switch re-words history instead of
+   * freezing one locale into it.
+   *
+   * The denial reasons and next steps it quotes come from `browserRunReport`
+   * above — one table, both surfaces.
+   */
+  unattendedRun: {
+    outcome: {
+      succeeded: string;
+      /** Delivered, but something was refused / failed / ran out of turns. */
+      partial: string;
+      /** Nothing got through the gate. */
+      blocked: string;
+      /** Nothing was even attempted — the master switch is off. */
+      notRun: string;
+      failed: string;
+      stopped: string;
+      noProgress: string;
+    };
+    /** "{label}：{detail}" */
+    summaryWithDetail: string;
+    /** "{reason}（{origins}）" */
+    detailWithOrigins: string;
+    /** "{failed}/{total} 个浏览器动作失败" */
+    detailActionsFailed: string;
+    /** Nothing was refused and nothing failed, yet there is no answer. */
+    detailNothingDelivered: string;
+    /**
+     * The run ran out of turns but still delivered. The card carries this in
+     * its `incomplete` badge; IM has no badge, so it needs the sentence — and
+     * it must not be `detailNothingDelivered`, which the answer printed right
+     * below it would contradict.
+     */
+    detailTurnLimit: string;
+    /**
+     * The built-in browser had not connected when the run's tool roster was
+     * frozen, so the run never had browser tools (issue #389). Not a gate
+     * refusal — nothing was decided, the tools were simply absent.
+     */
+    detailBrowserToolsNotReady: string;
+    /** "接下来：{step}" — second line, only when there is something to do. */
+    nextStep: string;
+    /**
+     * "产物：{name}（{size}）· {path}" — one line per file the run downloaded.
+     * Name, size and location; never the file itself (T6 / R-1).
+     */
+    artifactLine: string;
   };
 
   // Settings Modal
@@ -759,9 +1104,17 @@ export interface TranslationDict {
     sandboxProtectedPaths: string;
     sandboxWritablePaths: string;
     sandboxDisableWarning: string;
+    // Sandbox — Windows-specific copy (restricted token + PowerShell CLM,
+    // no file-path isolation; see electron/commandHost.cjs + sandbox-launcher)
+    sandboxDescriptionWindows: string;
+    sandboxProtectionDescriptionWindows: string;
+    sandboxWindowsMechanism: string;
+    sandboxWindowsScope: string;
+    sandboxDisableWarningWindows: string;
     // Network isolation
     networkIsolation: string;
     networkIsolationDescription: string;
+    networkIsolationDescriptionWindows: string;
     allowPrivateNetworks: string;
     networkWhitelist: string;
     networkPreset: string;
@@ -784,17 +1137,193 @@ export interface TranslationDict {
     capabilitiesDescription: string;
     capabilityWebTitle: string;
     capabilityBuiltinBrowser: string;
-    capabilityBuiltinBrowserDesc: string;
-    capabilityBuiltinBrowserScope: string;
     capabilityMyChrome: string;
     capabilityMyChromeDesc: string;
+    /** The one consent clause the My Chrome page keeps: it sits on the status
+     *  row while the channel is connected, in place of the footer paragraph
+     *  that used to say the same thing at four times the length. */
     capabilityMyChromeScope: string;
+    /** Level-1 channel cards AND the one-line subtitle under each detail
+     *  page's title — the same sentence in both places, because a detail page
+     *  is the card opened up. Anything longer belongs in a card below. */
+    capabilityBuiltinBrowserSubtitle: string;
+    capabilityMyChromeSubtitle: string;
+    capabilityComputerSubtitle: string;
     browserSitePermsTitle: string;
     browserSitePermsDesc: string;
     browserSitePermsEmpty: string;
     browserSitePermsAllowed: string;
     browserSitePermsDenied: string;
+    /** Option descriptions: the explanation lives where the choice is made,
+     *  not behind a hover affordance. */
+    browserSitePermsAllowedDesc: string;
+    browserSitePermsDeniedDesc: string;
     browserSitePermsRevoke: string;
+    /** F1 (2026-09-04) — the list is also an ENTRY point, not only a record of
+     *  dialogs already answered. Without it, the ONLY way to reach 「始终允许」
+     *  was to run the thing attended, be refused, and click the dialog — so
+     *  setting up a scheduled task meant deliberately failing once first.
+     *  `browserSitePermsAddInvalid` is the one rejection this row can produce
+     *  on its own; a high-risk origin reuses `browserHighRiskReason`, the same
+     *  sentence the confirmation dialog gives for the same refusal. */
+    browserSitePermsAddLabel: string;
+    browserSitePermsAddPlaceholder: string;
+    browserSitePermsAddVerdictLabel: string;
+    browserSitePermsAddButton: string;
+    browserSitePermsAddInvalid: string;
+    /** The one refusal here that is a SECURITY property, not input validation:
+     *  `highRiskSites.ts` withholds a standing grant for money-movement and
+     *  government origins, and the confirmation dialog already declines to
+     *  offer one (`allowPersistentGrant: false`). Same reason as
+     *  `commandConfirm.browserHighRiskReason`, minus its "check the page
+     *  before you confirm" tail — there is nothing to confirm on this page —
+     *  plus the thing the user CAN still do here. */
+    browserSitePermsAddHighRisk: string;
+    /** Card summary on a capability detail page: counts + the fact that the
+     *  verdicts are one shared list across both browser channels. */
+    browserSitePermsSummary: string;
+    /** U5 authorization visibility — which sites an unattended run reaches.
+     *  ORIGIN-level: a site being listed does not mean every page on it is
+     *  reachable, since the high-risk classifier still refuses per call.
+     *  The per-row "reachable / attended-only" pair was dropped: allowed means
+     *  allowed, and the per-page refusal now lives in the option description.
+     *  The high-risk tag stays — it reports the one thing the row cannot
+     *  imply, that an explicitly allowed site will still ask. */
+    browserHighRiskTag: string;
+    /** Row tag: this 「始终允许」 was minted through the merged prompt a page's
+     *  embedded regions get, so it is SCOPED — valid only inside the embedded
+     *  regions of the page it was given on, whoever is watching. Used when the
+     *  stored grant does not say which page that was (a pre-v51 mark). */
+    browserViaEmbedTag: string;
+    /** {@link browserViaEmbedTag} when the page IS known — `{page}` is that
+     *  page's address, or {@link browserViaEmbedTagPageMore}. */
+    browserViaEmbedTagOnPage: string;
+    /** The `{page}` of {@link browserViaEmbedTagOnPage} when the same region was
+     *  granted on several pages: the first address plus how many others. */
+    browserViaEmbedTagPageMore: string;
+    /** `title` for both tags — what the scope covers, what it does not, and how
+     *  to promote it to an ordinary standing grant. */
+    browserViaEmbedTagHint: string;
+    browserUnattendedReachSummary: string;
+    browserUnattendedReachNone: string;
+    browserUnattendedReachOff: string;
+    // Operation-class three-state policy + unattended master switch (batch-二
+    // 「无人值守授权闭环」T1). ONE row per class since the 2026-09-04 ruling
+    // collapsed the attended/automatic columns — the two column headings that
+    // used to live here have no surface left to name.
+    browserOpPolicyTitle: string;
+    browserOpPolicyDesc: string;
+    browserOpClassReadOnly: string;
+    browserOpClassInteractive: string;
+    /** T5 — the fourth operation class, one row on the same card. */
+    browserOpClassUpload: string;
+    /** Scripting is split out into its own card: it is the one row an ordinary
+     *  user should not skim past, and the only one that carries a risk
+     *  warning. The class name is that card's title, so it carries a
+     *  description of its own. */
+    browserOpClassScripting: string;
+    browserOpClassScriptingDesc: string;
+    browserOpStateAllow: string;
+    browserOpStateDeny: string;
+    browserOpStateAsk: string;
+    /** 「允许」 on the READ-ONLY row, where it is unconditional. */
+    browserOpStateAllowDesc: string;
+    /**
+     * 「允许」 on the two rows that ACT (click/fill, run scripts), where it is
+     * scoped to the sites carrying a standing 「始终允许」 verdict — a
+     * 'default' site still opens a confirmation. Split from the read-only
+     * wording by F8 (2026-09-05): one shared sentence 「不再询问」 was true for
+     * exactly one of the three rows.
+     */
+    browserOpStateAllowDescSiteScoped: string;
+    browserOpStateDenyDesc: string;
+    /**
+     * One line covering BOTH execution contexts, because one setting now
+     * governs both: a dialog while the user is here, and an IM approval at
+     * the channel the automation itself names when a task is running alone
+     * (`core/im/approvalTarget.ts` → `askOverIm`). With no channel bound
+     * there is nobody to ask and the action is refused (`no_binding`) with a
+     * desktop notice — the reason the task editor's field is called
+     * 结果与审批推送频道.
+     */
+    browserOpStateAskDesc: string;
+    /** ⚠ line under the scripting select while `allow` is selected AND the
+     *  automatic-tasks master switch is on — i.e. only while the risk is
+     *  live. An attended script is asked about every time whatever this row
+     *  says, so the switch is what makes an `allow` here mean anything. */
+    browserUnattendedScriptRiskWarning: string;
+    /* ── S12 生效权限预览 ─────────────────────────────────────────────
+     * A row inside the operation-permission card that answers "what can Abu
+     * do on this site right now?" with NO side effects. The verdict comes
+     * from `evaluateBrowserGate`, the same function the real gate uses, and
+     * the refusal wording is reused verbatim from `browserRunReport.reason`
+     * so the pane and the morning card never disagree.
+     */
+    browserPreviewTitle: string;
+    browserPreviewPlaceholder: string;
+    /** Shown when the typed text is not an http(s) address. */
+    browserPreviewInvalid: string;
+    /** Column headers: the two execution contexts. */
+    browserPreviewAttended: string;
+    browserPreviewUnattended: string;
+    /** The three verdicts a cell can carry. */
+    browserPreviewAllow: string;
+    browserPreviewAsk: string;
+    browserPreviewDeny: string;
+    /** The one-line "why" under an allow. */
+    browserPreviewNoPrompt: string;
+    browserPreviewAskDialog: string;
+    /** Deliberately does NOT name a person: the approver is bound per task
+     *  (S11), and this pane holds no global one to promise. */
+    browserPreviewAskIm: string;
+    /** What the preview did not check, said once. */
+    /** What the preview does NOT know: it answers for the address on its own,
+     *  and a real call folds in every embedded region it touches (R3-I). */
+    browserPreviewCaveat: string;
+    /* ── S11 自动任务配置总览 ──────────────────────────────────────── */
+    browserAutomationOverviewTitle: string;
+    /** "定时任务 {schedule} · 触发器 {trigger} · 消息渠道 {im}" */
+    browserAutomationOverviewCounts: string;
+    /** Nothing to fix — not "everything will work". */
+    browserAutomationOverviewClear: string;
+    /** No automation declares the browser at all. */
+    browserAutomationOverviewEmpty: string;
+    /** Card-level prerequisites, each one line. */
+    browserAutomationMasterOff: string;
+    browserAutomationNoAllowedSite: string;
+    /** Per-row issue: the policy needs a confirmation and the task named
+     *  nobody who could answer it. */
+    browserAutomationNoApprover: string;
+    /** Per-row: the automation is paused, so nothing runs either way. */
+    browserAutomationPaused: string;
+    /** Source tags. */
+    browserAutomationSourceSchedule: string;
+    browserAutomationSourceTrigger: string;
+    browserAutomationSourceIm: string;
+    /** The jump to that automation's own editor. */
+    browserAutomationFix: string;
+    /** Honest label for "we cannot tell statically whether it uses the browser". */
+    browserAutomationRuntimeCheck: string;
+    /* ── S18 保存反馈 ────────────────────────────────────────────────
+     * Inline status for a browser authorization field, next to the control
+     * that produced it. Confirmed by reading the value back out of storage —
+     * never shown on the strength of a re-render.
+     */
+    browserSaveSaving: string;
+    browserSaveSaved: string;
+    /** Says what was lost AND what is now in force, because the field has
+     *  already been rolled back by the time this is read. */
+    browserSaveFailed: string;
+    browserSaveRetry: string;
+    browserAutomaticTasksTitle: string;
+    browserUnattendedMasterSwitchLabel: string;
+    browserUnattendedMasterSwitchDesc: string;
+    /** U6 — the built-in browser can refuse an automatic action on an expired
+     *  session before it happens; the Chrome-extension channel can only report
+     *  it after the fact. One sentence, shown at the top of the permission card
+     *  on the My Chrome page ONLY — it is advice about that channel, and the
+     *  people it cannot apply to should not have to read past it. */
+    browserUnattendedChannelCaveat: string;
     capabilityComputerTitle: string;
     capabilityComputerDesc: string;
     capabilityExtensionsTitle: string;
@@ -809,9 +1338,10 @@ export interface TranslationDict {
     capabilityStatusReady: string;
     capabilityStatusSetupRequired: string;
     capabilityStatusNotConnected: string;
+    /** My Chrome's detail page reports the channel, not the app's readiness:
+     *  what the user did was connect a browser, so that is the word. */
+    capabilityStatusConnected: string;
     capabilityStatusOff: string;
-    capabilityStatusPermissionRequired: string;
-    capabilityStatusConnectionLost: string;
     capabilityStatusUnavailable: string;
     capabilityStatusChecking: string;
     capabilityStatusNextStep: string;
@@ -822,13 +1352,20 @@ export interface TranslationDict {
     capabilityPermissionUnknown: string;
     capabilityBuiltinBrowserDisconnected: string;
     capabilityBuiltinBrowserUnavailable: string;
-    capabilityChromeSetupRequired: string;
     capabilityChromeOptional: string;
     capabilityChromeDisconnected: string;
     capabilityChromeProbeUnavailable: string;
-    capabilityComputerDisabled: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
+    capabilityComputerAuthorize: string;
+    capabilityComputerUsable: string;
+    capabilityComputerSetupIntro: string;
+    capabilityComputerScreenShort: string;
+    capabilityComputerControlShort: string;
+    capabilityComputerViewHelp: string;
+    capabilityComputerSystemPermissions: string;
+    capabilityComputerPermissionProgress: string;
+    capabilityComputerRestartNote: string;
     capabilityComputerModel: string;
     capabilityComputerModelFull: string;
     capabilityComputerModelStructured: string;
@@ -839,22 +1376,21 @@ export interface TranslationDict {
     capabilityComputerModelUnsupportedNote: string;
     capabilityComputerModelUnknownNote: string;
     capabilityBackToOverview: string;
-    capabilityDone: string;
     capabilityCheckConnection: string;
     capabilityChromeConnect: string;
-    capabilityChromeManage: string;
+    /** Accessible name of the disconnect action. The button SHOWS the short
+     *  form (`capabilityChromeDisconnectShort`) because the page it sits on is
+     *  already titled "My Chrome"; the long form stays as the accessible name
+     *  so a screen reader still hears what is being disconnected, and it
+     *  contains the visible text, as WCAG "label in name" requires. */
     capabilityChromeDisconnect: string;
+    capabilityChromeDisconnectShort: string;
     capabilityChromeSetupTitle: string;
-    capabilityChromeSetupDesc: string;
     capabilityChromeTaskNeedsSetup: string;
-    capabilityChromeConfirmEnable: string;
-    capabilityChromeConsent: string;
     capabilityChromeExperimental: string;
     capabilityChromePermissionScope: string;
     capabilityChromeServiceUnavailable: string;
-    capabilityChromeExtensionTitle: string;
     capabilityChromeExtensionDesc: string;
-    capabilityChromeExtensionConnected: string;
     capabilityChromeOpenInstaller: string;
     capabilityChromeManualTitle: string;
     capabilityChromeManualStep1: string;
@@ -862,17 +1398,20 @@ export interface TranslationDict {
     capabilityChromeManualStep3: string;
     capabilityChromeResourceMissing: string;
     capabilityChromeOpenFailed: string;
-    capabilityChromePrivacy: string;
     capabilityComputerEnable: string;
-    capabilityComputerStartSetup: string;
-    capabilityComputerContinue: string;
-    capabilityComputerManage: string;
     capabilityComputerSetupTitle: string;
+    /** Still the description the floating permission guide window shows; the
+     *  settings page itself uses the one-line `capabilityComputerSubtitle`. */
     capabilityComputerSetupDesc: string;
     capabilityComputerTaskNeedsSetup: string;
     capabilityComputerConfirmEnable: string;
-    capabilityComputerConsent: string;
+    /** The one consent clause kept on the Computer Use status row, in place of
+     *  the footer paragraph. `capabilityComputerPrivacy` still carries the
+     *  full statement inside the permission guide. */
+    capabilityComputerReadyNote: string;
+    /** See `capabilityChromeDisconnect` for why there are two of these. */
     capabilityComputerDisable: string;
+    capabilityComputerDisableShort: string;
     capabilityScreenReadDesc: string;
     capabilityUIControlDesc: string;
     capabilityComputerStepScreen: string;
@@ -895,14 +1434,21 @@ export interface TranslationDict {
     capabilityPermissionGuideRestart: string;
     capabilityPermissionGuideRestartTitle: string;
     capabilityPermissionGuideRestartDesc: string;
-    capabilityComputerReadyTitle: string;
-    capabilityComputerReadyDesc: string;
     capabilityReturnToTask: string;
     capabilityComputerPlatformHint: string;
+    /** Guide-window only. The settings page says the same thing in one clause
+     *  on its status row (`capabilityComputerReadyNote`). */
     capabilityComputerPrivacy: string;
     closeWindowBehavior: string;
     composerEnterBehavior: string;
     composerEnterBehaviorDesc: string;
+    /** Global turn cap for a single run (settings › general). */
+    agentMaxTurns: string;
+    agentMaxTurnsDesc: string;
+    /** One dropdown option. {n} = the number of turns. */
+    agentMaxTurnsOption: string;
+    /** Shown only when a cap of "no cap" is already in force from outside the UI. */
+    agentMaxTurnsUnlimited: string;
     composerEnterSends: string;
     /** `{modifier}` = ⌘ / Ctrl. */
     composerEnterNewline: string;
@@ -1088,7 +1634,6 @@ export interface TranslationDict {
     revoke: string;
     appAutomationTitle: string;
     appAutomationDescription: string;
-    appAutomationConnectorPending: string;
     appAutomationUseComputer: string;
     appAutomationStop: string;
     appAutomationAdvanced: string;
@@ -1213,6 +1758,7 @@ export interface TranslationDict {
     errMap: {
       // AI service codes
       aiAuth: string;
+      aiContentPolicy: string;
       aiRateLimit: string;
       aiOverloaded: string;
       aiServerError: string;
@@ -1281,6 +1827,9 @@ export interface TranslationDict {
     conversationPickerTooMany: string; // {max}
     // Feedback form field label
     descriptionLabel: string;
+    // Required-field validation errors (upload path)
+    descriptionRequired: string;
+    conversationRequired: string;
     // Screenshot upload (feedback form)
     screenshotTitle: string;
     screenshotAddHint: string;
@@ -1293,13 +1842,254 @@ export interface TranslationDict {
   };
 
   // Toolbox Modal
+  team: {
+    tabMembers: string;
+    tabTeams: string;
+    searchPlaceholder: string;
+    newTeam: string;
+    editTeam: string;
+    createTeamAction: string;
+    teamCreated: string;
+    teamSaved: string;
+    teamSaveFailed: string;
+    fieldName: string;
+    fieldNamePlaceholder: string;
+    fieldAvatar: string;
+    fieldAvatarPlaceholder: string;
+    fieldAvatarHint: string;
+    fieldMembers: string;
+    fieldMembersHint: string;
+    noMembersYet: string;
+    createMemberNow: string;
+    fieldLeaderNote: string;
+    fieldLeaderNoteHint: string;
+    fieldLeaderNotePlaceholder: string;
+    teamRowSummary: string;
+    /** Singular of `teamRowSummary`, for exactly one member. */
+    teamRowSummaryOne: string;
+    detailStartChat: string;
+    detailLeader: string;
+    detailMembers: string;
+    detailNoMembers: string;
+    detailPlanApproval: string;
+    detailPlanApprovalOn: string;
+    detailPlanApprovalOff: string;
+    detailLeaderNote: string;
+    detailSkills: string;
+    detailSkillsHint: string;
+    detailNoSkills: string;
+    detailEdit: string;
+    aiCreateTeamPrompt: string;
+    unknownMember: string;
+    /** Detail / edit row for a stored member no live agent answers to. */
+    memberInvalid: string;
+    memberInvalidShort: string;
+    /** Primary line of an invalid row whose stored id still spells the name (`builtin:` / `plugin:`). */
+    memberInvalidNamed: string;
+    /** Primary line of an invalid row with no recoverable name; `{n}` is 1-based among those rows. */
+    memberInvalidNumbered: string;
+    /** Muted caption under an invalid row: why it is invalid. */
+    memberInvalidReason: string;
+    memberInvalidRemove: string;
+    editInvalidMembers: string;
+    teamsEmpty: string;
+    teamsEmptyHint: string;
+    /** Follow-up chips under a finished team turn. */
+    followUpRedoStep: string;
+    followUpMemberRevise: string;
+    followUpMemberAppend: string;
+    confirmationStripTitle: string;
+    confirmationSeparator: string;
+    confirmationLeader: string;
+    confirmationApproveRun: string;
+    confirmationAllowSite: string;
+    confirmationWriteRead: string;
+    confirmationWrite: string;
+    confirmationRead: string;
+    confirmationCwd: string;
+    confirmationOrigin: string;
+    confirmationRequestOrdinal: string;
+    confirmationDefaultCwd: string;
+    confirmationLegacy: string;
+    confirmationRunRule: string;
+    confirmationRevoke: string;
+    confirmationApprove: string;
+    confirmationReject: string;
+    confirmationNotice: string;
+    confirmationApprovedFollowUp: string;
+    confirmationRejectedFollowUp: string;
+    stallStoppedNotice: string;
+    resumeAfterRestart: string;
+    resumeAfterRestartFailed: string;
+    followUpHint: string;
+    fieldPlanApproval: string;
+    fieldPlanApprovalHint: string;
+    chatReceiptEmptyGoal: string;
+    chatReceiptOtherTeam: string;
+    fieldLeader: string;
+    fieldLeaderHint: string;
+    leaderPlaceholder: string;
+    membersPlaceholder: string;
+    pickerEmpty: string;
+    suggestionTeamHint: string;
+    deleteTeamAction: string;
+    deleteTeamTitle: string;
+    deleteTeamMessage: string;
+    teamArchived: string;
+  };
+
   toolbox: {
+    agentNamePlaceholder: string;
+    agentNameFormatHint: string;
+    agentInstructionsLabel: string;
+    agentAdvancedSection: string;
+    agentSkillsPlaceholder: string;
+    agentSkillsEmpty: string;
     title: string;
     skills: string;
     agents: string;
     mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
+    // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
+    plugins: string;
+    pluginsEmptyState: string;
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
+     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
+     *  literally "MCP", not a Connectors-flavored label. */
+    connectors: string;
+    // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
+    pluginsMarketplaceTab: string;
+    // Extensions 「市场 | 我的」 source sub-nav + the `···` menu on an installed item
+    sourceMarket: string;
+    sourceMine: string;
+    /** "{name} 的操作" — accessible name of an installed item's `···` trigger. */
+    itemMenuLabel: string;
+    menuTrial: string;
+    menuManage: string;
+    menuUninstall: string;
+    menuEdit: string;
+    menuView: string;
+    menuDelete: string;
+    menuRemove: string;
+    menuManagedByOrg: string;
+    /** 「立即试用」prefilled prompt — `{name}` = item name, `{hint}` = its description. */
+    trialPrompt: string;
+    /** Hint used when an item has no description. */
+    trialPromptFallback: string;
+    pluginsAddMarketplace: string;
+    pluginsAddMarketplaceTitle: string;
+    pluginsManifestInvalidField: string;
+    pluginsComponentMissing: string;
+    pluginsComponentEmptySkills: string;
+    pluginsBusy: string;
+    pluginsChanging: string;
+    pluginsCreate: string;
+    pluginsDraft: string;
+    pluginsAuthorConversation: string;
+    pluginsAuthorPrompt: string;
+    pluginsContinueEditing: string;
+    pluginsUpdating: string;
+    pluginsCheckChanges: string;
+    pluginsPreviewUpdate: string;
+    pluginsAuthorUpdateAvailable: string;
+    pluginsAuthorUpdateHint: string;
+    pluginsValidationPassed: string;
+    pluginsUpdateDisclosureTitle: string;
+    pluginsUpdateDisclosureSubtitle: string;
+    pluginsReviewChanges: string;
+    pluginsAuthoredSource: string;
+    pluginsReadyToInstall: string;
+    pluginsSourceFiles: string;
+    pluginsUnchanged: string;
+    pluginsDraftHint: string;
+    pluginsConfiguration: string;
+    pluginsConfigurationHint: string;
+    pluginsMarketplaceNameConflict: string;
+    pluginsMarketplaceIdentityChanged: string;
+    pluginsRefreshMarketplace: string;
+    pluginsCachedMarketplace: string;
+    pluginsRecoveryNeeded: string;
+    pluginsDeleteDraft: string;
+    pluginsDeleteDraftWarning: string;
+    pluginsJournalUnreadable: string;
+    pluginsArchiveContinue: string;
+    pluginsArchiveWarning: string;
+    pluginsArchivedNotice: string;
+    pluginsRetryRecovery: string;
+    pluginsDisabledCapability: string;
+    pluginsComponentInvalidJson: string;
+    pluginsComponentConflict: string;
+    pluginsMarketplaceDirLabel: string;
+    pluginsMarketplaceDirPlaceholder: string;
+    pluginsMarketplaceDirHint: string;
+    pluginsBrowseDir: string;
+    pluginsMarketplaceReadFailed: string;
+    pluginsNoMarketplaces: string;
+    pluginsNoMarketplacesHint: string;
+    pluginsRemoveMarketplace: string;
+    pluginsRemoveMarketplaceTitle: string;
+    pluginsRemoveMarketplaceMessage: string;
+    pluginsCategoryAll: string;
+    pluginsNoMatches: string;
+    pluginsEntryCount: string;
+    pluginsInstall: string;
+    pluginsUpdate: string;
+    pluginsUpdateSucceeded: string;
+    pluginsUpdateReloadHint: string;
+    /** Sidebar red-dot a11y label / Plugins-tab badge — "{count} updates available". */
+    pluginsUpdatesAvailable: string;
+    /** Singular form: English needs it, Chinese reuses the same wording. */
+    pluginsUpdatesAvailableOne: string;
+    pluginsUninstall: string;
+    pluginsUninstallTitle: string;
+    pluginsUninstallMessage: string;
+    pluginsUninstallFailed: string;
+    pluginsSkillCount: string;
+    pluginsServerCount: string;
+    pluginsFromMarketplace: string;
+    pluginsGoToMarketplace: string;
+    /** 「我的」 empty state — the user has authored no plugins yet. */
+    pluginsMineEmptyTitle: string;
+    pluginsMineEmptyHint: string;
+    /** Heading of the group for installs whose marketplace is gone. */
+    pluginsOrphanGroup: string;
+    /** Title of the installed-plugin detail dialog opened from 「管理」. */
+    pluginsManageTitle: string;
+    /** Install disclosure — the screen that shows what executable code is coming in. */
+    pluginsDisclosureTitle: string;
+    pluginsDisclosureSubtitle: string;
+    pluginsDisclosureSource: string;
+    pluginsDisclosureSkills: string;
+    pluginsDisclosureServers: string;
+    pluginsDisclosureServersHint: string;
+    /** Heading of the agents group — also reused by the manage dialog. */
+    pluginsDisclosureAgents: string;
+    /** Why one agent in the group will be skipped; one short tag per row. */
+    pluginsDisclosureAgentExists: string;
+    pluginsDisclosureAgentUnsafeName: string;
+    pluginsDisclosureAgentEmptyPrompt: string;
+    pluginsDisclosureCapabilities: string;
+    pluginsDisclosureIgnoredTitle: string;
+    pluginsDisclosureIgnoredHint: string;
+    pluginsDisclosureSymlinkTitle: string;
+    pluginsDisclosureSymlinkHint: string;
+    /** List punctuation for the refused-link paths — `, ` reads wrong in zh. */
+    pluginsDisclosureSymlinkSeparator: string;
+    /** Shown when the artifact carried no verifiable signature. */
+    pluginsDisclosureUnsigned: string;
+    pluginsDisclosureNone: string;
+    pluginsDisclosureLoading: string;
+    pluginsInstalling: string;
+    pluginsInstallFailed: string;
+    pluginsInstallSucceeded: string;
+    pluginsRemoteSourceBadge: string;
+    pluginsUnsupportedTitle: string;
+    pluginsUnsupportedRemote: string;
+    pluginsPlanFailed: string;
+    /** The package's own directory is a symlink, so nothing about it is trustworthy. */
+    pluginsSymlinkRootRefused: string;
+    pluginsPlanDenied: string;
     // Skills Section
     installedSkills: string;
     noInstalledSkills: string;
@@ -1308,6 +2098,9 @@ export interface TranslationDict {
     createWithAbu: string;
     createManually: string;
     nameFormatHint: string;
+    agentNameTakenHint: string;
+    skillNameTakenHint: string;
+    itemSaveFailed: string;
     aiAssistedCreate: string;
     installFailed: string;
     // npm registry install
@@ -1365,6 +2158,8 @@ export interface TranslationDict {
     connecting: string;
     reconnecting: string;
     disconnected: string;
+    /** MCP server status after its connection failed. */
+    connectionError: string;
     connect: string;
     disconnect: string;
     add: string;
@@ -1380,6 +2175,8 @@ export interface TranslationDict {
     sourceProject: string;
     sourceUser: string;
     sourceUnknown: string;
+    // Generic "Description" label used in the agent/skill/MCP detail views
+    detailDescription: string;
     builtinSkills: string;
     builtinAgents: string;
     noSkillsFound: string;
@@ -1435,6 +2232,16 @@ export interface TranslationDict {
     pickFolder: string;              // "选择文件夹"
     pickFile: string;                // "选择文件 (.askill/.zip)"
     importSkippedFiles: string;      // "跳过 {n} 个隐藏文件：{names}"
+    /** {n}, {names} — symlinks the copy refused, NOT hidden files. */
+    importSkippedLinks: string;
+    /** Joins the link paths in {@link importSkippedLinks}. */
+    importSkippedLinksSeparator: string;
+    /** {path} — the chosen folder is itself a symlink. */
+    importSymlinkRootRefused: string;
+    /** {name} — the .askill's frontmatter name is not one directory segment. */
+    importUnsafeName: string;
+    /** {n}, {names} — entries packSkill will not put in an exported archive. */
+    exportSymlinkRefused: string;
     manualAdd: string;
     // Skill detail & editor
     skillDetail: string;
@@ -1453,6 +2260,8 @@ export interface TranslationDict {
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
+    backToDetails: string;
+    useNow: string;
     skillTryInChat: string;
     skillSave: string;
     skillSaveAndTest: string;
@@ -1486,9 +2295,25 @@ export interface TranslationDict {
     categoryBuiltin: string;           // "市场" (ships-with-Abu / catalog, vs "我的")
     skillSourceBuiltin: string;
     skillSourceUser: string;
+    skillSourcePlugin: string;
+    skillPluginDisabled: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;
+    /** Skills 「市场」 hint card — outside skills arrive with plugins. */
+    skillsMarketHintTitle: string;
+    skillsMarketHintBody: string;
+    skillsMarketGoPlugins: string;
+    /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
+    skillsMineEmptyTitle: string;
+    /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
+    connectorsMarketTitle: string;
+    connectorsFromPlugins: string;
+    connectorsAdd: string;
+    /** Accessible name of one catalog row's 添加 button — `{name}` is the connector. */
+    connectorAddLabel: string;
+    /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
+    connectorsMineEmptyTitle: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;
@@ -1507,6 +2332,10 @@ export interface TranslationDict {
     agentModelInherit: string;
     agentTools: string;
     agentDisallowedTools: string;
+    agentToolPatternsHint: string;
+    agentUnknownToolsWarning: string;
+    agentAllTools: string;
+    agentInvalidTools: string;
     agentSkills: string;
     agentMemory: string;
     agentMemorySession: string;
@@ -1517,6 +2346,15 @@ export interface TranslationDict {
     agentAvatar: string;
     agentSystemPrompt: string;
     agentEdit: string;
+    /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
+    agentFromPlugin: string;
+    agentFromPluginEditDisabled: string;
+    agentFromPluginDeleteDisabled: string;
+    /** Deleting an agent that one or more teams reference. */
+    agentDeleteInTeamsTitle: string;
+    agentDeleteInTeamsMessage: string;
+    agentDeleteLeaderInTeamsMessage: string;
+    agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;
     agentEditorTitle: string;
@@ -1549,10 +2387,12 @@ export interface TranslationDict {
     // Connection test
     testConnection: string;
     testSuccess: string;
+    mcpFromPlugin: string;
     testFailed: string;
     testing: string;
     // Tool count
     toolCount: string;
+    toolCountWithApp: string;
     noTools: string;
     // Server logs
     viewLogs: string;
@@ -1647,7 +2487,7 @@ export interface TranslationDict {
     categoryBlocksUnblock: string;      // button label
     categoryBlocksUnblockError: string; // toast title on delete failure
     categoryBlocksHint: string;         // subtitle describing what these are
-    // Enterprise capability source (shown inside Skill / MCP when bound)
+    // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
     personalSource: string;
@@ -1880,15 +2720,66 @@ export interface TranslationDict {
     newBrowserTab: string;
     newTerminalTab: string;
     closeTab: string;
+    closeTabLabel: string;
     closeOtherTabs: string;
     closeAllTabs: string;
+    tabListLabel: string;
     newTabPage: string;
     terminalTitle: string;
     browserTitle: string;
+    agentTitle: string;
     summaryTitle: string;
     summaryDesc: string;
     browserDesc: string;
     terminalDesc: string;
+    agentStatusQueued: string;
+    agentStatusRunning: string;
+    agentStatusSucceeded: string;
+    agentStatusFailed: string;
+    agentStatusStopped: string;
+    agentStatusIncomplete: string;
+    agentStatusDone: string;
+    agentStatusError: string;
+    agentTools: string;
+    agentTokens: string;
+    agentNoSteps: string;
+    agentFullProcessUnavailable: string;
+    /** Member tab header note when the process is replayed from the message snapshot. */
+    agentPersistedProcess: string;
+    /** Member tab header note while the dispatch is still running (live execution source). */
+    teamLiveProcess: string;
+    /** Team overview tab (in-conversation team). */
+    teamTitle: string;
+    teamNotPinned: string;
+    teamLeaderBadge: string;
+    teamLeaderIdle: string;
+    teamMembersHeader: string;
+    teamNoMembers: string;
+    teamMemberIdle: string;
+    teamDispatchCount: string;
+    teamNoDispatchYet: string;
+    teamDispatchOrdinal: string;
+    teamOpenDispatch: string;
+    teamOpenOverview: string;
+    teamStopDispatch: string;
+    teamStopDispatchShort: string;
+    teamStopDispatchShortNamed: string;
+    teamAppendInstruction: string;
+    teamStalledFor: string;
+    teamDispatchInterrupted: string;
+    teamDispatchNoToolCalls: string;
+    teamMemberBarCollapse: string;
+    teamMemberBarExpand: string;
+    teamMemberBarCollapsed: string;
+    /** Singular form of teamMemberBarCollapsed, used when the count is exactly 1. */
+    teamMemberBarCollapsedOne: string;
+    /** Member strip pill: N stored members no live agent answers to. */
+    teamMemberBarUnresolved: string;
+    /** Singular form of teamMemberBarUnresolved, used when the count is exactly 1. */
+    teamMemberBarUnresolvedOne: string;
+    teamMemberBarUnresolvedHint: string;
+    agentRichContentReleased: string;
+    agentRichContentPartiallyRetained: string;
     startHere: string;
     terminalProcessExited: string;
     terminalStartFailed: string;
@@ -1921,6 +2812,13 @@ export interface TranslationDict {
 
   // Scheduled Tasks
   schedule: {
+    teamExecutor: string;
+    teamExecutorNone: string;
+    teamExecutorSearch: string;
+    teamExecutorEmpty: string;
+    teamExecutorHint: string;
+    teamAutoPaused: string;
+    teamPlanUnconfirmed: string;
     title: string;
     newTask: string;
     editTask: string;
@@ -1991,6 +2889,14 @@ export interface TranslationDict {
     // Output
     outputChannel: string;
     outputChannelNone: string;
+    /**
+     * F2 (2026-09-04) — answers the question this field always invited and
+     * never answered: "does the run ask ME here?" It does now. The scheduler
+     * builds its approval target from these same fields
+     * (`core/im/approvalTarget.ts`), so a prompt lands exactly where the
+     * results land, and 「不推送」 means an ask has nowhere to go and is
+     * refused. The label says 结果与审批 for the same reason.
+     */
     outputChannelHint: string;
     outputToGroup: string;
     outputToDM: string;
@@ -2012,6 +2918,15 @@ export interface TranslationDict {
     denialMore: string;
     /** {mode} {list} — appended to a failed run's result text */
     denialSummary: string;
+    /** The run stopped itself after consecutive browser-authorization refusals. */
+    abortedBrowserDenials: string;
+    /** U5 authorization visibility on the task detail page. */
+    browserAuthTitle: string;
+    browserAuthDesc: string;
+    browserAuthOff: string;
+    browserAuthNone: string;
+    browserAuthMore: string;
+    browserAuthManage: string;
   };
 
   // Triggers
@@ -2038,6 +2953,17 @@ export interface TranslationDict {
     filterField: string;
     filterFieldPlaceholder: string;
     filter: string;
+    capability: string;
+    capabilityReadTools: string;
+    capabilityReadToolsDescription: string;
+    capabilitySafeTools: string;
+    capabilitySafeToolsDescription: string;
+    capabilityFull: string;
+    capabilityFullDescription: string;
+    capabilityCustomLegacy: string;
+    capabilityCustomLegacyDescription: string;
+    capabilityHint: string;
+    capabilityFullWarning: string;
     debounceEnabled: string;
     debounce: string;
     seconds: string;
@@ -2170,6 +3096,10 @@ export interface TranslationDict {
     outputTargetWebhook: string;
     outputTargetIMChannel: string;
     outputSelectChannel: string;
+    /** F2 — the trigger editor's output channel is the trigger's approval
+     *  channel too (`triggerEngine.ts` builds the target from it), and says
+     *  so here for the same reason the scheduler's hint does. */
+    outputChannelApprovalHint: string;
     outputToGroup: string;
     outputToDM: string;
     outputChatIdPlaceholder: string;
@@ -2247,6 +3177,34 @@ export interface TranslationDict {
     wechatRebind: string;
     wechatAccount: string;
     wechatSessionExpired: string;
+    /** Unattended approval request pushed into the IM chat. The user answers
+     *  by replying with a bare 同意 / 拒绝. {action} {reason} {minutes}
+     *  🔴 {action} and {reason} are MODEL-AUTHORED and sanitized+fenced by
+     *  `sanitizeUntrustedPromptField`; the reply instruction and the deadline
+     *  MUST stay AFTER the fenced region in every translation, or a crafted
+     *  action string can forge them.
+     *  {context} is the pre-composed, already-sanitized task/origin block (or
+     *  empty). It must stay INSIDE the fenced region, before {action}. */
+    approvalPrompt: string;
+    /** One line of {@link approvalPrompt}'s {context}: which automation is
+     *  asking. Without it a user with several scheduled tasks cannot tell what
+     *  they are approving, and the only safe answer is always 拒绝. {task} */
+    approvalPromptTask: string;
+    /** One line of {@link approvalPrompt}'s {context}: the site the action
+     *  targets. {origin} */
+    approvalPromptOrigin: string;
+    /** One line of {@link approvalPrompt}'s {context}: the page the action is
+     *  happening ON, when the target is an embedded region inside it. The
+     *  remote approver is the reader with no browser in front of them, so a
+     *  bare third-party origin is a site they never visited. {origin} */
+    approvalPromptPageOrigin: string;
+    /** Receipt after the user replied 拒绝. */
+    approvalReceiptDenied: string;
+    /** Receipt after nobody answered in time. {minutes} */
+    approvalReceiptTimeout: string;
+    /** Receipt after a request was refused for exceeding the outstanding
+     *  approval cap. {max} */
+    approvalReceiptTooMany: string;
   };
 
   // Window Close Dialog
@@ -2307,10 +3265,8 @@ export interface TranslationDict {
   // About
   about: {
     feedback: string;
-    wechatSectionTitle: string;
-    feedbackDesc: string;
-    sponsor: string;
-    sponsorDesc: string;
+    /** 版本 page header description. */
+    versionDescription: string;
     deviceId: string;
     deviceIdHint: string;
     copied: string;
@@ -2320,6 +3276,34 @@ export interface TranslationDict {
     licenseLinkLabel: string;
     disclaimerTitle: string;
     disclaimerClose: string;
+  };
+
+  // 「关于作者」 page
+  author: {
+    title: string;
+    name: string;
+    tagline: string;
+    role: string;
+    vibe: string;
+    build: string;
+    contactTitle: string;
+    wechatLabel: string;
+    /** One line under the tile. */
+    wechatCaption: string;
+    /** Fuller sentence shown in the zoomed view. */
+    wechatCaptionFull: string;
+    sponsorLabel: string;
+    sponsorCaption: string;
+    sponsorCaptionFull: string;
+    xiaohongshu: string;
+    x: string;
+    github: string;
+    website: string;
+    zoomHint: string;
+    /** Feedback page footer: the question … */
+    feedbackLink: string;
+    /** … and the link that answers it. */
+    feedbackLinkAction: string;
   };
 
   // First-launch disclaimer banner
@@ -2358,16 +3342,132 @@ export interface TranslationDict {
     confirm: string;
     blocked: string;
     userCancelled: string;
+    /** Team run: action refused pending the user's confirmation (never blocks). */
+    teamPendingConfirmation: string;
     aiDenied: string;
     browserAction: string;
     browserReason: string;
     browserDenied: string;
     selfExtensionReason: string;
     selfExtensionDenied: string;
+    /** save_agent approval summary mode: no AGENT.md on disk under that name — a new expert. */
+    selfExtensionSaveAgentNew: string;
+    /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
+    selfExtensionSaveAgentReplace: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;
     browserScriptReason: string;
+    /** Answering a dialog the PAGE put up (`handle_dialog`) — a different
+     *  consent from clicking a button the user named, so it is asked for
+     *  separately and never rides the conversation grant.
+     *
+     *  Must NOT send the user to look at the page: on this channel the
+     *  built-in browser has already intercepted the dialog over CDP, so the
+     *  native box is not on screen (R2-2, 2026-09-06 review). The honest
+     *  fallback is what Abu itself reported — `get_dialog` is free and
+     *  read-only, so the text is normally in the message right above the
+     *  approval box. */
+    browserDialogAnswerReason: string;
+    /** Chrome-extension channel only: that channel cannot see a native dialog,
+     *  so `handle_dialog` PRE-ARMS the answer to the next one — a blind
+     *  signature, and a different thing to consent to. */
+    browserDialogArmReason: string;
+    /** A `batch` carrying a page-script step — refused whole, never partly run. */
+    browserBatchScriptStep: string;
+    browserBatchTooManySteps: string;
+    browserBatchMalformed: string;
+    /** Unattended run, master switch off — the whole browser surface is
+     *  unavailable regardless of the per-class policy. */
+    browserUnattendedDisabled: string;
+    /** Unattended or attended run whose operation-class policy is set to
+     *  'deny' for this kind of browser action. */
+    browserPolicyDenied: string;
+    /** Why an upload is being asked about — the sentence every ask channel
+     *  (desktop dialog and IM) shows above the file list and the target
+     *  site. */
+    browserUploadReason: string;
+    /**
+     * The upload confirmation's own wording (acceptance F5).
+     *
+     * An upload had been asked about with the generic browser-action box, so
+     * the question read 「浏览器操作: abu-browser__upload_file (origin)」 over a
+     * button that said 「确认执行」 — an internal tool name and a verb that
+     * does not say a file is leaving the machine. These say the decision
+     * instead: how many files, to which site, confirmed with 「确认上传」.
+     * `{host}` is a hostname, never a full path.
+     */
+    browserUploadTitle: string;
+    /** Singular of `browserUploadTitle`; both locales read badly with "1 files". */
+    browserUploadTitleOne: string;
+    /** Stands in for `{host}` when the target origin could not be resolved. */
+    browserUploadHostThisSite: string;
+    /** Wraps `{host}` when the upload targets a region embedded in the page. */
+    browserUploadHostEmbedded: string;
+    /** The line under the upload title. */
+    browserUploadDescription: string;
+    /** Primary button of the upload confirmation. */
+    browserUploadConfirm: string;
+    /** Primary button when 「以后都允许该网站」 is offered beside it. */
+    browserUploadConfirmOnce: string;
+    /** `files` could not be read as a list of paths. */
+    browserUploadMalformed: string;
+    /** More files than one submission may carry. `{max}` */
+    browserUploadTooManyFiles: string;
+    /** Outside every workspace the user authorized. `{name}` */
+    browserUploadNotAuthorized: string;
+    /** Missing, or not a regular file. `{name}` */
+    browserUploadNotAFile: string;
+    /** A symbolic link — refused rather than followed. `{name}` */
+    browserUploadSymlink: string;
+    /** Over the per-file or per-call size ceiling. `{name}` `{max}` */
+    browserUploadTooLarge: string;
+    /** The filesystem reported neither an mtime nor an inode for the file, so
+     *  nothing could be frozen that identifies it later (review F1). */
+    browserUploadUnidentifiable: string;
+    browserEnterprisePolicyDenied: string;
+    /** Unattended run on a site that carries no standing "allowed" verdict —
+     *  the cross-origin fail-closed baseline. */
+    browserUnattendedSiteNotAllowed: string;
+    /** Unattended run whose policy says "ask", with no approval channel able
+     *  to answer. */
+    browserUnattendedConfirmUnavailable: string;
+    /** Unattended run whose capability tier carries no browser access at all —
+     *  a tier decision, not an operation-policy one. */
+    browserUnattendedCapabilityDenied: string;
+    /** Unattended run whose target site could not be determined (the browser
+     *  host did not answer, or the action names no resolvable page). */
+    browserUnattendedOriginUnverified: string;
+    /** Unattended run on a URL `highRiskSites.ts` classified as money
+     *  movement / government. Denied outright — nobody can answer for a wire
+     *  transfer. */
+    browserUnattendedHighRiskSite: string;
+    /** Strengthened confirmation copy shown when an ATTENDED run wants to act
+     *  on a high-risk URL. Replaces `browserReason`, and the dialog offers no
+     *  "always allow this site". */
+    browserHighRiskReason: string;
+    /** U6 / F2.4 — unattended run whose target site is asking for a login. The
+     *  run cannot sign in, and retrying would just keep hitting the wall. */
+    browserUnattendedLoginRequired: string;
+    /** U6 / F2.4 — appended to an ATTENDED browser tool result when the target
+     *  site is asking for a login. Not a refusal: the action still ran, and
+     *  this tells the model (and the user reading the tool panel) what has to
+     *  happen before the next step can work. */
+    browserLoginRequiredHint: string;
+    /** The user answered the IM approval prompt with "拒绝". */
+    browserUnattendedImDenied: string;
+    /** Nobody answered the IM approval prompt before it expired. {minutes} */
+    browserUnattendedImTimeout: string;
+    /** The run needed approval, but its conversation is bound to no IM chat —
+     *  a system notification was raised instead. */
+    browserUnattendedImNoBinding: string;
+    /** Too many approval prompts are already outstanding for this
+     *  conversation. {max} */
+    browserUnattendedImTooMany: string;
+    /** The approval prompt could not be delivered to the IM chat. */
+    browserUnattendedImUndeliverable: string;
+    /** The run was stopped while its approval prompt was still outstanding. */
+    browserUnattendedImAborted: string;
     /** Conversation-scoped approval button (30-minute TTL, this conversation
      *  only) — shown when a persistent site grant is also offered. Named for
      *  what it actually grants: "this conversation", not "once". */
@@ -2376,10 +3476,47 @@ export interface TranslationDict {
      *  shown in the dialog's command display, keeping the button short no
      *  matter how long the URL is. */
     browserAlwaysAllowSite: string;
+    /** Appended to whichever "always allow" label is showing while the
+     *  scripting row is set to 'allow'. The verdict this click writes is the
+     *  same one either way; what changes is what it unlocks — with that row on
+     *  'allow', a standing 'allowed' site is the whole remaining precondition
+     *  for running scripts on it without a dialog (and for an automatic run to
+     *  script there at all), so the label has to name that second door.
+     *
+     *  A SUFFIX rather than a second full label on purpose: as soon as the
+     *  embedded-regions label existed, a label-per-combination turned into a
+     *  nested ternary where the regions branch short-circuited this one and
+     *  the scripting warning silently vanished (round-2 F2). Composed, the two
+     *  facts cannot hide each other. */
+    browserAlwaysAllowSiteScriptsSuffix: string;
+    /** Named above the buttons when the page embeds regions (iframes) from
+     *  other sites the automation can address. Those are authorized on their
+     *  own account, so the user has to see them before approving — and
+     *  "always allow" then writes a grant for each one separately, never a
+     *  wildcard. `{origins}` is the comma-separated list. */
+    browserEmbeddedOrigins: string;
+    /** Said after the list when the page embeds more regions than one dialog
+     *  should ask about at once. Those are NOT granted by this click — the
+     *  grant covers exactly the origins printed above it. `{count}` is how
+     *  many were left out. */
+    browserEmbeddedOriginsMore: string;
+    /** The page the action is happening ON, shown whenever it is not the same
+     *  site as the action's own target — a click inside a third-party region
+     *  otherwise names only that region, leaving the user to approve something
+     *  for a page the dialog never mentions. `{origin}` is the page's. */
+    browserPageOrigin: string;
+    /** The "always allow" button while embedded regions are listed: the click
+     *  grants the page AND those regions, and the label has to say so rather
+     *  than let the user discover it afterwards. `{count}` is how many
+     *  regions — the ones actually listed, which are the ones granted. */
+    browserAlwaysAllowSiteWithEmbedded: string;
     /** "Block this site" button — writes a persistent 'denied' verdict and
      *  refuses the pending action. Offered whenever the origin is known,
      *  including for requests that may not be granted permanently. */
     browserBlockSite: string;
+    pluginToolAction: string;
+    pluginToolReason: string;
+    pluginToolDenied: string;
     selfExtensionTitle: string;
     selfExtensionDescription: string;
   };
@@ -2389,6 +3526,7 @@ export interface TranslationDict {
     userDeniedAccess: string;
     pathAccessDenied: string;
     needsAuthorization: string;
+    scopedRunNoWorkspaceCommand: string;
   };
 
   // Mid-task queued-message staging strip above the composer
@@ -2700,6 +3838,12 @@ export interface TranslationDict {
       planImApprovalNeeded: string;
       /** Plan-approval card header. */
       planApprovalHeader: string;
+      /** Strict-team variants of the approval card (先确认分工). */
+      planApprovalHeaderTeam: string;
+      planApprovalQuestionTeam: string;
+      planApproveLabelTeam: string;
+      planRejectLabelTeam: string;
+      planApprovedTeam: string;
       /** Plan-approval card question (rendered after step list). */
       planApprovalQuestion: string;
       /** Approve option label. */
@@ -2821,6 +3965,8 @@ export interface TranslationDict {
       capCustom: string;
       /** {label} */
       capLevelLine: string;
+      /** Capability level is controlled by the user in the trigger settings UI. */
+      triggerCapabilityUiNotice: string;
       /** {filter} */
       filterLine: string;
       /** {value} */
@@ -2899,6 +4045,21 @@ export interface TranslationDict {
       errAgentNotFound: string;
       /** Error: agent disabled. {agentName} */
       errAgentDisabled: string;
+      errNotTeamMember: string;
+      /** Team run hit its hand-off cap (teamRunBounds). */
+      errDispatchCapReached: string;
+      /** Member blocked after consecutive failed hand-offs. */
+      errMemberBlocked: string;
+      /** Declared artifacts missing after the member finished (define-done check). */
+      errExpectedFilesMissing: string;
+      delegateNoToolCallsNote: string;
+      /** Member stopped before finishing; appended to the hand-off result. {reason} */
+      delegateStoppedNote: string;
+      /** Human label per non-completed stop reason (exhaustive by construction). */
+      stopReasonLabel: Record<Exclude<SubagentStopReason, 'completed'>, string>;
+      /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
+      delegateUnconfirmedInstructionsNote: string;
+      delegateUserInstructionsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
       // save_skill / save_agent (createSaveItemTool)
@@ -2908,8 +4069,39 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
-      /** Error: unsafe file path. {p} */
+      /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */
       errUnsafeFilePath: string;
+      /**
+       * Error: nothing written — a `files` entry names the manifest itself,
+       * which is written only from `content` (checked). {p}, {fileName}
+       */
+      errFileIsManifest: string;
+      /** Error: nothing written — `files[index]` is not a {path, content} pair of strings with a non-empty path. {index} */
+      errInvalidFileEntry: string;
+      /**
+       * Error: save_agent wrote nothing — the AGENT.md frontmatter does not
+       * read back (via the registry's parser) with the identity it must carry,
+       * or cannot be read at all. Tells the model to resend plain YAML. {name}
+       */
+      errAgentFrontmatterInvalid: string;
+      /**
+       * Error: nothing written — the name belongs to a built-in or plugin item,
+       * or to another item whose name differs only in letter case (the same
+       * folder on macOS / Windows). {label}, {name}
+       */
+      errNameInUse: string;
+      /**
+       * Error: nothing written — an item with this name already exists and the
+       * call did not pass `overwrite: true`. Tells the model to pass it only
+       * when the user asked to change that item. {label}, {name}
+       */
+      errItemExists: string;
+      /**
+       * Error: nothing written — the frontmatter `name` in the manifest differs
+       * from the name parameter (the registry keys items by the frontmatter
+       * name). {label}, {name}, {found}, {fileName}
+       */
+      errManifestNameMismatch: string;
       /** Attached-files section header + list. {list} */
       savedFileList: string;
       /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */
@@ -2934,6 +4126,10 @@ export interface TranslationDict {
       errBatchAgentNotFound: string;
       /** Error: agent disabled in batch task. {i}, {agentName} */
       errBatchAgentDisabled: string;
+      errBatchNotTeamMember: string;
+      errBatchDispatchCapReached: string;
+      errBatchMemberBlocked: string;
+      errBatchExpectedFilesMissing: string;
       /** Activity label when a sub-agent calls a tool. {toolName} */
       activityCalling: string;
       /** Timeout error message for runWithTimeout. */
@@ -2944,8 +4140,13 @@ export interface TranslationDict {
       batchHeader: string;
       /** aggregateBatchResults section title. {n}, {label} */
       batchSectionTitle: string;
+      /** Marks a batch task whose member did not finish. {reason} */
+      batchStoppedSuffix: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
+      /** Appended to a member result that made zero tool calls (team leader review). */
+      batchNoToolCallsNote: string;
+      batchUserInstructionsNote: string;
       /** Structured path: could not parse JSON. */
       errJsonParseFailed: string;
       /** Structured path: missing required fields. {fields} */
@@ -2993,12 +4194,30 @@ export interface TranslationDict {
       installFailed: string;
       /** {count}, {files} */
       skippedNote: string;
-      /** {name}, {count}, {skippedNote} */
+      /** {count}, {files} — symlinks the copy refused, NOT hidden files. */
+      skippedLinksNote: string;
+      /** {path} — the folder at `source` is itself a symlink. */
+      symlinkRootRefused: string;
+      /** {name}, {count}, {skippedNote}, {linksNote} */
       installed: string;
       /** {name}, {path} */
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
+      /**
+       * Error: create wrote nothing — the name belongs to a built-in, plugin
+       * (disabled included) or enterprise skill, to another skill or folder
+       * whose name differs only in letter case (the same folder on macOS /
+       * Windows), or to a folder already in this workspace's skills dir.
+       * {name}
+       */
+      errNameInUse: string;
+      /**
+       * Error: create wrote nothing — one of the user's skills already has
+       * this name. Points the model at patch / edit for a change the user
+       * asked for. {name}
+       */
+      errSkillExists: string;
     };
     // manage_mcp_server
     system: {
@@ -3008,6 +4227,8 @@ export interface TranslationDict {
       searchNoResults: string;
       /** Env-var needed note fragment. {envList} */
       searchEnvNote: string;
+      /** Configurable-argument needed note fragment. {argList} */
+      searchArgNote: string;
       /** Search results header. {count}, {lines} */
       searchResults: string;
       /** Error: action=install requires name. */
@@ -3041,6 +4262,10 @@ export interface TranslationDict {
       mcpCatalog: Record<string, string>;
       /** MCP env-var config hints keyed by env-var name. */
       mcpEnvHints: Record<string, string>;
+      /** Labels for configurable positional args, keyed by `${serverName}.${argIndex}`. */
+      mcpArgLabels: Record<string, string>;
+      /** Out-of-app setup notes keyed by server name (e.g. install a Chrome extension). */
+      mcpSetupHints: Record<string, string>;
       /** Generic unknown-error fallback for MCP connect failures. */
       mcpUnknownError: string;
       /** Server connected. {name}, {count} */
@@ -3051,6 +4276,8 @@ export interface TranslationDict {
       mcpConnectFailed: string;
       /** Install needs env vars. {name}, {hints} */
       mcpNeedsEnvVars: string;
+      /** Install is missing a configurable positional argument. {name}, {label} */
+      mcpMissingArg: string;
       /** Installed and connected. {name}, {count} */
       mcpInstalledConnected: string;
       /** Installed but connect failed. {name}, {error} */

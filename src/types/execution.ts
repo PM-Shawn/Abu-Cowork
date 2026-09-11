@@ -2,7 +2,7 @@
 // ABU — Task Execution Type Definitions
 // ============================================================
 
-import type { TokenUsage } from './index';
+import type { TokenUsage, ToolResultOutputRef } from './index';
 import type { DetailBlockLabelKey } from '@/utils/toolLabels';
 
 // --- Step Types ---
@@ -87,7 +87,11 @@ export interface DetailBlock {
   tableData?: TableData;
 
   // Extended fields for image type
-  imageData?: { mediaType: string; base64: string };
+  imageData?: {
+    mediaType: string;
+    base64?: string;
+    outputRef?: ToolResultOutputRef;
+  };
 
   // Long content handling
   isTruncated: boolean;
@@ -105,6 +109,15 @@ export interface DetailBlock {
 export interface ExecutionStep {
   id: string;
   executionId: string;
+
+  /**
+   * The LLM tool_use id this step was created for, when the step is backed by a
+   * real tool call. Lets persisted snapshots re-associate with the matching
+   * `Message.toolCalls[]` entry (whose `resultContent` still holds the full
+   * image payload) after the live execution is evicted. Absent for synthetic
+   * steps that have no tool_use id (e.g. @agent direct delegation).
+   */
+  toolCallId?: string;
 
   // Display info
   type: StepType;
@@ -131,6 +144,12 @@ export interface ExecutionStep {
   // Delegate (subagent) support
   agentName?: string;         // When type is 'delegate'
   childSteps?: ExecutionStep[];  // Nested steps from subagent
+  /**
+   * Set on a child step recorded under a run_agent_batch step: which batch
+   * task (member) produced it. Lets the member tab replay the persisted
+   * process after the live batch store is gone (in-conversation team).
+   */
+  batchTask?: BatchTaskRef;
 
   // Timing
   startTime?: number;
@@ -149,6 +168,8 @@ export interface PlannedStep {
   index: number;
   description: string;
   status: 'pending' | 'in_progress' | 'completed';
+  /** Who does this step — a team member's exact agent name (in-conversation team). Optional for ordinary plans. */
+  owner?: string;
 }
 
 /**
@@ -205,9 +226,21 @@ export type AgentEvent =
 export interface StepStartPayload {
   toolName: string;
   toolInput: Record<string, unknown>;
+  /** LLM tool_use id, when this step is backed by a real tool call. */
+  toolCallId?: string;
   source?: StepSource;
   skillName?: string;
   mcpServer?: string;
+  /** Child of a run_agent_batch step: the batch task (member) that produced it. */
+  batchTask?: BatchTaskRef;
+}
+
+/** Which task of a run_agent_batch call a child step belongs to. */
+export interface BatchTaskRef {
+  index: number;
+  label: string;
+  /** Exact agent name that ran the task (team member); absent for preset types. */
+  agent?: string;
 }
 
 // --- Execution Step Snapshot (for persistence on Message) ---
@@ -216,6 +249,12 @@ export interface StepStartPayload {
  *  Omits large fields (toolInput, toolResult) to keep payload small. */
 export interface ExecutionStepSnapshot {
   id: string;
+  /**
+   * LLM tool_use id of the originating tool call. Kept (it is tiny) so the
+   * renderer can look the heavy payload — e.g. an image block's base64 — back up
+   * from `Message.toolCalls[].resultContent` instead of duplicating it here.
+   */
+  toolCallId?: string;
   type: StepType;
   label: string;
   status: 'completed' | 'error';
@@ -225,6 +264,7 @@ export interface ExecutionStepSnapshot {
   // Delegate support
   agentName?: string;
   childSteps?: ExecutionStepSnapshot[];
+  batchTask?: BatchTaskRef;
   // Detail block stubs (with truncated content for post-eviction display)
   detailBlocks?: { id: string; title: string; type: DetailBlockType; content?: string }[];
 }
@@ -235,6 +275,8 @@ export interface ExecutionStepSnapshot {
  * Simplified tool call info for LLM context building
  */
 export interface ToolCallContext {
+  /** LLM tool_use id for matching the request-order UI call to this completion-order context call. */
+  id?: string;
   name: string;
   input: Record<string, unknown>;
   result: string;

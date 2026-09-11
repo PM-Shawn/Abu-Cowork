@@ -1,43 +1,63 @@
-import { writeTextFile } from '@tauri-apps/plugin-fs';
-import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
-import { skillLoader } from '../../skill/loader';
-import { agentRegistry } from '../../agent/registry';
+import { exists, readDir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { readAgentIdentity, wantedAgentIdentity, withAgentIdentity } from '@/core/agent/agentIdentityCarry';
+import { isTeamRosterMember } from '../../team/leaderRoute';
+import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
+import { createParentStepResolver } from '../../agent/delegateParentStep';
+import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } from '../../../types';
+import { skillLoader, parseSkillFile } from '../../skill/loader';
+import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
-import { extractParentConversationSummary } from '../../agent/subagentLoop';
+import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
+import { materializeDelegatedUserTurn } from '../../subagent/delegatedUserTurnMaterializer';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
+import { takeDispatchInstructionReport } from '../../agent/dispatchInstructionReport';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
-import { ITEM_NAME_RE } from '../../../utils/validation';
+import { ITEM_NAME_RE, AGENT_NAME_RE, isItemNameTaken } from '../../../utils/validation';
+import { isPluginOwnedAgent } from '../../../utils/agentSource';
 import { getSystemInfoData } from '../helpers/toolHelpers';
+import { abuItemPaths } from '../helpers/abuItemPaths';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 
-// Module-level map to track skill hook cleanup functions.
-// Key format: "conversationId:skillName" for per-conversation scoping.
-const skillHookCleanups = new Map<string, () => void>();
+interface SkillHookCleanupEntry {
+  cleanup: () => void;
+  conversationId?: string;
+  loopId?: string;
+}
+
+// Hook authority belongs to the run that activated it. Conversation-only
+// ownership is insufficient because a force-finalized sidecar run may still
+// unwind after a newer run for the same conversation has already started.
+const skillHookCleanups = new Set<SkillHookCleanupEntry>();
+
+function clearSkillHooksWhere(predicate: (entry: SkillHookCleanupEntry) => boolean): void {
+  for (const entry of skillHookCleanups) {
+    if (!predicate(entry)) continue;
+    entry.cleanup();
+    skillHookCleanups.delete(entry);
+  }
+}
 
 /** Clear all active skill hooks (called on agent loop end) */
 export function clearAllSkillHooks(): void {
-  for (const cleanup of skillHookCleanups.values()) {
-    cleanup();
-  }
-  skillHookCleanups.clear();
+  clearSkillHooksWhere(() => true);
 }
 
 /** Clear skill hooks for a specific conversation only */
 export function clearSkillHooksByConversation(conversationId: string): void {
-  const prefix = `${conversationId}:`;
-  for (const [key, cleanup] of skillHookCleanups) {
-    if (key.startsWith(prefix)) {
-      cleanup();
-      skillHookCleanups.delete(key);
-    }
-  }
+  clearSkillHooksWhere((entry) => entry.conversationId === conversationId);
+}
+
+/** Clear only hooks activated by one exact loop/run owner. */
+export function clearSkillHooksByLoop(loopId: string): void {
+  clearSkillHooksWhere((entry) => entry.loopId === loopId);
 }
 
 /**
@@ -61,15 +81,9 @@ export const useSkillTool: ToolDefinition = {
     },
     required: ['skill_name'],
   },
-  execute: async (input) => {
+  execute: async (input, toolExecContext) => {
     const skillName = (input.skill_name as string).replace(/^\/+/, '');
     const context = input.context as string | undefined;
-
-    // Auto-enable skill if disabled — user intent to use it takes precedence
-    const { disabledSkills, toggleSkillEnabled } = useSettingsStore.getState();
-    if (disabledSkills?.includes(skillName)) {
-      toggleSkillEnabled(skillName);
-    }
 
     const skill = skillLoader.getSkill(skillName);
     if (!skill) {
@@ -77,10 +91,24 @@ export const useSkillTool: ToolDefinition = {
       return `Error: Skill "${skillName}" not found. Available skills: ${available}`;
     }
 
+    // Auto-enable skill if disabled — only after resolving through the plugin gate
+    const { disabledSkills, toggleSkillEnabled } = useSettingsStore.getState();
+    if (disabledSkills?.includes(skillName)) {
+      toggleSkillEnabled(skillName);
+    }
+
     // Dedup: if already active in this conversation, short-circuit to prevent
     // wasted tool calls. Skill instructions are already in the system prompt.
     const state = useChatStore.getState();
-    const activeId = state.activeConversationId;
+    // Tool execution context owns the activation. A scheduled/IM/sidecar run
+    // may execute while an unrelated desktop tab is active; borrowing the
+    // global activeConversationId would attach its skill state and hooks to the
+    // wrong conversation. Keep the fallback only for legacy callers that pass
+    // no context at all.
+    const contextConversationId = toolExecContext?.conversationId;
+    const activeId = contextConversationId && state.conversations[contextConversationId]
+      ? contextConversationId
+      : (toolExecContext === undefined ? state.activeConversationId : undefined);
     if (activeId) {
       const existing = state.conversations[activeId]?.activeSkills;
       if (existing?.includes(skillName)) {
@@ -112,10 +140,12 @@ export const useSkillTool: ToolDefinition = {
     // Activate skill-scoped hooks
     if (skill.hooks) {
       const { activateSkillHooks } = await import('../../skill/skillHooks');
-      const cleanup = activateSkillHooks(skill);
-      // Store cleanup keyed by conversation:skill for per-conversation scoping
-      const hookKey = activeId ? `${activeId}:${skillName}` : skillName;
-      skillHookCleanups.set(hookKey, cleanup);
+      const cleanup = activateSkillHooks(skill, toolExecContext);
+      skillHookCleanups.add({
+        cleanup,
+        conversationId: activeId ?? undefined,
+        loopId: toolExecContext?.loopId,
+      });
     }
 
     // Also load chain skills if defined
@@ -163,7 +193,7 @@ const PRESET_AGENTS: Record<string, { description: string; systemPrompt: string;
   executor: {
     description: 'Executing complex operational tasks',
     systemPrompt: 'You are an efficient execution assistant. Able to use various tools to complete file operations, command execution, and other tasks.',
-    tools: [], // Empty = all tools allowed (except delegate_to_agent which is always blocked)
+    tools: [], // Empty = all tools allowed except nested delegation and user prompts.
   },
 };
 
@@ -186,9 +216,10 @@ export const delegateToAgentTool: ToolDefinition = {
     type: 'object',
     properties: {
       agent_name: { type: 'string', description: 'User-defined agent name (mutually exclusive with type)' },
-      type: { type: 'string', description: 'Built-in role: research (read-only research), writer (read/write content creation), executor (all-purpose execution). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
+      type: { type: 'string', description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: 'Task description to delegate' },
       context: { type: 'string', description: 'Additional context (optional)' },
+      expected_files: { type: 'array', items: { type: 'string' }, description: 'Files this step must produce (absolute, or relative to the workspace). Checked after the agent finishes: a missing file fails the step.' },
     },
     required: ['task'],
   },
@@ -197,10 +228,28 @@ export const delegateToAgentTool: ToolDefinition = {
     const agentType = input.type as string | undefined;
     const task = input.task as string;
     const context = input.context as string | undefined;
+    const expectedFiles = parseExpectedFiles(input.expected_files);
 
     // 1. Resolve agent: by name (user-defined) or by type (system preset)
     let agent: SubagentDefinition | undefined;
 
+    // In-conversation team mode: only roster members may be dispatched (presets included).
+    if (toolExecContext?.teamRoster && !isTeamRosterMember(toolExecContext.teamRoster, agentName)) {
+      const t = getI18n().toolResult.agent;
+      return format(t.errNotTeamMember, { agentName: agentName ?? (agentType ? `type:${agentType}` : getI18n().toolResult.valueNone), roster: toolExecContext.teamRoster.join(', ') });
+    }
+    // Hard bounds for the run (teamRunBounds.ts): refuse loudly so the leader
+    // stops dispatching and reports instead of looping.
+    const boundsLoopId = toolExecContext?.teamRoster && agentName && toolExecContext.loopId ? toolExecContext.loopId : undefined;
+    if (boundsLoopId && agentName) {
+      const admission = admitDispatches(boundsLoopId, [agentName]);
+      if (!admission.ok) {
+        const t = getI18n().toolResult.agent;
+        return admission.reason === 'run_cap'
+          ? format(t.errDispatchCapReached, { max: admission.max })
+          : format(t.errMemberBlocked, { agentName: admission.member, n: admission.failures });
+      }
+    }
     if (agentType && PRESET_AGENTS[agentType]) {
       // System preset role
       agent = buildPresetAgent(agentType, task);
@@ -233,98 +282,155 @@ export const delegateToAgentTool: ToolDefinition = {
     const loopCtx = toolExecContext?.loopId
       ? getLoopContext(toolExecContext.loopId)
       : getCurrentLoopContext();
+    const materializerLoopCtx = toolExecContext?.conversationId !== undefined
+      && toolExecContext.loopId !== undefined
+      ? getLoopContext(toolExecContext.loopId)
+      : undefined;
+    const ownerConversationId = toolExecContext?.conversationId ?? loopCtx?.conversationId;
 
     // 4. Set agent status indicator
-    useChatStore.getState().setAgentStatus('tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, effectiveAgentName);
+    if (ownerConversationId) {
+      useChatStore.getState().setAgentStatus(ownerConversationId, 'tool-calling', TOOL_NAMES.DELEGATE_TO_AGENT, effectiveAgentName);
+    }
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
 
-    if (loopCtx) {
-      // Find the parent delegate step ID from toolCallToStepId
-      // The tool call ID for this execution should be the last entry mapped
-      let parentStepId: string | undefined;
-      for (const [, sId] of loopCtx.toolCallToStepId) {
-        parentStepId = sId; // Will end up as last entry
-      }
-      // More precise: find step with toolName=delegate_to_agent and status=running
-      if (!parentStepId) {
-        const exec = loopCtx.eventRouter.getCurrentStepId(loopCtx.loopId);
-        if (exec) parentStepId = exec;
-      }
+    if (loopCtx?.eventRouter && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function') {
+      // Parent step resolved lazily, by this call's tool_use id — see
+      // delegateParentStep.ts (eager lookup lost the member process when the
+      // leader loop ran in the sidecar).
+      const resolveParentStepId = createParentStepResolver(loopCtx, toolExecContext?.toolCallId);
+      const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
 
-      if (parentStepId) {
-        const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
-        const capturedParentStepId = parentStepId;
-
-        onProgress = (event) => {
-          if (event.type === 'tool-start') {
-            const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
-              loopCtx.loopId,
-              capturedParentStepId,
-              { toolName: event.toolName, toolInput: event.toolInput }
-            );
-            if (childStepId) {
-              childIdMap.set(event.id, childStepId);
-            }
-          } else if (event.type === 'tool-end') {
-            const childStepId = childIdMap.get(event.id);
-            if (childStepId) {
-              loopCtx.eventRouter.completeChildStep(
-                loopCtx.loopId,
-                capturedParentStepId,
-                childStepId,
-                event.result,
-                event.error
-              );
-            }
+      onProgress = (event) => {
+        const parentStepId = resolveParentStepId();
+        if (!parentStepId) return;
+        if (event.type === 'tool-start') {
+          const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
+            loopCtx.loopId,
+            parentStepId,
+            { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
+          );
+          if (childStepId) {
+            childIdMap.set(event.id, childStepId);
           }
-        };
-      }
+        } else if (event.type === 'tool-end') {
+          const childStepId = childIdMap.get(event.id);
+          childIdMap.delete(event.id);
+          if (childStepId) {
+            loopCtx.eventRouter.completeChildStep(
+              loopCtx.loopId,
+              parentStepId,
+              childStepId,
+              event.result,
+              event.error,
+              event.resultContent
+            );
+          }
+        }
+      };
     }
 
     // 6. Extract parent conversation summary for context injection
-    let parentConversationSummary: string | undefined;
-    try {
-      const chatState = useChatStore.getState();
-      const activeConvId = chatState.activeConversationId;
-      if (activeConvId) {
-        const messages = chatState.conversations[activeConvId]?.messages ?? [];
-        parentConversationSummary = extractParentConversationSummary(messages);
-      }
-    } catch {
-      // Non-critical: proceed without parent context
-    }
+    const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
 
     // 7. Create per-subagent AbortController (linked to parent)
+    const dispatchKey = toolExecContext?.toolCallId ? `${toolExecContext.toolCallId}:0` : undefined;
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
       effectiveAgentName,
-      loopCtx?.signal
+      loopCtx?.signal,
+      dispatchKey,
     );
 
     // 8. Sync mode: blocking await
+    let outcomeRecorded = false;
     try {
+      // A model tool call may describe its task, but it never chooses the
+      // source message. The active shell loop owns both ids. Refuse to
+      // delegate when the tool context cannot be proved to refer to it.
+      if (!materializerLoopCtx
+        || toolExecContext?.conversationId !== materializerLoopCtx.conversationId
+        || toolExecContext.loopId !== materializerLoopCtx.loopId) {
+        throw new Error('Cannot delegate user turn: missing or mismatched trusted loop context');
+      }
+      const delegatedUserTurn = await materializeDelegatedUserTurn({
+        conversationId: materializerLoopCtx.conversationId,
+        loopId: materializerLoopCtx.loopId,
+        signal: subagentSignal,
+      });
       const result = await runSubagent({
         agent,
         task,
         context,
         parentConversationSummary,
+        delegatedUserTurn,
+        parentLoopId: delegatedUserTurn.origin.loopId,
+        parentConversationId: delegatedUserTurn.origin.conversationId,
+        parentUserMessageId: delegatedUserTurn.origin.messageId,
         signal: subagentSignal,
         commandConfirmCallback: loopCtx?.commandConfirmCallback,
         filePermissionCallback: loopCtx?.filePermissionCallback,
         allowedTools: loopCtx?.allowedTools,
         blockedTools: loopCtx?.blockedTools,
-        ...getSubagentRunInheritance(loopCtx),
+        imContext: loopCtx?.imContext,
+        persistParentToolImages: true,
+        ...(dispatchKey ? { dispatchKey } : {}),
+        ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
 
       // Clear this agent from tracking and cleanup
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(effectiveAgentName);
-      return result.text;
+      if (ownerConversationId) {
+        useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
+      }
+      // Define-done check: declared artifacts must exist, whatever the text says.
+      const missingFiles = expectedFiles.length > 0
+        ? await findMissingExpectedFiles(expectedFiles, toolExecContext?.workspacePath)
+        : [];
+      toolExecContext?.reportMetadata?.({ subagentStopReason: missingFiles.length > 0 ? 'error' : result.stopReason });
+      if (boundsLoopId && agentName) {
+        recordDispatchOutcome(boundsLoopId, agentName, result.stopReason === 'completed' && missingFiles.length === 0);
+        outcomeRecorded = true;
+      }
+      if (missingFiles.length > 0) {
+        throw new Error(format(getI18n().toolResult.agent.errExpectedFilesMissing, {
+          agentName: effectiveAgentName,
+          files: missingFiles.join(', '),
+          text: result.text,
+        }));
+      }
+      let text = result.text;
+      // The stop reason must survive the hand-off in the BODY, not only in
+      // `reportMetadata`: OpenAI-compatible providers carry no `is_error`
+      // channel, so a metadata-only signal reaches Claude and nobody else —
+      // and the leader then reads a truncated answer as a finished one.
+      if (result.stopReason !== 'completed') {
+        const labels = getI18n().toolResult.agent.stopReasonLabel;
+        text += `\n\n${format(getI18n().toolResult.agent.delegateStoppedNote, { reason: labels[result.stopReason] })}`;
+      }
+      // No tool call at all = nothing the member could have checked; flag it for the leader.
+      if (result.toolCallCount === 0 && toolExecContext?.teamRoster) {
+        text += `\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;
+      }
+      // The user spoke to this member mid-run: say so structurally, with the
+      // verbatim instructions, so the leader treats them as the user's.
+      const instructionReport = takeDispatchInstructionReport(dispatchKey, effectiveAgentName);
+      if (instructionReport) text += `\n\n${instructionReport}`;
+      return text;
     } catch (err) {
       subagentCleanup();
-      useChatStore.getState().removeActiveAgent(effectiveAgentName);
+      if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);
+      if (ownerConversationId) {
+        useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
+      }
+      const instructionReport = takeDispatchInstructionReport(dispatchKey, effectiveAgentName);
+      if (instructionReport) {
+        const error = new Error(`${err instanceof Error ? err.message : String(err)}\n\n${instructionReport}`, { cause: err });
+        if (err instanceof Error) error.name = err.name;
+        throw error;
+      }
       throw err;
     }
   },
@@ -381,19 +487,209 @@ export const readSkillFileTool: ToolDefinition = {
 
 // --- save_skill / save_agent: bypass pathSafety for ~/.abu/ writes ---
 
-function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
+/**
+ * The AGENT.md to write for the model's `content`, or null when nothing may be
+ * written.
+ *
+ * The model writes the whole file, but the agent's identity is not its to
+ * change: overwriting an existing agent keeps that file's role-id / created
+ * stamp, a new agent is stamped now and never gets an invented role-id.
+ *
+ * Fail closed with the registry's own reader: the result must load through
+ * `parseAgentFile` with exactly that identity. `withAgentIdentity` edits the
+ * YAML syntax tree, while the registry reads the resolved JS object — alias
+ * or merge keys, directives, or content the registry cannot load at all make
+ * the two disagree, and such a file is refused rather than written.
+ */
+function agentMdWithIdentity(
+  filePath: string,
+  existingRaw: string | null,
+  content: string,
+): { md: string; name: string } | null {
+  const existing = existingRaw === null ? null : readAgentIdentity(existingRaw);
+  const now = Date.now();
+  const md = withAgentIdentity(content, existing, now);
+  const wanted = wantedAgentIdentity(existing, now);
+  const readBack = parseAgentFile(md, filePath);
+  if (!readBack || readBack.roleId !== wanted.roleId || readBack.createdAt !== wanted.createdAt) return null;
+  return { md, name: readBack.name };
+}
+
+/**
+ * Skill sources a user skill must never take the name of: the loader scans
+ * `~/.abu/skills` before them, so a user SKILL.md under that name would hide
+ * the builtin / plugin / enterprise skill everywhere it is referenced.
+ */
+const RESERVED_SKILL_SOURCES: ReadonlySet<SkillSource | undefined> = new Set<SkillSource>(['builtin', 'plugin', 'enterprise']);
+
+/**
+ * Names the registry already resolves, split into `reserved` (never the user's
+ * to write: built-in, plugin-provided including disabled plugins, managed) and
+ * `listed` (every name it resolves, the user's own included).
+ */
+function registeredItemNames(isSkill: boolean): { reserved: string[]; listed: string[] } {
+  if (isSkill) {
+    const skills = skillLoader.getAvailableSkills({ includeDrafts: true, includeDisabledPlugins: true });
+    return {
+      reserved: skills.filter((s) => RESERVED_SKILL_SOURCES.has(s.source)).map((s) => s.name),
+      listed: skills.map((s) => s.name),
+    };
+  }
+  // Builtins come from the static list, not the registry: they must be refused
+  // even before discovery ran. The registry prefers a local file over a
+  // builtin (`registerBuiltins` then `scanDirectory`, same map key), so a user
+  // `abu/AGENT.md` would replace the default assistant.
+  const agents = agentRegistry.getAvailableAgents({ includeDisabledPlugins: true });
+  return {
+    reserved: [
+      ...getBuiltinAgentNames(),
+      ...agents.filter((a) => isPluginOwnedAgent(a) || a.managed !== undefined).map((a) => a.name),
+    ],
+    listed: agents.map((a) => a.name),
+  };
+}
+
+async function folderNames(dir: string): Promise<string[]> {
+  try {
+    return (await readDir(dir)).filter((entry) => entry.isDirectory).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * May `name` be written to `filePath` (`<itemsDir>/<name>/<manifest>`)?
+ *
+ * - `in-use`: a built-in / plugin item owns the name, another item's name
+ *   differs from it only in letter case (the same folder on macOS / Windows),
+ *   the registry resolves it to an item that does not live at `filePath`
+ *   (project-level, …), or the manifest at `filePath` is filed under another
+ *   name — writing would replace or hide that item. Refused whatever
+ *   `overwrite` says.
+ * - `exists`: the manifest is already there and the caller did not say
+ *   `overwrite` — creating must never silently replace an existing item.
+ *
+ * On success, `existingRaw` is the manifest being replaced (null for a new
+ * item), read once here so the identity carry needs no second read.
+ */
+async function checkSaveTarget(
+  isSkill: boolean,
+  name: string,
+  itemsDir: string,
+  filePath: string,
+  overwrite: boolean,
+): Promise<{ refused: 'in-use' | 'exists' } | { refused: null; existingRaw: string | null }> {
+  const { reserved, listed } = registeredItemNames(isSkill);
+  if (isItemNameTaken(name, null, reserved)) return { refused: 'in-use' };
+  if (isItemNameTaken(name, name, [...listed, ...(await folderNames(itemsDir))])) return { refused: 'in-use' };
+
+  if (!(await exists(filePath))) {
+    return listed.includes(name) ? { refused: 'in-use' } : { refused: null, existingRaw: null };
+  }
+  const existingRaw = await readTextFile(filePath);
+  // A plugin's AGENT.md the registry has not listed (yet): still the plugin's.
+  const existingAgent = isSkill ? null : parseAgentFile(existingRaw, filePath);
+  if (existingAgent && isPluginOwnedAgent(existingAgent)) return { refused: 'in-use' };
+  // The manifest in that folder is filed under another name (hand-made
+  // `foo/AGENT.md` with `name: bar`): replacing it would make `bar` vanish,
+  // though nothing in this call named `bar`. A manifest that no longer parses
+  // is filed under no name, so it stays replaceable (and its identity carried).
+  const existingName = isSkill ? parseSkillFile(existingRaw, filePath)?.name : existingAgent?.name;
+  if (existingName !== undefined && existingName !== name) return { refused: 'in-use' };
+  return overwrite ? { refused: null, existingRaw } : { refused: 'exists' };
+}
+
+type SupportingFile = { path: string; content: string };
+
+/**
+ * Windows device names: `CON`, `nul.txt`, `COM1 .log` open the device in any
+ * folder, whatever the extension or letter case.
+ */
+const WINDOWS_DEVICE_NAME_RE = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³]) *(\..*)?$/i;
+
+/** `:` (drive letter, alternate data stream) and the other characters Windows refuses in a name. */
+const WINDOWS_RESERVED_CHARS_RE = /[:<>"|?*]/;
+
+function hasControlChar(segment: string): boolean {
+  for (let i = 0; i < segment.length; i++) {
+    const code = segment.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * An allowlist, not a denylist: Win32 path normalisation strips a trailing
+ * `.` or space and reads `NAME::$DATA` as NAME, so `AGENT.md.`, `AGENT.md ` and
+ * `AGENT.md::$DATA` all land on AGENT.md there. A segment passes only when it
+ * is a plain name no platform rewrites into another one.
+ */
+function isPlainPathSegment(segment: string): boolean {
+  return segment !== '' && segment !== '.' && segment !== '..'
+    && !/[. ]$/.test(segment)
+    && !WINDOWS_RESERVED_CHARS_RE.test(segment)
+    && !hasControlChar(segment)
+    && !WINDOWS_DEVICE_NAME_RE.test(segment);
+}
+
+/**
+ * The `files` to write, or why the whole call must be refused.
+ *
+ * Every entry is checked before anything touches disk: a refusal found
+ * halfway through the list used to leave the manifest (and the entries before
+ * it) written under a call that reported failure. Every segment of every
+ * path must be plain ({@link isPlainPathSegment}) — which also refuses a
+ * leading separator (root, UNC) as an empty segment. An entry whose first
+ * segment is the manifest is refused too: it would replace the manifest just
+ * checked (name, identity) with unchecked text, or write beneath that file.
+ * Compared ignoring letter case, because `agent.md` is `AGENT.md` on macOS /
+ * Windows.
+ */
+function checkSupportingFiles(
+  raw: unknown,
+  fileName: string,
+  t: ReturnType<typeof getI18n>['toolResult']['agent'],
+): { refusal: string } | { files: SupportingFile[] } {
+  if (raw === undefined || raw === null) return { files: [] };
+  if (!Array.isArray(raw)) return { refusal: format(t.errInvalidFileEntry, { index: '0' }) };
+  const files: SupportingFile[] = [];
+  for (const [index, entry] of raw.entries()) {
+    const { path, content } = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof path !== 'string' || typeof content !== 'string') {
+      return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
+    }
+    if (path === '') return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
+    const segments = path.split(/[\\/]/);
+    if (!segments.every(isPlainPathSegment)) return { refusal: format(t.errUnsafeFilePath, { p: path }) };
+    if (segments[0].toLowerCase() === fileName.toLowerCase()) {
+      return { refusal: format(t.errFileIsManifest, { p: path, fileName }) };
+    }
+    files.push({ path, content });
+  }
+  return { files };
+}
+
+/**
+ * Exported for tests. Only the agent variant is registered (`saveAgentTool`
+ * below); `save_skill` was replaced by `skill_manage`.
+ */
+export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
   const isSkill = kind === 'skill';
   const folder = isSkill ? 'skills' : 'agents';
   const fileName = isSkill ? 'SKILL.md' : 'AGENT.md';
 
   return {
     name: isSkill ? TOOL_NAMES.SAVE_SKILL : TOOL_NAMES.SAVE_AGENT,
-    description: `Save a custom ${kind} file to ~/.abu/${folder}/{name}/${fileName}. Use when the user asks to create or modify a ${kind}. Only provide the name and content — the path is computed automatically. Optionally pass a files array to also save supporting files such as scripts and reference documents.`,
+    description: `Save a custom ${kind} file to ~/.abu/${folder}/{name}/${fileName}. Use when the user asks to create or modify a ${kind}. Only provide the name and content — the path is computed automatically; the name in the content's frontmatter must equal name. A name used by a built-in or plugin ${kind}, or by another ${kind} whose name differs only in letter case, is refused. If a ${kind} with this name already exists, nothing is written unless overwrite is true: pass overwrite: true only when the user asked to change that existing ${kind}; when creating a new one, choose another name instead. Optionally pass a files array to also save supporting files such as scripts and reference documents.`,
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: `${kind} name (lowercase, hyphens allowed, e.g. "${isSkill ? 'git-commit' : 'doc-writer'}")` },
         content: { type: 'string', description: `Full ${fileName} content including YAML frontmatter` },
+        overwrite: {
+          type: 'boolean',
+          description: `Replace the existing ${kind} with this name. Only when the user asked to modify that ${kind}; omit when creating a new one.`,
+        },
         files: {
           type: 'array',
           description: 'Optional supporting files (scripts, references, assets) to save alongside the main file.',
@@ -415,32 +711,62 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       const t = getI18n().toolResult.agent;
       const label = isSkill ? t.labelSkill : t.labelAgent;
 
-      if (!ITEM_NAME_RE.test(name)) {
+      // Agents allow unicode names (数据分析师); skills keep the strict slug.
+      const nameRe = isSkill ? ITEM_NAME_RE : AGENT_NAME_RE;
+      // A Windows device name (`nul`, `con`, …) is not a folder that can be created.
+      if (!nameRe.test(name) || WINDOWS_DEVICE_NAME_RE.test(name)) {
         return format(t.errInvalidName, { label, name });
       }
 
-      const info = await getSystemInfoData();
-      const itemDir = joinPath(info.home, '.abu', folder, name);
-      const filePath = joinPath(itemDir, fileName);
+      const supporting = checkSupportingFiles(input.files, fileName, t);
+      if ('refusal' in supporting) return supporting.refusal;
+
+      const { itemsDir, itemDir, filePath } = await abuItemPaths(folder, name, fileName);
+
+      const target = await checkSaveTarget(isSkill, name, itemsDir, filePath, input.overwrite === true);
+      if (target.refused !== null) {
+        return format(target.refused === 'in-use' ? t.errNameInUse : t.errItemExists, { label, name });
+      }
+
+      let mainContent = content;
+      let manifestName: string | undefined;
+      if (isSkill) {
+        manifestName = parseSkillFile(content, filePath)?.name;
+      } else {
+        const agent = agentMdWithIdentity(filePath, target.existingRaw, content);
+        if (agent === null) return format(t.errAgentFrontmatterInvalid, { name });
+        mainContent = agent.md;
+        manifestName = agent.name;
+      }
+      // The registry keys an item by its frontmatter name, not its folder: a
+      // mismatch would file it under a name this call never checked.
+      if (manifestName !== name) {
+        return format(t.errManifestNameMismatch, { label, name, found: manifestName ?? '', fileName });
+      }
 
       await ensureParentDir(filePath);
-      await writeTextFile(filePath, content);
-
-      // Write supporting files if provided
-      const files = input.files as Array<{ path: string; content: string }> | undefined;
-      const writtenFiles: string[] = [];
-
-      if (files?.length) {
-        for (const file of files) {
-          const p = file.path;
-          if (p.includes('..') || p.startsWith('/') || p.startsWith('\\')) {
-            return format(t.errUnsafeFilePath, { p });
-          }
-          const targetPath = joinPath(itemDir, p);
-          await ensureParentDir(targetPath);
-          await writeTextFile(targetPath, file.content);
-          writtenFiles.push(p);
+      if (target.existingRaw === null) {
+        // Creating: the host writes only if the manifest is still absent, so
+        // another loop creating the same name since the check above cannot be
+        // overwritten. A manifest now there is that loop's — report it as
+        // existing; any other failure is a real one.
+        try {
+          await writeTextFile(filePath, mainContent, { createNew: true });
+        } catch (err) {
+          if (await exists(filePath)) return format(t.errItemExists, { label, name });
+          throw err;
         }
+      } else {
+        await writeTextFile(filePath, mainContent);
+      }
+
+      // Supporting files, all checked above before the manifest was written.
+      const writtenFiles: string[] = [];
+      for (const file of supporting.files) {
+        const targetPath = joinPath(itemDir, file.path);
+        await ensureParentDir(targetPath);
+        await writeTextFile(targetPath, file.content);
+        writtenFiles.push(file.path);
       }
 
       // Refresh discovery so the new item appears in UI immediately

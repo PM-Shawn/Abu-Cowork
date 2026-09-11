@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { registerTools, type BrowserTransport, type BrowserTransportResponse } from '../../abu-browser-bridge/src/tools.ts';
+import { linkAbortSignal } from '../../abu-browser-bridge/src/abortSignal.ts';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
@@ -66,6 +67,14 @@ function isBridgeResponse(value: unknown): value is BrowserTransportResponse & {
 }
 
 class HttpBrowserTransport implements BrowserTransport {
+  /**
+   * The Electron main process is on the other end of this transport and can
+   * open a file itself, so an upload sends PATHS. It also has to: this
+   * transport POSTs JSON to `browserAutomationHost.cjs`, which caps a request
+   * at 1 MiB, so a file's bytes could not travel this way at all.
+   */
+  readonly uploadDelivery = 'path' as const;
+
   constructor(private readonly config: RuntimeConfig) {}
 
   isConnected(): boolean {
@@ -83,12 +92,18 @@ class HttpBrowserTransport implements BrowserTransport {
   async send(
     action: string,
     payload: Record<string, unknown> = {},
-    timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+    timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+    opts?: { signal?: AbortSignal }
   ): Promise<BrowserTransportResponse> {
     const id = nextRequestId();
     const body: RuntimeRequest = { id, action, payload };
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Fires immediately (before the fetch below ever starts) if opts.signal
+    // is already aborted, and is always detached in `finally` so an
+    // unrelated later abort on the caller's signal can't fire into a
+    // settled/reused controller.
+    const unlink = linkAbortSignal(opts?.signal, () => controller.abort());
 
     try {
       const response = await fetch(this.config.endpoint, {
@@ -117,6 +132,7 @@ class HttpBrowserTransport implements BrowserTransport {
       throw new Error(errorMessage(err), { cause: err });
     } finally {
       clearTimeout(timer);
+      unlink();
     }
   }
 }

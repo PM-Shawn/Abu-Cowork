@@ -21,7 +21,7 @@ export interface ProviderCallOutcome {
  * Error codes that indicate a persistent provider / model / endpoint
  * misconfiguration — the kind a user can act on via Settings → Models, and the
  * kind a cheap connectivity probe can miss. Transient conditions (rate limits,
- * upstream 5xx, network blips, user cancels) are deliberately excluded: recording
+ * upstream 5xx, network blips, content-policy rejections, user cancels) are deliberately excluded: recording
  * them would mislabel a correctly-configured provider as broken and steer the
  * user to change settings that are actually fine.
  */

@@ -9,15 +9,33 @@
 import type { Skill } from '../../types';
 import { TOOL_NAMES } from './toolNames';
 
-const BROWSER_TOOL_SUFFIXES = [
+/**
+ * Hand-copied mirror of the tools `abu-browser-bridge/src/tools.ts` registers.
+ * A tool missing here is never injected into a turn, so it is invisible to the
+ * model no matter how correctly the rest of the stack routes it — pinned
+ * against the real registration in `toolPrefetch.test.ts`.
+ *
+ * Exported so `browserToolPolicy.test.ts` can classify against the REAL tool
+ * list instead of a hand-copied duplicate that could silently drift (a 24th
+ * tool added here without a matching classification entry there would
+ * otherwise stay green).
+ */
+export const BROWSER_TOOL_SUFFIXES = [
   'get_tabs',
   'snapshot',
+  'find',
+  'batch',
   'click',
+  'upload_file',
+  'download',
   'fill',
   'select',
   'wait_for',
+  'get_dialog',
+  'handle_dialog',
   'extract_text',
   'extract_table',
+  'query_js',
   'scroll',
   'navigate',
   'keyboard',

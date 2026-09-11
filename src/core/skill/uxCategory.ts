@@ -32,6 +32,12 @@ export function sourceToUXCategory(source: SkillSource | undefined): SkillUXCate
       // Enterprise-installed skills appear in the "mine" bucket for now.
       // A dedicated visual badge will distinguish them (spec 11.d, V1.5+).
       return 'mine';
+    case 'plugin':
+      // Plugin-contributed skills share the "mine" bucket, same precedent as
+      // enterprise above: the bucket answers "is this something I can use
+      // here", while provenance ("which plugin brought this in") is a per-row
+      // badge. The Plugins tab is the place that lists them by package.
+      return 'mine';
     case 'draft':
       return 'agent-evolved';
     case 'builtin':

@@ -1,6 +1,6 @@
 import { Loader2 } from 'lucide-react';
 import { useI18n } from '@/i18n';
-import { useChatStore } from '@/stores/chatStore';
+import { getConversationAgentState, useChatStore } from '@/stores/chatStore';
 
 /**
  * AgentStatusStrip — a small line above the composer that surfaces the two
@@ -12,7 +12,7 @@ import { useChatStore } from '@/stores/chatStore';
 export default function AgentStatusStrip({ conversationId }: { conversationId: string }) {
   const { t, format } = useI18n();
   const isCompressing = useChatStore((s) => s.conversations[conversationId]?.isCompressing ?? false);
-  const retryInfo = useChatStore((s) => s.retryInfo);
+  const retryInfo = useChatStore((s) => getConversationAgentState(s.agentStates, conversationId).retryInfo);
 
   if (!isCompressing && !retryInfo) return null;
 

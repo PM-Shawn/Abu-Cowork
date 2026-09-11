@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { StreamEvent } from '../../types';
-import { LLMError } from './adapter';
+import { formatLlmTerminalError, LLMError } from './adapter';
 
 // Fake pub/sub + request/notify surface for sidecarManager — lets tests fire
 // llm.event/llm.chatMeta notifications and control what request() does,
@@ -168,6 +168,78 @@ describe('SidecarLLMAdapter', () => {
       });
     });
 
+    it('reconstructs status and upstream details without a raw provider body', async () => {
+      const upstream = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'sidecar-adapter-trace-403',
+        summary: 'The content safety system rejected the request.',
+      } as const;
+      requestMock.mockRejectedValue(
+        new SidecarRpcError(-32000, upstream.summary, {
+          name: 'LLMError',
+          code: 'content_policy',
+          retryable: false,
+          statusCode: 403,
+          message: upstream.summary,
+          upstream,
+        }),
+      );
+      const adapter = new SidecarLLMAdapter('claude');
+
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {})).rejects.toMatchObject({
+        code: 'content_policy',
+        statusCode: 403,
+        upstream,
+        rawBody: undefined,
+      });
+    });
+
+    it.each([
+      '{"private":"legacy provider body"}',
+      '<html><body>legacy proxy response</body></html>',
+    ])('does not promote a legacy structured RPC message into terminal text: %s', async (message) => {
+      requestMock.mockRejectedValue(
+        new SidecarRpcError(-32000, message, {
+          name: 'LLMError',
+          code: 'authentication',
+          retryable: false,
+          message,
+        }),
+      );
+      const adapter = new SidecarLLMAdapter('claude');
+
+      const caught = await adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}).catch((error) => error);
+      expect(caught).toMatchObject({ code: 'authentication', retryable: false, message: 'authentication' });
+      expect(formatLlmTerminalError(caught)).toBe('authentication');
+      expect(JSON.stringify(caught)).not.toContain('legacy provider body');
+      expect(JSON.stringify(caught)).not.toContain('legacy proxy response');
+    });
+
+    it.each([
+      ['unknown code', { code: 'made_up', retryable: false }],
+      ['content policy marked retryable', { code: 'content_policy', retryable: true }],
+      ['network-blocked marked retryable', { code: 'network_blocked', retryable: true }],
+      ['negative retry delay', { code: 'rate_limit', retryable: true, retryAfterMs: -1 }],
+      ['invalid status', { code: 'authentication', retryable: false, statusCode: 403.5 }],
+      ['content policy with 401 status', { code: 'content_policy', retryable: false, statusCode: 401, upstream: { status: 401 } }],
+      ['rate limit with 403 status', { code: 'rate_limit', retryable: true, statusCode: 403, upstream: { status: 403 } }],
+      ['unknown field', { code: 'authentication', retryable: false, rawBody: 'private' }],
+    ])('rejects malformed LLM wire data: %s', async (_label, fields) => {
+      requestMock.mockRejectedValue(new SidecarRpcError(-32000, 'untrusted', {
+        name: 'LLMError',
+        message: 'untrusted',
+        ...fields,
+      }));
+      const adapter = new SidecarLLMAdapter('claude');
+
+      await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {})).rejects.toMatchObject({
+        code: 'unknown',
+        retryable: false,
+        message: 'Invalid sidecar LLM error response',
+      });
+    });
+
     it('a SidecarRpcError without LLMError-shaped data becomes a retryable network_error', async () => {
       requestMock.mockRejectedValue(new SidecarRpcError(-32603, 'Internal error', { name: 'TypeError', message: 'boom' }));
       const adapter = new SidecarLLMAdapter('claude');
@@ -183,6 +255,16 @@ describe('SidecarLLMAdapter', () => {
         code: 'network_error', retryable: true,
       });
       await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {})).rejects.toBeInstanceOf(LLMError);
+    });
+
+    it('sanitizes a structured plain transport Error before it reaches terminal formatting', async () => {
+      requestMock.mockRejectedValue(new Error('{"private":"plain transport body"}'));
+      const adapter = new SidecarLLMAdapter('claude');
+
+      const caught = await adapter.chat([], { model: 'm', apiKey: 'k' }, () => {}).catch((error) => error);
+      expect(caught).toMatchObject({ code: 'network_error', retryable: true, message: 'Sidecar transport failed' });
+      expect(formatLlmTerminalError(caught)).toBe('Sidecar transport failed');
+      expect(JSON.stringify(caught)).not.toContain('plain transport body');
     });
   });
 

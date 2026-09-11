@@ -1,11 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { RpcError } from './protocol';
+import type { SubagentLoopOptions, SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
+import { firstImageContent } from '@/core/tools/toolResultContent';
+import { FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE } from '@/core/agent/__contractFixtures__/agentRunTerminalFixture';
+import { LLMError } from '@/core/llm/adapter';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
 const runAgentLoopMock = vi.fn();
 vi.mock('@/core/agent/agentLoop', () => ({
   runAgentLoop: (...a: unknown[]) => runAgentLoopMock(...a),
+}));
+
+const runSubagentLoopMock = vi.fn();
+vi.mock('@/core/agent/subagentLoop', () => ({
+  runSubagentLoop: (...a: unknown[]) => runSubagentLoopMock(...a),
 }));
 
 const applyPlanModeStateMock = vi.fn();
@@ -29,6 +39,12 @@ vi.mock('./runtimeTrace', () => ({
   traceSidecarRuntimeEvent: (...a: unknown[]) => traceSidecarRuntimeEventMock(...a),
   sidecarRuntimeErrorType: (error: unknown) => error instanceof Error ? error.name.toLowerCase() : typeof error,
 }));
+
+const delegatedMediaStoreMocks = vi.hoisted(() => ({
+  persistDelegatedMedia: vi.fn(),
+  readDelegatedMedia: vi.fn(),
+}));
+vi.mock('@/core/subagent/delegatedMediaStore', () => delegatedMediaStoreMocks);
 
 // P1-3d-1 — mock the local tool registry so this file's dispatch tests
 // (see "local tool dispatch (P1-3d-1)" below) exercise ONLY
@@ -63,6 +79,7 @@ import {
   shutdownAllAgentRuns,
   __getActiveAgentRunCount,
   __resetAgentRunRegistryForTests,
+  buildAgentRunPayloadDigest,
 } from './agentLoopHost';
 import { getCurrentAgentRunContext } from './agentRunContext';
 // Real (unmocked) module — this file doesn't mock '@/core/agent/userInputQueue',
@@ -98,6 +115,28 @@ function baseParams(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function reliableParams(overrides: Record<string, unknown> = {}) {
+  const params = baseParams(overrides);
+  const withIdentity = {
+    ...params,
+    clientMessageId: (overrides.clientMessageId as string | undefined) ?? `msg-${params.runId}`,
+    options: {
+      ...(params.options as Record<string, unknown>),
+      prePersistedUserMessageId: (overrides.clientMessageId as string | undefined) ?? `msg-${params.runId}`,
+    },
+  };
+  return {
+    ...withIdentity,
+    payloadDigest: buildAgentRunPayloadDigest(withIdentity),
+  };
+}
+
+async function handleStartedAgentRun(overrides: Record<string, unknown> = {}): Promise<unknown> {
+  const params = reliableParams(overrides);
+  handleAgentStart(params);
+  return await handleAgentRun(params);
+}
+
 /**
  * P1-3d-3/3d-4 — `sendRequestMock` now fields TWO reverse-RPC methods
  * (`approval.check` and `tool.invoke`), so a blanket `.mockResolvedValue`
@@ -115,6 +154,7 @@ function mockSendRequest(
 ) {
   const { approvalDecision = 'allow', approvalReason = 'Error: denied by shell policy', toolInvokeResult = 'tool output' } = overrides;
   sendRequestMock.mockImplementation((method: unknown) => {
+    if (method === 'agent.assertDirectDelegateEnabled') return Promise.resolve({ allowed: true });
     if (method === 'approval.check') {
       return Promise.resolve(
         approvalDecision === 'deny' ? { decision: 'deny', reason: approvalReason } : { decision: 'allow' },
@@ -124,6 +164,14 @@ function mockSendRequest(
   });
 }
 
+/** Deferred promise helper — lets tests assert that async media reads are a real ordering boundary. */
+function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 describe('agentLoopHost', () => {
   it('restores the execution presentation contract for the agent executor', async () => {
     runAgentLoopMock.mockImplementation(async () => {
@@ -131,14 +179,15 @@ describe('agentLoopHost', () => {
       expect(tools[0].execution).toEqual({ presentation: 'computer-use' });
       return { reason: 'completed' };
     });
-    await handleAgentRun(baseParams({ toolList: [{
+    await handleStartedAgentRun({ toolList: [{
       name: 'computer', description: '', inputSchema: { type: 'object', properties: {} },
       execution: { presentation: 'computer-use' },
-    }] }));
+    }] });
   });
 
   beforeEach(() => {
     runAgentLoopMock.mockReset();
+    runSubagentLoopMock.mockReset();
     applyPlanModeStateMock.mockReset();
     sendRequestMock.mockReset();
     mockSendRequest();
@@ -148,20 +197,12 @@ describe('agentLoopHost', () => {
     hasLocalToolMock.mockReturnValue(false);
     isLocalToolReadOnlyMock.mockReset();
     executeLocalToolMock.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
     __resetAgentRunRegistryForTests();
   });
 
   describe('Reliable Run Protocol start registry', () => {
-    function reliableParams(overrides: Record<string, unknown> = {}) {
-      const params = baseParams(overrides);
-      return {
-        ...params,
-        clientMessageId: `msg-${params.runId}`,
-        payloadDigest: `digest-${params.runId}`,
-        options: { prePersistedUserMessageId: `msg-${params.runId}` },
-      };
-    }
-
     it('acknowledges ownership before execution and exposes accepted state', () => {
       const params = reliableParams({ runId: 'start-accepted' });
       expect(handleAgentStart(params)).toEqual(expect.objectContaining({
@@ -207,13 +248,28 @@ describe('agentLoopHost', () => {
     it('accepts Stop between ACK and execution and never enters the loop', async () => {
       const params = reliableParams({ runId: 'start-cancelled' });
       handleAgentStart(params);
-      expect(handleAgentAbort({ runId: params.runId })).toEqual({ accepted: true, state: 'aborting' });
+      await expect(handleAgentAbort({ runId: params.runId })).resolves.toEqual({ accepted: true, state: 'aborting' });
       await expect(handleAgentRun(params)).resolves.toEqual({ reason: 'aborted' });
       expect(runAgentLoopMock).not.toHaveBeenCalled();
       expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({
         state: 'terminal',
         terminal: expect.objectContaining({ state: 'interrupted' }),
       }));
+    });
+
+    it('rejects agent.run before agent.start establishes ownership', async () => {
+      const params = reliableParams({ runId: 'run-without-start' });
+
+      await expect(handleAgentRun(params)).rejects.toMatchObject({ code: -32602 });
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects agent.run when executable params are tampered after start', async () => {
+      const params = reliableParams({ runId: 'run-tamper' });
+      handleAgentStart(params);
+
+      await expect(handleAgentRun({ ...params, userMessage: 'tampered task' })).rejects.toMatchObject({ code: -32602 });
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
     });
   });
 
@@ -231,6 +287,11 @@ describe('agentLoopHost', () => {
       ['resolvedCreds not an object', { ...baseParams(), resolvedCreds: null }],
       ['toolList not an array', { ...baseParams(), toolList: 'nope' }],
       ['locale not a string', { ...baseParams(), locale: 42 }],
+      ['empty authorizationScopeId', { ...baseParams(), options: { authorizationScopeId: '' } }],
+      ['malformed runPermissionCeiling', {
+        ...baseParams(),
+        options: { runPermissionCeiling: { version: 1, source: 'trigger', capability: 'not-a-tier' } },
+      }],
     ])('rejects %s with RpcError -32602', async (_label, params) => {
       await expect(handleAgentRun(params)).rejects.toThrow(RpcError);
       await expect(handleAgentRun(params)).rejects.toMatchObject({ code: -32602 });
@@ -240,10 +301,12 @@ describe('agentLoopHost', () => {
       const dupRunId = 'dup-agent-run';
       const never = new Promise(() => {});
       runAgentLoopMock.mockReturnValueOnce(never);
-      void handleAgentRun(baseParams({ runId: dupRunId, conversationId: 'conv-dup' }));
+      const firstParams = reliableParams({ runId: dupRunId, conversationId: 'conv-dup' });
+      handleAgentStart(firstParams);
+      void handleAgentRun(firstParams);
       await Promise.resolve();
 
-      await expect(handleAgentRun(baseParams({ runId: dupRunId, conversationId: 'conv-dup-2' })))
+      await expect(handleAgentRun(reliableParams({ runId: dupRunId, conversationId: 'conv-dup-2' })))
         .rejects.toMatchObject({ code: -32602 });
     });
   });
@@ -255,7 +318,8 @@ describe('agentLoopHost', () => {
         sawContextRunId = getCurrentAgentRunContext().runId;
         return { reason: 'completed' };
       });
-      const params = baseParams();
+      const params = reliableParams();
+      handleAgentStart(params);
       const result = await handleAgentRun(params);
       expect(result).toEqual({ reason: 'completed' });
       expect(sawContextRunId).toBe(params.runId);
@@ -279,7 +343,8 @@ describe('agentLoopHost', () => {
         capturedOptions = options;
         return { reason: 'completed' };
       });
-      const params = baseParams({ options: { blockedTools: ['x'], allowedTools: ['read_*'] } });
+      const params = reliableParams({ options: { blockedTools: ['x'], allowedTools: ['read_*'] } });
+      handleAgentStart(params);
       await handleAgentRun(params);
       expect(capturedOptions?.blockedTools).toEqual(['x']);
       expect(capturedOptions?.allowedTools).toEqual(['read_*']);
@@ -287,9 +352,23 @@ describe('agentLoopHost', () => {
       expect(capturedOptions?.settingsReader).toBeDefined();
     });
 
+    it('validates and restores the run permission ceiling into AgentLoopOptions', async () => {
+      let capturedOptions: Record<string, unknown> | undefined;
+      runAgentLoopMock.mockImplementationOnce(async (_convId: string, _msg: string, options: Record<string, unknown>) => {
+        capturedOptions = options;
+        return { reason: 'completed' };
+      });
+      const ceiling = { version: 1, source: 'trigger', capability: 'safe_tools' };
+
+      await handleStartedAgentRun({ options: { runPermissionCeiling: ceiling } });
+
+      expect(capturedOptions?.runPermissionCeiling).toEqual(ceiling);
+    });
+
     it('applies planMode when provided', async () => {
       runAgentLoopMock.mockResolvedValueOnce({ reason: 'completed' });
-      const params = baseParams({ planMode: 'planning' });
+      const params = reliableParams({ planMode: 'planning' });
+      handleAgentStart(params);
       await handleAgentRun(params);
       expect(applyPlanModeStateMock).toHaveBeenCalledWith(params.conversationId, 'planning');
     });
@@ -301,25 +380,132 @@ describe('agentLoopHost', () => {
       // subagentHost.test.ts's own activeRuns tests.
       const before = __getActiveAgentRunCount();
       runAgentLoopMock.mockResolvedValueOnce({ reason: 'completed' });
-      const okParams = baseParams();
+      const okParams = reliableParams();
+      handleAgentStart(okParams);
       await handleAgentRun(okParams);
       expect(__getActiveAgentRunCount()).toBe(before);
 
       runAgentLoopMock.mockRejectedValueOnce(new Error('boom'));
-      const errParams = baseParams();
+      const errParams = reliableParams();
+      handleAgentStart(errParams);
       await expect(handleAgentRun(errParams)).rejects.toThrow('boom');
       expect(__getActiveAgentRunCount()).toBe(before);
       expect(sendNotificationMock).toHaveBeenCalledWith('agent.terminal', {
         version: 1,
         runId: errParams.runId,
         state: 'failed',
-        result: { reason: 'error', error: 'boom' },
+        result: { reason: 'error', error: 'boom', messageTaken: true },
         failure: {
           errorType: 'error',
           message: 'boom',
           stack: expect.stringContaining('Error: boom'),
         },
       });
+    });
+
+    it('projects an unexpected top-level LLMError into a safe terminal and RPC error', async () => {
+      const rawBody = '{"private":"raw provider body"}';
+      const upstream = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'host-unexpected-trace-403',
+      } as const;
+      runAgentLoopMock.mockRejectedValueOnce(new LLMError(rawBody, 'content_policy', {
+        retryable: false,
+        statusCode: 403,
+        rawBody,
+        upstream,
+      }));
+      const params = reliableParams();
+      handleAgentStart(params);
+
+      await expect(handleAgentRun(params)).rejects.toMatchObject({
+        code: -32000,
+        message: 'HTTP 403 · content_policy',
+        data: expect.objectContaining({
+          message: 'HTTP 403 · content_policy',
+          upstream,
+        }),
+      });
+      const terminal = sendNotificationMock.mock.calls
+        .filter((call) => call[0] === 'agent.terminal')
+        .at(-1)?.[1];
+      expect(terminal).toMatchObject({
+        state: 'failed',
+        result: {
+          reason: 'error',
+          error: 'HTTP 403 · content_policy',
+          messageTaken: true,
+          upstream,
+        },
+        failure: {
+          errorType: 'llmerror',
+          message: 'HTTP 403 · content_policy',
+          upstream,
+        },
+      });
+      expect((terminal as { failure?: { stack?: string } }).failure?.stack).toBeUndefined();
+      expect(JSON.stringify(terminal)).not.toContain('raw provider body');
+    });
+
+    it('publishes structured upstream failure details returned by the agent loop', async () => {
+      runAgentLoopMock.mockResolvedValueOnce(FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE.result);
+
+      await handleStartedAgentRun({ runId: FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE.runId });
+
+      expect(sendNotificationMock).toHaveBeenCalledWith(
+        'agent.terminal',
+        FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE,
+      );
+    });
+
+    it('aborts scoped run controllers on normal completion so background commands cannot outlive unattended runs', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        capturedSignal = ctx.abortRegistry.getAbortController(ctx.conversationId).signal;
+        expect(capturedSignal.aborted).toBe(false);
+        ctx.abortRegistry.clearAbortController(ctx.conversationId);
+        return { reason: 'completed' };
+      });
+
+      await handleStartedAgentRun({
+        runId: 'scoped-controller-complete',
+        options: { authorizationScopeId: 'scope-complete' },
+      });
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('aborts scoped run controllers when the loop throws', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        capturedSignal = ctx.abortRegistry.getAbortController(ctx.conversationId).signal;
+        throw new Error('boom');
+      });
+
+      const scopedErrorParams = reliableParams({
+        runId: 'scoped-controller-error',
+        options: { authorizationScopeId: 'scope-error' },
+      });
+      handleAgentStart(scopedErrorParams);
+      await expect(handleAgentRun(scopedErrorParams)).rejects.toThrow('boom');
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('does not abort unscoped run controllers on normal completion', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        capturedSignal = ctx.abortRegistry.getAbortController(ctx.conversationId).signal;
+        return { reason: 'completed' };
+      });
+
+      await handleStartedAgentRun({ runId: 'unscoped-controller-complete' });
+
+      expect(capturedSignal?.aborted).toBe(false);
     });
   });
 
@@ -345,8 +531,12 @@ describe('agentLoopHost', () => {
         return { reason: 'completed' };
       });
 
-      const runA = handleAgentRun(baseParams({ runId: 'run-A', conversationId: 'conv-A' }));
-      const runB = handleAgentRun(baseParams({ runId: 'run-B', conversationId: 'conv-B' }));
+      const paramsA = reliableParams({ runId: 'run-A', conversationId: 'conv-A' });
+      const paramsB = reliableParams({ runId: 'run-B', conversationId: 'conv-B' });
+      handleAgentStart(paramsA);
+      handleAgentStart(paramsB);
+      const runA = handleAgentRun(paramsA);
+      const runB = handleAgentRun(paramsB);
       await Promise.all([runA, runB]);
 
       expect(seenByRun.first.conversationId).toBe('conv-A');
@@ -356,14 +546,14 @@ describe('agentLoopHost', () => {
   });
 
   describe('handleAgentAbort', () => {
-    it('is idempotent and silent for an unknown runId', () => {
-      expect(handleAgentAbort({ runId: 'never-existed' })).toEqual({ accepted: false, state: 'not_found' });
+    it('is idempotent and silent for an unknown runId', async () => {
+      await expect(handleAgentAbort({ runId: 'never-existed' })).resolves.toEqual({ accepted: false, state: 'not_found' });
     });
 
     it('aborts the run\'s conversation-scoped controller (observed via AbortRegistry inside the loop)', async () => {
       let capturedSignal: AbortSignal | undefined;
       let releaseLoop: (() => void) | undefined;
-      const params = baseParams({ runId: 'abort-me', conversationId: 'conv-abort-me' });
+      const params = reliableParams({ runId: 'abort-me', conversationId: 'conv-abort-me' });
       const loopStarted = new Promise<void>((resolveStarted) => {
         runAgentLoopMock.mockImplementationOnce(async () => {
           const ctx = getCurrentAgentRunContext();
@@ -373,10 +563,11 @@ describe('agentLoopHost', () => {
           return { reason: capturedSignal?.aborted ? 'aborted' : 'completed' };
         });
       });
+      handleAgentStart(params);
       const runPromise = handleAgentRun(params);
       await loopStarted;
       expect(capturedSignal?.aborted).toBe(false);
-      expect(handleAgentAbort({ runId: 'abort-me' })).toEqual({ accepted: true, state: 'aborting' });
+      await expect(handleAgentAbort({ runId: 'abort-me' })).resolves.toEqual({ accepted: true, state: 'aborting' });
       expect(capturedSignal?.aborted).toBe(true);
       expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith(
         'sidecar.agent_abort_ack_ready',
@@ -385,6 +576,69 @@ describe('agentLoopHost', () => {
       releaseLoop?.();
       const result = await runPromise;
       expect(result).toEqual({ reason: 'aborted' });
+    });
+
+    it('does not acknowledge Stop until pending media transport is flushed', async () => {
+      const params = reliableParams({ runId: 'abort-with-media', conversationId: 'conv-abort-media' });
+      const pngBase64 = 'iVBORw0KGgo=';
+      let resolvePersist!: (ref: {
+        id: string;
+        sha256: string;
+        mediaType: string;
+        bytes: number;
+      }) => void;
+      let releaseLoop!: () => void;
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockReturnValueOnce(
+        new Promise((resolve) => { resolvePersist = resolve; }),
+      );
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        ctx.abortRegistry.getAbortController(ctx.conversationId);
+        ctx.chatDelta.updateToolCall(
+          ctx.conversationId,
+          'm1',
+          'tc-abort-media',
+          'Screenshot saved to: /tmp/private.png',
+          [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngBase64 } }],
+          false,
+        );
+        await new Promise<void>((resolve) => { releaseLoop = resolve; });
+        return { reason: 'aborted' };
+      });
+
+      handleAgentStart(params);
+      const runPromise = handleAgentRun(params);
+      await vi.waitFor(() => expect(delegatedMediaStoreMocks.persistDelegatedMedia).toHaveBeenCalledOnce());
+      const abortPromise = handleAgentAbort({ runId: params.runId });
+      let abortSettled = false;
+      void abortPromise.then(() => { abortSettled = true; });
+      await Promise.resolve();
+      expect(abortSettled).toBe(false);
+
+      resolvePersist({
+        id: 'media_abort',
+        sha256: '9'.repeat(64),
+        mediaType: 'image/png',
+        bytes: 8,
+      });
+      await expect(abortPromise).resolves.toEqual({ accepted: true, state: 'aborting' });
+
+      const deltaCall = sendNotificationMock.mock.calls.find((call) => call[0] === 'agent.delta');
+      expect(deltaCall).toBeDefined();
+      expect(JSON.stringify(deltaCall)).not.toContain(pngBase64);
+      const deltaOrder = sendNotificationMock.mock.invocationCallOrder[
+        sendNotificationMock.mock.calls.findIndex((call) => call[0] === 'agent.delta')
+      ];
+      const ackOrder = traceSidecarRuntimeEventMock.mock.invocationCallOrder[
+        traceSidecarRuntimeEventMock.mock.calls.findIndex((call) => (
+          call[0] === 'sidecar.agent_abort_ack_ready'
+          && (call[1] as { runId?: string }).runId === params.runId
+        ))
+      ];
+      expect(deltaOrder).toBeLessThan(ackOrder);
+
+      releaseLoop();
+      await expect(runPromise).resolves.toEqual({ reason: 'aborted' });
     });
   });
 
@@ -404,7 +658,9 @@ describe('agentLoopHost', () => {
           return { reason: 'completed' };
         });
       });
-      const runPromise = handleAgentRun(baseParams({ runId: 'enqueue-run-1', conversationId }));
+      const params = reliableParams({ runId: 'enqueue-run-1', conversationId });
+      handleAgentStart(params);
+      const runPromise = handleAgentRun(params);
       await started;
 
       handleAgentEnqueueInput({ runId: 'enqueue-run-1', message: 'more instructions', queueId: 'shell-id-1' });
@@ -428,7 +684,9 @@ describe('agentLoopHost', () => {
           return { reason: 'completed' };
         });
       });
-      const runPromise = handleAgentRun(baseParams({ runId: 'enqueue-run-2', conversationId }));
+      const params = reliableParams({ runId: 'enqueue-run-2', conversationId });
+      handleAgentStart(params);
+      const runPromise = handleAgentRun(params);
       await started;
 
       handleAgentEnqueueInput({ runId: 'enqueue-run-2', userMessage: 'legacy shape' });
@@ -453,7 +711,9 @@ describe('agentLoopHost', () => {
           return { reason: 'completed' };
         });
       });
-      const runPromise = handleAgentRun(baseParams({ runId: 'enqueue-run-3', conversationId }));
+      const params = reliableParams({ runId: 'enqueue-run-3', conversationId });
+      handleAgentStart(params);
+      const runPromise = handleAgentRun(params);
       await started;
 
       handleAgentEnqueueInput({ runId: 'enqueue-run-3', message: 'sys', queueId: 'sys-id', isSystem: true });
@@ -480,7 +740,7 @@ describe('agentLoopHost', () => {
         return { reason: 'completed' };
       });
 
-      const params = baseParams({
+      const params = reliableParams({
         runId: 'seed-run-1',
         conversationId,
         queuedInputs: [
@@ -488,6 +748,7 @@ describe('agentLoopHost', () => {
           { id: 'leftover-2', text: 'leftover two', isSystem: true },
         ],
       });
+      handleAgentStart(params);
       await handleAgentRun(params);
 
       expect(seenAtLoopStart).toEqual([
@@ -500,7 +761,7 @@ describe('agentLoopHost', () => {
       const conversationId = 'conv-seed-2';
       clearInputQueue(conversationId);
       runAgentLoopMock.mockResolvedValueOnce({ reason: 'completed' });
-      await handleAgentRun(baseParams({ runId: 'seed-run-2', conversationId }));
+      await handleStartedAgentRun({ runId: 'seed-run-2', conversationId });
       expect(getQueuedInputs(conversationId)).toHaveLength(0);
     });
   });
@@ -508,7 +769,7 @@ describe('agentLoopHost', () => {
   describe('state.convPatch / state.execPatch routing', () => {
     it('handleStateConvPatch updates the run\'s conversation mirror; unknown runId is a silent drop', async () => {
       let readWorkspacePath: string | null | undefined;
-      const params = baseParams({ runId: 'patch-me', conversationId: 'conv-patch-me' });
+      const params = reliableParams({ runId: 'patch-me', conversationId: 'conv-patch-me' });
       const started = new Promise<void>((resolveStarted) => {
         runAgentLoopMock.mockImplementationOnce(async () => {
           const ctx = getCurrentAgentRunContext();
@@ -519,6 +780,7 @@ describe('agentLoopHost', () => {
           return { reason: 'completed' };
         });
       });
+      handleAgentStart(params);
       const runPromise = handleAgentRun(params);
       await started;
       expect(() => handleStateConvPatch({ runId: 'unknown', patch: { workspacePath: '/x' } })).not.toThrow();
@@ -538,6 +800,14 @@ describe('agentLoopHost', () => {
     it('silently ignores malformed params', () => {
       expect(() => handleStateSettings(null)).not.toThrow();
       expect(() => handleStateSettings({})).not.toThrow();
+    });
+
+    // A push with no revision cannot be ordered against the mirror, and
+    // applying an unorderable snapshot is how a stale one restores a
+    // permission the user just removed. Dropped, not applied.
+    it('ignores a push carrying no revision', () => {
+      expect(() => handleStateSettings({ settings: { agentMaxTurns: 5 } })).not.toThrow();
+      expect(() => handleStateSettings({ settings: { agentMaxTurns: 5 }, revision: 'one' })).not.toThrow();
     });
   });
 
@@ -561,12 +831,13 @@ describe('agentLoopHost', () => {
 
   describe('coalescer flush on settle', () => {
     it('sends a final agent.delta batch containing frames pushed right before the loop resolves', async () => {
-      const params = baseParams({ runId: 'flush-me', conversationId: 'conv-flush-me' });
+      const params = reliableParams({ runId: 'flush-me', conversationId: 'conv-flush-me' });
       runAgentLoopMock.mockImplementationOnce(async () => {
         const ctx = getCurrentAgentRunContext();
         ctx.chatDelta.setConversationStatus(ctx.conversationId, 'idle');
         return { reason: 'completed' };
       });
+      handleAgentStart(params);
       await handleAgentRun(params);
       const deltaCalls = sendNotificationMock.mock.calls.filter((c) => c[0] === 'agent.delta');
       expect(deltaCalls.length).toBeGreaterThan(0);
@@ -591,6 +862,73 @@ describe('agentLoopHost', () => {
         expect.objectContaining({ runId: 'flush-me', frameCount: lastBatch.frames.length }),
       );
     });
+
+    it('drains delayed media updateToolCall transport before final flush and terminal', async () => {
+      const params = reliableParams({ runId: 'drain-media-before-terminal', conversationId: 'conv-drain-media' });
+      const pngBase64 = 'iVBORw0KGgo=';
+      let resolvePersist!: (ref: {
+        id: string;
+        sha256: string;
+        mediaType: string;
+        bytes: number;
+      }) => void;
+      delegatedMediaStoreMocks.persistDelegatedMedia.mockReturnValueOnce(
+        new Promise((resolve) => { resolvePersist = resolve; }),
+      );
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        ctx.chatDelta.updateToolCall(
+          ctx.conversationId,
+          'm1',
+          'tc1',
+          'Screenshot saved to: /Users/alice/Desktop/secret-shot.png',
+          [
+            { type: 'text', text: 'Screenshot saved to: /Users/alice/Desktop/secret-shot.png' },
+            {
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: pngBase64 },
+            },
+          ],
+          false,
+        );
+        ctx.pushFrame({
+          p: 'session',
+          m: 'replaceMessageById',
+          a: [ctx.conversationId, { id: 'm1', role: 'assistant', content: 'durable', timestamp: 1 }],
+        });
+        ctx.chatDelta.setConversationStatus(ctx.conversationId, 'idle');
+        return { reason: 'completed' };
+      });
+      handleAgentStart(params);
+      const run = handleAgentRun(params);
+
+      await vi.waitFor(() => expect(delegatedMediaStoreMocks.persistDelegatedMedia).toHaveBeenCalledOnce());
+      await Promise.resolve();
+      expect(sendNotificationMock.mock.calls.some((call) => call[0] === 'agent.delta')).toBe(false);
+      expect(sendNotificationMock.mock.calls.some((call) => call[0] === 'agent.terminal')).toBe(false);
+
+      resolvePersist({
+        id: 'media_host_drain',
+        sha256: 'e'.repeat(64),
+        mediaType: 'image/png',
+        bytes: 8,
+      });
+      await expect(run).resolves.toEqual({ reason: 'completed' });
+
+      const deltaCalls = sendNotificationMock.mock.calls.filter((call) => call[0] === 'agent.delta');
+      const methods = deltaCalls.flatMap((call) => (call[1] as { frames: { m: string }[] }).frames.map((frame) => frame.m));
+      expect(methods).toEqual(['updateToolCall', 'replaceMessageById', 'setConversationStatus']);
+      const wire = JSON.stringify(deltaCalls);
+      expect(wire).not.toContain(pngBase64);
+      expect(wire).not.toContain('/Users/alice/Desktop/secret-shot.png');
+      const lastDeltaOrder = sendNotificationMock.mock.invocationCallOrder[
+        sendNotificationMock.mock.calls.findLastIndex((call) => call[0] === 'agent.delta')
+      ];
+      const terminalOrder = sendNotificationMock.mock.invocationCallOrder[
+        sendNotificationMock.mock.calls.findIndex((call) => call[0] === 'agent.terminal')
+      ];
+      expect(lastDeltaOrder).toBeLessThan(terminalOrder);
+    });
   });
 
   describe('local tool dispatch (P1-3d-1 / P1-3d-3 approval gate)', () => {
@@ -601,7 +939,7 @@ describe('agentLoopHost', () => {
         captured = await fn(getCurrentAgentRunContext().toolInvoker);
         return { reason: 'completed' };
       });
-      await handleAgentRun(baseParams());
+      await handleStartedAgentRun();
       return captured;
     }
 
@@ -620,6 +958,87 @@ describe('agentLoopHost', () => {
         expect.objectContaining({ toolName: 'show_widget', input: { title: 't' } }),
       );
       expect(executeLocalToolMock).toHaveBeenCalledWith('show_widget', { title: 't' }, undefined, undefined);
+      expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
+    });
+
+    it('executes a local file tool only with the canonical path bound by shell approval', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      executeLocalToolMock.mockResolvedValue('local file');
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') {
+          return Promise.resolve({
+            decision: 'allow',
+            executionPath: '/canonical/workspace/report.md',
+          });
+        }
+        return Promise.resolve('unexpected fallback');
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('read_file', { path: '/workspace/link/report.md' }),
+      );
+
+      expect(result).toBe('local file');
+      expect(executeLocalToolMock).toHaveBeenCalledWith(
+        'read_file',
+        { path: '/canonical/workspace/report.md' },
+        undefined,
+        undefined,
+      );
+      expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
+    });
+
+    it('does not execute a local file tool when an allow ACK omits its canonical path', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') return Promise.resolve({ decision: 'allow' });
+        if (method === 'tool.invoke') return Promise.resolve('reverse result');
+        return Promise.resolve(undefined);
+      });
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('read_file', { path: '/workspace/link/report.md' }),
+      );
+
+      expect(result).toBe('reverse result');
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
+      expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({ toolName: 'read_file', input: { path: '/workspace/link/report.md' } }),
+      );
+    });
+
+    it('does not start a local tool when Stop wins after the allow ACK was requested', async () => {
+      hasLocalToolMock.mockReturnValue(true);
+      isLocalToolReadOnlyMock.mockReturnValue(false);
+      let approve!: (value: { decision: 'allow'; executionPath: string }) => void;
+      sendRequestMock.mockImplementation((method: unknown) => {
+        if (method === 'approval.check') {
+          return new Promise((resolve) => { approve = resolve; });
+        }
+        return Promise.resolve('unexpected fallback');
+      });
+      const controller = new AbortController();
+
+      const execution = withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'write_file',
+          { path: '/tmp/late.txt', content: 'late' },
+          undefined,
+          undefined,
+          { abortSignal: controller.signal },
+        ),
+      );
+      await vi.waitFor(() => expect(sendRequestMock).toHaveBeenCalledWith(
+        'approval.check',
+        expect.objectContaining({ toolName: 'write_file' }),
+      ));
+
+      controller.abort();
+      approve({ decision: 'allow', executionPath: '/tmp/late.txt' });
+
+      await expect(execution).rejects.toEqual(expect.objectContaining({ name: 'AbortError' }));
+      expect(executeLocalToolMock).not.toHaveBeenCalled();
       expect(sendRequestMock).not.toHaveBeenCalledWith('tool.invoke', expect.anything());
     });
 
@@ -655,6 +1074,341 @@ describe('agentLoopHost', () => {
           },
         }),
       );
+    });
+
+    it('materializes shell-returned opaque image refs before a sidecar main-loop direct nested subagent sees tool results', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      const pngBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      const pngBase64 = 'iVBORw0KGgo=';
+      const readGate = deferred<Uint8Array>();
+      delegatedMediaStoreMocks.readDelegatedMedia.mockReturnValueOnce(readGate.promise);
+      mockSendRequest({
+        toolInvokeResult: [
+          { type: 'text', text: 'Image: /tmp/secret.png' },
+          {
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-main-nested',
+            attachment: {
+              id: 'media_shell_reverse',
+              sha256: 'b'.repeat(64),
+              mediaType: 'image/png',
+              bytes: pngBytes.byteLength,
+            },
+          },
+        ],
+      });
+      let nestedToolReturned = false;
+      let nestedImage: ReturnType<typeof firstImageContent>;
+      runSubagentLoopMock.mockImplementationOnce(async (options: SubagentLoopOptions) => {
+        const rawResult = await options.toolInvoker!.executeAnyTool('read_file', { path: '/tmp/secret.png' });
+        nestedToolReturned = true;
+        const admitted = canonicalizeActiveToolResultContent(rawResult);
+        nestedImage = firstImageContent(admitted);
+        if (nestedImage) {
+          options.onProgress?.({
+            type: 'tool-end',
+            id: 'nested-read',
+            toolName: 'read_file',
+            result: 'Image: /tmp/secret.png',
+            error: false,
+            resultContent: admitted,
+          });
+        }
+        return {
+          text: 'nested done',
+          toolCallCount: 1,
+          turnCount: 1,
+          tokenUsage: { input: 0, output: 0 },
+          duration: 1,
+          stopReason: 'completed',
+        };
+      });
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const ctx = getCurrentAgentRunContext();
+        const exec = ctx.executionPort.createExecution(ctx.conversationId, ctx.runId);
+        ctx.executionPort.addStep(exec.id, {
+          id: 'parent-delegate',
+          executionId: exec.id,
+          type: 'delegate',
+          label: 'Delegate',
+          status: 'running',
+          toolName: 'delegate_to_agent',
+          toolInput: {},
+          source: 'agent',
+          detailBlocks: [],
+          childSteps: [{
+            id: 'child-read',
+            executionId: exec.id,
+            type: 'file-read',
+            label: 'read_file',
+            status: 'running',
+            toolName: 'read_file',
+            toolInput: {},
+            source: 'agent',
+            detailBlocks: [],
+          }],
+        });
+        const { runSubagent } = await import('./shims/subagentRunnerRun');
+        await runSubagent({
+          agent: { name: 'nested', description: 'd', systemPrompt: 'sys', filePath: '__preset__' },
+          task: 'inspect image',
+          parentConversationId: ctx.conversationId,
+          onProgress: (event: SubagentProgressEvent) => {
+            if (event.type !== 'tool-end') return;
+            const image = firstImageContent(event.resultContent);
+            if (!image?.base64) return;
+            ctx.executionPort.updateChildStep(
+              exec.id,
+              'parent-delegate',
+              'child-read',
+              event.result,
+              event.error,
+              [{
+                id: 'detail-image',
+                stepId: 'child-read',
+                type: 'image',
+                label: 'Image',
+                content: 'Image preview',
+                imageData: { mediaType: image.mediaType, base64: image.base64 },
+                isTruncated: false,
+                isExpanded: true,
+              }],
+            );
+          },
+        } as never);
+        return { reason: 'completed' };
+      });
+
+      const params = reliableParams({ runId: 'main-nested-ref-run', conversationId: 'conv-main-nested' });
+      handleAgentStart(params);
+      const run = handleAgentRun(params);
+
+      await vi.waitFor(() => expect(sendRequestMock).toHaveBeenCalledWith(
+        'tool.invoke',
+        expect.objectContaining({ toolName: 'read_file' }),
+      ));
+      await Promise.resolve();
+      expect(delegatedMediaStoreMocks.readDelegatedMedia).toHaveBeenCalledOnce();
+      expect(nestedToolReturned).toBe(false);
+      expect(sendNotificationMock.mock.calls.some((call) => (
+        call[0] === 'agent.delta'
+        && JSON.stringify(call[1]).includes('updateChildStep')
+      ))).toBe(false);
+
+      readGate.resolve(pngBytes);
+      await expect(run).resolves.toEqual({ reason: 'completed' });
+
+      expect(nestedImage).toEqual({ mediaType: 'image/png', base64: pngBase64 });
+      const wire = JSON.stringify(sendNotificationMock.mock.calls);
+      expect(wire).not.toContain(pngBase64);
+      expect(wire).not.toContain('/tmp/secret.png');
+      expect(wire).toContain('updateChildStep');
+      const lastDeltaOrder = sendNotificationMock.mock.invocationCallOrder[
+        sendNotificationMock.mock.calls.findLastIndex((call) => call[0] === 'agent.delta')
+      ];
+      const terminalOrder = sendNotificationMock.mock.invocationCallOrder[
+        sendNotificationMock.mock.calls.findIndex((call) => call[0] === 'agent.terminal')
+      ];
+      expect(lastDeltaOrder).toBeLessThan(terminalOrder);
+    });
+
+    it('fails closed without leaking media paths when a sidecar main-loop direct nested subagent cannot materialize shell-returned opaque refs', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      delegatedMediaStoreMocks.readDelegatedMedia.mockRejectedValueOnce(
+        new Error('missing iVBORw0KGgo= at /Users/alice/secret.png'),
+      );
+      mockSendRequest({
+        toolInvokeResult: [
+          { type: 'text', text: 'Image: [REDACTED:path]' },
+          {
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-main-nested-fail',
+            attachment: {
+              id: 'media_shell_reverse_missing',
+              sha256: 'c'.repeat(64),
+              mediaType: 'image/png',
+              bytes: 8,
+            },
+          },
+        ],
+      });
+      let nestedRawResult: unknown;
+      runSubagentLoopMock.mockImplementationOnce(async (options: SubagentLoopOptions) => {
+        nestedRawResult = await options.toolInvoker!.executeAnyTool('read_file', { path: '/tmp/secret.png' });
+        return {
+          text: String(nestedRawResult),
+          toolCallCount: 1,
+          turnCount: 1,
+          tokenUsage: { input: 0, output: 0 },
+          duration: 1,
+          stopReason: 'completed',
+        };
+      });
+      runAgentLoopMock.mockImplementationOnce(async () => {
+        const { runSubagent } = await import('./shims/subagentRunnerRun');
+        await runSubagent({
+          agent: { name: 'nested', description: 'd', systemPrompt: 'sys', filePath: '__preset__' },
+          task: 'inspect image',
+        } as never);
+        return { reason: 'completed' };
+      });
+
+      await handleStartedAgentRun({ runId: 'main-nested-ref-fail-run', conversationId: 'conv-main-nested-fail' });
+
+      expect(nestedRawResult).toBe('Error: Could not prepare sidecar tool media for display.');
+      const wire = JSON.stringify(sendNotificationMock.mock.calls);
+      expect(wire).not.toContain('iVBORw0KGgo=');
+      expect(wire).not.toContain('/Users/alice/secret.png');
+      expect(wire).not.toContain('/tmp/secret.png');
+      expect(wire).not.toContain('media_shell_reverse_missing');
+    });
+
+    it('replays a validated subagent stopReason envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', subagentStopReason: 'max_turns' },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'delegate_to_agent',
+          { task: 'work' },
+          undefined,
+          undefined,
+          { reportMetadata },
+        ),
+      );
+
+      expect(result).toBe('partial report');
+      expect(reportMetadata).toHaveBeenCalledWith({ subagentStopReason: 'max_turns' });
+    });
+
+    it('replays a validated batch terminal summary metadata envelope into the original tool context', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      const summary = {
+        version: 1 as const,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        prompt: 'do not persist',
+        resultContent: [{ type: 'image', source: { data: 'base64' } }],
+        tasks: [{ taskIndex: 0, status: 'stopped' as const, terminalReason: 'aborted' as const, output: 'do not persist' }],
+      };
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', metadata: { batchTerminalSummary: summary } },
+      });
+      const reportMetadata = vi.fn();
+
+      const result = await withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'run_agent_batch',
+          { tasks: [] },
+          undefined,
+          undefined,
+          { conversationId: 'conv-wire', toolCallId: 'tc-batch', reportMetadata },
+        ),
+      );
+
+      expect(result).toBe('partial report');
+      expect(reportMetadata).toHaveBeenCalledWith({
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+          taskCount: 1,
+          counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+        },
+      });
+    });
+
+    it('rejects a malformed subagent metadata envelope instead of guessing', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', subagentStopReason: 'mystery' },
+      });
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('delegate_to_agent', { task: 'work' }),
+      )).rejects.toThrow(/Invalid tool\.invoke subagent metadata envelope/);
+    });
+
+    it('rejects an invalid batch summary metadata envelope instead of guessing', async () => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: {
+          result: 'partial report',
+          metadata: {
+            batchTerminalSummary: {
+              version: 1,
+              batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+              taskCount: 1,
+              counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+              tasks: [{ taskIndex: 0, status: 'mystery', terminalReason: 'completed' }],
+            },
+          },
+        },
+      });
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool('run_agent_batch', { tasks: [] }),
+      )).rejects.toThrow(/Invalid tool\.invoke batch summary envelope/);
+    });
+
+    it.each([
+      ['forged identity', {
+        version: 1,
+        batch: { conversationId: 'other-conv', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+      }],
+      ['malformed counts', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+        tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+      }],
+      ['duplicate task index', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 2,
+        counts: { succeeded: 0, failed: 0, stopped: 2, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'stopped', terminalReason: 'aborted' },
+          { taskIndex: 0, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      }],
+      ['out-of-range task index', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [{ taskIndex: 1, status: 'stopped', terminalReason: 'aborted' }],
+      }],
+      ['illegal status-reason pair', {
+        version: 1,
+        batch: { conversationId: 'conv-wire', batchToolCallId: 'tc-batch' },
+        taskCount: 1,
+        counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'completed' }],
+      }],
+    ])('rejects %s in a batch summary metadata envelope', async (_label, batchTerminalSummary) => {
+      hasLocalToolMock.mockReturnValue(false);
+      mockSendRequest({
+        toolInvokeResult: { result: 'partial report', metadata: { batchTerminalSummary } },
+      });
+
+      await expect(withToolInvoker((toolInvoker) =>
+        toolInvoker.executeAnyTool(
+          'run_agent_batch',
+          { tasks: [] },
+          undefined,
+          undefined,
+          { conversationId: 'conv-wire', toolCallId: 'tc-batch', reportMetadata: vi.fn() },
+        ),
+      )).rejects.toThrow(/Invalid tool\.invoke batch summary envelope/);
     });
 
     // ── P1-3d-3/3d-4 SAFETY-CRITICAL: approval.check deny (terminal, no
@@ -793,7 +1547,8 @@ describe('agentLoopHost', () => {
           return { reason: 'completed' };
         });
       });
-      const params = baseParams({ runId: 'shutdown-me', conversationId: 'conv-shutdown-me' });
+      const params = reliableParams({ runId: 'shutdown-me', conversationId: 'conv-shutdown-me' });
+      handleAgentStart(params);
       void handleAgentRun(params);
       await started;
       expect(capturedSignal?.aborted).toBe(false);

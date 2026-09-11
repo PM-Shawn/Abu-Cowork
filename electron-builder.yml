@@ -81,11 +81,15 @@ files:
   - "node_modules/jsonfile/**/*"
   - "node_modules/universalify/**/*"
   - "node_modules/js-yaml/**/*"
+  - "node_modules/yaml/**/*"
   - "node_modules/argparse/**/*"
   - "node_modules/lazy-val/**/*"
   - "node_modules/lodash.escaperegexp/**/*"
   - "node_modules/lodash.isequal/**/*"
   - "node_modules/tiny-typed-emitter/**/*"
+  # mediaSignature.cjs (delegated-media magic-byte validation) inflates PNG
+  # scanlines via fflate in the packaged main process; zero transitive deps.
+  - "node_modules/fflate/**/*"
 
 # node-pty ships a native .node + spawn-helper binary; asar can't exec/inspect
 # a binary in place, so unpack it to app.asar.unpacked/.
@@ -103,6 +107,8 @@ extraResources:
     to: sidecar/index.mjs
   - from: builtin-skills
     to: builtin-skills
+  - from: builtin-plugin-market
+    to: builtin-plugin-market
   - from: builtin-agents
     to: builtin-agents
   - from: electron/native-helper/target/release

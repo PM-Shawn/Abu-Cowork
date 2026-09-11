@@ -167,6 +167,89 @@ describe('llmHost', () => {
       });
     });
 
+    it('preserves bounded upstream error details in the legacy llm.chat RPC error', async () => {
+      const upstream = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'llm-host-trace-403',
+        summary: 'The content safety system rejected the request.',
+      } as const;
+      claudeChat.mockRejectedValue(new LLMError(upstream.summary, 'content_policy', {
+        retryable: false,
+        statusCode: 403,
+        rawBody: '{"must":"not cross the llm RPC"}',
+        upstream,
+      }));
+      const { sender } = makeSender();
+      const host = createLlmHost(sender);
+
+      await expect(host.handleChat(chatParams())).rejects.toMatchObject({
+        code: -32000,
+        data: {
+          name: 'LLMError',
+          code: 'content_policy',
+          retryable: false,
+          statusCode: 403,
+          message: upstream.summary,
+          upstream,
+        },
+      });
+      await expect(host.handleChat(chatParams())).rejects.not.toMatchObject({
+        data: expect.objectContaining({ rawBody: expect.anything() }),
+      });
+    });
+
+    it('does not put a message-less JSON provider body in the outer RPC error message', async () => {
+      const rawBody = '{"private":"credential-adjacent provider metadata"}';
+      claudeChat.mockRejectedValue(new LLMError(rawBody, 'authentication', {
+        retryable: false,
+        statusCode: 403,
+        rawBody,
+        upstream: { status: 403 },
+      }));
+      const { sender } = makeSender();
+      const host = createLlmHost(sender);
+
+      await expect(host.handleChat(chatParams())).rejects.toMatchObject({
+        code: -32000,
+        message: 'HTTP 403 · authentication',
+        data: expect.objectContaining({
+          message: 'HTTP 403 · authentication',
+          upstream: { status: 403 },
+        }),
+      });
+      await expect(host.handleChat(chatParams())).rejects.not.toMatchObject({
+        message: expect.stringContaining('private'),
+      });
+    });
+
+    it('fresh-projects a mutated LLMError upstream object before writing RPC data', async () => {
+      const error = new LLMError('safe provider failure', 'unknown');
+      error.upstream = {
+        status: 403,
+        rawBody: 'private prompt text',
+      } as never;
+      claudeChat.mockRejectedValue(error);
+      const { sender } = makeSender();
+      const host = createLlmHost(sender);
+
+      let caught: unknown;
+      try {
+        await host.handleChat(chatParams());
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toMatchObject({
+        code: -32000,
+        message: 'safe provider failure',
+        data: expect.objectContaining({ message: 'safe provider failure' }),
+      });
+      expect((caught as { data?: { upstream?: unknown } }).data?.upstream).toBeUndefined();
+      expect(JSON.stringify(caught)).not.toContain('rawBody');
+      expect(JSON.stringify(caught)).not.toContain('private prompt text');
+    });
+
     it('a non-LLMError thrown by the adapter still serializes name/message (no code/retryable)', async () => {
       claudeChat.mockRejectedValue(new TypeError('boom'));
       const { sender } = makeSender();

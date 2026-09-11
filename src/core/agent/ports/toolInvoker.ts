@@ -8,7 +8,7 @@ import { createPortSlot } from './portSlot';
  * `CommandConfirmCallback` 1:1 (kept local rather than imported so this
  * port's type surface doesn't depend on registry.ts even at the type level).
  */
-export type CommandConfirmCallback = (info: ConfirmationInfo) => Promise<boolean>;
+export type CommandConfirmCallback = (info: ConfirmationInfo, loopId?: string) => Promise<boolean>;
 
 /**
  * Callback type for file permission requests — mirrors registry.ts's
@@ -18,7 +18,7 @@ export type FilePermissionCallback = (request: {
   path: string;
   capability: 'read' | 'write';
   toolName: string;
-}) => Promise<boolean>;
+}, loopId?: string) => Promise<boolean>;
 
 /**
  * Port #7 — abstracts subagentLoop's tool execution surface (currently a

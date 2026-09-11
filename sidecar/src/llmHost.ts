@@ -13,9 +13,9 @@
  * `protocol.ts`'s `writeLine`.
  */
 
-import type { Message, StreamEvent } from '@/types';
+import type { Message, StreamEvent, UpstreamErrorDetails } from '@/types';
 import type { ChatOptions, LLMAdapter, AdapterKind } from '@/core/llm/adapter';
-import { LLMError } from '@/core/llm/adapter';
+import { formatLlmTerminalError, LLMError, normalizeUpstreamErrorDetails } from '@/core/llm/adapter';
 import { ClaudeAdapter } from '@/core/llm/claude';
 import { OpenAICompatibleAdapter } from '@/core/llm/openai-compatible';
 import { createEventCoalescer } from './eventCoalescer';
@@ -99,14 +99,25 @@ function createAdapter(kind: AdapterKind): LLMAdapter {
 }
 
 /** Reconstruct the `data` payload the shell's SidecarLLMAdapter uses to rebuild a faithful LLMError. */
-function errorDataFor(err: unknown): { name: string; code?: string; retryable?: boolean; retryAfterMs?: number; message: string } {
+function errorDataFor(err: unknown): {
+  name: string;
+  code?: string;
+  retryable?: boolean;
+  retryAfterMs?: number;
+  statusCode?: number;
+  upstream?: UpstreamErrorDetails;
+  message: string;
+} {
   if (err instanceof LLMError) {
+    const upstream = normalizeUpstreamErrorDetails(err.upstream);
     return {
       name: 'LLMError',
       code: err.code,
       retryable: err.retryable,
       retryAfterMs: err.retryAfterMs,
-      message: err.message,
+      statusCode: err.statusCode,
+      upstream,
+      message: formatLlmTerminalError(err),
     };
   }
   const message = err instanceof Error ? err.message : String(err);
@@ -186,7 +197,10 @@ export function createLlmHost(sender: SidecarRpcSender): LlmHost {
     } catch (err) {
       drain(call, callId);
       logger.warn('llm.chat failed', { callId, error: err instanceof Error ? err.message : String(err) });
-      throw new RpcError(-32000, err instanceof Error ? err.message : String(err), errorDataFor(err));
+      const wireMessage = err instanceof LLMError
+        ? formatLlmTerminalError(err)
+        : err instanceof Error ? err.message : String(err);
+      throw new RpcError(-32000, wireMessage, errorDataFor(err));
     } finally {
       activeCalls.delete(callId);
     }

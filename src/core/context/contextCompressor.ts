@@ -14,7 +14,7 @@
  */
 
 import type { Message } from '../../types';
-import type { LLMAdapter } from '../llm/adapter';
+import { LLMError, type LLMAdapter, type LLMErrorCode } from '../llm/adapter';
 import type { ChatOptions } from '../llm/adapter';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
 import { getMessageText, identifyRounds, RECENT_ROUNDS_TO_KEEP } from './contextUtils';
@@ -50,8 +50,8 @@ export interface CompressionResult {
   /** True when the summarization attempt failed (timeout / error), so the
    *  caller can record it against the auto-compact circuit breaker. */
   failed?: boolean;
-  /** Coarse reason when `failed` is true: 'timeout' | 'error'. */
-  failureCode?: string;
+  /** Provider code when available; otherwise a coarse timeout/error reason. */
+  failureCode?: LLMErrorCode | 'timeout' | 'error';
 }
 
 /**
@@ -326,6 +326,12 @@ ${middleText}
     // LLM call failed — fall back gracefully, don't block the agent
     const errorMessage = err instanceof Error ? err.message : String(err);
     logger.warn('Context compression failed', { error: errorMessage });
-    return { messages, compressed: false, savedTokens: 0, failed: true, failureCode: 'error' };
+    return {
+      messages,
+      compressed: false,
+      savedTokens: 0,
+      failed: true,
+      failureCode: err instanceof LLMError ? err.code : 'error',
+    };
   }
 }

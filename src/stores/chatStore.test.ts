@@ -17,9 +17,17 @@ import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
   getComposerDraftKey,
+  registerComposerDraftResourceDisposer,
   useComposerDraftStore,
+  writeComposerDraft,
   writePersistedComposerText,
 } from './composerDraftStore';
+import { DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST } from '@/core/session/durableToolResultContent';
+import { getCachedTabOrigin, noteBrowserToolOutcome, noteTabOrigin } from '@/core/observability/browserSignals';
+import { useBatchProgressStore } from './batchProgressStore';
+import { subagentTabId, usePreviewStore } from './previewStore';
+import { makeBatchKey } from '@/types';
+import { createMaxTurnsNoticeMessage, MAX_TURNS_NOTICE_ID_PREFIX } from '../core/agent/maxTurnsNotice';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -69,6 +77,10 @@ const FIXED_TIMESTAMP = 1_700_000_000_000;
 
 describe('chatStore', () => {
   beforeEach(() => {
+    usePreviewStore.getState().closeAllTabs();
+    for (const entry of Object.values(useBatchProgressStore.getState().batches)) {
+      useBatchProgressStore.getState().clearBatch(entry.identity);
+    }
     clearAllComposerDrafts();
     mockSetWorkspace.mockClear();
     mockClearWorkspace.mockClear();
@@ -84,12 +96,10 @@ describe('chatStore', () => {
       // from earlier tests would leak across cases.
       conversationIndex: {},
       activeConversationId: null,
-      agentStatus: 'idle',
-      currentTool: null,
       currentUsage: null,
       pendingInput: null,
       pendingInputAppend: null,
-      thinkingStartTime: null,
+      agentStates: new Map(),
     });
   });
 
@@ -199,6 +209,154 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id]).toBeUndefined();
     });
 
+    it('clears the conversation\'s browser-automation observability trackers (fix-wave: prevents an unbounded leak in a long-lived session)', () => {
+      const id = useChatStore.getState().createConversation();
+      // Manufacture some tracker state for this conversation: a repeat streak
+      // and a cached tab origin (browserSignals.ts's per-conversation Maps).
+      noteBrowserToolOutcome(id, 'click', 'tab:1 ref:e1', true);
+      noteBrowserToolOutcome(id, 'click', 'tab:1 ref:e1', true);
+      noteTabOrigin(id, 1, 'https://example.com');
+      expect(getCachedTabOrigin(id, 1)).toBe('https://example.com');
+
+      useChatStore.getState().deleteConversation(id);
+
+      // The tab-origin cache entry is gone...
+      expect(getCachedTabOrigin(id, 1)).toBeUndefined();
+      // ...and the repeat streak restarted from scratch (count back to 1,
+      // not 3 — if the old tracker had survived, this 3rd call would emit).
+      const after = noteBrowserToolOutcome(id, 'click', 'tab:1 ref:e1', true);
+      expect(after.repeat).toEqual({ count: 1, shouldEmit: false });
+    });
+
+    it('cascades subagent tab leases and batch entries for the deleted conversation only', () => {
+      const deletedId = useChatStore.getState().createConversation();
+      const survivorId = useChatStore.getState().createConversation();
+      const deletedBatch = { conversationId: deletedId, batchToolCallId: 'shared-batch' };
+      const survivorBatch = { conversationId: survivorId, batchToolCallId: 'shared-batch' };
+      const batchStore = useBatchProgressStore.getState();
+      batchStore.initBatch(deletedBatch, ['Deleted worker']);
+      batchStore.initBatch(survivorBatch, ['Surviving worker']);
+      const deletedTab = usePreviewStore.getState().openSubagent(deletedBatch, 0, 'Deleted worker');
+      const survivorTab = usePreviewStore.getState().openSubagent(survivorBatch, 0, 'Surviving worker');
+      usePreviewStore.getState().activateTab(deletedTab);
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(deletedBatch)]?.viewLeaseCount).toBe(1);
+
+      useChatStore.getState().deleteConversation(deletedId);
+
+      expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([survivorTab]);
+      expect(usePreviewStore.getState().tabs).not.toContainEqual(
+        expect.objectContaining({ id: subagentTabId(deletedBatch, 0) }),
+      );
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(deletedBatch)]).toBeUndefined();
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(survivorBatch)]).toBeDefined();
+    });
+
+    // C2-I1 / C1-I2 — a deleted conversation's browser tab is invisible in
+    // every conversation's strip (nothing can click it closed) and its native
+    // WebContentsView keeps running for the rest of the session. The cascade
+    // must both drop the records (which destroys the views it knows about) and
+    // tell main to dispose whatever it holds for that owner.
+    describe('browser view cascade', () => {
+      const runtime = globalThis as unknown as Record<string, unknown>;
+      const invokeMock = vi.mocked(invoke);
+      let previousInternals: unknown;
+
+      beforeEach(() => {
+        previousInternals = (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__;
+        (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+        invokeMock.mockReset();
+        invokeMock.mockResolvedValue(undefined);
+      });
+
+      afterEach(() => {
+        (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__ = previousInternals;
+        invokeMock.mockReset();
+        // closeAllTabs only reaches the tabs the CURRENT conversation can see,
+        // so foreign-owned leftovers would survive the outer reset.
+        usePreviewStore.setState({ tabs: [], activeTabId: null, currentConversationId: null });
+      });
+
+      it('closes the deleted conversation’s browser tabs and disposes its main-side views', () => {
+        const deletedId = useChatStore.getState().createConversation();
+        const survivorId = useChatStore.getState().createConversation();
+        usePreviewStore.getState().closeTabsForConversationSwitch(deletedId);
+        usePreviewStore.getState().openBrowser('https://agent.example', 'agent-deleted', deletedId);
+        usePreviewStore.getState().openBrowser('https://other.example', 'agent-survivor', survivorId);
+        const paneTab = usePreviewStore.getState().openBrowser('https://user-opened.example');
+
+        useChatStore.getState().deleteConversation(deletedId);
+
+        expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([
+          'agent-survivor',
+          paneTab,
+        ]);
+        expect(invokeMock).toHaveBeenCalledWith('browser_close', {
+          id: 'agent-deleted',
+          // A delete cascade is the app tidying up, never a user gesture (N7).
+          reason: 'lifecycle',
+        });
+        expect(invokeMock).not.toHaveBeenCalledWith(
+          'browser_close',
+          expect.objectContaining({ id: 'agent-survivor' }),
+        );
+        expect(invokeMock).not.toHaveBeenCalledWith(
+          'browser_close',
+          expect.objectContaining({ id: paneTab }),
+        );
+        expect(invokeMock).toHaveBeenCalledWith('browser_dispose_owner', {
+          conversationId: deletedId,
+        });
+      });
+
+      it('still disposes main-side state when the renderer holds no tab for the conversation', () => {
+        // Headless fallback views and adoptions that landed after the tab
+        // record was dropped exist only in main — the dispose command is the
+        // only thing that can reach them.
+        const deletedId = useChatStore.getState().createConversation();
+
+        useChatStore.getState().deleteConversation(deletedId);
+
+        expect(invokeMock).toHaveBeenCalledWith('browser_dispose_owner', {
+          conversationId: deletedId,
+        });
+      });
+    });
+
+    it('does not resurrect deleted batch state when in-flight progress settles late', async () => {
+      const conversationId = useChatStore.getState().createConversation();
+      const identity = {
+        conversationId,
+        assistantMessageId: 'assistant-in-flight',
+        batchToolCallId: 'batch-in-flight',
+      };
+      const batchStore = useBatchProgressStore.getState();
+      batchStore.initBatch(identity, ['In-flight worker']);
+      batchStore.setTaskRunning(identity, 0);
+      usePreviewStore.getState().openSubagent(identity, 0, 'In-flight worker');
+
+      useChatStore.getState().deleteConversation(conversationId);
+      await Promise.resolve();
+      batchStore.setTaskActivity(identity, 0, 'late activity', 1);
+      batchStore.startTaskStep(identity, 0, {
+        id: 'late-tool',
+        toolName: 'read_file',
+        toolInput: { path: '/late' },
+      });
+      batchStore.finishTaskStep(identity, 0, {
+        id: 'late-tool',
+        toolName: 'read_file',
+        result: 'late result',
+        resultContent: [{ type: 'text', text: 'late result' }],
+        error: false,
+      });
+      batchStore.setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+
+      expect(useBatchProgressStore.getState().batches[makeBatchKey(identity)]).toBeUndefined();
+      expect(usePreviewStore.getState().tabs).not.toContainEqual(
+        expect.objectContaining({ id: subagentTabId(identity, 0) }),
+      );
+    });
+
     it('clears the deleted conversation draft', () => {
       const id = useChatStore.getState().createConversation();
       const draftKey = getComposerDraftKey(id);
@@ -207,6 +365,30 @@ describe('chatStore', () => {
       useChatStore.getState().deleteConversation(id);
 
       expect(useComposerDraftStore.getState().drafts[draftKey]).toBeUndefined();
+    });
+
+    it('disposes token resources held by the deleted conversation draft', () => {
+      const dispose = vi.fn();
+      const unregister = registerComposerDraftResourceDisposer(dispose);
+      const id = useChatStore.getState().createConversation();
+      const draftKey = getComposerDraftKey(id);
+      writeComposerDraft(draftKey, {
+        text: '',
+        images: [],
+        files: [{ id: 'pdf', token: 'trusted-token', name: 'plan.pdf' }],
+        references: [],
+        selectedSkill: null,
+        selectedAgent: null,
+      });
+
+      useChatStore.getState().deleteConversation(id);
+
+      expect(dispose).toHaveBeenCalledWith({
+        kind: 'file-token',
+        token: 'trusted-token',
+        file: { id: 'pdf', token: 'trusted-token', name: 'plan.pdf' },
+      });
+      unregister();
     });
 
     it('switches to another conversation when active is deleted', async () => {
@@ -464,6 +646,59 @@ describe('chatStore', () => {
     });
   });
 
+  // N7 — the user closing an agent's browser tab tells the host to stop opening
+  // new ones. Writing to that conversation again is them re-engaging with the
+  // task, and is what lifts the window. `addMessage` is the single point every
+  // send path (sidecar dispatch and the in-process fallbacks alike) commits a
+  // user message through, so the signal is taken there rather than in each.
+  describe('browser reclaim window', () => {
+    const runtime = globalThis as unknown as Record<string, unknown>;
+    const invokeMock = vi.mocked(invoke);
+    let previousInternals: unknown;
+
+    beforeEach(() => {
+      previousInternals = (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__;
+      (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+      invokeMock.mockReset();
+      invokeMock.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      (runtime.window as Record<string, unknown>).__TAURI_INTERNALS__ = previousInternals;
+      invokeMock.mockReset();
+    });
+
+    it('lifts on the user’s next message in that conversation', () => {
+      const id = useChatStore.getState().createConversation();
+
+      useChatStore.getState().addMessage(id, {
+        id: 'user-1', role: 'user', content: 'go on', timestamp: FIXED_TIMESTAMP,
+      });
+
+      expect(invokeMock).toHaveBeenCalledWith('browser_clear_reclaim', { conversationId: id });
+    });
+
+    it('does not lift on anything the user did not write', () => {
+      const id = useChatStore.getState().createConversation();
+
+      useChatStore.getState().addMessage(id, {
+        id: 'assistant-1', role: 'assistant', content: 'working', timestamp: FIXED_TIMESTAMP,
+      });
+      // A system-injected wake-up rides the `user` role (agentLoop drains the
+      // system queue as user turns) — it is the app talking to itself, and must
+      // not hand the browser back on the user's behalf.
+      useChatStore.getState().addMessage(id, {
+        id: 'wakeup-1',
+        role: 'user',
+        content: 'continue',
+        timestamp: FIXED_TIMESTAMP,
+        isSystem: true,
+      });
+
+      expect(invokeMock).not.toHaveBeenCalledWith('browser_clear_reclaim', expect.anything());
+    });
+  });
+
   // ── addMessage ──
   describe('addMessage', () => {
     it('adds a message to conversation', () => {
@@ -507,6 +742,149 @@ describe('chatStore', () => {
           clientMessageId: 'client-msg-1',
           skill: { name: 'writer' },
         });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('keeps structured upstream error details on the durable failed user row', async () => {
+      const terminalTimestamp = new Date('2026-08-29T00:00:00.000Z').getTime();
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(terminalTimestamp);
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-upstream-failure',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      const errorDetails = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'store-trace-403',
+        summary: 'The content safety system rejected the request.',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: errorDetails.summary,
+          errorDetails,
+        });
+        await waitForConversationPersistence(id);
+
+        expect(useChatStore.getState().conversations[id].messages[0]).toMatchObject({
+          runState: 'failed',
+          runError: errorDetails.summary,
+          runErrorDetails: errorDetails,
+          runEndedAt: terminalTimestamp,
+        });
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('rejects privacy-unsafe upstream fields at the store action boundary', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-unsafe-upstream',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: 'HTTP 403 · content_policy',
+          errorDetails: {
+            status: 403,
+            rawBody: 'private prompt text',
+          } as never,
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runError).toBe('HTTP 403 · content_policy');
+        expect(stored.runErrorDetails).toBeUndefined();
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('sanitizes a structured run error at the store action boundary', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-unsafe-run-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'failed',
+          error: '{"private":"provider body at store boundary"}',
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runError).toBe(getI18n().chat.errorEmptyBody);
+        expect(JSON.stringify(stored)).not.toContain('provider body at store boundary');
+      } finally {
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+        vi.mocked(readTextFile).mockReset();
+        vi.mocked(readTextFile).mockResolvedValue('');
+      }
+    });
+
+    it('drops failure fields when the store action completes a run', async () => {
+      const id = useChatStore.getState().createConversation();
+      const message = {
+        id: 'client-msg-completed-with-error',
+        role: 'user',
+        content: 'fixed fixture input',
+        timestamp: FIXED_TIMESTAMP,
+        runState: 'running',
+      } as const;
+      useChatStore.getState().addMessage(id, message);
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockResolvedValue(`${JSON.stringify(message)}\n`);
+
+      try {
+        useChatStore.getState().updateUserMessageRun(id, message.id, {
+          state: 'completed',
+          error: 'must not survive',
+          errorDetails: { status: 403 },
+        });
+        await waitForConversationPersistence(id);
+
+        const stored = useChatStore.getState().conversations[id].messages[0];
+        expect(stored.runState).toBe('completed');
+        expect(stored.runError).toBeUndefined();
+        expect(stored.runErrorDetails).toBeUndefined();
       } finally {
         vi.mocked(exists).mockReset();
         vi.mocked(exists).mockResolvedValue(false);
@@ -860,15 +1238,22 @@ describe('chatStore', () => {
 
   // ── finishStreaming ──
   describe('finishStreaming', () => {
-    it('sets isStreaming to false and resets agent status', () => {
+    it('sets isStreaming to false and cleans up only that conversation agent state', () => {
       const id = useChatStore.getState().createConversation();
+      const otherId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'msg1', role: 'assistant', content: 'Hi', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
+      useChatStore.getState().setAgentStatus(id, 'tool-calling', 'read_file');
+      useChatStore.getState().setAgentStatus(otherId, 'tool-calling', 'write_file');
       useChatStore.getState().finishStreaming(id);
       const state = useChatStore.getState();
       expect(state.conversations[id].messages[0].isStreaming).toBe(false);
-      expect(state.agentStatus).toBe('idle');
+      expect(state.agentStates.has(id)).toBe(false);
+      expect(state.agentStates.get(otherId)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'write_file',
+      });
     });
 
     // Regression: without msgId, finishStreaming flipped isStreaming on whatever
@@ -1194,7 +1579,7 @@ describe('chatStore', () => {
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: '部分输出', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
-      useChatStore.setState({ agentStatus: 'thinking' });
+      useChatStore.getState().setAgentStatus(id, 'thinking');
       const controller = useChatStore.getState().getAbortController(id);
 
       useChatStore.getState().cancelStreaming(id, { source: 'chat-input-stop-button' });
@@ -1209,7 +1594,7 @@ describe('chatStore', () => {
       const live = useChatStore.getState().conversations[id].messages[0];
       expect(live.content).toBe('部分输出');
       expect(live.isStreaming).toBe(true);
-      expect(useChatStore.getState().agentStatus).toBe('thinking');
+      expect(useChatStore.getState().agentStates.get(id)?.status).toBe('thinking');
     });
 
     it('frame-driven call (fromSidecarFrame: true) applies the FULL decoration even though a sidecar run still reads as active', () => {
@@ -1232,7 +1617,7 @@ describe('chatStore', () => {
       expect(live.content).toBe('部分输出');
       expect(live.stopReason).toBe('user');
       expect(live.isStreaming).toBe(false);
-      expect(useChatStore.getState().agentStatus).toBe('idle');
+      expect(useChatStore.getState().agentStates.has(id)).toBe(false);
     });
 
     it('direct call with NO active sidecar run: unchanged original full-decoration path', () => {
@@ -1249,7 +1634,7 @@ describe('chatStore', () => {
       expect(live.content).toBe('部分输出');
       expect(live.stopReason).toBe('user');
       expect(live.isStreaming).toBe(false);
-      expect(useChatStore.getState().agentStatus).toBe('idle');
+      expect(useChatStore.getState().agentStates.has(id)).toBe(false);
     });
   });
 
@@ -1258,7 +1643,7 @@ describe('chatStore', () => {
   // "user enqueued input while the turn ended without tool calls" rescue path)
   // as part of the chatStore write-side probe. Unlike finishStreaming, this
   // looks a message up by EXACT id (no FALLBACK_LAST) and has zero side effects
-  // beyond the flag flip — no disk persistence, no agentStatus/retryInfo reset.
+  // beyond the flag flip — no disk persistence, no agent-state cleanup.
   describe('setMessageStreamingFlag', () => {
     it('flips isStreaming on the exact message id', () => {
       const id = useChatStore.getState().createConversation();
@@ -1269,14 +1654,14 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id].messages[0].isStreaming).toBe(false);
     });
 
-    it('does not touch agentStatus/retryInfo (unlike finishStreaming)', () => {
+    it('does not touch agent state (unlike finishStreaming)', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: 'partial', timestamp: FIXED_TIMESTAMP, isStreaming: true,
       });
-      useChatStore.getState().setAgentStatus('streaming');
+      useChatStore.getState().setAgentStatus(id, 'streaming');
       useChatStore.getState().setMessageStreamingFlag(id, 'a1', false);
-      expect(useChatStore.getState().agentStatus).toBe('streaming');
+      expect(useChatStore.getState().agentStates.get(id)?.status).toBe('streaming');
     });
 
     it('is a no-op when messageId does not match any message (no FALLBACK_LAST)', () => {
@@ -1320,6 +1705,154 @@ describe('chatStore', () => {
       const msg = useChatStore.getState().conversations[id].messages[0];
       expect(msg.toolCalls).toBeUndefined();
       expect(msg.isStreaming).toBe(true);
+    });
+
+    // Renderer-only fields must survive a wholesale replacement. The frame that
+    // carries `collectedToolCalls` comes from the sidecar, which has never seen
+    // `ui` (resolved from the renderer's MCP client) or `modelContext` (written
+    // by the app bridge) — so a replay/late frame for a message that already has
+    // an interface would blank it, exactly the way `sandboxRecoveryAction` had
+    // to be preserved on the disk side (conversationStorage.ts).
+    it('preserves renderer-only ui / modelContext when the incoming frame has none', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [
+        { id: 't1', name: 'weather__forecast', input: {} },
+        { id: 't2', name: 'read_file', input: {} },
+      ]);
+      useChatStore.getState().setToolCallAppUi(id, 'a1', 't1', {
+        server: 'weather', resourceUri: 'ui://weather/view.html',
+      });
+      useChatStore.getState().setToolCallModelContext(id, 'a1', 't1', 'rows: 3');
+
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [
+        { id: 't1', name: 'weather__forecast', input: {} },
+        { id: 't2', name: 'read_file', input: {} },
+      ]);
+
+      const [first, second] = useChatStore.getState().conversations[id].messages[0].toolCalls!;
+      expect(first.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/view.html' });
+      expect(first.modelContext).toBe('rows: 3');
+      expect(second.ui).toBeUndefined();
+    });
+
+    it('lets an incoming frame that DOES carry ui / modelContext win', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [{ id: 't1', name: 'weather__forecast', input: {} }]);
+      useChatStore.getState().setToolCallAppUi(id, 'a1', 't1', {
+        server: 'weather', resourceUri: 'ui://weather/old.html',
+      });
+      useChatStore.getState().setMessageToolCalls(id, 'a1', [{
+        id: 't1',
+        name: 'weather__forecast',
+        input: {},
+        ui: { server: 'weather', resourceUri: 'ui://weather/new.html' },
+        modelContext: 'fresh',
+      }]);
+      const [only] = useChatStore.getState().conversations[id].messages[0].toolCalls!;
+      expect(only.ui).toEqual({ server: 'weather', resourceUri: 'ui://weather/new.html' });
+      expect(only.modelContext).toBe('fresh');
+    });
+  });
+
+  // ── appendMessageToolCall (subagent image persistence) ──
+  describe('appendMessageToolCall', () => {
+    const subagentToolCall = {
+      id: 'toolu_sub_1',
+      name: 'computer',
+      input: { action: 'screenshot' },
+      result: 'Image: /tmp/shot.png (37KB, image/png)',
+      resultContent: [
+        { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'aGk=' } },
+      ],
+      hidden: true,
+      fromSubagent: true,
+    };
+
+    function setupLoopMessage() {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+        toolCalls: [{ id: 'toolu_delegate', name: 'delegate_to_agent', input: {} }],
+      });
+      return id;
+    }
+
+    it('appends the entry to the last assistant message of the loop, after existing tool calls', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      const msg = useChatStore.getState().conversations[id].messages[0];
+      expect(msg.toolCalls).toHaveLength(2);
+      expect(msg.toolCalls![1]).toEqual(subagentToolCall);
+    });
+
+    it('creates the toolCalls array when the message has none yet', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(id, {
+        id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1',
+      });
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toEqual([subagentToolCall]);
+    });
+
+    it('is idempotent per tool call id (sidecar frame path can re-deliver)', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toHaveLength(2);
+    });
+
+    it('keeps identical provider ids from separate scoped subagent runs', () => {
+      const id = setupLoopMessage();
+      const first = { ...subagentToolCall, id: 'subagent-v1:run-a:call_1' };
+      const second = {
+        ...subagentToolCall,
+        id: 'subagent-v1:run-b:call_1',
+        resultContent: [{
+          type: 'image' as const,
+          source: { type: 'base64' as const, media_type: 'image/png', data: 'SECOND' },
+        }],
+      };
+
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', first);
+      useChatStore.getState().appendMessageToolCall(id, 'loop-1', second);
+
+      const appended = useChatStore.getState().conversations[id].messages[0].toolCalls!.slice(1);
+      expect(appended.map((toolCall) => toolCall.id)).toEqual([first.id, second.id]);
+      expect(appended.map((toolCall) => toolCall.resultContent?.[0])).toEqual([
+        first.resultContent[0],
+        second.resultContent[0],
+      ]);
+    });
+
+    it('bounds retained subagent images before snapshotting the parent message', () => {
+      const id = setupLoopMessage();
+      for (let index = 0; index <= DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST; index++) {
+        useChatStore.getState().appendMessageToolCall(id, 'loop-1', {
+          ...subagentToolCall,
+          id: `subagent-v1:run-${index}:call_1`,
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: `IMAGE_${index}` },
+          }],
+        });
+      }
+
+      const childCalls = useChatStore.getState().conversations[id].messages[0].toolCalls!.slice(1);
+      expect(childCalls).toHaveLength(DURABLE_TOOL_RESULT_MAX_IMAGES_PER_LIST + 1);
+      expect(childCalls[0].resultContent).toBeUndefined();
+      expect(childCalls.slice(1).every((toolCall) => toolCall.resultContent?.[0]?.type === 'image')).toBe(true);
+    });
+
+    it('is a no-op when no assistant message carries the loopId', () => {
+      const id = setupLoopMessage();
+      useChatStore.getState().appendMessageToolCall(id, 'other-loop', subagentToolCall);
+      expect(useChatStore.getState().conversations[id].messages[0].toolCalls).toHaveLength(1);
     });
   });
 
@@ -1539,22 +2072,48 @@ describe('chatStore', () => {
 
   // ── setAgentStatus ──
   describe('setAgentStatus', () => {
-    it('sets thinking status with timestamp', () => {
-      useChatStore.getState().setAgentStatus('thinking');
+    it('sets thinking status with timestamp for one conversation', () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setAgentStatus(id, 'thinking');
       const state = useChatStore.getState();
-      expect(state.agentStatus).toBe('thinking');
-      expect(state.thinkingStartTime).not.toBeNull();
+      expect(state.agentStates.get(id)).toMatchObject({ status: 'thinking' });
+      expect(state.agentStates.get(id)?.thinkingStartTime).not.toBeNull();
     });
 
-    it('clears thinking timestamp on idle', () => {
-      useChatStore.getState().setAgentStatus('thinking');
-      useChatStore.getState().setAgentStatus('idle');
-      expect(useChatStore.getState().thinkingStartTime).toBeNull();
+    it('clears only the addressed conversation on idle', () => {
+      const id = useChatStore.getState().createConversation();
+      const otherId = useChatStore.getState().createConversation();
+      useChatStore.getState().setAgentStatus(id, 'thinking');
+      useChatStore.getState().setAgentStatus(otherId, 'tool-calling', 'read_file');
+      useChatStore.getState().setAgentStatus(id, 'idle');
+      expect(useChatStore.getState().agentStates.has(id)).toBe(false);
+      expect(useChatStore.getState().agentStates.get(otherId)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'read_file',
+      });
     });
 
-    it('sets tool name', () => {
-      useChatStore.getState().setAgentStatus('tool-calling', 'read_file');
-      expect(useChatStore.getState().currentTool).toBe('read_file');
+    it('isolates tool, retry, and active-agent state between concurrent conversations', () => {
+      const convA = useChatStore.getState().createConversation();
+      const convB = useChatStore.getState().createConversation();
+
+      useChatStore.getState().setAgentStatus(convA, 'tool-calling', 'read_file', 'agent-a');
+      useChatStore.getState().setRetryInfo(convA, { attempt: 2, maxAttempts: 3, delayMs: 5000 });
+      useChatStore.getState().setAgentStatus(convB, 'idle');
+
+      expect(useChatStore.getState().agentStates.get(convA)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'read_file',
+        retryInfo: { attempt: 2, maxAttempts: 3, delayMs: 5000 },
+        activeAgentNames: ['agent-a'],
+      });
+      expect(useChatStore.getState().agentStates.has(convB)).toBe(false);
+    });
+
+    it('does not create orphan agent state for a missing conversation', () => {
+      useChatStore.getState().setAgentStatus('missing-conv', 'tool-calling', 'read_file');
+
+      expect(useChatStore.getState().agentStates.has('missing-conv')).toBe(false);
     });
   });
 
@@ -1644,6 +2203,37 @@ describe('chatStore', () => {
       expect(reindex).toBeUndefined();
     });
 
+    // The turn cap ends a run on 'idle', not 'completed' (agentLoop's max_turns
+    // path). That still settles the round's messages, so the catalog row + FTS
+    // body must be re-indexed then too — otherwise search stayed stale until
+    // the next startup reconcile.
+    it('fires the catalog reindex when a running conversation settles back to idle', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationStatus(id, 'running');
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'idle');
+
+      await vi.waitFor(() => {
+        const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+        expect(reindex).toBeDefined();
+        expect((reindex![1] as { convId: string }).convId).toBe(id);
+      });
+    });
+
+    it('does not reindex an idle conversation that was never running', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'idle');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
+    });
+
     // Fix #5: a convId absent from state (e.g. already deleted) must never
     // trigger a reindex call.
     it('does not fire a catalog reindex for a convId absent from state', async () => {
@@ -1654,6 +2244,95 @@ describe('chatStore', () => {
       await new Promise((r) => setTimeout(r, 20));
       const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
       expect(reindex).toBeUndefined();
+    });
+
+    it('cleans terminal agent state for an unloaded conversation without clobbering another row', () => {
+      const completedId = 'unloaded-completed-conv';
+      const errorId = 'unloaded-error-conv';
+      const otherId = 'other-running-conv';
+
+      useChatStore.setState({
+        agentStates: new Map([
+          [completedId, {
+            status: 'thinking',
+            currentTool: null,
+            retryInfo: null,
+            thinkingStartTime: FIXED_TIMESTAMP,
+            activeAgentNames: [],
+          }],
+          [errorId, {
+            status: 'tool-calling',
+            currentTool: 'read_file',
+            retryInfo: null,
+            thinkingStartTime: null,
+            activeAgentNames: [],
+          }],
+          [otherId, {
+            status: 'streaming',
+            currentTool: null,
+            retryInfo: null,
+            thinkingStartTime: null,
+            activeAgentNames: [],
+          }],
+        ]),
+      });
+      expect(useChatStore.getState().conversations[completedId]).toBeUndefined();
+      expect(useChatStore.getState().conversations[errorId]).toBeUndefined();
+
+      useChatStore.getState().setConversationStatus(completedId, 'completed');
+
+      expect(useChatStore.getState().agentStates.has(completedId)).toBe(false);
+      expect(useChatStore.getState().agentStates.get(errorId)).toMatchObject({
+        status: 'tool-calling',
+        currentTool: 'read_file',
+      });
+      expect(useChatStore.getState().agentStates.get(otherId)).toMatchObject({
+        status: 'streaming',
+      });
+
+      useChatStore.getState().setConversationStatus(errorId, 'error');
+
+      expect(useChatStore.getState().agentStates.has(errorId)).toBe(false);
+      expect(useChatStore.getState().agentStates.get(otherId)).toMatchObject({
+        status: 'streaming',
+      });
+    });
+
+    it('drops agent state for conversations the LRU cache evicts, keeping running ones', () => {
+      const ids: string[] = [];
+      for (let i = 0; i < 7; i++) ids.push(useChatStore.getState().createConversation());
+
+      // Give every conversation a live agent state, and mark one eviction
+      // candidate as still running so the "don't unload a running
+      // conversation" guard is exercised alongside the cleanup.
+      const runningId = ids[0];
+      useChatStore.setState((state) => {
+        const running = state.conversations[runningId];
+        if (running) running.status = 'running';
+        state.agentStates = new Map(
+          ids.map((id) => [id, {
+            status: 'tool-calling' as const,
+            currentTool: 'read_file',
+            retryInfo: null,
+            thinkingStartTime: null,
+            activeAgentNames: [],
+          }]),
+        );
+      });
+
+      useChatStore.getState().unloadOldConversations();
+
+      const { conversations, agentStates } = useChatStore.getState();
+      const evicted = ids.filter((id) => !conversations[id]);
+      expect(evicted.length).toBeGreaterThan(0);
+      expect(conversations[runningId]).toBeDefined();
+      // Evicted rows must not keep a live agent state — no writer can ever
+      // clear it again, so it would leak and resurrect a stale status strip.
+      for (const id of evicted) expect(agentStates.has(id)).toBe(false);
+      // Still-loaded rows (including the protected running one) keep theirs.
+      for (const id of ids.filter((id) => conversations[id])) {
+        expect(agentStates.get(id)).toMatchObject({ status: 'tool-calling' });
+      }
     });
   });
 
@@ -2058,6 +2737,24 @@ describe('chatStore', () => {
     it('sets and clears the append buffer independently of pendingInput', () => {
       useChatStore.getState().appendPendingInput('widget follow-up');
       expect(useChatStore.getState().pendingInputAppend).toBe('widget follow-up');
+    });
+
+    it('APPENDS a second write instead of clobbering an undrained first', () => {
+      // ChatInput drains this buffer in an effect, so two senders (or one app
+      // sending twice) can write before it is consumed. Overwriting there would
+      // silently swallow the first message.
+      useChatStore.setState({ pendingInputAppend: null });
+      useChatStore.getState().appendPendingInput('first');
+      useChatStore.getState().appendPendingInput('second');
+      expect(useChatStore.getState().pendingInputAppend).toBe('first\nsecond');
+    });
+
+    it('caps the undrained buffer at 4 KB without splitting a code point', () => {
+      useChatStore.setState({ pendingInputAppend: null });
+      for (let i = 0; i < 10; i++) useChatStore.getState().appendPendingInput('中'.repeat(1000));
+      const buffer = useChatStore.getState().pendingInputAppend!;
+      expect(new TextEncoder().encode(buffer).length).toBeLessThanOrEqual(4096);
+      expect(buffer).not.toContain('\ufffd');
       // Does not touch the replace-semantics pendingInput buffer.
       expect(useChatStore.getState().pendingInput).toBeNull();
       useChatStore.getState().appendPendingInput(null);
@@ -2093,6 +2790,151 @@ describe('chatStore', () => {
     function getToolCall(convId: string) {
       return useChatStore.getState().conversations[convId]?.messages[0]?.toolCalls?.[0];
     }
+
+    it('persists the trusted subagent terminal reason and derives isError from it', () => {
+      const convId = seedToolCall('delegate_to_agent');
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'partial result without an error prefix',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'max_turns' },
+      );
+
+      expect(getToolCall(convId)).toEqual(expect.objectContaining({
+        subagentStopReason: 'max_turns',
+        isError: true,
+      }));
+    });
+
+    it('checkpoints a legal minimal batch summary without storing rich task details', () => {
+      const convId = seedToolCall('run_agent_batch');
+
+      useChatStore.getState().checkpointToolCallMetadata(
+        convId,
+        'msg-1',
+        'tc-1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 2,
+            counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+            prompt: 'do not persist',
+            resultContent: [{ type: 'image', source: { data: 'base64' } }],
+            tasks: [
+              { taskIndex: 0, status: 'succeeded', terminalReason: 'completed', output: 'do not persist' },
+              { taskIndex: 1, status: 'stopped', terminalReason: 'aborted', steps: ['do not persist'] },
+            ],
+          },
+        },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary).toEqual({
+        version: 1,
+        batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+        taskCount: 2,
+        counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+          { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      });
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('prompt');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('output');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('resultContent');
+      expect(JSON.stringify(getToolCall(convId)?.batchTerminalSummary)).not.toContain('steps');
+      expect(getToolCall(convId)?.isError).toBe(true);
+    });
+
+    it('does not let a late all-success response regress a stopped batch checkpoint', () => {
+      const convId = seedToolCall('run_agent_batch');
+      useChatStore.getState().checkpointToolCallMetadata(
+        convId,
+        'msg-1',
+        'tc-1',
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'stopped', terminalReason: 'aborted' }],
+          },
+        },
+      );
+
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'late success',
+        undefined,
+        false,
+        undefined,
+        {
+          batchTerminalSummary: {
+            version: 1,
+            batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+            taskCount: 1,
+            counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+            tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+          },
+        },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary?.counts.stopped).toBe(1);
+      expect(getToolCall(convId)?.isError).toBe(true);
+    });
+
+    it('merges cumulative partial batch summaries and keeps coarse completed from clearing non-success state', () => {
+      const convId = seedToolCall('run_agent_batch');
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', {
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+          taskCount: 2,
+          counts: { succeeded: 1, failed: 0, stopped: 0, incomplete: 0 },
+          tasks: [{ taskIndex: 0, status: 'succeeded', terminalReason: 'completed' }],
+        },
+      });
+      useChatStore.getState().checkpointToolCallMetadata(convId, 'msg-1', 'tc-1', {
+        batchTerminalSummary: {
+          version: 1,
+          batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+          taskCount: 2,
+          counts: { succeeded: 0, failed: 0, stopped: 1, incomplete: 0 },
+          tasks: [{ taskIndex: 1, status: 'stopped', terminalReason: 'aborted' }],
+        },
+      });
+      useChatStore.getState().updateToolCall(
+        convId,
+        'msg-1',
+        'tc-1',
+        'late completed envelope',
+        undefined,
+        false,
+        undefined,
+        { subagentStopReason: 'completed' },
+      );
+
+      expect(getToolCall(convId)?.batchTerminalSummary).toEqual({
+        version: 1,
+        batch: { conversationId: convId, batchToolCallId: 'tc-1' },
+        taskCount: 2,
+        counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+        tasks: [
+          { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+          { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+        ],
+      });
+      expect(getToolCall(convId)?.isError).toBe(true);
+      expect(getToolCall(convId)?.subagentStopReason).toBe('completed');
+    });
 
     it('lifts a skill-proposal notice_card from JSON result onto the tool call', () => {
       const convId = seedToolCall();
@@ -2322,6 +3164,78 @@ describe('chatStore', () => {
     });
   });
 
+  describe('max-turns notice', () => {
+    function seedNotice() {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(
+        convId,
+        createMaxTurnsNoticeMessage({
+          id: 'n1',
+          timestamp: FIXED_TIMESTAMP,
+          limit: 200,
+          streak: 1,
+        }),
+      );
+      return convId;
+    }
+
+    function getNotice(convId: string) {
+      return useChatStore.getState().conversations[convId]?.messages[0]?.maxTurnsNotice;
+    }
+
+    it('persists the continue choice on the notice', async () => {
+      const convId = seedNotice();
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockResolvedValue(undefined);
+
+      await useChatStore.getState().setMaxTurnsNoticeAction(
+        convId,
+        `${MAX_TURNS_NOTICE_ID_PREFIX}n1`,
+        'continued',
+      );
+
+      expect(getNotice(convId)?.action).toBe('continued');
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+
+    it('refuses to settle a notice that no longer exists', async () => {
+      const convId = seedNotice();
+
+      await expect(
+        useChatStore.getState().setMaxTurnsNoticeAction(convId, 'max-turns-gone', 'continued'),
+      ).rejects.toThrow('no longer exists');
+    });
+
+    it('does not show the choice in memory when durable persistence fails', async () => {
+      const convId = seedNotice();
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+
+      await expect(
+        useChatStore.getState().setMaxTurnsNoticeAction(
+          convId,
+          `${MAX_TURNS_NOTICE_ID_PREFIX}n1`,
+          'continued',
+        ),
+      ).rejects.toThrow('disk unavailable');
+      expect(getNotice(convId)?.action).toBeUndefined();
+
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+  });
+
   describe('context indicator ephemeral state', () => {
     beforeEach(() => {
       const conv: Conversation = {
@@ -2404,6 +3318,48 @@ describe('chatStore', () => {
     });
   });
 
+  describe('setToolCallModelContext', () => {
+    function seedStep() {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.setState((state) => {
+        state.conversations[convId]?.messages.push({
+          id: 'msg-1',
+          role: 'assistant',
+          content: '',
+          timestamp: FIXED_TIMESTAMP,
+          toolCalls: [{ id: 'tc-1', name: 'weather__board', input: {} }],
+        });
+      });
+      return convId;
+    }
+    const readBack = (convId: string) => useChatStore
+      .getState()
+      .conversations[convId]?.messages.find((m) => m.id === 'msg-1')
+      ?.toolCalls?.find((t) => t.id === 'tc-1');
+
+    it('writes the app-supplied context onto the step', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'row 4 selected');
+      expect(readBack(convId)?.modelContext).toBe('row 4 selected');
+    });
+
+    it('overwrites rather than appending', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'first');
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'second');
+      expect(readBack(convId)?.modelContext).toBe('second');
+    });
+
+    it('is a no-op for the same value and for a missing step', () => {
+      const convId = seedStep();
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'same');
+      const before = useChatStore.getState().conversations[convId]?.messages[0];
+      useChatStore.getState().setToolCallModelContext(convId, 'msg-1', 'tc-1', 'same');
+      expect(useChatStore.getState().conversations[convId]?.messages[0]).toBe(before);
+      expect(() => useChatStore.getState().setToolCallModelContext(convId, 'nope', 'nope', 'x')).not.toThrow();
+    });
+  });
+
   // ── setConversationPermissionMode ──
   describe('setConversationPermissionMode', () => {
     it('sets permissionMode on a conversation', () => {
@@ -2430,24 +3386,35 @@ describe('chatStore', () => {
 
   describe('retryInfo (Bug 1: 死寂期重试可见)', () => {
     beforeEach(() => {
-      useChatStore.setState({ retryInfo: null, agentStatus: 'idle', currentTool: null });
+      useChatStore.setState({ agentStates: new Map() });
     });
 
-    it('setRetryInfo stores the live retry state', () => {
-      useChatStore.getState().setRetryInfo({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
-      expect(useChatStore.getState().retryInfo).toEqual({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
+    it('setRetryInfo stores the live retry state for the addressed conversation only', () => {
+      const convA = useChatStore.getState().createConversation();
+      const convB = useChatStore.getState().createConversation();
+      useChatStore.getState().setRetryInfo(convA, { attempt: 2, maxAttempts: 3, delayMs: 5000 });
+      expect(useChatStore.getState().agentStates.get(convA)?.retryInfo).toEqual({ attempt: 2, maxAttempts: 3, delayMs: 5000 });
+      expect(useChatStore.getState().agentStates.has(convB)).toBe(false);
     });
 
     it('a resumed stream clears the retry strip (retry succeeded)', () => {
-      useChatStore.getState().setRetryInfo({ attempt: 1, maxAttempts: 3, delayMs: 1000 });
-      useChatStore.getState().setAgentStatus('streaming');
-      expect(useChatStore.getState().retryInfo).toBeNull();
+      const convA = useChatStore.getState().createConversation();
+      useChatStore.getState().setRetryInfo(convA, { attempt: 1, maxAttempts: 3, delayMs: 1000 });
+      useChatStore.getState().setAgentStatus(convA, 'streaming');
+      expect(useChatStore.getState().agentStates.get(convA)?.retryInfo).toBeNull();
     });
 
     it('rate-limited status does NOT clear retryInfo (still retrying)', () => {
-      useChatStore.getState().setRetryInfo({ attempt: 1, maxAttempts: 5, delayMs: 2000 });
-      useChatStore.getState().setAgentStatus('rate-limited', '2s');
-      expect(useChatStore.getState().retryInfo).not.toBeNull();
+      const convA = useChatStore.getState().createConversation();
+      useChatStore.getState().setRetryInfo(convA, { attempt: 1, maxAttempts: 5, delayMs: 2000 });
+      useChatStore.getState().setAgentStatus(convA, 'rate-limited', '2s');
+      expect(useChatStore.getState().agentStates.get(convA)?.retryInfo).not.toBeNull();
+    });
+
+    it('does not create orphan retry state for a missing conversation', () => {
+      useChatStore.getState().setRetryInfo('missing-conv', { attempt: 1, maxAttempts: 3, delayMs: 1000 });
+
+      expect(useChatStore.getState().agentStates.has('missing-conv')).toBe(false);
     });
   });
 
@@ -2486,32 +3453,58 @@ describe('chatStore', () => {
     });
   });
 
-  describe('pendingAttachmentPaths', () => {
+  describe('pendingAttachmentRequests', () => {
     beforeEach(() => {
-      useChatStore.setState({ pendingAttachmentPaths: [] });
+      useChatStore.setState({ pendingAttachmentRequests: [] });
     });
 
     it('starts empty', () => {
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([]);
     });
 
-    it('addPendingAttachment appends', () => {
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
-      useChatStore.getState().addPendingAttachment('/proj/b.txt');
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual(['/proj/a.txt', '/proj/b.txt']);
+    it('addPendingAttachment records the launch draft and scoped provenance', () => {
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/b.pdf',
+        draftKey: 'local:conversation:b',
+        readScope: 'workspace',
+      });
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([
+        expect.objectContaining({ path: '/proj/a.pdf', draftKey: 'local:conversation:a', readScope: 'workspace' }),
+        expect.objectContaining({ path: '/proj/b.pdf', draftKey: 'local:conversation:b', readScope: 'workspace' }),
+      ]);
     });
 
-    it('clearPendingAttachments empties the buffer', () => {
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
-      useChatStore.getState().clearPendingAttachments();
-      expect(useChatStore.getState().pendingAttachmentPaths).toEqual([]);
+    it('clearPendingAttachments can drain only one draft bucket', () => {
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/b.pdf',
+        draftKey: 'local:conversation:b',
+        readScope: 'workspace',
+      });
+      useChatStore.getState().clearPendingAttachments('local:conversation:a');
+      expect(useChatStore.getState().pendingAttachmentRequests).toEqual([
+        expect.objectContaining({ path: '/proj/b.pdf', draftKey: 'local:conversation:b' }),
+      ]);
     });
 
     it('is NOT included in persisted partialize output', () => {
       // partialize 只导出 conversationIndex —— 反向守卫，防止有人误加进持久化
-      useChatStore.getState().addPendingAttachment('/proj/a.txt');
+      useChatStore.getState().addPendingAttachment({
+        path: '/proj/a.pdf',
+        draftKey: 'local:conversation:a',
+        readScope: 'workspace',
+      });
       const persisted = useChatStore.persist.getOptions().partialize?.(useChatStore.getState());
-      expect(persisted && 'pendingAttachmentPaths' in persisted).toBe(false);
+      expect(persisted && 'pendingAttachmentRequests' in persisted).toBe(false);
     });
   });
 
@@ -2680,5 +3673,110 @@ describe('sanitizeImportedMessage — same completion inference as disk load', (
       id: 'u1', role: 'user', content: 'x', timestamp: 1, runState: 'pending', loopId: 'loop-z',
     } as never);
     expect((sanitized as { runState?: string }).runState).toBe('failed');
+  });
+
+  it.each([
+    ['unknown raw field', { status: 403, rawBody: 'private prompt text' }],
+    ['oversized summary', { status: 403, summary: 'x'.repeat(501) }],
+  ])('drops an invalid imported upstream projection: %s', (_label, runErrorDetails) => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-invalid-import',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runErrorDetails,
+    } as never);
+
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('sanitizes a legacy imported JSON runError', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-unsafe-import-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: 'Error: {"private":"imported provider body"}',
+    } as never);
+
+    expect(sanitized.runError).toBe(getI18n().chat.errorEmptyBody);
+    expect(JSON.stringify(sanitized)).not.toContain('imported provider body');
+  });
+
+  it('drops failure fields from an imported completed row', () => {
+    const sanitized = sanitizeImportedMessage({
+      id: 'u-completed-import-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'completed',
+      runError: 'must not survive',
+      runErrorDetails: { status: 403 },
+    } as never);
+
+    expect(sanitized.runError).toBeUndefined();
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+});
+
+describe('sanitizeLoadedMessages — upstream privacy boundary', () => {
+  it.each([
+    ['unknown raw field', { status: 403, rawBody: 'private prompt text' }],
+    ['oversized summary', { status: 403, summary: 'x'.repeat(501) }],
+  ])('drops an invalid persisted upstream projection: %s', (_label, runErrorDetails) => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-invalid-ledger',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runErrorDetails,
+    } as never]);
+
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+
+  it('sanitizes a legacy persisted HTML runError', () => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-unsafe-ledger-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: '<html><body>persisted proxy body</body></html>',
+    } as never]);
+
+    expect(sanitized.runError).toBe(getI18n().chat.errorEmptyBody);
+    expect(JSON.stringify(sanitized)).not.toContain('persisted proxy body');
+  });
+
+  it('drops failure fields from a persisted completed row', () => {
+    const [sanitized] = sanitizeLoadedMessages([{
+      id: 'u-completed-ledger-error',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'completed',
+      runError: 'must not survive',
+      runErrorDetails: { status: 403 },
+    } as never]);
+
+    expect(sanitized.runError).toBeUndefined();
+    expect(sanitized.runErrorDetails).toBeUndefined();
+  });
+});
+
+describe('pending team pin (welcome-page chip)', () => {
+  it('is consumed only by a foreground creation, never by a background one', () => {
+    useChatStore.setState({ pendingTeamId: 'team-x' });
+    const background = useChatStore.getState().createConversation(null, { scheduledTaskId: 's1', skipActivate: true });
+    expect(useChatStore.getState().conversations[background].teamId).toBeUndefined();
+    expect(useChatStore.getState().pendingTeamId).toBe('team-x');
+
+    const foreground = useChatStore.getState().createConversation(null);
+    expect(useChatStore.getState().conversations[foreground].teamId).toBe('team-x');
+    expect(useChatStore.getState().pendingTeamId).toBeUndefined();
   });
 });

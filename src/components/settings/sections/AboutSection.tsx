@@ -1,10 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { RefreshCw, Download, CheckCircle, CircleAlert, RotateCcw, ExternalLink, Copy, Check } from 'lucide-react';
 import { getDeviceId } from '@/utils/deviceId';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import abuAvatar from '@/assets/abu-avatar.png';
 import { APP_VERSION } from '@/utils/version';
 import { OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -15,18 +15,14 @@ import { cn } from '@/lib/utils';
 
 type CheckResult = 'idle' | 'just-checked' | 'error';
 
-const DISCLAIMER_URL_BASE = 'https://github.com/PM-Shawn/Abu-Cowork/blob/main';
 
 export default function AboutSection() {
-  const [disclaimerOpen, setDisclaimerOpen] = useState(false);
-  const disclaimerRef = useRef<HTMLDivElement>(null);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const updaterUnsupported = useSettingsStore((s) => s.updaterUnsupported);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
   const updateInstalling = useSettingsStore((s) => s.updateInstalling);
   const { t, locale } = useI18n();
-  const disclaimerUrl = `${DISCLAIMER_URL_BASE}/${locale === 'zh-CN' ? 'DISCLAIMER.zh-CN.md' : 'DISCLAIMER.md'}`;
   const [checkResult, setCheckResult] = useState<CheckResult>('idle');
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [idCopied, setIdCopied] = useState(false);
@@ -77,13 +73,21 @@ export default function AboutSection() {
     setCheckResult('idle');
     try {
       const result = await checkForUpdate(true);
-      // "just-checked" means a real feed comparison happened. The disabled
-      // marker also resolves null, so guard here at the assignment — not only
-      // in render order — reading the store directly (empty-deps callback, the
-      // hook value would be a stale closure).
-      if (!result && !useSettingsStore.getState().updaterUnsupported) {
-        setCheckResult('just-checked');
-        setTimeout(() => setCheckResult('idle'), 3000);
+      switch (result.kind) {
+        case 'up-to-date':
+          setCheckResult('just-checked');
+          setTimeout(() => setCheckResult('idle'), 3000);
+          break;
+        case 'error':
+          if (!result.updaterUnsupported) {
+            setCheckResult('just-checked');
+            setTimeout(() => setCheckResult('idle'), 3000);
+          }
+          break;
+        case 'update':
+        case 'disabled':
+        case 'throttled':
+          break;
       }
     } catch {
       setCheckResult('error');
@@ -132,15 +136,8 @@ export default function AboutSection() {
       : t.updates.downloading;
 
   return (
-    <div className="min-h-full flex flex-col justify-center gap-6">
-      {/* Logo & name */}
-      <div className="flex flex-col items-center text-center space-y-3">
-        <img src={abuAvatar} alt="Abu" className="w-20 h-20 rounded-2xl" />
-        <div>
-          <h4 className="text-h-xl font-semibold text-[var(--abu-text-primary)]">{t.common.appName}</h4>
-          <p className="text-body text-[var(--abu-text-tertiary)]">{t.common.appSlogan}</p>
-        </div>
-      </div>
+    <div className="space-y-6">
+      <SettingsSectionHeader title={t.common.version} description={t.about.versionDescription} />
 
       {/* Version info */}
       <div className="space-y-1">
@@ -329,66 +326,6 @@ export default function AboutSection() {
         )}
       </div>
 
-      {/* Footer */}
-      <div className="text-center space-y-2 pt-2">
-        <p className="text-body text-[var(--abu-text-tertiary)]">
-          Made with ❤️ by{' '}
-          <button
-            onClick={() => handleOpenLink('https://xhslink.cn/m/3A84p2yqNwZ')}
-            className="text-[var(--abu-clay)] hover:underline font-medium"
-          >
-            Shawn
-          </button>
-        </p>
-        <p className="text-minor text-[var(--abu-text-muted)]">
-          © 2026 {t.common.appName}. All rights reserved.
-          <span className="mx-1.5">·</span>
-          <button
-            onClick={() => {
-              setDisclaimerOpen((o) => !o);
-              if (!disclaimerOpen) {
-                setTimeout(() => disclaimerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
-              }
-            }}
-            className={cn(
-              'transition-colors',
-              disclaimerOpen
-                ? 'text-[var(--abu-text-secondary)]'
-                : 'hover:text-[var(--abu-text-secondary)]',
-            )}
-          >
-            {t.about.disclaimerLink}
-          </button>
-        </p>
-      </div>
-
-      {/* Expandable disclaimer content — renders below footer */}
-      {disclaimerOpen && (
-        <div
-          ref={disclaimerRef}
-          className="rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-active)] p-3 max-h-64 overflow-y-auto space-y-2"
-        >
-          <p className="text-minor font-semibold text-[var(--abu-text-primary)]">{t.about.disclaimerTitle}</p>
-          <div className="text-minor text-[var(--abu-text-secondary)] space-y-1.5 leading-relaxed">
-            <p>· {t.disclaimerBanner.line1}</p>
-            <p>· {t.disclaimerBanner.line2}</p>
-            <p>· {t.disclaimerBanner.line3}</p>
-          </div>
-          <button
-            onClick={() => void handleOpenLink(disclaimerUrl)}
-            className="flex items-center gap-1 text-minor text-[var(--abu-clay)] hover:underline mt-1"
-          >
-            <ExternalLink className="h-3 w-3" />
-            {t.about.disclaimerLink}{t.about.disclaimerFullSuffix}
-          </button>
-          <button
-            onClick={() => setDisclaimerOpen(false)}
-            className="block text-minor text-[var(--abu-text-muted)] hover:text-[var(--abu-text-secondary)] mt-1"
-          >
-            {t.about.disclaimerClose}
-          </button>
-        </div>
-      )}
     </div>
   );
 }

@@ -18,7 +18,7 @@
  * + desktopHost.cjs), and Check B below re-derives that same finding — this
  * script is that audit, made durable.
  *
- * Two checks:
+ * Three checks:
  *   A. Custom (non-plugin) commands: every literal `invoke('cmd', ...)` /
  *      `invoke<T>('cmd')` / ternary `invoke(cond ? 'a' : 'b')` string in
  *      src/**, must have its literal command string appear somewhere in
@@ -26,11 +26,15 @@
  *   B. Plugin families: every `@tauri-apps/plugin-<name>` the frontend
  *      actually imports must have its `plugin:<name>|` prefix appear
  *      somewhere in electron/*.cjs.
+ *   C. `@tauri-apps/api/window`: every Window method / window function the
+ *      frontend calls must have a `case` handler for each `plugin:window|*`
+ *      command it invokes, and every `tauri://*` window event it listens for
+ *      must be emitted by electron/*.cjs (see the Check C section).
  *
  * KNOWN_DEFERRED (deliberate, NOT gaps) must be kept in sync with the
  * matching list in electron/tauriHost.cjs's `KNOWN_DEFERRED`.
  *
- * Exit 0 iff no gaps found (both checks). Exit 1 otherwise (CI-gatable).
+ * Exit 0 iff no gaps found (all checks). Exit 1 otherwise (CI-gatable).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -366,6 +370,155 @@ for (const [pkg, files] of [...pluginPkgUses].sort((a, b) => a[0].localeCompare(
 }
 
 // ---------------------------------------------------------------------------
+// Check C — @tauri-apps/api/window surface (methods + window events)
+// ---------------------------------------------------------------------------
+//
+// Checks A/B only see literal `invoke('cmd')` strings and plugin imports, so a
+// `getCurrentWindow().setPosition(...)` (which invokes `plugin:window|
+// set_position` from inside the library) or a `getCurrentWindow().onMoved(...)`
+// (which listens for `tauri://move`) was invisible to them — both silently
+// no-op'd in Electron for months (desktop pet position never persisted; the
+// notification click's show/unminimize/setFocus did nothing).
+//
+// The method → command/event map is DERIVED from the installed library source
+// (node_modules/@tauri-apps/api/window.js + event.js), not hand-maintained:
+// each method/function body is scanned for `invoke('plugin:window|…')` and
+// `TauriEvent.X` references. Renderer usages are found per file:
+//   - `getCurrentWindow().method(`                      (direct chain)
+//   - `const w = getCurrentWindow(); … w.method(`       (local binding)
+//   - `primaryMonitor(`-style module functions imported from the package.
+// A used command must have a `case '<cmd>'` handler in electron/*.cjs (an
+// allowlist entry alone is not a handler); a used `tauri://*` event must be
+// the literal argument of some `emit*(...)` call in electron/*.cjs (a listen
+// allowlist entry alone does not emit anything).
+
+// Window methods / functions the Electron shell deliberately does not support.
+// name -> reason. Anything used by the renderer and not listed here must work.
+const KNOWN_UNSUPPORTED_WINDOW_API = new Map([
+  // (empty — every window method the renderer calls has an Electron handler)
+]);
+
+const tauriApiDir = path.join(repoRoot, 'node_modules', '@tauri-apps', 'api');
+
+/** TauriEvent enum member -> event name, read from the installed event.js. */
+function readTauriEventEnum() {
+  const text = fs.readFileSync(path.join(tauriApiDir, 'event.js'), 'utf8');
+  const map = new Map();
+  const re = /TauriEvent\["([A-Z_]+)"\]\s*=\s*"([^"]+)"/g;
+  let m;
+  while ((m = re.exec(text))) map.set(m[1], m[2]);
+  return map;
+}
+
+/**
+ * name -> { commands: Set, events: Set } for every Window class member and
+ * module-level function in the installed window.js. A member's "body" is the
+ * text from its declaration to the next declaration — enough for the
+ * one-level `invoke(...)` / `this.listen(TauriEvent.X, ...)` shape this
+ * library uses throughout.
+ */
+function readTauriWindowSurface() {
+  const text = fs.readFileSync(path.join(tauriApiDir, 'window.js'), 'utf8');
+  const events = readTauriEventEnum();
+  const declRe = /^(?: {4}(?:static\s+)?(?:async\s+)?|(?:async\s+)?function\s+)([A-Za-z_$][\w$]*)\s*\(/gm;
+  const decls = [];
+  let m;
+  while ((m = declRe.exec(text))) decls.push({ name: m[1], start: m.index });
+  const surface = new Map();
+  for (let i = 0; i < decls.length; i++) {
+    const body = text.slice(decls[i].start, i + 1 < decls.length ? decls[i + 1].start : text.length);
+    const entry = surface.get(decls[i].name) ?? { commands: new Set(), events: new Set() };
+    for (const c of body.matchAll(/invoke\(\s*'(plugin:window\|[a-z_]+)'/g)) entry.commands.add(c[1]);
+    for (const e of body.matchAll(/TauriEvent\.([A-Z_]+)/g)) {
+      if (events.has(e[1])) entry.events.add(events.get(e[1]));
+    }
+    surface.set(decls[i].name, entry);
+  }
+  return surface;
+}
+
+/** name -> Set(rel file) of window methods / functions the renderer calls. */
+function collectRendererWindowUsage() {
+  const uses = new Map();
+  const add = (name, rel) => {
+    if (!uses.has(name)) uses.set(name, new Set());
+    uses.get(name).add(rel);
+  };
+  for (const file of srcFiles) {
+    const raw = fs.readFileSync(file, 'utf8');
+    const importRe = /import\s*\{([^}]*)\}\s*from\s*['"]@tauri-apps\/api\/window['"]/g;
+    const imported = [];
+    let im;
+    while ((im = importRe.exec(raw))) {
+      for (const spec of im[1].split(',')) {
+        const parts = spec.trim().replace(/^type\s+/, '').split(/\s+as\s+/);
+        if (parts[0]) imported.push({ name: parts[0].trim(), local: (parts[1] ?? parts[0]).trim() });
+      }
+    }
+    if (imported.length === 0) continue;
+    const rel = path.relative(repoRoot, file);
+    const content = blankComments(raw);
+    // Module-level functions (primaryMonitor(), currentMonitor(), …). `new X(`
+    // is a re-exported dpi class constructor (PhysicalPosition), not a call.
+    for (const { name, local } of imported) {
+      if (name === 'getCurrentWindow') continue;
+      if (new RegExp(`(?<![\\w$.])(?<!\\bnew\\s+)${local.replace(/\$/g, '\\$')}\\s*\\(`).test(content)) add(name, rel);
+    }
+    const currentLocal = imported.find((i) => i.name === 'getCurrentWindow')?.local;
+    if (!currentLocal) continue;
+    // Direct chain: getCurrentWindow().method(  /  getCurrentWindow()\n  .method(
+    const chainRe = new RegExp(`\\b${currentLocal}\\(\\)\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*[(<]`, 'g');
+    let cm;
+    while ((cm = chainRe.exec(content))) add(cm[1], rel);
+    // Local binding: const win = getCurrentWindow(); … win.method(
+    const bindRe = new RegExp(`(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*(?:await\\s+)?${currentLocal}\\(\\)`, 'g');
+    let bm;
+    while ((bm = bindRe.exec(content))) {
+      const useRe = new RegExp(`(?<![\\w$.])${bm[1]}\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*[(<]`, 'g');
+      let um;
+      while ((um = useRe.exec(content))) add(um[1], rel);
+    }
+  }
+  return uses;
+}
+
+/** Every `tauri://*` event literal passed to an emit*(...) call in electron/*.cjs. */
+function collectElectronEmittedWindowEvents() {
+  const emitted = new Set();
+  // Drop whole-line comments (prose like "emits `tauri://move`" must not count
+  // as an emitter). Not blankComments(): that scanner is quote-driven and can
+  // desync on the regex literals in electron/*.cjs, then blank the `//` inside
+  // a real 'tauri://…' string.
+  const source = electronHandlerSource
+    .split('\n')
+    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .join('\n');
+  for (const m of source.matchAll(/\bemit[A-Za-z]*\s*\([^()]*?'(tauri:\/\/[\w-]+)'/g)) emitted.add(m[1]);
+  return emitted;
+}
+
+const windowSurface = readTauriWindowSurface();
+const windowUses = collectRendererWindowUsage();
+const emittedWindowEvents = collectElectronEmittedWindowEvents();
+const windowGaps = [];
+const windowSatisfied = [];
+const windowUnknown = [];
+for (const [name, files] of [...windowUses].sort((a, b) => a[0].localeCompare(b[0]))) {
+  if (KNOWN_UNSUPPORTED_WINDOW_API.has(name)) continue;
+  const entry = windowSurface.get(name);
+  if (!entry) {
+    windowUnknown.push(`${name} (${[...files].join(', ')})`);
+    continue;
+  }
+  const missing = [
+    ...[...entry.commands].filter((cmd) => !electronHandlerSource.includes(`case '${cmd}'`)).map((cmd) => `command ${cmd}`),
+    ...[...entry.events].filter((ev) => !emittedWindowEvents.has(ev)).map((ev) => `event ${ev} (never emitted)`),
+  ];
+  if (missing.length > 0) windowGaps.push({ name, missing, files: [...files] });
+  else windowSatisfied.push(name);
+}
+
+// ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 
@@ -398,6 +551,32 @@ if (pluginGaps.length > 0) {
   console.log('[parity-check] ✓ no plugin family gaps');
 }
 
+console.log('');
+console.log('[parity-check] ── Check C: @tauri-apps/api/window methods + window events ──');
+console.log(
+  `[parity-check] ${windowSatisfied.length} window method(s)/function(s) SATISFIED: ${windowSatisfied.join(', ') || '(none)'}`
+);
+console.log(
+  `[parity-check] ${KNOWN_UNSUPPORTED_WINDOW_API.size} KNOWN_UNSUPPORTED: ${[...KNOWN_UNSUPPORTED_WINDOW_API.keys()].join(', ')}`
+);
+if (windowGaps.length > 0) {
+  hasGaps = true;
+  console.log(`[parity-check] ❌ ${windowGaps.length} GAP(S):`);
+  for (const g of windowGaps) {
+    console.log(`  ❌ ${g.name}() needs ${g.missing.join(' + ')}  <- used in: ${g.files.join(', ')}`);
+  }
+} else {
+  console.log('[parity-check] ✓ no window method/event gaps');
+}
+if (windowUnknown.length > 0) {
+  hasGaps = true;
+  console.log(
+    `[parity-check] ❌ ${windowUnknown.length} call(s) on a Window binding matched no member of ` +
+      '@tauri-apps/api/window (library changed, or the scanner misread a call) — resolve or allowlist:'
+  );
+  for (const u of windowUnknown) console.log(`  ❌ ${u}`);
+}
+
 if (dynamicInvokeSites.length > 0) {
   console.log('');
   console.log(
@@ -411,8 +590,11 @@ console.log('');
 if (hasGaps) {
   console.log('[parity-check] FAIL — parity gap(s) found (see ❌ above). Add a real Electron handler, or if the gap is');
   console.log('[parity-check] deliberate, add it to KNOWN_DEFERRED_CUSTOM/KNOWN_DEFERRED_PLUGIN_FAMILIES here AND to');
-  console.log('[parity-check] electron/tauriHost.cjs\'s KNOWN_DEFERRED (keep both lists in sync).');
+  console.log('[parity-check] electron/tauriHost.cjs\'s KNOWN_DEFERRED (keep both lists in sync); for a window');
+  console.log('[parity-check] method/event, add it to KNOWN_UNSUPPORTED_WINDOW_API with the reason.');
 } else {
-  console.log('[parity-check] PASS — every custom command and plugin family the frontend calls has an Electron handler.');
+  console.log(
+    '[parity-check] PASS — every custom command, plugin family, and window method/event the frontend uses has an Electron handler.'
+  );
 }
 process.exit(hasGaps ? 1 : 0);

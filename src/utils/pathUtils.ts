@@ -4,6 +4,11 @@
  * On macOS these are essentially no-ops.
  */
 
+import { IMAGE_MIME_MAP } from '@/utils/imageMediaTypes';
+import { mkdir, readFile } from '@tauri-apps/plugin-fs';
+
+export { IMAGE_MIME_MAP } from '@/utils/imageMediaTypes';
+
 /**
  * Normalize backslashes to forward slashes.
  * macOS paths never contain backslashes, so this is a no-op on macOS.
@@ -61,7 +66,6 @@ export function extractUsername(homePath: string): string {
  * Uses mkdir(recursive:true) directly — no need to check exists() first.
  */
 export async function ensureParentDir(filePath: string): Promise<void> {
-  const { mkdir } = await import('@tauri-apps/plugin-fs');
   const parent = getParentDir(filePath);
   if (parent && parent !== '/') {
     await mkdir(parent, { recursive: true });
@@ -79,21 +83,21 @@ export function isLocalFilePath(s: string): boolean {
   return s.startsWith('/') || WIN_DRIVE_RE.test(s);
 }
 
-/** MIME types for common image extensions */
-export const IMAGE_MIME_MAP: Record<string, string> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
-  gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp',
-  bmp: 'image/bmp', ico: 'image/x-icon',
-};
+/**
+ * Load a local image file into an immutable Blob via the scoped filesystem
+ * bridge. Keeping the Blob lets a viewer save the exact bytes it displayed
+ * instead of reopening a path that may have changed in the meantime.
+ */
+export async function loadLocalImageBlob(filePath: string): Promise<Blob> {
+  const data = await readFile(filePath);
+  const ext = filePath.split('.').pop()?.toLowerCase() || '';
+  return new Blob([data], { type: IMAGE_MIME_MAP[ext] || 'image/png' });
+}
 
 /**
- * Load a local image file as a blob URL via Tauri readFile.
+ * Load a local image file as a blob URL via the scoped filesystem bridge.
  * Caller is responsible for calling URL.revokeObjectURL() on the returned URL when done.
  */
 export async function loadLocalImage(filePath: string): Promise<string> {
-  const { readFile } = await import('@tauri-apps/plugin-fs');
-  const data = await readFile(filePath);
-  const ext = filePath.split('.').pop()?.toLowerCase() || '';
-  const blob = new Blob([data], { type: IMAGE_MIME_MAP[ext] || 'image/png' });
-  return URL.createObjectURL(blob);
+  return URL.createObjectURL(await loadLocalImageBlob(filePath));
 }

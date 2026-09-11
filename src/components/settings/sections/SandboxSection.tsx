@@ -3,19 +3,16 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
 import { getAuthorizedWritablePaths, revokeWorkspace } from '@/core/tools/pathSafety';
 import { useI18n } from '@/i18n';
-import { isMacOS } from '@/utils/platform';
-import { Shield, ShieldAlert, Globe, Plus, X, Info, Rocket, Bot, ShieldCheck, FolderOpen, Trash2 } from 'lucide-react';
+import { isWindows } from '@/utils/platform';
+import { Shield, ShieldAlert, Globe, Plus, X, Info, ShieldCheck, FolderOpen, Trash2, SlidersHorizontal } from 'lucide-react';
 import { Toggle } from '@/components/ui/toggle';
+import { Select } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
-import { syncNetworkWhitelist } from '@/core/sandbox/config';
+import { isOsSandboxCapable, syncNetworkWhitelist } from '@/core/sandbox/config';
 
-const PERMISSION_MODES: { value: PermissionMode; icon: typeof Shield; color: string }[] = [
-  { value: 'standard', icon: ShieldCheck, color: 'text-[var(--abu-info)]' },
-  { value: 'smart', icon: Bot, color: 'text-violet-500' },
-  { value: 'autonomous', icon: Rocket, color: 'text-[var(--abu-warning)]' },
-];
+const PERMISSION_MODES: PermissionMode[] = ['standard', 'smart', 'autonomous'];
 
 export default function SandboxSection() {
   const sandboxEnabled = useSettingsStore(s => s.sandboxEnabled);
@@ -27,7 +24,32 @@ export default function SandboxSection() {
   const allowPrivateNetworks = useSettingsStore(s => s.allowPrivateNetworks);
   const setAllowPrivateNetworks = useSettingsStore(s => s.setAllowPrivateNetworks);
   const { t } = useI18n();
-  const macOS = isMacOS();
+  // Windows has a real OS-level sandbox too (restricted token + PowerShell
+  // ConstrainedLanguage, see electron/commandHost.cjs) — the settings UI must
+  // expose the same toggle there, with Windows-specific copy since the
+  // mechanism differs from macOS Seatbelt (no file-path isolation).
+  const windows = isWindows();
+  const osSandboxAvailable = isOsSandboxCapable();
+  // Per-platform copy resolved once — the Windows sandbox restricts what a
+  // command may DO (privileges), not which paths it may touch, so nearly
+  // every string differs from the macOS (Seatbelt path-isolation) wording.
+  const copy = windows
+    ? {
+        sectionDescription: t.settings.sandboxDescriptionWindows,
+        protectionDescription: t.settings.sandboxProtectionDescriptionWindows,
+        tooltipPrimary: t.settings.sandboxWindowsMechanism,
+        tooltipSecondary: t.settings.sandboxWindowsScope,
+        networkIsolationDescription: t.settings.networkIsolationDescriptionWindows,
+        disableWarning: t.settings.sandboxDisableWarningWindows,
+      }
+    : {
+        sectionDescription: t.settings.sandboxDescription,
+        protectionDescription: t.settings.sandboxProtectionDescription,
+        tooltipPrimary: t.settings.sandboxProtectedPaths,
+        tooltipSecondary: t.settings.sandboxWritablePaths,
+        networkIsolationDescription: t.settings.networkIsolationDescription,
+        disableWarning: t.settings.sandboxDisableWarning,
+      };
   const [showWarning, setShowWarning] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [newDomain, setNewDomain] = useState('');
@@ -67,25 +89,35 @@ export default function SandboxSection() {
 
   return (
     <div className="space-y-4">
-      <SettingsSectionHeader title={t.settings.sandbox} description={t.settings.sandboxDescription} />
+      <SettingsSectionHeader title={t.settings.sandbox} description={copy.sectionDescription} />
+      {/* Permission Mode */}
+      <div className="flex flex-wrap items-center justify-between gap-4 p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <div className="min-w-0 flex flex-1 items-center gap-3">
+          <SlidersHorizontal className="h-5 w-5 shrink-0 text-[var(--abu-text-muted)]" />
+          <div className="min-w-0">
+            <h4 className="text-body font-medium text-[var(--abu-text-primary)]">
+              {t.settings.permissionMode}
+            </h4>
+            <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
+              {t.settings.permissionModeDesc}
+            </p>
+          </div>
+        </div>
+        <PermissionModeSelector />
+      </div>
 
-      {macOS ? (
+      {osSandboxAvailable ? (
         <>
           {/* Sandbox Toggle */}
           <button
             onClick={handleToggle}
-            className={cn(
-              'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
-              sandboxEnabled
-                ? 'border-[var(--abu-success)] bg-[var(--abu-success-bg)]'
-                : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
-            )}
+            className="w-full flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] transition-all text-left"
           >
             <div className="flex items-center gap-3">
-              <Shield className={cn('h-5 w-5', sandboxEnabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-text-muted)]')} />
+              <Shield className="h-5 w-5 text-[var(--abu-text-muted)]" />
               <div>
                 <div className="flex items-center gap-1.5">
-                  <p className={cn('text-body font-medium', sandboxEnabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-text-tertiary)]')}>
+                  <p className="text-body font-medium text-[var(--abu-text-primary)]">
                     {t.settings.sandboxProtection}
                   </p>
                   <div
@@ -93,22 +125,22 @@ export default function SandboxSection() {
                     onMouseEnter={() => setShowDetails(true)}
                     onMouseLeave={() => setShowDetails(false)}
                   >
-                    <Info className={cn('h-3.5 w-3.5 cursor-help', sandboxEnabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-text-placeholder)]')} />
+                    <Info className="h-3.5 w-3.5 cursor-help text-[var(--abu-text-placeholder)]" />
                     {showDetails && (
                       <div className="absolute left-1/2 -translate-x-1/2 top-6 z-50 w-72 p-3 rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] shadow-lg text-left pointer-events-none">
                         <p className="text-caption text-[var(--abu-text-tertiary)] leading-relaxed">
-                          {t.settings.sandboxProtectedPaths}
+                          {copy.tooltipPrimary}
                         </p>
                         <div className="border-t border-[var(--abu-border)] my-1.5" />
                         <p className="text-caption text-[var(--abu-text-muted)] leading-relaxed">
-                          {t.settings.sandboxWritablePaths}
+                          {copy.tooltipSecondary}
                         </p>
                       </div>
                     )}
                   </div>
                 </div>
                 <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                  {t.settings.sandboxProtectionDescription}
+                  {copy.protectionDescription}
                 </p>
               </div>
             </div>
@@ -124,21 +156,16 @@ export default function SandboxSection() {
             <div className="space-y-3">
               <button
                 onClick={handleNetworkIsolationToggle}
-                className={cn(
-                  'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
-                  networkIsolationEnabled
-                    ? 'border-[var(--abu-info)] bg-[var(--abu-info-bg)]'
-                    : 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
-                )}
+                className="w-full flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] transition-all text-left"
               >
                 <div className="flex items-center gap-3">
-                  <Globe className={cn('h-5 w-5', networkIsolationEnabled ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-muted)]')} />
+                  <Globe className="h-5 w-5 text-[var(--abu-text-muted)]" />
                   <div>
-                    <p className={cn('text-body font-medium', networkIsolationEnabled ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]')}>
+                    <p className="text-body font-medium text-[var(--abu-text-primary)]">
                       {t.settings.networkIsolation}
                     </p>
                     <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
-                      {t.settings.networkIsolationDescription}
+                      {copy.networkIsolationDescription}
                     </p>
                   </div>
                 </div>
@@ -220,11 +247,16 @@ export default function SandboxSection() {
             </div>
           )}
 
+          {/* On Windows the app-layer guards ARE the file-path defense (the OS
+              sandbox only reduces privileges), so keep the notice Windows
+              users always had — macOS conveys paths via the Seatbelt copy. */}
+          {windows && <AppLayerProtectionCard />}
+
           {/* Disable confirmation dialog */}
           <ConfirmDialog
             open={showWarning}
             title={t.settings.sandbox}
-            message={t.settings.sandboxDisableWarning}
+            message={copy.disableWarning}
             confirmText={t.common.confirm}
             cancelText={t.common.cancel}
             variant="danger"
@@ -243,32 +275,15 @@ export default function SandboxSection() {
               {t.settings.sandboxMacOSOnly}
             </p>
           </div>
-          <div className="p-4 rounded-xl border border-[var(--abu-success)] bg-[var(--abu-success-bg)]">
-            <div className="flex items-center gap-2 mb-2">
-              <Shield className="h-4 w-4 text-[var(--abu-success)] shrink-0" />
-              <p className="text-minor text-[var(--abu-success)] font-medium">
-                {t.settings.sandboxAppLayerProtection}
-              </p>
-            </div>
-          </div>
+          <AppLayerProtectionCard />
         </div>
       )}
-      {/* Permission Mode */}
-      <div className="mt-6 pt-6 border-t border-[var(--abu-border)]">
-        <h4 className="text-body font-medium text-[var(--abu-text-primary)] mb-1">
-          {t.settings.permissionMode}
-        </h4>
-        <p className="text-minor text-[var(--abu-text-tertiary)] mb-3">
-          {t.settings.permissionModeDesc}
-        </p>
-        <PermissionModeSelector />
-      </div>
       {/* Content Guard toggle — Task #26, Module H kill switch.
           Separate from sandbox because it governs content patterns
           (exfiltration, injection, destructive commands) not file-path
           access. Default ON; turning off skips the 120-pattern scan for
           agent-initiated writes (memory + skill drafts). */}
-      <div className="mt-6 pt-6 border-t border-[var(--abu-border)]">
+      <div>
         <ContentGuardToggle />
       </div>
 
@@ -281,6 +296,20 @@ export default function SandboxSection() {
           <AuthorizedPathsList />
         </div>
       )}
+    </div>
+  );
+}
+
+function AppLayerProtectionCard() {
+  const { t } = useI18n();
+  return (
+    <div className="p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+      <div className="flex items-center gap-2">
+        <Shield className="h-4 w-4 text-[var(--abu-text-muted)] shrink-0" />
+        <p className="text-minor text-[var(--abu-text-tertiary)] font-medium">
+          {t.settings.sandboxAppLayerProtection}
+        </p>
+      </div>
     </div>
   );
 }
@@ -303,14 +332,14 @@ function ContentGuardToggle() {
         className={cn(
           'w-full flex items-center justify-between p-4 rounded-xl border transition-all text-left',
           enabled
-            ? 'border-[var(--abu-success)] bg-[var(--abu-success-bg)]'
+            ? 'border-[var(--abu-border)] bg-[var(--abu-bg-muted)]'
             : 'border-[var(--abu-warning)] bg-[var(--abu-warning-bg)]',
         )}
       >
         <div className="flex items-center gap-3">
-          <ShieldCheck className={cn('h-5 w-5', enabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-warning)]')} />
+          <ShieldCheck className={cn('h-5 w-5', enabled ? 'text-[var(--abu-text-muted)]' : 'text-[var(--abu-warning)]')} />
           <div>
-            <p className={cn('text-body font-medium', enabled ? 'text-[var(--abu-success)]' : 'text-[var(--abu-warning)]')}>
+            <p className={cn('text-body font-medium', enabled ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-warning)]')}>
               {t.settings.contentGuardTitle}
             </p>
             <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">
@@ -405,30 +434,17 @@ function PermissionModeSelector() {
   };
 
   return (
-    <div className="grid grid-cols-3 gap-2">
-      {PERMISSION_MODES.map(({ value, icon: Icon, color }) => (
-        <button
-          key={value}
-          onClick={() => setPermissionMode(value)}
-          className={cn(
-            'flex flex-col items-center gap-1.5 p-3 rounded-lg border transition-all text-center',
-            permissionMode === value
-              ? 'border-[var(--abu-clay)] bg-[var(--abu-clay-bg)]'
-              : 'border-[var(--abu-border-subtle)] hover:border-[var(--abu-border)]',
-          )}
-        >
-          <Icon className={cn('h-5 w-5', permissionMode === value ? color : 'text-[var(--abu-text-muted)]')} />
-          <span className={cn(
-            'text-minor font-medium',
-            permissionMode === value ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-secondary)]',
-          )}>
-            {labels[value].name}
-          </span>
-          <span className="text-caption text-[var(--abu-text-tertiary)] leading-tight">
-            {labels[value].desc}
-          </span>
-        </button>
-      ))}
-    </div>
+    <Select
+      variant="inline"
+      className="w-56 max-w-full shrink-0"
+      ariaLabel={t.settings.permissionMode}
+      value={permissionMode}
+      options={PERMISSION_MODES.map(value => ({
+        value,
+        label: labels[value].name,
+        description: labels[value].desc,
+      }))}
+      onChange={value => setPermissionMode(value as PermissionMode)}
+    />
   );
 }

@@ -140,7 +140,7 @@ function initSecretStore(app) {
   filePath = path.join(dir, STORE_FILENAME);
 
   try {
-    encryptionAvailable = safeStorage.isEncryptionAvailable();
+    encryptionAvailable = safeStorage.isEncryptionAvailable() && safeStorage.getSelectedStorageBackend?.() !== 'basic_text';
   } catch (err) {
     encryptionAvailable = false;
     warn('safeStorage.isEncryptionAvailable() threw', errMsg(err));

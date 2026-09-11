@@ -1,12 +1,31 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readTextFile, readDir, exists } from '@tauri-apps/plugin-fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
+import { homeDir, resolve } from '@tauri-apps/api/path';
 import { SkillLoader } from './loader';
+import { publishPluginActivation } from '../plugin/activationPolicy';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { EnterpriseBinding, EnterpriseConfigSnapshot } from '@/core/enterprise/types';
 
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockReadDir = vi.mocked(readDir);
 const mockExists = vi.mocked(exists);
+const mockLstat = vi.mocked(lstat);
+const mockHomeDir = vi.mocked(homeDir);
+const mockResolve = vi.mocked(resolve);
 
 const SKILL_TEMPLATE = (name: string) => `---
 name: ${name}
@@ -16,8 +35,68 @@ description: Test skill ${name}
 Body content for ${name}.
 `;
 
+describe('SkillLoader plugin component locations', () => {
+  it('loads only recorded custom skills, retaining user precedence on name collisions', async () => {
+    const home = '/home/plugin-a2-test';
+    const root = `${home}/.abu/plugin-packages/official/weather/1.0.0`;
+    mockHomeDir.mockResolvedValue(home);
+    const files: Record<string, string> = {
+      [`${home}/.abu/plugin-packages/installed.json`]: JSON.stringify([{
+        key: 'weather@official', marketplace: 'official', name: 'weather', version: '1.0.0',
+        componentLayoutVersion: 1, skillPaths: ['extras/review', 'skills/hello', '.'],
+        contributed: { skills: ['review', 'hello', 'root-skill'], mcpServers: [], agents: [] },
+      }]),
+      [`${root}/extras/review/SKILL.md`]: SKILL_TEMPLATE('review'),
+      [`${root}/skills/hello/SKILL.md`]: SKILL_TEMPLATE('hello'),
+      [`${root}/skills/unapproved/SKILL.md`]: SKILL_TEMPLATE('unapproved'),
+      [`${root}/SKILL.md`]: SKILL_TEMPLATE('root-skill'),
+      [`${home}/.abu/skills/hello/SKILL.md`]: SKILL_TEMPLATE('hello'),
+    };
+    mockReadTextFile.mockImplementation(async path => {
+      if (!(String(path) in files)) throw new Error('ENOENT');
+      return files[String(path)];
+    });
+    mockExists.mockImplementation(async path => Object.keys(files).some(file => file === path || file.startsWith(`${path}/`)));
+    mockReadDir.mockImplementation(async path => {
+      const prefix = `${path}/`;
+      return [...new Set(Object.keys(files).filter(file => file.startsWith(prefix)).map(file => file.slice(prefix.length).split('/')[0]))]
+        .map(name => ({ name, isFile: `${prefix}${name}` in files, isDirectory: !(`${prefix}${name}` in files), isSymlink: false }));
+    });
+    mockLstat.mockImplementation(async path => ({ isSymlink: false, isFile: String(path) in files, isDirectory: !(String(path) in files) }) as never);
+    const activation = { enabled: true, root, skillDirs: [root, `${root}/extras/review`, `${root}/skills/hello`], legacySkills: false, agentFiles: [], mcpServers: [] };
+    publishPluginActivation({ 'weather@official': activation }, [], true);
+    const loader = new SkillLoader();
+    await loader.discoverSkills();
+    expect(loader.getSkill('review')?.skillDir).toBe(`${root}/extras/review`);
+    expect(loader.getSkill('root-skill')?.skillDir).toBe(root);
+    expect(loader.getSkill('hello')?.source).toBe('user');
+    expect(loader.getSkill('unapproved')).toBeUndefined();
+    publishPluginActivation({ 'weather@official': { ...activation, enabled: false } }, [], true);
+    expect(loader.getSkill('review')).toBeUndefined();
+    expect(await loader.loadSkill('review')).toBeNull();
+    expect(loader.findMatchingSkills('review')).toEqual([]);
+    expect(loader.getAvailableSkills().map(s => s.name)).not.toContain('review');
+    expect(loader.getAvailableSkills({ includeDisabledPlugins: true }).map(s => s.name)).toContain('review');
+    // A disabled plugin's skills still claim their names, and so does the
+    // plugin's `hello` the user's own shadows.
+    expect(loader.getNameClaims()).toEqual(expect.arrayContaining([
+      { name: 'review', source: 'plugin' },
+      { name: 'hello', source: 'user' },
+      { name: 'hello', source: 'plugin' },
+    ]));
+    expect(loader.getSkill('hello')?.source).toBe('user');
+    mockReadTextFile.mockClear();
+    expect(await loader.refreshSkill('review')).toBeUndefined();
+    expect(await loader.listSupportingFiles('review')).toEqual([]);
+    expect(await loader.loadSupportingFile('review', 'README.md')).toBeNull();
+    expect(mockReadTextFile).not.toHaveBeenCalled();
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  publishPluginActivation({}, [], true);
+  mockHomeDir.mockResolvedValue('/Users/testuser');
   mockExists.mockResolvedValue(true);
   mockReadDir.mockResolvedValue([]);
   mockReadTextFile.mockRejectedValue(new Error('not found'));
@@ -68,6 +147,20 @@ function stubFs(
   mockExists.mockImplementation(async (path: string) => {
     return liveDirs.has(path) || Object.keys(fileContents).some((p) => p === path);
   });
+
+  // The scan asks `lstat` whether a manifest is a real file of the skill's own
+  // before reading it, so the virtual tree has to answer that too. The global
+  // mock in src/test/setup.ts only says `{ isSymlink: false }`, which would
+  // make every manifest look like a non-file.
+  mockLstat.mockImplementation(async (path: string) => {
+    if (path in fileContents) {
+      return { isFile: true, isDirectory: false, isSymlink: false } as never;
+    }
+    if (liveDirs.has(path)) {
+      return { isFile: false, isDirectory: true, isSymlink: false } as never;
+    }
+    throw new Error(`ENOENT: no such file or directory, lstat '${path}'`);
+  });
 }
 
 describe('SkillLoader.discoverSkills · workspace awareness', () => {
@@ -94,6 +187,30 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
     expect(loader.getSkill('org-skill')).toBeUndefined();
     expect(loader.getAvailableSkills().some(skill => skill.name === 'org-skill')).toBe(false);
     expect(loader.findMatchingSkills('org-skill')).toEqual([]);
+  });
+
+  // `description:` is third-party YAML with no schema behind it, so
+  // `description: 42` and `description:\n  - a` are shapes this parser WILL
+  // receive. Typed straight through as `(meta.description as string) ?? ''`
+  // they reached the prompt renderer as a number/array, whose `.replace` does
+  // not exist — one malformed installed SKILL.md then threw out of system
+  // prompt assembly for the whole run.
+  it('drops a non-string description instead of typing it as a string', async () => {
+    stubFs(
+      { '/Users/testuser/.abu/skills': ['numeric-desc', 'list-desc'] },
+      {
+        '/Users/testuser/.abu/skills/numeric-desc/SKILL.md':
+          '---\nname: numeric-desc\ndescription: 42\n---\n\nBody.\n',
+        '/Users/testuser/.abu/skills/list-desc/SKILL.md':
+          '---\nname: list-desc\ndescription:\n  - one\n  - two\n---\n\nBody.\n',
+      },
+    );
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(null);
+
+    expect(loader.getSkill('numeric-desc')?.description).toBe('');
+    expect(loader.getSkill('list-desc')?.description).toBe('');
   });
 
   it('scans global dirs only when workspacePath is null', async () => {
@@ -212,6 +329,39 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
     expect(shared!.source).toBe('project');
   });
 
+  it('getNameClaims keeps every scanned skill, the ones first-win shadowed included', async () => {
+    const workspace = '/Users/testuser/projects/myapp';
+    const draftDir = '/Users/testuser/.abu/projects/-Users-testuser-projects-myapp/skills/drafts';
+    stubFs(
+      {
+        [draftDir]: ['shared-name'],
+        '/Users/testuser/.abu/skills': ['shared-name', 'Solo'],
+      },
+      {
+        [`${draftDir}/shared-name/SKILL.md`]: SKILL_TEMPLATE('shared-name'),
+        '/Users/testuser/.abu/skills/shared-name/SKILL.md': SKILL_TEMPLATE('shared-name'),
+        '/Users/testuser/.abu/skills/Solo/SKILL.md': SKILL_TEMPLATE('Solo'),
+      },
+    );
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    // The draft wins the name, so the user skill under it is out of the map…
+    expect(loader.getSkill('shared-name')?.source).toBe('draft');
+    // …but not out of the claims.
+    expect(loader.getNameClaims()).toEqual(expect.arrayContaining([
+      { name: 'shared-name', source: 'draft' },
+      { name: 'shared-name', source: 'user' },
+      { name: 'Solo', source: 'user' },
+    ]));
+
+    // A re-scan starts over.
+    stubFs({}, {});
+    await loader.discoverSkills(workspace);
+    expect(loader.getNameClaims()).toEqual([]);
+  });
+
   it('switching workspace causes full re-scan', async () => {
     stubFs(
       {
@@ -234,5 +384,210 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
     expect(loader.has('a-only')).toBe(false);
     expect(loader.has('b-only')).toBe(true);
     expect(loader.getCurrentWorkspace()).toBe('/ws/b');
+  });
+});
+
+/**
+ * These run against REAL temporary trees carrying REAL symlinks and a REAL
+ * FIFO, driving the mocked `@tauri-apps/plugin-fs` surface through node's fs
+ * exactly the way `electron/fsHost.cjs` does.
+ *
+ * Deliberately not the virtual tree above. Every hand-written entry in it says
+ * `isSymlink: false`, which is precisely the blind spot that let this ship: a
+ * dirent for a link reports `isDirectory: false` / `isFile: false` /
+ * `isSymlink: true` whichever kind of thing it points at, and a FIFO reports
+ * `isDirectory: false` / `isFile: false` / `isSymlink: false`. Only a real
+ * dirent produces those combinations by itself.
+ */
+
+/** Point the mocked plugin-fs surface at the real filesystem. */
+/** What the non-blocking read hands back where the real host would block. */
+const BYTES_FROM_A_PIPE = 'BYTES-FROM-A-PIPE';
+
+/** Every path `useRealFs`'s readTextFile was asked for, in call order. */
+let readTextTargets: string[] = [];
+
+function useRealFs() {
+  readTextTargets = [];
+  mockReadDir.mockImplementation(async (p: string | URL) =>
+    readdirSync(String(p), { withFileTypes: true }).map((d) => ({
+      name: d.name,
+      isDirectory: d.isDirectory(),
+      isFile: d.isFile(),
+      isSymlink: d.isSymbolicLink(),
+    })) as never,
+  );
+  // Both of these FOLLOW a symlink — what the privileged host does, and the
+  // whole reason a link may not be treated as an ordinary entry.
+  //
+  // EXCEPT on a non-regular file: a faithful read of a writer-less pipe never
+  // returns, so a regression would HANG this run rather than fail it (vitest's
+  // own timeout cannot fire either — the blocked `readFileSync` stalls the
+  // worker's event loop). Handing back recognisable bytes instead turns the
+  // defect into an assertion, exactly as `useNonBlockingReads` does in
+  // installer.test.ts and the `0xde 0xad` mock does in plugin/fsOps.test.ts.
+  mockReadTextFile.mockImplementation(async (p: string | URL) => {
+    readTextTargets.push(String(p));
+    if (!lstatSync(String(p)).isFile()) return BYTES_FROM_A_PIPE as never;
+    return readFileSync(String(p), 'utf8');
+  });
+  mockExists.mockImplementation(async (p: string | URL) => existsSync(String(p)));
+  // `lstat` is the one call routed with `followFinalSymlink: false`, which is
+  // exactly what an ownership question needs.
+  mockLstat.mockImplementation(async (p: string | URL) => {
+    const info = lstatSync(String(p));
+    return {
+      isFile: info.isFile(),
+      isDirectory: info.isDirectory(),
+      isSymlink: info.isSymbolicLink(),
+    } as never;
+  });
+}
+
+const OWNED_SKILL_MD = '---\nname: helper\ndescription: a skill\n---\n# body';
+const OUTSIDE_SKILL_MD = '---\nname: stolen\ndescription: from outside\n---\n# body';
+
+describe('SkillLoader over a real tree with real symlinks', () => {
+  let root: string;
+  let workspace: string;
+  let skillsDir: string;
+  let helperDir: string;
+  let secret: string;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'abu-skill-loader-'));
+    workspace = join(root, 'cloned-repo');
+    skillsDir = join(workspace, '.abu', 'skills');
+    helperDir = join(skillsDir, 'helper');
+    secret = join(root, 'id_rsa');
+
+    mkdirSync(join(helperDir, 'references'), { recursive: true });
+    writeFileSync(secret, 'PRIVATE-KEY-BYTES');
+    writeFileSync(join(helperDir, 'SKILL.md'), OWNED_SKILL_MD);
+    writeFileSync(join(helperDir, 'references', 'api.md'), 'real reference');
+
+    useRealFs();
+    // $HOME lives inside the fixture so the global scan roots cannot reach the
+    // developer's real ~/.abu/skills.
+    mockHomeDir.mockResolvedValue(join(root, 'home'));
+    // No bundled-resource dir: the dev fallback would otherwise resolve the
+    // repo's own ./builtin-skills relative to the cwd and scan all of it.
+    mockResolve.mockRejectedValue(new Error('no resource dir in this test'));
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does not adopt a skill whose SKILL.md is a symlink', async () => {
+    // The manifest names the skill and therefore its identity. A linked one is
+    // a manifest the directory does not own — the skill would be adopted from
+    // outside the directory the loader was asked to scan.
+    mkdirSync(join(root, 'elsewhere'), { recursive: true });
+    writeFileSync(join(root, 'elsewhere', 'SKILL.md'), OUTSIDE_SKILL_MD);
+    rmSync(join(helperDir, 'SKILL.md'));
+    symlinkSync(join(root, 'elsewhere', 'SKILL.md'), join(helperDir, 'SKILL.md'));
+
+    const loader = new SkillLoader();
+    const skills = await loader.discoverSkills(workspace);
+
+    expect(skills.map((s) => s.name)).not.toContain('stolen');
+    expect(loader.has('stolen')).toBe(false);
+    expect(loader.has('helper')).toBe(false);
+  });
+
+  it('does not scan a skill directory that is itself a symlink', async () => {
+    // Load-bearing and invisible: `read_dir`'s flags are lstat-based, so a link
+    // to a directory already reports `isDirectory: false`. Pinned so a later
+    // "surely this should follow directories" edit has to argue with a test.
+    const outside = join(root, 'outside-skill');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'SKILL.md'), OUTSIDE_SKILL_MD);
+    symlinkSync(outside, join(skillsDir, 'linked'), 'dir');
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    expect(loader.has('stolen')).toBe(false);
+    expect(loader.has('helper')).toBe(true);
+  });
+
+  it('never advertises a symlink as a supporting file', async () => {
+    symlinkSync(secret, join(helperDir, 'notes.md'));
+    symlinkSync(join(root, 'elsewhere-dir'), join(helperDir, 'linkdir'), 'dir');
+    mkdirSync(join(root, 'elsewhere-dir'), { recursive: true });
+    writeFileSync(join(root, 'elsewhere-dir', 'other.md'), 'not this skill');
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+    const files = await loader.listSupportingFiles('helper');
+
+    expect(files).toEqual(['references/api.md']);
+  });
+
+  it('never reads a symlinked supporting file', async () => {
+    symlinkSync(secret, join(helperDir, 'notes.md'));
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    expect(await loader.loadSupportingFile('helper', 'notes.md')).toBeNull();
+    // The real neighbour still loads — this is an ownership rule, not a ban on
+    // supporting files.
+    expect(await loader.loadSupportingFile('helper', 'references/api.md')).toBe('real reference');
+  });
+
+  it('accepts a leading "./" — the form a model writes — while still refusing ".."', async () => {
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    // `skill_view` hands the model's string straight through, and models
+    // routinely spell a relative path `./references/api.md`. A `.` segment
+    // names the directory it is already in, so it cannot escape anything —
+    // refusing it would only teach the model that the file does not exist.
+    expect(await loader.loadSupportingFile('helper', './references/api.md')).toBe('real reference');
+    expect(await loader.loadSupportingFile('helper', 'references/./api.md')).toBe('real reference');
+    // `..` is the segment that can leave the skill; it stays refused.
+    expect(await loader.loadSupportingFile('helper', '../helper/references/api.md')).toBeNull();
+    expect(await loader.loadSupportingFile('helper', 'references/../references/api.md')).toBeNull();
+  });
+
+  it('never reads through a symlinked INTERMEDIATE directory', async () => {
+    // `relativePath.includes('..')` is a string test; a link needs no `..` at
+    // all. Every segment has to be owned, not just the last one.
+    const outside = join(root, 'outside-refs');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'api.md'), 'SECRET-FROM-OUTSIDE');
+    symlinkSync(outside, join(helperDir, 'refs'), 'dir');
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    expect(await loader.loadSupportingFile('helper', 'refs/api.md')).toBeNull();
+  });
+
+  // Skipped on Windows: no `mkfifo(1)`, so the non-regular dirent this test is
+  // about cannot be created there.
+  it.skipIf(process.platform === 'win32')('treats a FIFO as absent rather than reading it', async () => {
+    // A FIFO's dirent is `{ isDirectory: false, isFile: false, isSymlink: false }`
+    // — the one non-regular shape a symlink test does not catch. `readFileSync`
+    // on one blocks the privileged host's event loop until a writer appears, so
+    // "not a directory" is not a good enough reason to read something.
+    //
+    // Pre-loading the pipe would NOT make a regression fail instead of hang: a
+    // FIFO keeps no buffer once its last descriptor closes, so the next `open`
+    // for read blocks all the same. `useRealFs` is what keeps this test honest
+    // — it refuses to issue a blocking read and hands back BYTES_FROM_A_PIPE,
+    // so a regression fails on the assertions below.
+    const fifo = join(helperDir, 'pipe.md');
+    execFileSync('mkfifo', [fifo]);
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    expect(await loader.listSupportingFiles('helper')).toEqual(['references/api.md']);
+    expect(await loader.loadSupportingFile('helper', 'pipe.md')).toBeNull();
+    // The read that would have frozen the main process was never issued.
+    expect(readTextTargets).not.toContain(fifo);
   });
 });

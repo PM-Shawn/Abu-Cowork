@@ -2,6 +2,14 @@
 // ABU — Core Type Definitions
 // ============================================================
 
+import { encodeBoundedIdentityPart } from '@/utils/boundedIdentity';
+// Type-only: `browserDenialTracker` imports nothing, so this cannot cycle, and
+// sharing the unions keeps the tool-context seam and the counter from drifting.
+import type {
+  BrowserAllowConsent,
+  BrowserDenialKind,
+} from '@/core/agent/browserDenialTracker';
+
 // --- Messages & Conversations ---
 
 // ─── Interactive Notice Cards (Module I) ───────────────────────────────
@@ -28,6 +36,54 @@ export interface SandboxRecoveryPayload {
   targetApp?: string;
 }
 
+export type SubagentStopReason = 'completed' | 'aborted' | 'error' | 'max_turns';
+
+export interface BatchIdentity {
+  conversationId: string;
+  /** Owning assistant message. Optional only for v1 persisted summaries. */
+  assistantMessageId?: string;
+  batchToolCallId: string;
+}
+
+export const BATCH_KEY_MAX_PART_BYTES = 1_024;
+export const BATCH_KEY_MAX_BYTES = 3 + (BATCH_KEY_MAX_PART_BYTES * 3) + 2;
+
+export function makeBatchKey(identity: BatchIdentity): string {
+  const conversationId = encodeBoundedIdentityPart(identity.conversationId, BATCH_KEY_MAX_PART_BYTES);
+  const batchToolCallId = encodeBoundedIdentityPart(identity.batchToolCallId, BATCH_KEY_MAX_PART_BYTES);
+  if (identity.assistantMessageId) {
+    const assistantMessageId = encodeBoundedIdentityPart(
+      identity.assistantMessageId,
+      BATCH_KEY_MAX_PART_BYTES,
+    );
+    return `v2:${conversationId}:${assistantMessageId}:${batchToolCallId}`;
+  }
+  return `v1:${conversationId}:${batchToolCallId}`;
+}
+
+export type BatchTaskTerminalStatus = 'succeeded' | 'failed' | 'stopped' | 'incomplete';
+export type BatchTaskTerminalReason =
+  | 'completed'
+  | 'error'
+  | 'aborted'
+  | 'max_turns'
+  | 'timeout'
+  | 'invalid_structured';
+
+export interface BatchTerminalTaskSummary {
+  taskIndex: number;
+  status: BatchTaskTerminalStatus;
+  terminalReason: BatchTaskTerminalReason;
+}
+
+export interface BatchTerminalSummary {
+  version: 1;
+  batch: BatchIdentity;
+  taskCount: number;
+  counts: Record<BatchTaskTerminalStatus, number>;
+  tasks: BatchTerminalTaskSummary[];
+}
+
 export type SandboxRecoveryAction =
   | 'pending'
   | 'started'
@@ -51,6 +107,8 @@ export interface ToolExecutionMetadata {
     | 'computer-manual-handoff'
     | 'computer-verification-mismatch'
     | 'computer-outcome-unknown-new-turn';
+  subagentStopReason?: SubagentStopReason;
+  batchTerminalSummary?: BatchTerminalSummary;
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -175,6 +233,17 @@ export interface ToolCall {
   hidden?: boolean;    // Hidden from UI (e.g., report_plan)
   hideScreenshot?: boolean;  // If true, screenshot thumbnails hidden from chat UI (still sent to LLM)
   /**
+   * This entry records a SUBAGENT's tool call (persisted on the parent
+   * message solely so its `resultContent` image payload survives reload for
+   * child-step backfill — see executionSnapshot.ts's
+   * `backfillDetailBlockImages`). Unlike every other entry, it has no
+   * counterpart in the parent LLM's tool_use history: it must never be sent
+   * to the LLM (messageNormalizer's toolCalls fallback filters it) and never
+   * counts against the screenshot history budget (contextManager's
+   * trimOldScreenshots skips it).
+   */
+  fromSubagent?: boolean;
+  /**
    * Interactive notice card attached to this tool call (e.g. a
    * "save as skill?" proposal). Populated from the tool's JSON result
    * when present. Chat renderer picks it up and renders the card right
@@ -201,6 +270,34 @@ export interface ToolCall {
    * interactive (waiting for the user to answer).
    */
   userQuestionAnswers?: UserQuestionResult;
+  /** Structured terminal state for delegate_to_agent/run_agent_batch. */
+  subagentStopReason?: SubagentStopReason;
+  /** Minimal persisted terminal summary for run_agent_batch. */
+  batchTerminalSummary?: BatchTerminalSummary;
+  /**
+   * MCP Apps interface for this step (extension `io.modelcontextprotocol/ui`).
+   *
+   * Resolved in the RENDERER when the step first renders — `ToolDefinition.ui`
+   * never crosses the sidecar wire (the loop only sees name/description/schema),
+   * so it cannot be filled in where the tool call is created. Persisting it
+   * means a reopened conversation still knows the step had an interface, and
+   * which server to name in the placeholder, even when that server is offline.
+   *
+   * Optional and additive: ledgers written before MCP Apps simply lack it.
+   */
+  ui?: { server: string; resourceUri: string };
+  /**
+   * Extra model-visible context the MCP App interface attached to this step
+   * (`ui/update-model-context`, spec §4.3).
+   *
+   * Written by the host from the sandboxed view, capped at 8 KB, OVERWRITTEN
+   * (never appended) by each update. `messageNormalizer` appends it to this
+   * step's tool result when the history is next sent to the model, so it
+   * reaches the model on the NEXT turn — never as system-prompt bytes. The
+   * tool card renders it in an expander so the user can see what the interface
+   * told the model.
+   */
+  modelContext?: string;
 }
 
 // Multimodal content types for messages
@@ -227,11 +324,17 @@ export interface ImageContent {
 
 export interface DocumentContent {
   type: 'document';
+  name?: string;
   source: {
     type: 'base64';
     media_type: 'application/pdf';
     data: string;
   };
+  /**
+   * Optional legacy/persistence provenance. It is metadata-only in this batch:
+   * never use it to rehydrate stripped PDF bytes.
+   */
+  originConversationId?: string;
 }
 
 export type MessageContent = TextContent | ImageContent | DocumentContent;
@@ -259,6 +362,18 @@ export interface ThinkingBlock {
   thinking: string;
 }
 
+/**
+ * Bounded, user-visible projection of an upstream provider error. The raw
+ * response body stays inside the adapter/diagnostic path and must never cross
+ * the sidecar terminal wire or be persisted on a chat message.
+ */
+export interface UpstreamErrorDetails {
+  status: number;
+  error_type?: string;
+  traceId?: string;
+  summary?: string;
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -281,6 +396,8 @@ export interface Message {
   clientMessageId?: string;
   /** User-facing detail retained when dispatch reaches a failed terminal. */
   runError?: string;
+  /** Structured provider fields retained for the failed-run error card. */
+  runErrorDetails?: UpstreamErrorDetails;
   toolCalls?: ToolCall[];
   // Extended thinking content
   thinking?: string;
@@ -319,6 +436,27 @@ export interface Message {
   // to the log and never rewrites earlier entries; the send-side rebuilds a
   // compact context from the LAST marker.
   compactBoundary?: CompactBoundary;
+  /**
+   * Unattended browser run report (U7). Present only on report marker messages
+   * (id prefix `browser-run-report-`).
+   *
+   * This is a FROZEN SNAPSHOT, deliberately: the signals it was aggregated
+   * from live in an in-memory ring buffer that holds 5000 entries and is empty
+   * after a restart. A card that re-derived itself at render time would
+   * therefore be blank exactly when it matters — the morning after an
+   * overnight run — so the whole aggregation is computed once and stored here.
+   * Nothing in the render path may go back to the buffer.
+   */
+  browserRunReport?: import('../core/observability/browserRunReport').BrowserRunReportSnapshot;
+  /**
+   * Turn-cap notice payload. Present only on marker messages (id prefix
+   * `max-turns-`), appended when a run stops because it reached its turn cap.
+   *
+   * The cap is recorded on the marker rather than read from settings at render
+   * time: the notice explains a run that already happened, and changing the
+   * setting afterwards must not rewrite what an old card says.
+   */
+  maxTurnsNotice?: import('../core/agent/maxTurnsNotice').MaxTurnsNotice;
 }
 
 /**
@@ -381,6 +519,7 @@ export interface Conversation {
   enabledMCPServers?: string[];  // Per-session MCP server filter (undefined = all enabled)
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
+  teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
   projectId?: string;  // If set, this conversation belongs to a project
@@ -400,6 +539,14 @@ export interface Conversation {
     // which is what keeps a compacted conversation from being double-counted.
     // Absent only on a payload from an older publish — treated as "no tail".
     messageCountAtPublish?: number;
+    breakdown?: {
+      version: 1;
+      systemPrompt: number;
+      tools: number;
+      mcp: number;
+      skills: number;
+      conversation: number;
+    };
   };
   isCompressing?: boolean;  // True while compressContextIfNeeded is awaiting LLM
   /**
@@ -441,10 +588,23 @@ export interface RetryInfo {
 
 // --- Tool Results ---
 
+export interface ToolResultOutputRef {
+  /** Path relative to conversations/{convId}/outputs/. */
+  relPath: string;
+  /** Display filename from the manifest, used when the file cannot be loaded. */
+  basename?: string;
+  /** Snapshot size in bytes, used for fixed-size downgrade UI and send placeholder. */
+  sizeBytes?: number;
+}
+
 // Rich content blocks for tool results (images, text)
 export type ToolResultContent =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+  | {
+    type: 'image';
+    source: { type: 'base64'; media_type: string; data: string };
+    outputRef?: ToolResultOutputRef;
+  };
 
 // Tool execute return type: simple string or rich content array
 export type ToolResult = string | ToolResultContent[];
@@ -467,15 +627,54 @@ export interface ToolExecutionContext {
   loopId?: string;
   /** Conversation ID — tools should prefer this over activeConversationId */
   conversationId?: string;
+  /**
+   * The app-owned subagent run (`sar-*`) this tool call belongs to, or absent
+   * for the conversation's own agent loop.
+   *
+   * Set by the TRUSTED runtime only (`subagentRunner`'s shell-side session for
+   * a sidecar-hosted run, `subagentLoop` for an in-process one) — never taken
+   * from model input, and never from the sidecar's copy of the context.
+   *
+   * Consumed by resources that must be owned per RUN rather than per
+   * conversation, because one conversation can drive them from its own loop and
+   * from several delegated subagents at the same time: today that is browser tab
+   * ownership (it rides `_meta['abu/runKey']` to the browser host, which keys
+   * every tab, "current tab" and takeover record on `{conversationId, runKey}`).
+   */
+  agentRunId?: string;
+  /** Shell-owned originating dispatch; never accepted from model/wire input. */
+  teamApprovalDispatch?: { id: string; fingerprint: string };
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
+  /**
+   * Member identity stamped by the trusted runner (the shell session's agent
+   * definition across RPC, never the incoming context). Team approval keys
+   * bind it alongside the run, dispatch and exact tool parameters.
+   */
+  agentName?: string;
+  /** Assistant message ID owning this tool call; injected by toolExecutor for trusted metadata checkpoints. */
+  assistantMessageId?: string;
   /**
    * Whether this tool belongs to a user-visible desktop task. Background,
    * scheduled, trigger and IM runs must never open local setup/approval UI.
    */
   interactionMode?: 'foreground' | 'background';
+  /**
+   * Who started this run (`'user'` = a human sent a message; `'automation'` =
+   * scheduler / trigger / IM inbound / file watcher). Shell-owned like
+   * `interactionMode`: stamped by the trusted runtime from the dispatch entry
+   * point, never taken from model input or a sidecar's copy of the context.
+   * The browser gate reads it to decide whether a dialog can be offered.
+   */
+  initiatedBy?: import('../core/agent/runInteractionMode').RunInitiator;
   /** Effective three-tier permission mode for this conversation. */
   permissionMode?: import('../core/permissions/permissionMode').PermissionMode;
+  /**
+   * Shell-created authorization scope for unattended runs. When present,
+   * path checks must read only that scoped grant set and never fall back to
+   * process-global interactive grants.
+   */
+  authorizationScopeId?: string;
   /**
    * Whether the active model supports vision/image input, resolved from the
    * turn's model capabilities. When explicitly `false`, tools that would emit
@@ -501,6 +700,15 @@ export interface ToolExecutionContext {
    */
   deferredToolNames?: string[];
   /**
+   * In-conversation team mode: exact agent names the leader may delegate to.
+   * Set by the trusted runtime from the pinned team's roster (never from model
+   * input); delegate_to_agent / run_agent_batch refuse any other agent or
+   * preset type while it is present. Wire-safe (plain strings).
+   */
+  teamRoster?: string[];
+  /** Strict team (先确认分工): report_plan must get the user's approval before anything is dispatched. */
+  teamRequirePlanApproval?: boolean;
+  /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would
    * lose its live behavior.
@@ -512,6 +720,22 @@ export interface ToolExecutionContext {
    * the in-process fallback both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
+  /**
+   * Local execution-only seam for the browser authorization gate to report a
+   * refusal / an allow to the run that owns this tool call. The run counts
+   * consecutive refusals and stops itself after a threshold (see
+   * `browserDenialTracker.ts`). Deliberately a pair of narrow callbacks, NOT
+   * the run's AbortController: a tool must be able to say "the user said no"
+   * without being handed the power to cancel the run for any other reason.
+   * Functions, so they never cross the sidecar wire (both `toWireToolContext`
+   * implementations strip them by name — see their docs).
+   *
+   * The arguments classify the event for the tracker's R1 rule (a site grant
+   * cannot dilute a scripting refusal); both default to the strict reading, so
+   * an un-argumented call keeps the pre-U5 semantics.
+   */
+  reportBrowserDenial?: (kind?: BrowserDenialKind) => void;
+  reportBrowserAllow?: (consent?: BrowserAllowConsent) => void;
   /**
    * IM reply target for the current run, set only when the loop was dispatched
    * from an IM channel (channelRouter → agentLoop). Lets outbound tools like
@@ -546,6 +770,15 @@ export interface ToolDefinition {
    * checks if the command is read-only).
    */
   isConcurrencySafe?: boolean | ((input: Record<string, unknown>) => boolean);
+  /**
+   * MCP Apps interface declared by the tool's `_meta.ui`
+   * (extension `io.modelcontextprotocol/ui`). Present only for MCP tools whose
+   * server declares a `ui://` resource to render alongside the tool result.
+   * `visibility` decides who may call the tool: without `'model'` the tool is
+   * kept out of the model's tool table and is reachable only from the app
+   * bridge (see MCPClientManager.getAppTool).
+   */
+  ui?: { resourceUri: string; visibility: ReadonlyArray<'model' | 'app'> };
 }
 
 // --- LLM ---
@@ -634,7 +867,9 @@ export type SkillSource =
   | 'project-standard'
   | 'workspace-auto'
   | 'draft'
-  | 'enterprise';
+  | 'enterprise'
+  /** Shipped inside an installed plugin package. Ranked below the user's own. */
+  | 'plugin';
 
 /**
  * User-facing skill categories surfaced in the Toolbox. This is a
@@ -706,6 +941,12 @@ export interface ManagedAgentMetadata {
 export interface SubagentMetadata {
   /** Canonical name — primary key in agentRegistry, also the `@mention` token. */
   name: string;
+  /** Stable role identity for team membership (write-once, survives rename).
+   *  Written into AGENT.md frontmatter the first time an agent joins a team. */
+  roleId?: string;
+  /** Creation timestamp (ms), written once on first save — drives newest-first
+   *  ordering in the 队员 list. Absent on older agents (they sort last). */
+  createdAt?: number;
   /** Default-locale description shown in toolbox / agent selector. */
   description: string;
   avatar?: string;
@@ -713,10 +954,31 @@ export interface SubagentMetadata {
   maxTurns?: number;          // Optional cap on subagent loop turns. Falls back to global settings; ultimate fallback is 200 for safety.
   tools?: string[];
   disallowedTools?: string[];
+  /**
+   * Skill names preloaded into the agent's context at start — NOT a
+   * restriction. Each listed skill's full SKILL.md body is injected into the
+   * prompt that starts this agent's loop (see
+   * `core/agent/prompts/preloadedSkills.ts`); every other discovered skill
+   * stays available on demand exactly as it is for an agent that lists none.
+   */
   skills?: string[];
   memory?: 'session' | 'project' | 'user';
   background?: boolean;
   managed?: ManagedAgentMetadata;
+  /**
+   * Where this agent came from, when it did not come from the user.
+   *
+   * Only `plugin` exists: a plugin-contributed agent is read-only (a plugin
+   * update rewrites its AGENT.md), so the UI has to be able to say so. Agents
+   * the user wrote and the built-ins leave this `undefined` — there is no
+   * enumeration of every origin (the ecosystem has one; Abu has one thing to
+   * say, and says it).
+   *
+   * On disk it round-trips as the single frontmatter key `source:
+   * plugin:<pluginKey>`; in memory a plugin agent installed before that key
+   * existed gets it back from `installed.json` (see `discoveryStore.refresh`).
+   */
+  source?: { kind: 'plugin'; plugin: string };
 
   // ── Display-only fields (rendered by toolbox AgentsSection / chat welcome banner)
   //   All optional. User-defined agents can fill any subset; builtins ship full data.

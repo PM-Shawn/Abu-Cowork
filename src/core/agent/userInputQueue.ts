@@ -8,6 +8,7 @@
 
 /** Queued user input entry */
 export interface QueuedInput {
+  teamConfirmationRetryId?: string;
   id: string;
   text: string;
   timestamp: number;
@@ -26,14 +27,21 @@ const EMPTY_QUEUE: readonly QueuedInput[] = [];
 // Listeners for queue state changes
 const listeners = new Set<() => void>();
 
-function notifyListeners() {
-  listeners.forEach(fn => fn());
+function notifyListeners(): void {
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch {
+      // Queue ownership mutations must remain committed even when a UI
+      // observer is stale or faulty. Keep notifying the other subscribers.
+    }
+  }
 }
 
 /**
  * Enqueue a staged message for a running conversation.
  */
-export function enqueueUserInput(conversationId: string, text: string, isSystem?: boolean): void {
+export function enqueueUserInput(conversationId: string, text: string, isSystem?: boolean, teamConfirmationRetryId?: string): void {
   if (!text.trim()) return;
 
   const queue = inputQueues.get(conversationId) ?? [];
@@ -44,6 +52,7 @@ export function enqueueUserInput(conversationId: string, text: string, isSystem?
       text: text.trim(),
       timestamp: Date.now(),
       isSystem,
+      ...(teamConfirmationRetryId ? { teamConfirmationRetryId } : {}),
     },
   ]);
   notifyListeners();
@@ -149,6 +158,22 @@ export function dequeueNextUserInput(conversationId: string): QueuedInput | unde
   else inputQueues.set(conversationId, next);
   notifyListeners();
   return item;
+}
+
+/**
+ * Restore a user-authored item whose handoff failed before addMessage.
+ *
+ * The original id/timestamp and FIFO position are retained, and the queue is
+ * paused before subscribers are notified so no observer can see the restored
+ * item as runnable in the same turn. Replacing an accidental duplicate id
+ * keeps retries idempotent.
+ */
+export function restoreDequeuedUserInput(conversationId: string, item: QueuedInput): void {
+  const queue = inputQueues.get(conversationId) ?? [];
+  const withoutDuplicate = queue.filter((queued) => queued.id !== item.id);
+  inputQueues.set(conversationId, [item, ...withoutDuplicate]);
+  if (!item.isSystem) pausedUserQueues.add(conversationId);
+  notifyListeners();
 }
 
 /** Pause user-authored follow-ups after the active run is interrupted. */

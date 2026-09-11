@@ -62,9 +62,11 @@ export function resetCalibration(modelId?: string): void {
 }
 
 /**
- * Estimate token count for a string
+ * Unrounded token weight for a string. Keeping the rounding boundary separate
+ * lets callers partition one payload without rounding each section twice or
+ * changing the aggregate estimate.
  */
-export function estimateTokens(text: string): number {
+export function estimateTextTokenWeight(text: string): number {
   if (!text) return 0;
 
   const cjkMatches = text.match(CJK_REGEX);
@@ -75,7 +77,14 @@ export function estimateTokens(text: string): number {
   const cjkTokens = cjkCount / 1.5;
   const nonCjkTokens = nonCjkCount / 4;
 
-  return Math.ceil((cjkTokens + nonCjkTokens) * getCalibrationRatio());
+  return (cjkTokens + nonCjkTokens) * getCalibrationRatio();
+}
+
+/**
+ * Estimate token count for a string.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(estimateTextTokenWeight(text));
 }
 
 // Approximate tokens per image, deliberately provider-agnostic.
@@ -110,7 +119,16 @@ function estimateToolResultContentTokens(content: ToolResultContent[] | undefine
  */
 function countImages(content: string | MessageContent[]): number {
   if (typeof content === 'string') return 0;
-  return content.filter((c) => c.type === 'image').length;
+  return content.filter((c) => {
+    if (c.type === 'image') return true;
+    const maybeDelegated = c as unknown as {
+      type?: unknown;
+      attachment?: { mediaType?: unknown };
+    };
+    return maybeDelegated.type === 'delegated_media_ref'
+      && typeof maybeDelegated.attachment?.mediaType === 'string'
+      && maybeDelegated.attachment.mediaType.startsWith('image/');
+  }).length;
 }
 
 /**

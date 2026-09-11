@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { uint8ArrayToBase64 } from './base64';
+import { base64ToUint8Array, uint8ArrayToBase64 } from './base64';
 
 describe('base64', () => {
   it('converts small Uint8Array to base64', () => {
@@ -37,5 +37,11 @@ describe('base64', () => {
     expect(decoded.length).toBe(6);
     expect(decoded.charCodeAt(0)).toBe(0);
     expect(decoded.charCodeAt(5)).toBe(253);
+  });
+
+  it('round-trips arbitrary byte values', () => {
+    const bytes = new Uint8Array([0, 1, 2, 127, 128, 254, 255]);
+
+    expect(base64ToUint8Array(uint8ArrayToBase64(bytes))).toEqual(bytes);
   });
 });

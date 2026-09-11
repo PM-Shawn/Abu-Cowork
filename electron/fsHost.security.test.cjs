@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
-const { fsDispatch } = require('./fsHost.cjs');
+const { fsDispatch, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const { fsWatchDispatch, cleanupFsWatchesForSender } = require('./fsWatchHost.cjs');
 
 const app = {};
@@ -49,6 +49,31 @@ test('normal files stay readable and stat returns the Tauri FileInfo shape', (t)
   assert.equal(info.isSymlink, false);
   assert.equal(info.size, 6);
   assert.equal(typeof info.mtime, 'string');
+});
+
+test('a FileInfo timestamp truncates to whole milliseconds, the way the Rust plugin does', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'fractional.txt');
+  fs.writeFileSync(file, 'x');
+  // Sub-millisecond remainder of .73, i.e. the half of all files where
+  // `Math.round` and `Math.floor` part company.
+  fs.utimesSync(file, 1_700_000_000.73073, 1_700_000_000.73073);
+  const raw = fs.lstatSync(file);
+  if (raw.mtimeMs % 1 === 0) {
+    t.skip('this filesystem stores whole milliseconds, so there is nothing to truncate');
+    return;
+  }
+
+  const info = fsDispatch(app, 'plugin:fs|lstat', { args: { path: file } });
+
+  // Tauri's own plugin builds this with `as_millis()`, which truncates
+  // (`tauri-plugin-fs/src/commands.rs` `to_msec`). Node's `Stats.mtime`
+  // rounds, so shimming the plugin with it hands the frontend a stamp one
+  // millisecond later than every other tier derives — which is what refused
+  // unchanged uploads as 「changed on disk」 (acceptance F1).
+  assert.equal(new Date(info.mtime).getTime(), Math.floor(raw.mtimeMs));
+  assert.equal(new Date(info.atime).getTime(), Math.floor(raw.atimeMs));
+  assert.notEqual(new Date(info.mtime).getTime(), raw.mtime.getTime());
 });
 
 test(
@@ -124,6 +149,70 @@ test('symlinks whose canonical target remains in an allowed root keep working', 
 
   const bytes = fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: link } });
   assert.equal(bytes.toString('utf8'), 'allowed');
+});
+
+test(
+  'a root that is itself behind a symlink is allowed under its canonical spelling too',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    // The renderer pins every approved file tool to the CANONICAL path, and on
+    // macOS os.tmpdir() is `/var/folders/<…>/T` behind the `/var` →
+    // `/private/var` link. Refusing the canonical spelling of a root's own
+    // contents broke reads and writes anywhere under the temp dir.
+    const dir = tempDir(t);
+    const file = path.join(dir, 'canonical-root.txt');
+    fs.writeFileSync(file, 'inside');
+    const canonical = fs.realpathSync.native(file);
+
+    assert.equal(
+      fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: file } }).toString('utf8'),
+      'inside'
+    );
+    assert.equal(
+      fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: canonical } }).toString('utf8'),
+      'inside'
+    );
+
+    // Widening the roots to their canonical spelling must not admit anything
+    // that was outside them: /private/etc is the canonical /etc.
+    assert.throws(
+      () => fsDispatch(app, 'plugin:fs|read_text_file', { args: { path: '/private/etc/passwd' } }),
+      /outside the allowed scope/
+    );
+  }
+);
+
+test('path-policy canonicalization resolves an allowed symlink and a missing write tail', (t) => {
+  const dir = tempDir(t);
+  const targetDir = tempDir(t);
+  const linkDir = path.join(dir, 'policy-link');
+  fs.symlinkSync(targetDir, linkDir);
+
+  assert.equal(
+    canonicalizeForPathPolicy(path.join(linkDir, 'nested', 'future.txt')),
+    path.join(fs.realpathSync.native(targetDir), 'nested', 'future.txt')
+  );
+});
+
+test('path-policy entry canonicalization resolves the parent without following the final symlink', (t) => {
+  const dir = tempDir(t);
+  const targetDir = tempDir(t);
+  const target = path.join(targetDir, 'target.txt');
+  const link = path.join(dir, 'entry-link.txt');
+  fs.writeFileSync(target, 'target');
+  fs.symlinkSync(target, link);
+
+  assert.equal(canonicalizeForPathPolicy(link, true), fs.realpathSync.native(target));
+  assert.equal(
+    canonicalizeForPathPolicy(link, false),
+    path.join(fs.realpathSync.native(dir), path.basename(link))
+  );
+});
+
+test('path-policy canonicalization rejects malformed renderer paths', () => {
+  assert.throws(() => canonicalizeForPathPolicy(''), /non-empty string/);
+  assert.throws(() => canonicalizeForPathPolicy('bad\0path'), /must not contain NUL/);
+  assert.throws(() => canonicalizeForPathPolicy('x'.repeat(33 * 1024)), /too long/);
 });
 
 test('remove deletes an escaping symlink entry without following its target', { skip: process.platform === 'win32' }, (t) => {

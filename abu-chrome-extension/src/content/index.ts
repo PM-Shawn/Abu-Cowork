@@ -5,7 +5,28 @@
  * Communicates with Background script via chrome.runtime.onMessage.
  */
 
-import type { ElementInfo, ElementLocator, PageSnapshot } from '../shared/types.js';
+import type {
+  ElementInfo,
+  ElementLocator,
+  FindMatch,
+  FindQuery,
+  FindResult,
+  FrameNode,
+  FrameRef,
+  FrameTree,
+  PageHandoff,
+  PageHandoffKind,
+  PageSnapshot,
+} from '../shared/types.js';
+import {
+  MAIN_FRAME_REF,
+  frameGoneMessage,
+  frameOfRef,
+  frameUnreachableMessage,
+  isFrameRef,
+  localRef,
+  qualifyRef,
+} from '../shared/types.js';
 
 // Max text size returned by extractText (50KB)
 const MAX_EXTRACT_TEXT_SIZE = 50_000;
@@ -37,16 +58,6 @@ const electronBrowserRuntime = (
 if (electronBrowserRuntime) {
   electronBrowserRuntime.handleAction = handleAction;
 } else {
-  const reportVisible = (): void => {
-    if (document.visibilityState === 'visible') {
-      chrome.runtime.sendMessage({ type: 'tab_visible' }).catch(() => {
-        // Background not ready or extension context invalidated — ignore
-      });
-    }
-  };
-  document.addEventListener('visibilitychange', reportVisible);
-  reportVisible();
-
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const { action, payload } = message;
 
@@ -74,23 +85,53 @@ const refByElement = new WeakMap<Element, string>();
 const elementByRef = new Map<string, WeakRef<Element>>();
 let refCounter = 0;
 
-/** Stable ref for an element — same element, same ref, for as long as it lives. */
+/**
+ * Stable ref for an element — same element, same ref, for as long as it lives.
+ *
+ * Namespaced by the frame that holds the element (`f3:e17`), because in the
+ * extension every frame runs its OWN copy of this runtime with its own
+ * counter, so a bare `e17` names a different element in every frame of the
+ * page. The main document is deliberately left bare (`e17`) — see
+ * `qualifyRef` for why.
+ */
 function refFor(el: Element): string {
+  const frameId = frameIdOfElement(el);
   const existing = refByElement.get(el);
-  if (existing && elementByRef.get(existing)?.deref() === el) return existing;
+  if (existing && elementByRef.get(existing)?.deref() === el) return qualifyRef(frameId, existing);
   const ref = `e${++refCounter}`;
   refByElement.set(el, ref);
   elementByRef.set(ref, new WeakRef(el));
-  return ref;
+  return qualifyRef(frameId, ref);
 }
 
-/** Resolve a ref, dropping it if the element is gone or detached. */
-function resolveRef(ref: string): Element | null {
-  const el = elementByRef.get(ref)?.deref();
+/** Which frame handle an element's own document answers to. */
+function frameIdOfElement(el: Element): FrameRef {
+  const doc = el.ownerDocument;
+  if (!doc || doc === document) return hostFrameId;
+  return frameIdByDoc.get(doc) ?? frameIdForDoc(doc);
+}
+
+/**
+ * Resolve a ref, dropping it if the element is gone or detached.
+ *
+ * A ref that names ANOTHER frame resolves to null rather than to whatever
+ * element happens to carry that number here: the two frames' counters are
+ * independent, so answering it would act on a different element than the
+ * caller asked for and report success — the exact failure the ref registry's
+ * own header exists to prevent, one document over.
+ */
+function resolveRef(ref: string, scope: DomScope): Element | null {
+  if (frameOfRef(ref) !== scope.frameId) return null;
+  const el = elementByRef.get(localRef(ref))?.deref();
   if (!el || !el.isConnected) {
-    elementByRef.delete(ref);
+    elementByRef.delete(localRef(ref));
     return null;
   }
+  // The registry is shared across every document this runtime reaches (the
+  // built-in browser walks into same-origin frames from one isolated world),
+  // so identity has to be confirmed against the document actually being acted
+  // on, not just against the counter.
+  if (el.ownerDocument !== scope.doc) return null;
   return el;
 }
 
@@ -102,18 +143,786 @@ function sweepRefs(): void {
   }
 }
 
+
+// =============================================================================
+// 0a. FRAMES AND SHADOW ROOTS — what "the document" means for one action
+// =============================================================================
+//
+// Every DOM primitive below used to read the bare global `document`. On a page
+// whose form lives in an `<iframe>` — the ordinary shape of an OA/ERP screen —
+// that meant `snapshot` could describe a field (`get_html` inlines same-origin
+// frames) that `fill` could never reach. The fix is not a special case for
+// iframes; it is making "which document" an explicit argument that every
+// search takes, and defaulting it to the one this runtime is hosted in.
+//
+// Two very different hosts run this same file, and they differ in exactly one
+// respect — who can put code inside a child frame:
+//
+// - **Chrome extension**: the worker injects into `allFrames`, so every frame
+//   has its own copy of this runtime and `chrome.tabs.sendMessage(…,{frameId})`
+//   delivers straight to the right one. A frame's own copy always works on its
+//   own `document`, cross-origin included, and mints refs under the frame id
+//   the worker stamps on the message.
+// - **Built-in Electron browser**: `executeJavaScriptInIsolatedWorld` targets
+//   the MAIN frame only (Electron 43's `WebFrameMain` has no isolated-world
+//   entry point), and the view deliberately ships no preload, so there is no
+//   way to place this runtime inside a child frame without injecting into the
+//   page's own world — which would hand every third-party frame a global that
+//   advertises "this browser is automated". So the main frame's copy reaches
+//   child documents the only way an isolated world can: `contentDocument`,
+//   which same-origin policy grants for same-origin frames and refuses for the
+//   rest. Cross-origin frames are therefore ENUMERATED and REFUSED here, with
+//   the honest reason, rather than silently missing.
+
+/** How deep a frame walk goes. Deeper than any real page; stops a cycle. */
+const MAX_FRAME_DEPTH = 8;
+/** How many frames one tab reports. A page with more is an ad farm. */
+const MAX_FRAMES = 40;
+/** How deep open shadow roots are followed. */
+const MAX_SHADOW_DEPTH = 10;
+
+/**
+ * True when this runtime is the built-in browser's single main-frame copy,
+ * i.e. the host that has to walk into child documents itself. In the
+ * extension every frame runs its own copy and the worker does the routing, so
+ * this runtime must NOT mint frame ids of its own — they would collide with
+ * Chrome's, which are what the worker routes on.
+ */
+const LOCAL_FRAME_WALK = !!electronBrowserRuntime;
+
+/**
+ * The frame id of THIS runtime's own document.
+ *
+ * `f0` in the built-in browser (always the main frame) and for the extension's
+ * main-frame copy; in a subframe the extension worker stamps the message with
+ * the Chrome frame id it routed to, and that becomes this copy's identity for
+ * the rest of the call — which is what makes a ref minted here (`f7:e3`)
+ * resolvable by the next call routed to the same frame.
+ */
+let hostFrameId: FrameRef = MAIN_FRAME_REF;
+
+/** Did the last frame walk stop at `MAX_FRAMES` with regions still unvisited? */
+let frameListTruncated = false;
+
+/** A document plus the frame handle it answers to. The unit every search takes. */
+interface DomScope {
+  doc: Document;
+  frameId: FrameRef;
+}
+
+/** The scope for this runtime's own document. */
+function hostScope(): DomScope {
+  return { doc: document, frameId: hostFrameId };
+}
+
+// Frame identity is minted per DOCUMENT, not per `<iframe>` element: a frame
+// that reloads is a new document, and reusing the handle would let a ref
+// minted before the reload resolve against content the caller never saw. A
+// reloaded frame therefore gets a NEW id and the old one is refused with the
+// same "take a fresh snapshot" shape a stale ref is refused with.
+const frameIdByDoc = new WeakMap<Document, FrameRef>();
+const docByFrameId = new Map<FrameRef, WeakRef<Document>>();
+/** Cross-origin frames have no document, so those ids are keyed on the element. */
+const frameIdByFrameEl = new WeakMap<Element, FrameRef>();
+const frameElByFrameId = new Map<FrameRef, WeakRef<Element>>();
+/** What the last walk learned about each frame, for the refusal messages. */
+const frameNodeById = new Map<FrameRef, FrameNode>();
+let frameCounter = 0;
+
+function frameIdForDoc(doc: Document): FrameRef {
+  if (doc === document) return hostFrameId;
+  const existing = frameIdByDoc.get(doc);
+  if (existing && docByFrameId.get(existing)?.deref() === doc) return existing;
+  const id: FrameRef = `f${++frameCounter}`;
+  frameIdByDoc.set(doc, id);
+  docByFrameId.set(id, new WeakRef(doc));
+  return id;
+}
+
+function frameIdForCrossOriginEl(el: Element): FrameRef {
+  const existing = frameIdByFrameEl.get(el);
+  if (existing && frameElByFrameId.get(existing)?.deref() === el) return existing;
+  const id: FrameRef = `f${++frameCounter}`;
+  frameIdByFrameEl.set(el, id);
+  frameElByFrameId.set(id, new WeakRef(el));
+  return id;
+}
+
+/** The child document of a frame element, or null when it is not reachable. */
+function reachableFrameDoc(el: Element): Document | null {
+  try {
+    const doc = (el as HTMLIFrameElement).contentDocument;
+    // A frame mid-navigation exposes an about:blank document with no view;
+    // treating that as reachable would hand back a document that is about to
+    // be replaced.
+    if (!doc || !doc.defaultView || !doc.documentElement) return null;
+    return doc;
+  } catch {
+    // Cross-origin access throws in some engines and returns null in others.
+    return null;
+  }
+}
+
+/**
+ * Every addressable region of this document tree, main document first.
+ *
+ * Only meaningful in the built-in browser (see `LOCAL_FRAME_WALK`): in the
+ * extension the worker enumerates frames from Chrome's own injection results,
+ * which are authoritative for cross-origin frames too.
+ */
+/**
+ * A document's own origin.
+ *
+ * `location.origin` first: it is what a browser reports for an `about:blank`
+ * or `about:srcdoc` frame, which INHERITS the embedder's origin rather than
+ * having one of its own — deriving the origin from `about:srcdoc` as a URL
+ * would say "not a web page" about a region that is plainly part of the page.
+ */
+function originOfDocument(doc: Document): string | null {
+  return normalizedOrigin(doc.location.origin) ?? normalizedOrigin(doc.location.href);
+}
+
+/**
+ * A frame element the user cannot see — zero-sized, `display:none`, or parked
+ * off the left/top edge of its own document.
+ *
+ * Measured on the frame ELEMENT in its EMBEDDING document, which is the only
+ * place the answer exists: `isVisible` further down measures a node inside its
+ * OWN document, and a control in an 800×600 iframe dragged to `left:-9999px`
+ * has a perfectly ordinary box there.
+ *
+ * Deliberately conservative — a false "hidden" would make a real region
+ * unreachable by automatic resolution, so only unambiguous cases count:
+ *
+ * - a box under 2px on either axis (0×0, the 1×1 tracking pixel, and the
+ *   `clip: rect(…)` visually-hidden idiom, which leaves a 1px box);
+ * - `visibility: hidden`, which INHERITS, so an ancestor's counts too
+ *   (`display:none` needs no separate test — it produces no box at all);
+ * - a box lying entirely left of, or above, the DOCUMENT's origin. Document
+ *   coordinates and not viewport ones on purpose: `getBoundingClientRect` is
+ *   scroll-relative, so a viewport test would call every frame the user has
+ *   scrolled past "hidden".
+ *
+ * Everything else — below the fold, behind a modal, `opacity` on an ancestor,
+ * an arbitrary `clip-path` — reads as visible. Those are not decidable cheaply
+ * and the origin pin, not this, is what stops a cross-site region.
+ */
+function frameElementIsHidden(el: Element): boolean {
+  const view = el.ownerDocument.defaultView;
+  if (!view) return true;
+  const rect = el.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return true;
+  if (view.getComputedStyle(el).visibility === 'hidden') return true;
+  const docLeft = rect.left + (view.scrollX || 0);
+  const docTop = rect.top + (view.scrollY || 0);
+  return docLeft + rect.width <= 0 || docTop + rect.height <= 0;
+}
+
+function enumerateFrames(): FrameTree {
+  const topOrigin = originOfDocument(document);
+  const out: FrameTree = [{
+    frameId: hostFrameId,
+    origin: topOrigin,
+    url: document.location.href,
+    sameOriginAsTop: true,
+    accessible: topOrigin !== null,
+    ...(topOrigin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
+  }];
+
+  const walk = (
+    doc: Document,
+    parentFrameId: FrameRef,
+    parentOrigin: string | null,
+    depth: number,
+  ): void => {
+    if (depth >= MAX_FRAME_DEPTH || out.length >= MAX_FRAMES) return;
+    for (const el of queryAllDeep(doc, 'iframe, frame')) {
+      if (out.length >= MAX_FRAMES) return;
+      // Read once, from the embedding document, and carried on the node: the
+      // routing rule below and the model's own listing must agree about which
+      // regions a frameless locator may land in.
+      const hidden = frameElementIsHidden(el) ? { hidden: true as const } : {};
+      const child = reachableFrameDoc(el);
+      if (child) {
+        // A READABLE `contentDocument` is the browser's own same-origin check
+        // having already passed, so this region is covered by the page's grant.
+        // The parent's origin is the honest answer for a document that inherits
+        // one (`about:blank` written by the page, `srcdoc`) and never widens
+        // anything: a cross-origin frame never gets here at all.
+        const origin = originOfDocument(child) ?? parentOrigin;
+        const id = frameIdForDoc(child);
+        out.push({
+          frameId: id,
+          parentFrameId,
+          origin,
+          url: child.location.href,
+          sameOriginAsTop: origin !== null && origin === topOrigin,
+          accessible: origin !== null,
+          ...hidden,
+          ...(origin === null ? { inaccessibleReason: 'not-a-web-page' as const } : {}),
+        });
+        if (origin !== null) walk(child, id, origin, depth + 1);
+        continue;
+      }
+      // Not reachable from this isolated world. The `src` ATTRIBUTE is the
+      // only address available here and it is written by the embedding page,
+      // which can also navigate the frame elsewhere afterwards — so it is
+      // reported as a hint for the refusal message and NEVER as the origin an
+      // authorization is granted against. The built-in host cross-checks it
+      // against the browser's own frame list before the gate ever sees it.
+      const src = el.getAttribute('src') ?? '';
+      let hinted: string | null;
+      try {
+        hinted = src ? normalizedOrigin(new URL(src, doc.baseURI).href) : null;
+      } catch {
+        hinted = null;
+      }
+      out.push({
+        frameId: frameIdForCrossOriginEl(el),
+        parentFrameId,
+        origin: hinted,
+        ...(src ? { url: src } : {}),
+        sameOriginAsTop: false,
+        accessible: false,
+        ...hidden,
+        inaccessibleReason: hinted === null ? 'not-a-web-page' : 'cross-origin-unreachable',
+      });
+    }
+  };
+
+  if (LOCAL_FRAME_WALK) walk(document, hostFrameId, topOrigin, 0);
+  // A page with more regions than the cap is reported truncated, and a handle
+  // that is not in the list then gets an honest refusal rather than "it
+  // reloaded, or was removed" — which of a region that is sitting right there,
+  // just past row 40, is simply untrue.
+  frameListTruncated = out.length >= MAX_FRAMES;
+  frameNodeById.clear();
+  for (const node of out) frameNodeById.set(node.frameId, node);
+  return out;
+}
+
+/**
+ * Which document an action means, from the frame it names and the refs it
+ * carries — and a refusal, never a silent fallback to the main document, when
+ * the two disagree or the frame is gone.
+ */
+function resolveScope(payload: Record<string, unknown>): DomScope {
+  const named = payload.frameId;
+  if (named !== undefined && !isFrameRef(named)) {
+    throw new Error(
+      `Invalid frameId ${JSON.stringify(named)}. Frame handles come from a snapshot's \`frames\` list `
+      + '(or get_tabs) and look like "f0", "f3". Omit it to act on the main document.',
+    );
+  }
+  const fromRef = frameFromLocators(payload);
+  if (named !== undefined && fromRef !== null && named !== fromRef) {
+    throw new Error(
+      `frameId ${JSON.stringify(named)} does not match the ref you passed, which belongs to `
+      + `${JSON.stringify(fromRef)}. A ref can only be used in the frame that minted it — drop the `
+      + 'frameId, or use a ref from that frame.',
+    );
+  }
+  const wanted = (named as FrameRef | undefined) ?? fromRef ?? hostFrameId;
+  if (wanted === hostFrameId) return hostScope();
+  if (!LOCAL_FRAME_WALK) {
+    // Extension channel: the worker routes by Chrome frame id, so a copy of
+    // this runtime is only ever asked about its OWN document. Anything else is
+    // a stale handle from a frame that has since gone (or been re-numbered).
+    throw new Error(frameGoneMessage(wanted));
+  }
+  const doc = docByFrameId.get(wanted)?.deref();
+  if (doc && doc.defaultView) return { doc, frameId: wanted };
+  const known = frameNodeById.get(wanted);
+  if (known && !known.accessible) throw new Error(frameUnreachableMessage(known));
+  throw new Error(
+    frameGoneMessage(wanted)
+    + (frameListTruncated
+      ? ` This page has more than ${MAX_FRAMES} embedded regions and only the first ${MAX_FRAMES} `
+        + 'are listed, so this one may simply be past the end of that list rather than gone.'
+      : ''),
+  );
+}
+
+/**
+ * Locator actions that may be resolved to the region actually holding the
+ * target, when the caller named none. Same list the extension worker uses —
+ * `wait_for` is deliberately absent: it waits for something that does not
+ * exist yet, so "which frame holds it" has no answer to resolve.
+ */
+const LOCATOR_ROUTED_ACTIONS = new Set(['click', 'fill', 'select']);
+
+/**
+ * The region a frameless locator actually names — the built-in browser's half
+ * of the resolution the extension worker does by messaging each frame.
+ *
+ * Runs BEFORE the origin pin, so the pin is applied to the document the action
+ * will really execute in rather than to the one it was aimed at by default.
+ * Only same-origin regions are reachable from this isolated world, so the pin
+ * verdict is the same either way — but that is a property of this channel, not
+ * something the ordering should depend on.
+ *
+ * Exactly one match acts; several is refused with the regions listed, for the
+ * same reason two matches inside one document are refused: acting on whichever
+ * came first is a wrong, irreversible action reported as a success.
+ */
+function resolveLocatorFrame(
+  action: string,
+  payload: Record<string, unknown>,
+  scope: DomScope,
+): DomScope {
+  if (!LOCAL_FRAME_WALK || !LOCATOR_ROUTED_ACTIONS.has(action)) return scope;
+  if (payload.frameId !== undefined) return scope;
+  const locator = payload.locator as ElementLocator | undefined;
+  // A ref already names its own frame, and a malformed/ambiguous locator has
+  // to be reported by the ordinary path, not turned into a frame question.
+  if (!locator || locator.ref) return scope;
+  try {
+    if (findElement(scope, locator) !== null) return scope;
+  } catch {
+    return scope;
+  }
+
+  const hits: DomScope[] = [];
+  const ambiguous: DomScope[] = [];
+  for (const node of enumerateFrames()) {
+    if (node.frameId === scope.frameId || !node.accessible) continue;
+    // A region nobody can see never wins a locator the caller did not aim.
+    // Planting a same-named control in a 0×0 or off-screen iframe is otherwise
+    // enough to steer a click into a document the user cannot inspect, and the
+    // "exactly one match" rule would call that a success. Naming the frameId
+    // explicitly still reaches it — a hidden step of a wizard is a real thing.
+    if (node.hidden) continue;
+    const doc = docByFrameId.get(node.frameId)?.deref();
+    if (!doc || !doc.defaultView) continue;
+    const candidate: DomScope = { doc, frameId: node.frameId };
+    try {
+      if (findElement(candidate, locator) !== null) hits.push(candidate);
+    } catch {
+      ambiguous.push(candidate);
+    }
+  }
+  const all = [...hits, ...ambiguous];
+  if (all.length > 1) {
+    throw new Error(
+      `That locator matches an element in ${all.length} different embedded regions of this page, so `
+      + 'it does not identify one. Nothing was clicked or changed. Pass `frameId` to say which:\n'
+      + all.map((c) => `  ${c.frameId} (${normalizedOrigin(c.doc.location.href) ?? 'unknown region'})`).join('\n'),
+    );
+  }
+  // A single AMBIGUOUS region is returned so the ordinary path refuses it with
+  // the in-document candidate list, which is the more useful message.
+  return all[0] ?? scope;
+}
+
+/** The frame a payload's refs belong to, or null when it carries none. */
+function frameFromLocators(payload: Record<string, unknown>): FrameRef | null {
+  const refs: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value !== 'object' || value === null) return;
+    const ref = (value as { ref?: unknown }).ref;
+    if (typeof ref === 'string' && ref !== '') refs.push(ref);
+  };
+  collect(payload.locator);
+  const condition = payload.condition;
+  if (typeof condition === 'object' && condition !== null) {
+    collect((condition as { locator?: unknown }).locator);
+  }
+  if (refs.length === 0) return null;
+  const frames = new Set(refs.map(frameOfRef));
+  if (frames.size > 1) {
+    throw new Error('The refs in this call come from different frames; one call acts in one frame.');
+  }
+  return [...frames][0];
+}
+
+// --- Open shadow roots ---
+//
+// A design-system page (`<my-date-picker>` wrapping the real `<input>`) puts
+// its controls behind a shadow root, where `document.querySelectorAll` cannot
+// see them: a screen reader and a user can both reach the field, and the
+// automation reported "not found". Following OPEN roots costs one extra walk
+// and is what every browser-automation tool does. CLOSED roots are the page's
+// explicit opt-out and are reported as such, never worked around.
+
+/**
+ * How many elements one shadow-host hunt may walk, across every tree it
+ * descends into.
+ *
+ * Finding open shadow roots means visiting every element — there is no
+ * selector for "has a shadow root" — and every locator strategy now goes
+ * through it, so the walk is paid per action on a page that may carry tens of
+ * thousands of nodes (an ERP list view). The budget is what keeps a pathological
+ * page from turning each locator into a full traversal without end.
+ *
+ * The trade-off, stated plainly: past the budget, a control that lives ONLY
+ * inside a shadow root beyond it reads as "not found" — which is the exact
+ * behaviour this whole feature replaced, so the failure mode is the old one
+ * rather than a new one. Light-DOM matches are unaffected: they come from the
+ * engine's own `querySelectorAll`, which the budget never touches. 20k is far
+ * past any real design-system page and still bounded.
+ */
+const MAX_SHADOW_SCAN_NODES = 20_000;
+
+/** Every open shadow root at or under `root`, outermost first. */
+function shadowRootsIn(
+  root: Document | ShadowRoot | Element,
+  depth = 0,
+  budget = { left: MAX_SHADOW_SCAN_NODES },
+): ShadowRoot[] {
+  if (depth >= MAX_SHADOW_DEPTH || budget.left <= 0) return [];
+  const found: ShadowRoot[] = [];
+  for (const el of root.querySelectorAll('*')) {
+    if (budget.left <= 0) break;
+    budget.left -= 1;
+    const shadow = el.shadowRoot;
+    if (shadow) {
+      found.push(shadow);
+      found.push(...shadowRootsIn(shadow, depth + 1, budget));
+    }
+  }
+  return found;
+}
+
+/**
+ * `querySelectorAll` that also descends into open shadow roots.
+ *
+ * Order is light DOM first, then each shadow tree in host order — near enough
+ * to document order for the "deepest wins" and "first match" rules above,
+ * which compare by containment rather than by index.
+ *
+ * The shadow half is NOT skipped when the light DOM already matched, even
+ * though that would be the obvious saving: callers count the matches to decide
+ * whether a locator is ambiguous, and a search that stopped early would report
+ * one match where there are two and act on it.
+ *
+ * `MAX_SHADOW_SCAN_NODES` has the SAME failure mode, and saying otherwise
+ * would be the documentation lying about the code (round-2 R2-E — the earlier
+ * wording here claimed the bound "does not cost correctness"). Once the budget
+ * runs out, a second match living only in an unvisited shadow tree is not seen,
+ * and "there are two of these" is again reported as "there is one". What the
+ * bound changes is not WHETHER that can happen but WHEN: from "the moment the
+ * light DOM matches" to "on a page with more than 20,000 elements", which is
+ * far past any real design-system page. It pushes the failure out of reach; it
+ * does not remove it.
+ */
+function queryAllDeep(root: Document | ShadowRoot | Element, selector: string): Element[] {
+  const out: Element[] = [...root.querySelectorAll(selector)];
+  for (const shadow of shadowRootsIn(root)) out.push(...shadow.querySelectorAll(selector));
+  return out;
+}
+
+/**
+ * Elements that look like they hold a CLOSED shadow root: a custom element
+ * (its tag name has a dash — the only tag names that may host one) with no
+ * reachable `shadowRoot` and nothing in its light DOM.
+ *
+ * A heuristic on purpose. There is no API that answers "does this element have
+ * a closed shadow root", by design — that is what closed means. What matters
+ * is that the caller is told "this region is sealed, a person has to do it"
+ * instead of "not found", which reads as a locator mistake and invites a
+ * scripted work-around that cannot work either.
+ */
+function closedShadowHostCount(scope: DomScope): number {
+  let count = 0;
+  for (const el of scope.doc.querySelectorAll('*')) {
+    if (!el.tagName.includes('-')) continue;
+    if (el.shadowRoot) continue;
+    if (el.children.length > 0) continue;
+    if ((el.textContent ?? '').trim() !== '') continue;
+    count += 1;
+    if (count >= 20) break;
+  }
+  return count;
+}
+
+/** The sentence appended when a search came back empty and a sealed region exists. */
+function closedShadowNote(count: number): string {
+  return (
+    ` This page also has ${count} sealed region${count === 1 ? '' : 's'} (closed shadow DOM), whose `
+    + 'contents no automation can read or operate — not this tool, and not a script. If what you are '
+    + 'looking for is in one, ask the user to do that step by hand.'
+  );
+}
+
+/**
+ * Actions that change page state and must land on the page the approval gate
+ * decided on. Mirrors `ORIGIN_PINNED_ACTIONS` in `electron/browserHost.cjs`;
+ * `execute_js` is absent here only because the extension channel runs it in
+ * the background worker (`chrome.scripting.executeScript`), which pins it
+ * itself — the Electron channel's `execute_js` never reaches this file either.
+ * `navigate` is exempt in both places: its target IS what was approved.
+ */
+// `upload_file` (T5) is pinned like every other page-driving action, and for a
+// sharper reason than most: it is the one whose drift sends a file off THIS
+// MACHINE to a site the user never approved.
+const ORIGIN_PINNED_ACTIONS = new Set(['click', 'fill', 'select', 'keyboard', 'upload_file']);
+
+/**
+ * Actions that copy the page's CONTENTS into the conversation, and must
+ * therefore land on the document the gate approved (round-2 R2-A).
+ *
+ * A read changes nothing about the page, which is why it was exempt — but it
+ * changes the transcript, and on this channel the region it reads is a
+ * third-party document that navigates whenever its owner feels like it. Reading
+ * the body of a site the gate never judged is an exfiltration, so a read that
+ * CARRIES a pin has to match it.
+ *
+ * A read that carries NO pin keeps its previous path in both run modes: the
+ * auto-routing probe (`resolveAcrossFrames` in the worker) sends bare `locate`
+ * calls with no gate fields at all, and whether an unattended run may read
+ * without a resolved origin is the gate's question, not this file's.
+ *
+ * ## Why this is NOT the same list as `electron/browserHost.cjs` (R3-A)
+ *
+ * The host's `ORIGIN_PINNED_READ_ACTIONS` also carries `screenshot` and
+ * `screenshot_full_page`. They are absent here because on THIS channel a
+ * screenshot never reaches the content script: the background worker takes it
+ * with `chrome.tabs.captureVisibleTab`, and pins it there
+ * (`assertTabOriginPin(…, { read: true })`) — the same split `execute_js`
+ * already has. Two files, one rule; neither list is complete on its own.
+ *
+ * `wait_for` is exempt on both channels because waiting is frequently how a
+ * run waits OUT a navigation: pinning it would refuse the one call whose whole
+ * purpose is to watch the page become something else. The cost is real and
+ * accepted rather than talked away — its TIMEOUT diagnostic reports the page's
+ * current URL and up to 80 characters of visible text (`describeCurrentState`
+ * below), so a wait that times out inside a drift window can carry that much
+ * of the new site back. Known, bounded, and not a claim that a wait reads
+ * nothing.
+ */
+const ORIGIN_PINNED_READ_ACTIONS = new Set([
+  'snapshot', 'find', 'locate', 'get_html', 'extract_text', 'extract_table',
+]);
+
+/**
+ * ## Execution-time origin pin, content-script half (U5, review round 1)
+ *
+ * The first round pinned only the built-in Electron browser. The extension
+ * channel drives the user's REAL logged-in Chrome — the more dangerous of the
+ * two — and dropped `expectedOrigin` on the floor, leaving the TOCTOU window
+ * wide open exactly where it matters most.
+ *
+ * `location.origin` here is the TRUE execution point on this channel: whatever
+ * the background worker believed about the tab, this is the document the click
+ * is about to land in. `payload.expectedOrigin` / `payload.unattended` are
+ * stamped by Abu's approval gate into MCP `_meta` and are unreachable from the
+ * tool's input schema, so a page cannot forge either.
+ *
+ * The message is deliberately WORD-FOR-WORD the host's (`assertOriginPin` in
+ * `electron/browserHost.cjs`) — the model must not have to learn two dialects
+ * of the same refusal. `contentOriginPinMessage.test` pins that they match.
+ *
+ * Both run modes compare (review ruling I3): a sub-second redirect landing
+ * between approval and execution is invisible to a watching human too. Only
+ * the MISSING-value rule is unattended-only, so an attended call that carried
+ * no pin keeps its exact pre-U5 path.
+ */
+function assertOriginPin(action: string, payload: Record<string, unknown>, scope: DomScope): void {
+  const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
+  if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
+  const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+  if (!expected) {
+    // A read that arrived without a pin keeps its pre-R2-A path whatever the
+    // run mode — see `ORIGIN_PINNED_READ_ACTIONS`.
+    if (pinnedRead || payload.unattended !== true) return;
+    throw new Error(
+      'Refused: this unattended run sent no approved origin for the page, so the action could not be '
+      + 'verified against what was authorized. Call get_tabs to re-read where you are, then request this action again.',
+    );
+  }
+  // The SCOPE's document, not the global one: an action aimed into an embedded
+  // region executes there, so that is the origin the approval has to match.
+  // For a cross-origin region the gate has to have authorized that region's
+  // own origin — which is exactly what makes an unauthorized third-party frame
+  // fail closed here even though the top page was approved.
+  const current = normalizedOrigin(scope.doc.location.href);
+  if (current === expected) return;
+  // A SUBFRAME that fails the pin is a different situation from a top frame
+  // that drifted, and the drift wording is advice that can never work there:
+  // this frame is permanently a different site from the approved one, so "take
+  // a fresh snapshot" would send the model round a loop it cannot exit. Same
+  // refusal, honest attribution.
+  if (scope.frameId !== MAIN_FRAME_REF || window.top !== window) {
+    throw new Error(
+      `Refused: this action targeted a frame from a different site than the one approved (approved `
+      + `${expected}, this frame is ${current ?? 'not an ordinary web page'}). Embedded third-party `
+      + 'frames are not covered by that approval and a fresh snapshot will not change it — act on the '
+      + 'main page, or ask for this site to be authorized separately.',
+    );
+  }
+  throw new Error(
+    `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, `
+    + `now ${current ?? 'an unknown page'}). The page moved — a redirect, a script navigation, or a `
+    + 'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier '
+    + 'approval does not carry over to a different site.',
+  );
+}
+
+/**
+ * A frame that does not service the action must not ACT either (N1).
+ *
+ * Locator actions already stop on their own: `frameServicesAction` and
+ * `findElementOrThrow` call the same `findElement` against the same document,
+ * so a frame that answered "not mine" is structurally guaranteed to throw
+ * "Element not found" moments later — that is a second guard, not a
+ * coincidence. `keyboard` has no such guard: it dispatches at
+ * `document.activeElement`, which every document has. So it needs an explicit
+ * abstention, or a subframe would skip the pin AND press the key — exactly
+ * what the pin exists to prevent.
+ */
+function assertFrameAbstains(payload: Record<string, unknown>): void {
+  if (payload.locator !== undefined) return;
+  throw new Error(
+    'Nothing is focused in this frame, so there is nowhere to send the key press. '
+    + 'Click the field you want to type into first, then send the key.',
+  );
+}
+
+/**
+ * Origin in the exact spelling `normalizeBrowserOrigin` (browserToolPolicy.ts)
+ * and `normalizedOriginOf` (browserHost.cjs) produce, so all three ends of the
+ * pin compare like with like: http(s) only, default ports dropped by URL, and
+ * a trailing FQDN dot stripped (`evil.com.` and `evil.com` are one host over
+ * DNS and must not be two origins here). Null for anything else, which the pin
+ * treats as a mismatch — a document that is not an ordinary web page is not
+ * the page the user approved.
+ */
+function normalizedOrigin(href: string): string | null {
+  try {
+    const parsed = new URL(href);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const hostname = parsed.hostname.endsWith('.')
+      ? parsed.hostname.slice(0, -1)
+      : parsed.hostname;
+    if (!hostname) return null;
+    return `${parsed.protocol}//${hostname}${parsed.port ? `:${parsed.port}` : ''}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Will THIS frame actually service this action?
+ *
+ * `ensureContentScript` injects with `allFrames: true` and
+ * `chrome.tabs.sendMessage` broadcasts without a frameId, so every frame in
+ * the tab answers and the FIRST response wins. Without this check a benign
+ * `about:blank` / `srcdoc` / cross-origin subframe — which has nothing to do
+ * with the action — would answer the pin refusal ("the page moved, take a
+ * fresh snapshot") for a top frame that never moved: a false, unactionable
+ * refusal that loops the model back into the same race.
+ *
+ * So the pin is DEFERRED until the frame knows it is the one acting. Two
+ * shapes:
+ *
+ * - **locator actions** (click/fill/select): the frame that resolves the
+ *   target is the acting frame. A frame that cannot resolve it falls through
+ *   to its ordinary "Element not found", exactly as it did before the pin
+ *   existed. This is what keeps iframe-targeted actions working: an action
+ *   aimed into a SAME-ORIGIN iframe is still pinned, by that iframe, and
+ *   passes. An action aimed into a CROSS-ORIGIN iframe is not "pinned" so much
+ *   as permanently refused — that frame can never match the approved origin —
+ *   which is fail-closed and correct, but is a refusal, not support.
+ * - **`keyboard`** (no locator — it dispatches at `document.activeElement`):
+ *   the frame holding a real focused element is acting, and the TOP frame
+ *   always checks. The top frame checking is not a false refusal: it refuses
+ *   only when its own origin genuinely drifted, which is the true answer.
+ *   A subframe with nothing focused stays silent.
+ */
+function frameServicesAction(action: string, payload: Record<string, unknown>, scope: DomScope): boolean {
+  const locator = payload.locator as ElementLocator | undefined;
+  if (locator !== undefined) {
+    try {
+      return findElement(scope, locator) !== null;
+    } catch {
+      // A malformed locator resolves nowhere in any frame; let the ordinary
+      // handler report it rather than turning it into a pin refusal.
+      return false;
+    }
+  }
+  const focused = scope.doc.activeElement;
+  const hasRealFocus = focused !== null
+    && focused !== scope.doc.body
+    && focused !== scope.doc.documentElement;
+  return hasRealFocus || window.top === window;
+}
+
+/**
+ * Actions that act on ONE document and therefore take a `frameId`.
+ *
+ * `scroll` and `keyboard` are deliberately absent: both act on a viewport or
+ * on whatever holds focus rather than on a located element, and in the
+ * extension a key press already lands in the frame the worker routed it to.
+ * Accepting a `frameId` there would promise a targeting this layer does not
+ * do, so it is refused out loud instead.
+ */
+const FRAME_SCOPED_ACTIONS = new Set([
+  'snapshot', 'find', 'locate', 'click', 'fill', 'select', 'wait_for', 'extract_text', 'extract_table',
+  // T5 — an OA attachment field is usually inside the form's own iframe, and
+  // an upload that could only reach the main document would send the model
+  // straight back to scripting the page.
+  'upload_file',
+]);
+
 async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
+  // Which frame this copy of the runtime IS. Stamped by the extension worker
+  // on every message it routes (`__abuFrameId`), so it is reachable only from
+  // the extension's isolated world — a page cannot author it, and the model
+  // cannot either: the bridge builds payloads field by field from the tool
+  // schema, which has no such field. The built-in browser sends none and stays
+  // on the main frame.
+  const stamped = payload?.__abuFrameId;
+  if (isFrameRef(stamped)) hostFrameId = stamped;
+
+  if (!FRAME_SCOPED_ACTIONS.has(action) && payload?.frameId !== undefined) {
+    throw new Error(
+      `${action} does not act on a located element, so it takes no frameId. `
+      + 'Click into the region first, then send this action.',
+    );
+  }
+  const scope = resolveLocatorFrame(action, payload ?? {}, resolveScope(payload ?? {}));
+
+  // Before the switch, so no action can be added that forgets it — but only in
+  // the frame that is going to act (see `frameServicesAction`). A frame that
+  // is NOT acting abstains rather than falling through to do the work
+  // unchecked (see `assertFrameAbstains`).
+  if (ORIGIN_PINNED_ACTIONS.has(action)) {
+    if (frameServicesAction(action, payload, scope)) assertOriginPin(action, payload, scope);
+    else assertFrameAbstains(payload);
+  } else if (ORIGIN_PINNED_READ_ACTIONS.has(action)) {
+    // No deferral to arrange here: the worker addresses every message to one
+    // frame (`chrome.tabs.sendMessage(..., { frameId })`), so this copy IS the
+    // one answering and there is no losing racer to keep quiet.
+    assertOriginPin(action, payload, scope);
+  }
+  // U6 — advisory annotation runs AFTER the action and AFTER the pin, so a
+  // page-derived detection can never reorder, skip, or excuse the pin. See
+  // `annotateAdvisory`'s "advisory only" note.
+  return annotateAdvisory(action, await dispatchAction(action, payload, scope));
+}
+
+async function dispatchAction(
+  action: string,
+  payload: Record<string, unknown>,
+  scope: DomScope,
+): Promise<unknown> {
   switch (action) {
     case 'snapshot': return takeSnapshot(
+      scope,
       payload.selector as string | undefined,
       typeof payload.maxChars === 'number' ? payload.maxChars : undefined,
     );
-    case 'click': return clickElement(payload.locator as ElementLocator);
-    case 'fill': return fillElement(payload.locator as ElementLocator, payload.value as string);
-    case 'select': return selectOption(payload.locator as ElementLocator, payload.value as string);
-    case 'wait_for': return waitFor(payload.condition as Record<string, unknown>, payload.timeout as number | undefined);
-    case 'extract_text': return extractText(payload.selector as string | undefined);
-    case 'extract_table': return extractTable(payload.selector as string | undefined);
+    case 'find': return findElements(scope, payload.query, payload.limit);
+    case 'frames': return enumerateFrames();
+    case 'locate': return locateOnly(scope, payload.locator as ElementLocator);
+    case 'click': return clickElement(scope, payload.locator as ElementLocator);
+    case 'fill': return fillElement(scope, payload.locator as ElementLocator, payload.value as string);
+    case 'select': return selectOption(scope, payload.locator as ElementLocator, payload.value as string);
+    case 'upload_file': return uploadFiles(scope, payload.locator as ElementLocator, payload.files);
+    case 'wait_for': return waitFor(scope, payload.condition as Record<string, unknown>, payload.timeout as number | undefined);
+    case 'get_html': return getHtml(payload.selector as string | undefined);
+    case 'extract_text': return extractText(scope, payload.selector as string | undefined);
+    case 'extract_table': return extractTable(scope, payload.selector as string | undefined);
     case 'scroll': return scrollPage(payload as Record<string, unknown>);
     case 'keyboard': return sendKeyboard(payload as Record<string, unknown>);
     case 'start_recording': return startRecording();
@@ -126,10 +935,575 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
 }
 
 // =============================================================================
+// 0. SENSITIVE VALUE REDACTION (U5)
+// =============================================================================
+
+/**
+ * What a redacted field's value reads as. A marker, not an omission: an absent
+ * `value` means "this field is empty", and the agent would then try to fill a
+ * password box it should be leaving alone (or report the form as blank).
+ */
+const REDACTED_VALUE = '[value redacted]';
+
+/**
+ * `autocomplete` tokens whose value must never leave the page.
+ *
+ * `cc-*` covers the whole payment-card family the HTML spec defines
+ * (`cc-number`, `cc-csc`, `cc-exp`, `cc-name`, …) with one rule, so a token
+ * added to the spec later is covered without touching this file.
+ */
+function isSensitiveAutocompleteToken(token: string): boolean {
+  return token === 'one-time-code'
+    || token === 'current-password'
+    || token === 'new-password'
+    || token.startsWith('cc-');
+}
+
+/**
+ * Should this control's CURRENT value be withheld?
+ *
+ * Two signals, both read off the element itself — never off page text:
+ *  - `type="password"`;
+ *  - a sensitive `autocomplete` token. The attribute is space-separated and
+ *    may carry section/billing prefixes (`section-blue billing cc-number`), so
+ *    every token is checked, case-insensitively (authors shout it).
+ *
+ * NOTE what this does NOT cover, deliberately: a site that puts a card number
+ * in a `type="text"` box with no `autocomplete` is indistinguishable from an
+ * order-number box at this layer. This is a leak-reducer on the fields that
+ * declare themselves, not a classifier.
+ */
+function hasSensitiveValue(el: Element): boolean {
+  const type = (el as HTMLInputElement).type;
+  if (typeof type === 'string' && type.toLowerCase() === 'password') return true;
+  const autocomplete = el.getAttribute('autocomplete');
+  if (!autocomplete) return false;
+  return autocomplete
+    .toLowerCase()
+    .split(/\s+/)
+    .some((token) => isSensitiveAutocompleteToken(token));
+}
+
+/**
+ * How to NAME a field in the on-page status bubble.
+ *
+ * The bubble lives in `document.documentElement`, so whatever goes into it is
+ * readable by every script on the page, outlives the tool call, and comes back
+ * out through `get_html`. `fill` and `select` used to put the value being
+ * written there verbatim — the last plaintext channel on this surface, and one
+ * that leaked values every other path redacts. The status now names the FIELD
+ * (which the page already knows about itself) and never the value.
+ */
+function fieldLabel(el: Element): string {
+  const placeholder = (el as HTMLInputElement).placeholder;
+  return placeholder
+    || el.getAttribute('aria-label')
+    || el.getAttribute('name')
+    || (el.id ? `#${el.id}` : '')
+    || `<${el.tagName.toLowerCase()}>`;
+}
+
+/**
+ * The value to report for a control: the real one, the redaction marker, or
+ * `undefined` when the field is genuinely empty (an empty password box has
+ * nothing to hide, and marking it would misreport the form's state).
+ */
+function reportableValue(el: Element, value: string, maxChars: number): string | undefined {
+  if (!value) return undefined;
+  return hasSensitiveValue(el) ? REDACTED_VALUE : value.slice(0, maxChars);
+}
+
+// =============================================================================
+// 0.5 LOGIN WALLS AND DEAD ENDS (U6 / PRD F2.4 + F2.5)
+// =============================================================================
+
+/**
+ * ## What this is
+ *
+ * Two page-feature detectors that give the agent something to say instead of
+ * something to retry:
+ *
+ * - **`authState: 'login_required'`** — the page is a login wall. On the
+ *   built-in Electron browser the main process detects this at the HTTP layer
+ *   too (`browserHost.cjs`, 401/403-challenge + login-shaped navigation); the
+ *   extension channel has no `webRequest`, so this is the ONLY detector there,
+ *   and it reports under the same key so both channels read alike. Known
+ *   asymmetry: the shell gate learns `authState` from the HOST's `get_tabs`,
+ *   which the extension channel does not carry, so there an unattended run is
+ *   not pre-refused — it acts, reads this annotation, and hands back per the
+ *   narration rules. Reporting rather than refusing is deliberate for a
+ *   page-feature signal: a false positive would otherwise silently break a
+ *   working unattended run, with nobody watching to notice.
+ * - **`handoff: { kind, hint }`** — a step no automation can finish: a CAPTCHA,
+ *   a QR sign-in, a one-time code, an MFA push, WeChat's external-link
+ *   interstitial, a blanked OAuth popup. The hint tells the model to stop and
+ *   name the manual step.
+ *
+ * ## 🔴 Advisory only — never an authorization input
+ *
+ * These read PAGE CONTENT, which is attacker-controlled. They therefore feed
+ * only hints and REFUSALS: a page claiming "login required" or showing a fake
+ * CAPTCHA can make the agent stop, and can never make anything be allowed.
+ * Structurally: the values travel in the tool RESULT (which no gate reads
+ * back), the origin pin runs BEFORE any of this (see `handleAction`), and the
+ * shell gate reads `authState` only on its deny side
+ * (`registry.ts`). `contentDeadEnd.test.ts` pins that a page asserting
+ * authorization changes nothing.
+ *
+ * ## 🔴 Never retry an MFA push
+ *
+ * Re-triggering a push approval is how push-bombing works, and providers treat
+ * a burst of prompts as an attack: the user's account gets rate-limited,
+ * locked, or flagged for compromise. The `mfa_push` hint says so in as many
+ * words because the model's default instinct on a pending state is to retry.
+ *
+ * ## Deliberately incomplete, and why misses beat false positives
+ *
+ * Like `highRiskSites.ts`'s domain table, the patterns below are a short list
+ * of unambiguous cases, not a classifier. Everything they miss simply behaves
+ * as it did before this existed — the agent gets no hint, which is today's
+ * status quo, not a new hole.
+ *
+ * A FALSE POSITIVE is the expensive direction, and the asymmetry is worth
+ * spelling out because it drove every co-signal below. The narration rules
+ * tell the model to STOP acting on the site and tell the user what to do by
+ * hand. So a wrong detection does not merely add noise: it halts a working run
+ * and reports something untrue. That is why every text pattern here is paired
+ * with a STRUCTURAL co-signal — a CAPTCHA must be operable, an MFA push must
+ * be polling, a one-time code must have a box short enough to hold one, a
+ * login wall must be a sign-in-shaped form rather than any password box (a
+ * signup page and a change-password page both have one of those). Text alone
+ * matched a help article, a docs page, a blog post and a news story in review.
+ */
+
+/** Cap on the page text scanned per detection pass. */
+const MAX_DETECTION_TEXT = 20_000;
+
+/**
+ * Page text for MATCHING only — never echoed into a result. Scrubbed with the
+ * same `sensitiveValuesIn` net `extract_text` uses, so a detector can never
+ * become a side channel for a value every other surface redacts.
+ */
+function detectionText(): string {
+  const body = document.body;
+  if (!body) return '';
+  let text = ((body as HTMLElement).innerText ?? body.textContent ?? '').slice(0, MAX_DETECTION_TEXT);
+  for (const secret of sensitiveValuesIn(body)) {
+    text = text.split(secret).join(REDACTED_VALUE);
+  }
+  return text;
+}
+
+/** First laid-out match, or null. Off-screen scaffolding must not count. */
+function visibleMatch(selector: string): Element | null {
+  for (const el of document.querySelectorAll(selector)) {
+    if (hasBox(el)) return el;
+  }
+  return null;
+}
+
+const CAPTCHA_FRAME_PATTERN = /(recaptcha|hcaptcha|turnstile|geetest|captcha)/i;
+const CAPTCHA_SELECTOR =
+  '[class*="captcha" i],[id*="captcha" i],[class*="geetest" i],'
+  + '[class*="slide-verify" i],[class*="slider-verify" i],[class*="nc-container" i]';
+
+/**
+ * A CAPTCHA is something you OPERATE. Naming alone is not enough — a blog's
+ * `<div class="post-captcha-explainer">` is an article about CAPTCHAs, and
+ * announcing one there stops a working run on a page that has no challenge.
+ */
+// `[tabindex]:not([tabindex^="-"])` — NOT bare `[tabindex]` (N2). `tabindex="-1"`
+// means "focusable by script, not reachable by the user", and it is the standard
+// docs anchor-heading attribute, so accepting it let a text-only explainer
+// satisfy the very co-signal added to reject text-only explainers.
+const CAPTCHA_INTERACTIVE_SELECTOR =
+  'iframe,canvas,input,button,textarea,[role="button"],[role="checkbox"],'
+  + '[tabindex]:not([tabindex^="-"]),img[src^="data:"]';
+
+function containerIsOperable(el: Element): boolean {
+  if (el.matches(CAPTCHA_INTERACTIVE_SELECTOR)) return true;
+  for (const child of el.querySelectorAll(CAPTCHA_INTERACTIVE_SELECTOR)) {
+    if (hasBox(child)) return true;
+  }
+  return false;
+}
+
+/** Slider puzzles included: they are a CAPTCHA wearing a different coat. */
+function hasCaptcha(): boolean {
+  for (const frame of document.querySelectorAll('iframe')) {
+    const surface = `${frame.getAttribute('src') ?? ''} ${frame.getAttribute('title') ?? ''}`;
+    if (CAPTCHA_FRAME_PATTERN.test(surface) && hasBox(frame)) return true;
+  }
+  for (const el of document.querySelectorAll(CAPTCHA_SELECTOR)) {
+    if (hasBox(el) && containerIsOperable(el)) return true;
+  }
+  return false;
+}
+
+const QR_SELECTOR = '[class*="qrcode" i],[class*="qr-code" i],[class*="qr_code" i],[id*="qrcode" i],[class*="scan-login" i]';
+const QR_TEXT_PATTERN = /(scan (the )?(qr|code)|qr code to (log|sign) in|扫码|扫一扫|二维码)/i;
+
+function hasQrLogin(text: string): boolean {
+  if (visibleMatch(QR_SELECTOR) !== null) return true;
+  // Text alone is not enough — an article ABOUT QR codes is not a QR login —
+  // so it must sit next to something that could actually render one.
+  return QR_TEXT_PATTERN.test(text) && visibleMatch('canvas,img[src^="data:image"],svg') !== null;
+}
+
+const OTP_TEXT_PATTERN =
+  /(one[- ]?time (code|password)|verification code|security code we sent|enter the code (we )?sent|短信验证码|验证码已发送|输入验证码)/i;
+
+/**
+ * A box that could actually hold a 6-digit code. `visibleMatch('input')` was
+ * no co-signal at all — nearly every page has an input, so a docs page with a
+ * search box and the phrase "verification code flow" was classified as a code
+ * prompt.
+ */
+// `input[type="tel"]` is deliberately ABSENT: a support form's phone field is a
+// `tel` input, and pairing it with prose about codes was enough to report a
+// dead end on a contact page. A numeric INPUTMODE or an explicit digit pattern
+// is authored for a code; a phone number is not a code.
+const NUMERIC_CODE_INPUT_SELECTOR =
+  'input[inputmode="numeric"],input[pattern*="0-9"],input[pattern*="d"]';
+
+/** The six-box OTP grid: several single-character boxes side by side. */
+const OTP_GRID_MIN_BOXES = 4;
+
+function hasShortCodeInput(): boolean {
+  if (visibleMatch(NUMERIC_CODE_INPUT_SELECTOR) !== null) return true;
+  let singleCharBoxes = 0;
+  for (const el of document.querySelectorAll('input[maxlength]')) {
+    const max = Number(el.getAttribute('maxlength'));
+    if (!Number.isFinite(max) || !hasBox(el)) continue;
+    // One box holding the whole code...
+    if (max >= 4 && max <= 8) return true;
+    // ...or the split grid, which is a code only in the plural.
+    if (max === 1 && ++singleCharBoxes >= OTP_GRID_MIN_BOXES) return true;
+  }
+  return false;
+}
+
+function hasOneTimeCodeEntry(text: string): boolean {
+  if (visibleMatch('input[autocomplete~="one-time-code"]') !== null) return true;
+  return OTP_TEXT_PATTERN.test(text) && hasShortCodeInput();
+}
+
+const MFA_PUSH_PATTERN =
+  /(approve (this |the )?(sign[- ]?in|login|request)|check your (authenticator|authentication) app|open your authenticator|we sent a (push )?notification|tap [^.]{0,20} to approve|请在(手机|移动设备)上确认|已发送(推送|通知)，请确认)/i;
+
+/**
+ * What a page WAITING on a push looks like structurally: it is polling, or it
+ * is a dedicated push/2FA surface. Without this the sentence alone matched any
+ * help article that describes the flow — and rule ④ then tells the model to
+ * stop working on a documentation site.
+ */
+// `role="status"` and `aria-live="polite"` are deliberately ABSENT: every docs
+// site puts a "Was this page helpful?" live region on the page, which made any
+// help article describing push approval look like one.
+const PENDING_WIDGET_SELECTOR =
+  '[role="progressbar"],[aria-busy="true"],'
+  + '[class*="spinner" i],[class*="loading" i],[class*="pending" i],[class*="waiting" i],'
+  + '[class*="push" i],[class*="mfa" i],[class*="2fa" i],[class*="authenticator" i]';
+
+/**
+ * The fallback for a push screen that carries no widget class at all (Duo is
+ * the common one). Length ALONE cannot carry this — a short help-doc paragraph
+ * describing push approval is just as terse — so it is paired with the page
+ * being an auth surface by address. Both together: a page that is at an auth
+ * URL and says one thing and stops is a prompt, not documentation.
+ */
+const TERSE_AUTH_SURFACE_CHARS = 400;
+
+/**
+ * WHOLE path segments, not a `[/_.-]` boundary. The boundary form made every
+ * hyphenated doc slug qualify — `/blog/2fa-explained`, `/help/verify-email`,
+ * `/docs/auth-tokens` — which handed a short help page the same standing as
+ * `/auth/duo`, the one thing this gate exists to distinguish.
+ */
+const AUTH_SURFACE_SEGMENTS: ReadonlySet<string> = new Set([
+  'sign-in', 'signin', 'login', 'sso', 'auth', 'oauth', 'oauth2',
+  'mfa', '2fa', 'duo', 'verify', 'challenge',
+]);
+
+function isAuthSurfacePath(pathname: string): boolean {
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    /* a lone `%` — match on the raw path rather than on nothing */
+  }
+  return decoded.split('/').some((segment) => AUTH_SURFACE_SEGMENTS.has(segment.toLowerCase()));
+}
+
+function hasMfaPush(text: string): boolean {
+  if (!MFA_PUSH_PATTERN.test(text)) return false;
+  if (visibleMatch(PENDING_WIDGET_SELECTOR) !== null) return true;
+  return text.trim().length <= TERSE_AUTH_SURFACE_CHARS && isAuthSurfacePath(location.pathname);
+}
+
+const WECHAT_PATTERN = /(在浏览器中打开|即将离开微信|请在微信客户端打开|点击右上角.*浏览器)/;
+
+function isWeChatInterstitial(text: string): boolean {
+  const host = location.hostname.toLowerCase();
+  const wechatHost = host === 'weixin.qq.com' || host.endsWith('.weixin.qq.com');
+  return wechatHost || WECHAT_PATTERN.test(text);
+}
+
+const OAUTH_URL_PATTERN = /(?:^|\/)(oauth2?|authorize|signin-oidc|callback)(?:\/|$)/i;
+
+/**
+ * The OAuth popup that never came back. Abu's built-in browser DENIES
+ * `window.open` and loads the target in the SAME tab, and a real Chrome popup
+ * can be closed by the user or severed from its opener by COOP — either way
+ * the flow strands on a blank provider page that no click can advance.
+ *
+ * ## Why it has to SETTLE first (I3)
+ *
+ * A perfectly healthy `/auth/callback` is blank and `readyState === 'complete'`
+ * for as long as its JS takes to exchange the code — the single commonest
+ * shape in OAuth. Calling that a dead end tells the model to abandon a sign-in
+ * that was about to succeed. So "blank" must hold across MORE THAN ONE
+ * detection pass, i.e. two separate tool calls against the same URL, which is
+ * long enough that a real exchange has either rendered or redirected.
+ *
+ * The counter is keyed on the URL, so any navigation restarts the observation
+ * rather than inheriting the previous page's evidence.
+ */
+let blankOauthObservation: { href: string; passes: number } | null = null;
+
+function isStrandedOauthPage(text: string): boolean {
+  const blankNow = document.readyState !== 'loading'
+    && OAUTH_URL_PATTERN.test(location.pathname)
+    && text.trim().length <= 40
+    && visibleMatch('input,button,a[href],form') === null;
+  if (!blankNow) {
+    blankOauthObservation = null;
+    return false;
+  }
+  const href = location.href;
+  blankOauthObservation = blankOauthObservation?.href === href
+    ? { href, passes: blankOauthObservation.passes + 1 }
+    : { href, passes: 1 };
+  return blankOauthObservation.passes > 1;
+}
+
+const HANDOFF_HINTS: Record<PageHandoffKind, string> = {
+  captcha:
+    'This page is showing a CAPTCHA (a checkbox, image, or slider challenge). Do not retry the '
+    + 'action and do not try to solve it. Stop, tell the user which page is asking, and ask them to '
+    + 'complete the challenge themselves before you continue.',
+  qr_login:
+    'This page signs in by QR code, which only a person holding the phone can scan. Do not retry. '
+    + 'Stop and ask the user to scan the code shown on this page, then continue once they say they '
+    + 'are signed in.',
+  sms_code:
+    'This page is asking for a one-time code sent to the user by SMS, email, or an authenticator. '
+    + 'You cannot read it. Do not retry or guess. Stop and ask the user for the code, or ask them to '
+    + 'enter it themselves.',
+  mfa_push:
+    'This page is waiting for the user to approve a push prompt in their authenticator app. NEVER '
+    + 'retry or re-trigger it: repeated push prompts are how push-bombing attacks work, and the '
+    + 'provider may lock or flag the account. Stop and ask the user to approve the prompt once on '
+    + 'their device.',
+  wechat_external_link:
+    'WeChat has intercepted this link and is asking for it to be opened in a browser. Retrying '
+    + 'inside WeChat will keep landing here. Stop and ask the user to open the link in a browser.',
+  oauth_popup:
+    'The sign-in window this page opened is gone or blank, so the OAuth flow cannot finish here. Do '
+    + 'not retry the popup. Ask for the provider\'s redirect flow instead (navigate to the '
+    + 'authorization URL in this tab), or ask the user to complete the sign-in themselves.',
+};
+
+/**
+ * First match wins, most specific first. Order matters only for which hint the
+ * model reads: every kind says the same thing about retrying.
+ */
+function detectHandoff(text: string): PageHandoff | null {
+  const kind: PageHandoffKind | null =
+    isWeChatInterstitial(text) ? 'wechat_external_link'
+      : hasCaptcha() ? 'captcha'
+        : hasQrLogin(text) ? 'qr_login'
+          : hasMfaPush(text) ? 'mfa_push'
+            : hasOneTimeCodeEntry(text) ? 'sms_code'
+              : isStrandedOauthPage(text) ? 'oauth_popup'
+                : null;
+  return kind === null ? null : { kind, hint: HANDOFF_HINTS[kind] };
+}
+
+// `401 Unauthorized`, `login required` and `authentication required` are all
+// deliberately ABSENT, for one reason: they are what DOCUMENTATION about
+// authentication says, not what an auth wall says to a person. The built-in
+// browser already detects the real condition at the HTTP layer
+// (`browserHost.cjs`), earlier and unforgeably. What is left are sentences
+// addressed to a reader, which prose about auth does not contain.
+const AUTH_WALL_TEXT_PATTERN =
+  /(sign in to continue|log in to continue|please (sign|log) in|your session has expired|session expired|请先登录|登录已过期|请重新登录)/i;
+
+/**
+ * Pages that HAVE a password box and are NOT asking you to sign in. Signing up
+ * and changing a password are things an agent legitimately does while fully
+ * authenticated; reporting "your session expired" there stops a working run and
+ * tells the user something false.
+ */
+// `create[ ]<up to two words>[ ]account` rather than a fixed article list: the
+// governing-heading test caught `create (an? )?account` missing "Create YOUR
+// account" and "Create your free account", which is how most signup panels
+// actually word it.
+const NOT_A_SIGN_IN_PATTERN =
+  /(create[ \t]+(?:[a-z]+[ \t]+){0,2}account|sign up|signing up|registration|register now|change (your )?password|new password|reset (your )?password|注册账号|注册新用户|修改密码|设置新密码|重置密码)/i;
+
+/** A field that names WHO is signing in — a login form has one, a password-change form does not. */
+const IDENTIFIER_INPUT_SELECTOR =
+  'input[autocomplete~="username"],input[autocomplete~="email"],input[type="email"],'
+  + '[name*="user" i],[name*="email" i],[name*="login" i],[name*="account" i],'
+  + '[id*="user" i],[id*="email" i]';
+
+/**
+ * The form the password box lives in, plus the nearest heading that describes
+ * it — and NOTHING else on the page (N1).
+ *
+ * The first attempt tested `NOT_A_SIGN_IN_PATTERN` against the whole
+ * `body.innerText`, which is not a co-signal at all: nearly every real login
+ * page links to "Create an account" or "Reset your password", so the veto fired
+ * on precisely the pages this feature exists for. A co-signal has to be
+ * structurally LOCAL to the thing being detected; a page-wide text veto is an
+ * off switch any page can trip.
+ *
+ * NAVIGATION LABELS are stripped before matching, and that is the crux:
+ * "Create an account" as a link or a secondary button is a way OFF this page,
+ * while the same words as a heading are the page describing ITSELF. That one
+ * distinction separates a login page from a signup page more reliably than any
+ * wording list. Buttons count as navigation too — the second round stripped
+ * only links, and a login form with a "Create an account" button silently
+ * stopped being detected.
+ */
+const NAVIGATION_LABEL_SELECTOR =
+  'a,[role="link"],button,[role="button"],input[type="button"],input[type="submit"]';
+
+function signInScopeText(passwordBox: Element): string {
+  const scope = passwordBox.closest('form,[role="form"]')
+    ?? passwordBox.closest('section,article,main')
+    ?? passwordBox.parentElement
+    ?? passwordBox;
+  const clone = scope.cloneNode(true) as Element;
+  for (const label of clone.querySelectorAll(NAVIGATION_LABEL_SELECTOR)) label.remove();
+  return `${nearestHeadingText(scope)} ${clone.textContent ?? ''}`;
+}
+
+/**
+ * The closest heading that GOVERNS `scope` — and never one that merely shares
+ * an ancestor with it.
+ *
+ * The ancestor walk is the last place the "structurally local" rule was not
+ * applied, and it failed in the single commonest SaaS login layout: a promo
+ * `<aside>` beside the sign-in `<form>` inside one wrapper. A `querySelector`
+ * on that wrapper returns the FIRST heading in document order, which is the
+ * marketing one — and marketing copy on a login page is exactly where signup
+ * wording lives. So the widened lookup did not pick an arbitrary heading, it
+ * reliably picked the worst possible one, and the miss was silent: no
+ * annotation, no refusal, nothing a gate could see.
+ *
+ * The bound: inside `scope` any descendant heading counts (scope contains the
+ * password box). Above it, only a heading that is a DIRECT CHILD of an ancestor
+ * on the box's own path — which is what "governs" means structurally. A heading
+ * nested inside a SIBLING subtree describes that sibling, not us.
+ */
+function nearestHeadingText(scope: Element): string {
+  const own = scope.querySelector('h1,h2,h3,legend,[role="heading"]');
+  if (own && hasBox(own)) return own.textContent ?? '';
+  for (let node = scope.parentElement; node; node = node.parentElement) {
+    for (const child of node.children) {
+      if (!child.matches('h1,h2,h3,legend,[role="heading"]')) continue;
+      if (hasBox(child)) return child.textContent ?? '';
+    }
+    if (node.tagName === 'BODY') break;
+  }
+  return '';
+}
+
+/**
+ * Exactly ONE on-screen password box, not a new-password one, next to a field
+ * naming the account, on a form that does not describe itself as signup or
+ * password-change. Signup and password-change forms fail on the count, on
+ * `new-password`, or on their own heading; a re-auth prompt with no identifier
+ * field is a deliberate miss (misses are preferred — see the module note).
+ */
+function looksLikeSignInForm(): boolean {
+  const passwords = [...document.querySelectorAll('input[type="password"]')].filter(hasBox);
+  if (passwords.length !== 1) return false;
+  const autocomplete = (passwords[0].getAttribute('autocomplete') ?? '').toLowerCase();
+  if (autocomplete.includes('new-password')) return false;
+  if (visibleMatch(IDENTIFIER_INPUT_SELECTOR) === null) return false;
+  return !NOT_A_SIGN_IN_PATTERN.test(signInScopeText(passwords[0]));
+}
+
+/**
+ * A login wall, from page features: a sign-in-shaped form, or one of a short
+ * list of auth-wall sentences.
+ *
+ * The sentence path carries NO veto (N1). "Your session has expired" is the
+ * page telling us the answer directly; a signup link somewhere else on it
+ * cannot make that untrue, and letting one do so silenced the single clearest
+ * signal this detector has.
+ */
+function detectAuthWall(text: string): boolean {
+  if (looksLikeSignInForm()) return true;
+  return AUTH_WALL_TEXT_PATTERN.test(text);
+}
+
+/**
+ * Actions whose result the model reads to decide what to do next. Deliberately
+ * NOT every action:
+ *
+ *  - detection reads `body.innerText`, which forces a layout flush, so the
+ *    mechanical actions (`scroll`, the `fullpage_*` screenshot steps, the
+ *    recorder) must not pay for it on every call;
+ *  - a `fullpage_*` result is screenshot plumbing, and a stray advisory key on
+ *    one is noise in a place nothing reads prose.
+ *
+ * String-returning actions (`get_html`, `extract_text`) are absent for a
+ * different reason — see `annotateAdvisory`.
+ */
+const ADVISORY_ANNOTATED_ACTIONS = new Set([
+  'snapshot', 'click', 'fill', 'select', 'wait_for', 'extract_table',
+]);
+
+/**
+ * The one place a result grows advisory fields. Only plain objects are
+ * annotated: string results (`get_html`, `extract_text`) are page content the
+ * caller slices and searches, and splicing a sentence into one would corrupt
+ * exactly the thing it was asked for.
+ */
+function annotateAdvisory(action: string, result: unknown): unknown {
+  if (!ADVISORY_ANNOTATED_ACTIONS.has(action)) return result;
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+  const existing = result as Record<string, unknown>;
+  if ('authState' in existing || 'handoff' in existing) return result;
+
+  let text: string;
+  try {
+    text = detectionText();
+  } catch {
+    // Detection is advisory: a page that breaks it must not break the action
+    // whose result this is.
+    return result;
+  }
+  const handoff = detectHandoff(text);
+  const loginRequired = detectAuthWall(text);
+  if (!handoff && !loginRequired) return result;
+  return {
+    ...existing,
+    ...(loginRequired ? { authState: 'login_required' as const } : {}),
+    ...(handoff ? { handoff } : {}),
+  };
+}
+
+// =============================================================================
 // 1. SNAPSHOT — Structured page element extraction
 // =============================================================================
 
 function takeSnapshot(
+  scope: DomScope,
   scopeSelector?: string,
   maxChars: number = MAX_SNAPSHOT_CHARS,
 ): PageSnapshot {
@@ -140,8 +1514,8 @@ function takeSnapshot(
   // the page. Same defect as a text locator resolving to the first ancestor:
   // never resolve an ambiguous target by position.
   const roots: Element[] = scopeSelector
-    ? [...document.querySelectorAll(scopeSelector)]
-    : (document.body ? [document.body] : []);
+    ? queryAllDeep(scope.doc, scopeSelector)
+    : (scope.doc.body ? [scope.doc.body] : []);
   if (roots.length === 0) {
     throw new Error(
       `Scope element not found: ${scopeSelector}. ` +
@@ -167,7 +1541,7 @@ function takeSnapshot(
   // zero-sized mirror — so nothing above would classify them as interactive
   // and an open dropdown looked empty. Anchoring on the listbox/menu that IS
   // roled keeps this generic instead of a per-library selector list.
-  const openPopups = [...document.querySelectorAll('[role="listbox"], [role="menu"], [role="grid"]')]
+  const openPopups = queryAllDeep(scope.doc, '[role="listbox"], [role="menu"], [role="grid"]')
     .map((list) => popupRootFor(list))
     .filter((popup) => hasBox(popup));
   const isPopupRow = (el: Element): boolean => {
@@ -184,12 +1558,26 @@ function takeSnapshot(
   const seenElements = new WeakSet<Element>();
   let hitCap = false;
 
+  // A hand-rolled DFS rather than a TreeWalker: the walk has to step THROUGH
+  // open shadow roots, and a TreeWalker cannot leave the tree it was created
+  // on. Element order is identical to `SHOW_ELEMENT`'s for the light DOM; a
+  // host's shadow content is visited straight after the host.
+  const walkDeep = (root: Element, depth: number, visit: (el: Element) => boolean): boolean => {
+    if (!visit(root)) return false;
+    if (depth < MAX_SHADOW_DEPTH && root.shadowRoot) {
+      for (const child of root.shadowRoot.children) {
+        if (!walkDeep(child, depth + 1, visit)) return false;
+      }
+    }
+    for (const child of root.children) {
+      if (!walkDeep(child, depth, visit)) return false;
+    }
+    return true;
+  };
+
   for (const root of roots) {
     if (hitCap) break;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-    let node: Node | null = walker.currentNode;
-    while (node) {
-    const el = node as Element;
+    walkDeep(root, 0, (el) => {
     const tag = el.tagName?.toLowerCase();
 
     const isInteractive =
@@ -228,7 +1616,10 @@ function takeSnapshot(
         const input = el as HTMLInputElement;
         info.type = input.type;
         if (input.placeholder) info.placeholder = input.placeholder;
-        if (input.value) info.value = input.value.slice(0, 100);
+        // Everything else about the field still ships — a redacted value must
+        // not cost the agent the ability to find and fill it.
+        const value = reportableValue(input, input.value, 100);
+        if (value !== undefined) info.value = value;
         if (input.type === 'checkbox' || input.type === 'radio') {
           info.checked = input.checked;
         }
@@ -237,13 +1628,20 @@ function takeSnapshot(
       if (tag === 'textarea') {
         const ta = el as HTMLTextAreaElement;
         if (ta.placeholder) info.placeholder = ta.placeholder;
-        if (ta.value) info.value = ta.value.slice(0, 200);
+        const value = reportableValue(ta, ta.value, 200);
+        if (value !== undefined) info.value = value;
       }
 
       if (tag === 'select') {
         const select = el as HTMLSelectElement;
+        // The OPTION LIST stays: it is the page's own static set of choices
+        // (`01`…`12` on a card-expiry select), it is identical for every
+        // visitor, and without it the agent cannot pick a value at all — the
+        // same "must not break filling" rule the input branch follows.
+        // What is redacted is the SELECTION, which is the user's own datum.
         info.options = [...select.options].map(o => ({ value: o.value, text: o.text }));
-        info.value = select.value;
+        const value = reportableValue(select, select.value, 100);
+        if (value !== undefined) info.value = value;
       }
 
       if (tag === 'a') {
@@ -257,11 +1655,11 @@ function takeSnapshot(
       if (ariaLabel) info.ariaLabel = ariaLabel;
 
       elements.push(info);
-      if (elements.length >= MAX_SNAPSHOT_ELEMENTS) { hitCap = true; break; }
+      if (elements.length >= MAX_SNAPSHOT_ELEMENTS) { hitCap = true; return false; }
     }
 
-      node = walker.nextNode();
-    }
+      return true;
+    });
   }
 
   // Bound the payload here, at the only place that still knows what an element
@@ -297,15 +1695,20 @@ function takeSnapshot(
   // A scope that matched something but holds nothing actionable is not the
   // same as an empty page, and saying so is what keeps the caller from
   // concluding the tools are broken and scripting the page instead.
+  const sealed = closedShadowHostCount(scope);
   if (elements.length === 0 && scopeSelector) {
     return {
-      url: location.href,
-      title: document.title,
+      url: scope.doc.location.href,
+      title: scope.doc.title,
+      frameId: scope.frameId,
+      ...frameTreeField(scope),
       elements,
+      ...(sealed > 0 ? { closedShadowHosts: sealed } : {}),
       message:
         `"${scopeSelector}" matched ${roots.length} element${roots.length === 1 ? '' : 's'}, ` +
         `none of which contain anything interactive right now — a popup that is closed looks like this. ` +
-        `Take a snapshot without a selector to see the whole page, or open the control first.`,
+        `Take a snapshot without a selector to see the whole page, or open the control first.`
+        + (sealed > 0 ? closedShadowNote(sealed) : ''),
     };
   }
 
@@ -314,9 +1717,12 @@ function takeSnapshot(
   if (overBudget) reasons.push(`the ${maxChars}-character budget`);
 
   return {
-    url: location.href,
-    title: document.title,
+    url: scope.doc.location.href,
+    title: scope.doc.title,
+    frameId: scope.frameId,
+    ...frameTreeField(scope),
     elements,
+    ...(sealed > 0 ? { closedShadowHosts: sealed } : {}),
     ...(reasons.length
       ? {
         truncated: true,
@@ -328,6 +1734,20 @@ function takeSnapshot(
       }
       : {}),
   };
+}
+
+/**
+ * The tab's frame list, attached to a snapshot of the MAIN document only.
+ *
+ * Repeating it on a snapshot OF a frame would cost tokens to say the same
+ * thing, and the extension channel does not compute it here at all — its
+ * worker attaches Chrome's own frame list, which is authoritative for
+ * cross-origin frames this runtime cannot see.
+ */
+function frameTreeField(scope: DomScope): { frames?: FrameTree } {
+  if (!LOCAL_FRAME_WALK || scope.frameId !== MAIN_FRAME_REF) return {};
+  const frames = enumerateFrames();
+  return frames.length > 1 ? { frames } : {};
 }
 
 // =============================================================================
@@ -349,6 +1769,44 @@ function escapeCSS(value: string): string {
 /** Elements that contain everything and are never a meaningful target. */
 const NEVER_A_TARGET = new Set(['html', 'body', 'head', 'script', 'style', 'noscript', 'title']);
 
+/**
+ * Abu's own on-page UI: the highlight ring and the status bubble.
+ *
+ * These live on `document.documentElement`, outside `<body>`, so `snapshot`
+ * never sees them — but every locator scans the document, and the bubble
+ * echoes what was just done ("Abu: Click: 保存"). A `{text:"保存"}` locator
+ * issued after a 保存 click therefore found the real button AND our own
+ * caption, and the second call in a row became "matches 2 elements". The
+ * automation must never be able to act on, or trip over, its own overlay.
+ */
+const ABU_OVERLAY_IDS = new Set(['abu-status', 'abu-highlight']);
+
+/**
+ * `closest`, not `el.id`: the overlays are single elements today, but the
+ * moment either grows a child (a button, an icon, a wrapper span) that child
+ * carries no id of its own and would rejoin the candidate set — which is the
+ * whole bug this guard exists to stop, one nesting level down and just as
+ * silent. Matching an ancestor costs nothing and cannot go stale.
+ */
+function isAbuOverlay(el: Element): boolean {
+  const selector = [...ABU_OVERLAY_IDS].map((id) => `#${id}`).join(',');
+  return el.closest(selector) !== null;
+}
+
+/**
+ * Computed style read through the element's OWN window.
+ *
+ * `getComputedStyle` here is the TOP frame's, and this runtime now inspects
+ * elements from embedded documents too. Every engine happens to tolerate a
+ * foreign element today, but the guarantee belongs to the element's own view —
+ * and a detached document has none, which is a "not visible" rather than a
+ * throw that would abort a whole snapshot.
+ */
+function styleOf(el: Element): CSSStyleDeclaration {
+  const view = el.ownerDocument?.defaultView ?? window;
+  return view.getComputedStyle(el as HTMLElement);
+}
+
 /** Short, human-readable handle for an element, used in error messages. */
 function describeElement(el: Element): string {
   const tag = el.tagName.toLowerCase();
@@ -366,8 +1824,388 @@ function isClickable(el: Element): boolean {
   return role !== null && ['button', 'link', 'option', 'menuitem', 'tab', 'checkbox', 'radio', 'switch'].includes(role);
 }
 
+// -----------------------------------------------------------------------------
+// 2a. ACCESSIBLE SEMANTICS — implicit roles and accessible names
+//
+// A `{role, name}` locator used to be compiled into the attribute selector
+// `[role="button"][aria-label="保存"]`, which can only ever match a page that
+// spells its semantics out in attributes. Ordinary HTML does not: `<button>
+// 保存</button>` carries the role in its tag and the name in its text, so the
+// most natural locator a model can write returned "Element not found" and sent
+// it off to script the page instead. What follows is the minimum needed to
+// make that locator mean what a browser (and Playwright, and a screen reader)
+// means by it.
+//
+// Deliberately NOT a full ARIA accname implementation: no `::before`/`::after`
+// generated content, no recursive name computation, no `aria-owns` reordering,
+// no role inheritance chains. Those matter for conformance testing; the eight
+// native roles and six name sources below are what office forms are made of.
+// -----------------------------------------------------------------------------
+
+/** `<input type>` values that are buttons. Their name comes from `value`/`alt`. */
+const BUTTON_INPUT_TYPES = new Set(['submit', 'button', 'reset', 'image']);
+
 /**
- * Find an element by its text.
+ * `<input type>` values that are text boxes. An input with no `type` at all
+ * defaults to `text`, hence the empty string. Types outside this set (`date`,
+ * `range`, `file`, `color`, …) map to roles this module does not model, and
+ * claiming `textbox` for them would make an ambiguity check count elements the
+ * caller never meant — so they get no implicit role at all.
+ */
+const TEXTBOX_INPUT_TYPES = new Set(['', 'text', 'email', 'password', 'search', 'tel', 'url', 'number']);
+
+/** Tag → implicit role, for the tags whose role does not depend on attributes. */
+const IMPLICIT_ROLE_BY_TAG: Record<string, string> = {
+  button: 'button',
+  textarea: 'textbox',
+  select: 'combobox',
+  h1: 'heading',
+  h2: 'heading',
+  h3: 'heading',
+  h4: 'heading',
+  h5: 'heading',
+  h6: 'heading',
+  summary: 'button',
+};
+
+/**
+ * The tags that can carry each implicit role, so a role lookup can stay a
+ * single narrow `querySelectorAll` instead of walking every node on the page
+ * and reading its attributes.
+ */
+const IMPLICIT_ROLE_SELECTORS: Record<string, string> = {
+  button: 'button, input, summary',
+  link: 'a[href]',
+  textbox: 'input, textarea',
+  checkbox: 'input',
+  radio: 'input',
+  combobox: 'select',
+  heading: 'h1, h2, h3, h4, h5, h6',
+  img: 'img',
+};
+
+/** `type`, lowercased, defaulting to the empty string (which means `text`). */
+function inputType(el: Element): string {
+  return (el.getAttribute('type') ?? '').trim().toLowerCase();
+}
+
+/** The role a native element has without anyone writing `role=`. */
+function implicitRole(el: Element): string | null {
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'input') {
+    const type = inputType(el);
+    if (BUTTON_INPUT_TYPES.has(type)) return 'button';
+    if (type === 'checkbox') return 'checkbox';
+    if (type === 'radio') return 'radio';
+    if (TEXTBOX_INPUT_TYPES.has(type)) return 'textbox';
+    return null;
+  }
+  // A bare `<a>` with no href is a generic span as far as ARIA is concerned.
+  if (tag === 'a') return el.hasAttribute('href') ? 'link' : null;
+  // `alt=""` is how a page says "this image is decorative" — respecting it
+  // keeps spacer GIFs out of an `{role:"img"}` match.
+  if (tag === 'img') return el.getAttribute('alt') === '' ? null : 'img';
+  return IMPLICIT_ROLE_BY_TAG[tag] ?? null;
+}
+
+/**
+ * The role a locator should match: an explicit `role=` wins, otherwise the
+ * native one. A role attribute may list fallbacks (`role="doc-subtitle
+ * heading"`); the first token is the effective one.
+ */
+function effectiveRole(el: Element): string | null {
+  const explicit = (el.getAttribute('role') ?? '').trim().split(/\s+/)[0];
+  if (explicit) return explicit.toLowerCase();
+  return implicitRole(el);
+}
+
+/**
+ * Roles whose accessible name may be taken from their own text.
+ *
+ * The exclusions are what matter: a `<select>`'s text content is the
+ * concatenation of every option ("北京上海广州"), and a `<textarea>`'s is its
+ * default value. Naming those from content would invent names no user ever
+ * sees and make `{role:"combobox", name:"..."}` match by accident.
+ */
+const NAME_FROM_CONTENT_ROLES = new Set([
+  'button', 'link', 'heading', 'option', 'menuitem', 'menuitemcheckbox',
+  'menuitemradio', 'tab', 'checkbox', 'radio', 'switch', 'treeitem',
+  'cell', 'gridcell', 'columnheader', 'rowheader', 'row', 'tooltip',
+]);
+
+/** Elements a native `<label>` can name. */
+const LABELABLE_TAGS = new Set(['button', 'input', 'meter', 'output', 'progress', 'select', 'textarea']);
+
+/** Trim, and collapse every run of whitespace to one space. */
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+/** Whitespace removed entirely — see `looselyNamed` for why this exists. */
+function squashWhitespace(value: string): string {
+  return value.replace(/\s+/g, '');
+}
+
+/**
+ * Text of the native `<label>`s naming this control — both spellings:
+ * `<label for="id">` anywhere in the document, and an ancestor `<label>` the
+ * control sits inside.
+ *
+ * This is the single highest-value entry in the whole fallback chain. An
+ * office form's inputs almost never carry `aria-label` or `role`; the label is
+ * the only thing on the page that says what the field is, and it is what the
+ * user calls it when they say "put my name in 姓名".
+ *
+ * `aria-describedby` is deliberately not consulted: a description ("8-20
+ * characters") is not a name, and treating it as one makes two different
+ * fields answer to the same locator.
+ */
+function nativeLabelText(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  if (!LABELABLE_TAGS.has(tag)) return '';
+  if (tag === 'input' && inputType(el) === 'hidden') return '';
+
+  // Collected by element identity, not by text: `<label for="x">姓名<input
+  // id="x"></label>` — the shape form libraries and accessibility tutorials
+  // both emit — is reachable BOTH ways, and pushing the same <label> twice
+  // named the field "姓名 姓名". That name misses the exact and normalized
+  // tiers, so `{name:"姓名"}` fell through to the substring tier, where any
+  // unrelated `aria-label="姓名"` control wins the exact tier outright and
+  // gets filled instead.
+  const labels = new Set<Element>();
+  if (el.id) {
+    // Scoped to the element's OWN tree, not the global document: ids are
+    // per-shadow-tree, so `<label for="name">` inside a component names the
+    // input inside that component, and a same-id label out in the page does
+    // not. `getRootNode()` is the document for ordinary elements.
+    const root = el.getRootNode() as Document | ShadowRoot;
+    // Compared as attribute values rather than interpolated into a selector:
+    // an id is author-controlled, and no escaping scheme has to be trusted if
+    // nothing is ever concatenated into a query.
+    for (const label of root.querySelectorAll('label[for]')) {
+      if (label.getAttribute('for') === el.id) labels.add(label);
+    }
+  }
+  const wrapping = el.closest?.('label');
+  if (wrapping) labels.add(wrapping);
+
+  const parts = [...labels].map((label) => normalizeWhitespace(label.textContent ?? ''));
+  return normalizeWhitespace(parts.filter(Boolean).join(' '));
+}
+
+/**
+ * The accessible name of an element, by the six sources that carry office
+ * forms, first non-empty wins:
+ *
+ *   1. `aria-labelledby` — the IDREF list, joined
+ *   2. `aria-label`
+ *   3. the native `<label>` (for/id, or wrapping)
+ *   4. `alt` / `value` (buttons only) / `title`
+ *   5. its own visible text — only for roles that take a name from content
+ *   6. `placeholder`
+ */
+function accessibleName(el: Element): string {
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const joined = labelledBy
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((id) => (el.getRootNode() as Document | ShadowRoot).getElementById(id))
+      .filter((node): node is HTMLElement => node !== null)
+      .map((node) => normalizeWhitespace(node.textContent ?? ''))
+      .filter(Boolean)
+      .join(' ');
+    if (joined) return joined;
+  }
+
+  const ariaLabel = normalizeWhitespace(el.getAttribute('aria-label') ?? '');
+  if (ariaLabel) return ariaLabel;
+
+  const label = nativeLabelText(el);
+  if (label) return label;
+
+  const alt = normalizeWhitespace(el.getAttribute('alt') ?? '');
+  if (alt) return alt;
+  if (el.tagName.toLowerCase() === 'input' && BUTTON_INPUT_TYPES.has(inputType(el))) {
+    const value = normalizeWhitespace((el as HTMLInputElement).value ?? '');
+    if (value) return value;
+  }
+  const title = normalizeWhitespace(el.getAttribute('title') ?? '');
+  if (title) return title;
+
+  const role = effectiveRole(el);
+  if (role !== null && NAME_FROM_CONTENT_ROLES.has(role)) {
+    const text = normalizeWhitespace(el.textContent ?? '');
+    if (text) return text;
+  }
+
+  return normalizeWhitespace(el.getAttribute('placeholder') ?? '');
+}
+
+/**
+ * Whether an element can be matched by a locator at all.
+ *
+ * `isSnapshotVisible` rather than the stricter `isVisible` on purpose: antd's
+ * combobox puts the semantics on a `width: 0` `<input>` beside the span the
+ * user sees, so "has a layout box" would make every dropdown on the page
+ * unaddressable. The two extra checks below are the states that test cannot
+ * see — `hidden` is applied by the UA stylesheet, and `type="hidden"` inputs
+ * are laid out nowhere but are still perfectly ordinary inputs.
+ */
+function isLocatorVisible(el: Element): boolean {
+  if (el.hasAttribute('hidden')) return false;
+  if (el.tagName.toLowerCase() === 'input' && inputType(el) === 'hidden') return false;
+  // Out of the accessibility tree, by the page's own declaration. A role/name
+  // locator IS an accessibility-tree query, so matching a mirror the author
+  // explicitly removed from it is wrong on the locator's own terms — and it is
+  // how a duplicated render (antd's fixed table columns, a carousel, a
+  // screen-reader mirror) made a normal page permanently ambiguous.
+  if (el.closest?.('[aria-hidden="true"]')) return false;
+  // `inert` is the platform's "present but unreachable" — the layer behind an
+  // open modal. It cannot receive the click we would dispatch, so counting it
+  // only blocks the copy that can.
+  if (el.closest?.('[inert]')) return false;
+  if (isFullyTransparent(el)) return false;
+  return isSnapshotVisible(el);
+}
+
+/**
+ * Painted, full-size, and invisible: a copy the user cannot see or click.
+ *
+ * Scoped to elements that HAVE a layout box on purpose. Two documented cases
+ * are transparent deliberately and are still the right target, and both have a
+ * *collapsed* box, so they never reach this test: antd's `role="combobox"`
+ * lives on a `width: 0; opacity: 0` <input> (see `isSnapshotVisible`), and a
+ * popup mid-entrance-animation sits at `opacity: 0` with a collapsed box and
+ * never leaves that state in a background tab (see `isRendered`, which turns
+ * `checkOpacity` off for exactly this reason). Widening the rule past "has a
+ * box" would make every dropdown on the page unaddressable.
+ */
+function isFullyTransparent(el: Element): boolean {
+  if (!hasBox(el)) return false;
+  // opacity does not inherit — a transparent wrapper still reports `1` on its
+  // children — so the chain has to be walked.
+  for (
+    let node: Element | null = el;
+    node && node !== el.ownerDocument.documentElement;
+    node = node.parentElement
+  ) {
+    if (styleOf(node).opacity === '0') return true;
+  }
+  return false;
+}
+
+/** A locator may land here — page content, visible, and not our own overlay. */
+function isLocatorTarget(el: Element): boolean {
+  if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
+  if (isAbuOverlay(el)) return false;
+  return isLocatorVisible(el);
+}
+
+/**
+ * Every element carrying `role`, explicit or implicit.
+ *
+ * `[role]` catches the attribute spelling; the tag list catches the native
+ * one. An unmapped role (`dialog`, `alert`, …) scans only `[role]`, which is
+ * correct — this module claims no implicit mapping for those.
+ */
+function elementsWithRole(scope: DomScope, role: string): Element[] {
+  const wanted = role.trim().toLowerCase();
+  const selectors = ['[role]'];
+  const implicit = IMPLICIT_ROLE_SELECTORS[wanted];
+  if (implicit) selectors.push(implicit);
+  return queryAllDeep(scope.doc, selectors.join(', ')).filter(
+    (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && effectiveRole(el) === wanted,
+  );
+}
+
+/**
+ * The loosest tier of name matching: substring, after normalizing whitespace,
+ * case-insensitively — plus the same match with whitespace removed entirely.
+ *
+ * The whitespace-free comparison is not pedantry: antd renders a two-character
+ * Chinese button as `提 交` in the DOM while everyone — the user, the model,
+ * the page's own design — calls it `提交`. `findByText` has carried this rule
+ * since the field report that produced it; a name lookup that did not would
+ * fail on exactly the buttons this work exists to reach.
+ */
+function looselyNamed(name: string, wanted: string): boolean {
+  const normWanted = normalizeWhitespace(wanted).toLowerCase();
+  if (normWanted === '') return true;
+  if (normalizeWhitespace(name).toLowerCase().includes(normWanted)) return true;
+  const squashedWanted = squashWhitespace(wanted).toLowerCase();
+  return squashedWanted !== '' && squashWhitespace(name).toLowerCase().includes(squashedWanted);
+}
+
+/**
+ * Narrow candidates by a name-ish query, keeping the STRICTEST tier that still
+ * matches something: exact, then normalized, then substring.
+ *
+ * Order is the whole point. With `保存` and `保存并提交` both on the page, a
+ * plain substring match makes `{name:"保存"}` ambiguous and refuses to act —
+ * technically defensible, uselessly so, since one of them is called exactly
+ * that. Taking the strictest non-empty tier means an exact name always wins,
+ * and the substring tier only comes into play when nothing matched exactly.
+ */
+function narrowByName(
+  candidates: Element[],
+  wanted: string,
+  nameOf: (el: Element) => string,
+): Element[] {
+  const exact = candidates.filter((el) => nameOf(el) === wanted);
+  if (exact.length > 0) return exact;
+
+  const normWanted = normalizeWhitespace(wanted).toLowerCase();
+  const squashedWanted = squashWhitespace(wanted).toLowerCase();
+  const normalized = candidates.filter((el) => {
+    const name = nameOf(el);
+    return normalizeWhitespace(name).toLowerCase() === normWanted
+      || (squashedWanted !== '' && squashWhitespace(name).toLowerCase() === squashedWanted);
+  });
+  if (normalized.length > 0) return normalized;
+
+  return candidates.filter((el) => looselyNamed(nameOf(el), wanted));
+}
+
+/**
+ * A candidate line for an error message or a `find` result: enough for the
+ * caller to tell two same-looking controls apart and pick one by ref.
+ */
+function describeCandidate(el: Element): string {
+  const tag = el.tagName.toLowerCase();
+  const id = el.id ? `#${el.id}` : '';
+  const role = effectiveRole(el);
+  const name = accessibleName(el);
+  const text = normalizeWhitespace(getVisibleText(el) ?? '').slice(0, 40);
+  return `[${refFor(el)}] <${tag}${id}>`
+    + (role ? ` role=${role}` : '')
+    + (name ? ` name=${JSON.stringify(name.slice(0, 40))}` : '')
+    + (text && text !== name ? ` text=${JSON.stringify(text)}` : '')
+    + (isVisible(el) ? '' : ' (no layout box)');
+}
+
+/**
+ * Refuse an ambiguous locator instead of acting on the first match.
+ *
+ * `querySelector` returning the first of several `.primary` buttons is not a
+ * near miss — with "保存" and "删除" side by side in the same toolbar it is a
+ * wrong, irreversible action reported as a success. Nothing has happened to
+ * the page by the time this throws: every action resolves its target before it
+ * scrolls, highlights or dispatches anything.
+ */
+function uniqueOrAmbiguous(matches: Element[], what: string): Element | null {
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  throw new Error(
+    `${what} matches ${matches.length} elements, so it does not identify one. `
+    + `Nothing on the page was clicked or changed. Pick one by ref:\n`
+    + matches.slice(0, 8).map((el) => `  ${describeCandidate(el)}`).join('\n')
+    + (matches.length > 8 ? `\n  ...and ${matches.length - 8} more` : ''),
+  );
+}
+
+/**
+ * Every element a text locator matches, narrowed by the rules below.
  *
  * The rule that matters here is "deepest wins". Matching the first element in
  * document order whose subtree text merely *contains* the string always
@@ -375,20 +2213,18 @@ function isClickable(el: Element): boolean {
  * which was then clicked and reported as a success. An ancestor is only the
  * answer when nothing inside it is.
  *
- * Ambiguity is reported, not resolved by guessing: two equally-deep matches
- * mean the caller's locator does not identify one element, and picking either
- * is a coin flip performed on the user's live session.
+ * Returning the set rather than "the one" is what lets `wait_for` ask a
+ * different question of the same locator — see `matchElements`.
  */
-function findByText(text: string, tag?: string): Element | null {
-  const scope = tag ?? '*';
+function textMatches(scope: DomScope, text: string, tag?: string): Element[] {
+  const tagScope = tag ?? '*';
   const wanted = text.trim();
   // antd inserts a space between the two characters of a two-character Chinese
   // button, so the DOM holds "提 交" while the user — and anyone describing the
   // page — says "提交". Whitespace is presentation here, not identity.
   const squashed = wanted.replace(/\s+/g, '');
-  const candidates = [...document.querySelectorAll(scope)].filter((el) => {
-    if (NEVER_A_TARGET.has(el.tagName.toLowerCase())) return false;
-    if (!isSnapshotVisible(el)) return false;
+  const candidates = queryAllDeep(scope.doc, tagScope).filter((el) => {
+    if (!isLocatorTarget(el)) return false;
     const own = normalizedText(el);
     return own.includes(wanted) || (squashed !== '' && own.replace(/\s+/g, '').includes(squashed));
   });
@@ -397,7 +2233,7 @@ function findByText(text: string, tag?: string): Element | null {
   // one and the relaxed set is all there is.
   const laidOut = candidates.filter(hasBox);
   const matches = laidOut.length > 0 ? laidOut : candidates;
-  if (matches.length === 0) return null;
+  if (matches.length === 0) return [];
 
   // Keep only the innermost matches: drop any candidate that contains another.
   let deepest = matches.filter((el) => !matches.some((other) => other !== el && el.contains(other)));
@@ -412,20 +2248,36 @@ function findByText(text: string, tag?: string): Element | null {
   const clickable = deepest.filter(isClickable);
   if (clickable.length > 0) deepest = clickable;
 
-  if (deepest.length === 1) return deepest[0];
-
-  throw new Error(
-    `Text "${text}" matches ${deepest.length} different elements, so it does not identify one. ` +
-    `Pick one by ref:\n${deepest.slice(0, 8).map((el) => `  ${describeElement(el)}`).join('\n')}` +
-    (deepest.length > 8 ? `\n  ...and ${deepest.length - 8} more` : '')
-  );
+  return deepest;
 }
 
-function findElement(locator: ElementLocator): Element | null {
+/** Which strategy read the locator, and everything that locator matches. */
+interface LocatorMatches {
+  elements: Element[];
+  /** How to name the locator in an error message. */
+  what: string;
+  strategy: 'ref' | 'css' | 'text' | 'role' | 'testId' | 'xpath';
+}
+
+/**
+ * Everything a locator matches, with no opinion about whether that is enough.
+ *
+ * Two callers ask different questions of the same locator, and collapsing them
+ * into one was a regression. An ACTION must identify a single element, so
+ * `findElement` refuses anything else — clicking the first of two `.primary`
+ * buttons is a wrong, irreversible act reported as a success. `wait_for` only
+ * asks whether the page has reached a state: `{appear, css:'.ant-table-row'}`
+ * matching twelve rows, or `{disappear, css:'.ant-spin'}` with three spinners,
+ * is the normal shape of that question rather than a mistake. Worse, refusing
+ * it left `appear` with no way out at all — "pick one by ref" needs a ref, and
+ * the caller is waiting for something that does not exist yet.
+ */
+function matchElements(scope: DomScope, locator: ElementLocator): LocatorMatches {
   // ref — from snapshot
   if (locator.ref) {
-    const el = resolveRef(locator.ref);
-    if (el) return el;
+    const el = resolveRef(locator.ref, scope);
+    const what = `Ref ${JSON.stringify(locator.ref)}`;
+    if (el) return { elements: [el], what, strategy: 'ref' };
     // Naming a ref that no longer resolves is not the same as naming nothing.
     // Falling through to another strategy here would act on a *different*
     // element than the caller asked for, and report success.
@@ -440,43 +2292,371 @@ function findElement(locator: ElementLocator): Element | null {
     throw err;
   }
 
-  // CSS selector
+  // CSS selector — every match, not the first one
   if (locator.css) {
-    return document.querySelector(locator.css);
+    return {
+      elements: queryAllDeep(scope.doc, locator.css).filter(isLocatorTarget),
+      what: `CSS selector ${JSON.stringify(locator.css)}`,
+      strategy: 'css',
+    };
   }
 
   // Text content
   if (locator.text) {
-    return findByText(locator.text, locator.tag);
+    return {
+      elements: textMatches(scope, locator.text, locator.tag),
+      what: `Text ${JSON.stringify(locator.text)}`,
+      strategy: 'text',
+    };
   }
 
-  // ARIA role + name — use CSS.escape to prevent selector injection
+  // ARIA role + name — explicit `role=` and native roles both count
   if (locator.role) {
-    const escapedRole = escapeCSS(locator.role);
-    const selector = locator.name
-      ? `[role="${escapedRole}"][aria-label="${escapeCSS(locator.name)}"]`
-      : `[role="${escapedRole}"]`;
-    return document.querySelector(selector);
+    const byRole = elementsWithRole(scope, locator.role).filter(isLocatorTarget);
+    return {
+      elements: locator.name ? narrowByName(byRole, locator.name, accessibleName) : byRole,
+      what: locator.name
+        ? `role ${JSON.stringify(locator.role)} named ${JSON.stringify(locator.name)}`
+        : `role ${JSON.stringify(locator.role)}`,
+      strategy: 'role',
+    };
   }
 
   // data-testid — escape to prevent injection
   if (locator.testId) {
-    return document.querySelector(`[data-testid="${escapeCSS(locator.testId)}"]`);
+    return {
+      elements: queryAllDeep(scope.doc, `[data-testid="${escapeCSS(locator.testId)}"]`)
+        .filter(isLocatorTarget),
+      what: `testId ${JSON.stringify(locator.testId)}`,
+      strategy: 'testId',
+    };
   }
 
   // XPath
   if (locator.xpath) {
-    const result = document.evaluate(locator.xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
-    return result.singleNodeValue as Element | null;
+    // XPath cannot cross a shadow boundary — there is no such thing as an
+    // XPath into a shadow tree — so this one strategy stays light-DOM only.
+    const result = scope.doc.evaluate(locator.xpath, scope.doc, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+    const el = result.singleNodeValue as Element | null;
+    return {
+      elements: el ? [el] : [],
+      what: `XPath ${JSON.stringify(locator.xpath)}`,
+      strategy: 'xpath',
+    };
   }
 
   throw new Error(`Invalid locator: ${JSON.stringify(locator)}`);
 }
 
-function findElementOrThrow(locator: ElementLocator): Element {
-  const el = findElement(locator);
-  if (!el) throw new Error(`Element not found: ${JSON.stringify(locator)}`);
-  return el;
+/**
+ * The one element a locator identifies, or `null` — the entry point for every
+ * caller that is about to DO something. More than one match throws.
+ */
+function findElement(scope: DomScope, locator: ElementLocator): Element | null {
+  const { elements, what, strategy } = matchElements(scope, locator);
+  if (elements.length <= 1) return elements[0] ?? null;
+  if (strategy === 'text') {
+    // The text path keeps its own wording, which existing callers and tests
+    // read; the message is the same promise either way.
+    throw new Error(
+      `Text "${locator.text}" matches ${elements.length} different elements, so it does not identify one. ` +
+      `Pick one by ref:\n${elements.slice(0, 8).map((el) => `  ${describeElement(el)}`).join('\n')}` +
+      (elements.length > 8 ? `\n  ...and ${elements.length - 8} more` : '')
+    );
+  }
+  return uniqueOrAmbiguous(elements, what);
+}
+
+/**
+ * What the caller most plausibly meant, for the not-found path.
+ *
+ * "Element not found: {"role":"button","name":"保存"}" is true and useless: it
+ * costs another round trip to learn whether the page has no buttons, or five
+ * of them under other names. Naming the near misses lets the next call be the
+ * right one — and keeps the model from concluding the tools are broken and
+ * falling back to scripting the page.
+ */
+function nearbyCandidates(scope: DomScope, locator: ElementLocator, cap = 5): Element[] {
+  if (locator.role) {
+    return elementsWithRole(scope, locator.role).filter(isLocatorTarget).slice(0, cap);
+  }
+  const wanted = normalizeWhitespace(locator.text ?? locator.name ?? '');
+  if (!wanted) return [];
+  // Half the query, so "保存并提交" still surfaces when "保存" was asked for.
+  const needle = wanted.length > 2 ? wanted.slice(0, Math.ceil(wanted.length / 2)) : wanted;
+  return queryAllDeep(scope.doc, 'a, button, input, textarea, select, summary, [role], [onclick], [tabindex]')
+    .filter(isLocatorTarget)
+    .filter((el) => looselyNamed(`${accessibleName(el)} ${normalizeWhitespace(el.textContent ?? '')}`, needle))
+    .slice(0, cap);
+}
+
+function findElementOrThrow(scope: DomScope, locator: ElementLocator): Element {
+  const el = findElement(scope, locator);
+  if (el) return el;
+  const near = nearbyCandidates(scope, locator);
+  const sealed = near.length === 0 ? closedShadowHostCount(scope) : 0;
+  throw new Error(
+    `Element not found: ${JSON.stringify(locator)}${whereClause(scope)}.`
+    + (near.length > 0
+      ? ` The closest things on the page right now:\n${near.map((c) => `  ${describeCandidate(c)}`).join('\n')}\n`
+        + `Pick one by ref, or call find to search by text.`
+      : ` Call find to search the page by text/role, or snapshot to list what is there.`)
+    + framesNote(scope)
+    + (sealed > 0 ? closedShadowNote(sealed) : ''),
+  );
+}
+
+/** " in embedded region f3", or nothing at all for the main document. */
+function whereClause(scope: DomScope): string {
+  return scope.frameId === MAIN_FRAME_REF ? '' : ` in embedded region ${scope.frameId}`;
+}
+
+/**
+ * Point a failed search at the page's other documents.
+ *
+ * Without this a form inside an iframe reads as "the page does not have that
+ * field", which is what sends a model off to script the page. Only emitted
+ * when there ARE other regions, and only from the frame that was searched.
+ */
+function framesNote(scope: DomScope): string {
+  if (!LOCAL_FRAME_WALK || scope.frameId !== hostFrameId) return '';
+  const others = enumerateFrames().filter((f) => f.frameId !== scope.frameId);
+  if (others.length === 0) return '';
+  const listed = others.slice(0, 5).map(
+    (f) => `${f.frameId} (${f.origin ?? 'not a web page'}${f.accessible ? '' : ', not reachable from here'})`,
+  );
+  return (
+    ` This page also has ${others.length} embedded region${others.length === 1 ? '' : 's'}: `
+    + `${listed.join(', ')}${others.length > 5 ? ', …' : ''}. `
+    + 'A search only covers one document — pass `frameId` to look inside one of these.'
+  );
+}
+
+// =============================================================================
+// 2b. FIND — read-only search, the cheap step before acting
+// =============================================================================
+
+/** Matches returned by default; enough to choose from, small enough to read. */
+const FIND_DEFAULT_LIMIT = 20;
+/** Hard ceiling: past this the caller wants a snapshot, not a search. */
+const FIND_MAX_LIMIT = 50;
+/**
+ * Max serialized size of a find result, measured the way the bridge serializes
+ * it (pretty-printed JSON — see `formatResult`), and set to the budget
+ * `src/core/context/truncation.ts` gives the `find` tool.
+ *
+ * A count cap alone is not a size cap: 50 matches with long names, long text
+ * and long ids serialize to ~21,000 characters, past the budget, and what is
+ * upstream can only cut CHARACTERS — which turns the JSON into something that
+ * no longer parses and drops matches without saying which. `snapshot` bounds
+ * itself for exactly this reason; `find` did not.
+ */
+const MAX_FIND_CHARS = 16_000;
+/** Per-field caps, so one pathological attribute cannot eat the whole budget. */
+const FIND_MAX_NAME_CHARS = 120;
+const FIND_MAX_TEXT_CHARS = 80;
+const FIND_MAX_ID_CHARS = 100;
+
+/** Cut a field to its cap, marking the cut so the caller does not read a lie. */
+function capField(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+/** Every key of a find query, for validation and for the "empty query" error. */
+const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label', 'placeholder'] as const;
+
+/**
+ * Search the page and report the candidates — without touching any of them.
+ *
+ * The loop this exists to shorten is: snapshot the whole page, read 200
+ * elements to find the one button, act. `find` answers the same question
+ * directly, in a fraction of the tokens, and — because it shares the locator's
+ * matching rules exactly — its answer is also a preview of what `click` would
+ * do. A caller that gets three matches here knows to disambiguate BEFORE
+ * issuing an action that would be refused, or worse, guessed.
+ *
+ * Several keys are ANDed. Refs come from the same registry `snapshot` hands
+ * out, so anything found here can be acted on by ref with no extra round trip.
+ */
+function findElements(scope: DomScope, rawQuery: unknown, rawLimit?: unknown): FindResult {
+  const query = (rawQuery ?? {}) as FindQuery;
+  if (typeof query !== 'object' || Array.isArray(query)) {
+    throw new Error(`find: query must be an object with at least one of: ${FIND_QUERY_KEYS.join(', ')}`);
+  }
+  const used = FIND_QUERY_KEYS.filter((key) => {
+    const value = query[key];
+    return typeof value === 'string' && value !== '';
+  });
+  if (used.length === 0) {
+    throw new Error(`find: query must contain at least one of: ${FIND_QUERY_KEYS.join(', ')}`);
+  }
+
+  const limit = Math.max(1, Math.min(FIND_MAX_LIMIT, Math.trunc(Number(rawLimit) || FIND_DEFAULT_LIMIT)));
+
+  // Universe: the narrowest structural query the caller gave us. Everything
+  // else is a filter, so the expensive per-element work (layout reads inside
+  // the visibility test) runs on as few nodes as possible.
+  let candidates: Element[];
+  if (query.css) {
+    candidates = queryAllDeep(scope.doc, query.css);
+  } else if (query.testId) {
+    candidates = queryAllDeep(scope.doc, `[data-testid="${escapeCSS(query.testId)}"]`);
+  } else if (query.role) {
+    candidates = elementsWithRole(scope, query.role);
+  } else {
+    candidates = queryAllDeep(scope.doc, '*');
+  }
+  candidates = candidates.filter(
+    (el) => !NEVER_A_TARGET.has(el.tagName.toLowerCase()) && !isAbuOverlay(el),
+  );
+
+  // Attribute/text filters first (no layout), visibility last.
+  if (query.role && (query.css || query.testId)) {
+    const wantedRole = query.role.trim().toLowerCase();
+    candidates = candidates.filter((el) => effectiveRole(el) === wantedRole);
+  }
+  if (query.testId && query.css) {
+    candidates = candidates.filter((el) => el.getAttribute('data-testid') === query.testId);
+  }
+  if (query.name) {
+    candidates = candidates.filter((el) => looselyNamed(accessibleName(el), query.name as string));
+  }
+  if (query.label) {
+    candidates = candidates.filter((el) => looselyNamed(nativeLabelText(el), query.label as string));
+  }
+  if (query.placeholder) {
+    candidates = candidates.filter(
+      (el) => looselyNamed(el.getAttribute('placeholder') ?? '', query.placeholder as string),
+    );
+  }
+  if (query.text) {
+    candidates = candidates.filter(
+      (el) => looselyNamed(normalizeWhitespace(el.textContent ?? ''), query.text as string),
+    );
+  }
+
+  candidates = candidates.filter(isLocatorVisible);
+
+  // Strictest-tier narrowing, same ladder the locator uses, so `find` and
+  // `click` never disagree about which elements a `{role,name}` identifies.
+  if (query.name) candidates = narrowByName(candidates, query.name, accessibleName);
+  if (query.label) candidates = narrowByName(candidates, query.label, nativeLabelText);
+  if (query.placeholder) {
+    candidates = narrowByName(candidates, query.placeholder, (el) => el.getAttribute('placeholder') ?? '');
+  }
+  if (query.text) {
+    // Deepest wins, exactly as in `textMatches`: an ancestor is only the answer
+    // when nothing inside it is, or every text query returns the page shell.
+    candidates = candidates.filter((el) => !candidates.some((other) => other !== el && el.contains(other)));
+  }
+
+  const total = candidates.length;
+  const matches = candidates.slice(0, limit).map<FindMatch>((el) => {
+    const rect = el.getBoundingClientRect();
+    const role = effectiveRole(el);
+    const name = accessibleName(el);
+    const rawText = normalizeWhitespace(el.textContent ?? '');
+    const disabled = (el as HTMLButtonElement).disabled === true || el.getAttribute('aria-disabled') === 'true';
+    return {
+      ref: refFor(el),
+      tag: el.tagName.toLowerCase(),
+      ...(el.id ? { id: capField(el.id, FIND_MAX_ID_CHARS) } : {}),
+      ...(role ? { role } : {}),
+      ...(name ? { accessibleName: capField(name, FIND_MAX_NAME_CHARS) } : {}),
+      ...(rawText && rawText !== name ? { text: capField(rawText, FIND_MAX_TEXT_CHARS) } : {}),
+      // `false` means "on the page but with no layout box" — a collapsed antd
+      // combobox input, say. It is still addressable; it just is not what the
+      // user is looking at. Genuinely hidden elements never reach this list.
+      visible: isVisible(el),
+      interactive: isClickable(el),
+      ...(disabled ? { disabled: true } : {}),
+      rect: {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+      },
+    };
+  });
+
+  const describeQuery = used.map((key) => `${key}=${JSON.stringify(query[key])}`).join(' ');
+  const sealed = total === 0 ? closedShadowHostCount(scope) : 0;
+  const build = (kept: FindMatch[]): FindResult => ({
+    url: scope.doc.location.href,
+    title: scope.doc.title,
+    frameId: scope.frameId,
+    matches: kept,
+    total,
+    ...(sealed > 0 ? { closedShadowHosts: sealed } : {}),
+    ...(total === 0
+      ? {
+        message:
+            `Nothing${whereClause(scope) || ' on this page'} matches ${describeQuery}. Hidden elements are excluded. `
+            + `Try one key instead of several, or a shorter \`text\`; snapshot lists everything interactive.`
+            + framesNote(scope)
+            + (sealed > 0 ? closedShadowNote(sealed) : ''),
+      }
+      : {}),
+    ...(total > kept.length
+      ? {
+        truncated: true,
+        message:
+            `Showing ${kept.length} of ${total} matches. Narrow the query (add \`role\`, or a longer `
+            + `\`text\`/\`name\`) rather than raising \`limit\` — a locator that matches ${total} elements `
+            + `will be refused as ambiguous by click/fill/select.`,
+      }
+      : {}),
+  });
+
+  // Bound the payload here, where a match is still a structured thing, by
+  // binary search on the REAL serialized size — and on the WHOLE result, the
+  // way `formatResult` in the bridge serializes it. Measuring `matches` alone
+  // would run ~1,200 characters under the truth on a worst-case page (the
+  // array sits one level deeper inside the envelope, so every line carries two
+  // more spaces, and url/title/message are unbudgeted), and an estimate that
+  // runs under hands the result to the upstream character slicer, which cuts
+  // CHARACTERS — the JSON stops parsing and matches vanish without saying
+  // which. That is the failure this budget exists to prevent.
+  const fits = (count: number) => JSON.stringify(build(matches.slice(0, count)), null, 2).length <= MAX_FIND_CHARS;
+  if (matches.length > 0 && !fits(matches.length)) {
+    let low = 1;                 // always return at least one match: a single
+    let high = matches.length;   // oversized match beats an empty list
+    let kept = 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (fits(mid)) {
+        kept = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    matches.length = kept;
+  }
+
+  return build(matches);
+}
+
+/**
+ * How many elements a locator identifies in THIS document — and nothing else.
+ *
+ * An internal probe, not a tool: the extension worker sends it to each frame
+ * of a tab when a locator names no frame and the main document did not have
+ * the element, so the frame that DOES hold it can be resolved deterministically
+ * instead of by whichever frame answers a broadcast first. Read-only: it
+ * resolves a target and reports a count, it never scrolls, highlights or
+ * dispatches anything.
+ */
+function locateOnly(scope: DomScope, locator: ElementLocator): { matched: number } {
+  try {
+    return { matched: matchElements(scope, locator).elements.length };
+  } catch (err) {
+    // An ambiguous locator throws here exactly as it would for an action, and
+    // "several" is the honest answer for the worker's resolution rule. A stale
+    // ref or a malformed locator matches nothing in this document.
+    if (err instanceof Error && / matches \d+ /.test(err.message)) return { matched: 2 };
+    return { matched: 0 };
+  }
 }
 
 // =============================================================================
@@ -517,13 +2697,13 @@ function dispatchClickSequence(el: HTMLElement): void {
   el.click();
 }
 
-function clickElement(locator: ElementLocator): {
+function clickElement(scope: DomScope, locator: ElementLocator): {
   success: boolean;
   message: string;
   elementText?: string;
   target: ReturnType<typeof targetInfo>;
 } {
-  const el = findElementOrThrow(locator);
+  const el = findElementOrThrow(scope, locator);
   const target = targetInfo(el);
 
   // Scroll into view if needed
@@ -549,12 +2729,17 @@ function clickElement(locator: ElementLocator): {
 // 4. FILL
 // =============================================================================
 
-function fillElement(locator: ElementLocator, value: string): { success: boolean; message: string; previousValue?: string } {
-  const el = findElementOrThrow(locator) as HTMLInputElement | HTMLTextAreaElement;
-  const previousValue = el.value;
+function fillElement(scope: DomScope, locator: ElementLocator, value: string): { success: boolean; message: string; previousValue?: string } {
+  const el = findElementOrThrow(scope, locator) as HTMLInputElement | HTMLTextAreaElement;
+  // Same rule as the snapshot: what was ALREADY in the field is the user's
+  // secret (a browser-autofilled password, a saved card), and handing it back
+  // in the result would put it in the model's context, the logs, and any
+  // approval message quoting the result.
+  const previousValue = reportableValue(el, el.value, 100);
 
   highlightElement(el);
-  showStatus(`Fill: "${value.slice(0, 30)}"`, 'info');
+  // NEVER the value: this string is written into the page (see `fieldLabel`).
+  showStatus(`Fill: ${fieldLabel(el)}`, 'info');
 
   // Use native setter to bypass React's synthetic event system
   const nativeSetter = Object.getOwnPropertyDescriptor(
@@ -575,8 +2760,166 @@ function fillElement(locator: ElementLocator, value: string): { success: boolean
 
   return {
     success: true,
-    message: `Filled field with "${value.slice(0, 50)}"`,
-    previousValue: previousValue || undefined,
+    // The value being written is the caller's own, but the echo still rides
+    // into the model context, logs, and diagnostic bundles — the exact channel
+    // a login password left the machine through in v0.42.0. For a field that
+    // declares itself sensitive, confirm the fill without the content.
+    message: hasSensitiveValue(el)
+      ? `Filled field with ${REDACTED_VALUE}`
+      : `Filled field with "${value.slice(0, 50)}"`,
+    previousValue,
+  };
+}
+
+// =============================================================================
+// 4b. UPLOAD FILE (batch-三 T5)
+// =============================================================================
+
+/**
+ * One file, already opened by a privileged tier and carried here as base64.
+ *
+ * The content script never touches the filesystem — it cannot, on either
+ * channel — so "which file" was decided long before this code runs: Abu's
+ * approval gate resolved the path against the workspaces the user authorized,
+ * the user confirmed the name and the size, and only then did the bytes get
+ * read (by the Electron main process for the built-in browser, by the Node
+ * bridge for the Chrome extension). What arrives here is the RESULT of that
+ * decision, not an instruction to go and find a file.
+ */
+interface UploadPayloadFile {
+  name: string;
+  size: number;
+  base64: string;
+}
+
+/** The largest an upload may be, mirroring `MAX_UPLOAD_FILE_BYTES` in
+ *  `src/core/permissions/browserUploadFiles.ts`. A second, dumber check: the
+ *  gate is the one that refuses politely, this one refuses at all. */
+const UPLOAD_FILE_BYTES_MAX = 20 * 1024 * 1024;
+
+function isUploadPayloadFile(value: unknown): value is UploadPayloadFile {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const file = value as Record<string, unknown>;
+  return typeof file.name === 'string' && file.name !== ''
+    && typeof file.size === 'number' && Number.isFinite(file.size) && file.size >= 0
+    && typeof file.base64 === 'string';
+}
+
+function decodeBase64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Put files into a page's `<input type="file">` without an operating-system
+ * file picker ever being drawn.
+ *
+ * There is no other way to do it. `input.files` is read-only to assignment of
+ * anything but a `FileList`, and the only `FileList` a script can build is
+ * `DataTransfer`'s — so the file is reconstructed here as a `File` and handed
+ * over through a `DataTransfer`. That is also what makes it work identically
+ * on both channels: an isolated world (the built-in browser) and a content
+ * script (the extension) share the page's DOM, so the input the page sees is
+ * the input this writes to.
+ *
+ * The alternative — clicking the page's own 「选择文件」 button — is exactly
+ * what this exists to avoid: it raises a native modal that no automated run
+ * can answer and that Chromium keeps up until a human clicks it.
+ */
+function uploadFiles(
+  scope: DomScope,
+  locator: ElementLocator,
+  rawFiles: unknown,
+): {
+    success: boolean;
+    message: string;
+    attached: Array<{ name: string; size: number }>;
+  } {
+  const declared = Array.isArray(rawFiles) ? rawFiles : [];
+  if (declared.length === 0) {
+    throw new Error('Refused: this upload carried no file, so nothing was attached.');
+  }
+  const files: UploadPayloadFile[] = [];
+  for (const entry of declared) {
+    if (!isUploadPayloadFile(entry)) {
+      throw new Error('Refused: the file list for this upload was not readable.');
+    }
+    if (entry.size > UPLOAD_FILE_BYTES_MAX) {
+      throw new Error(`Refused: "${entry.name}" is larger than this browser will attach.`);
+    }
+    files.push(entry);
+  }
+
+  const el = findElementOrThrow(scope, locator);
+  const input = el as HTMLInputElement;
+  if (input.tagName !== 'INPUT' || input.type !== 'file') {
+    throw new Error(
+      `That element is a <${el.tagName.toLowerCase()}>, not a file input, so a file cannot be `
+      + 'attached to it. Point the locator at the <input type="file"> itself — pages usually '
+      + 'hide it behind a styled button, so { "css": "input[type=file]" } finds it even when it '
+      + 'is invisible. Do NOT click the visible button: that opens the operating system\'s own '
+      + 'file picker, which nothing here can fill in.',
+    );
+  }
+  if (input.disabled) {
+    throw new Error('That file input is disabled right now, so nothing was attached.');
+  }
+  if (files.length > 1 && !input.multiple) {
+    throw new Error(
+      `This input accepts one file and ${files.length} were offered. Nothing was attached — `
+      + 'send them one call at a time, or find the field that accepts several.',
+    );
+  }
+
+  const transfer = new DataTransfer();
+  for (const file of files) {
+    const bytes = decodeBase64ToBytes(file.base64);
+    if (bytes.byteLength !== file.size) {
+      throw new Error(
+        `Refused: "${file.name}" did not arrive intact (${file.size} bytes expected, `
+        + `${bytes.byteLength} received). Nothing was attached.`,
+      );
+    }
+    // `type` is left to the browser to infer from the name. Guessing a MIME
+    // type here would be guessing at the very field some upload validators
+    // check, and a wrong guess reads to the page as a wrong file.
+    transfer.items.add(new File([bytes as unknown as BlobPart], file.name));
+  }
+
+  highlightElement(input);
+  // The NAMES, never a path: the page can read this status element, and where
+  // a file lives on the user's disk is not the page's business.
+  showStatus(`Upload: ${files.map((f) => f.name).join(', ')}`, 'info');
+
+  input.files = transfer.files;
+  // The events a framework-backed form listens for. Without them React/Vue
+  // never learn the field changed and the submit button stays disabled — the
+  // failure that looks like "the upload silently did nothing".
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new Event('change', { bubbles: true }));
+
+  // Read BACK from the input rather than reporting what we sent: the page may
+  // have an `accept` filter, a size check, or an onchange handler that clears
+  // it, and "I attached it" when the field is empty is the single most useless
+  // thing this tool could say.
+  const attached = Array.from(input.files ?? []).map((f) => ({ name: f.name, size: f.size }));
+  if (attached.length === 0) {
+    return {
+      success: false,
+      message: 'The file was handed to the input and the field is empty again — the page '
+        + 'rejected it (an accept filter, a size rule, or its own onchange). Read the page for '
+        + 'the message it showed, and do not retry the same file.',
+      attached,
+    };
+  }
+  return {
+    success: true,
+    message: `Attached ${attached.length} file(s) to the input: `
+      + `${attached.map((f) => f.name).join(', ')}. The field now holds exactly these. `
+      + 'Submit the form as a separate step.',
+    attached,
   };
 }
 
@@ -609,7 +2952,7 @@ function isRendered(el: Element): boolean {
     return target.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true });
   }
   for (let node: Element | null = el; node; node = node.parentElement) {
-    const style = getComputedStyle(node as HTMLElement);
+    const style = styleOf(node);
     if (style.display === 'none' || style.visibility === 'hidden') return false;
   }
   return true;
@@ -696,7 +3039,8 @@ function clickTargetForOption(ariaOption: Element, popup: Element): Element | nu
 /** Nearest ancestor of the a11y list that is actually laid out — the popup. */
 function popupRootFor(container: Element): Element {
   let node: Element | null = container;
-  while (node && node !== document.body) {
+  const body = container.ownerDocument?.body ?? null;
+  while (node && node !== body) {
     if (hasBox(node)) return node;
     node = node.parentElement;
   }
@@ -712,7 +3056,7 @@ function optionsFor(trigger: Element): Element[] {
   const owned = (trigger.getAttribute('aria-controls') ?? trigger.getAttribute('aria-owns') ?? '')
     .split(/\s+/)
     .filter(Boolean)
-    .map((id) => document.getElementById(id))
+    .map((id) => (trigger.getRootNode() as Document | ShadowRoot).getElementById(id))
     .filter((el): el is HTMLElement => el !== null);
 
   if (owned.length > 0) {
@@ -725,11 +3069,12 @@ function optionsFor(trigger: Element): Element[] {
   // No naming: the options render in a portal on <body>, so the only way to
   // tell one dropdown from another is that ours is the one on screen. Here
   // the stricter check earns its keep.
-  const containers = [...document.querySelectorAll('[role="listbox"], [role="menu"]')].filter(isVisible);
+  const ownerDoc = trigger.ownerDocument;
+  const containers = queryAllDeep(ownerDoc, '[role="listbox"], [role="menu"]').filter(isVisible);
   const fromContainers = containers.flatMap((c) => [...c.querySelectorAll('[role="option"], [role="menuitem"]')]);
   const options = fromContainers.length > 0
     ? fromContainers
-    : [...document.querySelectorAll('[role="option"], [role="menuitem"]')];
+    : queryAllDeep(ownerDoc, '[role="option"], [role="menuitem"]');
 
   return options.filter(isVisible);
 }
@@ -861,10 +3206,11 @@ async function findOption(
  * selector list that rots whenever a library renames a class.
  */
 async function selectOption(
+  scope: DomScope,
   locator: ElementLocator,
   value: string,
 ): Promise<{ success: boolean; message: string; target?: ReturnType<typeof targetInfo> }> {
-  const el = findElementOrThrow(locator);
+  const el = findElementOrThrow(scope, locator);
 
   if (el.tagName.toLowerCase() === 'select') {
     const select = el as HTMLSelectElement;
@@ -896,7 +3242,8 @@ async function selectOption(
     );
   }
 
-  showStatus(`Select: "${value}"`, 'info');
+  // NEVER the value: same reason as fill (see `fieldLabel`).
+  showStatus(`Select: ${fieldLabel(el)}`, 'info');
   el.scrollIntoView({ behavior: 'instant', block: 'center' });
 
   // Open it if it is not already open. `aria-expanded` is the library's own
@@ -944,6 +3291,7 @@ async function selectOption(
 // =============================================================================
 
 async function waitFor(
+  scope: DomScope,
   condition: Record<string, unknown>,
   timeout: number = 30000
 ): Promise<{ success: boolean; message: string; timedOut: boolean; elapsed: number; observed?: string }> {
@@ -957,14 +3305,30 @@ async function waitFor(
    * round trip that used to get spent on a script.
    */
   const describeCurrentState = (): string => {
-    if (condType === 'urlContains') return `current url is ${location.href}`;
-    let el: Element | null;
+    if (condType === 'urlContains') return `current url is ${scope.doc.location.href}`;
+    let found: LocatorMatches;
     try {
-      el = findElement(condition.locator as ElementLocator);
-    } catch {
-      return 'the locator no longer resolves (its ref is stale) — take a fresh snapshot';
+      found = matchElements(scope, condition.locator as ElementLocator);
+    } catch (err) {
+      // Only a stale ref is "the locator no longer resolves". Reporting every
+      // other failure that way sent the caller off to re-snapshot for reasons
+      // that had nothing to do with refs.
+      if (err instanceof Error && err.name === 'StaleRefError') {
+        return 'the locator no longer resolves (its ref is stale) — take a fresh snapshot';
+      }
+      return `the locator could not be evaluated: ${err instanceof Error ? err.message : String(err)}`;
     }
-    if (!el) return 'no element matches that locator';
+    const { elements } = found;
+    if (elements.length === 0) return 'no element matches that locator';
+    if (elements.length > 1) {
+      // Not an error here — several matches is a legitimate way to ask "is the
+      // table populated" — but on a timeout the caller needs to know that the
+      // thing it waited for is a set, and which set.
+      return `the locator matches ${elements.length} elements, none of which satisfy "${condType}":\n`
+        + elements.slice(0, 5).map((el) => `  ${describeCandidate(el)}`).join('\n')
+        + (elements.length > 5 ? `\n  ...and ${elements.length - 5} more` : '');
+    }
+    const el = elements[0];
     if (!isVisible(el)) return `matched <${el.tagName.toLowerCase()}> but it has no layout box (hidden or zero-sized)`;
     if (condType === 'enabled' && (el as HTMLButtonElement).disabled) {
       return `matched <${el.tagName.toLowerCase()}> but it is still disabled`;
@@ -975,16 +3339,23 @@ async function waitFor(
     return `matched <${el.tagName.toLowerCase()}>, which does not satisfy "${condType}"`;
   };
 
+  /**
+   * Existence, not uniqueness: `appear` is satisfied by ANY match, `disappear`
+   * only when EVERY match is gone. That is what `wait_for` did before the
+   * locator rework, and what the question means — the alternative fails a
+   * perfectly ordinary `{css:'.toast'}` on a page that shows two toasts.
+   */
+  const matched = (): Element[] => matchElements(scope, condition.locator as ElementLocator).elements;
+
   const check = (): boolean => {
     switch (condType) {
       case 'appear': {
-        const el = findElement(condition.locator as ElementLocator);
-        return el !== null && isVisible(el);
+        return matched().some(isVisible);
       }
       case 'disappear': {
-        let el: Element | null;
+        let elements: Element[];
         try {
-          el = findElement(condition.locator as ElementLocator);
+          elements = matched();
         } catch (err) {
           // A ref that no longer resolves IS the disappearance being waited
           // on — the node was removed. Before this branch, the throw was
@@ -992,20 +3363,17 @@ async function waitFor(
           if (err instanceof Error && err.name === 'StaleRefError') return true;
           throw err;
         }
-        return el === null || !isVisible(el);
+        return elements.every((el) => !isVisible(el));
       }
       case 'enabled': {
-        const el = findElement(condition.locator as ElementLocator);
-        return el !== null && isVisible(el) && !(el as HTMLButtonElement).disabled;
+        return matched().some((el) => isVisible(el) && !(el as HTMLButtonElement).disabled);
       }
       case 'textContains': {
-        const el = findElement(condition.locator as ElementLocator);
-        if (!el) return false;
-        const text = getVisibleText(el) ?? '';
-        return text.includes(condition.text as string);
+        const wanted = condition.text as string;
+        return matched().some((el) => (getVisibleText(el) ?? '').includes(wanted));
       }
       case 'urlContains': {
-        return location.href.includes(condition.pattern as string);
+        return scope.doc.location.href.includes(condition.pattern as string);
       }
       default:
         throw new Error(`Unknown wait condition: ${condType}`);
@@ -1014,6 +3382,14 @@ async function waitFor(
 
   const staleRefMessage = (err: unknown): string | null =>
     err instanceof Error && err.name === 'StaleRefError' ? err.message : null;
+
+  /**
+   * A frame that goes away mid-wait can never satisfy the condition, and its
+   * document keeps answering queries as a detached tree — so polling on would
+   * burn the whole timeout and then report "no element matches", which reads
+   * as a locator mistake rather than "the region you were watching is gone".
+   */
+  const frameGone = (): boolean => scope.doc.defaultView === null;
 
   // Fast check first
   try {
@@ -1053,6 +3429,10 @@ async function waitFor(
 
     const tryCheck = () => {
       if (resolved) return;
+      if (frameGone()) {
+        complete(false, frameGoneMessage(scope.frameId));
+        return;
+      }
       try {
         if (check()) complete(false);
       } catch (err) {
@@ -1074,17 +3454,27 @@ async function waitFor(
     const observer = new MutationObserver(() => {
       if (!checkScheduled && !resolved) {
         checkScheduled = true;
-        requestAnimationFrame(() => {
+        // The watched document's own frame callback: a detached frame has no
+        // view, and the top window's rAF would keep firing against a document
+        // that can never change again.
+        (scope.doc.defaultView ?? window).requestAnimationFrame(() => {
           checkScheduled = false;
           tryCheck();
         });
       }
     });
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-    });
+    // The document being waited ON, not the top one: mutations inside an
+    // embedded region never reach the parent document's observer, so a wait
+    // scoped to a frame fell back to the 500ms poll and reported "timed out"
+    // for a condition that had been true for most of a second.
+    const observed = scope.doc.body ?? scope.doc.documentElement;
+    if (observed) {
+      observer.observe(observed, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+      });
+    }
 
     // Interval fallback (for URL changes, computed styles, etc.)
     const pollTimer = setInterval(tryCheck, 500);
@@ -1095,17 +3485,171 @@ async function waitFor(
 }
 
 // =============================================================================
+// 7. GET HTML — inert DOM source for query_js
+// =============================================================================
+
+function sameOriginFrameHtml(frame: HTMLIFrameElement): string {
+  try {
+    const doc = frame.contentDocument;
+    if (!doc?.documentElement) {
+      return '<abu-frame-unavailable data-reason="empty"></abu-frame-unavailable>';
+    }
+    return serializeElementWithFrames(doc.documentElement);
+  } catch {
+    return '<abu-frame-unavailable data-reason="cross-origin"></abu-frame-unavailable>';
+  }
+}
+
+function inlineFrameElement(frame: HTMLIFrameElement, ownerDocument: Document): Element {
+  const inline = ownerDocument.createElement('abu-inline-frame');
+  inline.setAttribute('data-src', frame.getAttribute('src') ?? '');
+  inline.setAttribute('data-title', frame.getAttribute('title') ?? '');
+  inline.innerHTML = sameOriginFrameHtml(frame);
+  return inline;
+}
+
+/**
+ * Redact sensitive `value` ATTRIBUTES in a detached clone before it is
+ * serialized for `get_html` / `query_js` (M6).
+ *
+ * The attribute and the property are different things: typing into a field
+ * does not touch the attribute, so most live secrets never appear here. A
+ * SERVER-RENDERED `<input type="password" value="…">` does carry one, though,
+ * and `cloneNode(true)` copies attributes verbatim — so the one path that
+ * hands the model raw page source was still emitting it after the snapshot
+ * stopped.
+ *
+ * The attribute is replaced rather than removed: `value=""` would read as "the
+ * field is empty", and a query_js reading `.value` should see the same marker
+ * every other surface shows.
+ */
+function redactSensitiveValueAttributes(root: Element): void {
+  const candidates = root.tagName === 'INPUT' || root.tagName === 'TEXTAREA' || root.tagName === 'SELECT'
+    ? [root, ...root.querySelectorAll('input, textarea, select')]
+    : [...root.querySelectorAll('input, textarea, select')];
+  for (const el of candidates) {
+    if (!hasSensitiveValue(el)) continue;
+    // A TEXTAREA has no `value` attribute at all — its default value IS the
+    // child text node, so rewriting attributes left it verbatim while the
+    // snapshot of the same field said `[value redacted]`. Exactly the
+    // "redacted on one surface, plaintext on the next" shape this pass exists
+    // to close, and `queryJsWorker` reading `.value` off the parsed html gets
+    // its value from precisely this text.
+    if (el.tagName === 'TEXTAREA' && el.textContent) {
+      el.textContent = REDACTED_VALUE;
+      // FALLS THROUGH to the attribute rewrite on purpose. A `value` attribute
+      // on a textarea is invalid HTML and inert in the DOM, but hand-written
+      // SSR templates do emit it, and it is raw plaintext in the serialized
+      // source either way. An earlier revision returned here and silently
+      // stopped redacting exactly that case.
+    }
+    if (!el.getAttribute('value')) continue;
+    el.setAttribute('value', REDACTED_VALUE);
+  }
+}
+
+/**
+ * Sensitive field values currently present in `scope`, for the one extraction
+ * path that cannot work on a redacted clone.
+ *
+ * `extract_text` reads `innerText` off the LIVE DOM, and it has to: `innerText`
+ * is layout-dependent, so a detached clone would return nothing at all. Rather
+ * than edit the page the user is looking at, the extracted STRING is scrubbed
+ * of any sensitive value the scope actually holds.
+ *
+ * ## A best-effort net, NOT a guarantee
+ *
+ * This is string matching, so it catches the common case (the value appears
+ * verbatim) and misses three known ones. Named rather than implied, because an
+ * over-stated guarantee here is worse than a modest one:
+ *
+ * - **Renders differently than it is stored.** A value containing whitespace
+ *   is compared against text the engine normalized, so `"pass\\nphrase"` will
+ *   not match `"pass phrase here"`.
+ * - **Echoed from outside the scope.** Only fields INSIDE the extract scope
+ *   contribute secrets; a page that copies a password into a `<div>` inside
+ *   the scope while the field itself sits outside it is not caught.
+ * - **Over-scrubs a short common value.** A password of `"admin"` turns "the
+ *   admin panel for admin users" into markers. That is the fail-safe
+ *   direction, and the 1-2 character floor below only blunts the worst of it.
+ *
+ * It does at least not depend on whether a given engine renders a textarea's
+ * content into `innerText` (Chrome does not; other DOM implementations do) —
+ * whatever the engine included, a verbatim occurrence is removed.
+ */
+function sensitiveValuesIn(scope: Element | null): string[] {
+  const root = scope ?? document.body;
+  if (!root) return [];
+  const fields = [
+    ...(root.matches?.('input, textarea, select') ? [root] : []),
+    ...root.querySelectorAll('input, textarea, select'),
+  ];
+  const values: string[] = [];
+  for (const el of fields) {
+    if (!hasSensitiveValue(el)) continue;
+    const value = (el as HTMLInputElement).value || el.textContent || '';
+    // One-and-two-character values are skipped: scrubbing them would mangle
+    // unrelated page text far more than it would protect anything.
+    if (value.length > 2) values.push(value);
+  }
+  return values;
+}
+
+function serializeElementWithFrames(element: Element): string {
+  if (element.tagName === 'IFRAME') {
+    return inlineFrameElement(element as HTMLIFrameElement, element.ownerDocument).outerHTML;
+  }
+
+  const clone = element.cloneNode(true) as Element;
+  // On the CLONE, never the live DOM: this must not edit the page the user is
+  // looking at. Runs before the frame inlining below so an inlined frame's own
+  // html — which came back through this same function — is already clean.
+  redactSensitiveValueAttributes(clone);
+  const liveFrames = [...element.querySelectorAll('iframe')];
+  const clonedFrames = [...clone.querySelectorAll('iframe')];
+
+  for (let i = 0; i < liveFrames.length; i += 1) {
+    const live = liveFrames[i] as HTMLIFrameElement;
+    const cloned = clonedFrames[i];
+    if (!cloned?.parentNode) continue;
+    const inline = inlineFrameElement(live, clone.ownerDocument);
+    cloned.parentNode.replaceChild(inline, cloned);
+  }
+
+  return clone.outerHTML;
+}
+
+function getHtml(selector?: string): string {
+  const root = selector ? document.querySelector(selector) : document.documentElement;
+  if (!root) {
+    throw new Error(
+      `Scope element not found: ${selector}. ` +
+      'Run query_js without a selector or take a snapshot to see what the page actually contains.',
+    );
+  }
+  return serializeElementWithFrames(root);
+}
+
+// =============================================================================
 // 7. EXTRACT TEXT
 // =============================================================================
 
-function extractText(selector?: string): string {
+function extractText(scope: DomScope, selector?: string): string {
   let text: string;
+  let region: Element | null;
   if (selector) {
-    const el = document.querySelector(selector);
-    if (!el) throw new Error(`Element not found: ${selector}`);
+    const el = queryAllDeep(scope.doc, selector)[0] ?? null;
+    if (!el) throw new Error(`Element not found: ${selector}${whereClause(scope)}`);
+    region = el;
     text = (el as HTMLElement).innerText ?? el.textContent ?? '';
   } else {
-    text = document.body.innerText ?? '';
+    region = scope.doc.body;
+    text = scope.doc.body?.innerText ?? '';
+  }
+  // See `sensitiveValuesIn`: this path reads the live DOM (innerText needs
+  // layout), so the scrubbing happens on the extracted string.
+  for (const secret of sensitiveValuesIn(region)) {
+    text = text.split(secret).join(REDACTED_VALUE);
   }
 
   // Truncate to prevent sending megabytes through the message channel
@@ -1119,13 +3663,13 @@ function extractText(selector?: string): string {
 // 8. EXTRACT TABLE
 // =============================================================================
 
-function extractTable(selector?: string): { headers: string[]; rows: string[][]; rowCount: number } {
+function extractTable(scope: DomScope, selector?: string): { headers: string[]; rows: string[][]; rowCount: number } {
   let table: HTMLTableElement | null;
 
   if (selector) {
-    table = document.querySelector(selector) as HTMLTableElement;
+    table = queryAllDeep(scope.doc, selector)[0] as HTMLTableElement | undefined ?? null;
   } else {
-    const tables = [...document.querySelectorAll('table')] as HTMLTableElement[];
+    const tables = queryAllDeep(scope.doc, 'table') as HTMLTableElement[];
     table = tables.sort((a, b) => b.rows.length - a.rows.length)[0] ?? null;
   }
 
@@ -1153,7 +3697,20 @@ function extractTable(selector?: string): { headers: string[]; rows: string[][];
     rows.push(row);
   }
 
-  return { headers, rows, rowCount: rows.length };
+  // The same best-effort scrub `extract_text` applies, for the same reason and
+  // with the same limits. Inert in Chrome today (neither input values nor
+  // textarea content reach `innerText` there), but this was the one reporting
+  // path that never got the U5 treatment, and "inert on one engine" is not a
+  // property worth relying on.
+  const secrets = sensitiveValuesIn(table);
+  const scrub = (cell: string): string =>
+    secrets.reduce((text, secret) => text.split(secret).join(REDACTED_VALUE), cell);
+
+  return {
+    headers: headers.map(scrub),
+    rows: rows.map((row) => row.map(scrub)),
+    rowCount: rows.length,
+  };
 }
 
 // =============================================================================
@@ -1283,7 +3840,7 @@ function startRecording(): { success: boolean; message: string } {
 
   recordClickHandler = (e: MouseEvent) => {
     const el = e.target as Element;
-    if (!el || el.id === 'abu-status' || el.id === 'abu-highlight') return;
+    if (!el || isAbuOverlay(el)) return;
     recordedSteps.push({
       action: 'click',
       locator: getBestSelector(el),
@@ -1428,12 +3985,21 @@ function fullpageRestore(scrollX: number, scrollY: number): { success: boolean }
 // VISUAL FEEDBACK — highlight elements during operations
 // =============================================================================
 
-let highlightOverlay: HTMLDivElement | null = null;
+/**
+ * One ring per document. `getBoundingClientRect` is relative to the element's
+ * OWN viewport, so a ring drawn in the top document at a frame element's
+ * coordinates lands somewhere else entirely — it has to be painted inside the
+ * same document as the element. `isAbuOverlay` then excludes it from that
+ * document's own searches, which is the reason the id is the same everywhere.
+ */
+const highlightOverlays = new WeakMap<Document, HTMLDivElement>();
 
 function highlightElement(el: Element): void {
   const rect = el.getBoundingClientRect();
-  if (!highlightOverlay) {
-    highlightOverlay = document.createElement('div');
+  const doc = el.ownerDocument ?? document;
+  let highlightOverlay = highlightOverlays.get(doc) ?? null;
+  if (!highlightOverlay || !highlightOverlay.isConnected) {
+    highlightOverlay = doc.createElement('div');
     highlightOverlay.id = 'abu-highlight';
     highlightOverlay.style.cssText = `
       position: fixed; pointer-events: none; z-index: 2147483647;
@@ -1441,7 +4007,8 @@ function highlightElement(el: Element): void {
       background: rgba(217, 119, 87, 0.12);
       transition: all 0.15s ease;
     `;
-    document.documentElement.appendChild(highlightOverlay);
+    doc.documentElement.appendChild(highlightOverlay);
+    highlightOverlays.set(doc, highlightOverlay);
   }
   highlightOverlay.style.top = `${rect.top - 2}px`;
   highlightOverlay.style.left = `${rect.left - 2}px`;
@@ -1451,11 +4018,10 @@ function highlightElement(el: Element): void {
   highlightOverlay.style.opacity = '1';
 
   // Fade out after 1.5s
+  const ring = highlightOverlay;
   setTimeout(() => {
-    if (highlightOverlay) {
-      highlightOverlay.style.opacity = '0';
-      setTimeout(() => { if (highlightOverlay) highlightOverlay.style.display = 'none'; }, 300);
-    }
+    ring.style.opacity = '0';
+    setTimeout(() => { ring.style.display = 'none'; }, 300);
   }, 1500);
 }
 
@@ -1511,7 +4077,7 @@ function showStatus(text: string, type: 'info' | 'success' | 'error' = 'info'): 
 
 function isVisible(el: Element): boolean {
   const htmlEl = el as HTMLElement;
-  const style = getComputedStyle(htmlEl);
+  const style = styleOf(el);
   // Checked unconditionally: `visibility: hidden` keeps the layout box, so
   // `offsetParent` stays non-null and the branch below never sees it — a
   // closed dropdown a library hides this way would otherwise count as the
@@ -1526,13 +4092,39 @@ function isVisible(el: Element): boolean {
   return rect.width > 0 && rect.height > 0;
 }
 
+/**
+ * The element's text as a caller should see it.
+ *
+ * ⚠️ For INPUT/TEXTAREA this returns the field's VALUE, which makes it a
+ * redaction path — and the one that was missed in the first U5 round. It feeds
+ * `info.text` in the snapshot (on the very object whose `.value` is redacted),
+ * `targetInfo` (→ click's `elementText`, `target.text`, the on-page status
+ * toast), `describeElement` (→ click's `message`, error text, and whatever an
+ * IM approval prompt quotes), and `wait_for`'s "whose text is …" explanation.
+ * Redacting here covers all of them at once; anything that reaches for
+ * `el.value` directly instead has to re-do this.
+ *
+ * A sensitive field falls through to placeholder / aria-label first, so the
+ * caller can still tell WHICH field it is, and only shows the marker when the
+ * page gave it nothing else to be called.
+ */
 function getVisibleText(el: Element): string | null {
   if (el.tagName === 'INPUT') {
     const input = el as HTMLInputElement;
+    if (hasSensitiveValue(input)) {
+      return input.placeholder
+        || input.getAttribute('aria-label')
+        || (input.value ? REDACTED_VALUE : null);
+    }
     return input.value || input.placeholder || input.getAttribute('aria-label') || null;
   }
   if (el.tagName === 'TEXTAREA') {
     const ta = el as HTMLTextAreaElement;
+    if (hasSensitiveValue(ta)) {
+      return ta.placeholder
+        || ta.getAttribute('aria-label')
+        || (ta.value ? REDACTED_VALUE : null);
+    }
     return ta.value || ta.placeholder || null;
   }
 

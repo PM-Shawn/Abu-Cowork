@@ -103,10 +103,10 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
       const md = serializeSkillMd(metadata, content);
       // Always the file being edited, renamed or not: its folder need not be
       // named after the skill, so an unchanged name could still point at another
-      // skill's folder. saveItemToAbuDir writes in place when the folder already
-      // matches, moves the skill's own ~/.abu folder to the name otherwise (a
-      // move onto an occupied folder fails instead of overwriting), and only
-      // copies from anywhere else.
+      // skill's folder. saveItemToAbuDir writes this skill's own file in place,
+      // wherever it lives (a project skill stays in its project), and on a
+      // rename moves its folder to the name within the same parent (a move
+      // onto an occupied folder fails instead of overwriting).
       const oldPath = skill?.filePath;
       // A letter-case-only rename moves this skill's own folder: on the
       // case-insensitive file systems the manifest already "at" the target is

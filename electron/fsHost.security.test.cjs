@@ -226,6 +226,37 @@ test('writes use the canonical operation path through an allowed symlink parent'
   assert.equal(fs.readFileSync(targetFile, 'utf8'), 'canonical');
 });
 
+function writeCreateNew(file, text) {
+  return fsDispatch(app, 'plugin:fs|write_text_file', {
+    body: Buffer.from(text),
+    headers: { path: encodeURIComponent(file), options: JSON.stringify({ createNew: true }) },
+  });
+}
+
+test('createNew creates a missing file and refuses an existing one without touching it', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+
+  writeCreateNew(file, 'first');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first');
+
+  assert.throws(() => writeCreateNew(file, 'second'), /already exists and createNew is set/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first');
+});
+
+test('createNew never overwrites a file that appears after an existence check', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+  fs.writeFileSync(file, 'someone else');
+  // The race: any "is it there?" probe answers no, yet the file exists by the
+  // time the bytes are written. Tauri's plugin opens with create_new (O_EXCL),
+  // so the create itself must be the check.
+  t.mock.method(fs, 'existsSync', () => false);
+
+  assert.throws(() => writeCreateNew(file, 'mine'), /already exists and createNew is set/);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'someone else');
+});
+
 test(
   'custom append and atomic writes reject paths below an escaping symlink',
   { skip: process.platform === 'win32' },

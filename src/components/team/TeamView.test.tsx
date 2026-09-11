@@ -87,6 +87,7 @@ vi.mock('@/core/team/roleIdentity', () => ({
   isBuiltinAgent: () => false,
   resolveRoleId: (roleId: string) =>
     Object.values(registryAgents).find((a) => (a.roleId ?? `builtin:${a.name}`) === roleId) ?? null,
+  roleIdAgentName: (roleId: string) => /^(?:builtin|plugin):(.+)$/.exec(roleId)?.[1],
 }));
 
 // AgentsSection drags in the whole toolbox world — stub it. The stub keeps the

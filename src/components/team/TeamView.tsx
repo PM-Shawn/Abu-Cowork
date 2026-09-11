@@ -6,7 +6,7 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
-import { ensureRoleId, effectiveRoleId, resolveRoleId } from '@/core/team/roleIdentity';
+import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
 import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
@@ -89,15 +89,14 @@ function memberOption(a: SubagentDefinition): SearchSelectOption {
 
 /**
  * Primary line for each invalid member, so two of them never read the same.
- * `builtin:<name>` / `plugin:<name>` ids (roleIdentity's name-keyed families)
- * still spell the name; a `role-…` id carries none, so those are numbered
- * 1-based among themselves, in stored order.
+ * Name-keyed ids (`builtin:` / `plugin:`) still spell the name; a `role-…` id
+ * carries none, so those are numbered 1-based among themselves, in stored order.
  */
-function invalidMemberLabels(roleIds: string[], named: string, numbered: string): string[] {
+function invalidMemberLabels(roleIds: string[], named: string, numbered: string): { id: string; label: string }[] {
   let unnamed = 0;
   return roleIds.map((id) => {
-    const name = /^(?:builtin|plugin):(.+)$/.exec(id)?.[1];
-    return name ? format(named, { name }) : format(numbered, { n: String(++unnamed) });
+    const name = roleIdAgentName(id);
+    return { id, label: name ? format(named, { name }) : format(numbered, { n: String(++unnamed) }) };
   });
 }
 
@@ -266,8 +265,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         {invalidMemberRoleIds.length > 0 && (
           <div className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 space-y-1.5">
             <div className="text-caption text-[var(--abu-text-secondary)]">{t.team.editInvalidMembers}</div>
-            {invalidMemberLabels(invalidMemberRoleIds, t.team.memberInvalidNamed, t.team.memberInvalidNumbered).map((label, i) => {
-              const id = invalidMemberRoleIds[i];
+            {invalidMemberLabels(invalidMemberRoleIds, t.team.memberInvalidNamed, t.team.memberInvalidNumbered).map(({ id, label }) => {
               return (
                 <div key={id} className="flex items-center gap-2" data-testid={`team-edit-invalid-${id}`}>
                   <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
@@ -541,8 +539,7 @@ export default function TeamView() {
           const leader = resolveRoleId(detailTeam.leaderRoleId) ?? undefined;
           const members = memberIds.map((id) => ({ id, agent: resolveRoleId(id) ?? undefined }));
           const validMembers = members.filter((m) => m.agent);
-          const invalidMembers = members.filter((m) => !m.agent);
-          const invalidLabels = invalidMemberLabels(invalidMembers.map((m) => m.id), t.team.memberInvalidNamed, t.team.memberInvalidNumbered);
+          const invalidMembers = invalidMemberLabels(members.filter((m) => !m.agent).map((m) => m.id), t.team.memberInvalidNamed, t.team.memberInvalidNumbered);
           const removeInvalid = (roleId: string) => {
             useTeamStore.getState().updateTeam(detailTeam.id, { memberRoleIds: detailTeam.memberRoleIds.filter((id) => id !== roleId) });
             setDetailTeam(useTeamStore.getState().teams.find((team) => team.id === detailTeam.id) ?? null);
@@ -577,10 +574,10 @@ export default function TeamView() {
                   ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoMembers}</div>
                   : <div className="space-y-0.5">
                       {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.memberInvalid)}</div>)}
-                      {invalidMembers.map((m, i) => (
+                      {invalidMembers.map((m) => (
                         <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
                           <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
-                          <InvalidMemberText label={invalidLabels[i]} reason={t.team.memberInvalidReason} />
+                          <InvalidMemberText label={m.label} reason={t.team.memberInvalidReason} />
                           <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>
                         </div>
                       ))}

@@ -68,6 +68,18 @@ export function effectiveRoleId(agent: SubagentDefinition): string | undefined {
   return agent.roleId;
 }
 
+/**
+ * The agent name a name-keyed roleId (`builtin:` / `plugin:`) spells out, even
+ * when that agent is gone — for labelling a member that no longer resolves.
+ * Frontmatter `role-…` ids carry no name: undefined.
+ */
+export function roleIdAgentName(roleId: string): string | undefined {
+  for (const prefix of [BUILTIN_ROLE_PREFIX, PLUGIN_ROLE_PREFIX]) {
+    if (roleId.startsWith(prefix)) return roleId.slice(prefix.length) || undefined;
+  }
+  return undefined;
+}
+
 /** Resolve a stored roleId back to the live agent (all three id families). */
 export function resolveRoleId(roleId: string): SubagentDefinition | null {
   if (roleId.startsWith(BUILTIN_ROLE_PREFIX)) {

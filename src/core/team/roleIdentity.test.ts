@@ -23,7 +23,7 @@ vi.mock('@/utils/itemStorage', () => ({
   saveItemToAbuDir: async (_dir: string, _file: string, name: string, md: string, filePath?: string) => { saved.push({ name, md, filePath }); return '/saved'; },
 }));
 
-import { createRoleId, effectiveRoleId, ensureRoleId, isBuiltinAgent, resolveRoleId } from './roleIdentity';
+import { createRoleId, effectiveRoleId, ensureRoleId, isBuiltinAgent, resolveRoleId, roleIdAgentName } from './roleIdentity';
 
 function def(name: string, extra: Partial<SubagentDefinition> = {}): SubagentDefinition {
   return { name, description: `${name} desc`, systemPrompt: 'p', filePath: `/Users/me/.abu/agents/${name}/AGENT.md`, ...extra } as SubagentDefinition;
@@ -42,6 +42,14 @@ describe('roleIdentity', () => {
     expect(effectiveRoleId(def('产品经理', { filePath: '__builtin__' }))).toBe('builtin:产品经理');
     expect(effectiveRoleId(def('a', { roleId: 'role-1' }))).toBe('role-1');
     expect(effectiveRoleId(def('b'))).toBeUndefined();
+  });
+
+  it('roleIdAgentName spells the name of name-keyed ids only, even when the agent is gone', () => {
+    expect(roleIdAgentName('builtin:产品经理')).toBe('产品经理');
+    expect(roleIdAgentName('plugin:reviewer')).toBe('reviewer');
+    expect(roleIdAgentName('role-abc123')).toBeUndefined();
+    expect(roleIdAgentName('builtin:')).toBeUndefined();
+    expect(roleIdAgentName('plugin:')).toBeUndefined();
   });
 
   it('resolveRoleId finds builtins by name and user agents by roleId', () => {

@@ -25,6 +25,7 @@ import { listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSour
 import { redactText, redactDeep, type RedactionSample } from './shareRedactor';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
+import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
@@ -106,8 +107,14 @@ export async function buildShareBundle(
   // payload holds the origins the run visited — internal hostnames that
   // `redactText` never sees, because it only scrubs `content`. Sharing a
   // conversation must not leak an intranet host list.
+  // Turn-cap notices are dropped for the first half of that reason only: they
+  // render as a card and carry empty `content`, so exporting one would put a
+  // blank bubble in the bundle. Their payload is two numbers — nothing to leak.
   const visible = conv.messages.filter(
-    (m) => !m.isSystem && !isCompactBoundary(m) && !isBrowserRunReportMessage(m),
+    (m) => !m.isSystem
+      && !isCompactBoundary(m)
+      && !isBrowserRunReportMessage(m)
+      && !isMaxTurnsNoticeMessage(m),
   );
   const cleanedMessages: Message[] = [];
   let done = 0;

@@ -76,6 +76,7 @@ import {
   type SemanticToolLoopReason,
   type ToolLoopObservation,
 } from './loopGuards';
+import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
 import {
   drainSystemQueuedInputs,
   enqueueUserInput,
@@ -1421,6 +1422,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         };
       }
 
+      // A delegate that ran out of turns did not finish: same reasoning as the
+      // main-loop cap above. It is not an error either — nothing failed — so
+      // the status is plain 'idle' and no "task completed" notification fires.
+      const delegateHitCap = delegateExitReason === 'max_turns';
+      if (delegateHitCap) {
+        // The partial `result.text` posted above reads as a final answer, and
+        // this route never passes through `delegate_to_agent`, so the tool's
+        // `delegateStoppedNote` cannot cover it either. Say it in the same
+        // words the main-loop cap uses, with the number the CHILD actually ran
+        // with — subagentLoop resolves definition > global > default from the
+        // same settings snapshot this loop hands it (entrySettingsReader).
+        const delegateCapMsgId = generateId();
+        chatDelta.addMessage(conversationId, {
+          id: delegateCapMsgId,
+          role: 'assistant',
+          content: format(getI18n().chat.maxTurnsReached, {
+            n: resolveMaxTurns({
+              definitionMaxTurns: delegateAgent.maxTurns,
+              globalMaxTurns: settingsForModel.agentMaxTurns,
+            }),
+          }),
+          timestamp: Date.now(),
+          loopId,
+        });
+        chatDelta.finishStreaming(conversationId, delegateCapMsgId);
+      }
+
       eventRouter.route({
         type: 'done',
         loopId,
@@ -1428,10 +1456,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       });
       persistExecutionSnapshot(conversationId, loopId);
       chatDelta.setAgentStatus(conversationId, 'idle');
-      chatDelta.setConversationStatus(conversationId, 'completed');
+      chatDelta.setConversationStatus(conversationId, delegateHitCap ? 'idle' : 'completed');
       // A completed or turn-limited delegate made successful provider calls.
       recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
-      notifyTaskCompleted(convTitle, conversationId);
+      if (!delegateHitCap) notifyTaskCompleted(convTitle, conversationId);
       return { reason: delegateExitReason };
     } catch (err) {
       subagentCleanup();
@@ -1616,19 +1644,36 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     });
 
     if (turnCount > maxTurns) {
-      const maxTurnsMsgId = generateId();
-      chatDelta.addMessage(conversationId, {
-        id: maxTurnsMsgId,
-        role: 'assistant',
-        content: format(getI18n().chat.maxTurnsReached, { n: maxTurns }),
-        timestamp: Date.now(),
-        loopId,
-      });
-      chatDelta.finishStreaming(conversationId, maxTurnsMsgId);
+      // The cap is reported as a marker card, not as a sentence the assistant
+      // "said": the two things the user wants here are to continue and to raise
+      // the cap, and a text message could only ask them to type the first and
+      // go hunting for the second. `createMaxTurnsNoticeMessage` explains why
+      // the marker is role `system` without `isSystem` (visible, not in context).
+      chatDelta.addMessage(
+        conversationId,
+        createMaxTurnsNoticeMessage({
+          id: generateId(),
+          timestamp: Date.now(),
+          limit: maxTurns,
+          // Read BEFORE the marker is appended — the streak counts the notices
+          // already in the transcript, not this one.
+          streak: deriveMaxTurnsStreak(
+            getConversationReader().getConversation(conversationId)?.messages ?? [],
+          ),
+        }),
+      );
       abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);
-      chatDelta.setConversationStatus(conversationId, 'completed');
+      // NOT 'completed': the cap is an INCOMPLETE ending — `isIncompleteReason`
+      // and the scheduler already treat it that way, and the green "done" dot
+      // plus "已完成 N 轮执行" told the user (and a team leader reading the
+      // conversation) the opposite. `setAgentStatus('idle')` first because
+      // clearing the per-conversation agent state was a side effect of the
+      // terminal 'completed' status; idle is not terminal, so the activity
+      // indicator has to be retired explicitly here.
+      chatDelta.setAgentStatus(conversationId, 'idle');
+      chatDelta.setConversationStatus(conversationId, 'idle');
       // Hitting the turn cap means every LLM call succeeded (a failed call throws
       // to the catch) → provider is healthy; record it so a prior config-failure
       // is cleared even when the run ends via the cap rather than end_turn.

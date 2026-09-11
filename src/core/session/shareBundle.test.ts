@@ -26,6 +26,7 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
 
 import { buildShareBundle, SHARE_SCHEMA_VERSION } from './shareBundle';
 import { createCompactBoundaryMarker } from '@/core/context/compactBoundary';
+import { createMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { createBrowserRunReportMessage } from '@/core/observability/browserRunReport';
 
 function makeConv(messages: Message[], overrides: Partial<Conversation> = {}): Conversation {
@@ -244,6 +245,24 @@ describe('buildShareBundle', () => {
     expect(bundle.messages).toHaveLength(2);
     expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
     expect(JSON.stringify(bundle)).not.toContain('SENTINEL_SUMMARY_do_not_leak_this_verbatim');
+  });
+
+  it('drops turn-cap notices so an export has no blank bubble where a card was', async () => {
+    const notice = createMaxTurnsNoticeMessage({
+      id: 'n1',
+      timestamp: 3,
+      limit: 200,
+      streak: 1,
+    });
+    const conv = makeConv([
+      { id: 'real-1', role: 'user', content: 'real question', timestamp: 1 },
+      notice,
+      { id: 'real-2', role: 'assistant', content: 'real answer', timestamp: 4 },
+    ]);
+
+    const bundle = await buildShareBundle(conv);
+
+    expect(bundle.messages.map((m) => m.id)).toEqual(['real-1', 'real-2']);
   });
 
   it('drops unattended run report cards and never leaks the origins they visited', async () => {

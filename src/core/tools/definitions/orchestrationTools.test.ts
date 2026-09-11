@@ -26,6 +26,7 @@ import {
   SUBAGENT_WALLCLOCK_TIMEOUT_MS,
 } from './orchestrationTools';
 import { SubagentResult } from '../../agent/subagentLoop';
+import { getLanguageSetting, setLanguage } from '@/i18n';
 import * as subagentRunner from '../../agent/subagentRunner';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 import { useChatStore } from '../../../stores/chatStore';
@@ -555,6 +556,26 @@ describe('structured subagent terminal aggregation', () => {
     expect(output).toContain('2 sub-tasks total: 1 succeeded, 1 failed');
     expect(output).toContain('Error: quoted log heading');
     expect(output).toContain('[Failed] stopped before finishing');
+  });
+
+  // Same failure as delegate_to_agent: a member that ran out of turns produced
+  // a section indistinguishable from a finished one, so the leader merged it
+  // into the final report as done.
+  it('marks a batch task line with the stop reason when the member did not finish', () => {
+    const previous = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const output = aggregateSubagentTextResults([
+        { status: 'fulfilled', value: subagentResult('全部做完', 'completed') },
+        { status: 'fulfilled', value: subagentResult('做到一半', 'max_turns') },
+      ], ['已完成的活', '没做完的活']);
+
+      const lines = output.split('\n');
+      expect(lines.find((l) => l.includes('已完成的活'))).not.toContain('（');
+      expect(lines.find((l) => l.includes('没做完的活'))).toContain('轮数用尽');
+    } finally {
+      setLanguage(previous);
+    }
   });
 
   it('aggregates mixed terminal reasons with deterministic failure priority', () => {

@@ -302,6 +302,42 @@ test('pet, overlay, and stop-button windows only receive their required commands
   );
 });
 
+test('the pet may move itself and report where, but not raise or focus windows', () => {
+  const pet = trustedRecord('pet');
+  const petPosition = { label: 'main', value: { position: { type: 'Physical', x: 480, y: 360 } } };
+  assert.doesNotThrow(() =>
+    validateInvokePayload(pet, { cmd: 'plugin:window|set_position', args: petPosition })
+  );
+  assert.doesNotThrow(() =>
+    validateInvokePayload(pet, { cmd: 'plugin:event|listen', args: { event: 'tauri://move', handler: 1 } })
+  );
+  assert.doesNotThrow(() =>
+    validateInvokePayload(pet, { cmd: 'plugin:event|emit', args: { event: 'pet-position-changed', payload: { x: 1, y: 2 } } })
+  );
+  for (const cmd of ['plugin:window|show', 'plugin:window|unminimize', 'plugin:window|set_focus']) {
+    assert.throws(() => validateInvokePayload(pet, { cmd, args: { label: 'main' } }), /cannot invoke/);
+  }
+  // A non-finite coordinate never reaches the handler.
+  assert.throws(
+    () =>
+      validateInvokePayload(pet, {
+        cmd: 'plugin:window|set_position',
+        args: { label: 'main', value: { Physical: { x: Number.NaN, y: 0 } } },
+      }),
+    /must be finite/
+  );
+  // The other restricted windows gain nothing.
+  for (const label of ['overlay', 'stop-button']) {
+    for (const cmd of ['plugin:window|set_position', 'plugin:window|show', 'plugin:window|set_focus']) {
+      assert.throws(() => validateInvokePayload(trustedRecord(label), { cmd, args: { label: 'main' } }), /cannot invoke/);
+    }
+  }
+  // The main window stays unrestricted for the notification-click commands.
+  for (const cmd of ['plugin:window|show', 'plugin:window|unminimize', 'plugin:window|set_focus']) {
+    assert.doesNotThrow(() => validateInvokePayload(trustedRecord('main'), { cmd, args: { label: 'main' } }));
+  }
+});
+
 test('main renderer cannot invoke privileged Computer Use commands without a session token', () => {
   const record = trustedRecord('main');
   for (const cmd of ['mouse_click', 'ax_press', 'capture_screen']) {

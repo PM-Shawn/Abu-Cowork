@@ -97,6 +97,11 @@ const FS_CANONICALIZE_FOR_POLICY_CHANNEL = 'abu:fs-canonicalize-for-policy';
 const { desktopDispatch, DESKTOP_MISS } = require('./desktopHost.cjs');
 const { popupWindowsMenu, syncMainWindowChromeTheme } = require('./windowChrome.cjs');
 const {
+  physicalPositionOf,
+  resolveWindowPosition,
+  wireWindowMoveEvent,
+} = require('./windowPlacement.cjs');
+const {
   nativeHelperDispatch,
   NATIVE_HELPER_MISS,
   killNativeHelper,
@@ -274,6 +279,7 @@ function wireWindowEvents(win) {
   setMainWindow(win);
   win.on('focus', () => emitEvent('tauri://focus', null));
   win.on('blur', () => emitEvent('tauri://blur', null));
+  wireWindowMoveEvent(win, { screen, emitWindowEvent });
   // Preventable close (slice D), guarded twice:
   //  - `quitting`: a REAL quit (OS Cmd+Q / menu Quit → before-quit, or app_exit)
   //    must NOT be prevented, or the app becomes un-quittable.
@@ -469,11 +475,14 @@ const subscriptions = new Map();
  * invoked with a Tauri Event object: {event, id, payload}.
  * @param {string} event
  * @param {unknown} payload
+ * @param {import('electron').WebContents} [onlySender] restrict delivery to
+ *   subscriptions registered by this renderer (per-window events).
  */
-function deliver(event, payload) {
+function deliver(event, payload, onlySender) {
   let delivered = 0;
   for (const [eventId, sub] of subscriptions) {
     if (sub.event !== event) continue;
+    if (onlySender && sub.sender !== onlySender) continue;
     if (!sub.sender || sub.sender.isDestroyed()) {
       subscriptions.delete(eventId);
       continue;
@@ -503,6 +512,21 @@ function deliver(event, payload) {
  */
 function emitEvent(event, payload) {
   return deliver(event, payload);
+}
+
+/**
+ * Per-window variant of emitEvent for Tauri's window-scoped events
+ * (`tauri://move`): only `win`'s own renderer receives it, the way
+ * `getCurrentWindow().onMoved()` in Tauri only hears its own window. Each
+ * subscription it can reach was admitted by the per-label listen allowlist in
+ * securityBoundary.cjs when the renderer registered it.
+ * @param {import('electron').BrowserWindow} win
+ * @param {string} event
+ * @param {unknown} payload
+ */
+function emitWindowEvent(win, event, payload) {
+  if (!win || win.isDestroyed()) return 0;
+  return deliver(event, payload, win.webContents);
 }
 
 /**
@@ -597,7 +621,8 @@ const WINDOW_DISPATCH_MISS = Symbol('window-dispatch-miss');
  *   window that sent this invoke (resolved via
  *   `BrowserWindow.fromWebContents(e.sender)` in the ipcMain handler below).
  *   Used only for the read/per-window-state commands (set_title, is_focused,
- *   outer_position) — see module header on why: `@tauri-apps/api`'s
+ *   outer_position, set_position, show, unminimize, set_focus) — see module
+ *   header on why: `@tauri-apps/api`'s
  *   `getCurrentWindow()` targets "whichever window is asking" (e.g. the pet
  *   window reading its OWN position for placement math), but every window
  *   shares the same preload.cjs, which hardcodes
@@ -706,10 +731,36 @@ function windowDispatch(app, cmd, args, callerWin) {
       // getPosition() is device-independent (DIP). Scale by the window's
       // display factor so HiDPI consumers (pet placement, popover anchoring,
       // window position persist/restore) aren't off by the scale factor.
-      const [x, y] = queryWin.getPosition();
-      const sf = screen.getDisplayMatching(queryWin.getBounds()).scaleFactor || 1;
-      return { x: Math.round(x * sf), y: Math.round(y * sf) };
+      // Same rule as the tauri://move payload and set_position's inverse
+      // (electron/windowPlacement.cjs), so a saved position round-trips.
+      return physicalPositionOf(screen, queryWin);
     }
+    case 'plugin:window|set_position': {
+      // The pet restores / edge-snaps its OWN window. Strictly the caller —
+      // no fall back to the main window like the read commands: the pet may
+      // invoke this, and must never be able to move another window.
+      // Physical or Logical; kept at least partly on a display (a saved
+      // position may belong to a monitor that is gone).
+      const target = callerWin && !callerWin.isDestroyed() ? callerWin : null;
+      if (!target) return null;
+      const [width, height] = target.getSize();
+      const current = screen.getDisplayMatching(target.getBounds());
+      const { x, y } = resolveWindowPosition(screen, a.value, { width, height }, current);
+      target.setPosition(x, y);
+      return null;
+    }
+    case 'plugin:window|show':
+      // getCurrentWindow().show()/unminimize()/setFocus() — the notification
+      // click's "bring the window forward". Caller-aware (it is "this
+      // window"); only the unrestricted main window may invoke them.
+      if (queryWin) queryWin.show();
+      return null;
+    case 'plugin:window|unminimize':
+      if (queryWin && queryWin.isMinimized()) queryWin.restore();
+      return null;
+    case 'plugin:window|set_focus':
+      if (queryWin) queryWin.focus();
+      return null;
     case 'plugin:window|primary_monitor': {
       // Tauri's Monitor: size/position/workArea in PHYSICAL px + scaleFactor.
       // Electron's Display gives them in DIP, so scale up. IMPORTANT: @tauri-apps/
@@ -1607,5 +1658,19 @@ module.exports = {
   getMigrationBackupPath: () => migrationBackupPath,
   hasListeners,
   wireWindowEvents,
+  emitWindowEvent,
   requestAppExit,
+  __test: {
+    windowDispatch,
+    WINDOW_DISPATCH_MISS,
+    /** Register a subscription exactly as `plugin:event|listen` does. */
+    subscribe(event, callbackId, sender) {
+      const id = nextEventId++;
+      subscriptions.set(id, { event, callbackId, sender });
+      return id;
+    },
+    clearSubscriptions() {
+      subscriptions.clear();
+    },
+  },
 };

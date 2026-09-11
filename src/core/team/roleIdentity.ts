@@ -3,7 +3,7 @@ import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { agentRegistry, serializeAgentMd } from '@/core/agent/registry';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
-import { PLUGIN_ROOT_DIRNAME } from '@/core/plugin/paths';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
 
 /**
  * Stable role identity for team membership (PRD docs/abu-team-prd-v2.md §2).
@@ -35,37 +35,27 @@ const BUILTIN_ROLE_PREFIX = 'builtin:';
  */
 const PLUGIN_ROLE_PREFIX = 'plugin:';
 
-/** `…/.abu/plugin-packages/…` — the install root is named by
- *  `PLUGIN_ROOT_DIRNAME` (src/core/plugin/paths.ts, the one constant the whole
- *  plugin layer builds its paths from). Matched as a fragment rather than via
- *  `pluginRoot(home)` because nothing here knows the home directory; paths in
- *  this repo are normalised to `/` (src/utils/pathUtils.ts). Same idiom as
- *  `isSkillAllowedIn` (src/core/plugin/activationPolicy.ts). */
-function isUnderPluginPackages(filePath: string | undefined): boolean {
-  return !!filePath && filePath.includes(`/.abu/${PLUGIN_ROOT_DIRNAME}/`);
-}
-
 /**
  * Does a plugin own this agent's AGENT.md, for identity purposes?
  *
- * `isPluginOwnedAgent` reads the frontmatter `source:` key, which is a *cache*,
- * not the authority: the installer writes it and the discovery store backfills
- * it from `installed.json` (`applyPluginAgentSources`,
- * src/stores/discoveryStore.ts), but that backfill only reaches discovery
- * metadata — `agentRegistry.getAgent`, which this module reads, still sees the
- * raw frontmatter.
+ * The authority is discovery metadata (`useDiscoveryStore`), whose `source` is
+ * set from `installed.json`'s `contributed.agents` by `applyPluginAgentSources`
+ * (src/stores/discoveryStore.ts): it is backfilled for plugin agents installed
+ * before the frontmatter key existed, and stripped from a name no plugin claims
+ * (an orphan left behind after uninstall, or a user's hand-written `source:`).
+ * The frontmatter `source:` that `agentRegistry.getAgent` returns is only the
+ * installer's cache of that answer.
  *
- * KNOWN GAP: the path check does NOT close the "plugin agent with no `source:`"
- * case today. The installer materialises plugin agents into
- * `~/.abu/agents/<name>/` (src/core/agent/installer.ts) and the registry never
- * scans the plugin-packages root, so no agent this module can see has a path
- * under it. The check is kept because it cannot misclassify a user agent and
- * becomes effective if plugin agents are ever loaded in place. The real fix is
- * to answer ownership from `installed.json` (the authority) instead of the
- * frontmatter cache — tracked as a follow-up.
+ * Cold start: until discovery has listed this agent, there is no authoritative
+ * answer yet, so the frontmatter cache decides.
  */
 function isPluginManagedAgent(agent: SubagentDefinition): boolean {
-  return isPluginOwnedAgent(agent) || isUnderPluginPackages(agent.filePath);
+  // Authority: discovery metadata, whose `source` is backfilled and corrected
+  // from installed.json. Only while discovery has not listed this agent yet
+  // (cold start) does the frontmatter cache decide.
+  const meta = useDiscoveryStore.getState().agents.find((m) => m.name === agent.name);
+  if (meta) return meta.source?.kind === 'plugin';
+  return isPluginOwnedAgent(agent);
 }
 
 /** Effective roleId for any agent — synthetic for builtins and plugin agents, frontmatter otherwise. */

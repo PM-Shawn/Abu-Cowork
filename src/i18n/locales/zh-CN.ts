@@ -3299,6 +3299,8 @@ const zhCN: TranslationDict = {
       labelAgent: '代理',
       errInvalidName: 'Error: {label}名称不合法。仅允许小写字母、数字和连字符，且不能以连字符开头或结尾。收到: "{name}"',
       errUnsafeFilePath: 'Error: 文件路径不安全: "{p}"。不允许 .. 或绝对路径。',
+      errFileIsManifest: 'Error: 未保存任何文件：files 里的「{p}」就是 {fileName} 本身。{fileName} 的内容请放在 content 里，files 只用于附属文件。',
+      errInvalidFileEntry: 'Error: 未保存任何文件：files[{index}] 必须是包含非空字符串 path 和字符串 content 的对象。',
       errAgentFrontmatterInvalid: 'Error: 代理「{name}」未保存，没有写入任何文件：AGENT.md 开头的 YAML frontmatter 无法被正确读取，或读回的身份字段（role-id / created）不对。请重新发送完整内容，使用普通 YAML frontmatter：以 --- 开头、以单独一行 --- 结束，包含 name；不要使用锚点（&）、别名（*）、合并键（<<）、YAML 指令（%YAML）或显式键（?）。role-id 和 created 由系统维护，不必填写。',
       errNameInUse: 'Error: {label}「{name}」未保存，没有写入任何文件：这个名字已被另一个{label}占用（内置的、插件提供的，或用户自己的另一个只差大小写的{label}），用它保存会覆盖或遮住那个{label}。请换一个名字。',
       errItemExists: 'Error: {label}「{name}」未保存，没有写入任何文件：同名{label}已经存在。如果用户要求修改的正是这个已有的{label}，请带上 overwrite: true 再调用一次；否则请换一个名字——新建时绝不要覆盖已有的{label}。',

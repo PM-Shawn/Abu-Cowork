@@ -591,6 +591,47 @@ async function checkSaveTarget(
   return overwrite ? { refused: null, existingRaw } : { refused: 'exists' };
 }
 
+type SupportingFile = { path: string; content: string };
+
+/** `..`, a leading `/` or `\\` (root, UNC), or a drive letter (`C:`). */
+function isUnsafeFilePath(p: string): boolean {
+  return p.includes('..') || p.startsWith('/') || p.startsWith('\\') || /^[A-Za-z]:/.test(p);
+}
+
+/**
+ * The `files` to write, or why the whole call must be refused.
+ *
+ * Every entry is checked before anything touches disk: a refusal found
+ * halfway through the list used to leave the manifest (and the entries before
+ * it) written under a call that reported failure. An entry naming the
+ * manifest itself is refused too — it would replace the manifest just checked
+ * (name, identity) with unchecked text. Compared ignoring letter case and
+ * `./` segments, because `agent.md` is `AGENT.md` on macOS / Windows.
+ */
+function checkSupportingFiles(
+  raw: unknown,
+  fileName: string,
+  t: ReturnType<typeof getI18n>['toolResult']['agent'],
+): { refusal: string } | { files: SupportingFile[] } {
+  if (raw === undefined || raw === null) return { files: [] };
+  if (!Array.isArray(raw)) return { refusal: format(t.errInvalidFileEntry, { index: '0' }) };
+  const files: SupportingFile[] = [];
+  for (const [index, entry] of raw.entries()) {
+    const { path, content } = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof path !== 'string' || typeof content !== 'string') {
+      return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
+    }
+    if (isUnsafeFilePath(path)) return { refusal: format(t.errUnsafeFilePath, { p: path }) };
+    const segments = path.split(/[\\/]/).filter((s) => s !== '' && s !== '.');
+    if (segments.length === 0) return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
+    if (segments.join('/').toLowerCase() === fileName.toLowerCase()) {
+      return { refusal: format(t.errFileIsManifest, { p: path, fileName }) };
+    }
+    files.push({ path, content });
+  }
+  return { files };
+}
+
 /**
  * Exported for tests. Only the agent variant is registered (`saveAgentTool`
  * below); `save_skill` was replaced by `skill_manage`.
@@ -639,6 +680,9 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
         return format(t.errInvalidName, { label, name });
       }
 
+      const supporting = checkSupportingFiles(input.files, fileName, t);
+      if ('refusal' in supporting) return supporting.refusal;
+
       const info = await getSystemInfoData();
       const itemsDir = joinPath(info.home, '.abu', folder);
       const itemDir = joinPath(itemsDir, name);
@@ -668,21 +712,13 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       await ensureParentDir(filePath);
       await writeTextFile(filePath, mainContent);
 
-      // Write supporting files if provided
-      const files = input.files as Array<{ path: string; content: string }> | undefined;
+      // Supporting files, all checked above before the manifest was written.
       const writtenFiles: string[] = [];
-
-      if (files?.length) {
-        for (const file of files) {
-          const p = file.path;
-          if (p.includes('..') || p.startsWith('/') || p.startsWith('\\')) {
-            return format(t.errUnsafeFilePath, { p });
-          }
-          const targetPath = joinPath(itemDir, p);
-          await ensureParentDir(targetPath);
-          await writeTextFile(targetPath, file.content);
-          writtenFiles.push(p);
-        }
+      for (const file of supporting.files) {
+        const targetPath = joinPath(itemDir, file.path);
+        await ensureParentDir(targetPath);
+        await writeTextFile(targetPath, file.content);
+        writtenFiles.push(file.path);
       }
 
       // Refresh discovery so the new item appears in UI immediately

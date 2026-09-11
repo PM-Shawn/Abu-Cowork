@@ -4067,6 +4067,13 @@ export interface TranslationDict {
       /** Error: unsafe file path. {p} */
       errUnsafeFilePath: string;
       /**
+       * Error: nothing written — a `files` entry names the manifest itself,
+       * which is written only from `content` (checked). {p}, {fileName}
+       */
+      errFileIsManifest: string;
+      /** Error: nothing written — `files[index]` is not a {path, content} pair of strings with a non-empty path. {index} */
+      errInvalidFileEntry: string;
+      /**
        * Error: save_agent wrote nothing — the AGENT.md frontmatter does not
        * read back (via the registry's parser) with the identity it must carry,
        * or cannot be read at all. Tells the model to resend plain YAML. {name}

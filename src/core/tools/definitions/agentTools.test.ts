@@ -1012,6 +1012,48 @@ describe('save_agent / save_skill name guard', () => {
       expectNothingWritten();
     });
 
+    // Every `files` entry is checked before the manifest is written: a refusal
+    // found halfway through the list used to leave AGENT.md (and the entries
+    // before it) on disk under a call that reported failure.
+    describe('supporting files are all checked before anything is written', () => {
+      const save = (files: unknown[]) => saveAgentTool.execute({ name: 'doc-writer', content: agentMd('doc-writer'), files });
+
+      it.each(['../escape.md', '/etc/passwd', '\\\\server\\share\\x', 'C:\\evil.txt', 'C:/evil.txt', 'notes/../../escape.md'])(
+        'refuses the unsafe path %s, writing neither the manifest nor the files before it',
+        async (p) => {
+          const result = await save([{ path: 'ok.md', content: 'x' }, { path: p, content: 'y' }]);
+
+          expect(result).toBe(format(t().errUnsafeFilePath, { p }));
+          expectNothingWritten();
+        },
+      );
+
+      it.each(['AGENT.md', './AGENT.md', 'agent.md', '.\\Agent.MD'])(
+        'refuses %s — the manifest is written from content, never from files',
+        async (p) => {
+          const result = await save([{ path: p, content: '---\nname: abu\n---\n\nP' }]);
+
+          expect(result).toBe(format(t().errFileIsManifest, { p, fileName: 'AGENT.md' }));
+          expectNothingWritten();
+        },
+      );
+
+      it.each([
+        [{ path: 'notes.md' }],
+        [{ path: 'notes.md', content: 42 }],
+        [{ path: 42, content: 'x' }],
+        [{ path: '', content: 'x' }],
+        [{ path: './', content: 'x' }],
+        ['notes.md'],
+        [null],
+      ])('refuses the malformed entry %j, writing nothing', async (entry) => {
+        const result = await save([{ path: 'ok.md', content: 'x' }, entry]);
+
+        expect(result).toBe(format(t().errInvalidFileEntry, { index: '1' }));
+        expectNothingWritten();
+      });
+    });
+
     it('writes an agent under a name nothing uses', async () => {
       givenOnDisk(AGENTS_DIR, { reviewer: agentMd('reviewer') });
       vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'reviewer', description: '' }]);

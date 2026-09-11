@@ -6,10 +6,11 @@
  * one) silently replaced it. A new or renamed skill must refuse any name
  * another skill already uses — case-insensitively — without colliding with itself.
  *
- * Saving now never deletes: it writes in place, or moves the skill's own
- * folder (scripts/ and references/ included) to its name — itemStorage.test.ts.
- * The last block runs the real storage layer for an edit whose folder is not
- * named after the skill.
+ * Saving now never deletes: it writes the skill's own file in place —
+ * wherever it lives, a project included — or moves the skill's own folder
+ * (scripts/ and references/ included) to its name within the same parent —
+ * itemStorage.test.ts. The last block runs the real storage layer for a
+ * project skill and for an edit whose folder is not named after the skill.
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -23,7 +24,7 @@ vi.mock('@/utils/itemStorage', () => ({
 }));
 
 import { saveItemToAbuDir } from '@/utils/itemStorage';
-import { exists, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, lstat, readTextFile, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { skillLoader } from '@/core/skill/loader';
 import { getI18n } from '@/i18n';
@@ -152,12 +153,20 @@ describe('SkillEditor — editing an existing skill saves through its own folder
     const actual = await vi.importActual<{ saveItemToAbuDir: typeof saveItemToAbuDir }>('@/utils/itemStorage');
     vi.mocked(saveItemToAbuDir).mockImplementation(actual.saveItemToAbuDir);
     vi.mocked(homeDir).mockResolvedValue(HOME);
+    // The skill's SKILL.md is a plain file in a plain folder, holding its previous text.
+    vi.mocked(lstat).mockImplementation(async (p) => ({ isFile: /\.md$/i.test(String(p)), isDirectory: !/\.md$/i.test(String(p)), isSymlink: false }) as Awaited<ReturnType<typeof lstat>>);
+    vi.mocked(readTextFile).mockResolvedValue('original');
   });
 
   afterEach(() => {
     vi.mocked(saveItemToAbuDir).mockImplementation(async () => undefined);
     vi.mocked(exists).mockResolvedValue(false);
+    vi.mocked(lstat).mockResolvedValue({ isSymlink: false } as Awaited<ReturnType<typeof lstat>>);
+    vi.mocked(readTextFile).mockResolvedValue('');
   });
+
+  /** Every path writeTextFile was called with. */
+  const writtenPaths = () => vi.mocked(writeTextFile).mock.calls.map(([p]) => String(p));
 
   const onDisk = (...paths: string[]) => vi.mocked(exists).mockImplementation(async (p) => paths.includes(String(p)));
   const mismatched: Skill = {
@@ -173,7 +182,25 @@ describe('SkillEditor — editing an existing skill saves through its own folder
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String), { create: false });
+    expect(rename).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('a project skill is saved in its own file — the user\'s same-named skill in ~/.abu is never written', async () => {
+    const projectSkill: Skill = {
+      ...summarize,
+      source: 'project',
+      filePath: '/work/repo/.abu/skills/summarize/SKILL.md',
+      skillDir: '/work/repo/.abu/skills/summarize',
+    };
+    onDisk(`${HOME}/.abu/skills/summarize`, `${HOME}/.abu/skills/summarize/SKILL.md`);
+    const onSave = vi.fn(async () => undefined);
+    render(<SkillEditor skill={projectSkill} onClose={vi.fn()} onSave={onSave} />);
+    fireEvent.click(saveButton());
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    expect(writtenPaths()).toEqual(['/work/repo/.abu/skills/summarize/SKILL.md']);
     expect(rename).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
@@ -185,8 +212,9 @@ describe('SkillEditor — editing an existing skill saves through its own folder
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    // Written in place first, then the folder (and so its scripts/) is moved.
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize-old/SKILL.md`, expect.any(String), { create: false });
     expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize-old`, `${HOME}/.abu/skills/summarize`);
-    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/summarize/SKILL.md`, expect.any(String));
     expect(remove).not.toHaveBeenCalled();
   });
 
@@ -200,7 +228,9 @@ describe('SkillEditor — editing an existing skill saves through its own folder
 
     await waitFor(() => expect(screen.queryByText(getI18n().toolbox.itemSaveFailed)).not.toBeNull());
     expect(onSave).not.toHaveBeenCalled();
-    expect(writeTextFile).not.toHaveBeenCalled();
+    // The other skill's file is never written; this skill's text is put back.
+    expect(writtenPaths()).not.toContain(`${HOME}/.abu/skills/summarize/SKILL.md`);
+    expect(vi.mocked(writeTextFile).mock.calls.at(-1)).toEqual([`${HOME}/.abu/skills/summarize-old/SKILL.md`, 'original', { create: false }]);
     expect(remove).not.toHaveBeenCalled();
   });
 });

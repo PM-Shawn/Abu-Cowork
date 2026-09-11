@@ -51,6 +51,7 @@ import { format, getI18n } from '../../i18n';
 import { appendInstructionToHistory, drainDispatchInstructionEntries, hasDispatchInput, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
 import { matchesToolName } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
+import { scanMemoryFiles, loadMemoryIndex } from '../memdir/scan';
 import { deriveRunInteractionMode } from './runInteractionMode';
 import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
 import { browserNarrationSection } from './browserNarrationRules';
@@ -677,7 +678,6 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
     // Load and inject persistent memory from memdir
     try {
-      const { scanMemoryFiles, loadMemoryIndex } = await import('../memdir/scan');
       const wsPath = workspacePath;
 
       const [globalHeaders, wsHeaders, globalIndex] = await Promise.all([

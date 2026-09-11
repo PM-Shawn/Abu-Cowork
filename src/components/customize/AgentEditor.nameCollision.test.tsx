@@ -9,10 +9,11 @@
  * uses — compared case-insensitively, because the folders live on
  * case-insensitive file systems — without ever colliding with itself.
  *
- * Saving now never deletes: it writes in place, or moves the agent's own
- * folder to its name (itemStorage.test.ts). The last block runs the real
- * storage layer to pin what an edit does when the folder is not named after
- * the agent.
+ * Saving now never deletes: it writes the agent's own file in place —
+ * wherever it lives, a project included — or moves the agent's own folder to
+ * its name within the same parent (itemStorage.test.ts). The last block runs
+ * the real storage layer to pin what an edit does for a project agent and
+ * when the folder is not named after the agent.
  */
 
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
@@ -26,7 +27,7 @@ vi.mock('@/utils/itemStorage', () => ({
 }));
 
 import { saveItemToAbuDir } from '@/utils/itemStorage';
-import { exists, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, lstat, readTextFile, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { agentRegistry } from '@/core/agent/registry';
 import { getI18n } from '@/i18n';
@@ -214,12 +215,20 @@ describe('AgentEditor — editing an existing agent saves through its own folder
     const actual = await vi.importActual<{ saveItemToAbuDir: typeof saveItemToAbuDir }>('@/utils/itemStorage');
     vi.mocked(saveItemToAbuDir).mockImplementation(actual.saveItemToAbuDir);
     vi.mocked(homeDir).mockResolvedValue(HOME);
+    // The agent's AGENT.md is a plain file in a plain folder, holding its previous text.
+    vi.mocked(lstat).mockImplementation(async (p) => ({ isFile: /\.md$/i.test(String(p)), isDirectory: !/\.md$/i.test(String(p)), isSymlink: false }) as Awaited<ReturnType<typeof lstat>>);
+    vi.mocked(readTextFile).mockResolvedValue('original');
   });
 
   afterEach(() => {
     vi.mocked(saveItemToAbuDir).mockImplementation(async () => undefined);
     vi.mocked(exists).mockResolvedValue(false);
+    vi.mocked(lstat).mockResolvedValue({ isSymlink: false } as Awaited<ReturnType<typeof lstat>>);
+    vi.mocked(readTextFile).mockResolvedValue('');
   });
+
+  /** Every path writeTextFile was called with. */
+  const writtenPaths = () => vi.mocked(writeTextFile).mock.calls.map(([p]) => String(p));
 
   /** `exists` answers true for exactly these paths. */
   const onDisk = (...paths: string[]) => vi.mocked(exists).mockImplementation(async (p) => paths.includes(String(p)));
@@ -231,20 +240,21 @@ describe('AgentEditor — editing an existing agent saves through its own folder
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/reviewer/AGENT.md`, expect.stringContaining('name: reviewer'));
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/reviewer/AGENT.md`, expect.stringContaining('name: reviewer'), { create: false });
     expect(rename).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
 
-  it('a project-level agent is only copied into ~/.abu — its own folder is never moved or removed', async () => {
+  it('a project-level agent is saved in its own file — the user\'s same-named agent in ~/.abu is never written', async () => {
     const projectAgent: SubagentDefinition = { ...reviewer, filePath: '/work/repo/.abu/agents/reviewer/AGENT.md' };
-    onDisk('/work/repo/.abu/agents/reviewer');
+    onDisk('/work/repo/.abu/agents/reviewer', `${HOME}/.abu/agents/reviewer`, `${HOME}/.abu/agents/reviewer/AGENT.md`);
     const onSave = vi.fn(async () => undefined);
     render(<AgentEditor agent={projectAgent} onClose={vi.fn()} onSave={onSave} />);
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
-    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/reviewer/AGENT.md`, expect.any(String));
+    expect(writeTextFile).toHaveBeenCalledWith('/work/repo/.abu/agents/reviewer/AGENT.md', expect.stringContaining('name: reviewer'), { create: false });
+    expect(writtenPaths()).toEqual(['/work/repo/.abu/agents/reviewer/AGENT.md']);
     expect(rename).not.toHaveBeenCalled();
     expect(remove).not.toHaveBeenCalled();
   });
@@ -257,8 +267,9 @@ describe('AgentEditor — editing an existing agent saves through its own folder
     fireEvent.click(saveButton());
 
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1));
+    // Written in place first, then the folder (and so its memory.md) is moved.
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/old-writer/AGENT.md`, expect.stringContaining('name: writer'), { create: false });
     expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/agents/old-writer`, `${HOME}/.abu/agents/writer`);
-    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/writer/AGENT.md`, expect.stringContaining('name: writer'));
     expect(remove).not.toHaveBeenCalled();
   });
 
@@ -274,7 +285,9 @@ describe('AgentEditor — editing an existing agent saves through its own folder
 
     await waitFor(() => expect(failedHint()).not.toBeNull());
     expect(onSave).not.toHaveBeenCalled();
-    expect(writeTextFile).not.toHaveBeenCalled();
+    // The other agent's file is never written; this agent's text is put back.
+    expect(writtenPaths()).not.toContain(`${HOME}/.abu/agents/writer/AGENT.md`);
+    expect(vi.mocked(writeTextFile).mock.calls.at(-1)).toEqual([`${HOME}/.abu/agents/old-writer/AGENT.md`, 'original', { create: false }]);
     expect(remove).not.toHaveBeenCalled();
   });
 });

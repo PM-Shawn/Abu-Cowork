@@ -1495,4 +1495,33 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(withCtx!.toolCallsForContext![0].id).toBe('t1');
     expect(withCtx!.toolCallsForContext![0].resultContent).toEqual(imageResult);
   });
+  it('injects the mocked memdir headers into BOTH concurrently started runs', async () => {
+    // Regression (TESTING.md §3): run_agent_batch starts several subagent loops
+    // at once. Each used to `await import('../memdir/scan')` from the same
+    // module; vitest served the second concurrent importer the REAL scan module
+    // (empty under the global fs mock), so only one run saw the memories.
+    const { scanMemoryFiles } = await import('../memdir/scan');
+    vi.mocked(scanMemoryFiles).mockResolvedValue([{
+      filename: 'marker.md', filePath: '/mock/marker.md',
+      name: 'CONCURRENT-MEMORY-MARKER', description: 'marker',
+      type: 'project', source: 'agent_explicit',
+      created: 1, updated: 1, accessCount: 0, private: false, // filler (TESTING.md §3)
+    }]);
+    mockClaudeChat.mockImplementation(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
+    try {
+      await Promise.all([
+        runSubagentLoop({ agent, task: 'task a' }),
+        runSubagentLoop({ agent, task: 'task b' }),
+      ]);
+      expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+      for (const call of mockClaudeChat.mock.calls) {
+        expect((call[1] as { systemPrompt?: string }).systemPrompt ?? '').toContain('CONCURRENT-MEMORY-MARKER');
+      }
+    } finally {
+      vi.mocked(scanMemoryFiles).mockResolvedValue([]);
+    }
+  });
 });

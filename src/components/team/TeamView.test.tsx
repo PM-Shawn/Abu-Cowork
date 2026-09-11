@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
 
@@ -54,10 +54,21 @@ vi.mock('@/i18n', async () => {
   return { format: actual.format, useI18n: () => ({ t: zhCN, locale: 'zh-CN' }) };
 });
 
-const registryAgents: Record<string, { name: string; description: string; roleId?: string; filePath: string; systemPrompt: string; managed?: boolean; source?: { kind: 'plugin'; plugin: string } }> = {};
+// Reactive stand-in for the plugin store: only `activationReady` matters here.
+vi.mock('@/stores/pluginStore', async () => {
+  const { create } = await import('zustand');
+  return { usePluginStore: create(() => ({ activationReady: true })) };
+});
+import { usePluginStore } from '@/stores/pluginStore';
+
+type RegistryAgent = { name: string; description: string; roleId?: string; filePath: string; systemPrompt: string; managed?: boolean; source?: { kind: 'plugin'; plugin: string } };
+const registryAgents: Record<string, RegistryAgent> = {};
+/** Mirrors activationPolicy: until plugin records are ready, a file-backed agent is hidden. */
+const gated = (agent: RegistryAgent | undefined): RegistryAgent | undefined =>
+  agent && !agent.filePath.startsWith('__') && !usePluginStore.getState().activationReady ? undefined : agent;
 vi.mock('@/core/agent/registry', () => ({
   agentRegistry: {
-    getAgent: (name: string) => registryAgents[name],
+    getAgent: (name: string) => gated(registryAgents[name]),
     getAvailableAgents: () => Object.values(registryAgents),
   },
   serializeAgentMd: vi.fn(() => 'md'),
@@ -86,7 +97,7 @@ vi.mock('@/core/team/roleIdentity', () => ({
     agent.source?.kind === 'plugin' ? `plugin:${agent.name}` : (agent.roleId ?? `builtin:${agent.name}`),
   isBuiltinAgent: () => false,
   resolveRoleId: (roleId: string) =>
-    Object.values(registryAgents).find((a) => (a.roleId ?? `builtin:${a.name}`) === roleId) ?? null,
+    gated(Object.values(registryAgents).find((a) => (a.roleId ?? `builtin:${a.name}`) === roleId)) ?? null,
   roleIdAgentName: (roleId: string) => /^(?:builtin|plugin):(.+)$/.exec(roleId)?.[1],
 }));
 
@@ -124,7 +135,67 @@ describe('TeamView', () => {
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
     chatState.conversationIndex = {};
+    usePluginStore.setState({ activationReady: true });
     vi.clearAllMocks();
+  });
+
+  // P1: at launch discovery publishes BEFORE the first installed.json read, and
+  // until then every file-backed expert is hidden. Readiness is the only thing
+  // that changes, so the team page must re-resolve on it.
+  it('teams tab: the card and the open detail re-resolve user experts when plugin records become ready', () => {
+    usePluginStore.setState({ activationReady: false });
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    seedAgent('校对', { roleId: 'r-mem' });
+    discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem'], createdAt: 1 }] });
+    render(<TeamView />);
+    expect(screen.getByTestId('team-row-数据小队').textContent).toContain('0 名成员');
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.getByText('成员（0）')).toBeTruthy();
+
+    act(() => { usePluginStore.setState({ activationReady: true }); });
+
+    expect(screen.getByTestId('team-row-数据小队').textContent).toContain('队长：分析师 · 1 名成员');
+    expect(screen.getByText('成员（1）')).toBeTruthy();
+    expect(screen.queryByTestId('team-member-invalid-r-mem')).toBeNull();
+  });
+
+  it('team dialog: opened before plugin records are ready, it re-seeds once they are — real members back in the picker', () => {
+    usePluginStore.setState({ activationReady: false });
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    seedAgent('校对', { roleId: 'r-mem' });
+    discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByTestId('team-edit-invalid-r-mem')).toBeTruthy();
+
+    act(() => { usePluginStore.setState({ activationReady: true }); });
+
+    expect(screen.queryByTestId('team-edit-invalid-r-mem')).toBeNull();
+    expect(screen.getByTestId('team-members-select').textContent).toContain('校对');
+    expect(screen.getByTestId('team-leader-select').textContent).toContain('分析师');
+  });
+
+  it('team dialog: a later ready→not-ready blip (a plugin install) does not wipe what the user typed', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '新名字' } });
+
+    act(() => { usePluginStore.setState({ activationReady: false }); });
+    act(() => { usePluginStore.setState({ activationReady: true }); });
+
+    expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
   });
 
   it('renders the two tabs 队员·团队 (the task board is gone)', () => {

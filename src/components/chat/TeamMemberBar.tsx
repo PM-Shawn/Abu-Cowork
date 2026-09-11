@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
 import type { TranslationDict } from '@/i18n/types';
 import { usePreviewStore } from '@/stores/previewStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { memberDefByName, useTeamDispatches } from '@/components/team/useTeamDispatches';
 import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -39,6 +40,9 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   const openSubagent = usePreviewStore((s) => s.openSubagent);
   const openTeam = usePreviewStore((s) => s.openTeam);
   const { team, members } = useTeamDispatches(conversationId);
+  // Before plugin records are ready every file-backed expert fails to resolve
+  // (launch, a plugin install), so "unavailable" would be a false claim then.
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
   // Collapsed = leader chip + a "{n} members" pill (running spinner kept so
   // activity stays visible). Session-local on purpose: it is a glance control,
   // not a preference.
@@ -48,7 +52,7 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   const defOf = (name: string) => memberDefByName(team, name);
   const chip = 'inline-flex max-w-[180px] items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] px-2 py-0.5 text-caption text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors';
   const anyRunning = members.some((member) => member.status === 'running');
-  const unresolved = team.unresolvedMemberRoleIds?.length ?? 0;
+  const unresolved = pluginRecordsReady ? (team.unresolvedMemberRoleIds?.length ?? 0) : 0;
   const toggle = (
     <button
       type="button"

@@ -6,7 +6,7 @@
  * opens the team panel, where the member can be removed or replaced.
  */
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TeamRouteContext } from '@/core/team/leaderRoute';
 
@@ -27,6 +27,11 @@ vi.mock('@/stores/previewStore', () => ({
 }));
 vi.mock('@/core/agent/dispatchCancel', () => ({ requestDispatchCancel: vi.fn() }));
 vi.mock('@/components/common/AgentAvatar', () => ({ default: () => <span /> }));
+// Reactive stand-in for the plugin store: only `activationReady` matters here.
+vi.mock('@/stores/pluginStore', async () => {
+  const { create } = await import('zustand');
+  return { usePluginStore: create(() => ({ activationReady: true })) };
+});
 
 const teamRef: { team: TeamRouteContext | null } = { team: null };
 vi.mock('@/components/team/useTeamDispatches', () => ({
@@ -38,6 +43,7 @@ vi.mock('@/components/team/useTeamDispatches', () => ({
   }),
 }));
 
+import { usePluginStore } from '@/stores/pluginStore';
 import TeamMemberBar from './TeamMemberBar';
 
 function ctx(extra: Partial<TeamRouteContext>): TeamRouteContext {
@@ -53,6 +59,20 @@ describe('TeamMemberBar — unresolved members', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localeRef.current = 'zh-CN';
+    usePluginStore.setState({ activationReady: true });
+  });
+
+  it('claims nothing is unavailable until plugin records are ready, then shows the pill', () => {
+    // Before the first installed.json read every file-backed expert fails to
+    // resolve, so the count would be a false alarm.
+    usePluginStore.setState({ activationReady: false });
+    teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone'] });
+    render(<TeamMemberBar conversationId="c1" />);
+    expect(screen.queryByTestId('team-member-bar-unresolved')).toBeNull();
+
+    act(() => { usePluginStore.setState({ activationReady: true }); });
+
+    expect(screen.getByTestId('team-member-bar-unresolved').textContent).toBe('1 名成员已失效');
   });
 
   it('shows a pill with the count when some members do not resolve, and it opens the team panel', () => {

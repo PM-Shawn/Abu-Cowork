@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
 import { useTeamStore, type Team } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
@@ -59,8 +60,12 @@ function EmptyState({ icon: Icon, title, hint, action }: {
 function useMemberPool(): SubagentDefinition[] {
   const { agents } = useDiscoveryStore();
   const disabledAgents = useSettingsStore((s) => s.disabledAgents);
-  const [full, setFull] = useState<SubagentDefinition[]>([]);
-  useEffect(() => {
+  // getAgent hides every file-backed agent until plugin records are ready,
+  // which at launch lands after discovery — so readiness is a dependency too.
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
+  // Computed during render (not in an effect) so a readiness flip reaches the
+  // edit dialog's re-seed in the same commit, with the pool it was waiting for.
+  return useMemo(() => {
     const disabled = new Set(disabledAgents ?? []);
     const list: SubagentDefinition[] = [];
     for (const meta of agents) {
@@ -69,9 +74,8 @@ function useMemberPool(): SubagentDefinition[] {
       if (a.name === 'abu' || a.managed || disabled.has(a.name)) continue;
       list.push(a);
     }
-    setFull(list);
-  }, [agents, disabledAgents]);
-  return full;
+    return list;
+  }, [agents, disabledAgents, pluginRecordsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: string): string {
@@ -121,6 +125,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
   const agents = useMemberPool();
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
 
   const [name, setName] = useState('');
   const [leaderName, setLeaderName] = useState<string>('');
@@ -143,8 +148,17 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const agentsRef = useRef(agents);
   useEffect(() => { agentsRef.current = agents; }, [agents]);
 
+  // Which team the form was seeded for, and whether plugin records were ready
+  // then. Before they are, file-backed experts resolve to nothing, so a dialog
+  // opened during launch seeds real members as invalid; it is re-seeded once
+  // when the records turn ready — never on a later ready→not-ready blip (a
+  // plugin install), which would wipe what the user has typed.
+  const seeded = useRef<{ team: Team | null; ready: boolean } | null>(null);
   useEffect(() => {
-    if (!open) return;
+    if (!open) { seeded.current = null; return; }
+    const prev = seeded.current;
+    if (prev && prev.team === team && (prev.ready || !pluginRecordsReady)) return;
+    seeded.current = { team, ready: pluginRecordsReady };
     const pool = agentsRef.current;
     if (team) {
       setName(team.name);
@@ -160,7 +174,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
     } else {
       setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setInvalidMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
     }
-  }, [open, team]);
+  }, [open, team, pluginRecordsReady]);
 
   // A leader whose agent is currently hidden keeps its roleId; the team stays editable.
   const leaderKept = !leaderName && !!team?.leaderRoleId;
@@ -326,6 +340,9 @@ export default function TeamView() {
   // source; subscribe to discovery so the card grid re-renders when the roster
   // changes (same reason useConversationTeam subscribes — useTeamDispatches.ts).
   const discoveredAgents = useDiscoveryStore((s) => s.agents);
+  // …and file-backed experts only resolve once plugin records are ready, which
+  // at launch lands after discovery: re-render the cards and the open detail then.
+  const pluginRecordsReady = usePluginStore((s) => s.activationReady);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const createConversation = useChatStore((s) => s.createConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
@@ -365,12 +382,12 @@ export default function TeamView() {
 
   const activeTeams = teams;
 
-  // `_agents` is unused by value — it exists only to make `discoveredAgents`
-  // a visible input of this derived text, so the caller's subscription to the
-  // discovery store isn't dead code from the compiler's point of view.
+  // `_agents` / `_ready` are unused by value — they exist only to make
+  // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
+  // text, so the subscriptions aren't dead code from the compiler's point of view.
   // The card's leader slot is one segment of a ` · ` summary line, so it takes
   // the short label; the explanatory clause lives in the detail and the editor.
-  const cardSummary = (team: Team, _agents: typeof discoveredAgents) => format(t.team.teamRowSummary, {
+  const cardSummary = (team: Team, _agents: typeof discoveredAgents, _ready: boolean) => format(t.team.teamRowSummary, {
     leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalidShort,
     count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length),
   });
@@ -463,7 +480,7 @@ export default function TeamView() {
                       id: team.id,
                       testId: `team-row-${team.name}`,
                       name: team.name,
-                      description: cardSummary(team, discoveredAgents),
+                      description: cardSummary(team, discoveredAgents, pluginRecordsReady),
                       avatar: <TeamAvatar avatar={team.avatar} />,
                     }}
                     onClick={() => setDetailTeam(team)}

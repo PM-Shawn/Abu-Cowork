@@ -53,6 +53,27 @@ describe('saveItemToAbuDir', () => {
     expect(remove).toHaveBeenCalledWith(`${HOME}/.abu/agents/reviewer`, { recursive: true });
   });
 
+  it('never removes a folder outside ~/.abu/<folder>/ — a project-level item is only copied from', async () => {
+    await saveItemToAbuDir('agents', 'AGENT.md', 'reviewer', 'md', '/work/repo/.abu/agents/reviewer/AGENT.md');
+
+    expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/agents/reviewer/AGENT.md`, 'md');
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('never removes the ~/.abu/<folder>/ root itself', async () => {
+    await saveItemToAbuDir('agents', 'AGENT.md', 'reviewer', 'md', `${HOME}/.abu/agents/AGENT.md`);
+
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it('still removes the old folder when the paths use Windows separators', async () => {
+    vi.mocked(homeDir).mockResolvedValue('C:\\Users\\tester');
+
+    await saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', 'C:\\Users\\tester\\.abu\\agents\\reviewer\\AGENT.md');
+
+    expect(remove).toHaveBeenCalledWith('C:/Users/tester/.abu/agents/reviewer', { recursive: true });
+  });
+
   it('keeps the folder after a letter-case-only rename (it is the folder just written)', async () => {
     await saveItemToAbuDir('agents', 'AGENT.md', 'reviewer', 'md', `${HOME}/.abu/agents/Reviewer/AGENT.md`);
 

@@ -34,9 +34,13 @@ export async function saveItemToAbuDir(
   // If renamed, remove old directory — unless the rename only changed letter
   // case: on the case-insensitive macOS/Windows file systems `Reviewer/` IS
   // `reviewer/`, so removing the "old" folder would delete what was just saved.
+  // Only ever a sibling item folder inside ~/.abu/{folder}/: a project-level
+  // item (<workspace>/.abu/{folder}/x) is repository content this function only
+  // copies from, and the root itself is never an item.
   if (oldFilePath) {
     const oldDir = getParentDir(oldFilePath);
-    if (oldDir.toLowerCase() !== targetDir.toLowerCase()) {
+    const ownedByAbuDir = getParentDir(oldDir).toLowerCase() === joinPath(home, '.abu', folder).toLowerCase();
+    if (ownedByAbuDir && oldDir.toLowerCase() !== targetDir.toLowerCase()) {
       await remove(oldDir, { recursive: true }).catch(() => {/* ignore if already gone */});
     }
   }

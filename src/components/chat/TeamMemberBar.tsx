@@ -79,6 +79,15 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
           {member.status === 'error' && <XCircle aria-hidden="true" className="h-3 w-3 text-[var(--abu-danger)]" />}
         </button>
       ))}
+      {(team.unresolvedMemberRoleIds?.length ?? 0) > 0 && (
+        <span
+          className="inline-flex items-center rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-danger)]"
+          title={t.workspace.teamMemberBarUnresolved.replace('{n}', String(team.unresolvedMemberRoleIds!.length))}
+          data-testid="team-member-bar-unresolved"
+        >
+          {format(t.workspace.teamMemberBarUnresolved, { n: team.unresolvedMemberRoleIds!.length })}
+        </span>
+      )}
       {members.map((m) => ({ m, running: m.dispatches.find((d) => d.live && d.status === 'running') })).filter((x) => x.running).map(({ m, running }) => (
         <button
           key={`stop-${m.agent}`}

@@ -2754,6 +2754,8 @@ export interface TranslationDict {
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
+    /** Member strip pill: N stored members no live agent answers to. */
+    teamMemberBarUnresolved: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;

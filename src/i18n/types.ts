@@ -4072,6 +4072,24 @@ export interface TranslationDict {
        * or cannot be read at all. Tells the model to resend plain YAML. {name}
        */
       errAgentFrontmatterInvalid: string;
+      /**
+       * Error: nothing written — the name belongs to a built-in or plugin item,
+       * or to another item whose name differs only in letter case (the same
+       * folder on macOS / Windows). {label}, {name}
+       */
+      errNameInUse: string;
+      /**
+       * Error: nothing written — an item with this name already exists and the
+       * call did not pass `overwrite: true`. Tells the model to pass it only
+       * when the user asked to change that item. {label}, {name}
+       */
+      errItemExists: string;
+      /**
+       * Error: nothing written — the frontmatter `name` in the manifest differs
+       * from the name parameter (the registry keys items by the frontmatter
+       * name). {label}, {name}, {found}, {fileName}
+       */
+      errManifestNameMismatch: string;
       /** Attached-files section header + list. {list} */
       savedFileList: string;
       /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */

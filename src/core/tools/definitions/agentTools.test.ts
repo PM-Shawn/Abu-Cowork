@@ -1,25 +1,32 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { exists, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, readDir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
 import { ensureParentDir } from '../../../utils/pathUtils';
-import { parseAgentFile } from '../../agent/registry';
-import { saveAgentTool, delegateToAgentTool, useSkillTool } from './agentTools';
+import { agentRegistry, parseAgentFile } from '../../agent/registry';
+import { skillLoader } from '../../skill/loader';
+import { saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool } from './agentTools';
 import { format, getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
 
 // Mock dependencies not covered by global setup
-vi.mock('../../skill/loader', () => ({
-  skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn() },
-}));
+vi.mock('../../skill/loader', async () => {
+  // save_skill checks a SKILL.md's name with the loader's own reader.
+  const actual = await vi.importActual<typeof import('../../skill/loader')>('../../skill/loader');
+  return {
+    parseSkillFile: actual.parseSkillFile,
+    skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn() },
+  };
+});
 vi.mock('../../agent/registry', async () => {
   // save_agent verifies what it writes with the registry's own reader, so the
   // real parseAgentFile stays; only the registry singleton is stubbed.
   const actual = await vi.importActual<typeof import('../../agent/registry')>('../../agent/registry');
   return {
     parseAgentFile: actual.parseAgentFile,
-    agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]) },
+    getBuiltinAgentNames: actual.getBuiltinAgentNames,
+    agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]), getAvailableAgents: vi.fn().mockReturnValue([]) },
   };
 });
 vi.mock('../../agent/permissionBridge', () => {
@@ -70,11 +77,13 @@ vi.mock('../../../stores/discoveryStore', () => ({
 }));
 vi.mock('../../../utils/pathUtils', () => ({
   joinPath: (...parts: string[]) => parts.join('/'),
+  getParentDir: (path: string) => path.slice(0, path.lastIndexOf('/')),
   ensureParentDir: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('../../../utils/validation', () => ({
+vi.mock('../../../utils/validation', async () => ({
   ITEM_NAME_RE: /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/,
   AGENT_NAME_RE: /^[\p{L}\p{N}](?:[\p{L}\p{N}_-]*[\p{L}\p{N}])?$/u,
+  isItemNameTaken: (await vi.importActual<typeof import('../../../utils/validation')>('../../../utils/validation')).isItemNameTaken,
 }));
 vi.mock('../helpers/toolHelpers', () => ({
   getSystemInfoData: vi.fn().mockResolvedValue({ home: '/Users/testuser' }),
@@ -697,8 +706,9 @@ describe('save_agent identity', () => {
     vi.mocked(readTextFile).mockResolvedValue(raw);
   }
 
+  // These are modify flows ("帮我优化这个专家"), so they pass overwrite.
   function save(content: string, files?: Array<{ path: string; content: string }>) {
-    return saveAgentTool.execute({ name: 'reviewer', content, ...(files ? { files } : {}) });
+    return saveAgentTool.execute({ name: 'reviewer', content, overwrite: true, ...(files ? { files } : {}) });
   }
 
   function writtenAgentMd(): string {
@@ -829,6 +839,227 @@ describe('save_agent identity', () => {
       givenExistingFile(EXISTING_MD);
 
       expectRefused(await save('---\nname: reviewer\nrole-id: &v role-other\nother: *v\n---\n\nP'));
+    });
+  });
+});
+
+// "新建一个叫 reviewer 的专家" must not replace the reviewer that already
+// exists, and no user item may take a builtin's or a plugin's name: the
+// registry prefers the user's file (agents) or scans the user's folder first
+// (skills), so such a file hides the real one from every team pointing at
+// `builtin:<name>` / `plugin:<name>`. Every refusal writes nothing at all —
+// neither the manifest nor any supporting file.
+describe('save_agent / save_skill name guard', () => {
+  const HOME = '/Users/testuser';
+  const AGENTS_DIR = `${HOME}/.abu/agents`;
+  const SKILLS_DIR = `${HOME}/.abu/skills`;
+  const t = () => getI18n().toolResult.agent;
+  const agentMd = (name: string) => `---\nname: ${name}\ndescription: Reviews code\n---\n\nYou review code.`;
+  const skillMd = (name: string) => `---\nname: ${name}\ndescription: Commits\n---\n\n# Commit`;
+  const saveSkillTool = createSaveItemTool('skill');
+
+  const inUse = (label: string, name: string) => format(t().errNameInUse, { label, name });
+  const alreadyExists = (label: string, name: string) => format(t().errItemExists, { label, name });
+
+  /** Folders under `dir` and the manifests inside them, as the fs mocks see them. */
+  function givenOnDisk(dir: string, folders: Record<string, string>, manifest = 'AGENT.md'): void {
+    vi.mocked(readDir).mockImplementation(async (path) => (
+      String(path) === dir ? Object.keys(folders).map((name) => ({ name, isDirectory: true, isFile: false, isSymlink: false })) : []
+    ));
+    vi.mocked(exists).mockImplementation(async (path) => Object.keys(folders).some((f) => path === `${dir}/${f}/${manifest}`));
+    vi.mocked(readTextFile).mockImplementation(async (path) => {
+      const folder = Object.keys(folders).find((f) => path === `${dir}/${f}/${manifest}`);
+      return folder === undefined ? '' : folders[folder];
+    });
+  }
+
+  function expectNothingWritten(): void {
+    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(ensureParentDir).not.toHaveBeenCalled();
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([]);
+    vi.mocked(skillLoader.getAvailableSkills).mockReturnValue([]);
+  });
+
+  afterEach(() => {
+    vi.mocked(exists).mockReset().mockResolvedValue(false);
+    vi.mocked(readTextFile).mockReset().mockResolvedValue('');
+    vi.mocked(readDir).mockReset().mockResolvedValue([]);
+  });
+
+  describe('save_agent', () => {
+    const label = () => t().labelAgent;
+
+    it('refuses to create an agent under the name of one that exists, writing no file at all', async () => {
+      givenOnDisk(AGENTS_DIR, { reviewer: agentMd('reviewer') });
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'reviewer', description: 'Reviews code' }]);
+
+      const result = await saveAgentTool.execute({
+        name: 'reviewer',
+        content: agentMd('reviewer'),
+        files: [{ path: 'notes.md', content: 'x' }],
+      });
+
+      expect(result).toBe(alreadyExists(label(), 'reviewer'));
+      expectNothingWritten();
+    });
+
+    it('tells the model to pass overwrite only when the user asked to change that item', () => {
+      expect(t().errItemExists).toContain('overwrite: true');
+      const overwrite = saveAgentTool.inputSchema.properties.overwrite as { type: string; description: string };
+      expect(overwrite.type).toBe('boolean');
+      expect(saveAgentTool.inputSchema.required).not.toContain('overwrite');
+      expect(saveAgentTool.description).toContain('overwrite');
+    });
+
+    it('modifies the existing agent when overwrite is true', async () => {
+      givenOnDisk(AGENTS_DIR, { reviewer: agentMd('reviewer') });
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'reviewer', description: 'Reviews code' }]);
+
+      const result = await saveAgentTool.execute({
+        name: 'reviewer',
+        content: '---\nname: reviewer\ndescription: Reviews code thoroughly\n---\n\nYou review code carefully.',
+        overwrite: true,
+        files: [{ path: 'notes.md', content: 'x' }],
+      });
+
+      expect(result).toBe(format(t().agentSaved, {
+        label: label(), name: 'reviewer', filePath: `${AGENTS_DIR}/reviewer/AGENT.md`,
+        fileList: format(t().savedFileList, { list: '  - notes.md' }),
+      }));
+      const written = vi.mocked(writeTextFile).mock.calls.find(([path]) => path === `${AGENTS_DIR}/reviewer/AGENT.md`);
+      expect(parseAgentFile(String(written?.[1]), `${AGENTS_DIR}/reviewer/AGENT.md`)?.systemPrompt).toBe('You review code carefully.');
+      expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/reviewer/notes.md`, 'x');
+    });
+
+    it.each(['产品经理', 'abu', 'ABU', 'Abu'])('refuses the builtin name %s, even with overwrite and before discovery listed anything', async (name) => {
+      const result = await saveAgentTool.execute({ name, content: agentMd(name), overwrite: true });
+
+      expect(result).toBe(inUse(label(), name));
+      expectNothingWritten();
+    });
+
+    it('refuses a builtin name even when a user file already shadows it', async () => {
+      givenOnDisk(AGENTS_DIR, { abu: agentMd('abu') });
+
+      const result = await saveAgentTool.execute({ name: 'abu', content: agentMd('abu'), overwrite: true });
+
+      expect(result).toBe(inUse(label(), 'abu'));
+      expectNothingWritten();
+    });
+
+    it('refuses the name of a plugin\'s agent, including a disabled plugin\'s, even with overwrite', async () => {
+      givenOnDisk(AGENTS_DIR, { 'weather-bot': `---\nname: weather-bot\nsource: plugin:weather@official\n---\n\nP` });
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([
+        { name: 'weather-bot', description: 'Weather', source: { kind: 'plugin', plugin: 'weather@official' } },
+      ]);
+
+      const result = await saveAgentTool.execute({ name: 'Weather-Bot', content: agentMd('Weather-Bot'), overwrite: true });
+
+      expect(result).toBe(inUse(label(), 'Weather-Bot'));
+      expect(agentRegistry.getAvailableAgents).toHaveBeenCalledWith({ includeDisabledPlugins: true });
+      expectNothingWritten();
+    });
+
+    it('refuses to overwrite a plugin\'s AGENT.md the registry has not listed yet', async () => {
+      givenOnDisk(AGENTS_DIR, { 'weather-bot': `---\nname: weather-bot\nsource: plugin:weather@official\n---\n\nP` });
+
+      const result = await saveAgentTool.execute({ name: 'weather-bot', content: agentMd('weather-bot'), overwrite: true });
+
+      expect(result).toBe(inUse(label(), 'weather-bot'));
+      expectNothingWritten();
+    });
+
+    it('refuses a name that differs only in letter case from another agent\'s folder, even with overwrite', async () => {
+      // On macOS `reviewer/AGENT.md` IS `Reviewer/AGENT.md`.
+      givenOnDisk(AGENTS_DIR, { Reviewer: agentMd('Reviewer') });
+
+      const result = await saveAgentTool.execute({ name: 'reviewer', content: agentMd('reviewer'), overwrite: true });
+
+      expect(result).toBe(inUse(label(), 'reviewer'));
+      expectNothingWritten();
+    });
+
+    it('refuses a name that differs only in letter case from a listed agent', async () => {
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'Writer', description: '' }]);
+
+      const result = await saveAgentTool.execute({ name: 'writer', content: agentMd('writer') });
+
+      expect(result).toBe(inUse(label(), 'writer'));
+      expectNothingWritten();
+    });
+
+    it('refuses a listed agent\'s exact name when its file is not the one this tool would write (project-level)', async () => {
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'reviewer', description: '' }]);
+
+      const result = await saveAgentTool.execute({ name: 'reviewer', content: agentMd('reviewer'), overwrite: true });
+
+      expect(result).toBe(inUse(label(), 'reviewer'));
+      expectNothingWritten();
+    });
+
+    it('refuses content whose frontmatter name differs from the name parameter', async () => {
+      const result = await saveAgentTool.execute({
+        name: 'reviewer',
+        content: agentMd('writer'),
+        files: [{ path: 'notes.md', content: 'x' }],
+      });
+
+      expect(result).toBe(format(t().errManifestNameMismatch, { label: label(), name: 'reviewer', found: 'writer', fileName: 'AGENT.md' }));
+      expectNothingWritten();
+    });
+
+    it('writes an agent under a name nothing uses', async () => {
+      givenOnDisk(AGENTS_DIR, { reviewer: agentMd('reviewer') });
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'reviewer', description: '' }]);
+
+      await saveAgentTool.execute({ name: 'doc-writer', content: agentMd('doc-writer') });
+
+      expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/AGENT.md`, expect.any(String));
+    });
+  });
+
+  describe('save_skill', () => {
+    const label = () => t().labelSkill;
+
+    it('refuses to create a skill under the name of one that exists, and modifies it with overwrite', async () => {
+      givenOnDisk(SKILLS_DIR, { 'git-commit': skillMd('git-commit') }, 'SKILL.md');
+      vi.mocked(skillLoader.getAvailableSkills).mockReturnValue([{ name: 'git-commit', description: '', source: 'user' }]);
+
+      expect(await saveSkillTool.execute({ name: 'git-commit', content: skillMd('git-commit'), files: [{ path: 'a.md', content: 'x' }] }))
+        .toBe(alreadyExists(label(), 'git-commit'));
+      expectNothingWritten();
+
+      await saveSkillTool.execute({ name: 'git-commit', content: skillMd('git-commit'), overwrite: true });
+      expect(writeTextFile).toHaveBeenCalledWith(`${SKILLS_DIR}/git-commit/SKILL.md`, skillMd('git-commit'));
+    });
+
+    it.each([
+      ['builtin', 'pdf'],
+      ['plugin', 'weather'],
+      ['enterprise', 'expense'],
+    ] as const)('refuses the name of a %s skill, even with overwrite', async (source, name) => {
+      vi.mocked(skillLoader.getAvailableSkills).mockReturnValue([{ name, description: '', source }]);
+
+      expect(await saveSkillTool.execute({ name, content: skillMd(name), overwrite: true })).toBe(inUse(label(), name));
+      expect(skillLoader.getAvailableSkills).toHaveBeenCalledWith({ includeDrafts: true, includeDisabledPlugins: true });
+      expectNothingWritten();
+    });
+
+    it('refuses content whose frontmatter name differs from the name parameter', async () => {
+      const result = await saveSkillTool.execute({ name: 'git-commit', content: skillMd('commit') });
+
+      expect(result).toBe(format(t().errManifestNameMismatch, { label: label(), name: 'git-commit', found: 'commit', fileName: 'SKILL.md' }));
+      expectNothingWritten();
+    });
+
+    it('writes a skill under a name nothing uses', async () => {
+      await saveSkillTool.execute({ name: 'git-commit', content: skillMd('git-commit') });
+
+      expect(writeTextFile).toHaveBeenCalledWith(`${SKILLS_DIR}/git-commit/SKILL.md`, skillMd('git-commit'));
     });
   });
 });

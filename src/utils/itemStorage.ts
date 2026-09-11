@@ -111,14 +111,21 @@ export async function saveItemToAbuDir(
   const location = itemLocation(oldFilePath, folder, fileName);
   if (!location) throw new Error(`not an editable ${folder} item: ${JSON.stringify(oldFilePath)}`);
   const { manifest, itemDir, root } = location;
-  // The same rule the registry and loader read by: a manifest the folder
-  // OWNS. A link put in its place since would carry this write elsewhere.
+  // The same rule the registry and loader read by: a real item folder that
+  // OWNS its manifest. A link put in place of either since the scan would
+  // carry this write into another item's file. (The host resolves every
+  // parent of an lstat'ed path, so the manifest check alone passes through a
+  // linked folder.)
+  const folderInfo = await lstat(itemDir);
+  if (!folderInfo.isDirectory || folderInfo.isSymlink) throw new Error(`${folder} item folder is not a plain folder: ${itemDir}`);
   const info = await lstat(manifest);
   if (!info.isFile || info.isSymlink) throw new Error(`${folder} manifest is not a plain file: ${manifest}`);
 
   // Exact compare: a folder differing only in letter case is still moved.
+  // So is a folder not named after its item even when the name is unchanged
+  // — the folder is brought to the item's name, never onto an occupied one.
   if (getBaseName(itemDir) === name) {
-    // create: false — a file deleted since the check is not recreated.
+    // create: false — refuse rather than recreate a manifest that is gone.
     await writeTextFile(manifest, mdContent, { create: false });
     return;
   }

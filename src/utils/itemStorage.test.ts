@@ -8,8 +8,8 @@
  *   A rename writes the manifest in place, then MOVES the item's folder
  *   within its own parent, putting the old text back if the move fails.
  * - It never deletes anything, and it only touches a path spelled like an
- *   item: `<…>/<agents|skills>/<plain item>/<manifest>`, whose manifest is a
- *   plain file right now.
+ *   item: `<…>/<agents|skills>/<plain item>/<manifest>`, whose folder and
+ *   manifest are a plain folder and a plain file right now — no links.
  * - A name that is not one plain folder name is refused before the disk is
  *   touched.
  */
@@ -40,6 +40,20 @@ function expectUntouched(): void {
   expectNoMoveNoRemove();
 }
 
+type Info = Awaited<ReturnType<typeof lstat>>;
+const PLAIN_FILE = { isFile: true, isDirectory: false, isSymlink: false } as Info;
+const PLAIN_DIR = { isFile: false, isDirectory: true, isSymlink: false } as Info;
+const LINK = { isFile: false, isDirectory: false, isSymlink: true } as Info;
+
+/** `lstat` of the item: folders are plain folders, `*.md` plain files, unless overridden. */
+function lstatAs(overrides: Record<string, Info | Error> = {}): void {
+  vi.mocked(lstat).mockImplementation(async (p) => {
+    const hit = overrides[String(p)];
+    if (hit instanceof Error) throw hit;
+    return hit ?? (/\.md$/i.test(String(p)) ? PLAIN_FILE : PLAIN_DIR);
+  });
+}
+
 /** Every path writeTextFile was called with. */
 function writtenPaths(): string[] {
   return vi.mocked(writeTextFile).mock.calls.map(([p]) => String(p));
@@ -49,8 +63,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(homeDir).mockResolvedValue(HOME);
   vi.mocked(exists).mockResolvedValue(false);
-  // The manifest being edited is a plain file holding its previous text.
-  vi.mocked(lstat).mockResolvedValue({ isFile: true, isDirectory: false, isSymlink: false } as Awaited<ReturnType<typeof lstat>>);
+  // The item being edited is a plain folder whose manifest holds its previous text.
+  lstatAs();
   vi.mocked(readTextFile).mockResolvedValue('original');
   vi.mocked(rename).mockResolvedValue(undefined);
   vi.mocked(writeTextFile).mockResolvedValue(undefined);
@@ -109,7 +123,7 @@ describe('saveItemToAbuDir', () => {
       await saveItemToAbuDir(folder, fileName, 'reviewer', 'md', filePath);
 
       expect(writeTextFile).toHaveBeenCalledTimes(1);
-      // create: false — a file deleted since the check is not recreated.
+      // create: false — a manifest that is gone is refused, not recreated.
       expect(writeTextFile).toHaveBeenCalledWith(filePath, 'md', { create: false });
       expect(mkdir).not.toHaveBeenCalled();
       expectNoMoveNoRemove();
@@ -224,11 +238,17 @@ describe('saveItemToAbuDir', () => {
     });
   });
 
-  describe('the manifest must still be a plain file', () => {
+  describe('the item folder and its manifest must still be plain', () => {
+    const manifest = `${PROJECT}/.abu/skills/render/SKILL.md`;
+    const itemDir = `${PROJECT}/.abu/skills/render`;
     const notPlain: Array<[string, () => void]> = [
-      ['a symlink', () => vi.mocked(lstat).mockResolvedValue({ isFile: false, isDirectory: false, isSymlink: true } as Awaited<ReturnType<typeof lstat>>)],
-      ['a directory', () => vi.mocked(lstat).mockResolvedValue({ isFile: false, isDirectory: true, isSymlink: false } as Awaited<ReturnType<typeof lstat>>)],
-      ['gone', () => vi.mocked(lstat).mockRejectedValue(new Error('ENOENT'))],
+      ['a symlinked manifest', () => lstatAs({ [manifest]: LINK })],
+      ['a directory at the manifest', () => lstatAs({ [manifest]: PLAIN_DIR })],
+      ['a manifest that is gone', () => lstatAs({ [manifest]: new Error('ENOENT') })],
+      // The host resolves every parent of an lstat'ed path, so a linked item
+      // folder answers "plain file" for its manifest: the folder is checked too.
+      ['an item folder swapped for a link since the scan', () => lstatAs({ [itemDir]: LINK })],
+      ['an item folder that is gone', () => lstatAs({ [itemDir]: new Error('ENOENT') })],
     ];
 
     it.each(notPlain)('%s: refused, nothing written or moved', async (_label, arrange) => {

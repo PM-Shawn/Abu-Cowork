@@ -215,8 +215,8 @@ describe('AgentEditor — editing an existing agent saves through its own folder
     const actual = await vi.importActual<{ saveItemToAbuDir: typeof saveItemToAbuDir }>('@/utils/itemStorage');
     vi.mocked(saveItemToAbuDir).mockImplementation(actual.saveItemToAbuDir);
     vi.mocked(homeDir).mockResolvedValue(HOME);
-    // The agent's AGENT.md is a plain file holding its previous text.
-    vi.mocked(lstat).mockResolvedValue({ isFile: true, isDirectory: false, isSymlink: false } as Awaited<ReturnType<typeof lstat>>);
+    // The agent's AGENT.md is a plain file in a plain folder, holding its previous text.
+    vi.mocked(lstat).mockImplementation(async (p) => ({ isFile: /\.md$/i.test(String(p)), isDirectory: !/\.md$/i.test(String(p)), isSymlink: false }) as Awaited<ReturnType<typeof lstat>>);
     vi.mocked(readTextFile).mockResolvedValue('original');
   });
 

@@ -10,10 +10,15 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TeamRouteContext } from '@/core/team/leaderRoute';
 
+const localeRef: { current: 'zh-CN' | 'en-US' } = { current: 'zh-CN' };
 vi.mock('@/i18n', async () => {
   const { default: zhCN } = await import('@/i18n/locales/zh-CN');
+  const { default: enUS } = await import('@/i18n/locales/en-US');
   const actual = await vi.importActual<typeof import('@/i18n')>('@/i18n');
-  return { format: actual.format, useI18n: () => ({ t: zhCN, locale: 'zh-CN' }) };
+  return {
+    format: actual.format,
+    useI18n: () => ({ t: localeRef.current === 'en-US' ? enUS : zhCN, locale: localeRef.current }),
+  };
 });
 const openTeam = vi.fn();
 const openSubagent = vi.fn();
@@ -45,7 +50,10 @@ function ctx(extra: Partial<TeamRouteContext>): TeamRouteContext {
 }
 
 describe('TeamMemberBar — unresolved members', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localeRef.current = 'zh-CN';
+  });
 
   it('shows a pill with the count when some members do not resolve, and it opens the team panel', () => {
     teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
@@ -62,5 +70,41 @@ describe('TeamMemberBar — unresolved members', () => {
     teamRef.team = ctx({ unresolvedMemberRoleIds: [] });
     render(<TeamMemberBar conversationId="c1" />);
     expect(screen.queryByTestId('team-member-bar-unresolved')).toBeNull();
+  });
+
+  it('also shows the unavailable pill when the strip is collapsed, and it still opens the team panel', () => {
+    teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
+    render(<TeamMemberBar conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: '收起成员条' }));
+    const bar = screen.getByTestId('team-member-bar');
+    expect(bar).toHaveAttribute('data-collapsed', 'true');
+    const pill = screen.getByTestId('team-member-bar-unresolved');
+    expect(pill.textContent).toBe('2 名成员已失效');
+    expect(pill.tagName).toBe('BUTTON');
+    fireEvent.click(pill);
+    expect(openTeam).toHaveBeenCalledWith('c1');
+  });
+
+  it('uses singular English copy for exactly one unavailable member', () => {
+    localeRef.current = 'en-US';
+    teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone'] });
+    render(<TeamMemberBar conversationId="c1" />);
+    expect(screen.getByTestId('team-member-bar-unresolved').textContent).toBe('1 member unavailable');
+  });
+
+  it('uses plural English copy for two or more unavailable members (unchanged)', () => {
+    localeRef.current = 'en-US';
+    teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
+    render(<TeamMemberBar conversationId="c1" />);
+    expect(screen.getByTestId('team-member-bar-unresolved').textContent).toBe('2 member(s) unavailable');
+  });
+
+  it('uses singular English copy for the collapsed member-count pill when there is exactly one member', () => {
+    localeRef.current = 'en-US';
+    teamRef.team = ctx({ members: [{ name: 'a', description: '', systemPrompt: '', filePath: '/a' }] });
+    render(<TeamMemberBar conversationId="c1" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse member bar' }));
+    expect(screen.getByTestId('team-member-bar')).toHaveTextContent('1 member');
+    expect(screen.queryByTestId('team-member-bar')?.textContent).not.toContain('1 members');
   });
 });

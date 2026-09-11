@@ -2762,8 +2762,12 @@ export interface TranslationDict {
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
+    /** Singular form of teamMemberBarCollapsed, used when the count is exactly 1. */
+    teamMemberBarCollapsedOne: string;
     /** Member strip pill: N stored members no live agent answers to. */
     teamMemberBarUnresolved: string;
+    /** Singular form of teamMemberBarUnresolved, used when the count is exactly 1. */
+    teamMemberBarUnresolvedOne: string;
     teamMemberBarUnresolvedHint: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;

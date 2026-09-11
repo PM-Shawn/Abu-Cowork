@@ -2,10 +2,32 @@ import { useState } from 'react';
 import { Check, Loader2, XCircle, Square, ChevronDown, ChevronUp } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useI18n, format } from '@/i18n';
+import type { TranslationDict } from '@/i18n/types';
 import { usePreviewStore } from '@/stores/previewStore';
 import { memberDefByName, useTeamDispatches } from '@/components/team/useTeamDispatches';
 import { requestDispatchCancel } from '@/core/agent/dispatchCancel';
 import AgentAvatar from '@/components/common/AgentAvatar';
+
+/**
+ * Pill that reports how many stored team members no longer resolve to a live
+ * agent. Rendered identically whether the strip is collapsed or expanded —
+ * per brief D3 it is also the way out: opening the team panel is where a
+ * member gets removed or replaced.
+ */
+function UnresolvedMembersPill({ t, unresolved, onOpen }: { t: TranslationDict; unresolved: number; onOpen: () => void }) {
+  if (unresolved <= 0) return null;
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-danger)] hover:bg-[var(--abu-bg-hover)] transition-colors"
+      onClick={onOpen}
+      title={t.workspace.teamMemberBarUnresolvedHint}
+      data-testid="team-member-bar-unresolved"
+    >
+      {unresolved === 1 ? t.workspace.teamMemberBarUnresolvedOne : format(t.workspace.teamMemberBarUnresolved, { n: unresolved })}
+    </button>
+  );
+}
 
 /**
  * WorkBuddy-style member strip under the transcript: leader chip + one chip per
@@ -49,9 +71,10 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
           <span className="text-[var(--abu-text-tertiary)]">{t.workspace.teamLeaderBadge}</span>
         </button>
         <button type="button" className={cn(chip, anyRunning && 'border-[var(--abu-clay)]')} onClick={() => openTeam(conversationId)} title={t.workspace.teamOpenOverview}>
-          <span className="truncate">{format(t.workspace.teamMemberBarCollapsed, { n: members.length })}</span>
+          <span className="truncate">{members.length === 1 ? t.workspace.teamMemberBarCollapsedOne : format(t.workspace.teamMemberBarCollapsed, { n: members.length })}</span>
           {anyRunning && <Loader2 aria-hidden="true" className="h-3 w-3 text-[var(--abu-clay)] motion-safe:animate-spin" />}
         </button>
+        <UnresolvedMembersPill t={t} unresolved={unresolved} onOpen={() => openTeam(conversationId)} />
         {toggle}
       </div>
     );
@@ -80,19 +103,7 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
           {member.status === 'error' && <XCircle aria-hidden="true" className="h-3 w-3 text-[var(--abu-danger)]" />}
         </button>
       ))}
-      {unresolved > 0 && (
-        // Brief D3: the strip is where the user notices the gap, so it is also
-        // the way out — the team panel is where members are removed or replaced.
-        <button
-          type="button"
-          className="inline-flex items-center rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-danger)]"
-          onClick={() => openTeam(conversationId)}
-          title={t.workspace.teamMemberBarUnresolvedHint}
-          data-testid="team-member-bar-unresolved"
-        >
-          {format(t.workspace.teamMemberBarUnresolved, { n: unresolved })}
-        </button>
-      )}
+      <UnresolvedMembersPill t={t} unresolved={unresolved} onOpen={() => openTeam(conversationId)} />
       {members.map((m) => ({ m, running: m.dispatches.find((d) => d.live && d.status === 'running') })).filter((x) => x.running).map(({ m, running }) => (
         <button
           key={`stop-${m.agent}`}

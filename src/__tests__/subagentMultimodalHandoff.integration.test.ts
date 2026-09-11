@@ -130,8 +130,29 @@ function childUserContent(index = 0) {
   return user?.content as Array<{ type: string; text?: string; source?: { media_type?: string } }>;
 }
 
-function expectOrderedChildContent(task: string, index = 0) {
-  expect(childUserContent(index).map((block) => (
+// run_agent_batch dispatches its children concurrently (runWithConcurrency),
+// so the order in which they reach the adapter is not part of the contract:
+// each child crosses its own asynchronous boundary before the model call (the
+// loop's dynamic import of the memory scanner, plus the sidecar transport on
+// that runtime), and under full-suite load a later-dispatched child can reach
+// the adapter first. The batch keeps its RESULT order by task index — the
+// aggregated report asserts that separately — so locate a child by the task
+// text the loop appends as the final user block, and require exactly one match.
+function childUserContentForTask(task: string) {
+  const matches = state.chats.flatMap((messages) => {
+    const user = (messages as Array<{ role: string; content: unknown }>).find((message) => message.role === 'user');
+    const content = Array.isArray(user?.content)
+      ? user.content as Array<{ type: string; text?: string; source?: { media_type?: string } }>
+      : undefined;
+    const last = content?.at(-1);
+    return last?.type === 'text' && last.text === task ? [content as NonNullable<typeof content>] : [];
+  });
+  expect(matches, `exactly one child adapter call should end with the task "${task}"`).toHaveLength(1);
+  return matches[0];
+}
+
+function expectOrderedChildContent(task: string) {
+  expect(childUserContentForTask(task).map((block) => (
     block.type === 'image' ? `image:${block.source?.media_type}` : `text:${block.text}`
   ))).toEqual([
     'text:Inspect this image.',
@@ -259,13 +280,18 @@ describe('multimodal delegation route × runtime matrix', () => {
   it.each(['local', 'sidecar'] as const)('run_agent_batch reaches every child adapter with image content (%s)', async (runtime) => {
     state.runtime = runtime;
     const { conversationId, loopId } = installSourceTurn();
-    await runAgentBatchTool.execute({ tasks: [
+    const report = await runAgentBatchTool.execute({ tasks: [
       { type: 'research', task: 'Describe it.' },
       { type: 'writer', task: 'Summarize it.' },
     ] }, { conversationId, loopId, toolCallId: `batch-${runtime}` } as never);
     expect(state.chats).toHaveLength(2);
-    expectOrderedChildContent('Describe it.', 0);
-    expectOrderedChildContent('Summarize it.', 1);
+    // Every child receives the full ordered source turn with its own task last,
+    // whichever child happened to reach the adapter first.
+    expectOrderedChildContent('Describe it.');
+    expectOrderedChildContent('Summarize it.');
+    // The batch's own ordering contract: sections are numbered by task index,
+    // not by completion order (`batchSectionTitle` is "{n}: {label}").
+    expect(report).toMatch(/1: Describe it\.[\s\S]*2: Summarize it\./);
     clearLoopContext(loopId);
   });
 

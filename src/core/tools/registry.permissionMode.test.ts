@@ -521,9 +521,10 @@ describe('self-extension approval gate', () => {
   it.each([
     [true, undefined, 'selfExtensionSaveAgentReplace'],
     [true, true, 'selfExtensionSaveAgentReplace'],
-    [false, true, 'selfExtensionSaveAgentNew'],
+    // `overwrite: true` may replace an expert created while the approval waits.
+    [false, true, 'selfExtensionSaveAgentReplace'],
     [false, undefined, 'selfExtensionSaveAgentNew'],
-  ] as const)('asks to save an agent as "replaces" only when its AGENT.md is on disk (on disk: %s, overwrite: %s)', async (onDisk, overwrite, label) => {
+  ] as const)('asks to save an agent as "new" only when no AGENT.md is on disk and overwrite is not requested (on disk: %s, overwrite: %s)', async (onDisk, overwrite, label) => {
     const target = '/Users/testuser/.abu/agents/helper/AGENT.md';
     vi.mocked(exists).mockImplementation(async (path) => onDisk && path === target);
     const asked: string[] = [];

@@ -713,7 +713,8 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
 
       // Agents allow unicode names (数据分析师); skills keep the strict slug.
       const nameRe = isSkill ? ITEM_NAME_RE : AGENT_NAME_RE;
-      if (!nameRe.test(name)) {
+      // A Windows device name (`nul`, `con`, …) is not a folder that can be created.
+      if (!nameRe.test(name) || WINDOWS_DEVICE_NAME_RE.test(name)) {
         return format(t.errInvalidName, { label, name });
       }
 

@@ -1030,6 +1030,16 @@ describe('save_agent / save_skill name guard', () => {
     // Every `files` entry is checked before the manifest is written: a refusal
     // found halfway through the list used to leave AGENT.md (and the entries
     // before it) on disk under a call that reported failure.
+    it.each(['nul', 'con', 'COM1', 'lpt9', 'aux.md'])(
+      'refuses the Windows device name %s as an expert name, writing nothing',
+      async (name) => {
+        const result = await saveAgentTool.execute({ name, content: agentMd(name) });
+
+        expect(result).toBe(format(t().errInvalidName, { label: t().labelAgent, name }));
+        expectNothingWritten();
+      },
+    );
+
     describe('supporting files are all checked before anything is written', () => {
       const save = (files: unknown[]) => saveAgentTool.execute({ name: 'doc-writer', content: agentMd('doc-writer'), files });
 

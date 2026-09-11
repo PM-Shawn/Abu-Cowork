@@ -1,4 +1,5 @@
 import type { Message, MessageContent, ToolCall, ToolCallForContext, ToolResultContent, ToolResultOutputRef } from '../../types';
+import { readFile } from '@tauri-apps/plugin-fs';
 import { resolveFileSource, resolveOutputRefSource } from '../session/outputSnapshots';
 import { uint8ArrayToBase64 } from '../../utils/base64';
 import { getBaseName } from '../../utils/pathUtils';
@@ -26,7 +27,6 @@ export async function readRecoverableImageBytes(
   try {
     const resolved = await resolveFileSource(conversationId, filePath, workspacePath);
     if (resolved.status === 'available') {
-      const { readFile } = await import('@tauri-apps/plugin-fs');
       const bytes = await readFile(resolved.path);
       return bytes.byteLength > 0 ? bytes : null;
     }
@@ -66,7 +66,6 @@ async function readOutputRefAsBase64(
   try {
     const resolved = await resolveOutputRefSource(conversationId, outputRef.relPath);
     if (resolved.status === 'available') {
-      const { readFile } = await import('@tauri-apps/plugin-fs');
       const bytes = await readFile(resolved.path);
       result = uint8ArrayToBase64(bytes);
     }

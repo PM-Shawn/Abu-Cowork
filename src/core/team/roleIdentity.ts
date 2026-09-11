@@ -57,6 +57,14 @@ const PLUGIN_ROLE_PREFIX = 'plugin:';
  */
 function isPluginManagedAgent(agent: SubagentDefinition): boolean {
   if (pluginOwnerForAgent(agent) !== undefined) return true; // an owner key, or null for a conflict
+  // Startup invariant: activationPolicy's `ready` starts out TRUE. That is safe
+  // only because pluginStore's persist hydrate (synchronous localStorage) runs
+  // at import and publishes the persisted records with `recordsReady=false`.
+  // If that hydrate ever becomes async or pluginStore is imported lazily, this
+  // line would treat every plugin file as a user file at startup — and
+  // ensureRoleId would write into it. (Today's gap: an unparseable persisted
+  // entry makes zustand skip the callback, leaving `ready` true until the next
+  // pluginStore update — bootstrapPluginUpdates' first statement.)
   if (pluginActivationRecordsReady()) return false;
   return isPluginOwnedAgent(agent);
 }

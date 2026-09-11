@@ -74,6 +74,8 @@ export function sanitizePluginActivations(raw: unknown): PluginActivations {
 // installer ↔ store cycle. pluginStore publishes synchronously on every change.
 let activations: PluginActivations = {};
 let knownMcp = new Set<string>();
+// Starts TRUE; safe only because pluginStore's synchronous persist hydrate
+// publishes `recordsReady=false` at import — see roleIdentity.isPluginManagedAgent.
 let ready = true;
 const mcpEpochs = new Map<string, number>();
 const mcpGrants = new Map<string, string>();

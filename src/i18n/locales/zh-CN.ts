@@ -2287,6 +2287,7 @@ const zhCN: TranslationDict = {
     teamMemberBarExpand: '展开成员条',
     teamMemberBarCollapsed: '{n} 位队员',
     teamMemberBarUnresolved: '{n} 名成员已失效',
+    teamMemberBarUnresolvedHint: '打开团队面板处理失效成员',
     agentRichContentReleased: '此步骤的富内容已释放，以控制内存占用。',
     agentRichContentPartiallyRetained: '此步骤的部分富内容已省略，以控制内存占用。',
     startHere: '从这里开始',

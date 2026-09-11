@@ -2,11 +2,12 @@
 /**
  * A team whose stored member no longer resolves runs with fewer people than
  * the team page suggests. The member strip is where the user looks during a
- * run, so it says so — once, as a muted pill, no button.
+ * run, so it says so once — and, per brief D3, is also the way out: the pill
+ * opens the team panel, where the member can be removed or replaced.
  */
 
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TeamRouteContext } from '@/core/team/leaderRoute';
 
 vi.mock('@/i18n', async () => {
@@ -14,8 +15,10 @@ vi.mock('@/i18n', async () => {
   const actual = await vi.importActual<typeof import('@/i18n')>('@/i18n');
   return { format: actual.format, useI18n: () => ({ t: zhCN, locale: 'zh-CN' }) };
 });
+const openTeam = vi.fn();
+const openSubagent = vi.fn();
 vi.mock('@/stores/previewStore', () => ({
-  usePreviewStore: (selector: (s: Record<string, unknown>) => unknown) => selector({ openSubagent: vi.fn(), openTeam: vi.fn() }),
+  usePreviewStore: (selector: (s: Record<string, unknown>) => unknown) => selector({ openSubagent, openTeam }),
 }));
 vi.mock('@/core/agent/dispatchCancel', () => ({ requestDispatchCancel: vi.fn() }));
 vi.mock('@/components/common/AgentAvatar', () => ({ default: () => <span /> }));
@@ -42,10 +45,17 @@ function ctx(extra: Partial<TeamRouteContext>): TeamRouteContext {
 }
 
 describe('TeamMemberBar — unresolved members', () => {
-  it('shows a muted pill with the count when some members do not resolve', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('shows a pill with the count when some members do not resolve, and it opens the team panel', () => {
     teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
     render(<TeamMemberBar conversationId="c1" />);
-    expect(screen.getByTestId('team-member-bar-unresolved').textContent).toBe('2 名成员已失效');
+    const pill = screen.getByTestId('team-member-bar-unresolved');
+    expect(pill.textContent).toBe('2 名成员已失效');
+    // Not a dead end: brief D3 asks for a way to act on it.
+    expect(pill.tagName).toBe('BUTTON');
+    fireEvent.click(pill);
+    expect(openTeam).toHaveBeenCalledWith('c1');
   });
 
   it('shows nothing when every member resolves', () => {

@@ -1,7 +1,7 @@
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import type { SubagentDefinition } from '@/types';
 import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { agentRegistry, serializeAgentMd } from '@/core/agent/registry';
-import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { pluginActivationRecordsReady, pluginOwnerForAgent } from '@/core/plugin/activationPolicy';
 
@@ -111,6 +111,13 @@ export function resolveRoleId(roleId: string): SubagentDefinition | null {
  * Caller is responsible for refreshing the discovery store afterwards when a
  * write happened (returned `wrote` flag). Builtin and plugin-owned agents are
  * never written to — their identity is synthetic.
+ *
+ * The id is written IN PLACE, into `agent.filePath` — the file the registry
+ * read. Never a path re-derived from the frontmatter `name`: an agent's folder
+ * need not be named after it, and a project-level agent lives in its project,
+ * so a derived path could overwrite another agent's AGENT.md or land outside
+ * ~/.abu/agents/. Nothing is moved or removed. `create: false` keeps a file
+ * deleted since the registry read it from being recreated.
  */
 export async function ensureRoleId(agent: SubagentDefinition): Promise<{ roleId: string; wrote: boolean }> {
   if (isBuiltinAgent(agent)) return { roleId: BUILTIN_ROLE_PREFIX + agent.name, wrote: false };
@@ -118,6 +125,6 @@ export async function ensureRoleId(agent: SubagentDefinition): Promise<{ roleId:
   if (agent.roleId) return { roleId: agent.roleId, wrote: false };
   const roleId = createRoleId();
   const md = serializeAgentMd({ ...agent, roleId }, agent.systemPrompt ?? '');
-  await saveItemToAbuDir('agents', 'AGENT.md', agent.name, md, agent.filePath);
+  await writeTextFile(agent.filePath, md, { create: false });
   return { roleId, wrote: true };
 }

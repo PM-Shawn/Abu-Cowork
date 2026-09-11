@@ -18,10 +18,21 @@ vi.mock('@/core/agent/registry', () => ({
   },
   serializeAgentMd: (meta: Record<string, unknown>, prompt: string) => `---\nrole-id: ${String(meta.roleId)}\n---\n${prompt}`,
 }));
-const saved: Array<{ name: string; md: string; filePath?: string }> = [];
-vi.mock('@/utils/itemStorage', () => ({
-  saveItemToAbuDir: async (_dir: string, _file: string, name: string, md: string, filePath?: string) => { saved.push({ name, md, filePath }); return '/saved'; },
-}));
+// Every write goes through the globally mocked plugin-fs: `saved` is what
+// reached the disk, and nothing else (mkdir/rename/remove) may be touched.
+import { mkdir, remove, rename, writeTextFile } from '@tauri-apps/plugin-fs';
+const saved = {
+  get length() { return vi.mocked(writeTextFile).mock.calls.length; },
+  at: (i: number) => {
+    const [filePath, md, options] = vi.mocked(writeTextFile).mock.calls[i];
+    return { filePath: String(filePath), md: String(md), options };
+  },
+};
+function expectNothingElseTouched(): void {
+  expect(mkdir).not.toHaveBeenCalled();
+  expect(rename).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+}
 
 import { createRoleId, effectiveRoleId, ensureRoleId, isBuiltinAgent, resolveRoleId, roleIdAgentName } from './roleIdentity';
 
@@ -30,7 +41,7 @@ function def(name: string, extra: Partial<SubagentDefinition> = {}): SubagentDef
 }
 
 describe('roleIdentity', () => {
-  beforeEach(() => { registry.agents = []; activation.owners = {}; activation.ready = true; saved.length = 0; });
+  beforeEach(() => { registry.agents = []; activation.owners = {}; activation.ready = true; vi.clearAllMocks(); });
 
   it('recognises builtin agents by the in-memory marker or the bundled resource dir', () => {
     expect(isBuiltinAgent({ filePath: '__builtin__' })).toBe(true);
@@ -68,9 +79,33 @@ describe('roleIdentity', () => {
     const fresh = await ensureRoleId(def('b'));
     expect(fresh.wrote).toBe(true);
     expect(fresh.roleId).toMatch(/^role-/);
-    expect(saved).toHaveLength(1);
-    expect(saved[0].md).toContain(`role-id: ${fresh.roleId}`);
-    expect(saved[0].filePath).toBe('/Users/me/.abu/agents/b/AGENT.md');
+    expect(saved.length).toBe(1);
+    expect(saved.at(0).md).toContain(`role-id: ${fresh.roleId}`);
+    expect(saved.at(0).filePath).toBe('/Users/me/.abu/agents/b/AGENT.md');
+    expectNothingElseTouched();
+  });
+
+  it('writes the role-id into the file the registry read, even when its folder is not named after the agent', async () => {
+    // Folder `old-writer/`, frontmatter `name: writer`; an unrelated agent may
+    // live in `writer/`. Re-deriving the path from the name would overwrite
+    // that agent and then delete `old-writer/`.
+    const renamedByHand = def('writer', { filePath: '/Users/me/.abu/agents/old-writer/AGENT.md' });
+    const ensured = await ensureRoleId(renamedByHand);
+    expect(ensured.wrote).toBe(true);
+    expect(saved.length).toBe(1);
+    expect(saved.at(0).filePath).toBe('/Users/me/.abu/agents/old-writer/AGENT.md');
+    expect(saved.at(0).md).toContain(`role-id: ${ensured.roleId}`);
+    // A file deleted since the registry read it is not recreated.
+    expect(saved.at(0).options).toEqual({ create: false });
+    expectNothingElseTouched();
+  });
+
+  it('writes a project-level agent in place — never a copy into ~/.abu', async () => {
+    const projectAgent = def('qa', { filePath: '/work/repo/.abu/agents/qa/AGENT.md' });
+    await ensureRoleId(projectAgent);
+    expect(saved.length).toBe(1);
+    expect(saved.at(0).filePath).toBe('/work/repo/.abu/agents/qa/AGENT.md');
+    expectNothingElseTouched();
   });
 
   it('an activation-record owner makes an agent plugin-owned even when its frontmatter has no source: key', async () => {
@@ -84,7 +119,7 @@ describe('roleIdentity', () => {
     expect(resolveRoleId('plugin:y')?.name).toBe('y');
     const ensured = await ensureRoleId(noSource);
     expect(ensured).toEqual({ roleId: 'plugin:y', wrote: false });
-    expect(saved).toHaveLength(0);
+    expect(saved.length).toBe(0);
   });
 
   it('conflicting ownership claims (owner null) fail closed: plugin-managed, never written', async () => {
@@ -94,7 +129,7 @@ describe('roleIdentity', () => {
     expect(effectiveRoleId(contested)).toBe('plugin:c');
     const ensured = await ensureRoleId(contested);
     expect(ensured).toEqual({ roleId: 'plugin:c', wrote: false });
-    expect(saved).toHaveLength(0);
+    expect(saved.length).toBe(0);
   });
 
   it('an orphaned frontmatter source: (records ready, no plugin claims the file) is a user agent', async () => {
@@ -109,8 +144,8 @@ describe('roleIdentity', () => {
     const ensured = await ensureRoleId(bare);
     expect(ensured.wrote).toBe(true);
     expect(ensured.roleId).toMatch(/^role-/);
-    expect(saved).toHaveLength(1);
-    expect(saved[0].filePath).toBe('/Users/me/.abu/agents/w/AGENT.md');
+    expect(saved.length).toBe(1);
+    expect(saved.at(0).filePath).toBe('/Users/me/.abu/agents/w/AGENT.md');
   });
 
   it('before activation records are ready (cold start), the frontmatter source: decides', async () => {
@@ -124,7 +159,7 @@ describe('roleIdentity', () => {
     expect(resolveRoleId('plugin:reviewer')).toBeNull();
     const ensured = await ensureRoleId(fromPlugin);
     expect(ensured).toEqual({ roleId: 'plugin:reviewer', wrote: false });
-    expect(saved).toHaveLength(0);
+    expect(saved.length).toBe(0);
   });
 
   it('regression: a recorded owner is enough on its own — ensureRoleId never writes into a plugin file', async () => {
@@ -137,7 +172,7 @@ describe('roleIdentity', () => {
       activation.ready = ready;
       expect(await ensureRoleId(owned)).toEqual({ roleId: 'plugin:p', wrote: false });
     }
-    expect(saved).toHaveLength(0);
+    expect(saved.length).toBe(0);
   });
 
   it('createRoleId yields distinct role- ids', () => {

@@ -36,7 +36,7 @@
  *   - `exists` → `fs.access(path)`, `false` on `ENOENT`, rethrow any other
  *     error (matches plugin-fs's `exists()` — only "not found" is a `false`
  *     result, everything else is a real error).
- *   - `mkdir(path, { recursive })` → `fs.mkdir(path, { recursive })`.
+ *   - `mkdir(path, { recursive, mode })` → `fs.mkdir(path, { recursive, mode })`.
  *   - `remove(path, { recursive })` → `fs.rm(path, { recursive, force:
  *     false })` (plugin-fs's `remove()` throws if the target doesn't exist,
  *     matching Node's default `force: false`).

@@ -106,6 +106,8 @@ describe('sidecar plugin-fs shim', () => {
       expect((await nodeStat(path)).mode & 0o777).toBe(0o600);
     });
 
+    // Bites only as a non-root user: honoring 0o400 would make the second
+    // write fail with EACCES, which root bypasses.
     it('ignores mode on Windows, as the plugin does', async () => {
       const original = Object.getOwnPropertyDescriptor(process, 'platform');
       Object.defineProperty(process, 'platform', { value: 'win32' });

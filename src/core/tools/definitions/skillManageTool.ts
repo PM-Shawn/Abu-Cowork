@@ -1119,7 +1119,9 @@ async function deleteAction(input: Record<string, unknown>, context?: ToolExecut
 
   const workspacePath = requireWorkspace(context);
 
-  const existing = skillLoader.getSkill(name);
+  // A skill the organization's blacklist hides can still be removed: removal
+  // is never refused (skillPolicy.ts).
+  const existing = skillLoader.getSkill(name, { includePolicyBlocked: true });
   if (!existing) {
     return { success: false, error: `skill "${name}" not found` };
   }

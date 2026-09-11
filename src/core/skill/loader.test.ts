@@ -659,6 +659,14 @@ describe('SkillLoader · organization skill blacklist', () => {
     expect(loader.isBlockedByPolicy('ok')).toBe(false);
   });
 
+  it('does not reveal a blocked name no skill on disk answers to', async () => {
+    setSkillNamePolicy((name) => name !== 'blocked' && name !== 'secret-listed-name');
+    const loader = new SkillLoader();
+    await loader.discoverSkills(ws);
+
+    expect(loader.isBlockedByPolicy('secret-listed-name')).toBe(false);
+  });
+
   it('lets bookkeeping see a blacklisted skill when it asks to', async () => {
     const loader = new SkillLoader();
     await loader.discoverSkills(ws);
@@ -691,5 +699,7 @@ describe('SkillLoader · organization skill blacklist', () => {
     });
 
     expect(await loader.refreshSkill('ok')).toBeUndefined();
+    expect(loader.getSkill('blocked')).toBeUndefined();
+    expect(loader.getAvailableSkills().map((s) => s.name)).not.toContain('blocked');
   });
 });

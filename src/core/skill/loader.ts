@@ -387,12 +387,15 @@ export class SkillLoader {
   }
 
   /**
-   * Whether the organization's skill blacklist blocks `name`. For telling the
-   * model a skill it asked for by name is blocked rather than missing, and for
-   * noticing when a policy change alters which scanned skills are hidden.
+   * Whether a skill the last scan found under `name` is hidden by the
+   * organization's skill blacklist. For telling the model a skill it asked
+   * for by name is blocked rather than missing, and for noticing when a policy
+   * change alters which scanned skills are hidden. A name nothing on disk
+   * claims is simply missing: answering "blocked" for any name would let the
+   * model enumerate the organization's list.
    */
   isBlockedByPolicy(name: string): boolean {
-    return !isSkillNameAllowed(name);
+    return this.nameClaims.some((claim) => claim.name === name) && !isSkillNameAllowed(name);
   }
 
   /** Get full draft entries (includes content) for the review UI. */

@@ -191,6 +191,8 @@ describe('discovery follows a skill blacklist change', () => {
     const discover = vi.mocked(skillLoader.discoverSkills);
     discover.mockClear();
 
+    const scanLanded = () => vi.waitFor(() => expect(useDiscoveryStore.getState().isLoading).toBe(false));
+
     // An enterprise-store change that blocks nothing new (a heartbeat).
     useEnterpriseStore.setState({});
     expect(discover).not.toHaveBeenCalled();
@@ -198,12 +200,39 @@ describe('discovery follows a skill blacklist change', () => {
     blocked = new Set(['b']);
     useEnterpriseStore.setState({});
     expect(discover).toHaveBeenCalledTimes(1);
+    await scanLanded();
 
     useEnterpriseStore.setState({});
     expect(discover).toHaveBeenCalledTimes(1);
 
     blocked = new Set();
     useEnterpriseStore.setState({});
+    expect(discover).toHaveBeenCalledTimes(2);
+    await scanLanded();
+  });
+});
+
+describe('discovery follows a skill blacklist change · mid-scan', () => {
+  it('never starts a second scan while one runs; it looks again once that one lands', async () => {
+    const claims = [{ name: 'b', source: 'project-standard' as const }];
+    vi.mocked(skillLoader.getNameClaims).mockReturnValue(claims);
+    vi.mocked(skillLoader.isBlockedByPolicy).mockImplementation((name) => name === 'b');
+    vi.mocked(agentRegistry.discoverAgents).mockResolvedValue([]);
+    await useDiscoveryStore.getState().refresh();
+    const discover = vi.mocked(skillLoader.discoverSkills);
+    discover.mockClear();
+
+    let land!: (skills: []) => void;
+    discover.mockImplementationOnce(() => new Promise((resolve) => { land = resolve; }));
+    const running = useDiscoveryStore.getState().refresh();
+    // A scan resets the loader's claims before it walks the directories.
+    vi.mocked(skillLoader.getNameClaims).mockReturnValue([]);
+    useEnterpriseStore.setState({});
+    expect(discover).toHaveBeenCalledTimes(1);
+
+    vi.mocked(skillLoader.getNameClaims).mockReturnValue(claims);
+    land([]);
+    await running;
     expect(discover).toHaveBeenCalledTimes(2);
   });
 });

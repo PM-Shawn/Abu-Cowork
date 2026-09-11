@@ -111,6 +111,17 @@ function blockedSkillSignature(): string {
   return [...names].filter((name) => skillLoader.isBlockedByPolicy(name)).sort().join('\n');
 }
 let lastBlockedSkills = '';
+/**
+ * The enterprise store changed while a scan was running. The loader resets
+ * its claims when a scan starts, so no signature can be taken mid-scan, and
+ * the scan in flight may have filtered with the policy from before the change.
+ */
+let policyChangedMidScan = false;
+function rescanIfPolicyChangedMidScan(): void {
+  if (!policyChangedMidScan) return;
+  policyChangedMidScan = false;
+  void useDiscoveryStore.getState().refresh();
+}
 export function getLastDiscoveryRefreshAt(): number {
   return lastRefreshAt;
 }
@@ -155,6 +166,8 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
       console.warn('Discovery refresh failed:', err);
       set({ isLoading: false });
       if (options?.strict) throw err;
+    } finally {
+      rescanIfPolicyChangedMidScan();
     }
   },
 }));
@@ -182,6 +195,12 @@ useWorkspaceStore.subscribe((state) => {
 // more often than the policy does; only a change in which scanned skills are
 // hidden rescans. Registered once per process, like the workspace one above.
 useEnterpriseStore.subscribe(() => {
+  // Look again once the running scan lands, rather than start a second one
+  // on the same loader.
+  if (useDiscoveryStore.getState().isLoading) {
+    policyChangedMidScan = true;
+    return;
+  }
   const next = blockedSkillSignature();
   if (next === lastBlockedSkills) return;
   lastBlockedSkills = next;

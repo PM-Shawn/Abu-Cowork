@@ -85,6 +85,12 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       samplePrompts: samplePrompts.length > 0 ? samplePrompts : undefined,
       category: category.trim() || undefined,
       tags: tags.length > 0 ? tags : undefined,
+      // Identity is not an editable field either: `roleId` is what every team
+      // membership points at, `createdAt` drives the newest-first sort. A new
+      // agent has neither; both are minted elsewhere (first team membership /
+      // first save) and only ever carried over here — never regenerated.
+      roleId: agent?.roleId,
+      createdAt: agent?.createdAt,
       // Provenance is not an editable field: carried over verbatim so a save
       // cannot quietly launder a plugin's agent into a user-authored one. A new
       // agent has none. (The detail views disable Edit for plugin agents, so

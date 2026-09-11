@@ -219,16 +219,27 @@ export async function writeDraft(
  *   - collision check against non-draft skills
  *   - best-effort reject of any same-name draft (so the loader's first-win
  *     rule doesn't leave a phantom in the drafts panel)
+ *
+ * Creates only: returns null, writing nothing, when the skill folder is
+ * already there — made since the caller's check (another loop creating the
+ * same name), or holding a SKILL.md the check could not see.
  */
 export async function writeSkillDirect(
   skillName: string,
   skillMdContent: string,
   workspacePath: string,
-): Promise<{ skillDir: string; skillMdPath: string }> {
+): Promise<{ skillDir: string; skillMdPath: string } | null> {
   const skillsRoot = await getProjectSkillsDir(workspacePath);
   const skillDir = joinPath(skillsRoot, skillName);
   const skillMdPath = joinPath(skillDir, 'SKILL.md');
-  await mkdir(skillDir, { recursive: true });
+  await mkdir(skillsRoot, { recursive: true });
+  // Not `recursive`: that succeeds on an existing folder, this fails on one.
+  try {
+    await mkdir(skillDir);
+  } catch (err) {
+    if (await exists(skillDir).catch(() => false)) return null;
+    throw err;
+  }
   await atomicWrite(skillMdPath, skillMdContent);
   return { skillDir, skillMdPath };
 }

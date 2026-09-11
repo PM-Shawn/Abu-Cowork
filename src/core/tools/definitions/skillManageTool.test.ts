@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { readTextFile, exists } from '@tauri-apps/plugin-fs';
+import { readTextFile, exists, readDir, mkdir } from '@tauri-apps/plugin-fs';
 import { skillManageTool } from './skillManageTool';
-import { skillLoader } from '../../skill/loader';
+import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
-import type { Skill } from '../../../types';
+import { format, getI18n, getLanguageSetting, setLanguage } from '../../../i18n';
+import type { Skill, SkillSource } from '../../../types';
 
 // ── Mocks for atomicFs (we don't want real disk I/O in unit tests) ──
 vi.mock('../../../utils/atomicFs', () => ({
@@ -71,6 +72,8 @@ import { getI18n, format } from '../../../i18n';
 
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockExists = vi.mocked(exists);
+const mockReadDir = vi.mocked(readDir);
+const mockMkdir = vi.mocked(mkdir);
 const mockAtomicWrite = vi.mocked(atomicWrite);
 const mockAtomicWriteWithBackup = vi.mocked(atomicWriteWithBackup);
 const mockRestoreFromBackup = vi.mocked(restoreFromBackup);
@@ -95,6 +98,9 @@ beforeEach(() => {
   mockAtomicWriteWithBackup.mockResolvedValue({ wrote: true, backupPath: null });
   mockExists.mockResolvedValue(true);
   mockReadTextFile.mockResolvedValue('');
+  // clearAllMocks keeps implementations: reset the ones tests below replace.
+  mockReadDir.mockResolvedValue([]);
+  mockMkdir.mockResolvedValue(undefined);
 
   // Reset settings safety config
   useSettingsStore.setState({
@@ -104,6 +110,7 @@ beforeEach(() => {
 
   // Reset skillLoader state
   vi.spyOn(skillLoader, 'discoverSkills').mockResolvedValue([]);
+  vi.spyOn(skillLoader, 'getNameClaims').mockReturnValue([]);
 });
 
 // ── Workspace enforcement ──────────────────────────────────────────────
@@ -339,6 +346,7 @@ describe('skill_manage · create', () => {
 
   it('refuses to overwrite an existing non-draft skill', async () => {
     vi.spyOn(skillLoader, 'getSkill').mockReturnValue(makeSkill('weekly-report', { source: 'user' }));
+    vi.spyOn(skillLoader, 'getNameClaims').mockReturnValue([{ name: 'weekly-report', source: 'user' }]);
     const result = JSON.parse(
       (await skillManageTool.execute(
         {
@@ -351,7 +359,7 @@ describe('skill_manage · create', () => {
       )) as string,
     );
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/already exists/);
+    expect(result.error).toBe(format(getI18n().toolResult.skill.errSkillExists, { name: 'weekly-report' }));
   });
 
   it('uses context.workspacePath when present, even if the global store is cleared', async () => {
@@ -402,6 +410,233 @@ describe('skill_manage · create', () => {
     // Pre-scan refuses the write — no disk side effects, no rollback needed.
     expect(mockAtomicWrite).not.toHaveBeenCalled();
     expect(mockRestoreFromBackup).not.toHaveBeenCalled();
+  });
+});
+
+// ── create: which names it may take ────────────────────────────────────
+//
+// create writes into this workspace's workspace-auto dir (or its drafts/),
+// which the loader scans BEFORE the user's, plugin, enterprise and built-in
+// skills: a created skill under a taken name hides the original. So create
+// may take only a name nothing else claims — every scanned skill counts,
+// disabled plugins' and first-win-shadowed ones included, and so does any
+// folder whose name differs only in letter case (the same folder on macOS /
+// Windows). The one exception is a draft of the very same name, which create
+// has always superseded.
+
+describe('skill_manage · create name guard', () => {
+  const WS_AUTO = '/Users/testuser/.abu/projects/-workspace-myapp/skills';
+  const WS_DRAFTS = `${WS_AUTO}/drafts`;
+
+  function claims(...entries: Array<[string, SkillSource]>): void {
+    vi.spyOn(skillLoader, 'getNameClaims').mockReturnValue(entries.map(([name, source]) => ({ name, source })));
+  }
+
+  function folders(byDir: Record<string, string[]>): void {
+    mockReadDir.mockImplementation(async (dir: string | URL) =>
+      (byDir[String(dir)] ?? []).map((name) => ({ name, isDirectory: true, isFile: false, isSymlink: false })),
+    );
+  }
+
+  async function create(name: string, extra: Record<string, unknown> = {}) {
+    return JSON.parse(
+      (await skillManageTool.execute(
+        { action: 'create', name, frontmatter: { description: 'd' }, content: '# body', ...extra },
+        {},
+      )) as string,
+    );
+  }
+
+  const inUse = (name: string) => format(getI18n().toolResult.skill.errNameInUse, { name });
+  const exists = (name: string) => format(getI18n().toolResult.skill.errSkillExists, { name });
+
+  function expectNothingWritten(): void {
+    expect(mockAtomicWrite).not.toHaveBeenCalled();
+    expect(mockMkdir).not.toHaveBeenCalled();
+  }
+
+  beforeEach(() => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+  });
+
+  describe('refused', () => {
+    it.each<[string, SkillSource]>([
+      ['a built-in skill', 'builtin'],
+      ['a plugin skill', 'plugin'],
+      ['an enterprise skill', 'enterprise'],
+    ])('the name of %s', async (_label, source) => {
+      claims(['pdf', source]);
+      const result = await create('pdf');
+      expect(result).toEqual({ success: false, error: inUse('pdf') });
+      expectNothingWritten();
+    });
+
+    it("the name of a disabled plugin's skill (getSkill does not see it)", async () => {
+      // The loader keeps a disabled plugin's skill but getSkill hides it:
+      // the old guard read that as a free name, and the created skill then
+      // took the name over from the plugin once it was enabled again.
+      claims(['review', 'plugin']);
+      const direct = await create('review');
+      expect(direct).toEqual({ success: false, error: inUse('review') });
+      const proposed = await create('review', { agent_proposed: true });
+      expect(proposed).toEqual({ success: false, error: inUse('review') });
+      expectNothingWritten();
+    });
+
+    it('a built-in name in other letter case', async () => {
+      claims(['PDF', 'builtin']);
+      expect(await create('pdf')).toEqual({ success: false, error: inUse('pdf') });
+      expectNothingWritten();
+    });
+
+    it("a user skill's name that differs only in letter case", async () => {
+      claims(['Weekly-Report', 'user']);
+      expect(await create('weekly-report')).toEqual({ success: false, error: inUse('weekly-report') });
+      expectNothingWritten();
+    });
+
+    it('a workspace-auto folder whose name differs only in letter case', async () => {
+      // `Notes/` and `notes/` are one folder on macOS / Windows: writing
+      // notes/SKILL.md would overwrite Notes/SKILL.md.
+      folders({ [WS_AUTO]: ['Notes'] });
+      expect(await create('notes')).toEqual({ success: false, error: inUse('notes') });
+      expectNothingWritten();
+    });
+
+    it('a drafts folder whose name differs only in letter case', async () => {
+      folders({ [WS_DRAFTS]: ['Notes'] });
+      expect(await create('notes', { agent_proposed: true })).toEqual({ success: false, error: inUse('notes') });
+      expectNothingWritten();
+    });
+
+    it('a workspace-auto folder of that name whose SKILL.md is filed under another name', async () => {
+      // `foo/SKILL.md` says `name: bar`: the loader lists it as `bar`, so
+      // getSkill('foo') misses — and writing foo/SKILL.md would make `bar` vanish.
+      claims(['bar', 'workspace-auto']);
+      folders({ [WS_AUTO]: ['foo'] });
+      expect(await create('foo')).toEqual({ success: false, error: inUse('foo') });
+      expect(await create('foo', { agent_proposed: true })).toEqual({ success: false, error: inUse('foo') });
+      expectNothingWritten();
+    });
+
+    it('"drafts", the folder the drafts live in, even before it exists', async () => {
+      // skills/drafts/SKILL.md would make the drafts folder a skill too — and a
+      // later delete of that skill removes the folder, every draft with it.
+      expect(await create('drafts')).toEqual({ success: false, error: inUse('drafts') });
+      expect(await create('drafts', { agent_proposed: true })).toEqual({ success: false, error: inUse('drafts') });
+      expectNothingWritten();
+    });
+
+    it('a user skill a same-name draft shadows (the draft holds the loader slot)', async () => {
+      claims(['shared', 'draft'], ['shared', 'user']);
+      vi.spyOn(skillLoader, 'getSkill').mockReturnValue(makeSkill('shared', { source: 'draft' }));
+      expect(await create('shared')).toEqual({ success: false, error: exists('shared') });
+      expectNothingWritten();
+    });
+
+    it('a built-in skill a same-name draft shadows', async () => {
+      claims(['pdf', 'draft'], ['pdf', 'builtin']);
+      vi.spyOn(skillLoader, 'getSkill').mockReturnValue(makeSkill('pdf', { source: 'draft' }));
+      expect(await create('pdf', { agent_proposed: true })).toEqual({ success: false, error: inUse('pdf') });
+      expectNothingWritten();
+    });
+
+    it('a folder another create made between the check and the write', async () => {
+      // The item folder is made without `recursive`, so it fails if the
+      // folder is already there — nothing is written into it.
+      mockMkdir.mockImplementation(async (path: string | URL, options?: { recursive?: boolean }) => {
+        if (!options?.recursive && String(path) === `${WS_AUTO}/raced`) throw new Error('EEXIST: file already exists');
+      });
+      mockExists.mockResolvedValue(true);
+      expect(await create('raced')).toEqual({ success: false, error: inUse('raced') });
+      expect(mockAtomicWrite).not.toHaveBeenCalled();
+    });
+
+    it('says so in the UI language', async () => {
+      const previous = getLanguageSetting();
+      setLanguage('zh-CN');
+      try {
+        claims(['pdf', 'builtin']);
+        const result = await create('pdf');
+        expect(result.error).toBe(format(getI18n().toolResult.skill.errNameInUse, { name: 'pdf' }));
+        expect(result.error).toMatch(/[一-鿿]/);
+      } finally {
+        setLanguage(previous);
+      }
+    });
+  });
+
+  describe('allowed', () => {
+    it('a name nothing claims, beside skills and folders with other names', async () => {
+      claims(['pdf', 'builtin'], ['review', 'plugin'], ['weekly', 'user']);
+      folders({ [WS_AUTO]: ['weekly', 'drafts'], [WS_DRAFTS]: ['other'] });
+      const result = await create('monthly');
+      expect(result.success).toBe(true);
+      expect(result.path).toBe(`${WS_AUTO}/monthly/SKILL.md`);
+      // The item folder is claimed on its own (not `recursive`): it must not exist yet.
+      expect(mockMkdir).toHaveBeenCalledWith(`${WS_AUTO}/monthly`);
+    });
+
+    it('superseding a same-name draft with another proposal', async () => {
+      claims(['digest', 'draft']);
+      folders({ [WS_DRAFTS]: ['digest'] });
+      vi.spyOn(skillLoader, 'getSkill').mockReturnValue(makeSkill('digest', { source: 'draft' }));
+      const result = await create('digest', { agent_proposed: true });
+      expect(result.success).toBe(true);
+      expect(result.status).toBe('pending-user-approval');
+      expect(result.path).toContain('/drafts/digest/SKILL.md');
+    });
+
+    it('creating directly over a same-name draft (the draft goes to the trash)', async () => {
+      const draftsModule = await import('../../skill/drafts');
+      const reject = vi.spyOn(draftsModule, 'rejectDraft').mockResolvedValueOnce({ trashDir: `${WS_DRAFTS}/.trash/digest-1` });
+      claims(['digest', 'draft']);
+      folders({ [WS_DRAFTS]: ['digest'] });
+      vi.spyOn(skillLoader, 'getSkill').mockReturnValue(makeSkill('digest', { source: 'draft' }));
+      const result = await create('digest');
+      expect(result.success).toBe(true);
+      expect(result.status).toBe('applied');
+      expect(result.path).toBe(`${WS_AUTO}/digest/SKILL.md`);
+      expect(reject).toHaveBeenCalledWith('digest', '/workspace/myapp');
+    });
+
+    it('the manifest is filed under the name parameter, whatever frontmatter.name said', async () => {
+      // The loader keys a skill by its frontmatter name: create checks `name`,
+      // so the SKILL.md must be filed under exactly that — including names
+      // YAML would otherwise read as a number, boolean or null.
+      for (const name of ['sneaky', '123', 'true', 'null', '1e5']) {
+        mockAtomicWrite.mockClear();
+        const result = await create(name, { frontmatter: { name: 'pdf', description: 'd' } });
+        expect(result.success).toBe(true);
+        const skillMd = writtenByAtomicWrite().find((w) => w.path.endsWith('SKILL.md'));
+        expect(parseSkillFile(skillMd!.content, skillMd!.path)?.name).toBe(name);
+      }
+    });
+
+    it('edit and patch still change a built-in skill (Copy-on-Modify), though create refuses its name', async () => {
+      claims(['pdf', 'builtin']);
+      expect(await create('pdf')).toEqual({ success: false, error: inUse('pdf') });
+
+      vi.spyOn(skillLoader, 'getSkill').mockReturnValue(
+        makeSkill('pdf', { source: 'builtin', skillDir: '/app/builtin-skills/pdf' }),
+      );
+      mockReadDir.mockResolvedValue([]);
+      mockReadTextFile.mockResolvedValue('---\nname: pdf\ndescription: x\n---\n\nold text\n');
+      mockExists.mockImplementation(async (path: string | URL) => String(path) !== `${WS_AUTO}/pdf`);
+
+      const edited = JSON.parse((await skillManageTool.execute(
+        { action: 'edit', name: 'pdf', content: '---\nname: pdf\ndescription: x\n---\n\nnew text\n' },
+        {},
+      )) as string);
+      expect(edited.success).toBe(true);
+      expect(edited.path).toBe(`${WS_AUTO}/pdf/SKILL.md`);
+
+      const patched = JSON.parse((await skillManageTool.execute(
+        { action: 'patch', name: 'pdf', old_string: 'old text', new_string: 'newer text' },
+        {},
+      )) as string);
+      expect(patched.success).toBe(true);
+    });
   });
 });
 

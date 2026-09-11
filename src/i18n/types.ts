@@ -4209,6 +4209,20 @@ export interface TranslationDict {
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
+      /**
+       * Error: create wrote nothing — the name belongs to a built-in, plugin
+       * (disabled included) or enterprise skill, to another skill or folder
+       * whose name differs only in letter case (the same folder on macOS /
+       * Windows), or to a folder already in this workspace's skills dir.
+       * {name}
+       */
+      errNameInUse: string;
+      /**
+       * Error: create wrote nothing — one of the user's skills already has
+       * this name. Points the model at patch / edit for a change the user
+       * asked for. {name}
+       */
+      errSkillExists: string;
       /** {name} — the organization's policy blocks this skill name; no skill was written under it. */
       policyDenied: string;
     };

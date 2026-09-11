@@ -399,6 +399,14 @@ export const delegateToAgentTool: ToolDefinition = {
         }));
       }
       let text = result.text;
+      // The stop reason must survive the hand-off in the BODY, not only in
+      // `reportMetadata`: OpenAI-compatible providers carry no `is_error`
+      // channel, so a metadata-only signal reaches Claude and nobody else —
+      // and the leader then reads a truncated answer as a finished one.
+      if (result.stopReason !== 'completed') {
+        const labels = getI18n().toolResult.agent.stopReasonLabel;
+        text += `\n\n${format(getI18n().toolResult.agent.delegateStoppedNote, { reason: labels[result.stopReason] })}`;
+      }
       // No tool call at all = nothing the member could have checked; flag it for the leader.
       if (result.toolCallCount === 0 && toolExecContext?.teamRoster) {
         text += `\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;

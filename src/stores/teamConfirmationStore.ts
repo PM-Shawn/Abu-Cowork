@@ -3,6 +3,8 @@ import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { generateId } from '@/lib/utils';
 import { clearTeamConfirmationIdentities, isRetryableTeamIdentity, type TeamConfirmationIdentity } from '@/core/agent/teamConfirmationIdentity';
+import type { DangerLevel } from '@/core/tools/commandSafety';
+import type { BrowserOperationClass } from '@/core/permissions/browserToolPolicy';
 
 // 'browser-upload' stays distinct from 'browser' (dev #416): an upload is the
 // one browser action whose consequence leaves the machine, so an approval for
@@ -22,6 +24,22 @@ export interface TeamConfirmation {
   additionalCapabilities?: Array<'read' | 'write'>;
   /** Missing on legacy records: they must be requested again, never approved. */
   identity?: TeamConfirmationIdentity;
+  /**
+   * Browser confirmations only: the authorization PAYLOAD of the original
+   * request, carried so the strip can offer the same per-site grant the
+   * desktop dialog offers instead of only "allow this one retry".
+   *
+   * These four fields are payload, NOT identity: they must never enter
+   * `confirmationKey`. An approval is keyed by who asked, what kind of action
+   * it is, and the exact parameters — adding the origin or the requester's
+   * own `allowPersistentGrant` there would let a request that differs only in
+   * its payload spend (or miss) a grant that was given for another one.
+   */
+  browserOrigin?: string;
+  browserOperationClass?: BrowserOperationClass;
+  /** The REQUESTER's ceiling; `mayOfferPersistentGrant` still lowers it. */
+  allowPersistentGrant?: boolean;
+  level?: DangerLevel;
   createdAt: number;
 }
 export type TeamConfirmationInput = Omit<TeamConfirmation, 'id' | 'createdAt'>;

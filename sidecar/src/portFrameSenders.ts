@@ -37,6 +37,10 @@ import {
   redactSidecarValueForWireFailure,
   sidecarValueNeedsMediaEncoding,
 } from '@/core/subagent/delegatedUserTurnMaterializer';
+import {
+  TOOL_MEDIA_TRANSPORT_ERROR,
+  markToolCallMediaTransportFailure,
+} from '@/core/subagent/mediaTransportFailure';
 import type { PortFrame } from './portFrameCoalescer';
 
 type Push = (frame: PortFrame) => void;
@@ -54,8 +58,6 @@ export type FrameChatDelta = ChatDelta & {
 
 // ── ChatDelta ────────────────────────────────────────────────────────────
 
-const TOOL_MEDIA_TRANSPORT_ERROR = 'Error: Could not prepare sidecar tool media for transport.';
-
 function cloneWireValue<T>(value: T): T {
   if (typeof globalThis.structuredClone === 'function') {
     return globalThis.structuredClone(value);
@@ -71,8 +73,18 @@ function sanitizeInlineToolPayloads(value: string): string {
   return redactInlineMediaPayloads(value);
 }
 
+/**
+ * Must never be narrower than the RECEIVER's guard
+ * (`sidecarValueHasOpaqueMediaRefs`): anything that guard rejects has to
+ * take the media-preparation path here instead of the fast path.
+ * `sidecarValueNeedsMediaEncoding` is that guard's own pair of predicates
+ * (`hasRawMediaBase64Source` — image AND document — plus
+ * `hasRawDetailImageDataBase64`) applied over the whole value, so it catches
+ * document blocks and nested `imageData` that a flat `type === 'image'`
+ * check missed. Pinned by portFrameSenders.contract.test.ts.
+ */
 function toolResultHasInlineMedia(resultContent: ToolResultContent[] | undefined): boolean {
-  return !!resultContent?.some((block) => block.type === 'image' && Boolean(block.source.data));
+  return sidecarValueNeedsMediaEncoding(resultContent);
 }
 
 function sanitizeToolResultInlinePayloads(
@@ -83,17 +95,6 @@ function sanitizeToolResultInlinePayloads(
       ? { ...block, text: sanitizeInlineToolPayloads(block.text) }
       : block
   ));
-}
-
-function markToolCallMediaTransportFailure<T>(toolCall: T): T {
-  if (!toolCall || typeof toolCall !== 'object' || Array.isArray(toolCall)) return toolCall;
-  const safe = redactSidecarValueForWireFailure(toolCall) as Record<string, unknown>;
-  return {
-    ...safe,
-    result: TOOL_MEDIA_TRANSPORT_ERROR,
-    resultContent: undefined,
-    isError: true,
-  } as T;
 }
 
 function failClosedPreparedChatArgs(method: string, args: unknown[]): unknown[] {
@@ -227,38 +228,43 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     }
 
     enqueueTransport(async () => {
+      let preparedContent: ToolResultContent[] | undefined;
+      let failed: boolean;
       try {
         const prepared = await prepareToolResultForSidecarWire(convId, wireResultContent as ToolResult);
-        push({
-          p: 'chat',
-          m: 'updateToolCall',
-          a: [
-            convId,
-            messageId,
-            toolCallId,
-            sanitizeToolTransportText(result),
-            Array.isArray(prepared) ? prepared : undefined,
-            isError,
-            hideScreenshot,
-            wireMetadata,
-          ],
-        });
+        preparedContent = Array.isArray(prepared) ? prepared : undefined;
+        // Preparation only encodes the shapes it knows; anything raw that
+        // survives it is exactly what the receiver's guard rejects. Fail
+        // closed with the transport error rather than push it.
+        failed = sidecarValueNeedsMediaEncoding(preparedContent);
       } catch {
-        push({
-          p: 'chat',
-          m: 'updateToolCall',
-          a: [
-            convId,
-            messageId,
-            toolCallId,
-            TOOL_MEDIA_TRANSPORT_ERROR,
-            undefined,
-            true,
-            hideScreenshot,
-            wireMetadata,
-          ],
-        });
+        failed = true;
       }
+      push({
+        p: 'chat',
+        m: 'updateToolCall',
+        a: failed
+          ? [
+              convId,
+              messageId,
+              toolCallId,
+              TOOL_MEDIA_TRANSPORT_ERROR,
+              undefined,
+              true,
+              hideScreenshot,
+              wireMetadata,
+            ]
+          : [
+              convId,
+              messageId,
+              toolCallId,
+              sanitizeToolTransportText(result),
+              preparedContent,
+              isError,
+              hideScreenshot,
+              wireMetadata,
+            ],
+      });
     });
   }
 

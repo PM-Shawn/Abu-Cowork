@@ -3,6 +3,7 @@ import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { agentRegistry, serializeAgentMd } from '@/core/agent/registry';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
+import { PLUGIN_ROOT_DIRNAME } from '@/core/plugin/paths';
 
 /**
  * Stable role identity for team membership (PRD docs/abu-team-prd-v2.md §2).
@@ -34,10 +35,35 @@ const BUILTIN_ROLE_PREFIX = 'builtin:';
  */
 const PLUGIN_ROLE_PREFIX = 'plugin:';
 
+/** `…/.abu/plugin-packages/…` — the install root is named by
+ *  `PLUGIN_ROOT_DIRNAME` (src/core/plugin/paths.ts, the one constant the whole
+ *  plugin layer builds its paths from). Matched as a fragment rather than via
+ *  `pluginRoot(home)` because nothing here knows the home directory; paths in
+ *  this repo are normalised to `/` (src/utils/pathUtils.ts). Same idiom as
+ *  `isSkillAllowedIn` (src/core/plugin/activationPolicy.ts). */
+function isUnderPluginPackages(filePath: string | undefined): boolean {
+  return !!filePath && filePath.includes(`/.abu/${PLUGIN_ROOT_DIRNAME}/`);
+}
+
+/**
+ * Does a plugin own this agent's AGENT.md, for identity purposes?
+ *
+ * `isPluginOwnedAgent` reads the frontmatter `source:` key, which is a *cache*,
+ * not the authority: the installer writes it and the discovery store backfills
+ * it from `installed.json` (`applyPluginAgentSources`,
+ * src/stores/discoveryStore.ts) — so an agent read before that backfill, or
+ * contributed by a package that predates the key, carries no `source:` at all.
+ * The path check closes that case, so `ensureRoleId` can never write a
+ * `role-id` into — or, worse, relocate — a file the plugin owns.
+ */
+function isPluginManagedAgent(agent: SubagentDefinition): boolean {
+  return isPluginOwnedAgent(agent) || isUnderPluginPackages(agent.filePath);
+}
+
 /** Effective roleId for any agent — synthetic for builtins and plugin agents, frontmatter otherwise. */
 export function effectiveRoleId(agent: SubagentDefinition): string | undefined {
   if (isBuiltinAgent(agent)) return BUILTIN_ROLE_PREFIX + agent.name;
-  if (isPluginOwnedAgent(agent)) return PLUGIN_ROLE_PREFIX + agent.name;
+  if (isPluginManagedAgent(agent)) return PLUGIN_ROLE_PREFIX + agent.name;
   return agent.roleId;
 }
 
@@ -49,7 +75,7 @@ export function resolveRoleId(roleId: string): SubagentDefinition | null {
   }
   if (roleId.startsWith(PLUGIN_ROLE_PREFIX)) {
     const agent = agentRegistry.getAgent(roleId.slice(PLUGIN_ROLE_PREFIX.length));
-    return agent && isPluginOwnedAgent(agent) ? agent : null;
+    return agent && isPluginManagedAgent(agent) ? agent : null;
   }
   for (const meta of agentRegistry.getAvailableAgents()) {
     const agent = agentRegistry.getAgent(meta.name);
@@ -67,7 +93,7 @@ export function resolveRoleId(roleId: string): SubagentDefinition | null {
  */
 export async function ensureRoleId(agent: SubagentDefinition): Promise<{ roleId: string; wrote: boolean }> {
   if (isBuiltinAgent(agent)) return { roleId: BUILTIN_ROLE_PREFIX + agent.name, wrote: false };
-  if (isPluginOwnedAgent(agent)) return { roleId: PLUGIN_ROLE_PREFIX + agent.name, wrote: false };
+  if (isPluginManagedAgent(agent)) return { roleId: PLUGIN_ROLE_PREFIX + agent.name, wrote: false };
   if (agent.roleId) return { roleId: agent.roleId, wrote: false };
   const roleId = createRoleId();
   const md = serializeAgentMd({ ...agent, roleId }, agent.systemPrompt ?? '');

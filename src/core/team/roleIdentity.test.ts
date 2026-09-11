@@ -69,6 +69,19 @@ describe('roleIdentity', () => {
     expect(saved).toHaveLength(0);
   });
 
+  it('treats a file under the plugin-packages root as plugin-owned even with no source: key', async () => {
+    // `source:` is a cache (the installer writes it, discoveryStore backfills
+    // it) — an agent read before that backfill has none. Ownership must still
+    // hold, or ensureRoleId would write a role-id into the plugin's file.
+    const noSource = def('y', { filePath: '/Users/me/.abu/plugin-packages/x/agents/y/AGENT.md' });
+    registry.agents = [noSource];
+    expect(effectiveRoleId(noSource)).toBe('plugin:y');
+    expect(resolveRoleId('plugin:y')?.name).toBe('y');
+    const ensured = await ensureRoleId(noSource);
+    expect(ensured).toEqual({ roleId: 'plugin:y', wrote: false });
+    expect(saved).toHaveLength(0);
+  });
+
   it('createRoleId yields distinct role- ids', () => {
     const a = createRoleId(); const b = createRoleId();
     expect(a).toMatch(/^role-/);

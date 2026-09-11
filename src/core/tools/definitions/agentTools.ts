@@ -1,11 +1,12 @@
-import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { readAgentIdentity, wantedAgentIdentity, withAgentIdentity } from '@/core/agent/agentIdentityCarry';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
-import { agentRegistry } from '../../agent/registry';
+import { agentRegistry, parseAgentFile } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -484,6 +485,31 @@ export const readSkillFileTool: ToolDefinition = {
 
 // --- save_skill / save_agent: bypass pathSafety for ~/.abu/ writes ---
 
+/**
+ * The AGENT.md to write for the model's `content`, or null when nothing may be
+ * written.
+ *
+ * The model writes the whole file, but the agent's identity is not its to
+ * change: overwriting an existing agent keeps that file's role-id / created
+ * stamp, a new agent is stamped now and never gets an invented role-id.
+ *
+ * Fail closed with the registry's own reader: the result must load through
+ * `parseAgentFile` with exactly that identity. `withAgentIdentity` edits the
+ * YAML syntax tree, while the registry reads the resolved JS object — alias
+ * or merge keys, directives, or content the registry cannot load at all make
+ * the two disagree, and such a file is refused rather than written.
+ */
+async function agentMdWithIdentity(filePath: string, content: string): Promise<string | null> {
+  const existingRaw = (await exists(filePath)) ? await readTextFile(filePath) : null;
+  const existing = existingRaw === null ? null : readAgentIdentity(existingRaw);
+  const now = Date.now();
+  const md = withAgentIdentity(content, existing, now);
+  const wanted = wantedAgentIdentity(existing, now);
+  const readBack = parseAgentFile(md, filePath);
+  if (!readBack || readBack.roleId !== wanted.roleId || readBack.createdAt !== wanted.createdAt) return null;
+  return md;
+}
+
 function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
   const isSkill = kind === 'skill';
   const folder = isSkill ? 'skills' : 'agents';
@@ -528,8 +554,11 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       const itemDir = joinPath(info.home, '.abu', folder, name);
       const filePath = joinPath(itemDir, fileName);
 
+      const mainContent = isSkill ? content : await agentMdWithIdentity(filePath, content);
+      if (mainContent === null) return format(t.errAgentFrontmatterInvalid, { name });
+
       await ensureParentDir(filePath);
-      await writeTextFile(filePath, content);
+      await writeTextFile(filePath, mainContent);
 
       // Write supporting files if provided
       const files = input.files as Array<{ path: string; content: string }> | undefined;

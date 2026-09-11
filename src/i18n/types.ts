@@ -1865,6 +1865,8 @@ export interface TranslationDict {
     fieldLeaderNoteHint: string;
     fieldLeaderNotePlaceholder: string;
     teamRowSummary: string;
+    /** Singular of `teamRowSummary`, for exactly one member. */
+    teamRowSummaryOne: string;
     detailStartChat: string;
     detailLeader: string;
     detailMembers: string;
@@ -1882,6 +1884,12 @@ export interface TranslationDict {
     /** Detail / edit row for a stored member no live agent answers to. */
     memberInvalid: string;
     memberInvalidShort: string;
+    /** Primary line of an invalid row whose stored id still spells the name (`builtin:` / `plugin:`). */
+    memberInvalidNamed: string;
+    /** Primary line of an invalid row with no recoverable name; `{n}` is 1-based among those rows. */
+    memberInvalidNumbered: string;
+    /** Muted caption under an invalid row: why it is invalid. */
+    memberInvalidReason: string;
     memberInvalidRemove: string;
     editInvalidMembers: string;
     teamsEmpty: string;
@@ -2090,6 +2098,9 @@ export interface TranslationDict {
     createWithAbu: string;
     createManually: string;
     nameFormatHint: string;
+    agentNameTakenHint: string;
+    skillNameTakenHint: string;
+    itemSaveFailed: string;
     aiAssistedCreate: string;
     installFailed: string;
     // npm registry install
@@ -2147,6 +2158,8 @@ export interface TranslationDict {
     connecting: string;
     reconnecting: string;
     disconnected: string;
+    /** MCP server status after its connection failed. */
+    connectionError: string;
     connect: string;
     disconnect: string;
     add: string;
@@ -2162,6 +2175,8 @@ export interface TranslationDict {
     sourceProject: string;
     sourceUser: string;
     sourceUnknown: string;
+    // Generic "Description" label used in the agent/skill/MCP detail views
+    detailDescription: string;
     builtinSkills: string;
     builtinAgents: string;
     noSkillsFound: string;
@@ -2756,8 +2771,12 @@ export interface TranslationDict {
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
+    /** Singular form of teamMemberBarCollapsed, used when the count is exactly 1. */
+    teamMemberBarCollapsedOne: string;
     /** Member strip pill: N stored members no live agent answers to. */
     teamMemberBarUnresolved: string;
+    /** Singular form of teamMemberBarUnresolved, used when the count is exactly 1. */
+    teamMemberBarUnresolvedOne: string;
     teamMemberBarUnresolvedHint: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
@@ -4047,6 +4066,12 @@ export interface TranslationDict {
       errInvalidName: string;
       /** Error: unsafe file path. {p} */
       errUnsafeFilePath: string;
+      /**
+       * Error: save_agent wrote nothing — the AGENT.md frontmatter does not
+       * read back (via the registry's parser) with the identity it must carry,
+       * or cannot be read at all. Tells the model to resend plain YAML. {name}
+       */
+      errAgentFrontmatterInvalid: string;
       /** Attached-files section header + list. {list} */
       savedFileList: string;
       /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */

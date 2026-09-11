@@ -1,9 +1,9 @@
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import type { SubagentDefinition } from '@/types';
 import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { agentRegistry, serializeAgentMd } from '@/core/agent/registry';
-import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
-import { PLUGIN_ROOT_DIRNAME } from '@/core/plugin/paths';
+import { pluginActivationRecordsReady, pluginOwnerForAgent } from '@/core/plugin/activationPolicy';
 
 /**
  * Stable role identity for team membership (PRD docs/abu-team-prd-v2.md §2).
@@ -35,37 +35,38 @@ const BUILTIN_ROLE_PREFIX = 'builtin:';
  */
 const PLUGIN_ROLE_PREFIX = 'plugin:';
 
-/** `…/.abu/plugin-packages/…` — the install root is named by
- *  `PLUGIN_ROOT_DIRNAME` (src/core/plugin/paths.ts, the one constant the whole
- *  plugin layer builds its paths from). Matched as a fragment rather than via
- *  `pluginRoot(home)` because nothing here knows the home directory; paths in
- *  this repo are normalised to `/` (src/utils/pathUtils.ts). Same idiom as
- *  `isSkillAllowedIn` (src/core/plugin/activationPolicy.ts). */
-function isUnderPluginPackages(filePath: string | undefined): boolean {
-  return !!filePath && filePath.includes(`/.abu/${PLUGIN_ROOT_DIRNAME}/`);
-}
-
 /**
  * Does a plugin own this agent's AGENT.md, for identity purposes?
  *
- * `isPluginOwnedAgent` reads the frontmatter `source:` key, which is a *cache*,
- * not the authority: the installer writes it and the discovery store backfills
- * it from `installed.json` (`applyPluginAgentSources`,
- * src/stores/discoveryStore.ts), but that backfill only reaches discovery
- * metadata — `agentRegistry.getAgent`, which this module reads, still sees the
- * raw frontmatter.
+ * The authority is the plugin activation records (`pluginOwnerForAgent`, the
+ * same ownership the execution gate `isPluginAgentAllowed` enforces). They are
+ * the persisted ownership derived from `installed.json` — which agent files
+ * each plugin contributed — and pluginStore keeps the last good records when a
+ * later read fails, so a broken manifest never turns a plugin file into a
+ * user file. A file claimed by more than one plugin fails closed: it is still
+ * plugin-managed and must never be written. A file no record claims, once the
+ * records are ready, is independent (an orphan left after uninstall, or a
+ * user's hand-written `source:`), matching how AgentsSection treats it.
  *
- * KNOWN GAP: the path check does NOT close the "plugin agent with no `source:`"
- * case today. The installer materialises plugin agents into
- * `~/.abu/agents/<name>/` (src/core/agent/installer.ts) and the registry never
- * scans the plugin-packages root, so no agent this module can see has a path
- * under it. The check is kept because it cannot misclassify a user agent and
- * becomes effective if plugin agents are ever loaded in place. The real fix is
- * to answer ownership from `installed.json` (the authority) instead of the
- * frontmatter cache — tracked as a follow-up.
+ * Cold start: until the records have been read, the frontmatter `source:` —
+ * the installer's cache of the answer — decides.
+ *
+ * Not discovery metadata: its non-strict refresh reads the manifest with
+ * `readInstalledPluginsSafely`, which yields `[]` on any failure, and then
+ * strips `source` from every agent — which would make plugin files writable.
  */
 function isPluginManagedAgent(agent: SubagentDefinition): boolean {
-  return isPluginOwnedAgent(agent) || isUnderPluginPackages(agent.filePath);
+  if (pluginOwnerForAgent(agent) !== undefined) return true; // an owner key, or null for a conflict
+  // Startup invariant: activationPolicy's `ready` starts out TRUE. That is safe
+  // only because pluginStore's persist hydrate (synchronous localStorage) runs
+  // at import and publishes the persisted records with `recordsReady=false`.
+  // If that hydrate ever becomes async or pluginStore is imported lazily, this
+  // line would treat every plugin file as a user file at startup — and
+  // ensureRoleId would write into it. (Today's gap: an unparseable persisted
+  // entry makes zustand skip the callback, leaving `ready` true until the next
+  // pluginStore update — bootstrapPluginUpdates' first statement.)
+  if (pluginActivationRecordsReady()) return false;
+  return isPluginOwnedAgent(agent);
 }
 
 /** Effective roleId for any agent — synthetic for builtins and plugin agents, frontmatter otherwise. */
@@ -73,6 +74,18 @@ export function effectiveRoleId(agent: SubagentDefinition): string | undefined {
   if (isBuiltinAgent(agent)) return BUILTIN_ROLE_PREFIX + agent.name;
   if (isPluginManagedAgent(agent)) return PLUGIN_ROLE_PREFIX + agent.name;
   return agent.roleId;
+}
+
+/**
+ * The agent name a name-keyed roleId (`builtin:` / `plugin:`) spells out, even
+ * when that agent is gone — for labelling a member that no longer resolves.
+ * Frontmatter `role-…` ids carry no name: undefined.
+ */
+export function roleIdAgentName(roleId: string): string | undefined {
+  for (const prefix of [BUILTIN_ROLE_PREFIX, PLUGIN_ROLE_PREFIX]) {
+    if (roleId.startsWith(prefix)) return roleId.slice(prefix.length) || undefined;
+  }
+  return undefined;
 }
 
 /** Resolve a stored roleId back to the live agent (all three id families). */
@@ -98,6 +111,13 @@ export function resolveRoleId(roleId: string): SubagentDefinition | null {
  * Caller is responsible for refreshing the discovery store afterwards when a
  * write happened (returned `wrote` flag). Builtin and plugin-owned agents are
  * never written to — their identity is synthetic.
+ *
+ * The id is written IN PLACE, into `agent.filePath` — the file the registry
+ * read. Never a path re-derived from the frontmatter `name`: an agent's folder
+ * need not be named after it, and a project-level agent lives in its project,
+ * so a derived path could overwrite another agent's AGENT.md or land outside
+ * ~/.abu/agents/. Nothing is moved or removed. `create: false` keeps a file
+ * deleted since the registry read it from being recreated.
  */
 export async function ensureRoleId(agent: SubagentDefinition): Promise<{ roleId: string; wrote: boolean }> {
   if (isBuiltinAgent(agent)) return { roleId: BUILTIN_ROLE_PREFIX + agent.name, wrote: false };
@@ -105,6 +125,6 @@ export async function ensureRoleId(agent: SubagentDefinition): Promise<{ roleId:
   if (agent.roleId) return { roleId: agent.roleId, wrote: false };
   const roleId = createRoleId();
   const md = serializeAgentMd({ ...agent, roleId }, agent.systemPrompt ?? '');
-  await saveItemToAbuDir('agents', 'AGENT.md', agent.name, md, agent.filePath);
+  await writeTextFile(agent.filePath, md, { create: false });
   return { roleId, wrote: true };
 }

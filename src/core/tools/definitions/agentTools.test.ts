@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { exists, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
+import { ensureParentDir } from '../../../utils/pathUtils';
+import { parseAgentFile } from '../../agent/registry';
 import { saveAgentTool, delegateToAgentTool, useSkillTool } from './agentTools';
-import { getLanguageSetting, setLanguage } from '@/i18n';
+import { format, getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
@@ -11,9 +13,15 @@ const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
 vi.mock('../../skill/loader', () => ({
   skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn() },
 }));
-vi.mock('../../agent/registry', () => ({
-  agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]) },
-}));
+vi.mock('../../agent/registry', async () => {
+  // save_agent verifies what it writes with the registry's own reader, so the
+  // real parseAgentFile stays; only the registry singleton is stubbed.
+  const actual = await vi.importActual<typeof import('../../agent/registry')>('../../agent/registry');
+  return {
+    parseAgentFile: actual.parseAgentFile,
+    agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]) },
+  };
+});
 vi.mock('../../agent/permissionBridge', () => {
   const getCurrentLoopContext = vi.fn(() => ({
     loopId: 'loop-1',
@@ -661,6 +669,169 @@ describe('save_agent multi-file support', () => {
   });
 });
 
+// "帮我优化这个专家": the model rewrites the whole AGENT.md. Its content must not
+// be able to drop the agent's identity (role-id is what team memberships point
+// at, created drives the newest-first sort) nor invent one. Every assertion
+// reads the written file back with the registry's own parser — the only
+// reading that decides which identity the agent has.
+describe('save_agent identity', () => {
+  const AGENT_PATH = '/Users/testuser/.abu/agents/reviewer/AGENT.md';
+  const NOW = 1757570400000;
+  const EXISTING = { roleId: 'role-abc123', createdAt: 1700000000000 };
+  const EXISTING_MD = '---\nname: reviewer\nrole-id: role-abc123\ncreated: 1700000000000\ndescription: Reviews code\n---\n\nYou review code.';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(exists).mockResolvedValue(false);
+    vi.mocked(readTextFile).mockResolvedValue('');
+  });
+
+  function givenExistingFile(raw: string): void {
+    vi.mocked(exists).mockImplementation(async (path) => path === AGENT_PATH);
+    vi.mocked(readTextFile).mockResolvedValue(raw);
+  }
+
+  function save(content: string, files?: Array<{ path: string; content: string }>) {
+    return saveAgentTool.execute({ name: 'reviewer', content, ...(files ? { files } : {}) });
+  }
+
+  function writtenAgentMd(): string {
+    const call = vi.mocked(writeTextFile).mock.calls.find(([path]) => path === AGENT_PATH);
+    expect(call).toBeDefined();
+    return String(call?.[1]);
+  }
+
+  /** Identity as the registry reads it from what save_agent wrote. */
+  function registryIdentity(): { roleId?: string; createdAt?: number } | null {
+    const agent = parseAgentFile(writtenAgentMd(), AGENT_PATH);
+    return agent ? { roleId: agent.roleId, createdAt: agent.createdAt } : null;
+  }
+
+  function expectRefused(result: string): void {
+    expect(result).toBe(format(getI18n().toolResult.agent.errAgentFrontmatterInvalid, { name: 'reviewer' }));
+    expect(writeTextFile).not.toHaveBeenCalled();
+    expect(ensureParentDir).not.toHaveBeenCalled();
+  }
+
+  it('keeps an existing agent\'s role-id and created stamp when the model rewrites it', async () => {
+    givenExistingFile(EXISTING_MD);
+
+    await save('---\nname: reviewer\nrole-id: role-other\ndescription: Reviews code thoroughly\n---\n\nYou review code carefully.');
+
+    expect(readTextFile).toHaveBeenCalledWith(AGENT_PATH);
+    expect(registryIdentity()).toEqual(EXISTING);
+    const agent = parseAgentFile(writtenAgentMd(), AGENT_PATH);
+    expect(agent?.description).toBe('Reviews code thoroughly');
+    expect(agent?.systemPrompt).toBe('You review code carefully.');
+  });
+
+  it('stamps a new agent with its creation time and drops a role-id the model invented', async () => {
+    await save('---\nname: reviewer\nrole-id: role-made-up\ndescription: Reviews code\n---\n\nYou review code.');
+
+    expect(readTextFile).not.toHaveBeenCalled();
+    expect(registryIdentity()).toEqual({ roleId: undefined, createdAt: NOW });
+  });
+
+  it('leaves a legacy agent (no created stamp) unstamped even if the model writes one', async () => {
+    givenExistingFile('---\nname: reviewer\ndescription: Reviews code\n---\n\nYou review code.');
+
+    await save(`---\nname: reviewer\ncreated: ${NOW}\ndescription: Reviews code\n---\n\nYou review code.`);
+
+    expect(registryIdentity()).toEqual({ roleId: undefined, createdAt: undefined });
+  });
+
+  describe('CRLF content', () => {
+    const crlf = (text: string) => text.replace(/\n/g, '\r\n');
+
+    it('round-trips a new agent', async () => {
+      await save(crlf('---\nname: reviewer\ndescription: Reviews code\n---\n\nYou review code.\n'));
+
+      expect(registryIdentity()).toEqual({ roleId: undefined, createdAt: NOW });
+    });
+
+    it('round-trips an existing agent (identity appended as the last frontmatter lines)', async () => {
+      givenExistingFile(crlf(EXISTING_MD));
+
+      await save(crlf('---\nname: reviewer\ndescription: Improved\n---\n\nYou review code.\n'));
+
+      expect(writtenAgentMd()).toContain('\r\ncreated: 1700000000000\r\n---\r\n');
+      expect(registryIdentity()).toEqual(EXISTING);
+    });
+  });
+
+  it('carries the role-id of an existing file whose YAML no longer parses', async () => {
+    // Joined a team, then broke (here: an unclosed flow list). The next
+    // "fix it" save must not lose the id every membership points at.
+    givenExistingFile('---\nname: reviewer\nrole-id: role-abc123\ncreated: 1700000000000\ntools: [read_file\n---\n\nYou review code.');
+
+    await save('---\nname: reviewer\ntools: [read_file]\n---\n\nYou review code.');
+
+    expect(registryIdentity()).toEqual(EXISTING);
+  });
+
+  it('refuses content the registry cannot read at all, writing nothing', async () => {
+    const result = await save('---\nname: [unclosed\n---\n\nYou review code.', [{ path: 'notes.md', content: 'x' }]);
+
+    expectRefused(result);
+  });
+
+  it('refuses content without frontmatter, writing nothing', async () => {
+    expectRefused(await save('You review code.'));
+  });
+
+  // Shapes where the YAML the helper edits and the object the registry reads
+  // disagree. Each one either ends with exactly the carried identity or is
+  // refused — never written with an identity the carry rules did not choose.
+  describe('hostile or unusual frontmatter', () => {
+    const ALIAS_KEY = 'k: &k role-id\n*k : role-victim';
+
+    it('refuses an alias key that smuggles a role-id into a new agent', async () => {
+      expectRefused(await save(`---\nname: reviewer\n${ALIAS_KEY}\n---\n\nP`));
+    });
+
+    it('refuses an alias key that overrides an existing agent\'s correct role-id', async () => {
+      givenExistingFile(EXISTING_MD);
+
+      expectRefused(await save(`---\nname: reviewer\nrole-id: role-abc123\ncreated: 1700000000000\n${ALIAS_KEY}\n---\n\nP`));
+    });
+
+    it('refuses a !!merge key that smuggles a role-id into a new agent', async () => {
+      expectRefused(await save('---\nname: reviewer\n!!merge <<: { role-id: role-victim }\n---\n\nP'));
+    });
+
+    it('carries the existing role-id over a !!merge key (an explicit key beats a merged one)', async () => {
+      givenExistingFile(EXISTING_MD);
+
+      await save('---\nname: reviewer\n!!merge <<: { role-id: role-victim }\n---\n\nP');
+
+      expect(registryIdentity()).toEqual(EXISTING);
+    });
+
+    it('refuses a YAML 1.1 merge key behind a %YAML directive', async () => {
+      expectRefused(await save('---\n%YAML 1.1\n--- # c\nname: reviewer\n<<: { role-id: role-victim }\n---\n\nP'));
+    });
+
+    it('carries the existing role-id over an explicit (? key) role-id', async () => {
+      givenExistingFile(EXISTING_MD);
+
+      await save('---\nname: reviewer\n? role-id\n: role-other\n---\n\nP');
+
+      expect(registryIdentity()).toEqual(EXISTING);
+    });
+
+    it('refuses when rewriting the role-id would orphan an alias to its anchored value', async () => {
+      givenExistingFile(EXISTING_MD);
+
+      expectRefused(await save('---\nname: reviewer\nrole-id: &v role-other\nother: *v\n---\n\nP'));
+    });
+  });
+});
 
 it('does not auto-enable a child skill when runtime resolution refuses it', async () => {
   const { useSettingsStore } = await import('@/stores/settingsStore');

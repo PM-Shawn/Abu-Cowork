@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   publishPluginActivation, reconcilePluginActivation, pluginOwnerForAgent,
-  isPluginSkillAllowed, isPluginAgentAllowed, isPluginMcpAllowed, assertPluginEnabled,
+  isPluginSkillAllowed, isPluginAgentAllowed, isPluginMcpAllowed, assertPluginEnabled, pluginActivationRecordsReady,
   type PluginActivation,
 } from './activationPolicy';
 import type { InstalledPlugin } from './installedStore';
@@ -103,5 +103,11 @@ describe('plugin activation policy', () => {
     expect(() => assertPluginEnabled(plugin.key)).toThrow();
     publishPluginActivation({}, [], true);
     expect(() => assertPluginEnabled(plugin.key)).toThrow();
+  });
+  it('reports readiness from the last publish', () => {
+    publishPluginActivation(snapshot(true), [], false);
+    expect(pluginActivationRecordsReady()).toBe(false);
+    publishPluginActivation(snapshot(true), [], true);
+    expect(pluginActivationRecordsReady()).toBe(true);
   });
 });

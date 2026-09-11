@@ -374,13 +374,13 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
               <div className="text-body font-medium text-[var(--abu-text-primary)]" data-testid="agent-added-by">
                 {selectedPluginSource
                   ? format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
-                  : isSystemAgent(selected) ? 'System' : 'User'}
+                  : isSystemAgent(selected) ? t.toolbox.sourceBuiltin : t.toolbox.sourceUser}
               </div>
             </div>
 
             {/* Description */}
             <div>
-              <span className="text-minor text-[var(--abu-text-muted)]">Description</span>
+              <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.detailDescription}</span>
               <p className="text-body text-[var(--abu-text-primary)] leading-relaxed mt-1.5">{localizedDescription(selected, locale)}</p>
             </div>
 
@@ -480,14 +480,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                   <button
                     onClick={() => setContentViewMode('preview')}
                     className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                    title="Preview"
+                    title={t.panel.previewMode}
                   >
                     <Eye className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => setContentViewMode('source')}
                     className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                    title="Source"
+                    title={t.panel.sourceMode}
                   >
                     <Code className="h-4 w-4" />
                   </button>

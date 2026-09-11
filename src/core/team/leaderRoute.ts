@@ -93,16 +93,21 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
   lines.push(`You are ${team.leader.name}, the leader of this team. The user talks only to you, in this conversation, and you answer for the whole team.`);
   lines.push('');
   lines.push('Team members (delegate only to these, by exact name):');
-  if (team.members.length === 0) {
+  const unresolved = team.unresolvedMemberRoleIds?.length ?? 0;
+  const unresolvedNoun = `member${unresolved === 1 ? '' : 's'}`;
+  if (team.members.length === 0 && unresolved > 0) {
+    // One line, not "no members yet" plus "the members listed above": the team
+    // has members, none of them can be reached.
+    lines.push(`- (none available — all ${unresolved} ${unresolvedNoun} of this team could not be resolved (deleted or changed since the team was set up). Do the work yourself and tell the user the team roster needs attention in the team settings.)`);
+  } else if (team.members.length === 0) {
     lines.push('- (no members yet — do the work yourself and tell the user the team has no members)');
   } else {
     for (const m of team.members) {
       lines.push(`- ${m.name}: ${m.description}`);
     }
   }
-  const unresolved = team.unresolvedMemberRoleIds?.length ?? 0;
-  if (unresolved > 0) {
-    lines.push(`- (${unresolved} member${unresolved === 1 ? '' : 's'} of this team could not be resolved — deleted or changed since the team was set up. They cannot be dispatched to. Plan with the members listed above and tell the user the team roster needs attention in the team settings.)`);
+  if (unresolved > 0 && team.members.length > 0) {
+    lines.push(`- (${unresolved} ${unresolvedNoun} of this team could not be resolved — deleted or changed since the team was set up. They cannot be dispatched to. Plan with the members listed above and tell the user the team roster needs attention in the team settings.)`);
   }
   if (team.leaderNote?.trim()) {
     lines.push('');

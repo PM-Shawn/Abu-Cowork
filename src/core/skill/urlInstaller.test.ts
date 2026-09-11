@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { exists, mkdir, writeFile, remove, rename } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, writeFile, remove, rename, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
 // ── Mocks ──────────────────────────────────────────────────────────
@@ -15,6 +15,8 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
     writeFile: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn().mockResolvedValue(undefined),
     rename: vi.fn().mockResolvedValue(undefined),
+    // The staged SKILL.md re-read before going live (assertStagedManifestIs).
+    readTextFile: vi.fn(),
   };
 });
 
@@ -131,6 +133,8 @@ beforeEach(() => {
   mockDownloadTarball.mockResolvedValue(DUMMY_BYTES);
   mockStrFromU8.mockReturnValue(SKILL_MD);
   mockFindSkillEntries.mockReturnValue([SKILL_LOC]);
+  // What staging holds after the writes: the same manifest that was checked.
+  vi.mocked(readTextFile).mockResolvedValue(SKILL_MD);
 });
 
 // ── detectSourceType ────────────────────────────────────────────────
@@ -302,6 +306,19 @@ describe('installSkillFromUrl', () => {
         code: 'AMBIGUOUS_SKILL_MD',
       });
       expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(liveEntries()).toEqual([]);
+    });
+
+    it('does not go live when the manifest that landed on disk declares another name', async () => {
+      // Stands in for any path resolution a disk applies that the up-front
+      // count does not model: whatever SKILL.md ended up in staging goes live.
+      useFakeDisk();
+      mockUnzipSync.mockReturnValue({ 'my-skill-main/SKILL.md': SKILL_MD_BYTES });
+      vi.mocked(readTextFile).mockResolvedValueOnce('---\nname: blocked-skill\n---\n# body');
+
+      await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+        code: 'AMBIGUOUS_SKILL_MD',
+      });
       expect(liveEntries()).toEqual([]);
     });
 

@@ -15,6 +15,7 @@ import { isSafeSkillDirName } from './skillDirName';
 import { assertSkillNameAllowed } from './skillPolicy';
 import { rootManifestCount } from './rootManifest';
 import {
+  assertStagedManifestIs,
   downloadTarball,
   extractTarball,
   fileEntryPaths,
@@ -156,6 +157,7 @@ export async function installSkillFromUrl(
         await writeFile(dest, entry.data);
         files.push(rel);
       }
+      await assertStagedManifestIs(stagingDir, skillName);
     },
   });
 

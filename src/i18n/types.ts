@@ -4064,7 +4064,7 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
-      /** Error: unsafe file path. {p} */
+      /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */
       errUnsafeFilePath: string;
       /**
        * Error: nothing written — a `files` entry names the manifest itself,

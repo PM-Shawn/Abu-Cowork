@@ -593,9 +593,35 @@ async function checkSaveTarget(
 
 type SupportingFile = { path: string; content: string };
 
-/** `..`, a leading `/` or `\\` (root, UNC), or a drive letter (`C:`). */
-function isUnsafeFilePath(p: string): boolean {
-  return p.includes('..') || p.startsWith('/') || p.startsWith('\\') || /^[A-Za-z]:/.test(p);
+/**
+ * Windows device names: `CON`, `nul.txt`, `COM1 .log` open the device in any
+ * folder, whatever the extension or letter case.
+ */
+const WINDOWS_DEVICE_NAME_RE = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³]) *(\..*)?$/i;
+
+/** `:` (drive letter, alternate data stream) and the other characters Windows refuses in a name. */
+const WINDOWS_RESERVED_CHARS_RE = /[:<>"|?*]/;
+
+function hasControlChar(segment: string): boolean {
+  for (let i = 0; i < segment.length; i++) {
+    const code = segment.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * An allowlist, not a denylist: Win32 path normalisation strips a trailing
+ * `.` or space and reads `NAME::$DATA` as NAME, so `AGENT.md.`, `AGENT.md ` and
+ * `AGENT.md::$DATA` all land on AGENT.md there. A segment passes only when it
+ * is a plain name no platform rewrites into another one.
+ */
+function isPlainPathSegment(segment: string): boolean {
+  return segment !== '' && segment !== '.' && segment !== '..'
+    && !/[. ]$/.test(segment)
+    && !WINDOWS_RESERVED_CHARS_RE.test(segment)
+    && !hasControlChar(segment)
+    && !WINDOWS_DEVICE_NAME_RE.test(segment);
 }
 
 /**
@@ -603,10 +629,13 @@ function isUnsafeFilePath(p: string): boolean {
  *
  * Every entry is checked before anything touches disk: a refusal found
  * halfway through the list used to leave the manifest (and the entries before
- * it) written under a call that reported failure. An entry naming the
- * manifest itself is refused too — it would replace the manifest just checked
- * (name, identity) with unchecked text. Compared ignoring letter case and
- * `./` segments, because `agent.md` is `AGENT.md` on macOS / Windows.
+ * it) written under a call that reported failure. Every segment of every
+ * path must be plain ({@link isPlainPathSegment}) — which also refuses a
+ * leading separator (root, UNC) as an empty segment. An entry whose first
+ * segment is the manifest is refused too: it would replace the manifest just
+ * checked (name, identity) with unchecked text, or write beneath that file.
+ * Compared ignoring letter case, because `agent.md` is `AGENT.md` on macOS /
+ * Windows.
  */
 function checkSupportingFiles(
   raw: unknown,
@@ -621,10 +650,10 @@ function checkSupportingFiles(
     if (typeof path !== 'string' || typeof content !== 'string') {
       return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
     }
-    if (isUnsafeFilePath(path)) return { refusal: format(t.errUnsafeFilePath, { p: path }) };
-    const segments = path.split(/[\\/]/).filter((s) => s !== '' && s !== '.');
-    if (segments.length === 0) return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
-    if (segments.join('/').toLowerCase() === fileName.toLowerCase()) {
+    if (path === '') return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
+    const segments = path.split(/[\\/]/);
+    if (!segments.every(isPlainPathSegment)) return { refusal: format(t.errUnsafeFilePath, { p: path }) };
+    if (segments[0].toLowerCase() === fileName.toLowerCase()) {
       return { refusal: format(t.errFileIsManifest, { p: path, fileName }) };
     }
     files.push({ path, content });

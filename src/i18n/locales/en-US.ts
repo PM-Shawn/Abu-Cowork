@@ -3296,7 +3296,7 @@ const enUS: TranslationDict = {
       labelSkill: 'skill',
       labelAgent: 'agent',
       errInvalidName: 'Error: {label} name is invalid. Only lowercase letters, digits, and hyphens are allowed; the name must not start or end with a hyphen. Received: "{name}"',
-      errUnsafeFilePath: 'Error: unsafe file path: "{p}". ".." and absolute paths are not allowed.',
+      errUnsafeFilePath: 'Error: nothing was saved: unsafe file path "{p}". Use a relative path made of plain names: no absolute path, no "." or ".." or empty segment, no name ending in "." or a space, none of : < > " | ? * or control characters, and no Windows device name (CON, PRN, AUX, NUL, COM1–9, LPT1–9).',
       errFileIsManifest: 'Error: nothing was saved: the files entry "{p}" is {fileName} itself. Put the {fileName} text in content, and use files only for supporting files.',
       errInvalidFileEntry: 'Error: nothing was saved: files[{index}] must be an object with a non-empty string path and a string content.',
       errAgentFrontmatterInvalid: 'Error: agent "{name}" was not saved and no file was written: the YAML frontmatter at the top of AGENT.md could not be read, or its identity fields (role-id / created) did not read back correctly. Resend the full content with plain YAML frontmatter: opened by --- and closed by a line with just ---, including name, and without anchors (&), aliases (*), merge keys (<<), YAML directives (%YAML) or explicit keys (?). role-id and created are maintained by the system; leave them out.',

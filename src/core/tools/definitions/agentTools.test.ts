@@ -1018,8 +1018,19 @@ describe('save_agent / save_skill name guard', () => {
     describe('supporting files are all checked before anything is written', () => {
       const save = (files: unknown[]) => saveAgentTool.execute({ name: 'doc-writer', content: agentMd('doc-writer'), files });
 
-      it.each(['../escape.md', '/etc/passwd', '\\\\server\\share\\x', 'C:\\evil.txt', 'C:/evil.txt', 'notes/../../escape.md'])(
-        'refuses the unsafe path %s, writing neither the manifest nor the files before it',
+      it.each([
+        '../escape.md', '/etc/passwd', '\\\\server\\share\\x', 'C:\\evil.txt', 'C:/evil.txt', 'notes/../../escape.md',
+        // Win32 strips a trailing dot or space and reads `NAME::$DATA` as NAME
+        // itself, so each of these IS AGENT.md there — replacing the checked
+        // manifest (name: abu → the default assistant is shadowed).
+        'AGENT.md.', 'AGENT.md ', 'AGENT.md::$DATA', 'sub/AGENT.md.',
+        // Windows device names, with or without an extension, any case.
+        'CON', 'sub/nul.txt', 'Com1.log', 'LPT9', 'aux', 'PRN.md', 'CON .txt',
+        // `.` / empty segments, control characters, other Windows-invalid names.
+        './AGENT.md', '.\\Agent.MD', './notes.md', 'notes//a.md', 'notes/', './',
+        'notes\u0000.md', 'notes\u001f.md', 'a<b.md', 'a|b.md', 'what?.md', 'star*.md', 'q"uote.md', 'a>b.md',
+      ])(
+        'refuses the unsafe path %j, writing neither the manifest nor the files before it',
         async (p) => {
           const result = await save([{ path: 'ok.md', content: 'x' }, { path: p, content: 'y' }]);
 
@@ -1028,7 +1039,7 @@ describe('save_agent / save_skill name guard', () => {
         },
       );
 
-      it.each(['AGENT.md', './AGENT.md', 'agent.md', '.\\Agent.MD'])(
+      it.each(['AGENT.md', 'agent.md', 'agent.MD', 'AGENT.md/inside.md'])(
         'refuses %s — the manifest is written from content, never from files',
         async (p) => {
           const result = await save([{ path: p, content: '---\nname: abu\n---\n\nP' }]);
@@ -1043,7 +1054,6 @@ describe('save_agent / save_skill name guard', () => {
         [{ path: 'notes.md', content: 42 }],
         [{ path: 42, content: 'x' }],
         [{ path: '', content: 'x' }],
-        [{ path: './', content: 'x' }],
         ['notes.md'],
         [null],
       ])('refuses the malformed entry %j, writing nothing', async (entry) => {
@@ -1051,6 +1061,18 @@ describe('save_agent / save_skill name guard', () => {
 
         expect(result).toBe(format(t().errInvalidFileEntry, { index: '1' }));
         expectNothingWritten();
+      });
+
+      it('still writes nested supporting files, with either separator', async () => {
+        await save([
+          { path: 'references/api.md', content: 'a' },
+          { path: 'scripts\\render.mjs', content: 'b' },
+          { path: 'v1.2/notes.txt', content: 'c' },
+        ]);
+
+        expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/references/api.md`, 'a');
+        expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/scripts\\render.mjs`, 'b');
+        expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/v1.2/notes.txt`, 'c');
       });
     });
 

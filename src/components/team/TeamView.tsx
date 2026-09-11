@@ -387,10 +387,13 @@ export default function TeamView() {
   // text, so the subscriptions aren't dead code from the compiler's point of view.
   // The card's leader slot is one segment of a ` · ` summary line, so it takes
   // the short label; the explanatory clause lives in the detail and the editor.
-  const cardSummary = (team: Team, _agents: typeof discoveredAgents, _ready: boolean) => format(t.team.teamRowSummary, {
-    leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalidShort,
-    count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length),
-  });
+  const cardSummary = (team: Team, _agents: typeof discoveredAgents, _ready: boolean) => {
+    const count = team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length;
+    return format(count === 1 ? t.team.teamRowSummaryOne : t.team.teamRowSummary, {
+      leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalidShort,
+      count: String(count),
+    });
+  };
 
   const navItems = [
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },

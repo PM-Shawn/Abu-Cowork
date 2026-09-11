@@ -1427,6 +1427,7 @@ const enUS: TranslationDict = {
     fieldLeaderNoteHint: 'Added to the leader\'s instructions whenever it picks up a task for this team.',
     fieldLeaderNotePlaceholder: 'e.g. Outline before writing; ask me when in doubt',
     teamRowSummary: 'Leader: {leader} · {count} members',
+    teamRowSummaryOne: 'Leader: {leader} · 1 member',
     detailStartChat: 'Start a conversation with this team',
     detailLeader: 'Leader',
     detailMembers: 'Members ({count})',

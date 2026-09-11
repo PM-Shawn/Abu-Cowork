@@ -1428,6 +1428,7 @@ const zhCN: TranslationDict = {
     fieldLeaderNoteHint: '这段话会在队长接到这个团队的活时，加进它的指令里。',
     fieldLeaderNotePlaceholder: '例如：产出前先列大纲；有风险先问我',
     teamRowSummary: '队长：{leader} · {count} 名成员',
+    teamRowSummaryOne: '队长：{leader} · 1 名成员',
     detailStartChat: '用这个团队开始对话',
     detailLeader: '队长',
     detailMembers: '成员（{count}）',

@@ -47,11 +47,17 @@ vi.mock('@/stores/toastStore', () => ({
   useToastStore: (selector: (state: Record<string, unknown>) => unknown) => selector({ addToast }),
 }));
 
-// Pin the real zh-CN copy (assertions below are the product copy the user reviews).
+// Pin the real zh-CN copy (assertions below are the product copy the user reviews);
+// a test may switch to en-US for plural checks.
+const localeRef: { current: 'zh-CN' | 'en-US' } = { current: 'zh-CN' };
 vi.mock('@/i18n', async () => {
   const { default: zhCN } = await import('@/i18n/locales/zh-CN');
+  const { default: enUS } = await import('@/i18n/locales/en-US');
   const actual = await vi.importActual<typeof import('@/i18n')>('@/i18n');
-  return { format: actual.format, useI18n: () => ({ t: zhCN, locale: 'zh-CN' }) };
+  return {
+    format: actual.format,
+    useI18n: () => ({ t: localeRef.current === 'en-US' ? enUS : zhCN, locale: localeRef.current }),
+  };
 });
 
 // Reactive stand-in for the plugin store: only `activationReady` matters here.
@@ -136,6 +142,7 @@ describe('TeamView', () => {
     discoveryState.agents = [];
     chatState.conversationIndex = {};
     usePluginStore.setState({ activationReady: true });
+    localeRef.current = 'zh-CN';
     vi.clearAllMocks();
   });
 
@@ -238,6 +245,23 @@ describe('TeamView', () => {
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem', 'r-gone'], createdAt: 1 }] });
     render(<TeamView />);
     expect(screen.getByTestId('team-row-数据小队').textContent).toContain('1 名成员');
+  });
+
+  it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {
+    localeRef.current = 'en-US';
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('lead', { roleId: 'r-lead' });
+    seedAgent('a', { roleId: 'r-a' });
+    seedAgent('b', { roleId: 'r-b' });
+    discoveryState.agents = [{ name: 'lead' }, { name: 'a' }, { name: 'b' }];
+    useTeamStore.setState({ teams: [
+      { id: 't1', name: 'Solo', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a'], createdAt: 1 },
+      { id: 't2', name: 'Pair', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-b'], createdAt: 2 },
+    ] });
+    render(<TeamView />);
+    expect(screen.getByTestId('team-row-Solo').textContent).toContain('Leader: lead · 1 member');
+    expect(screen.getByTestId('team-row-Solo').textContent).not.toContain('1 members');
+    expect(screen.getByTestId('team-row-Pair').textContent).toContain('Leader: lead · 2 members');
   });
 
   it('teams tab: the card labels an unresolvable leader as invalid, matching the detail', () => {

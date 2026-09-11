@@ -1865,6 +1865,8 @@ export interface TranslationDict {
     fieldLeaderNoteHint: string;
     fieldLeaderNotePlaceholder: string;
     teamRowSummary: string;
+    /** Singular of `teamRowSummary`, for exactly one member. */
+    teamRowSummaryOne: string;
     detailStartChat: string;
     detailLeader: string;
     detailMembers: string;

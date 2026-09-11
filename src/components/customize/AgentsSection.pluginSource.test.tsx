@@ -36,7 +36,7 @@ vi.mock('@/core/plugin/installedStore', async (importOriginal) => {
 import { remove as fsRemove } from '@tauri-apps/plugin-fs';
 import { agentRegistry } from '@/core/agent/registry';
 import { readInstalled } from '@/core/plugin/installedStore';
-import { getI18n, format } from '@/i18n';
+import { getI18n, format, setLanguage } from '@/i18n';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -98,7 +98,7 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
     );
   });
 
-  it('still says User for an agent no plugin claims', () => {
+  it('still says the localized "User" source for an agent no plugin claims', () => {
     useDiscoveryStore.setState({
       agents: [{ name: 'reviewer', description: 'Reviews code' }],
       skills: [],
@@ -107,7 +107,28 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
     render(<AgentsSection />);
     fireEvent.click(screen.getByText('reviewer'));
 
-    expect(screen.getByTestId('agent-added-by').textContent).toBe('User');
+    expect(screen.getByTestId('agent-added-by').textContent).toBe(tb().sourceUser);
+  });
+
+  it('renders the zh-CN detail with translated source and description labels, no English literals', () => {
+    setLanguage('zh-CN');
+    try {
+      useDiscoveryStore.setState({
+        agents: [{ name: 'reviewer', description: 'Reviews code' }],
+        skills: [],
+        isLoading: false,
+      });
+      render(<AgentsSection />);
+      fireEvent.click(screen.getByText('reviewer'));
+
+      expect(screen.getByText('来源')).toBeTruthy();
+      expect(screen.getByTestId('agent-added-by').textContent).toBe('用户');
+      expect(screen.getByText('描述')).toBeTruthy();
+      expect(screen.queryByText('User')).toBeNull();
+      expect(screen.queryByText('Description')).toBeNull();
+    } finally {
+      setLanguage('system');
+    }
   });
 
   it('disables edit and delete, each saying why', () => {
@@ -188,7 +209,7 @@ describe('AgentsSection — the store\'s normalised source wins over the registr
     });
     openDetail({ name: 'reviewer', description: 'Reviews code' });
 
-    expect(screen.getByTestId('agent-added-by').textContent).toBe('User');
+    expect(screen.getByTestId('agent-added-by').textContent).toBe(tb().sourceUser);
     expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(false);
     const remove = screen.getByText(tb().uninstall).closest('button')!;
     expect(remove.hasAttribute('disabled')).toBe(false);

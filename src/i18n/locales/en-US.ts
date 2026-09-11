@@ -1708,6 +1708,7 @@ const enUS: TranslationDict = {
     sourceProject: 'Project',
     sourceUser: 'User',
     sourceUnknown: 'Unknown',
+    detailDescription: 'Description',
     builtinSkills: 'Built-in Skills',
     builtinAgents: 'Built-in Agents',
     noSkillsFound: 'No skills found',

@@ -374,13 +374,13 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
               <div className="text-body font-medium text-[var(--abu-text-primary)]" data-testid="agent-added-by">
                 {selectedPluginSource
                   ? format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
-                  : isSystemAgent(selected) ? 'System' : 'User'}
+                  : isSystemAgent(selected) ? t.toolbox.sourceBuiltin : t.toolbox.sourceUser}
               </div>
             </div>
 
             {/* Description */}
             <div>
-              <span className="text-minor text-[var(--abu-text-muted)]">Description</span>
+              <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.detailDescription}</span>
               <p className="text-body text-[var(--abu-text-primary)] leading-relaxed mt-1.5">{localizedDescription(selected, locale)}</p>
             </div>
 

@@ -1037,7 +1037,7 @@ function TemplateDetail({
     <>
       {/* Description */}
       <div className="mb-5">
-        <span className="text-minor text-[var(--abu-text-muted)]">Description</span>
+        <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.detailDescription}</span>
         <p className="text-body text-[var(--abu-text-primary)] mt-1">{pickLocale(locale, template.description, template.descriptionEn)}</p>
       </div>
 

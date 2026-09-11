@@ -2168,6 +2168,8 @@ export interface TranslationDict {
     sourceProject: string;
     sourceUser: string;
     sourceUnknown: string;
+    // Generic "Description" label used in the agent/skill/MCP detail views
+    detailDescription: string;
     builtinSkills: string;
     builtinAgents: string;
     noSkillsFound: string;

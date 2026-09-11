@@ -1709,6 +1709,7 @@ const zhCN: TranslationDict = {
     sourceProject: '项目',
     sourceUser: '用户',
     sourceUnknown: '未知',
+    detailDescription: '描述',
     builtinSkills: '内置技能',
     builtinAgents: '内置代理',
     noSkillsFound: '未找到技能',

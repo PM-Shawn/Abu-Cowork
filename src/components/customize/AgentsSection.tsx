@@ -301,6 +301,9 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       <ToolDetailModal
         open={!!selected}
         onClose={() => { setSelectedAgent(null); setMenuAgent(null); }}
+        // The delete confirm is stacked on top; it owns Escape while it is up,
+        // otherwise one press dismisses both it and the detail behind it.
+        disableEscape={!!confirmDeleteAgent}
         maxWidth="max-w-2xl"
         avatar={selected ? <AgentAvatar agent={selected} /> : undefined}
         title={selected ? displayName(selected, locale) : undefined}

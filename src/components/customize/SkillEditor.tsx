@@ -3,13 +3,23 @@ import { ArrowLeft, Save, Play, ChevronDown, ChevronRight, Folder, File } from '
 import { useI18n } from '@/i18n';
 import { serializeSkillMd, skillLoader } from '@/core/skill/loader';
 import { navigateToChatWithInput } from '@/utils/navigation';
-import { useItemName } from '@/hooks/useItemName';
-import { saveItemToAbuDir } from '@/utils/itemStorage';
+import { useItemName, isItemNameTaken } from '@/hooks/useItemName';
+import { saveItemToAbuDir, ITEM_EXISTS_CODE } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { Skill, SkillMetadata } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
+
+/**
+ * Every name a skill already answers to — user, project, drafts, builtin and
+ * plugin skills including those of disabled plugins. A new or renamed skill
+ * saved under one of these would overwrite the user's own SKILL.md, or be
+ * shadowed by (or shadow) the skill the loader already resolves that name to.
+ */
+function skillNamesInUse(): string[] {
+  return skillLoader.getAvailableSkills({ includeDrafts: true, includeDisabledPlugins: true }).map((s) => s.name);
+}
 
 interface SkillEditorProps {
   skill: Skill | null;  // null = creating new skill
@@ -24,7 +34,13 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Name validation via shared hook
-  const { name, setName, nameValid, nameChanged } = useItemName(skill?.name ?? null);
+  const { name, setName, nameValid, nameTaken, nameChanged } = useItemName(skill?.name ?? null, {
+    takenNames: skillNamesInUse(),
+  });
+  // The name refused at save time (it became taken after the last render, or a
+  // SKILL.md is already on disk there): shown with the same hint.
+  const [refusedName, setRefusedName] = useState<string | null>(null);
+  const nameConflict = nameValid && (nameTaken || refusedName === name.trim());
   const [description, setDescription] = useState(skill?.description ?? '');
   const [license, setLicense] = useState(skill?.license ?? '');
   const [trigger, setTrigger] = useState(skill?.trigger ?? '');
@@ -67,15 +83,28 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
 
   const handleSave = async (): Promise<boolean> => {
     if (!name.trim()) return false;
+    const trimmed = name.trim();
+    const creatingOrRenaming = !skill || nameChanged;
+    if (creatingOrRenaming && isItemNameTaken(trimmed, skill?.name ?? null, skillNamesInUse())) {
+      setRefusedName(trimmed);
+      return false;
+    }
     setSaving(true);
     try {
       const metadata = buildMetadata();
       const md = serializeSkillMd(metadata, content);
       const oldPath = (skill?.filePath && nameChanged) ? skill.filePath : undefined;
-      await saveItemToAbuDir('skills', 'SKILL.md', name.trim(), md, oldPath);
+      // A letter-case-only rename targets this skill's own folder on
+      // case-insensitive file systems, so it must be allowed to overwrite.
+      const mustBeNew = !skill || (nameChanged && trimmed.toLowerCase() !== skill.name.toLowerCase());
+      await saveItemToAbuDir('skills', 'SKILL.md', trimmed, md, oldPath, { mustBeNew });
       await onSave();
       return true;
     } catch (err) {
+      if ((err as { code?: unknown })?.code === ITEM_EXISTS_CODE) {
+        setRefusedName(trimmed);
+        return false;
+      }
       console.error('[SkillEditor] Save failed:', err);
       return false;
     } finally {
@@ -89,7 +118,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
     navigateToChatWithInput(`/${name.trim()} `);
   };
 
-  const isValid = nameValid;
+  const isValid = nameValid && !nameConflict;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -136,11 +165,14 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
               placeholder="my-skill"
               className={cn(
                 'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                name.trim() && !nameValid ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
+                name.trim() && (!nameValid || nameConflict) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
               )}
             />
             {name.trim() && !nameValid && (
               <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
+            )}
+            {nameConflict && (
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.skillNameTakenHint}</p>
             )}
           </div>
 

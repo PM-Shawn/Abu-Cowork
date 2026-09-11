@@ -1,19 +1,32 @@
 import { useState } from 'react';
 import { ArrowLeft, Save, Play } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
-import { serializeAgentMd } from '@/core/agent/registry';
+import { serializeAgentMd, agentRegistry, getBuiltinAgentNames } from '@/core/agent/registry';
 import { getAllTools } from '@/core/tools/registry';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import { useSettingsStore, getActiveProvider } from '@/stores/settingsStore';
 import { navigateToChatWithInput } from '@/utils/navigation';
-import { useItemName } from '@/hooks/useItemName';
-import { saveItemToAbuDir } from '@/utils/itemStorage';
+import { useItemName, isItemNameTaken } from '@/hooks/useItemName';
+import { saveItemToAbuDir, ITEM_EXISTS_CODE } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
 import { getUnmatchedAgentToolPatterns } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
+
+/**
+ * Every name an agent already answers to — builtins, the user's own, and
+ * plugin agents including those of disabled plugins (their files are still on
+ * disk). Saving a new or renamed agent under one of these would overwrite that
+ * agent's AGENT.md, or shadow a builtin every `builtin:<name>` team points at.
+ */
+function agentNamesInUse(): string[] {
+  return [
+    ...getBuiltinAgentNames(),
+    ...agentRegistry.getAvailableAgents({ includeDisabledPlugins: true }).map((a) => a.name),
+  ];
+}
 
 interface AgentEditorProps {
   agent: SubagentDefinition | null;  // null = creating new agent
@@ -27,7 +40,13 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const [showPreview, setShowPreview] = useState(false);
 
   // Name validation via shared hook
-  const { name, setName, nameValid, nameChanged } = useItemName(agent?.name ?? null);
+  const { name, setName, nameValid, nameTaken, nameChanged } = useItemName(agent?.name ?? null, {
+    takenNames: agentNamesInUse(),
+  });
+  // The name the disk refused at save time (a file appeared after the registry
+  // snapshot): shown with the same hint as a registry collision.
+  const [refusedName, setRefusedName] = useState<string | null>(null);
+  const nameConflict = nameValid && (nameTaken || refusedName === name.trim());
   const [description, setDescription] = useState(agent?.description ?? '');
   const [avatar, setAvatar] = useState(agent?.avatar ?? '');
   const [model, setModel] = useState(() => {
@@ -108,15 +127,30 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
     // is saved here. The only entry point (AgentsSection's Edit) is disabled
     // for plugin agents; this keeps the invariant local to the save itself.
     if (agent && isPluginOwnedAgent(agent)) return false;
+    const trimmed = name.trim();
+    const creatingOrRenaming = !agent || nameChanged;
+    // Re-checked here, not only via the disabled button: the registry may have
+    // learned a name since the last render.
+    if (creatingOrRenaming && isItemNameTaken(trimmed, agent?.name ?? null, agentNamesInUse())) {
+      setRefusedName(trimmed);
+      return false;
+    }
     setSaving(true);
     try {
       const metadata = buildMetadata();
       const md = serializeAgentMd(metadata, systemPrompt);
       const oldPath = (agent?.filePath && nameChanged) ? agent.filePath : undefined;
-      await saveItemToAbuDir('agents', 'AGENT.md', name.trim(), md, oldPath);
+      // A letter-case-only rename targets this agent's own folder on
+      // case-insensitive file systems, so it must be allowed to overwrite.
+      const mustBeNew = !agent || (nameChanged && trimmed.toLowerCase() !== agent.name.toLowerCase());
+      await saveItemToAbuDir('agents', 'AGENT.md', trimmed, md, oldPath, { mustBeNew });
       await onSave();
       return true;
     } catch (err) {
+      if ((err as { code?: unknown })?.code === ITEM_EXISTS_CODE) {
+        setRefusedName(trimmed);
+        return false;
+      }
       console.error('[AgentEditor] Save failed:', err);
       return false;
     } finally {
@@ -130,7 +164,7 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
     navigateToChatWithInput(format(t.toolbox.agentTestPrompt, { name: name.trim() }));
   };
 
-  const isValid = nameValid;
+  const isValid = nameValid && !nameConflict;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -182,11 +216,14 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
                 placeholder="my-agent"
                 className={cn(
                   'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                  name.trim() && !nameValid ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
+                  name.trim() && (!nameValid || nameConflict) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
                 )}
               />
               {name.trim() && !nameValid && (
                 <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
+              )}
+              {nameConflict && (
+                <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.agentNameTakenHint}</p>
               )}
             </div>
             <div className="w-20">

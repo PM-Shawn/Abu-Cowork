@@ -2096,6 +2096,8 @@ export interface TranslationDict {
     createWithAbu: string;
     createManually: string;
     nameFormatHint: string;
+    agentNameTakenHint: string;
+    skillNameTakenHint: string;
     aiAssistedCreate: string;
     installFailed: string;
     // npm registry install

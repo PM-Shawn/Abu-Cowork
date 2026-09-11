@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import AuthoredPluginList from './AuthoredPluginList';
 import { releasePreparedInstall, type InstallDisclosure } from '@/core/plugin/installer';
 import { getI18n } from '@/i18n';
-const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn() }));
+const state = vi.hoisted(() => ({ authors: [] as unknown[], installed: [] as unknown[], refresh: vi.fn(), prepare: vi.fn(), install: vi.fn(), edit: vi.fn(), remove: vi.fn() }));
 vi.mock('@/stores/pluginAuthorStore', () => ({ usePluginAuthorStore: Object.assign((selector: (value: unknown) => unknown) => selector({ ...state, error: null }), { getState: () => state }) }));
 vi.mock('@/stores/pluginStore', () => ({ cleanupPluginConfiguration: vi.fn().mockResolvedValue(undefined), usePluginStore: Object.assign((selector: (value: unknown) => unknown) => selector(state), { getState: () => state }) }));
 vi.mock('@/core/plugin/installer', () => ({ releasePreparedInstall: vi.fn().mockResolvedValue(undefined) }));
@@ -87,4 +87,17 @@ it('shows no-change feedback inside the preview without offering a redundant upd
   await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(getI18n().toolbox.pluginsUnchanged));
   expect(screen.queryByTestId('plugin-install-confirm')).not.toBeInTheDocument();
   expect(releasePreparedInstall).toHaveBeenCalledWith('preview');
+});
+
+it('requires an honest source-retention confirmation before deleting a draft', async () => {
+  state.remove.mockResolvedValue(undefined);
+  render(<AuthoredPluginList home="/home" searchQuery="" />);
+  fireEvent.click(within(screen.getByTestId('plugin-mine-draft')).getByRole('button'));
+  fireEvent.click(screen.getByTestId('plugin-author-menu'));
+  fireEvent.click(screen.getByTestId('plugin-author-menu-delete'));
+  expect(screen.getByText(getI18n().toolbox.pluginsDeleteDraftWarning)).toBeVisible();
+  expect(screen.getByText(author.sourceDir)).toBeVisible();
+  expect(state.remove).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: getI18n().toolbox.pluginsDeleteDraft }));
+  await waitFor(() => expect(state.remove).toHaveBeenCalledWith(author.id));
 });

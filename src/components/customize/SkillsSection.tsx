@@ -25,6 +25,7 @@ import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import SkillDetailPanel from '@/components/toolbox/skills/SkillDetailPanel';
 import { usePluginSkillGate } from '@/components/toolbox/plugins/usePluginSkillGate';
+import { isUserOwnedSkill } from '@/components/toolbox/skills/isSystemSkill';
 
 // Build a set of system skill names from marketplace templates
 /**
@@ -348,7 +349,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                     {t.toolbox.historyMenuLabel}
                   </button>
                   {/* Edit & Delete - available for non-builtin skills */}
-                  {selected.source !== 'builtin' && selected.source !== 'plugin' && selected.source !== 'enterprise' && !selected.filePath.includes('builtin-skills') && (
+                  {isUserOwnedSkill(selected) && (
                     <>
                       <button
                         className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
@@ -368,7 +369,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
           </>
         ) : undefined}
         footer={selected ? <div className="flex items-center justify-between gap-3">
-          {selected.source !== 'builtin' && selected.source !== 'plugin' && selected.source !== 'enterprise' && !selected.filePath.includes('builtin-skills') ? (
+          {isUserOwnedSkill(selected) ? (
             <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.uninstall}</Button>
           ) : !pluginAllowed(selected) ? (
             <span className="text-caption text-[var(--abu-text-muted)]">{t.toolbox.skillPluginDisabled}</span>

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
 import { saveAgentTool, delegateToAgentTool, useSkillTool } from './agentTools';
+import { getLanguageSetting, setLanguage } from '@/i18n';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
@@ -457,6 +458,60 @@ describe('delegateToAgentTool', () => {
       { conversationId: 'conv-1', loopId: 'loop-notes', toolCallId: 'tc-notes', teamRoster: ['researcher'] } as never,
     ));
     expect(again).not.toContain('只看 Q3');
+  });
+
+  // A member that stopped mid-task must not read as a finished one. The
+  // stop reason used to travel only in `reportMetadata`, which has no carrier
+  // on OpenAI-compatible providers — so the leader saw a plain, confident
+  // answer and took the work over itself. It now also lands in the body text.
+  it('appends the stop reason to the hand-off body when the member did not finish', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-stop', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: '做到一半', stopReason: 'max_turns', toolCallCount: 3 } as never);
+
+    const previous = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const text = String(await delegateToAgentTool.execute(
+        { agent_name: 'researcher', task: 'go' },
+        { conversationId: 'conv-1', loopId: 'loop-stop', teamRoster: ['researcher'] } as never,
+      ));
+      expect(text).toContain('做到一半');
+      expect(text).toContain('轮数用尽');
+      expect(text).toContain('未完成');
+    } finally {
+      setLanguage(previous);
+    }
+  });
+
+  it('says nothing extra when the member finished normally', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-stop-ok', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: '全部做完', stopReason: 'completed', toolCallCount: 3 } as never);
+
+    const text = String(await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'go' },
+      { conversationId: 'conv-1', loopId: 'loop-stop-ok', teamRoster: ['researcher'] } as never,
+    ));
+    expect(text).toBe('全部做完');
   });
 
   it('fails the hand-off when a declared expected file is missing, whatever the member said', async () => {

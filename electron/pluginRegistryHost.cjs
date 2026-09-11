@@ -201,4 +201,4 @@ function createPluginRegistryHost({ home, fs = nodeFs, mutate = runMutationWorke
   };
 }
 
-module.exports = { registryIO, PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost, applyRegistryMutation, prepareRegistryMutation, validRecord, safeSegment };
+module.exports = { validateRecords, registryIO, PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost, applyRegistryMutation, prepareRegistryMutation, validRecord, safeSegment };

@@ -358,7 +358,7 @@ test('serializes registry mutations through the real Electron host without overw
     launched = await launchAbuElectron();
     const page = await launched.app.firstWindow();
     await waitForWelcomeScreen(page);
-    const home = path.join(launched.appDataDir, 'Home');
+    const home = fs.realpathSync(path.join(launched.appDataDir, 'Home'));
     const result = await page.evaluate(async profile => {
       const bridge = (window as unknown as { __ABU_SHELL__: {
         pluginRegistry: (action: string, request: object) => Promise<unknown>;
@@ -653,6 +653,63 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     await expect.poll(() => Object.keys(JSON.parse(fs.readFileSync(secretsPath, 'utf8')))).not.toContain(config.pluginConfiguration);
     expect(fs.existsSync(manifestFile)).toBe(true);
 
+  } finally {
+    if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
+  }
+});
+
+test('deletes only draft metadata and explicitly archives an unreadable operation in Electron', async () => {
+  let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
+  try {
+    launched = await launchAbuElectron();
+    let page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await dismissFirstRunOverlays(page);
+    await openPluginsTab(page);
+    await page.getByTestId('plugin-create-trigger').click();
+    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /创建插件|Create plugin/ }).click();
+    const home = fs.realpathSync(path.join(launched.appDataDir, 'Home'));
+    const authorsPath = path.join(home, '.abu/plugin-authors/authors.json');
+    await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
+    const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
+    const sourceDir = path.join(home, 'Abu Plugins', author.id);
+    const sourceFile = path.join(sourceDir, 'notes.md');
+    fs.writeFileSync(sourceFile, 'Keep my source.');
+    await openPluginsTab(page);
+    await page.getByTestId('plugin-mine-draft').click();
+    await page.getByTestId('plugin-author-menu').click();
+    await page.getByTestId('plugin-author-menu-delete').click();
+    await expect(page.getByText(/本期无法重新接管该目录|This release cannot re-adopt/)).toBeVisible();
+    await expect(page.getByText(sourceDir, { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: /^(删除草稿|Delete draft)$/ }).click();
+    await expect(page.getByTestId('plugin-mine-draft')).toHaveCount(0);
+    expect(JSON.parse(fs.readFileSync(authorsPath, 'utf8'))).toEqual([]);
+    expect(fs.readFileSync(sourceFile, 'utf8')).toBe('Keep my source.');
+    await closeAbuElectron(launched.app);
+    const operations = path.join(home, '.abu/plugin-operations');
+    const journal = path.join(operations, 'active.enc');
+    fs.mkdirSync(operations, { recursive: true });
+    fs.writeFileSync(journal, 'unreadable journal fixture');
+    const backup = path.join(home, '.abu/plugin-packages/market/demo/.abu-plugin-backup-fixture');
+    fs.mkdirSync(backup, { recursive: true });
+    fs.writeFileSync(path.join(backup, 'original.md'), 'Old version.');
+    launched = await launchAbuElectron(launched);
+    page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await openPluginsTab(page);
+    await page.getByRole('button', { name: /^(归档并继续|Archive and continue)$/ }).click();
+    await expect(page.getByText(/不会删除任何文件|No files are deleted/)).toBeVisible();
+    expect(fs.existsSync(journal)).toBe(true);
+    await page.getByRole('button', { name: /^(归档并继续|Archive and continue)$/ }).last().click();
+    await expect.poll(() => fs.existsSync(journal)).toBe(false);
+    const archived = fs.readdirSync(operations).find(name => /^corrupt-\d+\.enc$/.test(name));
+    expect(archived).toBeTruthy();
+    expect(fs.readFileSync(path.join(operations, archived!), 'utf8')).toBe('unreadable journal fixture');
+    expect(fs.readFileSync(path.join(backup, 'original.md'), 'utf8')).toBe('Old version.');
+    const backupNotice = page.getByRole('status');
+    await expect(backupNotice).toBeVisible();
+    await expect.poll(async () => (await backupNotice.locator('li').allTextContents()).map(file => fs.realpathSync(file))).toEqual([backup]);
+    await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-batch1-archived.png'), animations: 'disabled' });
   } finally {
     if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
   }

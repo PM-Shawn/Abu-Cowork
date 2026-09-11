@@ -26,7 +26,7 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     locale: 'zh-CN',
     t: {
-      common: { appName: 'Abu', appSlogan: 'Your desktop agent' },
+      common: { appName: 'Abu', appSlogan: 'Your desktop agent', version: '版本' },
       updates: {
         currentVersion: '当前版本',
         checkForUpdates: '检查更新',
@@ -49,6 +49,7 @@ vi.mock('@/i18n', () => ({
       },
       about: {
         deviceId: '设备 ID',
+        versionDescription: '当前版本与更新',
         disclaimerLink: '免责声明',
         disclaimerTitle: '免责声明',
         disclaimerFullSuffix: '全文',

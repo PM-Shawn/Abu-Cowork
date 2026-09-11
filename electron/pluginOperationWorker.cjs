@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { enterDirectory } = require('./pluginRegistryWorker.cjs');
@@ -48,10 +49,32 @@ function run(input, io = fs, chdir = process.chdir) {
     if (staged.isSymbolicLink() || !same(staged, identities.get(''))) throw new Error('Plugin operation: staging changed');
     try { io.lstatSync(input.to); throw new Error('Plugin operation: destination exists'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     io.renameSync(input.temp, input.to);
-  } else if (input.action === 'rename') {
+  } else if (input.action === 'rename' || input.action === 'archive') {
     if (!segment(input.from) || !segment(input.to)) throw new Error('Plugin operation: invalid move');
     const before = io.lstatSync(input.from);
     if (before.isSymbolicLink() || !same(before, input.source)) throw new Error('Plugin operation: source changed');
+    if (input.action === 'archive') {
+      if (input.parent.join('/') !== '.abu/plugin-operations' || input.from !== 'active.enc'
+        || !/^corrupt-\d+\.enc$/.test(input.to) || !/^[a-f0-9]{64}$/.test(input.fingerprint)) throw new Error('Plugin operation: invalid archive');
+      if (!before.isFile() || before.nlink > 1 || before.size > 8 * 1024 * 1024) throw new Error('Plugin operation: invalid archive source');
+      const fd = io.openSync(input.from, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0));
+      try {
+        const opened = io.fstatSync(fd);
+        if (!same(before, opened) || opened.size !== before.size) throw new Error('Plugin operation: archive source changed');
+        const bytes = Buffer.alloc(before.size);
+        let offset = 0;
+        while (offset < bytes.length) {
+          const count = io.readSync(fd, bytes, offset, bytes.length - offset, offset);
+          if (!count) break;
+          offset += count;
+        }
+        const after = io.fstatSync(fd);
+        const current = io.lstatSync(input.from);
+        if (offset !== before.size || !same(current, before) || current.isSymbolicLink()
+          || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
+          || crypto.createHash('sha256').update(bytes).digest('hex') !== input.fingerprint) throw new Error('Plugin operation: archive source changed; refresh before archiving');
+      } finally { io.closeSync(fd); }
+    }
     try { io.lstatSync(input.to); throw new Error('Plugin operation: destination exists'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
     io.renameSync(input.from, input.to);
   } else if (input.action === 'write') {
@@ -64,9 +87,11 @@ function run(input, io = fs, chdir = process.chdir) {
   } else throw new Error('Plugin operation: unsupported mutation');
   if (!same(parent, io.statSync('.'))) throw new Error('Plugin operation: directory changed');
   // Directory fsync makes a completed rename durable on platforms supporting it.
+  // Windows is not one of them; see pluginLease.syncDirectory.
+  if (process.platform === 'win32') return;
   let fd;
   try { fd = io.openSync('.', 'r'); io.fsyncSync(fd); } catch (e) {
-    if (!['EINVAL', 'EPERM', 'EISDIR', 'ENOTSUP'].includes(e.code)) throw e;
+    if (!['EINVAL', 'EPERM', 'EACCES', 'EBADF', 'EISDIR', 'ENOTSUP'].includes(e.code)) throw e;
   } finally { if (fd !== undefined) io.closeSync(fd); }
 }
 function mutate({ home, ...input }) {

@@ -20,7 +20,7 @@ const fail = message => { throw new Error(`Plugin operation: ${message}`); };
  * Runtime state must be applied and acknowledged before another mutation starts.
  */
 function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt,
-  fs = nodeFs.promises, session: providedSession, mutate, randomId = () => crypto.randomBytes(16).toString('hex'),
+  now = () => Date.now(), fs = nodeFs.promises, session: providedSession, mutate, randomId = () => crypto.randomBytes(16).toString('hex'),
 } = {}) {
   const root = path.resolve(home);
   const operations = path.join(root, '.abu', 'plugin-operations');
@@ -113,12 +113,35 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     if (value.phase === 'committed') validateRuntime(value.nextRuntime, value, true);
     return value;
   }
+  async function backupPaths() {
+    const paths = [];
+    async function scan(dir, depth) {
+      if (!await stat(dir)) return;
+      await directory(dir);
+      for (const name of await fs.readdir(dir)) {
+        if (!safeSegment(name)) continue;
+        const child = path.join(dir, name);
+        const info = await stat(child);
+        if (!info?.isDirectory() || info.isSymbolicLink()) continue;
+        if (name.startsWith('.abu-plugin-backup-')) paths.push(child);
+        else if (depth > 0) await scan(child, depth - 1);
+      }
+    }
+    await scan(path.join(root, '.abu', 'plugin-packages'), 2);
+    await scan(path.join(root, '.abu', 'agents'), 0);
+    return paths.sort();
+  }
   async function load() {
     await session?.ready();
-    try {
-      const bytes = await read(journal);
-      return bytes === null ? null : validate(JSON.parse(decrypt(bytes)));
-    } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    let bytes;
+    try { bytes = await read(journal); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    if (bytes === null) return null;
+    try { return validate(JSON.parse(decrypt(bytes))); }
+    catch {
+      // Only content decoding/validation degrades. Unsafe paths and I/O errors still fail closed.
+      return { unreadable: true, fingerprint: crypto.createHash('sha256').update(bytes).digest('hex'), backupPaths: await backupPaths() };
+    }
   }
   const packageDir = record => path.join(root, '.abu', 'plugin-packages', record.marketplace, record.name, record.version);
   const target = (op, move) => move.kind === 'package'
@@ -138,12 +161,13 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     const metadata = parseYaml(match[1]);
     return metadata?.source === `plugin:${key}`;
   }
-  async function moveDirectory(from, to, expected) {
+  async function moveDirectory(from, to, expected, fingerprint) {
     if (path.dirname(from) !== path.dirname(to)) fail('cross-directory move refused');
     await directory(path.dirname(from));
     const source = await stat(from);
     if (!source || source.isSymbolicLink() || (expected && !sameIdentity(source, expected))) fail('source changed');
-    await mutate({ home: rootIdentity.canonical, identity: rootIdentity, action: 'rename',
+    await mutate({ home: rootIdentity.canonical, identity: rootIdentity, action: fingerprint ? 'archive' : 'rename',
+      ...(fingerprint ? { fingerprint } : {}),
       parent: path.relative(root, path.dirname(from)).split(path.sep),
       from: path.basename(from), to: path.basename(to), source: identityOf(source) });
   }
@@ -295,8 +319,29 @@ function createPluginOperationHost({ home, registry, snapshots, encrypt, decrypt
     return { id: op.id, previous };
   }
   async function execute(sender, action, request) {
+    // Recovery is the user's explicit "get me out of this" action, so it is the
+    // one place allowed to restart a session that a worker death closed.
+    if (action === 'recover' || action === 'archive') session?.reopen?.();
     if (action === 'begin') return begin(sender, request);
     const op = await load();
+    if (action === 'configurationCleanupAllowed') {
+      if (op) return false;
+      try { await directory(operations); } catch (error) { if (error.code === 'ENOENT') return true; throw error; }
+      // Archived journals may still own credentials needed for manual recovery.
+      return !(await fs.readdir(operations)).some(name => /^corrupt-\d+\.enc$/.test(name));
+    }
+    if (action === 'archive') {
+      if (!plain(request) || Object.keys(request).some(key => key !== 'fingerprint') || !op?.unreadable || request.fingerprint !== op.fingerprint) fail('unreadable journal changed; refresh before archiving');
+      if (owner && owner !== sender && !owner.isDestroyed?.()) fail('operation still owned by another window');
+      const timestamp = now();
+      if (!Number.isSafeInteger(timestamp) || timestamp < 0) fail('invalid archive timestamp');
+      const destination = path.join(operations, `corrupt-${timestamp}.enc`);
+      await moveDirectory(journal, destination, undefined, op.fingerprint);
+      owner = undefined;
+      return { archivedPath: destination, backupPaths: op.backupPaths };
+    }
+    if (action === 'status' && op?.unreadable) return op;
+    if (op?.unreadable) fail('unreadable journal; explicit archive confirmation required');
     if (action === 'status') return op ? { id: op.id, key: op.key, phase: op.phase } : null;
     if (action === 'recover') {
       if (!op) return null;

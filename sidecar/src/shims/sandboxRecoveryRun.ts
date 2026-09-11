@@ -8,9 +8,9 @@
  * process. `commandTools.ts` (`run_command`) only ever calls the single
  * exported function `showSandboxBlockedToast(command)` (verified: `grep -n
  * "showSandboxBlockedToast\|extractBlockedPath" src/core/tools/definitions/commandTools.ts`
- * — one import, one call site, guarded by `if (sandbox &&
- * output.stderr.includes('[sandbox-blocked]'))`), so this shim covers
- * exactly that surface.
+ * — one import, one call site, guarded by `if (!appAutomationRecovery &&
+ * sandbox && sandboxBlockClass(output.stderr) === 'write')`), so this shim
+ * covers exactly that surface.
  *
  * Forwards to the shell via the `shell.sandboxBlocked` fire-and-forget
  * NOTIFICATION (shell handler: `agentLoopRunner.ts`'s

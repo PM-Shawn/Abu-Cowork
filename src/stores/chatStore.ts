@@ -5,6 +5,7 @@ import { immer } from 'zustand/middleware/immer';
 import { current, enableMapSet } from 'immer';
 import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult, UpstreamErrorDetails } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
+import type { MaxTurnsNoticeAction } from '../core/agent/maxTurnsNotice';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
 import { useTaskExecutionStore } from './taskExecutionStore';
@@ -700,6 +701,8 @@ interface ChatActions {
    */
   setToolCallModelContext: (convId: string, messageId: string, toolCallId: string, modelContext: string) => void;
   setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
+  /** Settle a turn-cap notice card so the choice survives a reload. */
+  setMaxTurnsNoticeAction: (convId: string, messageId: string, action: MaxTurnsNoticeAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
    * Stash a post-loop proposal signal on the conversation so the next
@@ -1622,6 +1625,34 @@ export const useChatStore = create<ChatStore>()(
         }
       },
 
+      setMaxTurnsNoticeAction: async (convId, messageId, action) => {
+        const currentMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (!currentMsg?.maxTurnsNotice) {
+          throw new Error(`Max-turns notice "${messageId}" no longer exists`);
+        }
+        // Write-through BEFORE the in-memory flip, exactly as the sandbox
+        // recovery card does: a card that looked settled but wasn't persisted
+        // would come back actionable after a reload and continue a second time.
+        const persistedMsg: Message = {
+          ...currentMsg,
+          maxTurnsNotice: { ...currentMsg.maxTurnsNotice, action },
+        };
+        const { replaceMessageByIdStrict } = await import('../core/session/conversationStorage');
+        await replaceMessageByIdStrict(convId, persistedMsg);
+
+        let updated = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          if (msg?.maxTurnsNotice) {
+            msg.maxTurnsNotice.action = action;
+            updated = true;
+          }
+        });
+        if (!updated) {
+          throw new Error(`Max-turns notice "${messageId}" no longer exists`);
+        }
+      },
+
       setToolCallUserQuestionAnswers: (convId, messageId, toolCallId, answers) => {
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
@@ -2321,7 +2352,13 @@ export const useChatStore = create<ChatStore>()(
             // transitioning INTO a terminal state — not on a redundant
             // re-set of a status it's already in (e.g. a duplicate
             // 'completed' call), and never for a convId absent from state.
-            shouldReindex = isTerminal && prevStatus !== status;
+            // A run that ends WITHOUT 'completed' still settles this
+            // conversation's messages for the round — the turn cap now lands
+            // on 'idle' (agentLoop's max_turns path), and gating the
+            // write-through on `isTerminal` alone would leave the catalog row
+            // and FTS body stale until the next startup reconcile. Additive:
+            // every transition that re-indexed before still does.
+            shouldReindex = prevStatus !== status && (isTerminal || prevStatus === 'running');
             conv.status = status;
             if (status === 'completed') {
               conv.completedAt = Date.now();
@@ -2663,7 +2700,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 11,
+      version: 12,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2695,6 +2732,11 @@ export const useChatStore = create<ChatStore>()(
         if (version < 10) { /* no transform needed */ }
         // v10 → v11: merge of the two v8 lineages above (no transform).
         if (version < 11) { /* no transform needed */ }
+        // v11 → v12: added the turn-cap notice card — an append-only Message
+        // (id prefix `max-turns-`) carrying an optional `maxTurnsNotice`
+        // payload. Messages live in JSONL, not in the persisted
+        // `conversationIndex`, so there is nothing to transform.
+        if (version < 12) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

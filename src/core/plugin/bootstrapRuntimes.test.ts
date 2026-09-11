@@ -9,40 +9,58 @@ import { startCapabilityRuntimes } from './bootstrapRuntimes';
 
 beforeEach(() => vi.clearAllMocks());
 
-it('starts the private browser while plugin recovery is still pending, but defers user MCP startup', async () => {
+it('starts the private browser immediately and MCP synchronization once recovery settles', async () => {
   let finish!: () => void;
   mocks.recovery.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
   const stop = startCapabilityRuntimes();
   expect(mocks.browser).toHaveBeenCalledOnce();
+  // Not before: until plugin ownership is published, a plugin's own server
+  // looks independent and would be connected, then invalidated by epoch.
   expect(mocks.sync).not.toHaveBeenCalled();
   finish();
   await Promise.resolve();
+  await Promise.resolve();
   expect(mocks.sync).toHaveBeenCalledOnce();
-  expect(mocks.browser).toHaveBeenCalledOnce();
   stop();
   expect(mocks.browserCleanup).toHaveBeenCalledOnce();
   expect(mocks.syncCleanup).toHaveBeenCalledOnce();
 });
 
-it('does not restart user MCP synchronization after the owning effect is cleaned up', async () => {
+it('does not start MCP synchronization after the owning effect is cleaned up', async () => {
   let finish!: () => void;
   mocks.recovery.mockReturnValue(new Promise<void>(resolve => { finish = resolve; }));
   startCapabilityRuntimes()();
   finish();
   await Promise.resolve();
+  await Promise.resolve();
   expect(mocks.sync).not.toHaveBeenCalled();
 });
 
-it('keeps the private browser available when plugin recovery fails', async () => {
+/**
+ * Regression: plugin recovery and MCP startup used to be one promise chain, so
+ * an unreadable plugin journal left every user-configured connector offline
+ * with the only explanation buried in the plugins tab.
+ */
+it('keeps user MCP connectors running when plugin recovery fails', async () => {
   const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
   mocks.recovery.mockRejectedValue(new Error('recovery blocked'));
   const stop = startCapabilityRuntimes();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
   expect(mocks.browser).toHaveBeenCalledOnce();
+  expect(mocks.sync).toHaveBeenCalledOnce();
   expect(mocks.browserCleanup).not.toHaveBeenCalled();
-  expect(mocks.sync).not.toHaveBeenCalled();
   expect(warning).toHaveBeenCalled();
   stop();
   warning.mockRestore();
+});
+
+it('tears both runtimes down on cleanup', async () => {
+  mocks.recovery.mockResolvedValue(undefined);
+  startCapabilityRuntimes()();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(mocks.browserCleanup).toHaveBeenCalledOnce();
+  expect(mocks.syncCleanup).toHaveBeenCalledOnce();
 });

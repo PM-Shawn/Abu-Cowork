@@ -104,6 +104,9 @@ test('security settings dropdown saves modes and keeps protection confirmations'
   await expect(page.getByRole('button', { name: '默认权限模式: 替我审批', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '偏好', exact: true }).click();
+  // Appearance is a dropdown now (same control as the other General rows):
+  // open it on the seeded 'light' value, then pick dark.
+  await page.getByRole('button', { name: '亮色', exact: true }).click();
   await page.getByRole('button', { name: '暗色', exact: true }).click();
   await page.getByRole('button', { name: '安全', exact: true }).click();
   await page.locator('[data-abu-settings-dialog] > div').screenshot({ path: testInfo.outputPath('security-dark.png') });

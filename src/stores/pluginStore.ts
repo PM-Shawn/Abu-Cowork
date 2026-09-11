@@ -110,6 +110,7 @@ interface PluginState {
   activationByKey: PluginActivations;
   activationReady: boolean;
   recoveryError: string | null;
+  unreadableOperation: import('@/core/plugin/operationBridge').UnreadablePluginOperation | null;
   /** Persisted: local marketplace directories the user added. */
   marketplaces: MarketplaceRef[];
   /** Runtime mirror of installed.json — never persisted (see module doc). */
@@ -244,6 +245,7 @@ export const usePluginStore = create<PluginStore>()(
       activationByKey: {},
       activationReady: false,
       recoveryError: null,
+      unreadableOperation: null,
       marketplaces: [],
       installed: [],
       knownMcpServerNames: [],
@@ -297,6 +299,13 @@ export const usePluginStore = create<PluginStore>()(
 
       refreshInstalled: async (home, options) => {
         const pending = hasPluginOperationHost() ? await pluginOperationStatus() : null;
+        if (pending && 'unreadable' in pending) {
+          const result = await readInstalledResult(home);
+          set({ unreadableOperation: pending, recoveryError: getI18n().toolbox.pluginsJournalUnreadable, activationReady: false,
+            ...(result.ok ? { installed: result.plugins } : {}) });
+          if (options?.strict) throw new Error('Plugin recovery is still pending');
+          return;
+        }
         if ((pending || managedChanges.size > 0) && !applyingPluginRuntime) {
           set({ activationReady: false });
           if (options?.strict) throw new Error('Plugin recovery is still pending');
@@ -631,12 +640,20 @@ usePluginStore.subscribe(state => publishPluginActivation(state.activationByKey,
  * discovery promise; the Electron application always lets this routine own boot.
  */
 export async function bootstrapPluginUpdates(discoveryReady?: Promise<void>): Promise<void> {
-  usePluginStore.setState({ recoveryError: null, activationReady: false });
+  usePluginStore.setState({ recoveryError: null, unreadableOperation: null, activationReady: false });
   try {
   await discoveryReady;
   const home = await homeDir();
   if (hasPluginOperationHost()) {
-    const recovery = await recoverPluginOperation();
+    // Recovery owns reopening a dead worker; status cannot run ahead of it.
+    const recovery = await recoverPluginOperation().catch(async error => {
+      const status = await pluginOperationStatus().catch(() => null);
+      if (status && 'unreadable' in status) {
+        await usePluginStore.getState().refreshInstalled(home);
+        throw new Error(getI18n().toolbox.pluginsJournalUnreadable);
+      }
+      throw error;
+    });
     if (recovery) { await applyPluginRuntime(recovery, home); await acknowledgePluginOperation(recovery.id); }
   }
   if (!discoveryReady || hasPluginOperationHost()) await useDiscoveryStore.getState().refresh();

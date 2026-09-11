@@ -895,6 +895,222 @@ describe('agentLoopRunner', () => {
       );
     });
 
+    // P3 degradation: a batch that trips the raw-media guard is no longer
+    // dropped wholesale — each offending frame is redacted in place and any
+    // tool call it carries is settled as a media-transport failure, so a
+    // dispatch can never stay stuck at "executing" because one frame was bad.
+    const RAW_B64 = 'QUJVLVJBVy1CQVNFNjQ=';
+    const RAW_MEDIA_SHAPES: Array<{ name: string; carrier: Record<string, unknown> }> = [
+      {
+        name: 'image.source.data',
+        carrier: { resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: RAW_B64 } }] },
+      },
+      {
+        name: 'document.source.data',
+        carrier: { resultContent: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: RAW_B64 } }] },
+      },
+      {
+        name: 'nested imageData',
+        carrier: { resultContent: [{ type: 'error', content: 'boom', imageData: { mediaType: 'image/png', base64: RAW_B64 } }] },
+      },
+      {
+        name: 'metadata base64',
+        carrier: { metadata: { detail: { mediaType: 'image/png', base64: RAW_B64 } } },
+      },
+    ];
+
+    it.each(RAW_MEDIA_SHAPES)('degrades the $name frame in place and keeps the settled tool call frame', async ({ carrier }) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const settled = { p: 'chat', m: 'updateToolCall', a: ['conv-1', 'msg-1', 'tc1', 'done', undefined, false, undefined, undefined] };
+      const unsafe = {
+        p: 'chat',
+        m: 'appendMessageToolCall',
+        a: ['conv-1', 'loop-1', { id: 'tc2', name: 'computer', input: {}, isExecuting: true, ...carrier }],
+      };
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({ runId: 'run-1', frames: [settled, unsafe] });
+
+      await vi.waitFor(() => {
+        expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1);
+      });
+      const applied = applyDeltaFramesMock.mock.calls[0][0] as Array<{ p: string; m: string; a: unknown[] }>;
+      // Frame count and order are preserved; the clean settle frame is untouched.
+      expect(applied).toHaveLength(2);
+      expect(applied[0]).toEqual(settled);
+      expect(applied[1].p).toBe('chat');
+      expect(applied[1].m).toBe('appendMessageToolCall');
+      const degradedCall = applied[1].a[2] as Record<string, unknown>;
+      expect(degradedCall.id).toBe('tc2');
+      expect(degradedCall.result).toBe('Error: Could not prepare sidecar tool media for transport.');
+      expect(degradedCall.isError).toBe(true);
+      expect(degradedCall.isExecuting).toBe(false);
+      expect(degradedCall.resultContent).toBeUndefined();
+      // The raw payload never reaches the store.
+      expect(JSON.stringify(applied)).not.toContain(RAW_B64);
+    });
+
+    it('logs a per-frame summary (never the frame args) when a batch is degraded for raw media payloads', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({
+        runId: 'run-1',
+        frames: [
+          { p: 'chat', m: 'updateToolCall', a: ['conv-1', 'loop-1', 'tc1', 'done'] },
+          { p: 'chat', m: 'addMessage', a: ['conv-1', { content: [{ type: 'image', source: { type: 'base64', data: 'AAAA' } }] }] },
+        ],
+      });
+
+      await vi.waitFor(() => {
+        expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1);
+      });
+      expect(loggerWarnMock).toHaveBeenCalledWith(
+        'agent.delta degraded unsafe media payload',
+        expect.objectContaining({
+          runId: 'run-1',
+          frameCount: 2,
+          degradedIndexes: [1],
+          frames: [
+            { index: 0, p: 'chat', m: 'updateToolCall', toolCallId: 'tc1' },
+            { index: 1, p: 'chat', m: 'addMessage' },
+          ],
+        }),
+      );
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.agent_delta_degraded',
+        expect.objectContaining({ runId: 'run-1', frameCount: 2, degradedCount: 1 }),
+      );
+      // The summary must never carry frame args (and therefore never a base64 payload).
+      expect(JSON.stringify(loggerWarnMock.mock.calls)).not.toContain('AAAA');
+      expect(JSON.stringify(traceRuntimeEventMock.mock.calls)).not.toContain('AAAA');
+      // A non-tool-call frame is redacted, not re-labelled as a tool failure.
+      const applied = applyDeltaFramesMock.mock.calls[0][0] as Array<{ a: unknown[] }>;
+      expect(JSON.stringify(applied)).not.toContain('AAAA');
+    });
+
+    // Fix round 1 (Task 3b review): degradation must not neutralise the guard's
+    // trigger while a payload rides along in a key redaction skipped. Both probes
+    // below THREW the guard before degradation (old code => whole batch dropped,
+    // payload never stored) and PASSED it after (=> batch applied with raw base64
+    // in the store). They must now degrade cleanly AND be applied.
+    const SIBLING_PAYLOAD = 'QUJVLVJBVy1CQVNFNjQtUEFZTE9BRC1QUk9CRS1GT1ItVEhFLURFR1JBREFUSU9OLUZJWC1ST1VORC0x';
+    it.each([
+      {
+        name: 'record sibling (alt)',
+        block: {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: SIBLING_PAYLOAD },
+          alt: SIBLING_PAYLOAD,
+        },
+      },
+      {
+        name: 'source sibling (raw)',
+        block: {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: SIBLING_PAYLOAD, raw: SIBLING_PAYLOAD },
+        },
+      },
+      {
+        name: 'recognised detail sibling',
+        block: {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: SIBLING_PAYLOAD },
+          sibling: { mediaType: 'image/png', base64: SIBLING_PAYLOAD },
+        },
+      },
+    ])('degrades and applies a frame whose raw media node carries a $name', async ({ block }) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({
+        runId: 'run-1',
+        frames: [{ p: 'chat', m: 'addMessage', a: ['conv-1', { content: [block] }] }],
+      });
+
+      await vi.waitFor(() => {
+        expect(applyDeltaFramesMock).toHaveBeenCalledTimes(1);
+      });
+      const applied = applyDeltaFramesMock.mock.calls[0][0] as Array<{ a: unknown[] }>;
+      expect(applied).toHaveLength(1);
+      expect(JSON.stringify(applied)).not.toContain(SIBLING_PAYLOAD);
+      expect(loggerWarnMock).toHaveBeenCalledWith(
+        'agent.delta degraded unsafe media payload',
+        expect.objectContaining({ runId: 'run-1', degradedIndexes: [0] }),
+      );
+      expect(loggerWarnMock).not.toHaveBeenCalledWith(
+        'agent.delta dropped unsafe media payload after degradation',
+        expect.anything(),
+      );
+      expect(JSON.stringify(loggerWarnMock.mock.calls)).not.toContain(SIBLING_PAYLOAD);
+    });
+
+    it('falls back to dropping the batch when degradation cannot clean a frame', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1', loopId: 'loop-1' }));
+
+      const handler = handlerFor(onSidecarNotification, 'agent.delta');
+      handler({
+        runId: 'run-1',
+        frames: [
+          // Adversarial shape the redactor still cannot clean: the SAME node is
+          // both a raw-source media block and a raw detail-image block. The
+          // source branch wins, blanks `source.data`, and carries the node's own
+          // `mediaType`/`base64` keys through (that short `base64` is below the
+          // payload-length class), so the post-degradation guard still throws.
+          {
+            p: 'chat',
+            m: 'addMessage',
+            a: ['conv-1', {
+              content: [{
+                type: 'image',
+                source: { type: 'base64', data: 'AAAA' },
+                mediaType: 'image/png',
+                base64: 'BBBB',
+              }],
+            }],
+          },
+        ],
+      });
+
+      await Promise.resolve();
+      expect(applyDeltaFramesMock).not.toHaveBeenCalled();
+      expect(loggerWarnMock).toHaveBeenCalledWith(
+        'agent.delta dropped unsafe media payload after degradation',
+        expect.objectContaining({ runId: 'run-1', frameCount: 1 }),
+      );
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.agent_delta_rejected',
+        expect.objectContaining({ runId: 'run-1', frameCount: 1 }),
+      );
+      expect(JSON.stringify(loggerWarnMock.mock.calls)).not.toContain('BBBB');
+    });
+
+    it('summarizeFramesForLog keeps identity only — real tool-call ids in, message/step ids out', async () => {
+      const { summarizeFramesForLog } = await importFresh();
+
+      expect(summarizeFramesForLog([
+        // Production shape: chatStore.updateToolCall(convId, messageId, toolCallId, result).
+        { p: 'chat', m: 'updateToolCall', a: ['conv-1', 'msg-1', 'tc-real', 'done'] },
+        { p: 'chat', m: 'setMessageToolCalls', a: ['conv-1', 'msg-1', [{ id: 'tc-first' }, { id: 'tc-second' }]] },
+        { p: 'chat', m: 'addMessage', a: ['conv-1', { id: 'msg-1' }] },
+        { p: 'exec', m: 'addStep', a: ['loop-1', { id: 'step-1' }] },
+      ])).toEqual([
+        { index: 0, p: 'chat', m: 'updateToolCall', toolCallId: 'tc-real' },
+        { index: 1, p: 'chat', m: 'setMessageToolCalls', toolCallId: 'tc-first' },
+        { index: 2, p: 'chat', m: 'addMessage' },
+        { index: 3, p: 'exec', m: 'addStep' },
+      ]);
+    });
+
     it('serializes separate frame batches for the same run', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();

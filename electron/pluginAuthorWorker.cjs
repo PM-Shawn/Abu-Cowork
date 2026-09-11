@@ -2,7 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { enterDirectory } = require('./pluginRegistryWorker.cjs');
-const { registryIO, safeSegment } = require('./pluginRegistryHost.cjs');
+const { registryIO, safeSegment, validateRecords } = require('./pluginRegistryHost.cjs');
 const idValid = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 const preparedValid = value => value === null || (value && typeof value === 'object' && safeSegment(value.version) && /^[a-f0-9]{64}$/.test(value.checksum) && typeof value.description === 'string' && value.description.length <= 2048);
 const conversationValid = value => typeof value === 'string' && /^[\w-]{1,120}$/.test(value);
@@ -41,7 +41,21 @@ function runAuthor(input, io = fs, chdir = process.chdir) {
   } else {
     author = authors.find(item => item.id === input.id);
     if (!author) throw new Error('Plugin author: record unavailable');
-    if (input.action === 'bind') {
+    if (input.action === 'delete') {
+      // Inspect installation ownership inside the same leased worker before removing metadata.
+      chdir(home);
+      if (io.statSync('.').ino !== stat.ino || io.statSync('.').dev !== stat.dev) throw new Error('Plugin author: profile changed');
+      enterDirectory('.abu', false, io, chdir);
+      let rawInstalled = null;
+      try { enterDirectory('plugin-packages', false, io, chdir); rawInstalled = data.read('installed.json'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      const installed = rawInstalled === null ? [] : JSON.parse(rawInstalled);
+      validateRecords(installed);
+      if (installed.some(record => record.authoringId === author.id || record.key === result(author).key)) {
+        throw new Error('Plugin author: uninstall the installed plugin before deleting its draft');
+      }
+      authors.splice(authors.indexOf(author), 1);
+    } else if (input.action === 'bind') {
       if (!conversationValid(input.conversationId) || authors.some(item => item.id !== author.id && item.conversationId === input.conversationId)) throw new Error('Plugin author: invalid or reused conversation');
       if (author.conversationId !== input.conversationId && author.conversationId !== (input.expectedConversationId ?? null)) throw new Error('Plugin author: conversation binding changed');
       author.conversationId = input.conversationId;
@@ -56,10 +70,13 @@ function runAuthor(input, io = fs, chdir = process.chdir) {
   const current = io.statSync('.');
   if (current.ino !== metadataIdentity.ino || current.dev !== metadataIdentity.dev) throw new Error('Plugin author: metadata directory changed');
   data.write('authors.json', JSON.stringify(authors));
-  let fd;
-  try { fd = io.openSync('.', 'r'); io.fsyncSync(fd); }
-  catch (error) { if (!['EINVAL', 'EPERM', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error; }
-  finally { if (fd !== undefined) io.closeSync(fd); }
+  if (process.platform !== 'win32') {
+    // Windows has no directory-fsync equivalent; see pluginLease.syncDirectory.
+    let fd;
+    try { fd = io.openSync('.', 'r'); io.fsyncSync(fd); }
+    catch (error) { if (!['EINVAL', 'EPERM', 'EACCES', 'EBADF', 'EISDIR', 'ENOTSUP'].includes(error.code)) throw error; }
+    finally { if (fd !== undefined) io.closeSync(fd); }
+  }
   return result(author);
 }
 module.exports = { runAuthor };

@@ -102,6 +102,7 @@ import {
   prepareToolResultForSidecarWire,
   sidecarValueHasOpaqueMediaRefs,
 } from '../subagent/delegatedUserTurnMaterializer';
+import { degradeDeltaFramesForMediaFailure } from '../subagent/mediaTransportFailure';
 import {
   areAgentRunTerminalsEqual,
   isAgentRunTerminal,
@@ -585,6 +586,60 @@ function trustedDeltaFramesForSession(session: RunSession, frames: PortFrame[]):
   return frames.filter((frame) => isDeltaFrameTrustedForSession(frame, session));
 }
 
+/** chat-port frames whose third arg identifies the tool call being mutated (see chatDelta.ts signatures). */
+const TOOL_CALL_FRAME_METHODS = new Set([
+  'updateToolCall',
+  'appendMessageToolCall',
+  'appendToolCallContext',
+  'setMessageToolCalls',
+  'checkpointToolCallMetadata',
+]);
+const TOOL_CALL_FRAME_ARG_INDEX = 2;
+
+function toolCallIdFromObject(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as { id?: unknown; toolCallId?: unknown };
+  if (typeof record.id === 'string' && record.id) return record.id;
+  if (typeof record.toolCallId === 'string' && record.toolCallId) return record.toolCallId;
+  return undefined;
+}
+
+function toolCallIdFromFrame(frame: PortFrame): string | undefined {
+  if (frame.p !== 'chat' || !TOOL_CALL_FRAME_METHODS.has(frame.m)) return undefined;
+  const arg = frame.a[TOOL_CALL_FRAME_ARG_INDEX];
+  if (typeof arg === 'string') return arg || undefined;
+  if (Array.isArray(arg)) {
+    for (const entry of arg) {
+      const id = toolCallIdFromObject(entry);
+      if (id) return id;
+    }
+    return undefined;
+  }
+  return toolCallIdFromObject(arg);
+}
+
+/**
+ * Identity-only summary of a frame batch for logs: port, method, position and
+ * (when the method carries one) the tool call id. Frame args are NEVER
+ * serialized — a batch is summarized precisely because it may carry a raw
+ * base64 media payload.
+ *
+ * `index` is the position in the array passed in — for `agent.delta` that is
+ * the position AFTER `trustedDeltaFramesForSession`, not the sidecar's wire
+ * index. Two summaries of the same run are comparable only when the same
+ * frames survived the trust filter.
+ */
+export function summarizeFramesForLog(
+  frames: readonly PortFrame[],
+): Array<{ index: number; p: string; m: string; toolCallId?: string }> {
+  return frames.map((frame, index) => {
+    const toolCallId = toolCallIdFromFrame(frame);
+    return toolCallId === undefined
+      ? { index, p: frame.p, m: frame.m }
+      : { index, p: frame.p, m: frame.m, toolCallId };
+  });
+}
+
 /** `agent.delta` (NOTIFICATION) → {runId, frames} → applyDeltaFrames. Unknown runId → silent drop (3a discipline, matches handleSubagentAbort's unknown-runId no-op). */
 function handleAgentDelta(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; frames?: unknown } | null;
@@ -620,24 +675,51 @@ function handleAgentDelta(rawParams: unknown): void {
     }
   }
   const previous = session.frameApplyTail ?? Promise.resolve();
+  // P3: degrade, don't drop. A batch that trips the raw-media guard used to
+  // be dropped wholesale, which stranded the settle frames it carried (a
+  // dispatch stuck at "executing" forever). Now each offending frame is
+  // redacted in place and its tool call settled as a transport failure,
+  // while every clean frame in the same batch applies untouched.
+  const { frames: safeFrames, degradedIndexes } = degradeDeltaFramesForMediaFailure(frames);
+  if (degradedIndexes.length > 0) {
+    logger.warn('agent.delta degraded unsafe media payload', {
+      runId: params.runId,
+      frameCount: frames.length,
+      degradedIndexes,
+      frames: summarizeFramesForLog(frames),
+    });
+    traceRuntimeEvent('renderer.agent_delta_degraded', {
+      runId: params.runId,
+      frameCount: frames.length,
+      degradedCount: degradedIndexes.length,
+    });
+  }
   let hasOpaqueMediaRefs: boolean;
   try {
-    hasOpaqueMediaRefs = sidecarValueHasOpaqueMediaRefs(frames);
+    hasOpaqueMediaRefs = sidecarValueHasOpaqueMediaRefs(safeFrames);
   } catch (err) {
-    logger.warn('agent.delta rejected unsafe media payload', {
+    // Fail closed: redaction could not clean this payload, so the batch is
+    // still unsafe to apply. Raw base64 must never reach the store.
+    logger.warn('agent.delta dropped unsafe media payload after degradation', {
       runId: params.runId,
       error: err instanceof Error ? err.message : String(err),
+      frameCount: frames.length,
+      frames: summarizeFramesForLog(frames),
+    });
+    traceRuntimeEvent('renderer.agent_delta_rejected', {
+      runId: params.runId,
+      frameCount: frames.length,
     });
     return;
   }
   session.frameApplyTail = previous.then(() => (
     hasOpaqueMediaRefs
       ? materializeSidecarMediaRefsForShell(
-          frames,
+          safeFrames,
           session.conversationId,
           session.shellAbortController.signal,
         ).then((shellFrames) => applyDeltaFrames(shellFrames))
-      : applyDeltaFrames(frames)
+      : applyDeltaFrames(safeFrames)
   )).then(() => {
     if (!isFirstDelta || session.firstFrameApplied) return;
     session.firstFrameApplied = true;

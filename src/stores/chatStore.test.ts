@@ -27,6 +27,7 @@ import { getCachedTabOrigin, noteBrowserToolOutcome, noteTabOrigin } from '@/cor
 import { useBatchProgressStore } from './batchProgressStore';
 import { subagentTabId, usePreviewStore } from './previewStore';
 import { makeBatchKey } from '@/types';
+import { createMaxTurnsNoticeMessage, MAX_TURNS_NOTICE_ID_PREFIX } from '../core/agent/maxTurnsNotice';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -2161,6 +2162,37 @@ describe('chatStore', () => {
       expect(reindex).toBeUndefined();
     });
 
+    // The turn cap ends a run on 'idle', not 'completed' (agentLoop's max_turns
+    // path). That still settles the round's messages, so the catalog row + FTS
+    // body must be re-indexed then too — otherwise search stayed stale until
+    // the next startup reconcile.
+    it('fires the catalog reindex when a running conversation settles back to idle', async () => {
+      const id = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationStatus(id, 'running');
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'idle');
+
+      await vi.waitFor(() => {
+        const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+        expect(reindex).toBeDefined();
+        expect((reindex![1] as { convId: string }).convId).toBe(id);
+      });
+    });
+
+    it('does not reindex an idle conversation that was never running', async () => {
+      const id = useChatStore.getState().createConversation();
+      await new Promise((r) => setTimeout(r, 20));
+      vi.mocked(invoke).mockClear();
+
+      useChatStore.getState().setConversationStatus(id, 'idle');
+
+      await new Promise((r) => setTimeout(r, 20));
+      const reindex = vi.mocked(invoke).mock.calls.find((c) => c[0] === 'catalog_reindex_conversation');
+      expect(reindex).toBeUndefined();
+    });
+
     // Fix #5: a convId absent from state (e.g. already deleted) must never
     // trigger a reindex call.
     it('does not fire a catalog reindex for a convId absent from state', async () => {
@@ -3084,6 +3116,78 @@ describe('chatStore', () => {
         ),
       ).rejects.toThrow('disk unavailable');
       expect(getToolCall(convId)?.sandboxRecoveryAction).toBeUndefined();
+
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+  });
+
+  describe('max-turns notice', () => {
+    function seedNotice() {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().addMessage(
+        convId,
+        createMaxTurnsNoticeMessage({
+          id: 'n1',
+          timestamp: FIXED_TIMESTAMP,
+          limit: 200,
+          streak: 1,
+        }),
+      );
+      return convId;
+    }
+
+    function getNotice(convId: string) {
+      return useChatStore.getState().conversations[convId]?.messages[0]?.maxTurnsNotice;
+    }
+
+    it('persists the continue choice on the notice', async () => {
+      const convId = seedNotice();
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockResolvedValue(undefined);
+
+      await useChatStore.getState().setMaxTurnsNoticeAction(
+        convId,
+        `${MAX_TURNS_NOTICE_ID_PREFIX}n1`,
+        'continued',
+      );
+
+      expect(getNotice(convId)?.action).toBe('continued');
+      vi.mocked(exists).mockReset();
+      vi.mocked(readTextFile).mockReset();
+      vi.mocked(invoke).mockReset();
+    });
+
+    it('refuses to settle a notice that no longer exists', async () => {
+      const convId = seedNotice();
+
+      await expect(
+        useChatStore.getState().setMaxTurnsNoticeAction(convId, 'max-turns-gone', 'continued'),
+      ).rejects.toThrow('no longer exists');
+    });
+
+    it('does not show the choice in memory when durable persistence fails', async () => {
+      const convId = seedNotice();
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(readTextFile).mockImplementation(async () => {
+        const message = useChatStore.getState().conversations[convId].messages[0];
+        return `${JSON.stringify(message)}\n`;
+      });
+      vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+
+      await expect(
+        useChatStore.getState().setMaxTurnsNoticeAction(
+          convId,
+          `${MAX_TURNS_NOTICE_ID_PREFIX}n1`,
+          'continued',
+        ),
+      ).rejects.toThrow('disk unavailable');
+      expect(getNotice(convId)?.action).toBeUndefined();
 
       vi.mocked(exists).mockReset();
       vi.mocked(readTextFile).mockReset();

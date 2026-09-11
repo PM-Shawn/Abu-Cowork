@@ -27,3 +27,5 @@ export const bindPluginAuthor = (id: string, conversationId: string, expectedCon
 export const preparePluginAuthor = (identity: { id: string } | { conversationId: string }) => request<PreparedAuthor>('prepare', identity);
 
 export const validatePluginAuthor = (token: string) => request<PluginAuthor>('validated', { token });
+
+export const deletePluginAuthor = (id: string) => request<PluginAuthor>('delete', { id });

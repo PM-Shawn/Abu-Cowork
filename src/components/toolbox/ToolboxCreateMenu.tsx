@@ -7,7 +7,7 @@ interface ToolboxCreateMenuProps {
    *  (used by the MCP tab, which just opens the add-server form). Mutually exclusive
    *  with the menu-mode props below. */
   onClick?: () => void;
-  items?: { label: string; onSelect: () => void }[];
+  items?: { label: string; disabled?: boolean; onSelect: () => void }[];
   /** Menu mode: dropdown with up to 3 entries (used by Agents/Skills tabs). */
   onAICreate?: () => void;
   onManualCreate?: () => void;
@@ -61,7 +61,7 @@ export default function ToolboxCreateMenu({
           data-testid={menuTestId}
           className="absolute z-50 top-full right-0 mt-1 w-44 bg-[var(--abu-bg-base)] rounded-lg shadow-lg border border-[var(--abu-border)] py-1"
         >
-          {items?.map(item => <button key={item.label} onClick={() => { setOpen(false); item.onSelect(); }} className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)]"><Plus className="h-3.5 w-3.5" />{item.label}</button>)}
+          {items?.map(item => <button key={item.label} disabled={item.disabled} onClick={() => { setOpen(false); item.onSelect(); }} className="disabled:opacity-50 disabled:cursor-not-allowed w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-active)]"><Plus className="h-3.5 w-3.5" />{item.label}</button>)}
           {onAICreate && (
             <button
               onClick={() => { setOpen(false); onAICreate(); }}

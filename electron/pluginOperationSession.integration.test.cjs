@@ -49,7 +49,7 @@ for (const relative of ['.abu', '.abu/plugin-operations']) {
   });
 }
 
-test('tree publication never writes through a replaced parent symlink', () => {
+test('tree publication refuses a parent replaced while entering it', () => {
   const { execFileSync } = require('node:child_process');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-tree-boundary-'));
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-tree-outside-'));
@@ -65,17 +65,111 @@ test('tree publication never writes through a replaced parent symlink', () => {
       process.chdir(home);
       const identity = fs.statSync('.');
       const parentIdentity = fs.statSync(parent);
+      const chdir = name => {
+        if (name === 'agents') {
+          // Replace the parent while the worker is still in .abu. Windows
+          // rejects renaming a directory that is the current working directory.
+          fs.renameSync(parent, parent + '-old');
+          fs.symlinkSync(outside, parent, 'dir');
+        }
+        process.chdir(name);
+      };
+      assert.throws(() => run({ identity, parent: ['.abu', 'agents'], parentIdentity,
+        action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, fs, chdir), /directory changed/);
+      assert.deepEqual(fs.readdirSync(outside), []);
+    `, path.join(__dirname, 'pluginOperationWorker.cjs'), home, outside, parent]);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+});
+
+// POSIX permits replacing an active cwd; Windows prevents that replacement.
+// Exercise the publication-stage attack on both platforms, preserving each
+// platform's exact refusal and proving that no payload reaches either target.
+test(process.platform === 'win32'
+  ? 'Windows prevents replacing the active publication parent before any payload write'
+  : 'tree publication rechecks a parent replaced after entering it', () => {
+  const { execFileSync } = require('node:child_process');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-tree-publication-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-tree-outside-'));
+  const parent = path.join(home, '.abu', 'agents');
+  fs.mkdirSync(parent, { recursive: true });
+  try {
+    execFileSync(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const assert = require('node:assert/strict');
+      const { run } = require(process.argv[1]);
+      const [home, outside, parent] = process.argv.slice(2);
+      process.chdir(home);
+      const identity = fs.statSync('.');
+      const parentIdentity = fs.statSync(parent);
+      let attempted = false;
       const io = { ...fs, mkdirSync(name, ...args) {
         if (name === '.incoming') {
+          attempted = true;
           fs.renameSync(parent, parent + '-old');
           fs.symlinkSync(outside, parent, 'dir');
         }
         return fs.mkdirSync(name, ...args);
       }};
-      assert.throws(() => run({ identity, parent: ['.abu', 'agents'], parentIdentity,
-        action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, io), /parent changed/);
+      const publish = () => run({ identity, parent: ['.abu', 'agents'], parentIdentity,
+        action: 'tree', temp: '.incoming', to: 'helper', tree: [['AGENT.md', Buffer.from('approved').toString('base64')]] }, io);
+      if (process.platform === 'win32') {
+        assert.throws(publish, { code: 'EBUSY', syscall: 'rename' });
+        const after = fs.lstatSync(parent);
+        assert.equal(after.isSymbolicLink(), false);
+        assert.equal(after.ino, parentIdentity.ino);
+        assert.equal(after.dev, parentIdentity.dev);
+        assert.equal(fs.existsSync(parent + '-old'), false);
+        assert.deepEqual(fs.readdirSync(parent), []);
+      } else {
+        assert.throws(publish, /parent changed/);
+        assert.equal(fs.lstatSync(parent).isSymbolicLink(), true);
+        assert.equal(fs.existsSync(path.join(parent + '-old', 'helper')), false);
+        assert.deepEqual(fs.readdirSync(path.join(parent + '-old', '.incoming')), []);
+      }
+      assert.equal(attempted, true);
+      assert.equal(fs.existsSync(path.join(parent, 'helper')), false);
       assert.deepEqual(fs.readdirSync(outside), []);
     `, path.join(__dirname, 'pluginOperationWorker.cjs'), home, outside, parent]);
     assert.deepEqual(fs.readdirSync(outside), []);
   } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
+});
+
+/**
+ * Regression: a SIGKILLed worker (OOM, antivirus, memory pressure) closed the
+ * session for the life of the process. The plugins tab's retry button routes
+ * through the same session, so it re-awaited a cached rejected startup and
+ * could never restore installing, updating or uninstalling.
+ */
+test('an explicit reopen restarts a killed worker, and a disposed session stays closed', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-operation-reopen-'));
+  const session = createOperationSession(home);
+  try {
+    await session.ready();
+    const info = fs.statSync(home);
+    const write = value => session.mutate({ home, identity: { ino: info.ino, dev: info.dev },
+      parent: ['.abu', 'plugin-operations'], action: 'write', temp: `${value}.tmp`, to: 'active.enc',
+      bytes: Buffer.from(value).toString('base64') });
+    await write('before');
+
+    process.kill(session.pid, 'SIGKILL');
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { await session.ready(); await new Promise(resolve => setTimeout(resolve, 20)); }
+      catch { break; }
+    }
+    await assert.rejects(session.ready(), /session/);
+
+    assert.equal(session.reopen(), true);
+    await session.ready();
+    await write('after');
+    assert.equal(fs.readFileSync(path.join(home, '.abu', 'plugin-operations', 'active.enc'), 'utf8'), 'after');
+
+    await session.close();
+    assert.equal(session.reopen(), false);
+    await assert.rejects(session.ready(), /session closed/);
+  } finally {
+    await session.close().catch(() => {});
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

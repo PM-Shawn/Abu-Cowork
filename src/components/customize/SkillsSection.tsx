@@ -24,6 +24,8 @@ import { sourceToUXCategory } from '@/core/skill/uxCategory';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import SkillDetailPanel from '@/components/toolbox/skills/SkillDetailPanel';
+import { usePluginSkillGate } from '@/components/toolbox/plugins/usePluginSkillGate';
+import { isUserOwnedSkill } from '@/components/toolbox/skills/isSystemSkill';
 
 // Build a set of system skill names from marketplace templates
 /**
@@ -85,6 +87,10 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     const skill = skillLoader.getSkill(meta.name, { includeDisabledPlugins: true });
     return skill ? [skill] : [];
   }), [skills]);
+  // The list above deliberately keeps disabled plugins' skills visible; this
+  // gate stops the card from also claiming they are active (the model's
+  // strict getAvailableSkills() has already dropped them).
+  const pluginAllowed = usePluginSkillGate();
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [editorSkill, setEditorSkill] = useState<Skill | 'new' | null>(null);
   const [menuSkill, setMenuSkill] = useState<string | null>(null);
@@ -196,7 +202,8 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   }, [menuSkill]);
 
   const renderSkillCard = (skill: Skill) => {
-    const isEnabled = !disabledSet.has(skill.name);
+    const gated = !pluginAllowed(skill);
+    const isEnabled = !disabledSet.has(skill.name) && !gated;
     const badge = sourceBadge(skill);
     return (
       <ToolCard
@@ -212,8 +219,8 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             </span>
           ) : undefined,
           toggle: (
-            <span onClick={(event) => event.stopPropagation()}>
-              <Toggle checked={isEnabled} onChange={() => toggleSkillEnabled(skill.name)} size="sm" tone="green" />
+            <span onClick={(event) => event.stopPropagation()} title={gated ? t.toolbox.skillPluginDisabled : undefined}>
+              <Toggle checked={isEnabled} disabled={gated} onChange={() => toggleSkillEnabled(skill.name)} size="sm" tone="green" />
             </span>
           ),
         }}
@@ -342,7 +349,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                     {t.toolbox.historyMenuLabel}
                   </button>
                   {/* Edit & Delete - available for non-builtin skills */}
-                  {selected.source !== 'builtin' && selected.source !== 'plugin' && selected.source !== 'enterprise' && !selected.filePath.includes('builtin-skills') && (
+                  {isUserOwnedSkill(selected) && (
                     <>
                       <button
                         className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
@@ -362,12 +369,14 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
           </>
         ) : undefined}
         footer={selected ? <div className="flex items-center justify-between gap-3">
-          {selected.source !== 'builtin' && selected.source !== 'plugin' && selected.source !== 'enterprise' && !selected.filePath.includes('builtin-skills') ? (
+          {isUserOwnedSkill(selected) ? (
             <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.uninstall}</Button>
+          ) : !pluginAllowed(selected) ? (
+            <span className="text-caption text-[var(--abu-text-muted)]">{t.toolbox.skillPluginDisabled}</span>
           ) : <span />}
 
 
-          <Button size="sm" className="rounded-xl" disabled={disabledSet.has(selected.name)} onClick={() => {
+          <Button size="sm" className="rounded-xl" disabled={disabledSet.has(selected.name) || !pluginAllowed(selected)} onClick={() => {
             startNewConversation();
             setPendingInput(`/${selected.name} `);
             setSelectedSkill(null);

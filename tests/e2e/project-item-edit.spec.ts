@@ -1,24 +1,25 @@
 /**
- * Real-Electron acceptance: editing an expert or skill that does NOT live
- * under ~/.abu/<folder>/ saves it where it lives, and never touches the
- * user's own same-named item (finding I4 of the #470 re-review).
+ * Real-Electron acceptance: editing a skill that does NOT live under
+ * ~/.abu/skills/ saves it where it lives, and never touches the user's own
+ * same-named skill (finding I4 of the #470 re-review).
  *
  * Before the fix the editor wrote a copy to ~/.abu/<folder>/<name>/ without
  * create-new: the user's same-named item was silently overwritten, and the
  * list kept showing the project item, which outranks the copy — the edit
  * never took. Deterministic per TESTING.md: no provider, no model run.
  *
- * Fixtures:
- * - Project-level expert: the registry's project root is `.abu/agents`
- *   resolved against the main process cwd, which launchAbuElectron pins to
- *   REPO_ROOT (gitignored `.abu/`; removed in `finally`; workers: 1).
- * - Project skill: `<isolated HOME>/i4-workspace/.abu/skills`, made the
- *   current workspace by starting a task in a seeded sidebar project.
+ * Experts have no project level: the registry once scanned `.abu/agents`
+ * resolved against the main process cwd — the launch directory, which
+ * launchAbuElectron pins to REPO_ROOT — and that root is gone. An expert
+ * seeded there (gitignored `.abu/`; removed in `finally`; workers: 1) must not
+ * load, nor shadow the user's own same-named expert.
+ *
+ * Project skill fixture: `<isolated HOME>/i4-workspace/.abu/skills`, made the
+ * current workspace by starting a task in a seeded sidebar project.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import type { Page } from 'playwright';
 import {
   REPO_ROOT,
   closeAbuElectron,
@@ -45,13 +46,8 @@ function write(file: string, body: string): void {
 
 const read = (file: string) => fs.readFileSync(file, 'utf8');
 
-/** The detail's "…" menu has no testid; it is the only ellipsis button once the detail is open. */
-function detailMenuButton(page: Page) {
-  return page.locator('button:has(svg[class*="ellipsis"]), button:has(svg[class*="more-horizontal"])').last();
-}
-
 test.describe('editing an item outside ~/.abu', () => {
-  test('saves the project expert and skill in place; the user\'s same-named items are untouched', async () => {
+  test('saves the project skill in place and ignores an expert under the launch cwd; the user\'s same-named items are untouched', async () => {
     test.setTimeout(300_000);
     const dataRoot = createElectronDataRoot();
     const home = path.join(dataRoot.appDataDir, 'Home');
@@ -87,19 +83,14 @@ test.describe('editing an item outside ~/.abu', () => {
       }, { ws: workspace, name: PROJECT_NAME });
       await dismissFirstRunOverlays(page);
 
-      // ---- 1. The project expert (it outranks the user's same-named one) -----
+      // ---- 1. An expert under the launch cwd is not loaded ---------------------
       await page.getByTestId('sidebar-team').click();
       await page.getByTestId('top-tab-nav').getByRole('button', { name: '队员' }).click();
       await page.getByText(AGENT, { exact: true }).first().click();
-      await expect(page.getByText('PROJECT-PROMPT')).toBeVisible();
-      await detailMenuButton(page).click();
-      await page.getByText('编辑', { exact: true }).click();
-      await page.getByPlaceholder('Write agent system prompt in Markdown...').fill('EDITED-PROMPT');
-      await page.getByRole('button', { name: '保存', exact: true }).click();
-      await page.getByText(AGENT, { exact: true }).first().click();
-      await expect(page.getByText('EDITED-PROMPT')).toBeVisible();
+      await expect(page.getByText('USER-PROMPT')).toBeVisible();
+      await expect(page.getByText('PROJECT-PROMPT')).toHaveCount(0);
       await page.keyboard.press('Escape');
-      expect(read(projectAgent)).toContain('EDITED-PROMPT');
+      expect(read(projectAgent)).toBe(agentMd('PROJECT'));
       expect(read(userAgent)).toBe(agentMd('USER'));
 
       // ---- 2. The project skill ------------------------------------------------

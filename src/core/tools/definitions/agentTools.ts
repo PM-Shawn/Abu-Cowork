@@ -1,12 +1,12 @@
-import { exists, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, readDir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { readAgentIdentity, wantedAgentIdentity, withAgentIdentity } from '@/core/agent/agentIdentityCarry';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
-import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
-import { skillLoader } from '../../skill/loader';
-import { agentRegistry, parseAgentFile } from '../../agent/registry';
+import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } from '../../../types';
+import { skillLoader, parseSkillFile } from '../../skill/loader';
+import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -19,8 +19,10 @@ import { useSettingsStore } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
-import { ITEM_NAME_RE, AGENT_NAME_RE } from '../../../utils/validation';
+import { ITEM_NAME_RE, AGENT_NAME_RE, isItemNameTaken } from '../../../utils/validation';
+import { isPluginOwnedAgent } from '../../../utils/agentSource';
 import { getSystemInfoData } from '../helpers/toolHelpers';
+import { abuItemPaths } from '../helpers/abuItemPaths';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 
@@ -499,30 +501,195 @@ export const readSkillFileTool: ToolDefinition = {
  * or merge keys, directives, or content the registry cannot load at all make
  * the two disagree, and such a file is refused rather than written.
  */
-async function agentMdWithIdentity(filePath: string, content: string): Promise<string | null> {
-  const existingRaw = (await exists(filePath)) ? await readTextFile(filePath) : null;
+function agentMdWithIdentity(
+  filePath: string,
+  existingRaw: string | null,
+  content: string,
+): { md: string; name: string } | null {
   const existing = existingRaw === null ? null : readAgentIdentity(existingRaw);
   const now = Date.now();
   const md = withAgentIdentity(content, existing, now);
   const wanted = wantedAgentIdentity(existing, now);
   const readBack = parseAgentFile(md, filePath);
   if (!readBack || readBack.roleId !== wanted.roleId || readBack.createdAt !== wanted.createdAt) return null;
-  return md;
+  return { md, name: readBack.name };
 }
 
-function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
+/**
+ * Skill sources a user skill must never take the name of: the loader scans
+ * `~/.abu/skills` before them, so a user SKILL.md under that name would hide
+ * the builtin / plugin / enterprise skill everywhere it is referenced.
+ */
+const RESERVED_SKILL_SOURCES: ReadonlySet<SkillSource | undefined> = new Set<SkillSource>(['builtin', 'plugin', 'enterprise']);
+
+/**
+ * Names the registry already resolves, split into `reserved` (never the user's
+ * to write: built-in, plugin-provided including disabled plugins, managed) and
+ * `listed` (every name it resolves, the user's own included).
+ */
+function registeredItemNames(isSkill: boolean): { reserved: string[]; listed: string[] } {
+  if (isSkill) {
+    const skills = skillLoader.getAvailableSkills({ includeDrafts: true, includeDisabledPlugins: true });
+    return {
+      reserved: skills.filter((s) => RESERVED_SKILL_SOURCES.has(s.source)).map((s) => s.name),
+      listed: skills.map((s) => s.name),
+    };
+  }
+  // Builtins come from the static list, not the registry: they must be refused
+  // even before discovery ran. The registry prefers a local file over a
+  // builtin (`registerBuiltins` then `scanDirectory`, same map key), so a user
+  // `abu/AGENT.md` would replace the default assistant.
+  const agents = agentRegistry.getAvailableAgents({ includeDisabledPlugins: true });
+  return {
+    reserved: [
+      ...getBuiltinAgentNames(),
+      ...agents.filter((a) => isPluginOwnedAgent(a) || a.managed !== undefined).map((a) => a.name),
+    ],
+    listed: agents.map((a) => a.name),
+  };
+}
+
+async function folderNames(dir: string): Promise<string[]> {
+  try {
+    return (await readDir(dir)).filter((entry) => entry.isDirectory).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * May `name` be written to `filePath` (`<itemsDir>/<name>/<manifest>`)?
+ *
+ * - `in-use`: a built-in / plugin item owns the name, another item's name
+ *   differs from it only in letter case (the same folder on macOS / Windows),
+ *   the registry resolves it to an item that does not live at `filePath`
+ *   (project-level, …), or the manifest at `filePath` is filed under another
+ *   name — writing would replace or hide that item. Refused whatever
+ *   `overwrite` says.
+ * - `exists`: the manifest is already there and the caller did not say
+ *   `overwrite` — creating must never silently replace an existing item.
+ *
+ * On success, `existingRaw` is the manifest being replaced (null for a new
+ * item), read once here so the identity carry needs no second read.
+ */
+async function checkSaveTarget(
+  isSkill: boolean,
+  name: string,
+  itemsDir: string,
+  filePath: string,
+  overwrite: boolean,
+): Promise<{ refused: 'in-use' | 'exists' } | { refused: null; existingRaw: string | null }> {
+  const { reserved, listed } = registeredItemNames(isSkill);
+  if (isItemNameTaken(name, null, reserved)) return { refused: 'in-use' };
+  if (isItemNameTaken(name, name, [...listed, ...(await folderNames(itemsDir))])) return { refused: 'in-use' };
+
+  if (!(await exists(filePath))) {
+    return listed.includes(name) ? { refused: 'in-use' } : { refused: null, existingRaw: null };
+  }
+  const existingRaw = await readTextFile(filePath);
+  // A plugin's AGENT.md the registry has not listed (yet): still the plugin's.
+  const existingAgent = isSkill ? null : parseAgentFile(existingRaw, filePath);
+  if (existingAgent && isPluginOwnedAgent(existingAgent)) return { refused: 'in-use' };
+  // The manifest in that folder is filed under another name (hand-made
+  // `foo/AGENT.md` with `name: bar`): replacing it would make `bar` vanish,
+  // though nothing in this call named `bar`. A manifest that no longer parses
+  // is filed under no name, so it stays replaceable (and its identity carried).
+  const existingName = isSkill ? parseSkillFile(existingRaw, filePath)?.name : existingAgent?.name;
+  if (existingName !== undefined && existingName !== name) return { refused: 'in-use' };
+  return overwrite ? { refused: null, existingRaw } : { refused: 'exists' };
+}
+
+type SupportingFile = { path: string; content: string };
+
+/**
+ * Windows device names: `CON`, `nul.txt`, `COM1 .log` open the device in any
+ * folder, whatever the extension or letter case.
+ */
+const WINDOWS_DEVICE_NAME_RE = /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³]) *(\..*)?$/i;
+
+/** `:` (drive letter, alternate data stream) and the other characters Windows refuses in a name. */
+const WINDOWS_RESERVED_CHARS_RE = /[:<>"|?*]/;
+
+function hasControlChar(segment: string): boolean {
+  for (let i = 0; i < segment.length; i++) {
+    const code = segment.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * An allowlist, not a denylist: Win32 path normalisation strips a trailing
+ * `.` or space and reads `NAME::$DATA` as NAME, so `AGENT.md.`, `AGENT.md ` and
+ * `AGENT.md::$DATA` all land on AGENT.md there. A segment passes only when it
+ * is a plain name no platform rewrites into another one.
+ */
+function isPlainPathSegment(segment: string): boolean {
+  return segment !== '' && segment !== '.' && segment !== '..'
+    && !/[. ]$/.test(segment)
+    && !WINDOWS_RESERVED_CHARS_RE.test(segment)
+    && !hasControlChar(segment)
+    && !WINDOWS_DEVICE_NAME_RE.test(segment);
+}
+
+/**
+ * The `files` to write, or why the whole call must be refused.
+ *
+ * Every entry is checked before anything touches disk: a refusal found
+ * halfway through the list used to leave the manifest (and the entries before
+ * it) written under a call that reported failure. Every segment of every
+ * path must be plain ({@link isPlainPathSegment}) — which also refuses a
+ * leading separator (root, UNC) as an empty segment. An entry whose first
+ * segment is the manifest is refused too: it would replace the manifest just
+ * checked (name, identity) with unchecked text, or write beneath that file.
+ * Compared ignoring letter case, because `agent.md` is `AGENT.md` on macOS /
+ * Windows.
+ */
+function checkSupportingFiles(
+  raw: unknown,
+  fileName: string,
+  t: ReturnType<typeof getI18n>['toolResult']['agent'],
+): { refusal: string } | { files: SupportingFile[] } {
+  if (raw === undefined || raw === null) return { files: [] };
+  if (!Array.isArray(raw)) return { refusal: format(t.errInvalidFileEntry, { index: '0' }) };
+  const files: SupportingFile[] = [];
+  for (const [index, entry] of raw.entries()) {
+    const { path, content } = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof path !== 'string' || typeof content !== 'string') {
+      return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
+    }
+    if (path === '') return { refusal: format(t.errInvalidFileEntry, { index: String(index) }) };
+    const segments = path.split(/[\\/]/);
+    if (!segments.every(isPlainPathSegment)) return { refusal: format(t.errUnsafeFilePath, { p: path }) };
+    if (segments[0].toLowerCase() === fileName.toLowerCase()) {
+      return { refusal: format(t.errFileIsManifest, { p: path, fileName }) };
+    }
+    files.push({ path, content });
+  }
+  return { files };
+}
+
+/**
+ * Exported for tests. Only the agent variant is registered (`saveAgentTool`
+ * below); `save_skill` was replaced by `skill_manage`.
+ */
+export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
   const isSkill = kind === 'skill';
   const folder = isSkill ? 'skills' : 'agents';
   const fileName = isSkill ? 'SKILL.md' : 'AGENT.md';
 
   return {
     name: isSkill ? TOOL_NAMES.SAVE_SKILL : TOOL_NAMES.SAVE_AGENT,
-    description: `Save a custom ${kind} file to ~/.abu/${folder}/{name}/${fileName}. Use when the user asks to create or modify a ${kind}. Only provide the name and content — the path is computed automatically. Optionally pass a files array to also save supporting files such as scripts and reference documents.`,
+    description: `Save a custom ${kind} file to ~/.abu/${folder}/{name}/${fileName}. Use when the user asks to create or modify a ${kind}. Only provide the name and content — the path is computed automatically; the name in the content's frontmatter must equal name. A name used by a built-in or plugin ${kind}, or by another ${kind} whose name differs only in letter case, is refused. If a ${kind} with this name already exists, nothing is written unless overwrite is true: pass overwrite: true only when the user asked to change that existing ${kind}; when creating a new one, choose another name instead. Optionally pass a files array to also save supporting files such as scripts and reference documents.`,
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', description: `${kind} name (lowercase, hyphens allowed, e.g. "${isSkill ? 'git-commit' : 'doc-writer'}")` },
         content: { type: 'string', description: `Full ${fileName} content including YAML frontmatter` },
+        overwrite: {
+          type: 'boolean',
+          description: `Replace the existing ${kind} with this name. Only when the user asked to modify that ${kind}; omit when creating a new one.`,
+        },
         files: {
           type: 'array',
           description: 'Optional supporting files (scripts, references, assets) to save alongside the main file.',
@@ -546,35 +713,60 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
 
       // Agents allow unicode names (数据分析师); skills keep the strict slug.
       const nameRe = isSkill ? ITEM_NAME_RE : AGENT_NAME_RE;
-      if (!nameRe.test(name)) {
+      // A Windows device name (`nul`, `con`, …) is not a folder that can be created.
+      if (!nameRe.test(name) || WINDOWS_DEVICE_NAME_RE.test(name)) {
         return format(t.errInvalidName, { label, name });
       }
 
-      const info = await getSystemInfoData();
-      const itemDir = joinPath(info.home, '.abu', folder, name);
-      const filePath = joinPath(itemDir, fileName);
+      const supporting = checkSupportingFiles(input.files, fileName, t);
+      if ('refusal' in supporting) return supporting.refusal;
 
-      const mainContent = isSkill ? content : await agentMdWithIdentity(filePath, content);
-      if (mainContent === null) return format(t.errAgentFrontmatterInvalid, { name });
+      const { itemsDir, itemDir, filePath } = await abuItemPaths(folder, name, fileName);
+
+      const target = await checkSaveTarget(isSkill, name, itemsDir, filePath, input.overwrite === true);
+      if (target.refused !== null) {
+        return format(target.refused === 'in-use' ? t.errNameInUse : t.errItemExists, { label, name });
+      }
+
+      let mainContent = content;
+      let manifestName: string | undefined;
+      if (isSkill) {
+        manifestName = parseSkillFile(content, filePath)?.name;
+      } else {
+        const agent = agentMdWithIdentity(filePath, target.existingRaw, content);
+        if (agent === null) return format(t.errAgentFrontmatterInvalid, { name });
+        mainContent = agent.md;
+        manifestName = agent.name;
+      }
+      // The registry keys an item by its frontmatter name, not its folder: a
+      // mismatch would file it under a name this call never checked.
+      if (manifestName !== name) {
+        return format(t.errManifestNameMismatch, { label, name, found: manifestName ?? '', fileName });
+      }
 
       await ensureParentDir(filePath);
-      await writeTextFile(filePath, mainContent);
-
-      // Write supporting files if provided
-      const files = input.files as Array<{ path: string; content: string }> | undefined;
-      const writtenFiles: string[] = [];
-
-      if (files?.length) {
-        for (const file of files) {
-          const p = file.path;
-          if (p.includes('..') || p.startsWith('/') || p.startsWith('\\')) {
-            return format(t.errUnsafeFilePath, { p });
-          }
-          const targetPath = joinPath(itemDir, p);
-          await ensureParentDir(targetPath);
-          await writeTextFile(targetPath, file.content);
-          writtenFiles.push(p);
+      if (target.existingRaw === null) {
+        // Creating: the host writes only if the manifest is still absent, so
+        // another loop creating the same name since the check above cannot be
+        // overwritten. A manifest now there is that loop's — report it as
+        // existing; any other failure is a real one.
+        try {
+          await writeTextFile(filePath, mainContent, { createNew: true });
+        } catch (err) {
+          if (await exists(filePath)) return format(t.errItemExists, { label, name });
+          throw err;
         }
+      } else {
+        await writeTextFile(filePath, mainContent);
+      }
+
+      // Supporting files, all checked above before the manifest was written.
+      const writtenFiles: string[] = [];
+      for (const file of supporting.files) {
+        const targetPath = joinPath(itemDir, file.path);
+        await ensureParentDir(targetPath);
+        await writeTextFile(targetPath, file.content);
+        writtenFiles.push(file.path);
       }
 
       // Refresh discovery so the new item appears in UI immediately

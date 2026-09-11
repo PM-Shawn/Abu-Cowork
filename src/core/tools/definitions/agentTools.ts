@@ -1,4 +1,5 @@
-import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { exists, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { readAgentIdentity, withAgentIdentity } from '@/core/agent/agentIdentityCarry';
 import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
@@ -484,6 +485,16 @@ export const readSkillFileTool: ToolDefinition = {
 
 // --- save_skill / save_agent: bypass pathSafety for ~/.abu/ writes ---
 
+/**
+ * The model writes the whole AGENT.md, but the agent's identity is not its to
+ * change: overwriting an existing agent keeps that file's role-id / created
+ * stamp, a new agent is stamped now and never gets an invented role-id.
+ */
+async function withExistingAgentIdentity(filePath: string, content: string): Promise<string> {
+  const existingRaw = (await exists(filePath)) ? await readTextFile(filePath) : null;
+  return withAgentIdentity(content, existingRaw === null ? null : readAgentIdentity(existingRaw), Date.now());
+}
+
 function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
   const isSkill = kind === 'skill';
   const folder = isSkill ? 'skills' : 'agents';
@@ -529,7 +540,7 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       const filePath = joinPath(itemDir, fileName);
 
       await ensureParentDir(filePath);
-      await writeTextFile(filePath, content);
+      await writeTextFile(filePath, isSkill ? content : await withExistingAgentIdentity(filePath, content));
 
       // Write supporting files if provided
       const files = input.files as Array<{ path: string; content: string }> | undefined;

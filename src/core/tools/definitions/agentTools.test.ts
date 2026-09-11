@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { exists, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
 import { saveAgentTool, delegateToAgentTool, useSkillTool } from './agentTools';
 import { getLanguageSetting, setLanguage } from '@/i18n';
@@ -658,6 +658,76 @@ describe('save_agent multi-file support', () => {
       expect(result).toContain('Attached files');
       expect(result).toContain('scripts/helper.py');
     });
+  });
+});
+
+// "帮我优化这个专家": the model rewrites the whole AGENT.md. Its content must not
+// be able to drop the agent's identity (role-id is what team memberships point
+// at, created drives the newest-first sort) nor invent one.
+describe('save_agent identity', () => {
+  const AGENT_PATH = '/Users/testuser/.abu/agents/reviewer/AGENT.md';
+  const NOW = 1757570400000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.mocked(exists).mockResolvedValue(false);
+    vi.mocked(readTextFile).mockResolvedValue('');
+  });
+
+  function writtenAgentMd(): string {
+    const call = vi.mocked(writeTextFile).mock.calls.find(([path]) => path === AGENT_PATH);
+    expect(call).toBeDefined();
+    return String(call?.[1]);
+  }
+
+  it('keeps an existing agent\'s role-id and created stamp when the model rewrites it', async () => {
+    vi.mocked(exists).mockImplementation(async (path) => path === AGENT_PATH);
+    vi.mocked(readTextFile).mockResolvedValue(
+      '---\nname: reviewer\nrole-id: role-abc123\ncreated: 1700000000000\ndescription: Reviews code\n---\n\nYou review code.',
+    );
+
+    await saveAgentTool.execute({
+      name: 'reviewer',
+      content: '---\nname: reviewer\nrole-id: role-other\ndescription: Reviews code thoroughly\n---\n\nYou review code carefully.',
+    });
+
+    expect(readTextFile).toHaveBeenCalledWith(AGENT_PATH);
+    const md = writtenAgentMd();
+    expect(md).toMatch(/^role-id: role-abc123$/m);
+    expect(md).toMatch(/^created: 1700000000000$/m);
+    expect(md).not.toContain('role-other');
+    expect(md).toContain('description: Reviews code thoroughly');
+    expect(md).toContain('You review code carefully.');
+  });
+
+  it('stamps a new agent with its creation time and drops a role-id the model invented', async () => {
+    await saveAgentTool.execute({
+      name: 'reviewer',
+      content: '---\nname: reviewer\nrole-id: role-made-up\ndescription: Reviews code\n---\n\nYou review code.',
+    });
+
+    expect(readTextFile).not.toHaveBeenCalled();
+    const md = writtenAgentMd();
+    expect(md).toMatch(new RegExp(`^created: ${NOW}$`, 'm'));
+    expect(md).not.toMatch(/role-id:/);
+  });
+
+  it('leaves a legacy agent (no created stamp) unstamped even if the model writes one', async () => {
+    vi.mocked(exists).mockImplementation(async (path) => path === AGENT_PATH);
+    vi.mocked(readTextFile).mockResolvedValue('---\nname: reviewer\ndescription: Reviews code\n---\n\nYou review code.');
+
+    await saveAgentTool.execute({
+      name: 'reviewer',
+      content: `---\nname: reviewer\ncreated: ${NOW}\ndescription: Reviews code\n---\n\nYou review code.`,
+    });
+
+    expect(writtenAgentMd()).not.toMatch(/created:/);
   });
 });
 

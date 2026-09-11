@@ -1694,6 +1694,7 @@ const zhCN: TranslationDict = {
     connecting: '连接中...',
     reconnecting: '重连中...',
     disconnected: '未连接',
+    connectionError: '连接出错',
     connect: '连接',
     disconnect: '断开连接',
     add: '添加',

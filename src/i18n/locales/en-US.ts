@@ -1693,6 +1693,7 @@ const enUS: TranslationDict = {
     connecting: 'Connecting...',
     reconnecting: 'Reconnecting...',
     disconnected: 'Disconnected',
+    connectionError: 'Error',
     connect: 'Connect',
     disconnect: 'Disconnect',
     add: 'Add',

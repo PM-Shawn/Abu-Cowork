@@ -480,14 +480,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                   <button
                     onClick={() => setContentViewMode('preview')}
                     className={`p-1.5 rounded transition-colors ${contentViewMode === 'preview' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                    title="Preview"
+                    title={t.panel.previewMode}
                   >
                     <Eye className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => setContentViewMode('source')}
                     className={`p-1.5 rounded transition-colors ${contentViewMode === 'source' ? 'text-[var(--abu-text-primary)] bg-[var(--abu-bg-hover)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]'}`}
-                    title="Source"
+                    title={t.panel.sourceMode}
                   >
                     <Code className="h-4 w-4" />
                   </button>

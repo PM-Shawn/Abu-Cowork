@@ -2153,6 +2153,8 @@ export interface TranslationDict {
     connecting: string;
     reconnecting: string;
     disconnected: string;
+    /** MCP server status after its connection failed. */
+    connectionError: string;
     connect: string;
     disconnect: string;
     add: string;

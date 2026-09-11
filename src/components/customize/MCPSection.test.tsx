@@ -216,6 +216,18 @@ describe('MCPSection · focusServer', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: /hand-rolled/ })).toBeTruthy());
   });
 
+  it('says the failed status in the app language, not a bare English "Error"', async () => {
+    setLanguage('zh-CN');
+    try {
+      useMCPStore.setState({ servers: { broken: { ...serverEntry('broken'), status: 'error' } } });
+      render(<MCPSection sourceFilter="mine" focusServer="broken" />);
+      await waitFor(() => expect(screen.getAllByText('连接出错').length).toBeGreaterThan(0));
+      expect(screen.queryByText('Error')).toBeNull();
+    } finally {
+      setLanguage('system');
+    }
+  });
+
   it('ignores a server that is not configured', () => {
     render(<MCPSection sourceFilter="mine" focusServer="never-existed" />);
     expect(screen.queryByRole('heading')).toBeNull();

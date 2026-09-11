@@ -935,7 +935,7 @@ function serverStatusMeta(
   const statusLabel = isReconnecting ? t.toolbox.reconnecting
     : isConnecting ? t.toolbox.connecting
     : isConnected ? t.toolbox.connected
-    : status === 'error' ? 'Error'
+    : status === 'error' ? t.toolbox.connectionError
     : t.toolbox.disconnected;
   const statusColor = isReconnecting ? 'text-[var(--abu-warning)]'
     : isConnecting ? 'text-[var(--abu-warning)]'

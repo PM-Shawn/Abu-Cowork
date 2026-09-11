@@ -121,6 +121,10 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
       render(<AgentsSection />);
       fireEvent.click(screen.getByText('reviewer'));
 
+      expect(screen.getByTitle('预览')).toBeTruthy();
+      expect(screen.getByTitle('源码')).toBeTruthy();
+      expect(screen.queryByTitle('Preview')).toBeNull();
+      expect(screen.queryByTitle('Source')).toBeNull();
       expect(screen.getByText('来源')).toBeTruthy();
       expect(screen.getByTestId('agent-added-by').textContent).toBe('用户');
       expect(screen.getByText('描述')).toBeTruthy();

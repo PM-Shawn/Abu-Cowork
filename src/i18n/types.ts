@@ -4047,6 +4047,12 @@ export interface TranslationDict {
       errInvalidName: string;
       /** Error: unsafe file path. {p} */
       errUnsafeFilePath: string;
+      /**
+       * Error: save_agent wrote nothing — the AGENT.md frontmatter does not
+       * read back (via the registry's parser) with the identity it must carry,
+       * or cannot be read at all. Tells the model to resend plain YAML. {name}
+       */
+      errAgentFrontmatterInvalid: string;
       /** Attached-files section header + list. {list} */
       savedFileList: string;
       /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */

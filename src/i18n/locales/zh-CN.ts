@@ -3288,6 +3288,7 @@ const zhCN: TranslationDict = {
       labelAgent: '代理',
       errInvalidName: 'Error: {label}名称不合法。仅允许小写字母、数字和连字符，且不能以连字符开头或结尾。收到: "{name}"',
       errUnsafeFilePath: 'Error: 文件路径不安全: "{p}"。不允许 .. 或绝对路径。',
+      errAgentFrontmatterInvalid: 'Error: 代理「{name}」未保存，没有写入任何文件：AGENT.md 开头的 YAML frontmatter 无法被正确读取，或读回的身份字段（role-id / created）不对。请重新发送完整内容，使用普通 YAML frontmatter：以 --- 开头、以单独一行 --- 结束，包含 name；不要使用锚点（&）、别名（*）、合并键（<<）、YAML 指令（%YAML）或显式键（?）。role-id 和 created 由系统维护，不必填写。',
       savedFileList: '\n附属文件：\n{list}',
       skillSaved: '✅ {label}「{name}」已保存到 {filePath}{fileList}\n\n你可以：\n- 到「工具箱 → 技能」查看和编辑\n- 使用 /{name} 调用此技能',
       agentSaved: '✅ {label}「{name}」已保存到 {filePath}{fileList}\n\n你可以到「工具箱 → 代理」查看和管理此代理。',

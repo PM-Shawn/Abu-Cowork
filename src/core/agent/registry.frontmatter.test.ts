@@ -107,3 +107,39 @@ describe('parseAgentFile / serializeAgentMd — source: frontmatter', () => {
     expect(serializeAgentMd(parsed!, parsed!.systemPrompt)).not.toContain('source:');
   });
 });
+
+/**
+ * Line endings. An AGENT.md saved on Windows (or by a model that writes CRLF)
+ * ends every frontmatter line in `\r\n`. The fence regex used to stop at the
+ * `\n` before the closing `---`, leaving a `\r` on the LAST frontmatter line —
+ * so whatever key landed there read back as `"value\r"`: a role-id that no
+ * team membership matches, a `created` stamp that is a string.
+ */
+describe('parseAgentFile — CRLF frontmatter', () => {
+  it('reads the last frontmatter line without a trailing \\r', () => {
+    const raw = '---\r\nname: reviewer\r\ncreated: 1700000000000\r\nrole-id: role-abc123\r\n---\r\n\r\nYou review code.\r\n';
+    const parsed = parseAgentFile(raw, '/a/AGENT.md');
+    expect(parsed?.roleId).toBe('role-abc123');
+    expect(parsed?.systemPrompt).toBe('You review code.');
+  });
+
+  it('reads a created stamp on the last line as a number', () => {
+    const raw = '---\r\nname: reviewer\r\nrole-id: role-abc123\r\ncreated: 1700000000000\r\n---\r\n\r\nYou review code.';
+    const parsed = parseAgentFile(raw, '/a/AGENT.md');
+    expect(parsed?.createdAt).toBe(1700000000000);
+    expect(parsed?.roleId).toBe('role-abc123');
+  });
+
+  it('still reads LF frontmatter, blank lines around the fences included', () => {
+    const raw = '---\n\nname: reviewer\nrole-id: role-abc123\n---\n\n\nYou review code.';
+    const parsed = parseAgentFile(raw, '/a/AGENT.md');
+    expect(parsed?.name).toBe('reviewer');
+    expect(parsed?.roleId).toBe('role-abc123');
+    expect(parsed?.systemPrompt).toBe('You review code.');
+  });
+
+  it('keeps a --- rule inside the prompt as prompt', () => {
+    const raw = '---\r\nname: reviewer\r\n---\r\nIntro\r\n---\r\nMore';
+    expect(parseAgentFile(raw, '/a/AGENT.md')?.systemPrompt).toBe('Intro\r\n---\r\nMore');
+  });
+});

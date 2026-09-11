@@ -3286,6 +3286,7 @@ const enUS: TranslationDict = {
       labelAgent: 'agent',
       errInvalidName: 'Error: {label} name is invalid. Only lowercase letters, digits, and hyphens are allowed; the name must not start or end with a hyphen. Received: "{name}"',
       errUnsafeFilePath: 'Error: unsafe file path: "{p}". ".." and absolute paths are not allowed.',
+      errAgentFrontmatterInvalid: 'Error: agent "{name}" was not saved and no file was written: the YAML frontmatter at the top of AGENT.md could not be read, or its identity fields (role-id / created) did not read back correctly. Resend the full content with plain YAML frontmatter: opened by --- and closed by a line with just ---, including name, and without anchors (&), aliases (*), merge keys (<<), YAML directives (%YAML) or explicit keys (?). role-id and created are maintained by the system; leave them out.',
       savedFileList: '\nAttached files:\n{list}',
       skillSaved: '✅ {label} "{name}" saved to {filePath}{fileList}\n\nYou can:\n- View and edit it in Toolbox → Skills\n- Invoke this skill with /{name}',
       agentSaved: '✅ {label} "{name}" saved to {filePath}{fileList}\n\nYou can view and manage this agent in Toolbox → Agents.',

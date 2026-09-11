@@ -1,4 +1,4 @@
-import { isMap, isScalar, parseDocument, stringify, type Document, type Pair, type YAMLMap } from 'yaml';
+import { isMap, isScalar, parse, parseDocument, stringify, type Document, type Pair, type YAMLMap } from 'yaml';
 
 /**
  * Identity fields of an AGENT.md that the content's author does not own.
@@ -19,11 +19,15 @@ const CREATED_KEY = 'created';
 /**
  * Frontmatter fence, matched the way `parseAgentFile` matches it (the FIRST
  * `---` line after the opening one closes the block, so a horizontal rule in
- * the prompt stays prompt), but CRLF-aware at every line break and without
+ * the prompt stays prompt), CRLF-aware at every line break and without
  * letting the space after a fence swallow the newline. The closing fence may
  * end the file.
  */
 const FRONTMATTER_RE = /^(---[^\S\r\n]*\r?\n)([\s\S]*?)(\r?\n---[^\S\r\n]*(?:\r?\n|$))/;
+const OPENING_FENCE_RE = /^---[^\S\r\n]*\r?\n/;
+/** Top-level identity lines, for salvaging from a file whose YAML no longer parses. */
+const SALVAGE_ROLE_ID_RE = /^role-id:[ \t]*["']?([^\s"'#]+)/m;
+const SALVAGE_CREATED_RE = /^created:[ \t]*(\d+)/m;
 
 type ParsedFrontmatter = { open: string; inner: string; close: string; rest: string; doc: Document.Parsed; map: YAMLMap };
 
@@ -36,20 +40,66 @@ function parseFrontmatter(content: string): ParsedFrontmatter | null {
   return { open, inner, close, rest: content.slice(whole.length), doc, map: doc.contents };
 }
 
-function identityOf(map: YAMLMap): CarriedIdentity {
+function identityOf(meta: Record<string, unknown>): CarriedIdentity {
   const identity: CarriedIdentity = {};
-  const roleId = map.get(ROLE_ID_KEY);
+  const roleId = meta[ROLE_ID_KEY];
   if (typeof roleId === 'string' && roleId !== '') identity.roleId = roleId;
-  const createdAt = map.get(CREATED_KEY);
+  const createdAt = meta[CREATED_KEY];
   if (typeof createdAt === 'number' && Number.isFinite(createdAt)) identity.createdAt = createdAt;
   return identity;
 }
 
-/** Read the identity fields from an existing AGENT.md (undefined when absent/unparseable). */
+/** The frontmatter as the registry reads it: `yaml.parse` into a JS object, or null. */
+function parseMeta(inner: string): Record<string, unknown> | null {
+  try {
+    const meta: unknown = parse(inner);
+    return meta !== null && typeof meta === 'object' && !Array.isArray(meta) ? (meta as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function salvageIdentity(text: string): CarriedIdentity {
+  const identity: CarriedIdentity = {};
+  const roleId = SALVAGE_ROLE_ID_RE.exec(text)?.[1];
+  if (roleId) identity.roleId = roleId;
+  const createdAt = Number(SALVAGE_CREATED_RE.exec(text)?.[1]);
+  if (Number.isSafeInteger(createdAt)) identity.createdAt = createdAt;
+  return identity;
+}
+
+/**
+ * Read the identity fields from an existing AGENT.md (undefined when absent).
+ *
+ * The frontmatter is read the way `parseAgentFile` reads it — `yaml.parse`
+ * into a JS object, alias and merge keys resolved — so this and the registry
+ * agree on which identity the agent has. When the YAML no longer parses (or
+ * the closing fence is gone), the identity is salvaged from top-level
+ * `role-id:` / `created:` lines: an agent that broke after joining a team must
+ * not lose its id on the next "fix it" save. A file with no frontmatter at all
+ * has no identity to salvage.
+ */
 export function readAgentIdentity(raw: string | null): CarriedIdentity {
   if (raw === null) return {};
-  const parsed = parseFrontmatter(raw);
-  return parsed ? identityOf(parsed.map) : {};
+  const match = FRONTMATTER_RE.exec(raw);
+  if (match) {
+    const meta = parseMeta(match[2]);
+    return meta ? identityOf(meta) : salvageIdentity(match[2]);
+  }
+  return OPENING_FENCE_RE.test(raw) ? salvageIdentity(raw) : {};
+}
+
+/**
+ * The identity the carry rules demand for a write: the existing agent's
+ * role-id / created as they are (a legacy agent stays unstamped), and for a
+ * brand-new agent (`existing === null`) no role-id and `created: now`.
+ */
+export function wantedAgentIdentity(existing: CarriedIdentity | null, now: number): CarriedIdentity {
+  if (existing === null) return { createdAt: now };
+  const wanted: CarriedIdentity = {};
+  if (existing.roleId !== undefined) wanted.roleId = existing.roleId;
+  if (existing.createdAt !== undefined) wanted.createdAt = existing.createdAt;
+  return wanted;
 }
 
 function findPair(map: YAMLMap, key: string): Pair | undefined {
@@ -70,32 +120,40 @@ function rangeOf(node: unknown): [number, number, number] | undefined {
 }
 
 /**
- * Return `content` with the identity frontmatter enforced:
+ * Return `content` with the identity frontmatter enforced — the identity
+ * {@link wantedAgentIdentity} demands:
  * - `role-id`: the existing agent's id if it had one, otherwise REMOVED
  *   (ids are minted only by ensureRoleId on first team membership — a model
  *   must not invent one, a collision would make two agents share an identity);
  * - `created`: the existing agent's stamp if it had one; for a brand-new agent
  *   (`existing === null`) `now`; for an existing agent without one, left absent.
- * Other frontmatter keys, their order and comments are preserved (yaml Document API).
- * Content without a leading `---\n…\n---` block is returned unchanged.
+ * Every other frontmatter byte is preserved — keys, order, comments, quoting,
+ * indentation, line endings. Content without a leading `---\n…\n---` block,
+ * or whose frontmatter YAML cannot parse, is returned unchanged.
  *
- * "Preserved" is byte-for-byte: the Document API locates the two keys, and
- * only their source lines are rewritten (in place when present, appended to
- * the frontmatter when missing, with the file's own line ending and the map's
+ * How: `parseDocument` locates the two keys on the YAML syntax tree and only
+ * their source lines are rewritten (in place when present, appended to the
+ * frontmatter when missing, with the file's own line ending and the map's
  * indentation). `Document.toString()` is deliberately not used — it re-indents
  * sequences and respaces comments and flow collections. A flow-style map
  * (`{ name: x }`) has no lines to splice, so it alone is re-serialized.
- * Frontmatter YAML cannot parse is returned unchanged: `parseAgentFile`
- * rejects it too, so no agent — and no identity — is read from it.
+ *
+ * NOT a guarantee on its own: the registry reads the frontmatter as a JS
+ * object, and some YAML reads differently there than on the syntax tree —
+ * an alias key (`*k : v`), a merge key (`<<:`, `!!merge`, a `%YAML 1.1`
+ * directive), or an alias to an anchor on a rewritten line. A writer must
+ * therefore read its result back with `parseAgentFile` and refuse to write
+ * unless it yields exactly the wanted identity (save_agent does).
  */
 export function withAgentIdentity(content: string, existing: CarriedIdentity | null, now: number): string {
   const parsed = parseFrontmatter(content);
   if (!parsed) return content;
   const { open, inner, close, rest, doc, map } = parsed;
 
+  const identity = wantedAgentIdentity(existing, now);
   const wanted: Array<[string, string | number | undefined]> = [
-    [ROLE_ID_KEY, existing?.roleId],
-    [CREATED_KEY, existing === null ? now : existing.createdAt],
+    [ROLE_ID_KEY, identity.roleId],
+    [CREATED_KEY, identity.createdAt],
   ];
   // A key already holding the wanted value is left alone, however it is spelled.
   const changes = wanted.filter(([key, value]) => (value === undefined ? map.has(key) : map.get(key) !== value));
@@ -111,8 +169,11 @@ export function withAgentIdentity(content: string, existing: CarriedIdentity | n
     return `${open}${text}${close}${rest}`;
   }
 
-  const firstKeyStart = rangeOf(map.items[0]?.key)?.[0] ?? 0;
-  const mapIndent = inner.slice(inner.lastIndexOf('\n', firstKeyStart - 1) + 1, firstKeyStart);
+  // Indentation of a key's line — whitespace only, so an explicit key's `? `
+  // marker is not copied onto the plain `key: value` line that replaces it.
+  const indentOf = (keyStart: number, lineStart = inner.lastIndexOf('\n', keyStart - 1) + 1): string =>
+    /^[ \t]*/.exec(inner.slice(lineStart, keyStart))?.[0] ?? '';
+  const mapIndent = indentOf(rangeOf(map.items[0]?.key)?.[0] ?? 0);
 
   const splices: Array<{ start: number; end: number; text: string }> = [];
   const appends: string[] = [];
@@ -134,7 +195,7 @@ export function withAgentIdentity(content: string, existing: CarriedIdentity | n
     const end = breakAt === -1 ? inner.length : breakAt + 1;
     const lineBreak = breakAt === -1 ? '' : inner[breakAt - 1] === '\r' ? '\r\n' : '\n';
     if (line !== undefined) {
-      splices.push({ start: lineStart, end, text: `${inner.slice(lineStart, keyRange[0])}${line}${lineBreak}` });
+      splices.push({ start: lineStart, end, text: `${indentOf(keyRange[0], lineStart)}${line}${lineBreak}` });
     } else if (breakAt === -1 && lineStart > 0) {
       // Removing the last line: drop the break that led into it instead, so no
       // blank line is left before the closing fence.

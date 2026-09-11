@@ -51,10 +51,18 @@ function isUnderPluginPackages(filePath: string | undefined): boolean {
  * `isPluginOwnedAgent` reads the frontmatter `source:` key, which is a *cache*,
  * not the authority: the installer writes it and the discovery store backfills
  * it from `installed.json` (`applyPluginAgentSources`,
- * src/stores/discoveryStore.ts) — so an agent read before that backfill, or
- * contributed by a package that predates the key, carries no `source:` at all.
- * The path check closes that case, so `ensureRoleId` can never write a
- * `role-id` into — or, worse, relocate — a file the plugin owns.
+ * src/stores/discoveryStore.ts), but that backfill only reaches discovery
+ * metadata — `agentRegistry.getAgent`, which this module reads, still sees the
+ * raw frontmatter.
+ *
+ * KNOWN GAP: the path check does NOT close the "plugin agent with no `source:`"
+ * case today. The installer materialises plugin agents into
+ * `~/.abu/agents/<name>/` (src/core/agent/installer.ts) and the registry never
+ * scans the plugin-packages root, so no agent this module can see has a path
+ * under it. The check is kept because it cannot misclassify a user agent and
+ * becomes effective if plugin agents are ever loaded in place. The real fix is
+ * to answer ownership from `installed.json` (the authority) instead of the
+ * frontmatter cache — tracked as a follow-up.
  */
 function isPluginManagedAgent(agent: SubagentDefinition): boolean {
   return isPluginOwnedAgent(agent) || isUnderPluginPackages(agent.filePath);

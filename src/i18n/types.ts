@@ -2242,6 +2242,8 @@ export interface TranslationDict {
     importSymlinkRootRefused: string;
     /** {name} — the .askill's frontmatter name is not one directory segment. */
     importUnsafeName: string;
+    /** {name} — the organization's policy blocks the imported skill's name. */
+    importPolicyDenied: string;
     /** {n}, {names} — entries packSkill will not put in an exported archive. */
     exportSymlinkRefused: string;
     manualAdd: string;
@@ -4207,7 +4209,7 @@ export interface TranslationDict {
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
-      /** {name} — the organization's policy blocks this skill name; nothing was written. */
+      /** {name} — the organization's policy blocks this skill name; no skill was written under it. */
       policyDenied: string;
     };
     // manage_mcp_server

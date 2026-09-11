@@ -1121,6 +1121,19 @@ describe("skill_manage · the organization's skill policy", () => {
     expect(result).toEqual({ success: false, error: refusal() });
   });
 
+  it('explains a folder install the policy refused the same way', async () => {
+    const urlMod = await import('../../skill/urlInstaller');
+    const folderMod = await import('../../skill/installer');
+    vi.mocked(urlMod.detectSourceType).mockReturnValue('folder');
+    vi.mocked(folderMod.installSkillFromFolder).mockResolvedValue({
+      ok: false, code: 'POLICY_DENIED', message: "[policy] skill 'blocked-skill' blocked by policy", skillName: 'blocked-skill',
+    });
+
+    const result = await run({ action: 'install', source: '/path/to/blocked-skill' });
+
+    expect(result).toEqual({ success: false, error: refusal() });
+  });
+
   it('refuses a patch that renames a skill to a blocked name', async () => {
     vi.spyOn(skillLoader, 'getSkill').mockReturnValue(
       makeSkill('local-skill', { source: 'workspace-auto', skillDir: '/ws/skills/local-skill' }),

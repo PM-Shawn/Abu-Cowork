@@ -1770,6 +1770,7 @@ const enUS: TranslationDict = {
     importSkippedLinksSeparator: ', ',
     importSymlinkRootRefused: 'That folder is itself a link to somewhere else ({path}), so Abu will not import it — what it appears to contain actually lives elsewhere. Choose the folder the link points at.',
     importUnsafeName: 'The SKILL.md in this package declares a name that is not a usable folder name ("{name}") — it would write files outside the skills directory, so Abu refused to install it.',
+    importPolicyDenied: 'Your organization\'s policy doesn\'t allow the skill name "{name}", so it was not installed.',
     exportSymlinkRefused: 'Export refused: this skill folder holds {n} entr(ies) Abu will not package — {names}. A symlink would put the file it points at — very likely one from outside the folder — into the archive under an ordinary-looking name, so the package you share would carry something that is not part of this skill. Replace them with real files and export again.',
     exportSuccess: 'Export Successful',
     exportFailed: 'Export Failed',
@@ -3365,7 +3366,7 @@ const enUS: TranslationDict = {
       installed: 'Skill "{name}" installed successfully ({count} file(s)){skippedNote}{linksNote}, and now appears in "My Skills".',
       draftProposed: 'Draft "{name}" proposed. The user can accept or reject it directly in chat, or handle it in the drafts panel under Toolbox → Skills. Path: {path}.',
       skillCreated: 'Skill "{name}" created and is now active. Path: {path}',
-      policyDenied: 'Your organization\'s policy does not allow a skill named "{name}", so nothing was written. Do not work around it another way (such as writing the file directly or picking a near-identical name); tell the user this skill name is blocked by their organization\'s policy.',
+      policyDenied: 'Your organization\'s policy does not allow a skill named "{name}", so no skill was written under that name. Do not work around it another way (such as writing the file directly or picking a near-identical name); tell the user this skill name is blocked by their organization\'s policy.',
     },
     system: {
       errSearchNeedsQuery: 'Error: action=search requires a query parameter',

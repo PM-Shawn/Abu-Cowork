@@ -411,6 +411,9 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
         if (r.code === 'SYMLINK_ROOT') {
           return { success: false, error: format(t.symlinkRootRefused, { path: source }) };
         }
+        if (r.code === 'POLICY_DENIED') {
+          return { success: false, error: format(t.policyDenied, { name: r.skillName }) };
+        }
         return { success: false, error: r.message };
       }
       skillName = r.name;

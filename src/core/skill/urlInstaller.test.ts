@@ -288,6 +288,23 @@ describe('installSkillFromUrl', () => {
       expect(liveEntries()).toEqual([]);
     });
 
+    it('refuses an archive whose second SKILL.md, differing only in case, would replace the checked one', async () => {
+      // One file on APFS / NTFS: the entry written last is the manifest that
+      // goes live, and it declares a name nobody checked.
+      useFakeDisk();
+      mockUnzipSync.mockReturnValue({ 'root/SKILL.md': SKILL_MD_BYTES, 'root/skill.md': DUMMY_BYTES });
+      mockFindSkillEntries.mockReturnValue([{
+        skillMdEntry: { path: 'root/SKILL.md', data: SKILL_MD_BYTES },
+        prefix: 'root/',
+      }]);
+
+      await expect(installSkillFromUrl('https://github.com/user/my-skill')).rejects.toMatchObject({
+        code: 'AMBIGUOUS_SKILL_MD',
+      });
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(liveEntries()).toEqual([]);
+    });
+
     it('rejects path traversal in zip entries', async () => {
       // findSkillEntries returns valid location, but one entry has .. in path
       mockUnzipSync.mockReturnValue({

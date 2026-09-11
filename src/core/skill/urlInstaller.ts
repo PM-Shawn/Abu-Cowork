@@ -13,9 +13,11 @@ import { joinPath } from '@/utils/pathUtils';
 import { atomicInstallDir } from '@/core/fsAtomic';
 import { isSafeSkillDirName } from './skillDirName';
 import { assertSkillNameAllowed } from './skillPolicy';
+import { rootManifestCount } from './rootManifest';
 import {
   downloadTarball,
   extractTarball,
+  fileEntryPaths,
   findSkillEntries,
   stripPrefix,
   NpmInstallError,
@@ -104,6 +106,10 @@ export async function installSkillFromUrl(
   // those paths are written UNDER — see isSafeSkillDirName.
   if (!isSafeSkillDirName(skillName)) {
     throw new NpmInstallError('PATH_TRAVERSAL', `SKILL.md declares an unsafe skill name: "${skillName}"`);
+  }
+  // The name checked here must be the name that goes live — see rootManifest.ts.
+  if (rootManifestCount(fileEntryPaths(entries, prefix)) > 1) {
+    throw new NpmInstallError('AMBIGUOUS_SKILL_MD', 'Archive has more than one SKILL.md at its root');
   }
   // The organization's skill blacklist, before anything reaches disk.
   assertSkillNameAllowed(skillName);

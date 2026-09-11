@@ -1773,6 +1773,7 @@ const zhCN: TranslationDict = {
     importSkippedLinksSeparator: '、',
     importSymlinkRootRefused: '这个文件夹本身是一个指向别处的链接（{path}），阿布不会导入它——它看上去装着的东西其实都在别处。请直接选择链接指向的那个文件夹。',
     importUnsafeName: '这个技能包在 SKILL.md 里声明的名字不是一个合法的文件夹名（"{name}"）——它会把文件写到技能目录之外。阿布已拒绝安装。',
+    importPolicyDenied: '所在组织的策略不允许技能名 "{name}"，没有安装。',
     exportSymlinkRefused: '已拒绝导出：这个技能文件夹里有 {n} 个阿布不会打包的条目——{names}。符号链接会把它指向的那个文件（很可能在文件夹之外）以一个看起来正常的名字塞进技能包，你分享出去的包就会夹带别处的内容。请把它们换成真实文件后再导出。',
     manualAdd: '手动配置',
     // Skill detail & editor
@@ -3367,7 +3368,7 @@ const zhCN: TranslationDict = {
       installed: '技能 "{name}" 安装成功（{count} 个文件）{skippedNote}{linksNote}，已出现在"我的技能"中。',
       draftProposed: '草稿 "{name}" 已提议。用户可在聊天里直接采纳或拒绝；也可到「工具箱 → 技能」的草稿面板处理。路径：{path}。',
       skillCreated: '技能 "{name}" 已创建，立即生效。路径：{path}',
-      policyDenied: '所在组织的策略不允许名为 "{name}" 的技能，本次没有写入任何内容。不要换别的方式绕过（例如直接写文件，或换一个几乎一样的名字）；请告诉用户这个技能名被组织策略禁用了。',
+      policyDenied: '所在组织的策略不允许名为 "{name}" 的技能，没有以这个名字写入任何技能。不要换别的方式绕过（例如直接写文件，或换一个几乎一样的名字）；请告诉用户这个技能名被组织策略禁用了。',
     },
     system: {
       errSearchNeedsQuery: 'Error: action=search 时必须提供 query 参数',

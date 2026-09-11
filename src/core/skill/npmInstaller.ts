@@ -16,6 +16,7 @@ import { parse as parseYaml } from 'yaml';
 import { atomicInstallDir } from '@/core/fsAtomic';
 import { isSafeSkillDirName } from './skillDirName';
 import { assertSkillNameAllowed } from './skillPolicy';
+import { rootManifestCount } from './rootManifest';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -54,7 +55,8 @@ export type NpmInstallErrorCode =
   | 'PATH_TRAVERSAL'
   | 'FILE_TOO_LARGE'
   | 'EXTRACT_FAILED'
-  | 'ALREADY_EXISTS';
+  | 'ALREADY_EXISTS'
+  | 'AMBIGUOUS_SKILL_MD';
 
 export class NpmInstallError extends Error {
   code: NpmInstallErrorCode;
@@ -118,6 +120,10 @@ export async function installSkillFromNpm(
   // those paths are written UNDER — see isSafeSkillDirName.
   if (!isSafeSkillDirName(skillName)) {
     throw new NpmInstallError('PATH_TRAVERSAL', `SKILL.md declares an unsafe skill name: "${skillName}"`);
+  }
+  // The name checked here must be the name that goes live — see rootManifest.ts.
+  if (rootManifestCount(fileEntryPaths(entries, prefix)) > 1) {
+    throw new NpmInstallError('AMBIGUOUS_SKILL_MD', `Package "${packageName}" has more than one SKILL.md at its root`);
   }
   // The organization's skill blacklist, before anything reaches disk.
   assertSkillNameAllowed(skillName);
@@ -372,6 +378,13 @@ export function stripPrefix(path: string, prefix: string): string {
     return path.slice(prefix.length);
   }
   return path;
+}
+
+/** The skill-relative paths of the files the write loop will write, in archive order. */
+export function fileEntryPaths(entries: TarEntry[], prefix: string): string[] {
+  return entries
+    .map((entry) => stripPrefix(entry.path, prefix))
+    .filter((rel) => rel && !rel.endsWith('/'));
 }
 
 // ── Helpers ────────────────────────────────────────────────────────

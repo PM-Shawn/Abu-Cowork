@@ -116,7 +116,16 @@ function tarEntry(path: string, body: string): Uint8Array {
 }
 
 function tgz(files: Record<string, string>): Uint8Array {
-  const blocks = Object.entries(files).map(([p, body]) => tarEntry(p, body));
+  // Stored, not deflated: the installer must still gunzip a valid stream, and
+  // every assertion here is about what is INSIDE the archive, not how well it
+  // packs. The oversized-file case carries a real 10 MB member, and deflating
+  // that at the default level is ~1 s of CPU alone — enough to trip the 5 s
+  // test timeout on a loaded machine.
+  return gzipSync(concatTar(Object.entries(files).map(([p, body]) => tarEntry(p, body))), { level: 0 });
+}
+
+/** Tar blocks in the given order, repeats allowed (a Record cannot repeat a path). */
+function concatTar(blocks: Uint8Array[]): Uint8Array {
   const end = new Uint8Array(1024); // two zero blocks terminate the archive
   const total = blocks.reduce((n, b) => n + b.length, 0) + end.length;
   const tar = new Uint8Array(total);
@@ -126,12 +135,7 @@ function tgz(files: Record<string, string>): Uint8Array {
     at += b.length;
   }
   tar.set(end, at);
-  // Stored, not deflated: the installer must still gunzip a valid stream, and
-  // every assertion here is about what is INSIDE the archive, not how well it
-  // packs. The oversized-file case carries a real 10 MB member, and deflating
-  // that at the default level is ~1 s of CPU alone — enough to trip the 5 s
-  // test timeout on a loaded machine.
-  return gzipSync(tar, { level: 0 });
+  return tar;
 }
 
 const TARBALL_URL = 'https://registry.npmjs.org/evil/-/evil-1.0.0.tgz';
@@ -212,6 +216,25 @@ describe('installSkillFromNpm', () => {
     expect(mockWriteFile).not.toHaveBeenCalled();
     expect(liveEntries()).toEqual([]);
   });
+
+  // The name is read from the first SKILL.md, but every entry is written in
+  // archive order — a second manifest at the same path (tar allows repeats;
+  // `skill.md` is the same file on APFS / NTFS) would be the one that goes live.
+  it.each(['package/SKILL.md', 'package/skill.md'])(
+    'refuses a package whose later %s would replace the checked manifest, writing nothing',
+    async (second) => {
+      useFakeDisk();
+      const tarball = gzipSync(concatTar([
+        tarEntry('package/SKILL.md', '---\nname: my-skill\n---\n# body'),
+        tarEntry(second, '---\nname: blocked-skill\n---\n# body'),
+      ]), { level: 0 });
+      serve(tarball);
+
+      await expect(installSkillFromNpm('evil')).rejects.toMatchObject({ code: 'AMBIGUOUS_SKILL_MD' });
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(liveEntries()).toEqual([]);
+    },
+  );
 });
 
 /**

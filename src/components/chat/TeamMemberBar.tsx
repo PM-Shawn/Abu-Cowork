@@ -26,6 +26,7 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
   const defOf = (name: string) => memberDefByName(team, name);
   const chip = 'inline-flex max-w-[180px] items-center gap-1 rounded-full border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-base)] px-2 py-0.5 text-caption text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors';
   const anyRunning = members.some((member) => member.status === 'running');
+  const unresolved = team.unresolvedMemberRoleIds?.length ?? 0;
   const toggle = (
     <button
       type="button"
@@ -79,6 +80,19 @@ export default function TeamMemberBar({ conversationId }: { conversationId: stri
           {member.status === 'error' && <XCircle aria-hidden="true" className="h-3 w-3 text-[var(--abu-danger)]" />}
         </button>
       ))}
+      {unresolved > 0 && (
+        // Brief D3: the strip is where the user notices the gap, so it is also
+        // the way out — the team panel is where members are removed or replaced.
+        <button
+          type="button"
+          className="inline-flex items-center rounded-full border border-[var(--abu-border-subtle)] px-2 py-0.5 text-caption text-[var(--abu-danger)]"
+          onClick={() => openTeam(conversationId)}
+          title={t.workspace.teamMemberBarUnresolvedHint}
+          data-testid="team-member-bar-unresolved"
+        >
+          {format(t.workspace.teamMemberBarUnresolved, { n: unresolved })}
+        </button>
+      )}
       {members.map((m) => ({ m, running: m.dispatches.find((d) => d.live && d.status === 'running') })).filter((x) => x.running).map(({ m, running }) => (
         <button
           key={`stop-${m.agent}`}

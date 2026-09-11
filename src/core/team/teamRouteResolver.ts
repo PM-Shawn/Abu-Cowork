@@ -19,16 +19,19 @@ export function resolveTeamRouteContext(teamId: string | undefined): TeamRouteCo
   const leader = resolveRoleId(team.leaderRoleId);
   if (!leader) return null;
   const members: SubagentDefinition[] = [];
+  const unresolvedMemberRoleIds: string[] = [];
   for (const roleId of team.memberRoleIds) {
     if (roleId === team.leaderRoleId) continue;
     const def = resolveRoleId(roleId);
-    if (def && def.name !== leader.name && !members.some((m) => m.name === def.name)) members.push(def);
+    if (!def) { unresolvedMemberRoleIds.push(roleId); continue; }
+    if (def.name !== leader.name && !members.some((m) => m.name === def.name)) members.push(def);
   }
   return {
     teamId: team.id,
     teamName: team.name,
     leader,
     members,
+    unresolvedMemberRoleIds,
     leaderNote: team.leaderNote,
     requirePlanApproval: team.requirePlanApproval,
     ...(team.lastPlan && team.lastPlan.steps.length > 0 ? { lastPlan: { request: team.lastPlan.request, steps: team.lastPlan.steps } } : {}),

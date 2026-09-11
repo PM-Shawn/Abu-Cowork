@@ -44,15 +44,21 @@ describe('resolveTeamRouteContext', () => {
     expect(resolveTeamRouteContext('nope')).toBeNull();
   });
 
-  it('resolves the roster without the leader and skips unresolvable roles', () => {
+  it('resolves the roster without the leader, skips unresolvable roles, and REPORTS them', () => {
     teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-gone', 'r-b'], leaderNote: '先看数据', requirePlanApproval: true }];
     const ctx = resolveTeamRouteContext('t1');
     expect(ctx).not.toBeNull();
     expect(ctx!.teamName).toBe('数据小队');
     expect(ctx!.leader.name).toBe('lead');
     expect(teamRosterNames(ctx!)).toEqual(['a', 'b']);
+    expect(ctx!.unresolvedMemberRoleIds).toEqual(['r-gone']);
     expect(ctx!.leaderNote).toBe('先看数据');
     expect(ctx!.requirePlanApproval).toBe(true);
+  });
+
+  it('reports an empty unresolved list when every member resolves', () => {
+    teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a'] }];
+    expect(resolveTeamRouteContext('t1')!.unresolvedMemberRoleIds).toEqual([]);
   });
 });
 

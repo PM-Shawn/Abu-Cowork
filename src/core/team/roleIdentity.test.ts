@@ -56,6 +56,32 @@ describe('roleIdentity', () => {
     expect(saved[0].filePath).toBe('/Users/me/.abu/agents/b/AGENT.md');
   });
 
+  it('plugin-owned agents get a name-keyed plugin: id and never a role-id written into the plugin file', async () => {
+    const fromPlugin = def('reviewer', { source: { kind: 'plugin', plugin: 'weather@official' } });
+    registry.agents = [fromPlugin, def('reviewer-copy')];
+    expect(effectiveRoleId(fromPlugin)).toBe('plugin:reviewer');
+    expect(resolveRoleId('plugin:reviewer')?.name).toBe('reviewer');
+    // A user agent of the same name is NOT the plugin's agent.
+    registry.agents = [def('reviewer')];
+    expect(resolveRoleId('plugin:reviewer')).toBeNull();
+    const ensured = await ensureRoleId(fromPlugin);
+    expect(ensured).toEqual({ roleId: 'plugin:reviewer', wrote: false });
+    expect(saved).toHaveLength(0);
+  });
+
+  it('treats a file under the plugin-packages root as plugin-owned even with no source: key', async () => {
+    // `source:` is a cache (the installer writes it, discoveryStore backfills
+    // it) — an agent read before that backfill has none. Ownership must still
+    // hold, or ensureRoleId would write a role-id into the plugin's file.
+    const noSource = def('y', { filePath: '/Users/me/.abu/plugin-packages/x/agents/y/AGENT.md' });
+    registry.agents = [noSource];
+    expect(effectiveRoleId(noSource)).toBe('plugin:y');
+    expect(resolveRoleId('plugin:y')?.name).toBe('y');
+    const ensured = await ensureRoleId(noSource);
+    expect(ensured).toEqual({ roleId: 'plugin:y', wrote: false });
+    expect(saved).toHaveLength(0);
+  });
+
   it('createRoleId yields distinct role- ids', () => {
     const a = createRoleId(); const b = createRoleId();
     expect(a).toMatch(/^role-/);

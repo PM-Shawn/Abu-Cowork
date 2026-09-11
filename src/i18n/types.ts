@@ -1879,6 +1879,11 @@ export interface TranslationDict {
     detailEdit: string;
     aiCreateTeamPrompt: string;
     unknownMember: string;
+    /** Detail / edit row for a stored member no live agent answers to. */
+    memberInvalid: string;
+    memberInvalidShort: string;
+    memberInvalidRemove: string;
+    editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
     /** Follow-up chips under a finished team turn. */
@@ -2330,6 +2335,11 @@ export interface TranslationDict {
     agentFromPlugin: string;
     agentFromPluginEditDisabled: string;
     agentFromPluginDeleteDisabled: string;
+    /** Deleting an agent that one or more teams reference. */
+    agentDeleteInTeamsTitle: string;
+    agentDeleteInTeamsMessage: string;
+    agentDeleteLeaderInTeamsMessage: string;
+    agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;
     agentEditorTitle: string;
@@ -2746,6 +2756,9 @@ export interface TranslationDict {
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
+    /** Member strip pill: N stored members no live agent answers to. */
+    teamMemberBarUnresolved: string;
+    teamMemberBarUnresolvedHint: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;

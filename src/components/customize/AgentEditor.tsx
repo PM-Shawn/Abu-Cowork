@@ -87,12 +87,13 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       tags: tags.length > 0 ? tags : undefined,
       // Identity is not an editable field either: `roleId` is what every team
       // membership points at (minted by ensureRoleId on first team membership),
-      // `createdAt` drives the newest-first sort. Neither is ever regenerated
-      // here — both are carried over verbatim when present. (Today nothing
-      // mints `createdAt` for editor-created agents; that is a separate gap,
-      // not this editor's job.)
+      // `createdAt` drives the newest-first sort. An existing agent's values
+      // are carried over verbatim and never regenerated. A new agent is
+      // stamped with `createdAt` here, on its first save; a legacy agent that
+      // has no stamp stays unstamped on purpose — stamping it on edit would
+      // falsely mark it the newest.
       roleId: agent?.roleId,
-      createdAt: agent?.createdAt,
+      createdAt: agent ? agent.createdAt : Date.now(),
       // Provenance is not an editable field: carried over verbatim so a save
       // cannot quietly launder a plugin's agent into a user-authored one. A new
       // agent has none. (The detail views disable Edit for plugin agents, so

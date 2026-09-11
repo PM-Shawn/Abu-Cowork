@@ -1879,6 +1879,10 @@ export interface TranslationDict {
     detailEdit: string;
     aiCreateTeamPrompt: string;
     unknownMember: string;
+    /** Detail / edit row for a stored member no live agent answers to. */
+    memberInvalid: string;
+    memberInvalidRemove: string;
+    editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
     /** Follow-up chips under a finished team turn. */

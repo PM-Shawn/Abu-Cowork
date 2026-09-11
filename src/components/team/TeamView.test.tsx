@@ -82,7 +82,8 @@ vi.mock('@/core/team/roleIdentity', () => ({
     agent.roleId ? { roleId: agent.roleId, wrote: false } : { roleId: 'role-new', wrote: true }),
   effectiveRoleId: (agent: { roleId?: string; name: string }) => agent.roleId ?? `builtin:${agent.name}`,
   isBuiltinAgent: () => false,
-  resolveRoleId: () => null,
+  resolveRoleId: (roleId: string) =>
+    Object.values(registryAgents).find((a) => (a.roleId ?? `builtin:${a.name}`) === roleId) ?? null,
 }));
 
 // AgentsSection drags in the whole toolbox world — stub it.
@@ -139,6 +140,55 @@ describe('TeamView', () => {
     expect(screen.getByText('成员（1）')).toBeTruthy();
     // Skills live on members; the union is deduplicated and sorted.
     for (const skill of ['取数', '画图', '核对']) expect(screen.getByText(skill)).toBeTruthy();
+  });
+
+  it('teams tab: the card counts only members that resolve, matching the runtime roster', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    seedAgent('校对', { roleId: 'r-mem' });
+    discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem', 'r-gone'], createdAt: 1 }] });
+    render(<TeamView />);
+    expect(screen.getByTestId('team-row-数据小队').textContent).toContain('1 名成员');
+  });
+
+  it('teams tab: the detail labels an unresolvable member as invalid and removes it on request', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    seedAgent('校对', { roleId: 'r-mem' });
+    discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem', 'r-gone'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.getByText('成员（1）')).toBeTruthy();
+    const invalidRow = screen.getByTestId('team-member-invalid-r-gone');
+    expect(invalidRow.textContent).toContain('已失效');
+    fireEvent.click(screen.getByText('移除'));
+    expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead', 'r-mem']);
+    expect(screen.queryByTestId('team-member-invalid-r-gone')).toBeNull();
+  });
+
+  it('team dialog: an invalid member is listed, kept on save unless removed', async () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-gone'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByTestId('team-edit-invalid-r-gone')).toBeTruthy();
+    // Save without touching it: the ghost is preserved (never silently dropped).
+    fireEvent.click(screen.getByTestId('team-save'));
+    await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead', 'r-gone']));
+    // Reopen, remove, save: now it is gone.
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    fireEvent.click(screen.getByTestId('team-edit-invalid-remove-r-gone'));
+    expect(screen.queryByTestId('team-edit-invalid-r-gone')).toBeNull();
+    fireEvent.click(screen.getByTestId('team-save'));
+    await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead']));
   });
 
   it('teams tab: the detail\'s primary action opens a conversation already pinned to the team', () => {

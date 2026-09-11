@@ -6,9 +6,9 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
-import { ensureRoleId, effectiveRoleId } from '@/core/team/roleIdentity';
+import { ensureRoleId, effectiveRoleId, resolveRoleId } from '@/core/team/roleIdentity';
 import { useI18n, format } from '@/i18n';
-import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2 } from 'lucide-react';
+import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
@@ -78,10 +78,6 @@ function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: strin
   return agents.find((a) => effectiveRoleId(a) === roleId)?.name ?? fallback;
 }
 
-function roleAgent(agents: SubagentDefinition[], roleId: string): SubagentDefinition | undefined {
-  return agents.find((a) => effectiveRoleId(a) === roleId);
-}
-
 function memberOption(a: SubagentDefinition): SearchSelectOption {
   return { value: a.name, label: a.name, description: a.description || undefined, icon: <AgentAvatar agent={a} size="sm" /> };
 }
@@ -105,10 +101,14 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const [requireApproval, setRequireApproval] = useState(false);
   const [avatar, setAvatar] = useState('');
   const [saving, setSaving] = useState(false);
-  // Members whose agent is disabled / deleted / managed cannot be shown in the
-  // picker, but they are still part of the team: keep their roleIds and write
-  // them back on save instead of silently dropping them.
+  // Members not offered by the picker fall into two very different buckets:
+  // - hidden: the agent exists but is disabled / managed — still a real member,
+  //   kept and written back untouched;
+  // - invalid: no live agent answers to the roleId at all (deleted, or edited
+  //   before role-id survived edits). Shown below the picker with a remove
+  //   action; kept on save unless the user removes it — never dropped silently.
   const [hiddenMemberRoleIds, setHiddenMemberRoleIds] = useState<string[]>([]);
+  const [invalidMemberRoleIds, setInvalidMemberRoleIds] = useState<string[]>([]);
   // The pool refreshes (new array identity) whenever discovery re-runs — including
   // ensureRoleId's own refresh during save. Seed from it once per open, via a ref,
   // so a refresh never wipes what the user has typed.
@@ -123,12 +123,14 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
       setLeaderName(roleLabel(pool, team.leaderRoleId, ''));
       const members = team.memberRoleIds.filter((id) => id !== team.leaderRoleId);
       setMemberNames(members.map((id) => roleLabel(pool, id, '')).filter(Boolean));
-      setHiddenMemberRoleIds(members.filter((id) => !roleLabel(pool, id, '')));
+      const notInPicker = members.filter((id) => !roleLabel(pool, id, ''));
+      setHiddenMemberRoleIds(notInPicker.filter((id) => resolveRoleId(id) !== null));
+      setInvalidMemberRoleIds(notInPicker.filter((id) => resolveRoleId(id) === null));
       setLeaderNote(team.leaderNote ?? '');
       setRequireApproval(team.requirePlanApproval === true);
       setAvatar(team.avatar ?? '');
     } else {
-      setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
+      setName(''); setLeaderName(''); setMemberNames([]); setHiddenMemberRoleIds([]); setInvalidMemberRoleIds([]); setLeaderNote(''); setRequireApproval(false); setAvatar('');
     }
   }, [open, team]);
 
@@ -147,7 +149,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         return roleId;
       };
       const leaderRoleId = leaderName ? await resolve(leaderName) : (team as Team).leaderRoleId;
-      const memberRoleIds: string[] = [...hiddenMemberRoleIds.filter((id) => id !== leaderRoleId)];
+      const memberRoleIds: string[] = [...hiddenMemberRoleIds, ...invalidMemberRoleIds].filter((id) => id !== leaderRoleId);
       for (const n of memberNames) {
         if (n === leaderName) continue;
         memberRoleIds.push(await resolve(n));
@@ -228,6 +230,27 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
                 testId="team-members-select"
               />
             </div>
+            {invalidMemberRoleIds.length > 0 && (
+              <div className="rounded-xl bg-[var(--abu-bg-muted)] px-3 py-2.5 space-y-1.5">
+                <div className="text-caption text-[var(--abu-text-secondary)]">{t.team.editInvalidMembers}</div>
+                {invalidMemberRoleIds.map((id) => (
+                  <div key={id} className="flex items-center gap-2" data-testid={`team-edit-invalid-${id}`}>
+                    <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                    <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-danger)]">{t.team.memberInvalid}</span>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={t.team.memberInvalidRemove}
+                      title={t.team.memberInvalidRemove}
+                      onClick={() => setInvalidMemberRoleIds((prev) => prev.filter((x) => x !== id))}
+                      data-testid={`team-edit-invalid-remove-${id}`}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
 
@@ -385,7 +408,7 @@ export default function TeamView() {
                       name: team.name,
                       description: format(t.team.teamRowSummary, {
                         leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
-                        count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId).length),
+                        count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length),
                       }),
                       avatar: <TeamAvatar avatar={team.avatar} />,
                     }}
@@ -457,8 +480,16 @@ export default function TeamView() {
       >
         {detailTeam && (() => {
           const memberIds = detailTeam.memberRoleIds.filter((id) => id !== detailTeam.leaderRoleId);
-          const leader = roleAgent(agents, detailTeam.leaderRoleId);
-          const members = memberIds.map((id) => ({ id, agent: roleAgent(agents, id) }));
+          // Same predicate the run uses (resolveRoleId), so the count here never
+          // disagrees with the "队员 · N" the workspace tab shows mid-run.
+          const leader = resolveRoleId(detailTeam.leaderRoleId) ?? undefined;
+          const members = memberIds.map((id) => ({ id, agent: resolveRoleId(id) ?? undefined }));
+          const validMembers = members.filter((m) => m.agent);
+          const invalidMembers = members.filter((m) => !m.agent);
+          const removeInvalid = (roleId: string) => {
+            useTeamStore.getState().updateTeam(detailTeam.id, { memberRoleIds: detailTeam.memberRoleIds.filter((id) => id !== roleId) });
+            setDetailTeam(useTeamStore.getState().teams.find((team) => team.id === detailTeam.id) ?? null);
+          };
           // Skills live on each member, not on the team — the union answers
           // "what can this team actually do" without opening every member.
           const skills = [...new Set([leader, ...members.map((m) => m.agent)]
@@ -481,13 +512,22 @@ export default function TeamView() {
             <div className="space-y-5">
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
-                {row(leader, t.team.unknownMember)}
+                {row(leader, t.team.memberInvalid)}
               </div>
               <div>
-                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{format(t.team.detailMembers, { count: String(memberIds.length) })}</div>
-                {memberIds.length === 0
+                <div className="text-minor text-[var(--abu-text-muted)] mb-1">{format(t.team.detailMembers, { count: String(validMembers.length) })}</div>
+                {validMembers.length === 0 && invalidMembers.length === 0
                   ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoMembers}</div>
-                  : <div className="space-y-0.5">{members.map((m) => <div key={m.id}>{row(m.agent, t.team.unknownMember)}</div>)}</div>}
+                  : <div className="space-y-0.5">
+                      {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.unknownMember)}</div>)}
+                      {invalidMembers.map((m) => (
+                        <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
+                          <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                          <span className="min-w-0 flex-1 truncate text-body text-[var(--abu-danger)]">{t.team.memberInvalid}</span>
+                          <Button size="xs" variant="ghost" onClick={() => removeInvalid(m.id)}>{t.team.memberInvalidRemove}</Button>
+                        </div>
+                      ))}
+                    </div>}
               </div>
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailPlanApproval}</div>

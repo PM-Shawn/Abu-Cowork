@@ -23,7 +23,14 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
   };
 });
 
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
+
 import { installSkillFromNpm } from './npmInstaller';
+import { SkillPolicyDeniedError } from './skillPolicy';
 
 const mockFetch = vi.mocked(fetch);
 const mockExists = vi.mocked(exists);
@@ -191,6 +198,19 @@ describe('installSkillFromNpm', () => {
     await expect(installSkillFromNpm('evil')).rejects.toMatchObject({ code: 'PATH_TRAVERSAL' });
     expect(mockMkdir).not.toHaveBeenCalled();
     expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+
+  it("refuses a skill name the organization's policy blocks, writing nothing", async () => {
+    useFakeDisk();
+    serve(tgz({ 'package/SKILL.md': '---\nname: blocked-skill\n---\n# body' }));
+
+    const err = await installSkillFromNpm('evil').catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SkillPolicyDeniedError);
+    expect((err as SkillPolicyDeniedError).skillName).toBe('blocked-skill');
+    expect(mockMkdir).not.toHaveBeenCalled();
+    expect(mockWriteFile).not.toHaveBeenCalled();
+    expect(liveEntries()).toEqual([]);
   });
 });
 

@@ -2100,6 +2100,8 @@ export interface TranslationDict {
     nameFormatHint: string;
     agentNameTakenHint: string;
     skillNameTakenHint: string;
+    /** The organization's policy blocks this skill name. */
+    skillNamePolicyHint: string;
     itemSaveFailed: string;
     aiAssistedCreate: string;
     installFailed: string;
@@ -2420,6 +2422,8 @@ export interface TranslationDict {
     draftsConfirmAcceptAll: string;    // e.g. "确认采纳全部 {count} 个草稿？"
     draftsConfirmRejectAll: string;
     draftsAcceptError: string;
+    /** {name} — the organization's policy blocks the draft's skill name. */
+    draftsAcceptPolicyDenied: string;
     draftsRejectError: string;
     draftsTriggerReason: string;
     draftsCreatedAgo: string;          // "{when} 前"
@@ -4203,6 +4207,8 @@ export interface TranslationDict {
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
+      /** {name} — the organization's policy blocks this skill name; nothing was written. */
+      policyDenied: string;
     };
     // manage_mcp_server
     system: {

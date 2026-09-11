@@ -1639,6 +1639,7 @@ const enUS: TranslationDict = {
     nameFormatHint: 'Only lowercase letters, numbers, and hyphens allowed. Cannot start or end with a hyphen.',
     agentNameTakenHint: 'An expert with this name already exists. Try a different name.',
     skillNameTakenHint: 'A skill with this name already exists. Try a different name.',
+    skillNamePolicyHint: "Your organization's policy doesn't allow this skill name.",
     itemSaveFailed: 'Save failed. Please try again.',
     aiAssistedCreate: 'AI-assisted custom skill creation',
     installFailed: 'Install failed',
@@ -1938,6 +1939,7 @@ const enUS: TranslationDict = {
     draftsConfirmAcceptAll: 'Accept all {count} drafts?',
     draftsConfirmRejectAll: 'Reject all {count} drafts? Rejected drafts go to trash for 7 days.',
     draftsAcceptError: 'Accept failed',
+    draftsAcceptPolicyDenied: 'Your organization\'s policy doesn\'t allow the skill name "{name}", so this draft can\'t be accepted.',
     draftsRejectError: 'Reject failed',
     draftsTriggerReason: 'Proposed because',
     draftsCreatedAgo: '{when} ago',
@@ -3363,6 +3365,7 @@ const enUS: TranslationDict = {
       installed: 'Skill "{name}" installed successfully ({count} file(s)){skippedNote}{linksNote}, and now appears in "My Skills".',
       draftProposed: 'Draft "{name}" proposed. The user can accept or reject it directly in chat, or handle it in the drafts panel under Toolbox → Skills. Path: {path}.',
       skillCreated: 'Skill "{name}" created and is now active. Path: {path}',
+      policyDenied: 'Your organization\'s policy does not allow a skill named "{name}", so nothing was written. Do not work around it another way (such as writing the file directly or picking a near-identical name); tell the user this skill name is blocked by their organization\'s policy.',
     },
     system: {
       errSearchNeedsQuery: 'Error: action=search requires a query parameter',

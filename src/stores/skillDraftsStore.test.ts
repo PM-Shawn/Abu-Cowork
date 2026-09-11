@@ -6,6 +6,8 @@ import * as drafts from '../core/skill/drafts';
 import type { DraftRecord } from '../core/skill/drafts';
 import type { Conversation, ToolCall } from '../types';
 import { skillLoader } from '../core/skill/loader';
+import { SkillPolicyDeniedError } from '../core/skill/skillPolicy';
+import { getI18n, format } from '../i18n';
 
 // The store imports these stores at module init; they're real zustand so we
 // just manipulate state via setState. Drafts module is mocked — we're testing
@@ -177,6 +179,17 @@ describe('skillDraftsStore · acceptDraft', () => {
 
     expect(result).toEqual({ ok: false, error: 'already exists' });
     expect(useSkillDraftsStore.getState().lastError).toBe('already exists');
+  });
+
+  it("says in the user's language that the organization's policy blocks the name", async () => {
+    mockAcceptDraft.mockRejectedValueOnce(new SkillPolicyDeniedError('blocked-skill', "skill 'blocked-skill' blocked by policy"));
+
+    const result = await useSkillDraftsStore.getState().acceptDraft('blocked-skill');
+
+    expect(result).toEqual({
+      ok: false,
+      error: format(getI18n().toolbox.draftsAcceptPolicyDenied, { name: 'blocked-skill' }),
+    });
   });
 });
 

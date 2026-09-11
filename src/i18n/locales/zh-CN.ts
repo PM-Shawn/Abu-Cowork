@@ -1640,6 +1640,7 @@ const zhCN: TranslationDict = {
     nameFormatHint: '仅允许小写字母、数字和连字符，且不能以连字符开头或结尾',
     agentNameTakenHint: '已有同名专家，换个名字吧',
     skillNameTakenHint: '已有同名技能，换个名字吧',
+    skillNamePolicyHint: '所在组织的策略不允许使用这个技能名',
     itemSaveFailed: '保存失败，请重试',
     aiAssistedCreate: 'AI 辅助生成自定义技能',
     installFailed: '安装失败',
@@ -1940,6 +1941,7 @@ const zhCN: TranslationDict = {
     draftsConfirmAcceptAll: '确认采纳全部 {count} 个草稿？',
     draftsConfirmRejectAll: '确认拒绝全部 {count} 个草稿？拒绝的草稿会进入回收区保留 7 天。',
     draftsAcceptError: '采纳失败',
+    draftsAcceptPolicyDenied: '所在组织的策略不允许技能名 "{name}"，这个草稿无法采纳',
     draftsRejectError: '拒绝失败',
     draftsTriggerReason: '提议原因',
     draftsCreatedAgo: '{when} 前提议',
@@ -3365,6 +3367,7 @@ const zhCN: TranslationDict = {
       installed: '技能 "{name}" 安装成功（{count} 个文件）{skippedNote}{linksNote}，已出现在"我的技能"中。',
       draftProposed: '草稿 "{name}" 已提议。用户可在聊天里直接采纳或拒绝；也可到「工具箱 → 技能」的草稿面板处理。路径：{path}。',
       skillCreated: '技能 "{name}" 已创建，立即生效。路径：{path}',
+      policyDenied: '所在组织的策略不允许名为 "{name}" 的技能，本次没有写入任何内容。不要换别的方式绕过（例如直接写文件，或换一个几乎一样的名字）；请告诉用户这个技能名被组织策略禁用了。',
     },
     system: {
       errSearchNeedsQuery: 'Error: action=search 时必须提供 query 参数',

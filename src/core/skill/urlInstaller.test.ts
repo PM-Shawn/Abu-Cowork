@@ -34,9 +34,16 @@ vi.mock('./npmInstaller', async (importOriginal) => {
   };
 });
 
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
+
 import { unzipSync, strFromU8 } from 'fflate';
 import { downloadTarball, extractTarball, findSkillEntries } from './npmInstaller';
 import { detectSourceType, installSkillFromUrl } from './urlInstaller';
+import { SkillPolicyDeniedError } from './skillPolicy';
 
 const mockExists = vi.mocked(exists);
 const mockMkdir = vi.mocked(mkdir);
@@ -265,6 +272,20 @@ describe('installSkillFromUrl', () => {
       });
       expect(mockMkdir).not.toHaveBeenCalled();
       expect(mockWriteFile).not.toHaveBeenCalled();
+    });
+
+    it("refuses a skill name the organization's policy blocks, writing nothing", async () => {
+      useFakeDisk();
+      mockStrFromU8.mockReturnValue('---\nname: blocked-skill\n---\n# body');
+      mockUnzipSync.mockReturnValue({ 'root/SKILL.md': SKILL_MD_BYTES });
+
+      const err = await installSkillFromUrl('https://github.com/user/my-skill').catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(SkillPolicyDeniedError);
+      expect((err as SkillPolicyDeniedError).skillName).toBe('blocked-skill');
+      expect(mockMkdir).not.toHaveBeenCalled();
+      expect(mockWriteFile).not.toHaveBeenCalled();
+      expect(liveEntries()).toEqual([]);
     });
 
     it('rejects path traversal in zip entries', async () => {

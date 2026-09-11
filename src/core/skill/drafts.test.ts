@@ -25,8 +25,15 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
   };
 });
 
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
+
 // Pull rename out after the mock is registered (can't import it at top).
 import * as fs from '@tauri-apps/plugin-fs';
+import { SkillPolicyDeniedError } from './skillPolicy';
 const renameMock = vi.mocked(fs.rename);
 
 import {
@@ -354,6 +361,21 @@ describe('drafts · acceptDraft', () => {
     const vfs = makeVfs();
     vfs.install();
     await expect(acceptDraft('ghost', WS)).rejects.toThrow(/not found/);
+  });
+
+  it("refuses a draft whose name the organization's policy blocks, leaving it in drafts", async () => {
+    const vfs = makeVfs();
+    vfs.seed(`${DRAFTS}/blocked-skill`);
+    vfs.seed(`${DRAFTS}/blocked-skill/SKILL.md`, '---\nname: blocked-skill\n---\nbody');
+    vfs.seed(`${DRAFTS}/blocked-skill/.abu-draft-meta.json`, '{}');
+    vfs.install();
+
+    const err = await acceptDraft('blocked-skill', WS).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SkillPolicyDeniedError);
+    expect((err as SkillPolicyDeniedError).skillName).toBe('blocked-skill');
+    expect(renameMock).not.toHaveBeenCalled();
+    expect(mockRemove).not.toHaveBeenCalled();
   });
 });
 

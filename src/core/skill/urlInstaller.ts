@@ -12,6 +12,7 @@ import { parse as parseYaml } from 'yaml';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicInstallDir } from '@/core/fsAtomic';
 import { isSafeSkillDirName } from './skillDirName';
+import { assertSkillNameAllowed } from './skillPolicy';
 import {
   downloadTarball,
   extractTarball,
@@ -104,6 +105,8 @@ export async function installSkillFromUrl(
   if (!isSafeSkillDirName(skillName)) {
     throw new NpmInstallError('PATH_TRAVERSAL', `SKILL.md declares an unsafe skill name: "${skillName}"`);
   }
+  // The organization's skill blacklist, before anything reaches disk.
+  assertSkillNameAllowed(skillName);
 
   // Write to ~/.abu/skills/<name>/
   const home = await homeDir();

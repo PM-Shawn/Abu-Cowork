@@ -3350,6 +3350,10 @@ export interface TranslationDict {
     browserDenied: string;
     selfExtensionReason: string;
     selfExtensionDenied: string;
+    /** save_agent approval summary mode: no AGENT.md on disk under that name — a new expert. */
+    selfExtensionSaveAgentNew: string;
+    /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
+    selfExtensionSaveAgentReplace: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;
@@ -4064,14 +4068,39 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
-      /** Error: unsafe file path. {p} */
+      /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */
       errUnsafeFilePath: string;
+      /**
+       * Error: nothing written — a `files` entry names the manifest itself,
+       * which is written only from `content` (checked). {p}, {fileName}
+       */
+      errFileIsManifest: string;
+      /** Error: nothing written — `files[index]` is not a {path, content} pair of strings with a non-empty path. {index} */
+      errInvalidFileEntry: string;
       /**
        * Error: save_agent wrote nothing — the AGENT.md frontmatter does not
        * read back (via the registry's parser) with the identity it must carry,
        * or cannot be read at all. Tells the model to resend plain YAML. {name}
        */
       errAgentFrontmatterInvalid: string;
+      /**
+       * Error: nothing written — the name belongs to a built-in or plugin item,
+       * or to another item whose name differs only in letter case (the same
+       * folder on macOS / Windows). {label}, {name}
+       */
+      errNameInUse: string;
+      /**
+       * Error: nothing written — an item with this name already exists and the
+       * call did not pass `overwrite: true`. Tells the model to pass it only
+       * when the user asked to change that item. {label}, {name}
+       */
+      errItemExists: string;
+      /**
+       * Error: nothing written — the frontmatter `name` in the manifest differs
+       * from the name parameter (the registry keys items by the frontmatter
+       * name). {label}, {name}, {found}, {fileName}
+       */
+      errManifestNameMismatch: string;
       /** Attached-files section header + list. {list} */
       savedFileList: string;
       /** Success: skill saved. {label}, {name}, {filePath}, {fileList} */

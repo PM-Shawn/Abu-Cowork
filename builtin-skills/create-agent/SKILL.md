@@ -58,7 +58,8 @@ background: false
    已有专家（含内置专家与团队成员）不要回读文件确认——名单本身就是权威，用 save_agent 返回的摘要核对即可。
 
 3. **保存代理**：
-   使用 `save_agent` 工具保存，传入 `name`（代理名称）和 `content`（完整 AGENT.md 内容）。
+   使用 `save_agent` 工具保存，传入 `name`（代理名称）和 `content`（完整 AGENT.md 内容），content 里 frontmatter 的 `name` 必须与 `name` 参数一致。
+   新建时不要传 `overwrite`；工具提示同名代理已存在或名字已被占用时，换一个名字（或问用户），不要覆盖。只有用户明确要修改某个已有代理时，才传 `overwrite: true`。
    工具会自动保存到正确路径并刷新代理列表；保存后核对工具返回的摘要即可，不要回读文件确认。
 
 4. **创建完成引导**：

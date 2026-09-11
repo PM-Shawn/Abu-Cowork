@@ -19,14 +19,18 @@
  * Edge snap: when the pet stops within 20px of a screen edge, we snap
  * it to hide 40% of its body off-screen (PRD-02 "docked" feel).
  *
- * Position persistence: settingsStore (Zustand persist). On first use,
- * migrates any legacy value from localStorage ('abu-pet-position') and
- * removes the old key.
+ * Position persistence: settingsStore (Zustand persist), written by the MAIN
+ * window — the pet announces its position with PET_POSITION_EVENT instead of
+ * writing its own copy of the store (see core/pet/petPositionSync.ts). On
+ * first use, migrates any legacy value from localStorage ('abu-pet-position')
+ * and removes the old key.
  */
 
 import { useEffect, useRef } from 'react';
+import { emit } from '@tauri-apps/api/event';
 import { getCurrentWindow, primaryMonitor, PhysicalPosition } from '@tauri-apps/api/window';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { PET_POSITION_EVENT } from '@/core/pet/petPositionSync';
 
 const STORAGE_KEY = 'abu-pet-position';
 const SNAP_THRESHOLD = 20;
@@ -56,7 +60,7 @@ function loadStored(): Stored | null {
     try {
       const parsed = JSON.parse(legacy) as Stored;
       if (typeof parsed.x === 'number' && typeof parsed.y === 'number') {
-        useSettingsStore.getState().setPetPosition(parsed);
+        void saveStored(parsed);
         localStorage.removeItem(STORAGE_KEY);
         return parsed;
       }
@@ -65,8 +69,13 @@ function loadStored(): Stored | null {
   return null;
 }
 
-function saveStored(pos: Stored): void {
-  useSettingsStore.getState().setPetPosition(pos);
+async function saveStored(pos: Stored): Promise<void> {
+  // Not setPetPosition() here: this window's copy of the settings store is
+  // stale for every other field, and the main window's next write would
+  // overwrite this one anyway. The main window stores it.
+  try {
+    await emit(PET_POSITION_EVENT, pos);
+  } catch { /* main window gone — nothing to persist to */ }
 }
 
 async function resolveSnap(x: number, y: number): Promise<Stored> {
@@ -196,7 +205,7 @@ export function usePetDrag<T extends HTMLElement>(): {
               .setPosition(new PhysicalPosition(snapped.x, snapped.y))
               .catch(() => {});
           }
-          saveStored(snapped);
+          void saveStored(snapped);
         }, DEBOUNCE_MS);
       })
       .then((fn) => {

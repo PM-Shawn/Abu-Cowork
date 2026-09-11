@@ -96,7 +96,7 @@ describe('TeamMemberBar — unresolved members', () => {
     localeRef.current = 'en-US';
     teamRef.team = ctx({ unresolvedMemberRoleIds: ['r-gone', 'r-gone2'] });
     render(<TeamMemberBar conversationId="c1" />);
-    expect(screen.getByTestId('team-member-bar-unresolved').textContent).toBe('2 member(s) unavailable');
+    expect(screen.getByTestId('team-member-bar-unresolved').textContent).toBe('2 members unavailable');
   });
 
   it('uses singular English copy for the collapsed member-count pill when there is exactly one member', () => {

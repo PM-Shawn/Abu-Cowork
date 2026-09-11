@@ -2288,7 +2288,7 @@ const enUS: TranslationDict = {
     teamMemberBarExpand: 'Expand member bar',
     teamMemberBarCollapsed: '{n} members',
     teamMemberBarCollapsedOne: '1 member',
-    teamMemberBarUnresolved: '{n} member(s) unavailable',
+    teamMemberBarUnresolved: '{n} members unavailable',
     teamMemberBarUnresolvedOne: '1 member unavailable',
     teamMemberBarUnresolvedHint: 'Open the team panel to fix unavailable members',
     agentRichContentReleased: 'Rich content for this step was released to keep memory bounded.',

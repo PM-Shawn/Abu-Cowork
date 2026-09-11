@@ -4,6 +4,7 @@ import { tempDir } from '@tauri-apps/api/path';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import { setPlatformForTest } from '../../test/helpers';
 import { TOOL_NAMES } from './toolNames';
+import { getI18n } from '../../i18n';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import type { PermissionMode } from '../permissions/permissionMode';
@@ -515,6 +516,24 @@ describe('self-extension approval gate', () => {
     expect(decision.decision).toBe('allow');
     expect(asked).toHaveLength(1);
     expect(asked[0]).toContain('helper');
+  });
+
+  it.each([
+    [true, undefined, 'selfExtensionSaveAgentReplace'],
+    [true, true, 'selfExtensionSaveAgentReplace'],
+    [false, true, 'selfExtensionSaveAgentNew'],
+    [false, undefined, 'selfExtensionSaveAgentNew'],
+  ] as const)('asks to save an agent as "replaces" only when its AGENT.md is on disk (on disk: %s, overwrite: %s)', async (onDisk, overwrite, label) => {
+    const target = '/Users/testuser/.abu/agents/helper/AGENT.md';
+    vi.mocked(exists).mockImplementation(async (path) => onDisk && path === target);
+    const asked: string[] = [];
+
+    await checkToolApproval(
+      'save_agent', { name: 'helper', content: '---\nname: helper\n---\nP', ...(overwrite === undefined ? {} : { overwrite }) },
+      { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+
+    expect(asked).toEqual([`save_agent (${getI18n().commandConfirm[label]}): helper`]);
   });
 
   it.each([

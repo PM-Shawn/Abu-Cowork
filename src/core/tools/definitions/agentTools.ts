@@ -22,6 +22,7 @@ import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { ITEM_NAME_RE, AGENT_NAME_RE, isItemNameTaken } from '../../../utils/validation';
 import { isPluginOwnedAgent } from '../../../utils/agentSource';
 import { getSystemInfoData } from '../helpers/toolHelpers';
+import { abuItemPaths } from '../helpers/abuItemPaths';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 
@@ -712,10 +713,7 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       const supporting = checkSupportingFiles(input.files, fileName, t);
       if ('refusal' in supporting) return supporting.refusal;
 
-      const info = await getSystemInfoData();
-      const itemsDir = joinPath(info.home, '.abu', folder);
-      const itemDir = joinPath(itemsDir, name);
-      const filePath = joinPath(itemDir, fileName);
+      const { itemsDir, itemDir, filePath } = await abuItemPaths(folder, name, fileName);
 
       const target = await checkSaveTarget(isSkill, name, itemsDir, filePath, input.overwrite === true);
       if (target.refused !== null) {

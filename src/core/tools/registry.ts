@@ -62,6 +62,7 @@ import {
 } from '../permissions/unattendedConfirmation';
 import { deriveRunInteractionMode } from '../agent/runInteractionMode';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
+import { saveAgentWouldReplace } from './helpers/abuItemPaths';
 import {
   analyzeCommandBoundary,
   resolveFullNoWorkspaceCommandWriteTargets,
@@ -2369,7 +2370,11 @@ export async function checkToolApproval(
   // shapes later turns/runs. No per-conversation grant here — these are rare,
   // deliberate acts, each worth its own ask.
   {
-    const selfExtension = classifySelfExtension(name, input);
+    const selfExtension = classifySelfExtension(
+      name,
+      input,
+      name === TOOL_NAMES.SAVE_AGENT ? { saveAgentReplaces: await saveAgentWouldReplace(input.name) } : {},
+    );
     if (selfExtension) {
       const selfExtensionCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
         runPermissionCeiling,

@@ -3350,6 +3350,10 @@ export interface TranslationDict {
     browserDenied: string;
     selfExtensionReason: string;
     selfExtensionDenied: string;
+    /** save_agent approval summary mode: no AGENT.md on disk under that name — a new expert. */
+    selfExtensionSaveAgentNew: string;
+    /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
+    selfExtensionSaveAgentReplace: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;

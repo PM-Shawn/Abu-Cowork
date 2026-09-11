@@ -17,8 +17,9 @@ export const AGENT_NAME_RE = /^[\p{L}\p{N}](?:[\p{L}\p{N}_-]*[\p{L}\p{N}])?$/u;
  * saving one would overwrite the other. The item being edited (`existingName`)
  * never collides with itself, so renaming `reviewer` → `Reviewer` stays allowed.
  *
- * Shared by the editors (`useItemName`) and the model's `save_agent` tool, so
- * the two paths that write an item's folder refuse the same names.
+ * Shared by the editors (`useItemName`) and the model's `save_agent` tool and
+ * `skill_manage` create, so every path that writes an item's folder refuses
+ * the same names.
  */
 export function isItemNameTaken(
   candidate: string,

@@ -3363,6 +3363,8 @@ const enUS: TranslationDict = {
       installed: 'Skill "{name}" installed successfully ({count} file(s)){skippedNote}{linksNote}, and now appears in "My Skills".',
       draftProposed: 'Draft "{name}" proposed. The user can accept or reject it directly in chat, or handle it in the drafts panel under Toolbox → Skills. Path: {path}.',
       skillCreated: 'Skill "{name}" created and is now active. Path: {path}',
+      errNameInUse: 'Error: skill "{name}" was not created and no file was written: that name already belongs to another skill — a built-in one, one provided by a plugin (even a disabled one), an enterprise one, or another skill or folder whose name differs only in letter case — and a skill created under it would replace or hide that one. Choose a different name.',
+      errSkillExists: 'Error: skill "{name}" was not created and no file was written: a skill with this name already exists. To make a new skill, choose a different name. To change that existing skill, use patch or edit on it — only when the user asked to change it.',
     },
     system: {
       errSearchNeedsQuery: 'Error: action=search requires a query parameter',

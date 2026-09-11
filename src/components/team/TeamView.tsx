@@ -75,7 +75,12 @@ function useMemberPool(): SubagentDefinition[] {
 }
 
 function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: string): string {
-  return agents.find((a) => effectiveRoleId(a) === roleId)?.name ?? fallback;
+  // Match the frontmatter `roleId` as well as the effective one: a team saved
+  // before plugin agents got synthetic `plugin:<name>` ids still stores the
+  // legacy `role-…` id for them. Without this the member drops out of the
+  // picker (and can be re-added as a duplicate); with it the id self-heals —
+  // saving rewrites the membership with `ensureRoleId`'s current id.
+  return agents.find((a) => effectiveRoleId(a) === roleId || a.roleId === roleId)?.name ?? fallback;
 }
 
 function memberOption(a: SubagentDefinition): SearchSelectOption {

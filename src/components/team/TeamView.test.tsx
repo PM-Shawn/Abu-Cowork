@@ -54,7 +54,7 @@ vi.mock('@/i18n', async () => {
   return { format: actual.format, useI18n: () => ({ t: zhCN, locale: 'zh-CN' }) };
 });
 
-const registryAgents: Record<string, { name: string; description: string; roleId?: string; filePath: string; systemPrompt: string; managed?: boolean }> = {};
+const registryAgents: Record<string, { name: string; description: string; roleId?: string; filePath: string; systemPrompt: string; managed?: boolean; source?: { kind: 'plugin'; plugin: string } }> = {};
 vi.mock('@/core/agent/registry', () => ({
   agentRegistry: {
     getAgent: (name: string) => registryAgents[name],
@@ -80,7 +80,10 @@ vi.mock('@/core/team/orchestrator', () => ({
 vi.mock('@/core/team/roleIdentity', () => ({
   ensureRoleId: vi.fn(async (agent: { roleId?: string }) =>
     agent.roleId ? { roleId: agent.roleId, wrote: false } : { roleId: 'role-new', wrote: true }),
-  effectiveRoleId: (agent: { roleId?: string; name: string }) => agent.roleId ?? `builtin:${agent.name}`,
+  // Mirrors the real module: a plugin-owned agent's identity is name-keyed,
+  // whatever `role-…` id its frontmatter may still carry.
+  effectiveRoleId: (agent: { roleId?: string; name: string; source?: { kind: string } }) =>
+    agent.source?.kind === 'plugin' ? `plugin:${agent.name}` : (agent.roleId ?? `builtin:${agent.name}`),
   isBuiltinAgent: () => false,
   resolveRoleId: (roleId: string) =>
     Object.values(registryAgents).find((a) => (a.roleId ?? `builtin:${a.name}`) === roleId) ?? null,
@@ -93,9 +96,10 @@ vi.mock('@/components/customize/AgentsSection', () => ({
 
 import TeamView from './TeamView';
 
-function seedAgent(name: string, extra?: string | { roleId?: string; skills?: string[] }) {
-  const { roleId, skills } = typeof extra === 'string' ? { roleId: extra, skills: undefined } : (extra ?? {});
-  const agent = { name, description: `${name} desc`, roleId, skills, filePath: `/agents/${name}/AGENT.md`, systemPrompt: '' };
+type SeedExtra = { roleId?: string; skills?: string[]; source?: { kind: 'plugin'; plugin: string } };
+function seedAgent(name: string, extra?: string | SeedExtra) {
+  const { roleId, skills, source } = typeof extra === 'string' ? ({ roleId: extra } as SeedExtra) : (extra ?? {});
+  const agent = { name, description: `${name} desc`, roleId, skills, source, filePath: `/agents/${name}/AGENT.md`, systemPrompt: '' };
   registryAgents[name] = agent;
   return agent;
 }
@@ -200,6 +204,23 @@ describe('TeamView', () => {
     expect(screen.queryByTestId('team-edit-invalid-r-gone')).toBeNull();
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-lead']));
+  });
+
+  it('team dialog: a plugin member stored under its legacy role- id stays in the picker', () => {
+    // Teams saved before plugin agents got synthetic `plugin:<name>` ids hold
+    // the frontmatter `role-…` id. It must still resolve to the picker chip —
+    // otherwise the member silently drops out and can be re-added as a duplicate.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    seedAgent('校对', { roleId: 'role-legacy', source: { kind: 'plugin', plugin: 'x@official' } });
+    discoveryState.agents = [{ name: '分析师' }, { name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'role-legacy'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByTestId('team-members-select').textContent).toContain('校对');
+    expect(screen.queryByTestId('team-edit-invalid-role-legacy')).toBeNull();
   });
 
   it('teams tab: the detail\'s primary action opens a conversation already pinned to the team', () => {

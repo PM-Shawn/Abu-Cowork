@@ -21,6 +21,9 @@ import { getAllTools } from '@/core/tools/registry';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import ConfirmDialog from '@/components/common/ConfirmDialog';
+import { useTeamStore } from '@/stores/teamStore';
+import { effectiveRoleId } from '@/core/team/roleIdentity';
 
 function isSystemAgent(agent: SubagentDefinition): boolean {
   // System / builtin agents ship with the app (registered in registry.ts) —
@@ -75,6 +78,15 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
   const [editorAgent, setEditorAgent] = useState<SubagentDefinition | 'new' | null>(null);
   const [menuAgent, setMenuAgent] = useState<string | null>(null);
   const [contentViewMode, setContentViewMode] = useState<'preview' | 'source'>('preview');
+  const teams = useTeamStore((s) => s.teams);
+  // Deleting an agent that a team lists leaves that team with a roleId no
+  // agent answers to. Ask first and say which teams — the user decides.
+  const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<{ agent: SubagentDefinition; teams: string[] } | null>(null);
+  const teamsReferencing = (agent: SubagentDefinition): string[] => {
+    const roleId = effectiveRoleId(agent);
+    if (!roleId) return [];
+    return teams.filter((team) => team.memberRoleIds.includes(roleId)).map((team) => team.name);
+  };
   const knownToolNames = getAllTools().map((tool) => tool.name);
 
   // Open blank editor when manual create is triggered from parent
@@ -328,7 +340,12 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                       className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                       disabled={!!selectedPluginSource}
                       title={selectedPluginSource ? t.toolbox.agentFromPluginDeleteDisabled : undefined}
-                      onClick={() => { handleDelete(selected); setMenuAgent(null); }}
+                      onClick={() => {
+                        const using = teamsReferencing(selected);
+                        if (using.length > 0) setConfirmDeleteAgent({ agent: selected, teams: using });
+                        else handleDelete(selected);
+                        setMenuAgent(null);
+                      }}
                     >
                       <Trash2 className="h-3 w-3" />
                       {t.toolbox.uninstall}
@@ -478,6 +495,22 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
           </div>
         )}
       </ToolDetailModal>
+      <ConfirmDialog
+        open={!!confirmDeleteAgent}
+        title={format(t.toolbox.agentDeleteInTeamsTitle, { name: confirmDeleteAgent?.agent.name ?? '' })}
+        message={format(t.toolbox.agentDeleteInTeamsMessage, {
+          count: String(confirmDeleteAgent?.teams.length ?? 0),
+          teams: (confirmDeleteAgent?.teams ?? []).join('、'),
+        })}
+        confirmText={t.toolbox.agentDeleteAnyway}
+        cancelText={t.common.cancel}
+        variant="danger"
+        onCancel={() => setConfirmDeleteAgent(null)}
+        onConfirm={() => {
+          if (confirmDeleteAgent) handleDelete(confirmDeleteAgent.agent);
+          setConfirmDeleteAgent(null);
+        }}
+      />
     </div>
   );
 }

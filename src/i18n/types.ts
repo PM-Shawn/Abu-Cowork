@@ -449,8 +449,34 @@ export interface TranslationDict {
       conversation: string;
       free: string;
     };
-    // Agent loop max turns
+    /** An @agent delegate ran out of turns inside the main run (a sentence — the
+     *  card below is for the MAIN loop's own cap). {n} = the delegate's cap. */
     maxTurnsReached: string;
+    // Agent loop turn cap — the notice card the run ends with.
+    maxTurns: {
+      /** Card title, first time this run chain hits the cap. {n} = the cap. */
+      title: string;
+      /** Card title from the second consecutive cap onwards. {n} = the cap. */
+      titleAgain: string;
+      /** Card body, first time. */
+      body: string;
+      /** Card body from the second consecutive cap onwards. */
+      bodyAgain: string;
+      /** Primary/secondary action: resume the unfinished task. */
+      continueAction: string;
+      /** Button label while the previous run is being wound down. */
+      continuing: string;
+      /** Action: jump to the 「最大轮次」 setting. */
+      adjustAction: string;
+      /** Settled state left in the transcript after 「继续执行」. */
+      continued: string;
+      /** The user message the continue button dispatches. */
+      continuePrompt: string;
+      /** Toast title when continuing fails. */
+      continueFailedTitle: string;
+      /** Toast body when continuing fails. */
+      continueFailed: string;
+    };
     // Agent loop no-progress guard (model stuck emitting unparseable tool calls)
     noProgressStopped: string;
     // Agent loop semantic guard (well-formed but repetitive/meta-only calls)
@@ -1416,6 +1442,13 @@ export interface TranslationDict {
     closeWindowBehavior: string;
     composerEnterBehavior: string;
     composerEnterBehaviorDesc: string;
+    /** Global turn cap for a single run (settings › general). */
+    agentMaxTurns: string;
+    agentMaxTurnsDesc: string;
+    /** One dropdown option. {n} = the number of turns. */
+    agentMaxTurnsOption: string;
+    /** Shown only when a cap of "no cap" is already in force from outside the UI. */
+    agentMaxTurnsUnlimited: string;
     composerEnterSends: string;
     /** `{modifier}` = ⌘ / Ctrl. */
     composerEnterNewline: string;

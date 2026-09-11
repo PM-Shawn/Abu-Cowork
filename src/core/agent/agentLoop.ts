@@ -76,6 +76,7 @@ import {
   type SemanticToolLoopReason,
   type ToolLoopObservation,
 } from './loopGuards';
+import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
 import {
   drainSystemQueuedInputs,
   enqueueUserInput,
@@ -1643,15 +1644,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     });
 
     if (turnCount > maxTurns) {
-      const maxTurnsMsgId = generateId();
-      chatDelta.addMessage(conversationId, {
-        id: maxTurnsMsgId,
-        role: 'assistant',
-        content: format(getI18n().chat.maxTurnsReached, { n: maxTurns }),
-        timestamp: Date.now(),
-        loopId,
-      });
-      chatDelta.finishStreaming(conversationId, maxTurnsMsgId);
+      // The cap is reported as a marker card, not as a sentence the assistant
+      // "said": the two things the user wants here are to continue and to raise
+      // the cap, and a text message could only ask them to type the first and
+      // go hunting for the second. `createMaxTurnsNoticeMessage` explains why
+      // the marker is role `system` without `isSystem` (visible, not in context).
+      chatDelta.addMessage(
+        conversationId,
+        createMaxTurnsNoticeMessage({
+          id: generateId(),
+          timestamp: Date.now(),
+          limit: maxTurns,
+          // Read BEFORE the marker is appended — the streak counts the notices
+          // already in the transcript, not this one.
+          streak: deriveMaxTurnsStreak(
+            getConversationReader().getConversation(conversationId)?.messages ?? [],
+          ),
+        }),
+      );
       abortRegistry.clearAbortController(conversationId);
       eventRouter.route({ type: 'done', loopId, reason: 'max_turns' });
       persistExecutionSnapshot(conversationId, loopId);

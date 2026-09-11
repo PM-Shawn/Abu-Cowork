@@ -441,6 +441,15 @@ export interface Message {
    * Nothing in the render path may go back to the buffer.
    */
   browserRunReport?: import('../core/observability/browserRunReport').BrowserRunReportSnapshot;
+  /**
+   * Turn-cap notice payload. Present only on marker messages (id prefix
+   * `max-turns-`), appended when a run stops because it reached its turn cap.
+   *
+   * The cap is recorded on the marker rather than read from settings at render
+   * time: the notice explains a run that already happened, and changing the
+   * setting afterwards must not rewrite what an old card says.
+   */
+  maxTurnsNotice?: import('../core/agent/maxTurnsNotice').MaxTurnsNotice;
 }
 
 /**

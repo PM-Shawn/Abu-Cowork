@@ -419,6 +419,7 @@ import * as toolSearchModule from '../core/tools/toolSearch';
 import { notifyTaskCompleted } from '@/utils/notifications';
 import { joinPath } from '@/utils/pathUtils';
 import { isWindows } from '@/utils/platform';
+import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 
@@ -1157,10 +1158,12 @@ describe('Agent Pipeline Integration', () => {
       // just keep typing.
       expect(conv.status).toBe('idle');
       expect(conv.completedAt).toBeUndefined();
-      const capMsg = conv.messages.at(-1);
-      expect(String(capMsg?.content).startsWith('已达到')).toBe(true);
-      expect(String(capMsg?.content).startsWith('已完成')).toBe(false);
-      expect(String(capMsg?.content)).toContain('未完成');
+      // The cap now ends in a notice CARD (a `max-turns-` marker with the cap
+      // it hit), not a sentence — so nothing here can read as "已完成" either.
+      const capMsg = conv.messages.at(-1)!;
+      expect(isMaxTurnsNoticeMessage(capMsg)).toBe(true);
+      expect(capMsg.maxTurnsNotice).toEqual({ limit: 2, streak: 1 });
+      expect(String(capMsg.content)).not.toContain('已完成');
       // 'completed' used to be what cleared the per-conversation agent state
       // (the活动 indicator). Idle must clear it just as thoroughly.
       expect(useChatStore.getState().agentStates.has(convId)).toBe(false);

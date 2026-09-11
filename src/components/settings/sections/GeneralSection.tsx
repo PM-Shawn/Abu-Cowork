@@ -4,13 +4,24 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { type LanguageSetting, format, useI18n } from '@/i18n';
 import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
-import { Trash2, Sun, Moon, Monitor } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import { clearBehaviorData, testWindowPermission } from '@/core/agent/behaviorSensor';
 import { useToastStore } from '@/stores/toastStore';
 import { Select } from '@/components/ui/select';
 import { Toggle } from '@/components/ui/toggle';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
-import { cn } from '@/lib/utils';
+import { buildAgentMaxTurnsOptions } from '@/core/agent/maxTurnsNotice';
+import { DEFAULT_MAX_TURNS } from '@/core/agent/loopGuards';
+
+/**
+ * One width for every control on the right of a settings row.
+ *
+ * `Select variant="inline"` is `w-full`, so without a sized wrapper each row's
+ * control is as wide as the option it happens to be showing and the column
+ * comes out ragged. Sized here rather than inside `Select` because the width
+ * belongs to this page's layout, not to the control.
+ */
+const SETTINGS_CONTROL_WIDTH = 'w-40 shrink-0';
 
 export default function GeneralSection() {
   const closeAction = useSettingsStore(s => s.closeAction);
@@ -26,6 +37,16 @@ export default function GeneralSection() {
   const setComposerEnterBehavior = useSettingsStore(s => s.setComposerEnterBehavior);
   const theme = useSettingsStore(s => s.theme);
   const setTheme = useSettingsStore(s => s.setTheme);
+  const agentMaxTurns = useSettingsStore(s => s.agentMaxTurns);
+  const setAgentMaxTurns = useSettingsStore(s => s.setAgentMaxTurns);
+  const maxTurnsOptions = buildAgentMaxTurnsOptions(agentMaxTurns).map((turns) => ({
+    value: String(turns),
+    // 0 only appears when it is already in force (see buildAgentMaxTurnsOptions)
+    // — it is shown so the menu doesn't misreport the cap, not offered as new.
+    label: turns <= 0
+      ? t.settings.agentMaxTurnsUnlimited
+      : format(t.settings.agentMaxTurnsOption, { n: turns }),
+  }));
 
   const handleToggleSensor = async () => {
     if (behaviorSensorEnabled) {
@@ -72,6 +93,12 @@ export default function GeneralSection() {
     },
   ];
 
+  const themeOptions = [
+    { value: 'light', label: t.settings.appearanceLight },
+    { value: 'system', label: t.settings.appearanceSystem },
+    { value: 'dark', label: t.settings.appearanceDark },
+  ];
+
   const languageOptions = [
     { value: 'system', label: t.settings.followSystem },
     { value: 'zh-CN', label: '简体中文' },
@@ -85,50 +112,56 @@ export default function GeneralSection() {
       {/* Appearance */}
       <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
         <p className="text-body text-[var(--abu-text-primary)]">{t.settings.appearance}</p>
-        <div className="flex gap-1">
-          {([
-            { value: 'light', icon: Sun, label: t.settings.appearanceLight },
-            { value: 'system', icon: Monitor, label: t.settings.appearanceSystem },
-            { value: 'dark', icon: Moon, label: t.settings.appearanceDark },
-          ] as const).map(({ value, icon: Icon, label }) => (
-            <button
-              key={value}
-              onClick={() => setTheme(value)}
-              title={label}
-              className={cn(
-                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-minor transition-colors',
-                theme === value
-                  ? 'bg-[var(--abu-clay)] text-white'
-                  : 'text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]'
-              )}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {label}
-            </button>
-          ))}
+        <div className={SETTINGS_CONTROL_WIDTH}>
+          <Select
+            variant="inline"
+            value={theme}
+            options={themeOptions}
+            onChange={(v) => setTheme(v as 'light' | 'system' | 'dark')}
+          />
         </div>
       </div>
 
       {/* Language */}
       <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
         <p className="text-body text-[var(--abu-text-primary)]">{t.settings.language}</p>
-        <Select
-          variant="inline"
-          value={language}
-          options={languageOptions}
-          onChange={(v) => setLanguage(v as LanguageSetting)}
-        />
+        <div className={SETTINGS_CONTROL_WIDTH}>
+          <Select
+            variant="inline"
+            value={language}
+            options={languageOptions}
+            onChange={(v) => setLanguage(v as LanguageSetting)}
+          />
+        </div>
+      </div>
+
+      {/* Agent max turns */}
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <div className="flex-1 mr-4">
+          <p className="text-body text-[var(--abu-text-primary)]">{t.settings.agentMaxTurns}</p>
+          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.agentMaxTurnsDesc}</p>
+        </div>
+        <div className={SETTINGS_CONTROL_WIDTH}>
+          <Select
+            variant="inline"
+            value={String(agentMaxTurns ?? DEFAULT_MAX_TURNS)}
+            options={maxTurnsOptions}
+            onChange={(v) => setAgentMaxTurns(Number(v))}
+          />
+        </div>
       </div>
 
       {/* Close window behavior */}
       <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
         <p className="text-body text-[var(--abu-text-primary)]">{t.settings.closeWindowBehavior}</p>
-        <Select
-          variant="inline"
-          value={closeAction}
-          options={closeOptions}
-          onChange={(v) => setCloseAction(v as 'ask' | 'minimize' | 'quit')}
-        />
+        <div className={SETTINGS_CONTROL_WIDTH}>
+          <Select
+            variant="inline"
+            value={closeAction}
+            options={closeOptions}
+            onChange={(v) => setCloseAction(v as 'ask' | 'minimize' | 'quit')}
+          />
+        </div>
       </div>
 
       {/* Composer send shortcut */}
@@ -137,12 +170,14 @@ export default function GeneralSection() {
           <p className="text-body text-[var(--abu-text-primary)]">{t.settings.composerEnterBehavior}</p>
           <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.settings.composerEnterBehaviorDesc}</p>
         </div>
-        <Select
-          variant="inline"
-          value={composerEnterBehavior}
-          options={enterBehaviorOptions}
-          onChange={(v) => setComposerEnterBehavior(v as ComposerEnterBehavior)}
-        />
+        <div className={SETTINGS_CONTROL_WIDTH}>
+          <Select
+            variant="inline"
+            value={composerEnterBehavior}
+            options={enterBehaviorOptions}
+            onChange={(v) => setComposerEnterBehavior(v as ComposerEnterBehavior)}
+          />
+        </div>
       </div>
 
       {/* Behavior sensor */}

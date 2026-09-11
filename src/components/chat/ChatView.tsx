@@ -769,7 +769,10 @@ export default function ChatView({
       {/* The stopped conversation is the one that OWNS the CU session (passed
           up by the bar), NOT `activeConv.id` — a background conversation can be
           driving the screen while an unrelated tab is open. See the component. */}
-      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(conversationId)} />
+      <ComputerUseStatusBar onStop={(conversationId) => useChatStore.getState().cancelStreaming(
+        conversationId,
+        { source: 'computer-use-status-bar' },
+      )} />
 
       {/* Messages Area — overlay-scroll hides the native scrollbar (thumb shows
           only while scrolling, via the global is-scrolling toggle in main.tsx);

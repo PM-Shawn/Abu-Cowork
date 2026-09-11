@@ -24,6 +24,8 @@ import { checkWritePath, revokeWorkspace } from '../tools/pathSafety';
 vi.mock('../agent/agentLoop', () => ({
   runAgentLoop: vi.fn(),
   isIncompleteReason: (r: string) => r === 'max_turns' || r === 'no_progress',
+  // Scheduled runs are background entry points, not interactive desktop turns.
+  isInteractiveDesktop: () => false,
 }));
 
 // Mock outputSender — buildMessage being called means delivery was entered.

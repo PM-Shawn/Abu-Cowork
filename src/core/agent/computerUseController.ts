@@ -1,3 +1,12 @@
+import {
+  deriveVerificationEvidence,
+  type VerificationExpectation,
+  type VerificationObservation,
+} from '@/core/computer-use/verificationEvidence';
+import computerUsePolicy from '@/core/tools/computerUsePolicy.json';
+
+const progressPolicy = computerUsePolicy.progressPolicy;
+
 export const COMPUTER_STATE_TTL_MS = 30_000;
 
 export interface ComputerUseRunKey {
@@ -6,6 +15,7 @@ export interface ComputerUseRunKey {
 }
 
 export interface ComputerTargetIdentity {
+  windowRef: string | null;
   appName: string;
   bundleId: string;
   processId: number | null;
@@ -19,6 +29,10 @@ export interface ComputerAxElement {
   bounds: [number, number, number, number];
   actions: string[];
   depth: number;
+  /** Native observation hints used only to rank what the model sees. */
+  focused?: boolean;
+  enabled?: boolean;
+  offscreen?: boolean;
 }
 
 export interface ComputerAxDiff {
@@ -53,12 +67,17 @@ export type ComputerVerificationStatus =
 
 export interface ComputerVerification {
   status: ComputerVerificationStatus;
+  /** Optional only for compatibility with verification records created before evidence layering. */
+  observation?: VerificationObservation;
+  /** Optional only for compatibility with verification records created before evidence layering. */
+  expectation?: VerificationExpectation;
   beforeStateId: string;
   afterStateId: string | null;
   reason:
     | 'expected-effect-observed'
     | 'state-changed'
     | 'state-unchanged'
+    | 'expected-effect-not-observed'
     | 'observation-failed'
     | 'target-changed'
     | 'effect-not-observable';
@@ -68,6 +87,7 @@ export type ComputerProgressDecision =
   | 'continue'
   | 'recover'
   | 'stop-no-progress'
+  | 'stop-expectation-not-satisfied'
   | 'stop-ambiguous-side-effect';
 
 export interface ComputerProgressAssessment {
@@ -102,6 +122,7 @@ export interface ComputerObservationInput {
   target: ComputerTargetIdentity;
   axSessionId: string | null;
   elements: ComputerAxElement[];
+  modalWindowId?: string | null;
   capabilityTier: 'full' | 'structured';
 }
 
@@ -118,7 +139,7 @@ interface RunRecord {
   actionInFlight: boolean;
   consecutiveNoChange: number;
   recoveryUsed: boolean;
-  stoppedReason: Extract<ComputerProgressDecision, 'stop-no-progress' | 'stop-ambiguous-side-effect'> | null;
+  stoppedReason: Extract<ComputerProgressDecision, `stop-${string}`> | null;
 }
 
 interface ComputerUseControllerDependencies {
@@ -136,6 +157,7 @@ function runKey(input: ComputerUseRunKey): string {
 }
 
 function sameTarget(a: ComputerTargetIdentity, b: ComputerTargetIdentity): boolean {
+  if (a.windowRef !== null && b.windowRef !== null && a.windowRef !== b.windowRef) return false;
   if (a.bundleId.toLowerCase() !== b.bundleId.toLowerCase()) return false;
   return a.processId === null || b.processId === null || a.processId === b.processId;
 }
@@ -162,9 +184,15 @@ function hashText(input: string): string {
   return first.toString(16).padStart(8, '0') + second.toString(16).padStart(8, '0');
 }
 
-export function hashComputerElements(elements: ComputerAxElement[]): string | null {
-  if (elements.length === 0) return null;
-  return hashText(elements.map(elementFingerprint).join('\n'));
+export function hashComputerElements(
+  elements: ComputerAxElement[],
+  modalWindowId: string | null = null,
+): string | null {
+  if (elements.length === 0 && modalWindowId === null) return null;
+  return hashText(JSON.stringify([
+    modalWindowId,
+    elements.map(elementFingerprint),
+  ]));
 }
 
 function diffElements(
@@ -190,13 +218,127 @@ function elementMatches(
     && (matcher.label === undefined || element.label === matcher.label);
 }
 
+function hasMeaningfulElementMatcher(matcher: { role?: string; label?: string }): boolean {
+  return Boolean(matcher.role?.trim() || matcher.label?.trim());
+}
+
+/**
+ * Re-finds an element across two snapshots, or `null` if it cannot be shown to
+ * be the same element.
+ *
+ * An element `id` is a per-snapshot index, NOT a durable identity: a redraw can
+ * hand the same number to a different control. Treating the index alone as
+ * identity reports a neighbouring element's value as the one we asked about, so
+ * require role and label to survive the action as corroboration.
+ */
+function stableElement(
+  before: ComputerState,
+  after: ComputerState,
+  elementId: number,
+): ComputerAxElement | null {
+  const previous = before.elements.find((element) => element.id === elementId);
+  const current = after.elements.find((element) => element.id === elementId);
+  if (!previous || !current) return null;
+  if (previous.role !== current.role || previous.label !== current.label) return null;
+  return current;
+}
+
+/**
+ * Evaluates one machine-checkable postcondition against the post-action state.
+ *
+ * `null` means "cannot be decided from what we observed" and maps to the
+ * `unverifiable` expectation — never to a pass. Every arm of the union must be
+ * handled: routing expectation evidence through `deriveVerificationEvidence`
+ * once reduced this to `element-appears` only, which left the other four types
+ * permanently unverifiable and degraded every verified write to ambiguous, which
+ * in turn stops the run. Keep the switch exhaustive.
+ */
+function evaluateExpectation(
+  before: ComputerState,
+  after: ComputerState,
+  expectedEffect: ExpectedEffect,
+): boolean | null {
+  switch (expectedEffect.type) {
+    case 'element-value': {
+      const element = stableElement(before, after, expectedEffect.elementId);
+      return element === null ? null : element.value === expectedEffect.equals;
+    }
+    case 'element-state': {
+      // Only `value` is decidable: `role`/`label` are the very attributes
+      // stableElement uses as identity, so a changed one is indistinguishable
+      // from a reassigned index.
+      if (expectedEffect.attribute !== 'value') return null;
+      // The schema still accepts a boolean `equals` (boolean state checks are
+      // "reserved for AX attributes exposed by a later helper protocol"), but no
+      // observed attribute is a boolean yet. Comparing a string value against
+      // one can only ever be false, which would report a check we never made as
+      // a check that failed — and that latches a terminal stop.
+      if (typeof expectedEffect.equals !== 'string') return null;
+      const element = stableElement(before, after, expectedEffect.elementId);
+      return element === null ? null : element.value === expectedEffect.equals;
+    }
+    case 'element-appears':
+      // A matcher with neither role nor label matches anything, so it proves
+      // nothing — stay unverifiable rather than reporting a wildcard pass.
+      return hasMeaningfulElementMatcher(expectedEffect)
+        ? after.elements.some((element) => elementMatches(element, expectedEffect))
+        : null;
+    case 'element-disappears': {
+      // Match on what the element WAS, not on its index: after a redraw the
+      // index may simply have been handed to a different control.
+      //
+      // Asking merely whether SOME element of that kind survives is wrong when
+      // the app has more than one: a modal's OK button and the OK button in the
+      // window behind it are indistinguishable by role and label, so a closed
+      // modal would be reported as "did not disappear". Count the kind instead.
+      const previous = before.elements.find((element) => element.id === expectedEffect.elementId);
+      if (!previous) return null;
+      const sameKind = (element: ComputerAxElement) => element.role === previous.role
+        && element.label === previous.label;
+      if (after.elements.filter(sameKind).length < before.elements.filter(sameKind).length) {
+        return true;
+      }
+      // The population held steady. Only claim it did NOT disappear while the
+      // id still resolves to an element of the same kind; otherwise one may have
+      // been swapped for another and nothing here can tell the two apart.
+      return stableElement(before, after, expectedEffect.elementId) === null ? null : false;
+    }
+    case 'frontmost-app':
+      // `after.target` is the window we chose to observe, so comparing it to the
+      // expected bundle is circular — it says nothing about what the OS actually
+      // has in front. Needs real frontmost evidence from the helper.
+      return null;
+    case 'any-state-change':
+      // Not an expectation: handled by the state-change branch below.
+      return null;
+  }
+}
+
 export function verifyComputerEffect(
   before: ComputerState,
   after: ComputerState | null,
   expectedEffect?: ExpectedEffect,
 ): ComputerVerification {
+  const observationAvailable = after !== null;
+  const targetMatches = after !== null && sameTarget(before.target, after.target);
+  const stateChanged = targetMatches && before.axTreeHash !== after.axTreeHash;
+  const expectationRequested = expectedEffect !== undefined
+    && expectedEffect.type !== 'any-state-change';
+  let expectationMatched: boolean | null = null;
+  if (targetMatches && expectedEffect !== undefined) {
+    expectationMatched = evaluateExpectation(before, after, expectedEffect);
+  }
+  const evidence = deriveVerificationEvidence({
+    observationAvailable,
+    targetMatches,
+    changed: stateChanged,
+    expectationRequested,
+    expectationMatched,
+  });
+
   if (!after) {
     return {
+      ...evidence,
       status: 'ambiguous',
       beforeStateId: before.stateId,
       afterStateId: null,
@@ -206,15 +348,16 @@ export function verifyComputerEffect(
 
   if (!sameTarget(before.target, after.target)) {
     return {
+      ...evidence,
       status: 'ambiguous',
       beforeStateId: before.stateId,
       afterStateId: after.stateId,
       reason: 'target-changed',
     };
   }
-  const stateChanged = before.axTreeHash !== after.axTreeHash;
   if (!expectedEffect || expectedEffect.type === 'any-state-change') {
     return {
+      ...evidence,
       status: stateChanged ? 'verified-change' : 'no-change',
       beforeStateId: before.stateId,
       afterStateId: after.stateId,
@@ -222,35 +365,9 @@ export function verifyComputerEffect(
     };
   }
 
-  let observed: boolean | null;
-  switch (expectedEffect.type) {
-    case 'element-value':
-      observed = after.elements.find((element) => element.id === expectedEffect.elementId)?.value
-        === expectedEffect.equals;
-      break;
-    case 'element-state': {
-      const element = after.elements.find((candidate) => candidate.id === expectedEffect.elementId);
-      if (!element || !['role', 'label', 'value'].includes(expectedEffect.attribute)) {
-        observed = null;
-      } else {
-        observed = element[expectedEffect.attribute as 'role' | 'label' | 'value']
-          === expectedEffect.equals;
-      }
-      break;
-    }
-    case 'element-appears':
-      observed = after.elements.some((element) => elementMatches(element, expectedEffect));
-      break;
-    case 'element-disappears':
-      observed = !after.elements.some((element) => element.id === expectedEffect.elementId);
-      break;
-    case 'frontmost-app':
-      observed = after.target.bundleId.toLowerCase() === expectedEffect.bundleId.toLowerCase();
-      break;
-  }
-
-  if (observed === null) {
+  if (evidence.expectation === 'unverifiable') {
     return {
+      ...evidence,
       status: 'ambiguous',
       beforeStateId: before.stateId,
       afterStateId: after.stateId,
@@ -258,10 +375,13 @@ export function verifyComputerEffect(
     };
   }
   return {
-    status: observed ? 'verified-change' : 'no-change',
+    ...evidence,
+    status: evidence.expectation === 'satisfied' ? 'verified-change' : 'no-change',
     beforeStateId: before.stateId,
     afterStateId: after.stateId,
-    reason: observed ? 'expected-effect-observed' : 'state-unchanged',
+    reason: evidence.expectation === 'satisfied'
+      ? 'expected-effect-observed'
+      : 'expected-effect-not-observed',
   };
 }
 
@@ -306,7 +426,7 @@ export function createComputerUseController(
       target: input.target,
       capturedAt,
       axSessionId: input.axSessionId,
-      axTreeHash: hashComputerElements(input.elements),
+      axTreeHash: hashComputerElements(input.elements, input.modalWindowId ?? null),
       axDiff: record.state ? diffElements(record.state.elements, input.elements) : null,
       elements: input.elements,
       capabilityTier: input.capabilityTier,
@@ -382,6 +502,14 @@ export function createComputerUseController(
     consequence: string,
   ): ComputerProgressAssessment {
     const record = getOrCreate(key);
+    if (verification.expectation === 'not-satisfied') {
+      record.stoppedReason = 'stop-expectation-not-satisfied';
+      return {
+        decision: record.stoppedReason,
+        consecutiveNoChange: record.consecutiveNoChange,
+        recoveryUsed: record.recoveryUsed,
+      };
+    }
     if (verification.status === 'verified-change') {
       record.consecutiveNoChange = 0;
       return {
@@ -400,7 +528,12 @@ export function createComputerUseController(
     }
 
     record.consecutiveNoChange += 1;
-    const threshold = record.recoveryUsed ? 2 : 3;
+    // Shared with the Host Gate's completeTaskAttempt — see progressPolicy in
+    // computerUsePolicy.json. Both tiers judge no-progress independently, so the
+    // thresholds must come from one file, not from two matching literals.
+    const threshold = record.recoveryUsed
+      ? progressPolicy.noProgressAfterRecovery
+      : progressPolicy.noProgressBeforeRecovery;
     if (record.consecutiveNoChange < threshold) {
       return {
         decision: 'continue',

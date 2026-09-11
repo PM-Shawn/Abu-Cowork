@@ -566,7 +566,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleStop = () => {
     if (activeConv?.id) {
-      cancelStreaming(activeConv.id);
+      cancelStreaming(activeConv.id, { source: 'chat-input-stop-button' });
     }
   };
 

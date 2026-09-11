@@ -822,10 +822,10 @@ describe('chatStore', () => {
       const id = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(id, {
         id: 'a1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, isStreaming: true,
-      });
-      useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
-      useChatStore.getState().cancelStreaming(id);
-      const msg = useChatStore.getState().conversations[id].messages[0];
+        });
+        useChatStore.getState().updateMessageThinking(id, 'mid-thought when aborted', 'a1');
+        useChatStore.getState().cancelStreaming(id);
+        const msg = useChatStore.getState().conversations[id].messages[0];
       expect(msg.thinking).toBe('mid-thought when aborted');
     });
   });
@@ -1072,6 +1072,46 @@ describe('chatStore', () => {
         expect(written.some((c) => c.includes('"stopReason":"user"'))).toBe(true);
       });
     });
+
+    it('cancels and persists an executing tool on an earlier message when a later placeholder is last', async () => {
+      const id = useChatStore.getState().createConversation();
+      const activeToolMessage = {
+        id: 'a-tool',
+        role: 'assistant' as const,
+        content: '',
+        timestamp: FIXED_TIMESTAMP,
+        toolCalls: [{ id: 'tc1', name: 'computer', input: { action: 'screenshot' }, isExecuting: true }],
+      };
+      const trailingPlaceholder = {
+        id: 'a-placeholder',
+        role: 'assistant' as const,
+        content: '',
+        timestamp: FIXED_TIMESTAMP + 1,
+        isStreaming: true,
+      };
+      useChatStore.getState().addMessage(id, activeToolMessage);
+      useChatStore.getState().addMessage(id, trailingPlaceholder);
+      vi.mocked(readTextFile).mockResolvedValue(
+        `${JSON.stringify(activeToolMessage)}\n${JSON.stringify(trailingPlaceholder)}\n`,
+      );
+
+      useChatStore.getState().cancelStreaming(id, { fromSidecarFrame: true });
+
+      const messages = useChatStore.getState().conversations[id].messages;
+      expect(messages[0].toolCalls?.[0]).toMatchObject({
+        id: 'tc1',
+        isExecuting: false,
+        result: getI18n().task.cancelled,
+      });
+      expect(messages[1]).toMatchObject({ id: 'a-placeholder', isStreaming: false });
+      await vi.waitFor(() => {
+        expect(written.some((c) => (
+          c.includes('"id":"a-tool"')
+          && c.includes('"isExecuting":false')
+          && c.includes(getI18n().task.cancelled)
+        ))).toBe(true);
+      });
+    });
   });
 
   // ── setMessageToolCalls — intent durability ──
@@ -1157,11 +1197,12 @@ describe('chatStore', () => {
       useChatStore.setState({ agentStatus: 'thinking' });
       const controller = useChatStore.getState().getAbortController(id);
 
-      useChatStore.getState().cancelStreaming(id);
+      useChatStore.getState().cancelStreaming(id, { source: 'chat-input-stop-button' });
 
       expect(mockIsConversationRunningInSidecar).toHaveBeenCalledWith(id);
       // Abort still fires — the shell's "喊停" signal reaches the sidecar.
       expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBe('chat-input-stop-button');
       expect(useChatStore.getState().hasAbortController(id)).toBe(true);
       // But the message/agentStatus decoration is untouched — deferred to
       // the sidecar's own cancelStreaming frame.

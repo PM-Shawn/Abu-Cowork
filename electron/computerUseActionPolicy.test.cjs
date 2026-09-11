@@ -41,6 +41,15 @@ test('action intent requires a valid category and exact summary for consequences
   );
 });
 
+test('window-bound observation actions are valid Host intents', () => {
+  for (const action of ['list_windows', 'get_window_state']) {
+    assert.deepEqual(
+      normalizeActionIntent({ action, category: 'none' }, 'ui-control'),
+      { action, category: 'none', summary: '' },
+    );
+  }
+});
+
 test('screen reading always normalizes to a non-consequential intent', () => {
   assert.deepEqual(
     normalizeActionIntent(null, 'screen-read'),
@@ -111,9 +120,9 @@ test('declared consequences bind to the next native side effect', () => {
   assert.equal(resolveConsequence(session, 'capture_screen', {}, null), null);
 });
 
-test('Windows Explorer Delete and Shift+Delete are host-inferred consequences', () => {
+test('Windows Explorer full-path identity preserves Delete consequence inference', () => {
   const session = {
-    target: { app_name: 'Explorer', bundle_id: 'explorer.exe' },
+    target: { app_name: 'Explorer', bundle_id: 'C:\\Windows\\explorer.exe' },
     actionIntent: { action: 'key', category: 'none', summary: '' },
   };
   assert.deepEqual(

@@ -53,7 +53,7 @@
   <button class="stop-btn" id="stopBtn">
     <span class="stop-icon"></span>
     <span id="stopLabel">Stop control</span>
-    <span class="shortcut">⌘.</span>
+    <span class="shortcut" id="stopShortcut">Esc</span>
   </button>
   <script>
     // Caption is pre-localized by the native side (window.__CU_I18N__, injected
@@ -61,12 +61,16 @@
     if (window.__CU_I18N__ && window.__CU_I18N__.stopControl) {
       document.getElementById('stopLabel').textContent = window.__CU_I18N__.stopControl;
     }
+    document.getElementById('stopShortcut').textContent =
+      /Mac/i.test(navigator.platform) ? 'Esc / ⌘.' : 'Esc';
 
     // Use Tauri global API (withGlobalTauri: true) to emit abort event
     document.getElementById('stopBtn').addEventListener('click', async () => {
       try {
         if (window.__TAURI__) {
-          await window.__TAURI__.event.emit('computer-use-abort');
+          await window.__TAURI__.event.emit('computer-use-abort', {
+            source: 'computer-use-overlay-stop-button'
+          });
         }
       } catch (e) {
         console.error('Failed to emit abort:', e);

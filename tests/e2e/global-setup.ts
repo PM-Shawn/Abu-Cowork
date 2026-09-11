@@ -17,16 +17,51 @@
  * project memory) — everything here is synchronous / self-terminating, no
  * reliance on a `timeout` wrapper.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const { withoutLiveEvalCredential } = createRequire(import.meta.url)('../../scripts/computer-use-live-eval.cjs') as {
+  withoutLiveEvalCredential: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+};
 
 const REPO_ROOT = process.cwd();
+const BUNDLED_NODE_DIR = path.join(
+  REPO_ROOT,
+  'electron',
+  '.runtime',
+  'node-runtime',
+  process.platform === 'win32' ? '' : 'bin',
+);
+const BUNDLED_NODE = path.join(
+  BUNDLED_NODE_DIR,
+  process.platform === 'win32' ? 'node.exe' : 'node',
+);
+
+function bundledNodeEnv(): NodeJS.ProcessEnv {
+  return {
+    ...withoutLiveEvalCredential(process.env),
+    PATH: `${BUNDLED_NODE_DIR}${path.delimiter}${process.env.PATH ?? ''}`,
+  };
+}
 
 export default async function globalSetup(): Promise<void> {
   console.log('[e2e:global-setup] preparing Electron and browser runtimes...');
+  // This bootstrap is intentionally the only command allowed to use the
+  // developer's system Node. It installs/verifies the pinned repository Node;
+  // every build below must then use that runtime so an old global Node cannot
+  // accidentally launch Vite or another build tool.
+  execSync('npm run setup:electron-runtimes', {
+    cwd: REPO_ROOT,
+    stdio: 'inherit',
+    env: withoutLiveEvalCredential(process.env),
+  });
+  const runtimeEnv = bundledNodeEnv();
   execSync(
-    'npm run setup:electron-runtimes && npm run verify:electron-runtimes && npm run build:electron-browser-runtime && npm run build:native-helper',
+    'npm run verify:electron-runtimes && npm run build:electron-browser-runtime && npm run build:native-helper',
     {
       cwd: REPO_ROOT,
+      env: runtimeEnv,
       stdio: 'inherit',
     },
   );
@@ -34,12 +69,20 @@ export default async function globalSetup(): Promise<void> {
   console.log('[e2e:global-setup] building sidecar from current sources…');
   execSync('npm run build:sidecar', {
     cwd: REPO_ROOT,
+    env: runtimeEnv,
     stdio: 'inherit',
   });
 
   console.log('[e2e:global-setup] building renderer from current sources…');
-  execSync('npx vite build --base=./ --outDir dist-electron-spike', {
+  execFileSync(BUNDLED_NODE, [
+    path.join(REPO_ROOT, 'node_modules', 'vite', 'bin', 'vite.js'),
+    'build',
+    '--base=./',
+    '--outDir',
+    'dist-electron-spike',
+  ], {
     cwd: REPO_ROOT,
+    env: runtimeEnv,
     stdio: 'inherit',
   });
 }

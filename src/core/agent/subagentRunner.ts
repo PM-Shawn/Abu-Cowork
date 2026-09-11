@@ -107,11 +107,15 @@ export interface SerializableToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
+  execution?: ToolDefinition['execution'];
 }
 
 /** Exported for reuse by agentLoopRunner.ts's `tool.list` REQUEST handler (P1-3b-2 item 5) — same wire-safe tool projection, no need for a second copy. */
 export function toSerializableTool(t: ToolDefinition): SerializableToolDefinition {
-  return { name: t.name, description: t.description, inputSchema: t.inputSchema };
+  return {
+    name: t.name, description: t.description, inputSchema: t.inputSchema,
+    ...(t.execution ? { execution: t.execution } : {}),
+  };
 }
 
 /** The `subagent.run` request params — see this file's module doc for the wire protocol. */

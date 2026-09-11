@@ -5,6 +5,7 @@ import {
   requestComputerUsePermission,
   runComputerUsePermissionGuide,
   testScreenshotPermission,
+  normalizeComputerUsePermissions,
   type ComputerUsePermissionGuideStrings,
 } from './computerUsePermission';
 
@@ -54,6 +55,23 @@ describe('Computer Use permission probes', () => {
       restartRequired: false,
     });
     expect(invoke).toHaveBeenCalledWith('check_macos_permissions');
+  });
+
+  it('preserves the Windows same-or-lower-integrity limitation as capability metadata', () => {
+    expect(normalizeComputerUsePermissions({
+      screen_recording: true,
+      accessibility: true,
+      screen_recording_status: 'granted',
+      accessibility_status: 'granted',
+      ui_control_limitation: 'same-or-lower-integrity',
+    })).toEqual({
+      screenRead: true,
+      uiControl: true,
+      screenReadStatus: 'granted',
+      uiControlStatus: 'granted',
+      restartRequired: false,
+      uiControlLimitation: 'same-or-lower-integrity',
+    });
   });
 
   it('returns undefined when the permission host is unavailable', async () => {

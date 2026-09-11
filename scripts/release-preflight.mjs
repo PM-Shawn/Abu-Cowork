@@ -28,7 +28,7 @@ const errors = [];
 const fail = (m) => errors.push(m);
 const readOr = (p) => {
   try {
-    return readFileSync(p, 'utf8');
+    return readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
   } catch {
     return null;
   }
@@ -38,7 +38,7 @@ const readOr = (p) => {
 const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
 const tauri = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8'));
 const cargoToml = readFileSync('src-tauri/Cargo.toml', 'utf8');
-const cargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8');
+const cargoLock = readFileSync('src-tauri/Cargo.lock', 'utf8').replace(/\r\n/g, '\n');
 
 const versions = {
   'package.json': pkg.version,

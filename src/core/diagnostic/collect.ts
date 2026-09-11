@@ -635,6 +635,11 @@ export async function collectBundleFiles(opts: CollectOptions): Promise<CollectR
   );
   const electronRuntime = await getElectronRuntimeDiagnostics();
   if (electronRuntime) {
+    if (electronRuntime.computerUseReplay) {
+      files['runtime/computer-use-replay.json'] = JSON.stringify(
+        scrubSecrets(electronRuntime.computerUseReplay), null, 2,
+      );
+    }
     files['logs/main-runtime.jsonl'] = String(
       scrubSecrets(electronRuntime.recentEventLines.join('\n')),
     );

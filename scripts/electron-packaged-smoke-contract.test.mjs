@@ -10,18 +10,33 @@ function helloResponse(platform, supportedCommands) {
   return {
     id: 1,
     result: {
-      protocol_version: 1,
+      protocol_version: 2,
       binary_version: '0.0.1',
       platform,
       started_at_ms: 1,
       supported_commands: supportedCommands,
+      capabilities: {
+        transport: 'ndjson-stdio',
+        request_serialization: 'host',
+        accessibility: platform === 'windows' ? 'windows-uia' : 'axui-element',
+        screen_capture: platform === 'windows' ? 'wgc-monitor' : 'xcap',
+        input: platform === 'windows' ? 'sendinput-guarded' : 'enigo',
+        physical_input_monitoring: platform === 'windows',
+      },
     },
   };
 }
 
 test('Windows handshake requires only commands implemented by the Windows helper', () => {
   const commands = requiredNativeHelperCommands('win32');
-  assert.deepEqual(commands, ['health', 'mouse_click', 'capture_screen']);
+  assert.deepEqual(commands, [
+    'health',
+    'mouse_click',
+    'capture_screen',
+    'list_windows',
+    'ax_snapshot',
+    'mouse_drag',
+  ]);
   assert.equal(
     isValidNativeHelperIdentity(
       helloResponse('windows', ['hello', ...commands]),
@@ -51,6 +66,6 @@ test('macOS handshake additionally requires identity and AX commands', () => {
 test('handshake still fails closed on protocol or process failure', () => {
   const response = helloResponse('windows', requiredNativeHelperCommands('win32'));
   assert.equal(isValidNativeHelperIdentity(response, 1, 'win32'), false);
-  response.result.protocol_version = 2;
+  response.result.protocol_version = 1;
   assert.equal(isValidNativeHelperIdentity(response, 0, 'win32'), false);
 });

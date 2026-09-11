@@ -75,6 +75,8 @@ vi.mock('../../stores/chatStore', () => ({
 const mockRunAgentLoop = vi.fn();
 vi.mock('../agent/agentLoop', () => ({
   runAgentLoop: (...args: unknown[]) => mockRunAgentLoop(...args),
+  // IM entry points do not capture the user's foreground desktop target.
+  isInteractiveDesktop: () => false,
 }));
 
 const mockSendThinking = vi.fn();

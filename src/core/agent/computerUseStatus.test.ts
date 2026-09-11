@@ -14,6 +14,7 @@ import {
   setSessionWindowHidden,
   pauseComputerUseStatus,
   checkCUSessionLimits,
+  beginComputerUseConsentPause,
   getCUStatusSnapshot,
   subscribeCUStatus,
 } from './computerUseStatus';
@@ -132,6 +133,29 @@ describe('computerUseStatus — per-conversation session table', () => {
       setComputerUseActive(true, 'conv-B');
 
       expect(getCUStatusSnapshot().stepCount).toBe(0);
+    });
+
+    it('nested consent pause tokens exclude arbitrary human wait exactly once', () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date('2026-09-01T00:00:00Z'));
+        setComputerUseActive(true, 'conv-A');
+        const first = beginComputerUseConsentPause('conv-A');
+        vi.advanceTimersByTime(6 * 60 * 1000);
+        const nested = beginComputerUseConsentPause('conv-A');
+        vi.advanceTimersByTime(6 * 60 * 1000);
+        first.resume();
+        expect(checkCUSessionLimits()).toBeNull();
+        nested.resume();
+        nested.resume(); // idempotent
+
+        vi.advanceTimersByTime(5 * 60 * 1000 - 1);
+        expect(checkCUSessionLimits()).toBeNull();
+        vi.advanceTimersByTime(2);
+        expect(checkCUSessionLimits()).toContain('已超时');
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('setCurrentAction/pauseComputerUseStatus are harmless no-ops when idle (no phantom entry created)', () => {

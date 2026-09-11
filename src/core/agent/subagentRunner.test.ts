@@ -124,6 +124,16 @@ async function importFresh() {
 }
 
 describe('subagentRunner', () => {
+  it('preserves the execution contract across the wire-safe tool projection', async () => {
+    const { toSerializableTool } = await importFresh();
+    const wire = JSON.parse(JSON.stringify(toSerializableTool({
+      name: 'computer', description: '', inputSchema: { type: 'object', properties: {} },
+      execute: async () => '', execution: { presentation: 'computer-use' },
+    })));
+    expect(wire.execution).toEqual({ presentation: 'computer-use' });
+    expect(wire.execute).toBeUndefined();
+  });
+
   // Same cold-transform hazard as agentLoopRunner.test.ts: left in the first
   // test body, the first importFresh() here measured 2.7 s against the 5 s
   // testTimeout — and a timed-out body is not cancelled, so it keeps mutating

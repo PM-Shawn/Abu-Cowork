@@ -237,6 +237,7 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
           sidecars: Array<Record<string, unknown>>;
           pendingRendererAcks: Array<Record<string, unknown>>;
           nativeHelpers: Array<Record<string, unknown>>;
+          computerUseReplay?: Record<string, unknown>;
         }>;
       };
     };
@@ -249,6 +250,7 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
         sidecars: [{ sidecarId: 'abu-sidecar', stage: 'running' }],
         pendingRendererAcks: [{ runId: 'run-1', durationMs: 12 }],
         nativeHelpers: [{ helperGeneration: 2, stage: 'running' }],
+        computerUseReplay: { schemaVersion: 1, evaluationKind: 'diagnostic-replay', complete: true, runs: [] },
       }),
     };
 
@@ -260,6 +262,7 @@ describe('collectBundleFiles (诊断反馈增强 L1: 多选对话 / 描述 / 截
     expect(files['runtime/sidecar-state.json']).toContain('abu-sidecar');
     expect(files['runtime/sidecar-state.json']).toContain('pendingRendererAcks');
     expect(files['runtime/sidecar-state.json']).toContain('helperGeneration');
+    expect(files['runtime/computer-use-replay.json']).toContain('diagnostic-replay');
   });
 
   it('redacts secrets from existing runtime logs before adding them to the bundle', async () => {

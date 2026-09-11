@@ -72,6 +72,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 import { executeToolBatch } from './toolExecutor';
 import { READ_ONLY_TOOL_ALLOWLIST } from '../permissions/readOnlyToolPolicy';
+import { setComputerUseActive } from './computerUseStatus';
 
 function makeToolCall(name: string, input: Record<string, unknown> = {}): ToolCall {
   return {
@@ -86,7 +87,11 @@ function makeInvoker(
   executeAnyTool: ToolInvoker['executeAnyTool'],
 ): ToolInvoker {
   return {
-    getAllTools: () => [],
+    getAllTools: () => [{
+      name: 'computer', description: '', inputSchema: { type: 'object', properties: {} },
+      execute: async () => '', isConcurrencySafe: false,
+      execution: { presentation: 'computer-use' },
+    }],
     executeAnyTool,
     toolResultToString: (result) => String(result),
   };
@@ -445,6 +450,171 @@ describe('executeToolBatch · run_command batch scheduling', () => {
 
     expect(probe.executeAnyTool).toHaveBeenCalledTimes(2);
     expect(probe.maxInFlight()).toBe(1);
+  });
+});
+
+describe('executeToolBatch · Computer Use target recovery', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.emitHook.mockResolvedValue({ blocked: false });
+  });
+
+  it('uses the execution presentation contract for computer sequential status, not the tool name', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('observed');
+    const invoker = makeInvoker(executeAnyTool);
+    invoker.getAllTools = () => [{
+      name: 'desktop_session', description: '', inputSchema: { type: 'object', properties: {} },
+      execute: async () => 'unused', isConcurrencySafe: false,
+      execution: { presentation: 'computer-use' },
+    }];
+    await executeToolBatch(makeParams(makeToolCall('desktop_session', { action: 'wait' }), invoker));
+    expect(setComputerUseActive).toHaveBeenCalledWith(true, 'conv-1');
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1', 'msg-1', 'tc-desktop_session', 'observed', undefined, false,
+      true, undefined,
+    );
+  });
+
+  it('does not time out a pending Host confirmation or retry its execution', async () => {
+    vi.useFakeTimers();
+    try {
+      let complete!: (value: string) => void;
+      const executeAnyTool = vi.fn(() => new Promise<string>(resolve => { complete = resolve; }));
+      const pending = executeToolBatch(makeParams(makeToolCall('computer', { action: 'wait' }), makeInvoker(executeAnyTool)));
+      await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
+      expect(executeAnyTool).toHaveBeenCalledTimes(1);
+      expect(mocks.updateToolCall).not.toHaveBeenCalled();
+      complete('Host approved and completed');
+      const result = await pending;
+      expect(result.observations[0].result).toBe('Host approved and completed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces Host rejection once without replaying a computer action', async () => {
+    const executeAnyTool = vi.fn().mockRejectedValue(new Error('Host denied'));
+    const result = await executeToolBatch(makeParams(makeToolCall('computer', { action: 'wait' }), makeInvoker(executeAnyTool)));
+    expect(executeAnyTool).toHaveBeenCalledTimes(1);
+    expect(result.observations[0]).toMatchObject({ error: true, result: 'Error: Host denied' });
+  });
+
+  it('marks a pre-dispatch Computer Use validation result as an error without stopping recovery', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue(
+      'Error: This computer request is invalid. Nothing was executed.',
+    );
+
+    const result = await executeToolBatch(
+      makeParams(
+        makeToolCall('computer', { action: 'get_window_state', consequence: '' }),
+        makeInvoker(executeAnyTool),
+      ),
+    );
+
+    expect(executeAnyTool).toHaveBeenCalledTimes(1);
+    expect(result.requiresUserRecovery).toBe(false);
+    expect(result.observations).toEqual([{
+      name: 'computer',
+      input: { action: 'get_window_state', consequence: '' },
+      result: 'Error: This computer request is invalid. Nothing was executed.',
+      error: true,
+    }]);
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1',
+      'msg-1',
+      'tc-computer',
+      'Error: This computer request is invalid. Nothing was executed.',
+      undefined,
+      true,
+      true,
+      undefined,
+    );
+  });
+
+  it('marks the registry-wrapped Computer Use failure as an error without stopping recovery', async () => {
+    const wrapped = 'Error executing tool "computer": Windows refused to activate target';
+    const executeAnyTool = vi.fn().mockResolvedValue(wrapped);
+
+    const result = await executeToolBatch(
+      makeParams(
+        makeToolCall('computer', { action: 'get_window_state', app: 'Word', consequence: 'none' }),
+        makeInvoker(executeAnyTool),
+      ),
+    );
+
+    expect(result.requiresUserRecovery).toBe(false);
+    expect(result.observations[0]).toMatchObject({ result: wrapped, error: true });
+    expect(mocks.updateToolCall).toHaveBeenCalledWith(
+      'conv-1', 'msg-1', 'tc-computer', wrapped, undefined, true, true, undefined,
+    );
+  });
+
+  it('stops an already-emitted mixed batch before run_command can launch a missing target', async () => {
+    const calls = [
+      { ...makeToolCall('computer', { action: 'get_app_state', app: '记事本', consequence: 'none' }), id: 'tc-computer' },
+      { ...makeToolCall('run_command', { command: 'Start-Process notepad' }), id: 'tc-run-command' },
+    ];
+    const executeAnyTool = vi.fn(async (
+      name: string,
+      _input: Record<string, unknown>,
+      _confirm: unknown,
+      _filePerm: unknown,
+      context: ToolExecutionContext,
+    ) => {
+      if (name === 'computer') {
+        context.reportMetadata?.({ requiresUserRecovery: 'computer-target-unavailable' });
+        return 'Error: 找不到可见的「记事本」窗口';
+      }
+      return 'should not execute';
+    });
+    const params = makeParams(calls[0], makeInvoker(executeAnyTool));
+    params.collectedToolCalls = calls;
+
+    const result = await executeToolBatch(params);
+
+    expect(executeAnyTool).toHaveBeenCalledTimes(1);
+    expect(executeAnyTool.mock.calls[0]?.[0]).toBe('computer');
+    expect(result.requiresUserRecovery).toBe(true);
+    expect(result.observations).toEqual([
+      expect.objectContaining({ name: 'computer', error: true }),
+      expect.objectContaining({
+        name: 'run_command',
+        error: true,
+        result: expect.stringContaining('skipped'),
+      }),
+    ]);
+  });
+
+  it('skips dependent writes in the same batch after an explicit verification mismatch', async () => {
+    const calls = [
+      { ...makeToolCall('computer', { action: 'key', consequence: 'none' }), id: 'tc-computer-mismatch' },
+      { ...makeToolCall('write_file', { path: 'dependent.txt', content: 'dependent' }), id: 'tc-dependent-write' },
+    ];
+    const executeAnyTool = vi.fn(async (
+      name: string,
+      _input: Record<string, unknown>,
+      _confirm: unknown,
+      _filePerm: unknown,
+      context: ToolExecutionContext,
+    ) => {
+      if (name === 'computer') {
+        context.reportMetadata?.({ requiresUserRecovery: 'computer-verification-mismatch' });
+        return 'Explicit expected effect was not satisfied';
+      }
+      return 'must not execute';
+    });
+    const params = makeParams(calls[0], makeInvoker(executeAnyTool));
+    params.collectedToolCalls = calls;
+
+    const result = await executeToolBatch(params);
+
+    expect(executeAnyTool).toHaveBeenCalledTimes(1);
+    expect(result.requiresUserRecovery).toBe(true);
+    expect(result.observations[1]).toMatchObject({
+      name: 'write_file',
+      error: true,
+      result: expect.stringMatching(/skipped.*Computer Use.*user review/i),
+    });
   });
 });
 

@@ -2660,6 +2660,7 @@ export interface TranslationDict {
     /** Overlay stop-button label. */
     stopControl: string;
     phaseChecking: string;
+    phaseAwaitingApproval: string;
     phaseObserving: string;
     phaseActing: string;
     phaseVerifying: string;
@@ -3454,6 +3455,22 @@ export interface TranslationDict {
       errModelUnknown: string;
       /** Foreground target identity probe failed. {msg} */
       errTargetIdentityFailed: string;
+      /** A specifically requested app has no visible target window. {app} */
+      errTargetUnavailable: string;
+      /** No target selector was supplied for a window operation. */
+      errTargetRequired: string;
+      /** No visible window matched the supplied selector. */
+      errTargetNotFound: string;
+      /** More than one visible window matched; select a returned WindowRef. */
+      errTargetAmbiguous: string;
+      /** The opaque WindowRef is invalid or expired. */
+      errWindowRefStale: string;
+      /** Coordinate input is not bound to the latest screenshot. */
+      errScreenshotStale: string;
+      /** Secure desktop or another protected surface needs the user. */
+      errManualHandoff: string;
+      /** Separately authorized whole-screen read was denied. */
+      errScreenReadDenied: string;
       /** Main-process Computer Use authorization failed. {msg} */
       errAuthorizationFailed: string;
       /** Every computer action must declare whether it has a consequential outcome. */
@@ -3483,9 +3500,20 @@ export interface TranslationDict {
       stateHeader: string;
       /** Automatic post-action verification result. {status}, {stateId} */
       verificationResult: string;
-      verificationChanged: string;
-      verificationNoChange: string;
-      verificationAmbiguous: string;
+      /** A modal appeared during post-action verification. {formatted} */
+      verificationModal: string;
+      /** Office reports that desktop editing is unavailable until activation. */
+      officeEditingUnavailable: string;
+      verificationObservationChanged: string;
+      verificationObservationUnchanged: string;
+      verificationObservationUnavailable: string;
+      verificationChangedNoExpectation: string;
+      verificationUnchangedNoExpectation: string;
+      verificationUnavailableNoExpectation: string;
+      verificationExpectationSatisfied: string;
+      verificationExpectationNotSatisfied: string;
+      verificationExpectationUnverifiable: string;
+      verificationLegacyWeak: string;
       /** formatAxElements: no interactive elements found. */
       noInteractiveElements: string;
       /** screenshot: current model has no vision capability (bilingual). zh half. */
@@ -3498,6 +3526,8 @@ export interface TranslationDict {
       errActivateFailed: string;
       /** get_app_state: AX tree truncated note. */
       axTreeTruncated: string;
+      /** get_app_state: modal boundary note. */
+      axTreeModal: string;
       /** get_app_state: AX tree header. {app}, {count}, {visited}, {note}, {formatted} */
       axTreeHeader: string;
       /** get_app_state: AX tree fetch failed. {msg} */
@@ -3555,7 +3585,7 @@ export interface TranslationDict {
       /** Screen recording permission denied (bilingual). zh half. */
       errNoScreenRecording: string;
       /** Windows: accessibility requires elevation (bilingual). zh half. */
-      errWindowsNeedsAdmin: string;
+      errWindowsControlUnavailable: string;
       /** macOS: accessibility permission denied (bilingual). zh half. */
       errMacOSNeedsAccessibility: string;
     };

@@ -42,7 +42,7 @@ export default function BatchProgress({ toolCallId }: BatchProgressProps) {
 
   const handleStop = () => {
     if (activeConv?.id) {
-      useChatStore.getState().cancelStreaming(activeConv.id);
+      useChatStore.getState().cancelStreaming(activeConv.id, { source: 'batch-stop-button' });
     }
   };
 

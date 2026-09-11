@@ -44,6 +44,9 @@ if (envProxy && envProxySupported && !process.env.NODE_USE_ENV_PROXY) {
 const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
 const args = new Set(process.argv.slice(2));
 const force = args.has('--force');
+const archiveCache = process.env.ABU_RUNTIME_ARCHIVE_CACHE
+  ? path.resolve(process.env.ABU_RUNTIME_ARCHIVE_CACHE)
+  : null;
 const requestedKinds = args.has('--node') || args.has('--python')
   ? [args.has('--node') ? 'node' : null, args.has('--python') ? 'python' : null].filter(Boolean)
   : ['node', 'python'];
@@ -170,6 +173,18 @@ function verifyArchive(filePath, expectedSha256) {
   console.log(`[runtime] verified SHA-256 ${actual}`);
 }
 
+async function stageArchive(url, archive, destination) {
+  if (archiveCache) {
+    const cached = path.join(archiveCache, path.basename(archive.file));
+    if (fs.existsSync(cached) && fs.statSync(cached).isFile()) {
+      fs.copyFileSync(cached, destination, fs.constants.COPYFILE_EXCL);
+      console.log(`[runtime] using cached archive ${cached}`);
+      return;
+    }
+  }
+  await download(url, destination);
+}
+
 function markerFor(kind, archive) {
   const runtime = manifest[kind];
   return {
@@ -257,7 +272,7 @@ async function setupNode() {
   const buildDir = makeBuildDir('node');
   try {
     const archivePath = path.join(buildDir, archive.file);
-    await download(`${manifest.node.source}${archive.file}`, archivePath);
+    await stageArchive(`${manifest.node.source}${archive.file}`, archive, archivePath);
     verifyArchive(archivePath, archive.sha256);
     const extracted = path.join(buildDir, 'extract');
     fs.mkdirSync(extracted);
@@ -388,7 +403,7 @@ async function setupPython() {
     const archivePath = path.join(buildDir, archive.file);
     const encodedFile = encodeURIComponent(archive.file);
     const url = `https://github.com/astral-sh/python-build-standalone/releases/download/${manifest.python.build}/${encodedFile}`;
-    await download(url, archivePath);
+    await stageArchive(url, archive, archivePath);
     verifyArchive(archivePath, archive.sha256);
     const extracted = path.join(buildDir, 'extract');
     fs.mkdirSync(extracted);

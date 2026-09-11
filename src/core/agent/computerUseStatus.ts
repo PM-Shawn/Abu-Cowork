@@ -44,7 +44,7 @@
 import { getI18n, format } from '@/i18n';
 
 export type CUSessionStatus = 'idle' | 'active' | 'paused';
-export type CUPhase = 'checking' | 'observing' | 'acting' | 'verifying' | 'blocked';
+export type CUPhase = 'checking' | 'awaiting-approval' | 'observing' | 'acting' | 'verifying' | 'blocked';
 export type CUCapabilityMode = 'full' | 'structured' | 'unsupported' | 'unknown';
 
 /** Max steps per CU session before auto-stop */
@@ -86,6 +86,7 @@ const IDLE_STATE: CUState = {
 
 /** Per-conversation session table — see module doc for why this exists. */
 const sessions = new Map<string, CUState>();
+const consentPauses = new Map<string, { depth: number; startedAt: number }>();
 /**
  * Whether the Abu window is currently hidden (and the screen border / Stop
  * overlay shown) for a Computer Use session.
@@ -161,6 +162,9 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
     // cannot reach around. Keeping this side honest matters for what the
     // user is shown, and so the two never disagree.
     const previous = id === activeConversationId ? sessions.get(id) : undefined;
+    if (activeConversationId && activeConversationId !== id) {
+      consentPauses.delete(activeConversationId);
+    }
     activeConversationId = id;
     sessions.set(id, {
       status: 'active',
@@ -200,6 +204,7 @@ export function setComputerUseActive(active: boolean, conversationId?: string) {
     const wasHidden = windowHiddenForCU;
     windowHiddenForCU = false;
     if (owner) sessions.delete(owner);
+    if (owner) consentPauses.delete(owner);
     activeConversationId = null;
     notify();
     cleanupAbortListener();
@@ -231,17 +236,17 @@ export function incrementComputerUseStep(action?: string) {
     const newStep = current.stepCount + 1;
     updateActive({ stepCount: newStep, currentAction: action ?? null });
     // Push status to overlay window for display
-    emitStatusToOverlay(newStep, action ?? null);
+    emitStatusToOverlay(newStep, action ?? null, current.targetApp);
   }
 }
 
 /** Emit current step/action to the overlay window for display. */
-function emitStatusToOverlay(step: number, action: string | null) {
+function emitStatusToOverlay(step: number, action: string | null, targetApp: string | null) {
   // Resolve the localized step label here (frontend has the UI locale) and push
   // it to the overlay HTML, which is a dumb view outside the React i18n tree.
   const stepLabel = format(getI18n().computerUse.overlayStep, { step });
   import('@tauri-apps/api/event').then(({ emit }) => {
-    emit('computer-use-status', { step, action, stepLabel }).catch(() => {});
+    emit('computer-use-status', { step, action, stepLabel, targetApp }).catch(() => {});
   }).catch(() => {});
 }
 
@@ -279,7 +284,16 @@ export function checkCUSessionLimits(): string | null {
     return `Computer Use 操作已达上限（${MAX_CU_STEPS} 步）。请向用户汇报当前进度和结果，询问是否继续。`;
   }
 
-  if (current.sessionStartTime && Date.now() - current.sessionStartTime > MAX_CU_DURATION_MS) {
+  const activePause = activeConversationId
+    ? consentPauses.get(activeConversationId)
+    : undefined;
+  const pendingExcludedMs = activePause
+    ? Math.max(0, Date.now() - activePause.startedAt)
+    : 0;
+  if (
+    current.sessionStartTime
+    && Date.now() - current.sessionStartTime - pendingExcludedMs > MAX_CU_DURATION_MS
+  ) {
     return `Computer Use 操作已超时（${MAX_CU_DURATION_MS / 60000} 分钟）。请向用户汇报当前进度和结果。`;
   }
 
@@ -295,6 +309,69 @@ export function setCurrentAction(action: string | null) {
 export function setComputerUsePhase(phase: CUPhase) {
   const current = getActive();
   if (current?.status === 'active') updateActive({ phase });
+}
+
+/** Keep the renderer's display-only timer aligned with the Host's active-time budget. */
+export function excludeComputerUseDuration(durationMs: number) {
+  const current = getActive();
+  if (
+    !current
+    || current.status !== 'active'
+    || current.sessionStartTime === null
+    || !Number.isFinite(durationMs)
+    || durationMs <= 0
+  ) return;
+  updateActive({ sessionStartTime: current.sessionStartTime + durationMs });
+}
+
+export interface ComputerUseConsentPauseToken {
+  resume(): void;
+}
+
+/**
+ * Pause the renderer's display-only active-time budget while a human-owned
+ * consent surface is open. Tokens are nested and idempotent so task, app,
+ * site, and consequential approvals can share one clock safely.
+ */
+export function beginComputerUseConsentPause(
+  conversationId: string | null = activeConversationId,
+): ComputerUseConsentPauseToken {
+  if (!conversationId || conversationId !== activeConversationId) {
+    return Object.freeze({ resume() {} });
+  }
+  const current = sessions.get(conversationId);
+  if (!current || current.status !== 'active') {
+    return Object.freeze({ resume() {} });
+  }
+  const pause = consentPauses.get(conversationId) ?? { depth: 0, startedAt: Date.now() };
+  if (pause.depth === 0) pause.startedAt = Date.now();
+  pause.depth += 1;
+  consentPauses.set(conversationId, pause);
+  let resumed = false;
+  return Object.freeze({
+    resume() {
+      if (resumed) return;
+      resumed = true;
+      const activePause = consentPauses.get(conversationId);
+      if (!activePause) return;
+      activePause.depth = Math.max(0, activePause.depth - 1);
+      if (activePause.depth > 0) return;
+      consentPauses.delete(conversationId);
+      const state = sessions.get(conversationId);
+      if (
+        conversationId === activeConversationId
+        && state
+        && state.sessionStartTime !== null
+      ) {
+        const excludedMs = Math.max(0, Date.now() - activePause.startedAt);
+        sessions.set(conversationId, {
+          ...state,
+          sessionStartTime: state.sessionStartTime + excludedMs,
+        });
+        notify();
+      }
+    },
+  });
 }
 
 /** Set safe structural context shown in the status bar. */
@@ -315,11 +392,11 @@ export function setComputerUseContext(input: {
 let abortUnlisten: (() => void) | null = null;
 let shortcutRegistered = false;
 
-function triggerAbort() {
+function triggerAbort(source: string) {
   const convId = activeConversationId;
   if (convId) {
     import('../../stores/chatStore').then(({ useChatStore }) => {
-      useChatStore.getState().cancelStreaming(convId);
+      useChatStore.getState().cancelStreaming(convId, { source });
     }).catch(() => {});
   }
 }
@@ -330,7 +407,14 @@ async function setupAbortListener() {
   // 1. Listen for stop button click event from overlay window
   try {
     const { listen } = await import('@tauri-apps/api/event');
-    const unlisten = await listen('computer-use-abort', triggerAbort);
+    const unlisten = await listen<{ source?: string; type?: string }>(
+      'computer-use-abort',
+      (event) => {
+        const source = event.payload?.source
+          ?? (event.payload?.type ? `native-helper-${event.payload.type}` : 'computer-use-overlay-stop-button');
+        triggerAbort(source);
+      },
+    );
     abortUnlisten = unlisten;
   } catch { /* ignore — event API unavailable */ }
 
@@ -338,7 +422,7 @@ async function setupAbortListener() {
   if (!shortcutRegistered) {
     try {
       const { register } = await import('@tauri-apps/plugin-global-shortcut');
-      await register('CommandOrControl+.', triggerAbort);
+      await register('CommandOrControl+.', () => triggerAbort('computer-use-global-shortcut'));
       shortcutRegistered = true;
     } catch { /* ignore — plugin unavailable or shortcut conflict */ }
   }

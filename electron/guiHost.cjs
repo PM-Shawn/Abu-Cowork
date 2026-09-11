@@ -293,6 +293,9 @@ function showOverlay() {
   );
   overlayWindow.setIgnoreMouseEvents(true);
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
+  // On Windows this maps to WDA_EXCLUDEFROMCAPTURE, keeping Abu's control
+  // chrome out of WGC state frames without hiding the target application.
+  overlayWindow.setContentProtection?.(true);
   applyAllSpaces(overlayWindow);
   const page = resolveHtml('overlay.html');
   registerPrivilegedWindow(overlayWindow, page, { label: 'overlay' });
@@ -322,6 +325,7 @@ function showStopButton(stopLabel) {
   // (Rust: NSStatusWindowLevel+2 vs overlay's +1) — Electron's relativeLevel
   // 3rd arg stacks atop the named level.
   stopBtnWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+  stopBtnWindow.setContentProtection?.(true);
   applyAllSpaces(stopBtnWindow);
   // stop-button.html reads `window.__CU_I18N__.stopControl` from its own
   // trailing (synchronous, non-deferred) inline <script> block — which runs
@@ -342,6 +346,39 @@ function showScreenBorder(args) {
   showOverlay();
   showStopButton(String(args.stopLabel ?? ''));
   return null;
+}
+
+/** Move the Computer Use chrome to the display represented by a native WGC frame. */
+function updateComputerUseOverlayBounds(capture) {
+  if (!capture || typeof capture !== 'object') return;
+  const originX = Number(capture.origin_x);
+  const originY = Number(capture.origin_y);
+  const width = Number(capture.width) * Number(capture.scale_factor || 1);
+  const height = Number(capture.height) * Number(capture.scale_factor || 1);
+  if (![originX, originY, width, height].every(Number.isFinite) || width <= 0 || height <= 0) {
+    return;
+  }
+  let point = {
+    x: Math.round(originX + width / 2),
+    y: Math.round(originY + height / 2),
+  };
+  try {
+    point = screen.screenToDipPoint(point);
+  } catch {
+    /* screenToDipPoint is Windows-only; coordinates are already DIP elsewhere */
+  }
+  const display = screen.getDisplayNearestPoint(point);
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setBounds(display.bounds, false);
+  }
+  if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
+    stopBtnWindow.setBounds({
+      x: Math.round(display.bounds.x + (display.bounds.width - STOP_BTN_WIDTH) / 2),
+      y: display.bounds.y + 8,
+      width: STOP_BTN_WIDTH,
+      height: STOP_BTN_HEIGHT,
+    }, false);
+  }
 }
 
 /** `hide_screen_border` — overlay.rs:29 (Rust hide()s then destroy()s both; recreated fresh next `show_screen_border`, matching Rust's not-cached-across-hide semantics). */
@@ -688,6 +725,7 @@ module.exports = {
   teardownGuiHost,
   hasTray,
   showMainWindowFromTray,
+  updateComputerUseOverlayBounds,
   __test: {
     WINDOWS_ACTIVE_WINDOW_SCRIPT,
     getActiveWindowForPlatform,

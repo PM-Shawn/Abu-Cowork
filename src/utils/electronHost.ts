@@ -50,6 +50,8 @@ export interface ElectronRuntimeDiagnostics {
   sidecars: Array<Record<string, unknown>>;
   pendingRendererAcks: Array<Record<string, unknown>>;
   nativeHelpers: Array<Record<string, unknown>>;
+  /** Host's pure, privacy-allowlisted projection; not executable recovery state. */
+  computerUseReplay?: Record<string, unknown>;
 }
 
 function getRuntime() {

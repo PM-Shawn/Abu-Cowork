@@ -15,6 +15,8 @@ import type { Trigger, TriggerEventPayload } from '../../types/trigger';
 // Mock agentLoop to avoid full LLM execution
 vi.mock('../agent/agentLoop', () => ({
   runAgentLoop: vi.fn().mockResolvedValue(undefined),
+  // Trigger runs are background entry points, not interactive desktop turns.
+  isInteractiveDesktop: () => false,
 }));
 
 // Mock notifications

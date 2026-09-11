@@ -32,18 +32,20 @@
  * unsigned NSIS artifact with scripts/electron-windows-installed-smoke.ps1.
  */
 import { _electron as electron } from '@playwright/test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 
 import { isValidNativeHelperIdentity } from './electron-packaged-smoke-contract.mjs';
 
 const require = createRequire(import.meta.url);
 const { getCurrentFuseWire, FuseV1Options } = require('@electron/fuses');
+const { PNG } = require('pngjs');
 const FUSE_DISABLED = '0'.charCodeAt(0);
 const FUSE_ENABLED = '1'.charCodeAt(0);
 const OUT = process.env.ABU_ELECTRON_SMOKE_OUTPUT || 'release-electron';
@@ -65,6 +67,74 @@ const SIGNATURE_VARIANT_RESOURCE_ROOTS = [
   'python-runtime',
   path.join('app.asar.unpacked', 'node_modules', 'node-pty'),
 ];
+
+function createNativeHelperClient(binary) {
+  const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const lines = readline.createInterface({ input: child.stdout });
+  const pending = new Map();
+  let nextId = 1;
+  lines.on('line', (line) => {
+    let message;
+    try { message = JSON.parse(line); } catch { return; }
+    if (typeof message?.event === 'string') return;
+    const request = pending.get(message?.id);
+    if (!request) return;
+    pending.delete(message.id);
+    clearTimeout(request.timer);
+    if (message.error != null) request.reject(new Error(String(message.error)));
+    else request.resolve(message.result);
+  });
+  const call = (method, params = {}, timeoutMs = 15_000) => new Promise((resolve, reject) => {
+    const id = nextId++;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`native helper ${method} timed out`));
+    }, timeoutMs);
+    pending.set(id, { resolve, reject, timer });
+    child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+  });
+  const close = () => {
+    try { child.stdin.end(); } catch { /* already closed */ }
+    try { child.kill(); } catch { /* already exited */ }
+  };
+  return { call, close };
+}
+
+function compareVerticalOverlayEdges(beforeCapture, afterCapture) {
+  const before = PNG.sync.read(Buffer.from(beforeCapture.base64, 'base64'));
+  const after = PNG.sync.read(Buffer.from(afterCapture.base64, 'base64'));
+  if (before.width !== after.width || before.height !== after.height) {
+    throw new Error('overlay capture dimensions changed unexpectedly');
+  }
+  const band = Math.min(10, Math.max(4, Math.floor(before.width / 200)));
+  const top = Math.min(80, Math.floor(before.height / 4));
+  const bottom = Math.max(top + 1, before.height - Math.min(120, Math.floor(before.height / 4)));
+  let sampled = 0;
+  let changed = 0;
+  let addedBlue = 0;
+  for (let y = top; y < bottom; y += 1) {
+    for (let edgeX = 0; edgeX < band * 2; edgeX += 1) {
+      const x = edgeX < band ? edgeX : before.width - (edgeX - band) - 1;
+      const offset = (y * before.width + x) * 4;
+      const delta = Math.abs(after.data[offset] - before.data[offset])
+        + Math.abs(after.data[offset + 1] - before.data[offset + 1])
+        + Math.abs(after.data[offset + 2] - before.data[offset + 2]);
+      const afterBlue = after.data[offset + 2] > 140
+        && after.data[offset + 2] - after.data[offset + 1] > 35
+        && after.data[offset + 2] - after.data[offset] > 65;
+      const beforeBlue = before.data[offset + 2] > 140
+        && before.data[offset + 2] - before.data[offset + 1] > 35
+        && before.data[offset + 2] - before.data[offset] > 65;
+      sampled += 1;
+      if (delta > 70) changed += 1;
+      if (afterBlue && !beforeBlue) addedBlue += 1;
+    }
+  }
+  return {
+    changedRatio: changed / sampled,
+    addedBlueRatio: addedBlue / sampled,
+  };
+}
 
 /** Locate the packaged binary + its Resources dir across mac/win/linux --dir outputs. */
 function findPackagedApp(outputRoot) {
@@ -95,7 +165,11 @@ function findPackagedApp(outputRoot) {
     }
   }
   // win --dir
-  const winBin = path.join(outputRoot, 'win-unpacked', 'Abu.exe');
+  const configuredExecutable = process.env.ABU_ELECTRON_SMOKE_EXECUTABLE || 'Abu.exe';
+  if (path.basename(configuredExecutable) !== configuredExecutable) {
+    throw new Error('ABU_ELECTRON_SMOKE_EXECUTABLE must be a plain filename');
+  }
+  const winBin = path.join(outputRoot, 'win-unpacked', configuredExecutable);
   if (fs.existsSync(winBin)) {
     const packageRoot = path.join(outputRoot, 'win-unpacked');
     return {
@@ -2263,6 +2337,10 @@ async function main() {
           }
           const bounds = mainWindow.getBounds();
           const contentBounds = mainWindow.getContentBounds();
+          const nativeHandle = mainWindow.getNativeWindowHandle();
+          const nativeValue = nativeHandle.length >= 8
+            ? nativeHandle.readBigUInt64LE(0)
+            : BigInt(nativeHandle.readUInt32LE(0));
           const workArea = screen.getDisplayMatching(bounds).workArea;
           const roomRight = workArea.x + workArea.width - (bounds.x + bounds.width);
           const roomDown = workArea.y + workArea.height - (bounds.y + bounds.height);
@@ -2274,6 +2352,7 @@ async function main() {
             contentX: contentBounds.x,
             contentY: contentBounds.y,
             processId: process.pid,
+            windowId: `0x${nativeValue.toString(16).toUpperCase()}`,
             deltaX: roomRight >= 64 ? 48 : -48,
             deltaY: roomDown >= 48 ? 32 : -32,
           };
@@ -2289,29 +2368,63 @@ async function main() {
         const screenStartY = Math.round(dragPlan.contentY + startY);
         const dragHelperName = process.platform === 'win32' ? 'native-helper.exe' : 'native-helper';
         const dragHelperPath = path.join(found.resources, 'native-helper', dragHelperName);
-        const helperResult = spawnSync(dragHelperPath, [], {
-          input: `${JSON.stringify({
-            id: 1,
-            method: 'mouse_drag',
-            params: {
+        const helper = createNativeHelperClient(dragHelperPath);
+        let axSessionId = null;
+        const inputLeaseId = `packaged-window-drag-${randomUUID()}`;
+        let inputLeaseStarted = false;
+        try {
+          await helper.call('input_lease_begin', { lease_id: inputLeaseId });
+          inputLeaseStarted = true;
+          const target = await helper.call('get_window', { window_id: dragPlan.windowId });
+          await helper.call('activate_window', { window_id: target.window_id });
+          const state = await helper.call('ax_snapshot', {
+            app_name: target.app_name,
+            expected_bundle_id: target.app_id,
+            expected_process_id: target.process_id,
+            expected_window_id: target.window_id,
+          });
+          axSessionId = state.session_id;
+          await helper.call('input_lease_commit_observation', {
+            lease_id: inputLeaseId,
+            expected_input_epoch: state.input_epoch,
+          });
+          const capture = await helper.call('capture_screen', {
+            max_width: 4096,
+            expected_bundle_id: target.app_id,
+            expected_process_id: target.process_id,
+            expected_window_id: target.window_id,
+          });
+          await helper.call('input_lease_commit_observation', {
+            lease_id: inputLeaseId,
+            expected_input_epoch: state.input_epoch,
+          });
+          await helper.call('input_lease_activate', {
+            lease_id: inputLeaseId,
+            expected_input_epoch: state.input_epoch,
+          });
+          try {
+            await helper.call('mouse_drag', {
               start_x: screenStartX,
               start_y: screenStartY,
               end_x: screenStartX + dragPlan.deltaX,
               end_y: screenStartY + dragPlan.deltaY,
-              expected_bundle_id: 'abu.packaged-smoke',
-              expected_process_id: dragPlan.processId,
-            },
-          })}\n`,
-          encoding: 'utf8',
-          timeout: 10_000,
-        });
-        const helperResponse = JSON.parse(String(helperResult.stdout || '').trim());
-        if (helperResult.status !== 0 || helperResponse?.error) {
-          throw new Error([
-            `native drag helper status=${String(helperResult.status)}`,
-            `response=${JSON.stringify(helperResponse)}`,
-            `stderr=${JSON.stringify(helperResult.stderr || '')}`,
-          ].join(' '));
+              screenshot_id: capture.screenshot_id,
+              expected_bundle_id: target.app_id,
+              expected_process_id: target.process_id,
+              expected_window_id: target.window_id,
+              expected_input_epoch: state.input_epoch,
+            });
+          } finally {
+            await helper.call('input_lease_observe', { lease_id: inputLeaseId });
+          }
+        } finally {
+          if (axSessionId) {
+            await helper.call('ax_close_session', { session_id: axSessionId }).catch(() => {});
+          }
+          if (inputLeaseStarted) {
+            await helper.call('input_lease_end', { lease_id: inputLeaseId }).catch(() => {});
+          }
+          helper.close();
         }
         await waitUntil(
           () => app.evaluate(({ BrowserWindow }, original) => {
@@ -2337,10 +2450,47 @@ async function main() {
           }, { x: dragPlan.originalX, y: dragPlan.originalY });
         }
       }
+      const overlayHelperName = process.platform === 'win32' ? 'native-helper.exe' : 'native-helper';
+      const overlayHelperPath = path.join(found.resources, 'native-helper', overlayHelperName);
+      const overlayHelper = createNativeHelperClient(overlayHelperPath);
+      let overlayShown = false;
+      try {
+        const beforeOverlay = await overlayHelper.call('capture_screen', { max_width: 4096 });
+        await window.evaluate(() => globalThis.__TAURI_INTERNALS__.invoke(
+          'show_screen_border',
+          { stopLabel: 'Stop · Esc' },
+        ));
+        overlayShown = true;
+        await waitUntil(
+          () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((candidate) => (
+            candidate.isVisible() && candidate.webContents.getURL().includes('/overlay.html')
+          ))),
+          'the protected Computer Use overlay to become visible',
+          5_000,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        const withOverlay = await overlayHelper.call('capture_screen', { max_width: 4096 });
+        const edgeDelta = compareVerticalOverlayEdges(beforeOverlay, withOverlay);
+        checks.packagedWindowsOverlayExcluded = edgeDelta.changedRatio < 0.05
+          && edgeDelta.addedBlueRatio < 0.02;
+        if (!checks.packagedWindowsOverlayExcluded) {
+          errors.windowsOverlayExcluded = `protected overlay leaked into WGC frame: ${JSON.stringify(edgeDelta)}`;
+        }
+      } catch (err) {
+        checks.packagedWindowsOverlayExcluded = false;
+        errors.windowsOverlayExcluded = String(err);
+      } finally {
+        if (overlayShown) {
+          await window.evaluate(() => globalThis.__TAURI_INTERNALS__.invoke('hide_screen_border'))
+            .catch(() => {});
+        }
+        overlayHelper.close();
+      }
     } else {
       checks.packagedWindowsTitlebarLayout = true;
       checks.packagedWindowsToolbarLayout = true;
       checks.packagedWindowsWindowDrag = true;
+      checks.packagedWindowsOverlayExcluded = true;
     }
 
     if (process.platform === 'darwin') {

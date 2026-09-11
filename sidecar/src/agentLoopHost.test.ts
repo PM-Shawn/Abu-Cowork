@@ -125,6 +125,18 @@ function mockSendRequest(
 }
 
 describe('agentLoopHost', () => {
+  it('restores the execution presentation contract for the agent executor', async () => {
+    runAgentLoopMock.mockImplementation(async () => {
+      const tools = getCurrentAgentRunContext()!.toolInvoker.getAllTools();
+      expect(tools[0].execution).toEqual({ presentation: 'computer-use' });
+      return { reason: 'completed' };
+    });
+    await handleAgentRun(baseParams({ toolList: [{
+      name: 'computer', description: '', inputSchema: { type: 'object', properties: {} },
+      execution: { presentation: 'computer-use' },
+    }] }));
+  });
+
   beforeEach(() => {
     runAgentLoopMock.mockReset();
     applyPlanModeStateMock.mockReset();

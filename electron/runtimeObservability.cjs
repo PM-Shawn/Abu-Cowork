@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { sanitizeTrajectoryAttributes, normalizeTrajectoryEvent, replayComputerUseTrajectory } = require('./computerUseTrajectory.cjs');
 
 const RUNTIME_EVENT_CHANNEL = 'abu:runtime-event';
 const RUNTIME_DIAGNOSTICS_CHANNEL = 'abu:runtime-diagnostics';
@@ -66,6 +67,24 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'subscriptionCount',
   'exitCode',
   'windowLabel',
+  'snapshotRevision',
+  'accessibilityRevision',
+  'inputEpoch',
+  'cacheKind',
+  'cacheHit',
+  'invalidationReason',
+  'inputRejectionReason',
+  'zIndex',
+  'trajectorySequence',
+  'trajectoryVersion',
+  'trajectoryId',
+  'approvalKind',
+  'approvalDecision',
+  'supervisorState',
+  'approvalPaused',
+  'windowGraphRevision',
+  'outcomeUnknown',
+  'consequential',
 ]);
 
 /**
@@ -344,6 +363,50 @@ function createRuntimeState({
     });
   }
 
+  function noteNativeHelperSupervisorTransition(snapshot = {}) {
+    emitEvent('main', 'main.native_helper_supervisor_transition', {
+      helperGeneration: snapshot.generation,
+      supervisorState: snapshot.state,
+      command: typeof snapshot.activeMethod === 'string' ? snapshot.activeMethod : undefined,
+      pendingRpcCount: snapshot.pendingCount,
+      approvalPaused: snapshot.approvalPaused === true,
+    });
+  }
+
+  function noteComputerUseObservation(attributes = {}) {
+    emitEvent('main', 'main.computer_use_observation', {
+      snapshotRevision: attributes.snapshotRevision,
+      accessibilityRevision: attributes.accessibilityRevision,
+      inputEpoch: attributes.inputEpoch,
+      zIndex: attributes.zIndex,
+      outcome: 'success',
+    });
+  }
+
+  function noteComputerUseCache(cacheKind, cacheHit, accessibilityRevision) {
+    emitEvent('main', 'main.computer_use_cache', {
+      cacheKind,
+      cacheHit: Boolean(cacheHit),
+      accessibilityRevision,
+    });
+  }
+
+  function noteComputerUseInvalidation(invalidationReason) {
+    emitEvent('main', 'main.computer_use_invalidated', { invalidationReason });
+  }
+
+  function noteComputerUseInputRejected(inputRejectionReason) {
+    emitEvent('main', 'main.computer_use_input_rejected', {
+      inputRejectionReason,
+      outcome: 'error',
+    });
+  }
+
+  function noteComputerUseTrajectory(attributes = {}) {
+    const safe = sanitizeTrajectoryAttributes(attributes);
+    if (safe) emitEvent('main', 'main.computer_use_trajectory', safe);
+  }
+
   function noteRpcWriteStarted(id, message) {
     if (id !== SIDECAR_ID) return null;
     const metadata = parseJsonRpcMetadata(message);
@@ -560,6 +623,12 @@ function createRuntimeState({
     noteNativeHelperCrashed,
     noteNativeHelperStopped,
     noteNativeHelperCallTimeout,
+    noteNativeHelperSupervisorTransition,
+    noteComputerUseObservation,
+    noteComputerUseCache,
+    noteComputerUseInvalidation,
+    noteComputerUseInputRejected,
+    noteComputerUseTrajectory,
     noteRpcWriteStarted,
     noteRpcWriteFinished,
     noteStdoutLine,
@@ -645,9 +714,16 @@ function emitRuntimeEvent(processName, event, attributes) {
 
 const runtimeState = createRuntimeState({ emit: emitRuntimeEvent });
 
+function serializeTrajectoryRecord(raw) {
+  const trajectory = normalizeTrajectoryEvent(raw);
+  return trajectory ? JSON.stringify({ schemaVersion: SCHEMA_VERSION,
+    event: 'main.computer_use_trajectory', process: 'main', ...trajectory }) : null;
+}
+
 function readPersistedEvents() {
   const paths = logFilePath ? [`${logFilePath}.old`, logFilePath] : [];
   const lines = [];
+  let invalidRecordCount = 0;
   for (const filePath of paths) {
     try {
       const content = fs.readFileSync(filePath, 'utf8');
@@ -655,6 +731,14 @@ function readPersistedEvents() {
         if (!line.trim()) continue;
         try {
           const parsed = JSON.parse(line);
+          if (parsed?.event === 'main.computer_use_trajectory') {
+            // Validate raw numeric/version fields before the generic logger's
+            // rounding/clamping can turn damaged records into valid evidence.
+            const trajectory = serializeTrajectoryRecord(parsed);
+            if (trajectory) lines.push(trajectory);
+            else invalidRecordCount++;
+            continue;
+          }
           const event = sanitizeEventName(parsed?.event);
           const processName = ['renderer', 'main', 'sidecar'].includes(parsed?.process) ? parsed.process : null;
           if (parsed?.schemaVersion === SCHEMA_VERSION && event && processName) {
@@ -668,23 +752,34 @@ function readPersistedEvents() {
             }));
           }
         } catch {
-          // Ignore a partial final line after an abrupt process exit.
+          // Retain evidence of damage, never the malformed/private content.
+          invalidRecordCount++;
         }
       }
-    } catch {
+    } catch (error) {
       // Missing/unreadable log files are valid on a fresh install.
+      if (error.code !== 'ENOENT') invalidRecordCount++;
     }
   }
-  return lines.slice(-MAX_RECENT_EVENTS);
+  return { lines: lines.slice(-MAX_RECENT_EVENTS), invalidRecordCount, truncated: lines.length > MAX_RECENT_EVENTS };
 }
 
 function getRuntimeDiagnostics() {
-  const mergedEventLines = new Set(readPersistedEvents());
-  for (const event of recentEvents) mergedEventLines.add(JSON.stringify(event));
+  const persisted = readPersistedEvents();
+  const mergedEventLines = new Set(persisted.lines);
+  for (const event of recentEvents) {
+    const line = event.event === 'main.computer_use_trajectory' ? serializeTrajectoryRecord(event) : JSON.stringify(event);
+    if (line) mergedEventLines.add(line);
+  }
+  const recentEventLines = Array.from(mergedEventLines).slice(-MAX_RECENT_EVENTS);
   return {
     schemaVersion: SCHEMA_VERSION,
     appSessionId,
-    recentEventLines: Array.from(mergedEventLines).slice(-MAX_RECENT_EVENTS),
+    recentEventLines,
+    computerUseReplay: replayComputerUseTrajectory(recentEventLines, {
+      droppedInvalidRecordCount: persisted.invalidRecordCount,
+      inputTruncated: persisted.truncated || mergedEventLines.size > MAX_RECENT_EVENTS,
+    }),
     ...runtimeState.snapshot(),
   };
 }

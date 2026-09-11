@@ -597,6 +597,27 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
         session.abortWatchdog = undefined;
       }
 
+      // Persist the turn-level Computer Use stop before any process-bound
+      // cleanup. The normal end-task call in run.finally releases leases, but
+      // must never make this same stopped run executable after a helper,
+      // renderer, or sidecar restart.
+      try {
+        const { stopComputerUseTurn } = await import('../tools/definitions/computerTools');
+        await stopComputerUseTurn(
+          session.conversationId,
+          session.runId ?? session.loopId,
+          typeof session.shellAbortController.signal.reason === 'string'
+            ? session.shellAbortController.signal.reason
+            : `agent-abort-${source}`,
+        );
+      } catch (error) {
+        logger.warn('Computer Use turn-stop marker failed; abort continues', {
+          runId: session.runId ?? session.loopId,
+          conversationId: session.conversationId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       await (session.frameApplyTail ?? Promise.resolve());
 
       // Permission dialogs live in the shell and must not survive a force-stop.
@@ -709,6 +730,11 @@ function requestSidecarRunAbort(session: RunSession): Promise<void> {
     runId: session.runId ?? session.loopId,
     method: 'agent.abort',
     stage: 'abort_requested',
+    reason: typeof session.shellAbortController.signal.reason === 'string'
+      ? session.shellAbortController.signal.reason
+      : session.shellAbortController.signal.reason instanceof Error
+        ? session.shellAbortController.signal.reason.name
+        : 'unspecified',
   });
   session.abortWatchdog = setTimeout(() => {
     traceRuntimeEvent('renderer.agent_abort_watchdog_fired', {
@@ -900,6 +926,7 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'atomic_write_text',
   'ax_close_session',
   'computer_use_end_task',
+  'computer_use_stop_turn',
   // P1-3d-5 slice 3: delete_file runs locally in the sidecar and reverses its
   // OS-Trash move here. Safe to allowlist — move_to_trash is recoverable (lands
   // in Finder Trash, never a permanent delete), delete_file's write-path approval
@@ -2097,12 +2124,13 @@ async function runSingleAgentLoopDispatched(
   options?: AgentLoopOptions,
 ): Promise<AgentLoopResult> {
   const sidecarRunning = getSidecarStatus() === 'running';
+  const entryConversation = getConversationReader().getConversation(conversationId);
 
   // ── Concurrency guard — see doc above for the two-venue rationale. This
   // runs before venue selection so sidecar-down/fallback callers cannot bypass
   // the same one-live-run-per-conversation invariant.
   {
-    const runningConv = getConversationReader().getConversation(conversationId);
+    const runningConv = entryConversation;
     const hasImages = Boolean(options?.images?.length);
     const stageable = userMessage.trim().length > 0 && !hasImages;
     const getBusyError = (): string => hasImages
@@ -2146,14 +2174,36 @@ async function runSingleAgentLoopDispatched(
     }
   }
 
+  // Mint the loop identity before choosing an execution venue. The Windows
+  // foreground snapshot is task-scoped, so an in-process run, a sidecar run,
+  // and any safe pre-commit fallback must all use this exact same identifier.
+  const runId = generateRunId();
+  if (isInteractiveDesktop(options, entryConversation)) {
+    try {
+      const { captureComputerUseTurnTarget } = await import('../computer-use/windowProtocol');
+      await captureComputerUseTurnTarget(conversationId, runId);
+    } catch (error) {
+      // This snapshot is an optional selector. A named-app/window_ref request
+      // can still resolve explicitly, so capture transport failure must not
+      // prevent the model run from starting.
+      logger.debug('computer-use turn target capture unavailable', {
+        conversationId,
+        runId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   if (!sidecarRunning) {
     await ensureBuiltinBrowserRuntime();
-    return runAgentLoop(conversationId, userMessage, rendererRuntimeOptions(options));
+    return runAgentLoop(conversationId, userMessage, rendererRuntimeOptions({
+      ...options,
+      loopId: runId,
+    }));
   }
 
   ensureHandlersRegistered();
 
-  const runId = generateRunId();
   const clientMessageId = `msg-${runId}`;
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
   const runtimeStartedAt = Date.now();

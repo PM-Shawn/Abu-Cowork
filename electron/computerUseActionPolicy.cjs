@@ -13,6 +13,8 @@ const CONSEQUENCE_CATEGORIES = new Set([
 ]);
 
 const COMPUTER_ACTIONS = new Set([
+  'list_windows',
+  'get_window_state',
   'get_app_state',
   'get_ui',
   'activate_app',
@@ -37,6 +39,7 @@ const CONSEQUENCE_TRIGGER_COMMANDS = new Set([
   'keyboard_press',
   'ax_press',
   'ax_set_value',
+  'ax_replace_text',
   'ax_perform_action',
 ]);
 
@@ -187,8 +190,12 @@ function inferKeyboardConsequence(session, cmd, args) {
   const key = typeof args?.key === 'string' ? args.key.toLowerCase() : '';
   const modifiers = normalizedModifiers(args);
   const targetId = session.target.bundle_id.toLowerCase();
+  const targetFileName = targetId.split(/[\\/]/).at(-1) || targetId;
+  const targetStem = targetFileName.endsWith('.exe')
+    ? targetFileName.slice(0, -4)
+    : targetFileName;
   const finderLike = targetId === 'com.apple.finder';
-  const windowsExplorer = targetId === 'explorer' || targetId === 'explorer.exe';
+  const windowsExplorer = targetStem === 'explorer';
   if (
     windowsExplorer
     && (key === 'delete' || key === 'backspace')

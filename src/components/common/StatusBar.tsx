@@ -2,7 +2,8 @@ import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore, getEffectiveModel, getActiveProvider } from '../../stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { Loader2, Wrench, Zap } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
+import { subscribeCUStatus, getCUStatusSnapshot } from '@/core/agent/computerUseStatus';
 
 /**
  * Hook to track elapsed time since a timestamp
@@ -39,6 +40,15 @@ export default function StatusBar() {
   const activeProvider = getActiveProvider(useSettingsStore.getState());
   const modelLabel = activeProvider?.models.find((m) => m.id === effectiveModel)?.label ?? effectiveModel;
   const { t } = useI18n();
+  const computerUse = useSyncExternalStore(
+    subscribeCUStatus,
+    getCUStatusSnapshot,
+    getCUStatusSnapshot,
+  );
+  const awaitingComputerApproval = agentStatus === 'tool-calling'
+    && currentTool === 'computer'
+    && computerUse.status === 'active'
+    && computerUse.phase === 'awaiting-approval';
 
   // Track thinking time
   const thinkingElapsed = useElapsedTime(
@@ -60,7 +70,11 @@ export default function StatusBar() {
         ) : agentStatus === 'tool-calling' ? (
           <>
             <Wrench className="w-3 h-3 text-[var(--abu-warning)] animate-pulse" />
-            <span className="text-[var(--abu-warning)]">{t.status.usingTool} {currentTool}</span>
+            <span className="text-[var(--abu-warning)]">
+              {awaitingComputerApproval
+                ? t.computerUse.phaseAwaitingApproval
+                : `${t.status.usingTool} ${currentTool}`}
+            </span>
           </>
         ) : (
           <>

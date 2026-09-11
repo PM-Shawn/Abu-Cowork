@@ -71,6 +71,14 @@
       "regedit.exe",
       "taskmgr",
       "taskmgr.exe",
+      "systemsettings",
+      "systemsettings.exe",
+      "sechealthui",
+      "sechealthui.exe",
+      "securityhealthhost",
+      "securityhealthhost.exe",
+      "credentialuibroker",
+      "credentialuibroker.exe",
       "mmc",
       "mmc.exe",
       "credentialmanager",
@@ -80,6 +88,13 @@
       "1password.exe",
       "bitwarden",
       "bitwarden.exe"
+    ],
+    "hardDenyPrefixes": [
+      "aumid:abu",
+      "aumid:windows.immersivecontrolpanel_",
+      "aumid:microsoft.windowsterminal_",
+      "aumid:microsoft.windows.sechealthui_",
+      "aumid:microsoft.sechealthui_"
     ],
     "approvalRequired": [
       "chrome",
@@ -94,18 +109,47 @@
       "opera.exe",
       "wechat",
       "wechat.exe",
+      "weixin",
+      "weixin.exe",
+      "wechatappex",
+      "wechatappex.exe",
       "outlook",
       "outlook.exe",
+      "olk",
+      "olk.exe",
       "slack",
       "slack.exe",
       "lark",
       "lark.exe",
+      "feishu",
+      "feishu.exe",
       "dingtalk",
       "dingtalk.exe",
       "telegram",
       "telegram.exe",
       "discord",
       "discord.exe"
+    ],
+    "browser": [
+      "chrome",
+      "chrome.exe",
+      "msedge",
+      "msedge.exe",
+      "firefox",
+      "firefox.exe",
+      "brave",
+      "brave.exe",
+      "opera",
+      "opera.exe"
+    ],
+    "ordinarySignerSubjects": [
+      "Microsoft Windows",
+      "Microsoft Corporation"
+    ],
+    "ordinaryPackagePrefixes": [
+      "aumid:microsoft.windowscalculator_",
+      "aumid:microsoft.windowsnotepad_",
+      "aumid:microsoft.paint_"
     ],
     "ordinaryAllow": [
       "explorer",
@@ -139,5 +183,11 @@
       "ordinary": "allow",
       "approval-required": "confirm"
     }
+  },
+  "progressPolicy": {
+    "noProgressBeforeRecovery": 3,
+    "noProgressAfterRecovery": 2,
+    "eventRecoveryLimit": 1,
+    "turnRecoveryLimit": 2
   }
 }

@@ -37,6 +37,7 @@ interface SerializableToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolDefinition['inputSchema'];
+  execution?: ToolDefinition['execution'];
 }
 
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
@@ -172,6 +173,7 @@ function createReverseToolInvoker(runId: string, tools: SerializableToolDefiniti
     name: t.name,
     description: t.description,
     inputSchema: t.inputSchema,
+    ...(t.execution ? { execution: t.execution } : {}),
     execute: async () => {
       throw new Error(
         `[sidecar] ToolDefinition.execute() called directly for "${t.name}" — this should never happen; subagentLoop.ts only calls invoker.executeAnyTool(), which reverses to the shell via tool.invoke.`,

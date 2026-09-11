@@ -857,6 +857,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     ? options?.blockedTools
     : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE];
   let computerUseTaskEndPromise: Promise<void> | null = null;
+  let computerUseTurnStopPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {
     if (!computerUseTaskEndPromise) {
       computerUseTaskEndPromise = import('../tools/definitions/computerTools')
@@ -866,7 +867,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     return computerUseTaskEndPromise;
   };
   const endComputerUseTaskOnAbort = () => {
-    void endComputerUseTaskLease();
+    if (!computerUseTurnStopPromise) {
+      computerUseTurnStopPromise = import('../tools/definitions/computerTools')
+        .then(({ stopComputerUseTurn }) => stopComputerUseTurn(
+          conversationId,
+          loopId,
+          typeof abortController.signal.reason === 'string'
+            ? abortController.signal.reason
+            : 'user-stop',
+        ))
+        .catch(() => {});
+    }
+    void computerUseTurnStopPromise;
   };
   abortController.signal.addEventListener('abort', endComputerUseTaskOnAbort, { once: true });
 

@@ -50,6 +50,7 @@ import { startSubagentSpan } from '../observability/langfuse';
 import { getI18n } from '../../i18n';
 import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
+import { isToolResultError } from './toolResultErrors';
 
 const logger = createLogger('subagentLoop');
 
@@ -773,7 +774,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const result = r.status === 'fulfilled'
           ? r.value.result
           : `Error: ${r.reason}`;
-        const isError = r.status === 'rejected' || result.startsWith('Error:');
+        const isError = r.status === 'rejected' || isToolResultError(result);
         onProgress?.({ type: 'tool-end', id: tc.id, toolName: tc.name, result, error: isError });
         return { id: tc.id, name: tc.name, input: tc.input, result };
       });

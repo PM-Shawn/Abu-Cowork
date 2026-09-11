@@ -11,6 +11,7 @@ const path = require('node:path');
 const {
   SIDECAR_TRACE_PREFIX,
   configureRuntimeObservability,
+  getRuntimeDiagnostics,
   createRuntimeState,
   observeMainProcessCrashes,
   observeWebContentsCrashes,
@@ -442,10 +443,14 @@ test('tracks native helper start, readiness, restart, crash, and call timeout wi
   h.state.noteNativeHelperSpawnStarted(1, false);
   h.advance(25);
   h.state.noteNativeHelperReady(1, {
-    protocol_version: 1,
+    protocol_version: 2,
     binary_version: '0.1.0',
     platform: 'macos',
     secret: 'must not escape',
+    base64: 'SCREENSHOT_MUST_NOT_ESCAPE',
+    text: 'TYPED_TEXT_MUST_NOT_ESCAPE',
+    clipboard: 'CLIPBOARD_MUST_NOT_ESCAPE',
+    elements: [{ label: 'UIA_LABEL_MUST_NOT_ESCAPE', value: 'UIA_VALUE_MUST_NOT_ESCAPE' }],
   });
   h.state.noteNativeHelperCallTimeout(1, 'ax_snapshot', 30_000);
   h.state.noteNativeHelperCrashed(1, 'code=1 sig=null');
@@ -457,13 +462,125 @@ test('tracks native helper start, readiness, restart, crash, and call timeout wi
   assert.ok(h.events.some((entry) => entry.event === 'main.native_helper_restarted'));
   const ready = h.events.find((entry) => entry.event === 'main.native_helper_ready');
   assert.equal(ready.attributes.helperGeneration, 1);
-  assert.equal(ready.attributes.helperProtocolVersion, 1);
+  assert.equal(ready.attributes.helperProtocolVersion, 2);
   assert.equal(ready.attributes.helperBinaryVersion, '0.1.0');
   assert.equal('secret' in ready.attributes, false);
+  const serialized = JSON.stringify({ events: h.events, snapshot: h.state.snapshot() });
+  for (const marker of [
+    'SCREENSHOT_MUST_NOT_ESCAPE',
+    'TYPED_TEXT_MUST_NOT_ESCAPE',
+    'CLIPBOARD_MUST_NOT_ESCAPE',
+    'UIA_LABEL_MUST_NOT_ESCAPE',
+    'UIA_VALUE_MUST_NOT_ESCAPE',
+  ]) {
+    assert.equal(serialized.includes(marker), false);
+  }
   assert.deepEqual(h.state.snapshot().nativeHelpers, [
     { helperGeneration: 1, stage: 'crashed', durationMs: 25 },
     { helperGeneration: 2, stage: 'starting', durationMs: 0 },
   ]);
+});
+
+test('Computer Use trajectory is append-safe and excludes prompts, UI text, and secrets', () => {
+  const h = makeHarness();
+  h.state.noteComputerUseTrajectory({
+    trajectoryVersion: 1,
+    trajectoryId: 'b1111111-1111-4111-8111-111111111111',
+    computerRunId: 'cu-0123456789abcdef01234567',
+    trajectorySequence: 3,
+    stage: 'action-outcome',
+    command: 'keyboard_type',
+    attemptCount: 2,
+    outcome: 'outcome-unknown',
+    outcomeUnknown: true,
+    consequential: false,
+    reason: 'observe-required',
+    windowGraphRevision: 'graph-digest',
+    prompt: 'private prompt',
+    text: 'private typed text',
+    apiKey: 'sk-never-log-this-value',
+  });
+
+  assert.deepEqual(h.events.at(-1), {
+    processName: 'main',
+    event: 'main.computer_use_trajectory',
+    attributes: {
+      trajectoryVersion: 1,
+      trajectoryId: 'b1111111-1111-4111-8111-111111111111',
+      computerRunId: 'cu-0123456789abcdef01234567',
+      trajectorySequence: 3,
+      stage: 'action-outcome',
+      command: 'keyboard_type',
+      outcome: 'outcome-unknown',
+      attemptCount: 2,
+      consequential: false,
+      outcomeUnknown: true,
+      reason: 'observe-required',
+    },
+  });
+});
+
+test('rejects malformed or private trajectory attributes instead of logging them', () => {
+  const h = makeHarness();
+  h.state.noteComputerUseTrajectory({ computerRunId: 'private-conversation', stage: 'observation' });
+  assert.equal(h.events.length, 0);
+});
+
+test('native helper supervisor telemetry records state only, never error text', () => {
+  const h = makeHarness();
+  h.state.noteNativeHelperSupervisorTransition({
+    generation: 8,
+    state: 'awaiting-approval',
+    activeMethod: null,
+    pendingCount: 0,
+    approvalPaused: true,
+    lastReason: 'authorization=Bearer abcdefghijklmnop private window title',
+  });
+
+  assert.deepEqual(h.events.at(-1), {
+    processName: 'main',
+    event: 'main.native_helper_supervisor_transition',
+    attributes: {
+      helperGeneration: 8,
+      pendingRpcCount: 0,
+      approvalPaused: true,
+      supervisorState: 'awaiting-approval',
+    },
+  });
+});
+
+test('records Computer Use revisions, cache outcomes, invalidations, and input rejection categories only', () => {
+  const h = makeHarness();
+  h.state.noteComputerUseObservation({
+    snapshotRevision: 42,
+    accessibilityRevision: 7,
+    inputEpoch: 9,
+    zIndex: 3,
+    base64: 'SCREENSHOT_MUST_NOT_ESCAPE',
+    label: 'UIA_LABEL_MUST_NOT_ESCAPE',
+    value: 'UIA_VALUE_MUST_NOT_ESCAPE',
+  });
+  h.state.noteComputerUseCache('uia-element', true, 7);
+  h.state.noteComputerUseInvalidation('physical-input');
+  h.state.noteComputerUseInputRejected('occluded');
+
+  const serialized = JSON.stringify(h.events);
+  assert.equal(serialized.includes('SCREENSHOT_MUST_NOT_ESCAPE'), false);
+  assert.equal(serialized.includes('UIA_LABEL_MUST_NOT_ESCAPE'), false);
+  assert.equal(serialized.includes('UIA_VALUE_MUST_NOT_ESCAPE'), false);
+  assert.deepEqual(h.events.map(({ event }) => event), [
+    'main.computer_use_observation',
+    'main.computer_use_cache',
+    'main.computer_use_invalidated',
+    'main.computer_use_input_rejected',
+  ]);
+  assert.deepEqual(h.events[0].attributes, {
+    snapshotRevision: 42,
+    accessibilityRevision: 7,
+    inputEpoch: 9,
+    zIndex: 3,
+    outcome: 'success',
+  });
 });
 
 // Runs last on purpose: it configures the module-level log file, which is a
@@ -492,4 +609,25 @@ test('events recorded before the log path is known are backfilled to disk', (t) 
   assert.equal(written[0].event, 'main.uncaught_exception');
   assert.equal(written[0].process, 'main');
   assert.ok(written[0].timestamp <= written[1].timestamp);
+  runtimeState.noteComputerUseTrajectory({ trajectoryVersion: 1,
+    trajectoryId: 'b1111111-1111-4111-8111-111111111111', computerRunId: 'cu-0123456789abcdef01234567',
+    trajectorySequence: 1, stage: 'observation' });
+  assert.equal(getRuntimeDiagnostics().recentEventLines.filter((line) => JSON.parse(line).event === 'main.computer_use_trajectory').length, 1);
+  const file = path.join(logDir, 'runtime-observability.jsonl');
+  fs.appendFileSync(file, '\n{"private-partial-record":');
+  const report = getRuntimeDiagnostics().computerUseReplay;
+  const { replayFile } = require('../scripts/replay-computer-use.cjs');
+  assert.deepEqual(report, replayFile(file));
+  assert.equal(report.invalidRecordCount, 1);
+  assert.equal(report.complete, false);
+  assert.equal(JSON.stringify(getRuntimeDiagnostics()).includes('private-partial-record'), false);
+  const envelope = { schemaVersion: 1, event: 'main.computer_use_trajectory', process: 'main',
+    appSessionId: 'a1111111-1111-4111-8111-111111111111', timestamp: 100,
+    trajectoryVersion: 1, trajectorySequence: 1, trajectoryId: 'b1111111-1111-4111-8111-111111111111',
+    computerRunId: 'cu-0123456789abcdef01234567', stage: 'observation' };
+  for (const patch of [{ trajectorySequence: 1.2 }, { trajectoryVersion: 1.2 }, { timestamp: null }]) {
+    fs.appendFileSync(file, `\n${JSON.stringify({ ...envelope, ...patch })}`);
+  }
+  assert.deepEqual(getRuntimeDiagnostics().computerUseReplay, replayFile(file));
+  assert.equal(getRuntimeDiagnostics().computerUseReplay.invalidRecordCount, 4);
 });

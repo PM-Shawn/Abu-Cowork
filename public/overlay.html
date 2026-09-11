@@ -91,12 +91,12 @@
     // Listen for status updates from main window via Tauri event
     if (window.__TAURI__) {
       window.__TAURI__.event.listen('computer-use-status', (event) => {
-        const { step, action, stepLabel } = event.payload;
+        const { step, action, stepLabel, targetApp } = event.payload;
         if (action) {
           // stepLabel is pre-localized by the frontend (this HTML is a dumb view
           // outside the React i18n tree); fall back if an older emitter omits it.
           const label = stepLabel || `Step ${step}`;
-          statusBar.textContent = `${label} · ${action}`;
+          statusBar.textContent = `${targetApp ? `${targetApp} · ` : ''}${label} · ${action} · Esc`;
           statusBar.classList.add('visible');
         } else {
           statusBar.classList.remove('visible');

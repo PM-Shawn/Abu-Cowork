@@ -44,6 +44,13 @@ export type SandboxRecoveryAction =
  */
 export interface ToolExecutionMetadata {
   sandboxRecovery?: SandboxRecoveryPayload;
+  /** Trusted tool says the current agent turn must stop until the user fixes
+   * an external precondition (for example, opening an explicitly named app). */
+  requiresUserRecovery?:
+    | 'computer-target-unavailable'
+    | 'computer-manual-handoff'
+    | 'computer-verification-mismatch'
+    | 'computer-outcome-unknown-new-turn';
 }
 
 /** Payload for a "save this as a skill?" proposal card. */
@@ -523,6 +530,12 @@ export interface ToolDefinition {
     required?: string[];
   };
   execute: (input: Record<string, unknown>, context?: ToolExecutionContext) => Promise<ToolResult>;
+  /** Runtime-only contract, not part of the model-facing input schema.
+   * Computer-use presentation also requires ordered batch/status handling.
+   * Host Gate owns approval-aware time/step limits; the executor adds no timer
+   * and does not retry tools automatically.
+   */
+  execution?: { presentation: 'computer-use' };
   /**
    * Whether this tool can safely execute in parallel with other concurrent-safe tools.
    * - `true` or returns `true`: tool only reads data, no side effects

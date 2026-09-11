@@ -32,6 +32,26 @@ import { listFiles } from './spike/listFilesRecursive.cjs';
 const FIXED_KEY = Buffer.alloc(32, 7);
 const quietLog = { log: () => {}, warn: () => {} };
 
+function canCreateFileSymlinks(): boolean {
+  const probeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-symlink-probe-'));
+  try {
+    const target = path.join(probeDir, 'target.txt');
+    fs.writeFileSync(target, 'probe');
+    fs.symlinkSync(target, path.join(probeDir, 'link.txt'), 'file');
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'EPERM') return false;
+    throw error;
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
+}
+
+// Windows requires Developer Mode or SeCreateSymbolicLinkPrivilege for these
+// security cases. Keep the suite portable while still running every symlink
+// assertion on hosts that can actually construct the fixture.
+const symlinkIt = canCreateFileSymlinks() ? it : it.skip;
+
 let root: string;
 let tauriDir: string;
 let electronDir: string;
@@ -852,7 +872,7 @@ describe('runTauriMigration', () => {
     ).toContain('"id":"late"');
   });
 
-  it('preserves safe relative npm bin symlinks whose targets stay inside session data', () => {
+  symlinkIt('preserves safe relative npm bin symlinks whose targets stay inside session data', () => {
     seedTauriDir();
     const packageBin = path.join(
       tauriDir,
@@ -899,7 +919,7 @@ describe('runTauriMigration', () => {
     expect(fs.readFileSync(migratedLink, 'utf8')).toContain('/usr/bin/env node');
   });
 
-  it('repairs exact v1 absolute symlinks after rollback and re-upgrade without discarding partial backups', () => {
+  symlinkIt('repairs exact v1 absolute symlinks after rollback and re-upgrade without discarding partial backups', () => {
     seedTauriDir();
     const sourcePackageBin = path.join(
       tauriDir,
@@ -1010,7 +1030,7 @@ describe('runTauriMigration', () => {
     );
   });
 
-  it('still rejects unrelated absolute symlinks already present in Electron data', () => {
+  symlinkIt('still rejects unrelated absolute symlinks already present in Electron data', () => {
     seedTauriDir();
     fs.mkdirSync(path.join(electronDir, 'sessions'), { recursive: true });
     fs.symlinkSync(
@@ -1028,7 +1048,7 @@ describe('runTauriMigration', () => {
     expect(summary.backup.path).toBeNull();
   });
 
-  it('rejects absolute source symlinks without writing a completion marker', () => {
+  symlinkIt('rejects absolute source symlinks without writing a completion marker', () => {
     seedTauriDir();
     fs.symlinkSync(
       path.join(tauriDir, 'conversations', 'index.json'),
@@ -1041,7 +1061,7 @@ describe('runTauriMigration', () => {
     expect(summary.sentinelWritten).toBe(false);
   });
 
-  it('rejects relative source symlinks that escape the migrated tree', () => {
+  symlinkIt('rejects relative source symlinks that escape the migrated tree', () => {
     seedTauriDir();
     fs.writeFileSync(path.join(root, 'outside.txt'), 'outside');
     fs.symlinkSync(
@@ -1055,7 +1075,7 @@ describe('runTauriMigration', () => {
     expect(summary.sentinelWritten).toBe(false);
   });
 
-  it('rejects dangling relative source symlinks', () => {
+  symlinkIt('rejects dangling relative source symlinks', () => {
     seedTauriDir();
     fs.symlinkSync(
       './missing.txt',

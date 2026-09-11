@@ -70,11 +70,13 @@ const {
   NATIVE_HELPER_MISS,
   killNativeHelper,
   getNativeHelperGeneration,
+  subscribeNativeHelperEvents,
 } = require('./nativeHelperManager.cjs');
 const {
   createComputerUseGate,
   COMPUTER_USE_GATE_MISS,
 } = require('./computerUseGate.cjs');
+const { createComputerUseTurnStopStore } = require('./computerUseTurnStopStore.cjs');
 const {
   buildActionApprovalDialogOptions,
 } = require('./computerUseActionPolicy.cjs');
@@ -96,7 +98,13 @@ const {
 // guiHost.cjs (GUI-families slice) — same lazy-back-require pattern as
 // browserHost.cjs: it needs emitEvent/getMainWindow/requestAppExit from this
 // module, required lazily inside its own function bodies.
-const { guiDispatch, GUI_MISS, initGuiHost, teardownGuiHost } = require('./guiHost.cjs');
+const {
+  guiDispatch,
+  GUI_MISS,
+  initGuiHost,
+  teardownGuiHost,
+  updateComputerUseOverlayBounds,
+} = require('./guiHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
@@ -125,6 +133,7 @@ const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
 let mainWindow = null;
 let quitting = false;
 let computerUseGate = null;
+let unsubscribeNativeHelperEvents = null;
 let migrationStartupBlock = null;
 let migrationStartupPending = false;
 let migrationBackupPath = null;
@@ -760,6 +769,17 @@ function registerTauriHost(app, options = {}) {
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
   computerUseGate = createComputerUseGate({
+    // BrowserWindow HWNDs and native Electron consent dialogs belong to the
+    // main process. Passing the PID lets the Host Gate reject Abu itself even
+    // in development, where the executable is the generic `electron.exe` and
+    // cannot be recognized safely from a filename policy entry.
+    selfProcessId: process.pid,
+    turnStopStore: createComputerUseTurnStopStore({
+      filePath: path.join(app.getPath('userData'), 'computer-use-stopped-turns.json'),
+      onError: (error) => {
+        console.warn('[computer-use] stopped-turn store unavailable', error);
+      },
+    }),
     nativeDispatch: async (cmd, args) => {
       const permissionResult = await computerUsePermissionHostDispatch(cmd);
       if (permissionResult !== COMPUTER_USE_PERMISSION_HOST_MISS) {
@@ -769,20 +789,15 @@ function registerTauriHost(app, options = {}) {
       if (result === NATIVE_HELPER_MISS) {
         throw new Error(`native helper does not own Computer Use command ${cmd}`);
       }
-      return await result;
-    },
-    // Computer Use must not depend on Apple Events/System Events on macOS. The
-    // native helper resolves NSWorkspace identity there; Windows keeps its
-    // existing foreground-window process probe. Both return the stable
-    // bundle/process identity required by the Host Gate.
-    getActiveWindow: async () => {
-      if (process.platform === 'win32') {
-        const result = await guiDispatch(app, 'get_active_window', {});
-        if (result === GUI_MISS) {
-          throw new Error('Windows frontmost-app provider unavailable');
-        }
-        return result;
+      const value = await result;
+      if (process.platform === 'win32' && cmd.startsWith('capture_screen')) {
+        updateComputerUseOverlayBounds(value);
       }
+      return value;
+    },
+    // Computer Use identity is resolved in the native helper on both desktop
+    // platforms. Windows must not depend on a PowerShell Add-Type subprocess.
+    getActiveWindow: async () => {
       const result = nativeHelperDispatch('frontmost_app_identity', {});
       if (result === NATIVE_HELPER_MISS) {
         throw new Error('native frontmost-app provider unavailable');
@@ -868,6 +883,30 @@ function registerTauriHost(app, options = {}) {
         : await dialog.showMessageBox(options);
       return result.response === 0;
     },
+    requestBrowserSiteApproval: async ({ target, origin }) => {
+      const isZh = app.getLocale().toLowerCase().startsWith('zh');
+      const options = {
+        type: 'warning',
+        title: isZh
+          ? `允许 Abu 操作「${origin}」？`
+          : `Allow Abu to control "${origin}"?`,
+        message: isZh
+          ? `已从「${target.app_name}」的原生地址栏验证当前站点`
+          : `The current site was verified from ${target.app_name}'s native address bar`,
+        detail: isZh
+          ? '仅允许当前任务在这个精确 origin 内操作。若页面跳转到其他 origin，必须重新观察并再次确认。无法验证地址栏时一律拒绝。'
+          : 'This allows the current task to act only within this exact origin. Navigating to another origin requires a fresh observation and approval. Unverifiable address bars are always blocked.',
+        buttons: isZh ? ['允许此站点（仅本任务）', '取消'] : ['Allow site for this task', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      };
+      const win = getMainWindow();
+      const result = win
+        ? await dialog.showMessageBox(win, options)
+        : await dialog.showMessageBox(options);
+      return result.response === 0;
+    },
     requestActionApproval: async ({ target, consequence }) => {
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const options = buildActionApprovalDialogOptions({
@@ -881,6 +920,13 @@ function registerTauriHost(app, options = {}) {
         : await dialog.showMessageBox(options);
       return result.response === 0;
     },
+  });
+  unsubscribeNativeHelperEvents?.();
+  unsubscribeNativeHelperEvents = subscribeNativeHelperEvents((event) => {
+    const interruption = computerUseGate?.handleNativeHelperEvent(event);
+    if (!interruption) return;
+    emitEvent('computer-use-abort', interruption);
+    emitEvent('computer-use-interrupted', interruption);
   });
 
   // One-time Tauri→Electron migration. It is armed only by packaged release
@@ -1140,6 +1186,8 @@ function registerTauriHost(app, options = {}) {
     // Same no-orphan intent for command trees. Background commands keep their
     // 3s-return behavior, but the registry still owns them for app shutdown.
     teardownCommandHost();
+    unsubscribeNativeHelperEvents?.();
+    unsubscribeNativeHelperEvents = null;
     computerUseGate?.teardown();
   });
 

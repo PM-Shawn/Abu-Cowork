@@ -326,9 +326,11 @@ vi.mock('../session/checkpoint', () => ({
 
 const closeAxSessionMock = vi.fn().mockResolvedValue(undefined);
 const endComputerUseTaskMock = vi.fn().mockResolvedValue(undefined);
+const stopComputerUseTurnMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../tools/definitions/computerTools', () => ({
   closeAxSession: (...a: unknown[]) => closeAxSessionMock(...a),
   endComputerUseTask: (...a: unknown[]) => endComputerUseTaskMock(...a),
+  stopComputerUseTurn: (...a: unknown[]) => stopComputerUseTurnMock(...a),
 }));
 
 const notifyTaskCompletedMock = vi.fn().mockResolvedValue(undefined);
@@ -419,6 +421,11 @@ vi.mock('../../i18n', () => ({
 const tauriInvokeMock = vi.fn().mockResolvedValue({ ok: true });
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...a: unknown[]) => tauriInvokeMock(...a),
+}));
+
+const captureComputerUseTurnTargetMock = vi.fn().mockResolvedValue({ captured: true });
+vi.mock('../computer-use/windowProtocol', () => ({
+  captureComputerUseTurnTarget: (...a: unknown[]) => captureComputerUseTurnTargetMock(...a),
 }));
 
 async function importFresh() {
@@ -532,6 +539,8 @@ describe('agentLoopRunner', () => {
     // themselves before asserting.
     chatState = { conversations: { 'conv-1': {} }, conversationIndex: {} };
     tauriInvokeMock.mockClear();
+    captureComputerUseTurnTargetMock.mockReset();
+    captureComputerUseTurnTargetMock.mockResolvedValue({ captured: true });
     execSubscribeMock.mockClear();
     execUnsubMock.mockReset();
     capturedExecCb = undefined;
@@ -544,6 +553,8 @@ describe('agentLoopRunner', () => {
     closeAxSessionMock.mockResolvedValue(undefined);
     endComputerUseTaskMock.mockReset();
     endComputerUseTaskMock.mockResolvedValue(undefined);
+    stopComputerUseTurnMock.mockReset();
+    stopComputerUseTurnMock.mockResolvedValue(undefined);
     executeAnyToolMock.mockReset();
     executeAnyToolMock.mockResolvedValue('tool result');
     capsGetMock.mockReset();
@@ -980,6 +991,7 @@ describe('agentLoopRunner', () => {
       'abort_command',
       'ax_close_session',
       'computer_use_end_task',
+      'computer_use_stop_turn',
     ])(
       'allows %s and forwards to the real Tauri invoke',
       async (cmd) => {
@@ -1978,6 +1990,51 @@ describe('agentLoopRunner', () => {
       getSettingsSnapshotMock.mockReturnValue(dispatchSettingsSnapshot());
     });
 
+    it('freezes the turn target before an in-process model run and reuses the same loop ID', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      getSidecarStatusMock.mockReturnValue('stopped');
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const loopId = (runAgentLoopMock.mock.calls[0][2] as { loopId: string }).loopId;
+      expect(captureComputerUseTurnTargetMock).toHaveBeenCalledExactlyOnceWith('conv-1', loopId);
+      expect(captureComputerUseTurnTargetMock.mock.invocationCallOrder[0])
+        .toBeLessThan(runAgentLoopMock.mock.invocationCallOrder[0]);
+    });
+
+    it('freezes the turn target before sidecar dispatch with the exact run ID', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      expect(captureComputerUseTurnTargetMock).toHaveBeenCalledExactlyOnceWith('conv-1', runId);
+      expect(captureComputerUseTurnTargetMock.mock.invocationCallOrder[0])
+        .toBeLessThan(sidecarRequestMock.mock.invocationCallOrder[0]);
+    });
+
+    it('still starts a named-app run when optional turn-target capture rejects', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      captureComputerUseTurnTargetMock.mockRejectedValue(new Error('capture unavailable'));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await expect(runAgentLoopDispatched('conv-1', 'use Word'))
+        .resolves.toEqual({ reason: 'completed' });
+      expect(sidecarRequestMock).toHaveBeenCalled();
+    });
+
+    it('does not capture a target for a non-interactive background run', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      isInteractiveDesktopMock.mockReturnValue(false);
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'scheduled work');
+
+      expect(captureComputerUseTurnTargetMock).not.toHaveBeenCalled();
+      expect(sidecarRequestMock).toHaveBeenCalled();
+    });
+
     it('runs in-process (runAgentLoop) when the sidecar is not running', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       getSidecarStatusMock.mockReturnValue('stopped');
@@ -1986,6 +2043,7 @@ describe('agentLoopRunner', () => {
 
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
       expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', {
+        loopId: expect.stringMatching(/^agl-/),
         runtimeEvent: expect.any(Function),
       });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
@@ -2654,7 +2712,7 @@ describe('agentLoopRunner', () => {
       drainSystemQueuedInputsMock.mockReturnValue([
         { id: 'system-1', text: 'hidden control input', timestamp: 3, isSystem: true },
       ]);
-      shellController.abort();
+      shellController.abort('computer-use-status-bar');
       for (let i = 0; i < 30 && !sidecarRequestMock.mock.calls.some((c) => c[0] === 'agent.abort'); i++) {
         await Promise.resolve();
       }
@@ -2664,6 +2722,10 @@ describe('agentLoopRunner', () => {
         'agent.abort',
         { runId: expect.any(String) },
         1_000,
+      );
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith(
+        'renderer.agent_abort_requested',
+        expect.objectContaining({ reason: 'computer-use-status-bar' }),
       );
       expect(chatDeltaCancelStreamingMock).toHaveBeenCalledWith('conv-1', { fromSidecarFrame: true });
       expect(chatDeltaDeactivateSkillsMock).toHaveBeenCalledWith('conv-1');

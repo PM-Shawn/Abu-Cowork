@@ -27,21 +27,44 @@
 //! src/ax.rs, macOS-only).
 
 use std::io::{BufRead, Write};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(target_os = "windows"))]
 use enigo::{Coordinate, Enigo, Mouse, Settings};
 use serde_json::{json, Value};
 
 #[cfg(target_os = "macos")]
 mod ax;
+#[cfg(target_os = "windows")]
+#[path = "windows/mod.rs"]
+mod windows_backend;
 // Computer Use (mouse/keyboard/screen-capture/TCC) — cross-platform (only the
 // exclusion-capture + permission-check internals are macOS-gated, same as
 // src-tauri). See src/cu.rs.
 mod cu;
 
-const HELPER_PROTOCOL_VERSION: u32 = 1;
+const HELPER_PROTOCOL_VERSION: u32 = 2;
 static STARTED_AT_MS: OnceLock<u128> = OnceLock::new();
+static OUTPUT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static ACTIVE_REQUEST_CONTEXT: OnceLock<RwLock<Option<Value>>> = OnceLock::new();
+
+fn emit_json(value: &Value) {
+    let lock = OUTPUT_LOCK.get_or_init(|| Mutex::new(()));
+    let Ok(_guard) = lock.lock() else { return };
+    let mut stdout = std::io::stdout();
+    let _ = writeln!(stdout, "{value}");
+    let _ = stdout.flush();
+}
+
+pub(crate) fn emit_helper_event(event: &str, reason: &str) {
+    let context = ACTIVE_REQUEST_CONTEXT
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .ok()
+        .and_then(|value| value.clone());
+    emit_json(&json!({ "event": event, "reason": reason, "context": context }));
+}
 
 fn started_at_ms() -> u128 {
     *STARTED_AT_MS.get_or_init(|| {
@@ -79,16 +102,132 @@ fn supported_commands() -> Vec<&'static str> {
         "ax_perform_action",
         "ax_close_session",
     ]);
+    #[cfg(target_os = "windows")]
+    commands.extend([
+        "input_lease_begin",
+        "input_lease_activate",
+        "input_lease_commit_observation",
+        "input_lease_observe",
+        "input_lease_pause",
+        "input_lease_resume",
+        "input_lease_end",
+        "resolve_app_identity",
+        "frontmost_app_identity",
+        "activate_app",
+        "list_apps",
+        "launch_app",
+        "list_windows",
+        "get_window",
+        "get_window_graph",
+        "frontmost_matches_target",
+        "activate_window",
+        "ax_snapshot",
+        "ax_press",
+        "ax_set_value",
+        "ax_replace_text",
+        "ax_perform_action",
+        "ax_restore_focus",
+        "ax_close_session",
+    ]);
     commands
 }
 
 fn helper_identity() -> Value {
+    #[cfg(target_os = "windows")]
+    let input_monitoring = windows_backend::input_monitoring_ready();
+    #[cfg(not(target_os = "windows"))]
+    let input_monitoring = false;
     json!({
         "protocol_version": HELPER_PROTOCOL_VERSION,
         "binary_version": env!("CARGO_PKG_VERSION"),
         "platform": std::env::consts::OS,
         "supported_commands": supported_commands(),
         "started_at_ms": started_at_ms(),
+        "capabilities": {
+            "transport": "ndjson-stdio",
+            "request_serialization": "host",
+            "legacy_v1_request_adapter": true,
+            "events": if cfg!(target_os = "windows") && input_monitoring {
+                vec!["user-interrupted", "user-input-detected", "window-invalidated"]
+            } else {
+                Vec::<&str>::new()
+            },
+            "screen_capture": if cfg!(target_os = "windows") { "wgc-monitor" } else { "xcap" },
+            "input": if cfg!(target_os = "windows") { "sendinput-guarded" } else { "enigo" },
+            "physical_input_monitoring": input_monitoring,
+            "accessibility": if cfg!(target_os = "macos") {
+                "axui-element"
+            } else if cfg!(target_os = "windows") {
+                "windows-uia"
+            } else {
+                "unavailable"
+            },
+        },
+    })
+}
+
+struct WireRequest {
+    id: Value,
+    method: String,
+    params: Value,
+    context: Option<Value>,
+}
+
+fn normalize_request_context(req: &Value) -> Option<Value> {
+    let context = req.get("context")?.as_object()?;
+    let conversation_id = context
+        .get("conversation_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(256).collect::<String>());
+    let loop_id = context
+        .get("loop_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(256).collect::<String>());
+    let target = context
+        .get("target")
+        .and_then(Value::as_object)
+        .map(|target| {
+            json!({
+                "app_id": target
+                    .get("app_id")
+                    .and_then(Value::as_str)
+                    .map(|value| value.chars().take(1024).collect::<String>()),
+                "process_id": target.get("process_id").and_then(Value::as_u64),
+                "window_id": target
+                    .get("window_id")
+                    .and_then(Value::as_str)
+                    .map(|value| value.chars().take(128).collect::<String>()),
+            })
+        });
+    if conversation_id.is_none() && loop_id.is_none() && target.is_none() {
+        return None;
+    }
+    Some(json!({
+        "conversation_id": conversation_id,
+        "loop_id": loop_id,
+        "target": target,
+    }))
+}
+
+fn parse_wire_request(req: &Value) -> Result<WireRequest, String> {
+    let method = req
+        .get("method")
+        .or_else(|| req.get("command"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "missing request method/command".to_string())?;
+    let params = req
+        .get("params")
+        .or_else(|| req.get("args"))
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    Ok(WireRequest {
+        id: req.get("id").cloned().unwrap_or(Value::Null),
+        method: method.to_string(),
+        params,
+        context: normalize_request_context(req),
     })
 }
 
@@ -107,6 +246,14 @@ fn require_u32(params: &Value, key: &str) -> Result<u32, String> {
         .get(key)
         .and_then(Value::as_u64)
         .map(|v| v as u32)
+        .ok_or_else(|| format!("missing required param '{key}'"))
+}
+
+/// Read a required u64 param used for monotonic observation/input epochs.
+fn require_u64(params: &Value, key: &str) -> Result<u64, String> {
+    params
+        .get(key)
+        .and_then(Value::as_u64)
         .ok_or_else(|| format!("missing required param '{key}'"))
 }
 
@@ -174,24 +321,13 @@ fn assert_expected_target(params: &Value) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, GetWindowThreadProcessId,
-        };
-
-        let expected_pid = expected_pid
-            .ok_or_else(|| "Computer Use expected process identity is unavailable".to_string())?;
-        let hwnd = unsafe { GetForegroundWindow() };
-        if hwnd.0.is_null() {
-            return Err("Computer Use foreground window is unavailable".to_string());
-        }
-        let mut actual_pid = 0u32;
-        unsafe {
-            GetWindowThreadProcessId(hwnd, Some(&mut actual_pid));
-        }
-        if actual_pid as i32 != expected_pid {
+        let actual = windows_backend::frontmost_app_identity_impl()?;
+        if !actual.bundle_id.eq_ignore_ascii_case(&expected_bundle)
+            || expected_pid.is_some_and(|pid| pid != actual.process_id)
+        {
             return Err(format!(
-                "Computer Use target changed before native input: expected {} ({}), got process {}",
-                expected_bundle, expected_pid, actual_pid
+                "Computer Use target changed before native input: expected {} ({:?}), got {} ({})",
+                expected_bundle, expected_pid, actual.bundle_id, actual.process_id
             ));
         }
         Ok(())
@@ -217,6 +353,56 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             Ok(identity)
         }
 
+        #[cfg(target_os = "windows")]
+        "input_lease_begin" => {
+            let epoch = windows_backend::begin_input_lease(&require_str(params, "lease_id")?)?;
+            Ok(json!({ "input_epoch": epoch, "phase": "observing" }))
+        }
+        #[cfg(target_os = "windows")]
+        "input_lease_activate" => {
+            let epoch = windows_backend::activate_input_lease(
+                &require_str(params, "lease_id")?,
+                require_u64(params, "expected_input_epoch")?,
+            )?;
+            Ok(json!({ "input_epoch": epoch, "phase": "running" }))
+        }
+        #[cfg(target_os = "windows")]
+        "input_lease_commit_observation" => {
+            let epoch = windows_backend::commit_input_observation(
+                &require_str(params, "lease_id")?,
+                require_u64(params, "expected_input_epoch")?,
+            )?;
+            Ok(json!({ "input_epoch": epoch, "phase": "observing" }))
+        }
+        #[cfg(target_os = "windows")]
+        "input_lease_observe" => {
+            let epoch = windows_backend::observe_input_lease(&require_str(params, "lease_id")?)?;
+            Ok(json!({ "input_epoch": epoch, "phase": "observing" }))
+        }
+        #[cfg(target_os = "windows")]
+        "input_lease_pause" => {
+            let owner = u32::try_from(require_u64(params, "consent_owner_process_id")?)
+                .map_err(|_| "consent owner process id is invalid".to_string())?;
+            let epoch =
+                windows_backend::pause_input_lease(&require_str(params, "lease_id")?, owner)?;
+            Ok(json!({ "input_epoch": epoch, "phase": "paused-for-consent" }))
+        }
+        #[cfg(target_os = "windows")]
+        "input_lease_resume" => {
+            let (dirty, epoch) =
+                windows_backend::resume_input_lease(&require_str(params, "lease_id")?)?;
+            Ok(json!({
+                "dirty": dirty,
+                "input_epoch": epoch,
+                "phase": if dirty { "observing" } else { "running" },
+            }))
+        }
+        #[cfg(target_os = "windows")]
+        "input_lease_end" => {
+            windows_backend::end_input_lease(&require_str(params, "lease_id")?)?;
+            Ok(json!({ "ended": true, "phase": "idle" }))
+        }
+
         // ── Accessibility (AXUIElement) family — reuses src-tauri's
         // Tauri-free `*_impl` code via `ax` module (see src/ax.rs). ──
         "resolve_app_identity" => {
@@ -227,8 +413,15 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
             }
             #[cfg(not(target_os = "macos"))]
+            #[cfg(not(target_os = "windows"))]
             {
                 Err("App identity resolution is macOS-only".to_string())
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let name = require_str(params, "app_name")?;
+                let identity = windows_backend::resolve_app_identity_impl(name)?;
+                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
             }
         }
 
@@ -239,8 +432,14 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
             }
             #[cfg(not(target_os = "macos"))]
+            #[cfg(not(target_os = "windows"))]
             {
                 Err("Frontmost app identity resolution is macOS-only".to_string())
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let identity = windows_backend::frontmost_app_identity_impl()?;
+                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
             }
         }
 
@@ -255,8 +454,113 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 Ok(Value::String(display))
             }
             #[cfg(not(target_os = "macos"))]
+            #[cfg(not(target_os = "windows"))]
             {
                 Err("AX is macOS-only".to_string())
+            }
+            #[cfg(target_os = "windows")]
+            {
+                let name = require_str(params, "app_name")?;
+                let display = windows_backend::activate_app_impl(name)?;
+                Ok(Value::String(display))
+            }
+        }
+
+        "list_windows" => {
+            #[cfg(target_os = "windows")]
+            {
+                let expected_app_id = opt_str(params, "expected_app_id");
+                let windows = windows_backend::list_windows_impl(expected_app_id)?;
+                serde_json::to_value(windows).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Window enumeration is Windows-only".to_string())
+            }
+        }
+
+        "list_apps" => {
+            #[cfg(target_os = "windows")]
+            {
+                let apps = windows_backend::list_apps_impl()?;
+                serde_json::to_value(apps).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Application catalog is Windows-only".to_string())
+            }
+        }
+
+        "launch_app" => {
+            #[cfg(target_os = "windows")]
+            {
+                let query = require_str(params, "app_name")?;
+                let app = windows_backend::launch_app_impl(query)?;
+                serde_json::to_value(app).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Application launch is Windows-only".to_string())
+            }
+        }
+
+        "get_window" => {
+            #[cfg(target_os = "windows")]
+            {
+                let window_id = require_str(params, "window_id")?;
+                let window = windows_backend::get_window_impl(window_id)?;
+                serde_json::to_value(window).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Window lookup is Windows-only".to_string())
+            }
+        }
+
+        "get_window_graph" => {
+            #[cfg(target_os = "windows")]
+            {
+                let graph = windows_backend::get_window_graph_impl(
+                    require_str(params, "expected_app_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                )?;
+                serde_json::to_value(graph).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Window graph lookup is Windows-only".to_string())
+            }
+        }
+
+        "frontmost_matches_target" => {
+            #[cfg(target_os = "windows")]
+            {
+                let result = windows_backend::frontmost_matches_target_impl(
+                    require_str(params, "expected_app_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                )?;
+                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Window target matching is Windows-only".to_string())
+            }
+        }
+
+        "activate_window" => {
+            #[cfg(target_os = "windows")]
+            {
+                let window_id = require_str(params, "window_id")?;
+                let window = windows_backend::activate_window_impl(window_id)?;
+                serde_json::to_value(window).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("Window activation is Windows-only".to_string())
             }
         }
 
@@ -274,9 +578,27 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     ax::ax_snapshot_impl(app, Some(expected_bundle_id), expected_process_id)?;
                 serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
             {
-                Err("AX is macOS-only".to_string())
+                let expected_app_id = require_str(params, "expected_bundle_id")?;
+                let app_name = params
+                    .get("app_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&expected_app_id)
+                    .to_string();
+                let expected_process_id = opt_i32(params, "expected_process_id")
+                    .and_then(|value| u32::try_from(value).ok());
+                let result = windows_backend::ax_snapshot_impl(
+                    app_name,
+                    Some(expected_app_id),
+                    expected_process_id,
+                    opt_str(params, "expected_window_id"),
+                )?;
+                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                Err("Accessibility snapshots are unsupported on this platform".to_string())
             }
         }
 
@@ -288,9 +610,16 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 ax::ax_press_impl(session_id, element_id)?;
                 Ok(json!({ "ok": true }))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
             {
-                Err("AX is macOS-only".to_string())
+                let session_id = require_str(params, "session_id")?;
+                let element_id = require_u32(params, "element_id")?;
+                windows_backend::ax_press_impl(session_id, element_id)?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                Err("Accessibility actions are unsupported on this platform".to_string())
             }
         }
 
@@ -303,9 +632,73 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 ax::ax_set_value_impl(session_id, element_id, text)?;
                 Ok(json!({ "ok": true }))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
             {
-                Err("AX is macOS-only".to_string())
+                let session_id = require_str(params, "session_id")?;
+                let element_id = require_u32(params, "element_id")?;
+                let text = require_str(params, "text")?;
+                windows_backend::ax_set_value_impl(session_id, element_id, text)?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                Err("Accessibility actions are unsupported on this platform".to_string())
+            }
+        }
+
+        "ax_replace_text" => {
+            #[cfg(target_os = "windows")]
+            {
+                let session_id = require_str(params, "session_id")?;
+                let element_id = require_u32(params, "element_id")?;
+                let text = require_str(params, "text")?;
+                let expected_app_id = require_str(params, "expected_bundle_id")?;
+                let expected_process_id =
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?;
+                let expected_window_id = require_str(params, "expected_window_id")?;
+                let expected_input_epoch = require_u64(params, "expected_input_epoch")?;
+
+                // UIA chooses and verifies the exact cached element; guarded
+                // SendInput then performs the user-visible edit against the
+                // same app/PID/HWND/input epoch. This avoids trusting a
+                // provider-side ValuePattern cache as proof of a real edit.
+                windows_backend::ax_perform_action_impl(
+                    session_id,
+                    element_id,
+                    "focus".to_string(),
+                )?;
+                windows_backend::keyboard_press_impl(
+                    "a".to_string(),
+                    vec!["ctrl".to_string()],
+                    expected_app_id.clone(),
+                    expected_process_id,
+                    expected_window_id.clone(),
+                    expected_input_epoch,
+                )?;
+                let result = if text.is_empty() {
+                    windows_backend::keyboard_press_impl(
+                        "backspace".to_string(),
+                        Vec::new(),
+                        expected_app_id,
+                        expected_process_id,
+                        expected_window_id,
+                        expected_input_epoch,
+                    )?
+                } else {
+                    windows_backend::keyboard_type_impl(
+                        text,
+                        expected_app_id,
+                        expected_process_id,
+                        expected_window_id,
+                        expected_input_epoch,
+                    )?
+                };
+                Ok(json!(result))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("guarded accessibility text replacement is Windows-only".to_string())
             }
         }
 
@@ -318,9 +711,30 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 ax::ax_perform_action_impl(session_id, element_id, action_name)?;
                 Ok(json!({ "ok": true }))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
             {
-                Err("AX is macOS-only".to_string())
+                let session_id = require_str(params, "session_id")?;
+                let element_id = require_u32(params, "element_id")?;
+                let action_name = require_str(params, "action_name")?;
+                windows_backend::ax_perform_action_impl(session_id, element_id, action_name)?;
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                Err("Accessibility actions are unsupported on this platform".to_string())
+            }
+        }
+
+        "ax_restore_focus" => {
+            #[cfg(target_os = "windows")]
+            {
+                let session_id = require_str(params, "session_id")?;
+                let restored = windows_backend::ax_restore_focus_impl(session_id)?;
+                Ok(json!({ "restored": restored }))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err("UIA focus restoration is Windows-only".to_string())
             }
         }
 
@@ -331,33 +745,54 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 ax::ax_close_session_impl(session_id);
                 Ok(json!({ "ok": true }))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
             {
-                Err("AX is macOS-only".to_string())
+                let session_id = require_str(params, "session_id")?;
+                windows_backend::ax_close_session_impl(session_id);
+                Ok(json!({ "ok": true }))
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            {
+                Err("Accessibility actions are unsupported on this platform".to_string())
             }
         }
 
         "mouse_move" => {
-            assert_expected_target(params)?;
-            let mut enigo =
-                Enigo::new(&Settings::default()).map_err(|e| format!("enigo init failed: {e}"))?;
-            // Current position — also the default target, so an argument-less call
-            // is a no-op that still exercises the full input-synth (TCC) path.
-            let (cx, cy) = enigo
-                .location()
-                .map_err(|e| format!("location failed: {e}"))?;
-            let tx = params
-                .get("x")
-                .and_then(Value::as_i64)
-                .map_or(cx, |v| v as i32);
-            let ty = params
-                .get("y")
-                .and_then(Value::as_i64)
-                .map_or(cy, |v| v as i32);
-            enigo
-                .move_mouse(tx, ty, Coordinate::Abs)
-                .map_err(|e| format!("move_mouse failed: {e}"))?;
-            Ok(json!({ "moved_to": [tx, ty], "was_at": [cx, cy] }))
+            #[cfg(target_os = "windows")]
+            {
+                let result = windows_backend::mouse_move_impl(
+                    require_i32(params, "x")?,
+                    require_i32(params, "y")?,
+                    require_str(params, "screenshot_id")?,
+                    require_str(params, "expected_bundle_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                    require_u64(params, "expected_input_epoch")?,
+                )?;
+                Ok(json!(result))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                assert_expected_target(params)?;
+                let mut enigo = Enigo::new(&Settings::default())
+                    .map_err(|e| format!("enigo init failed: {e}"))?;
+                let (cx, cy) = enigo
+                    .location()
+                    .map_err(|e| format!("location failed: {e}"))?;
+                let tx = params
+                    .get("x")
+                    .and_then(Value::as_i64)
+                    .map_or(cx, |v| v as i32);
+                let ty = params
+                    .get("y")
+                    .and_then(Value::as_i64)
+                    .map_or(cy, |v| v as i32);
+                enigo
+                    .move_mouse(tx, ty, Coordinate::Abs)
+                    .map_err(|e| format!("move_mouse failed: {e}"))?;
+                Ok(json!({ "moved_to": [tx, ty], "was_at": [cx, cy] }))
+            }
         }
 
         // ── Computer Use — screen capture (base64 PNG, matches computer_use.rs's
@@ -373,8 +808,28 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             let width = opt_u32(params, "width");
             let height = opt_u32(params, "height");
             let max_width = opt_u32(params, "max_width");
-            let result = cu::capture_screen_impl(x, y, width, height, max_width)?;
-            serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+            #[cfg(target_os = "windows")]
+            {
+                let result = windows_backend::capture_screen_state_impl(
+                    x,
+                    y,
+                    width,
+                    height,
+                    max_width,
+                    None,
+                    None,
+                    opt_str(params, "expected_bundle_id"),
+                    opt_i32(params, "expected_process_id")
+                        .and_then(|value| u32::try_from(value).ok()),
+                    opt_str(params, "expected_window_id"),
+                )?;
+                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let result = cu::capture_screen_impl(x, y, width, height, max_width)?;
+                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+            }
         }
 
         "capture_screen_excluding" => {
@@ -403,7 +858,25 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 )?;
                 serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
             }
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            {
+                let _ = exclude_window_id;
+                let result = windows_backend::capture_screen_state_impl(
+                    x,
+                    y,
+                    width,
+                    height,
+                    max_width,
+                    anchor_x,
+                    anchor_y,
+                    opt_str(params, "expected_bundle_id"),
+                    opt_i32(params, "expected_process_id")
+                        .and_then(|value| u32::try_from(value).ok()),
+                    opt_str(params, "expected_window_id"),
+                )?;
+                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+            }
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
                 // xcap doesn't support exclusion — fall back to regular capture,
                 // same as computer_use.rs's non-macOS branch.
@@ -422,9 +895,27 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             let x = require_i32(params, "x")?;
             let y = require_i32(params, "y")?;
             let button = opt_str(params, "button");
-            let msg =
-                cu::mouse_click_guarded_impl(x, y, button, || assert_expected_target(params))?;
-            Ok(json!(msg))
+            #[cfg(target_os = "windows")]
+            {
+                let msg = windows_backend::mouse_click_impl(
+                    x,
+                    y,
+                    button,
+                    require_str(params, "screenshot_id")?,
+                    require_str(params, "expected_bundle_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                    require_u64(params, "expected_input_epoch")?,
+                )?;
+                Ok(json!(msg))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let msg =
+                    cu::mouse_click_guarded_impl(x, y, button, || assert_expected_target(params))?;
+                Ok(json!(msg))
+            }
         }
 
         "mouse_scroll" => {
@@ -432,10 +923,29 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             let y = require_i32(params, "y")?;
             let direction = require_str(params, "direction")?;
             let amount = opt_i32(params, "amount");
-            let msg = cu::mouse_scroll_guarded_impl(x, y, direction, amount, || {
-                assert_expected_target(params)
-            })?;
-            Ok(json!(msg))
+            #[cfg(target_os = "windows")]
+            {
+                let msg = windows_backend::mouse_scroll_impl(
+                    x,
+                    y,
+                    direction,
+                    amount,
+                    require_str(params, "screenshot_id")?,
+                    require_str(params, "expected_bundle_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                    require_u64(params, "expected_input_epoch")?,
+                )?;
+                Ok(json!(msg))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let msg = cu::mouse_scroll_guarded_impl(x, y, direction, amount, || {
+                    assert_expected_target(params)
+                })?;
+                Ok(json!(msg))
+            }
         }
 
         "mouse_drag" => {
@@ -443,24 +953,75 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             let start_y = require_i32(params, "start_y")?;
             let end_x = require_i32(params, "end_x")?;
             let end_y = require_i32(params, "end_y")?;
-            let msg = cu::mouse_drag_guarded_impl(start_x, start_y, end_x, end_y, || {
-                assert_expected_target(params)
-            })?;
-            Ok(json!(msg))
+            #[cfg(target_os = "windows")]
+            {
+                let msg = windows_backend::mouse_drag_impl(
+                    start_x,
+                    start_y,
+                    end_x,
+                    end_y,
+                    require_str(params, "screenshot_id")?,
+                    require_str(params, "expected_bundle_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                    require_u64(params, "expected_input_epoch")?,
+                )?;
+                Ok(json!(msg))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let msg = cu::mouse_drag_guarded_impl(start_x, start_y, end_x, end_y, || {
+                    assert_expected_target(params)
+                })?;
+                Ok(json!(msg))
+            }
         }
 
         "keyboard_type" => {
             let text = require_str(params, "text")?;
-            let msg = cu::keyboard_type_guarded_impl(text, || assert_expected_target(params))?;
-            Ok(json!(msg))
+            #[cfg(target_os = "windows")]
+            {
+                let msg = windows_backend::keyboard_type_impl(
+                    text,
+                    require_str(params, "expected_bundle_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                    require_u64(params, "expected_input_epoch")?,
+                )?;
+                Ok(json!(msg))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let msg = cu::keyboard_type_guarded_impl(text, || assert_expected_target(params))?;
+                Ok(json!(msg))
+            }
         }
 
         "keyboard_press" => {
             let key = require_str(params, "key")?;
             let modifiers = opt_str_vec(params, "modifiers");
-            let msg =
-                cu::keyboard_press_guarded_impl(key, modifiers, || assert_expected_target(params))?;
-            Ok(json!(msg))
+            #[cfg(target_os = "windows")]
+            {
+                let msg = windows_backend::keyboard_press_impl(
+                    key,
+                    modifiers.unwrap_or_default(),
+                    require_str(params, "expected_bundle_id")?,
+                    u32::try_from(require_i32(params, "expected_process_id")?)
+                        .map_err(|_| "expected process id is invalid".to_string())?,
+                    require_str(params, "expected_window_id")?,
+                    require_u64(params, "expected_input_epoch")?,
+                )?;
+                Ok(json!(msg))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let msg = cu::keyboard_press_guarded_impl(key, modifiers, || {
+                    assert_expected_target(params)
+                })?;
+                Ok(json!(msg))
+            }
         }
 
         other => Err(format!("unknown method: {other}")),
@@ -468,9 +1029,18 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
 }
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = unsafe {
+            windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
+                windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+            )
+        };
+    }
+    #[cfg(target_os = "windows")]
+    let _ = windows_backend::initialize_input_monitoring();
     let _ = started_at_ms();
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(l) => l,
@@ -483,23 +1053,86 @@ fn main() {
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    json!({ "error": format!("parse error: {e}") })
-                );
-                let _ = stdout.flush();
+                emit_json(&json!({ "error": format!("parse error: {e}") }));
                 continue;
             }
         };
-        let id = req.get("id").cloned().unwrap_or(Value::Null);
-        let method = req.get("method").and_then(Value::as_str).unwrap_or("");
-        let params = req.get("params").cloned().unwrap_or(Value::Null);
-        let resp = match handle(method, &params) {
-            Ok(result) => json!({ "id": id, "result": result }),
-            Err(error) => json!({ "id": id, "error": error }),
+        let wire = match parse_wire_request(&req) {
+            Ok(value) => value,
+            Err(error) => {
+                emit_json(&json!({
+                    "id": req.get("id").cloned().unwrap_or(Value::Null),
+                    "error": error,
+                }));
+                continue;
+            }
         };
-        let _ = writeln!(stdout, "{resp}");
-        let _ = stdout.flush();
+        if let Some(context) = &wire.context {
+            if let Ok(mut active) = ACTIVE_REQUEST_CONTEXT
+                .get_or_init(|| RwLock::new(None))
+                .write()
+            {
+                *active = Some(context.clone());
+            }
+        }
+        #[cfg(target_os = "windows")]
+        if matches!(
+            wire.method.as_str(),
+            "ax_snapshot" | "capture_screen" | "capture_screen_excluding"
+        ) {
+            windows_backend::begin_input_observation();
+        }
+        let handled = handle(&wire.method, &wire.params);
+        let resp = match handled {
+            Ok(result) => json!({ "id": wire.id, "result": result }),
+            Err(error) => json!({ "id": wire.id, "error": error }),
+        };
+        emit_json(&resp);
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_v2_and_legacy_v1_request_shapes() {
+        let v2 = parse_wire_request(&json!({
+            "id": 1,
+            "method": "health",
+            "params": { "ignored": true },
+            "context": {
+                "conversation_id": "conversation-a",
+                "loop_id": "loop-a",
+                "target": {
+                    "app_id": "path:C:\\Windows\\System32\\notepad.exe",
+                    "process_id": 42,
+                    "window_id": "0x1234",
+                    "window_title": "must not cross the protocol boundary"
+                },
+                "user_text": "must not cross the protocol boundary"
+            }
+        }))
+        .unwrap();
+        assert_eq!(v2.method, "health");
+        assert_eq!(v2.params["ignored"], true);
+        let context = v2.context.unwrap();
+        assert_eq!(context["conversation_id"], "conversation-a");
+        assert_eq!(context["loop_id"], "loop-a");
+        assert_eq!(context["target"]["process_id"], 42);
+        assert!(context.get("user_text").is_none());
+        assert!(context["target"].get("window_title").is_none());
+
+        let v1 = parse_wire_request(&json!({
+            "id": "legacy",
+            "command": "ping",
+            "args": { "legacy": true },
+        }))
+        .unwrap();
+        assert_eq!(v1.id, "legacy");
+        assert_eq!(v1.method, "ping");
+        assert_eq!(v1.params["legacy"], true);
+        assert!(v1.context.is_none());
+        assert!(parse_wire_request(&json!({ "id": 2 })).is_err());
     }
 }

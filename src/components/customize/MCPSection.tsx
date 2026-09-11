@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from 'react';
 import { useExtensionsSearchQuery } from '@/stores/settingsStore';
 import { useMCPStore, type MCPServerEntry } from '@/stores/mcpStore';
+import { useToastStore } from '@/stores/toastStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { pluginServerOwners } from '@/core/plugin/pluginMcpBridge';
 import { useChatStore } from '@/stores/chatStore';
@@ -12,9 +13,12 @@ import { mcpManager, type MCPServerConfig, type MCPLogEntry } from '@/core/mcp/c
 import { parseArgs } from '@/utils/argsParser';
 import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import type { MCPTemplate } from '@/types/marketplace';
-import { Trash2, Plus, Loader2, Check, X, Plug, PlugZap, ChevronDown, ChevronRight, Wrench, Zap, AlertCircle, ScrollText, Server, Pencil } from 'lucide-react';
+import { Plus, Loader2, Check, X, ChevronDown, ChevronRight, Wrench, AlertCircle, Server, ArrowLeft } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { open } from '@tauri-apps/plugin-shell';
+import { Button } from '@/components/ui/button';
+import InstalledItemMenu from '@/components/toolbox/InstalledItemMenu';
+import { Toggle } from '@/components/ui/toggle';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
@@ -91,13 +95,7 @@ type SelectedItem =
 interface MCPSectionProps {
   showAddForm?: boolean;
   onAddFormChange?: (open: boolean) => void;
-  /** `'mine'` narrows the list to the servers the user configured by hand — the
-   *  「我的」 half of the Extensions source sub-nav. A plugin's server belongs to
-   *  the package that brought it, and un-installed catalog cards are offers
-   *  「市场」 (ConnectorCatalog) makes, so both are absent here. What is left is
-   *  rendered as ONE ungrouped list: the 我的/市场 split describes where a config
-   *  came from, and here the answer is always "the user". Omitted = every
-   *  source, grouped as before. */
+  /** Optional authored-only embedding; omit for the released grouped card view. */
   sourceFilter?: 'mine';
   /** A connector to pre-fill the add-server form with, applied when the form
    *  is open. 「市场」's 「添加」 routes through here rather than adding a server
@@ -141,11 +139,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
 
   // Tool list expansion
-  const [expandedTools, setExpandedTools] = useState(false);
+  const [expandedTools, setExpandedTools] = useState(true);
 
   // Test connection state
   const [testingServer, setTestingServer] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, { success: boolean; message: string }>>({});
 
   // Server logs viewer
   const [showLogs, setShowLogs] = useState(false);
@@ -209,12 +206,13 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Categorize: "我的" = custom (not from templates), "示例" = template-based (installed + uninstalled)
   const searchLower = extensionsSearchQuery.toLowerCase();
   const templateNames = useMemo(() => new Set(getMCPTemplates().map((t) => t.name)), []);
-  const editingNameLocked = !!editingServerName && templateNames.has(editingServerName);
+  const editingNameLocked = !!editingServerName && (templateNames.has(editingServerName) || !!serverOwners[editingServerName]);
 
   const validateServerName = (requestedName: string, oldName?: string): string | null => {
     const name = requestedName.trim();
     if (!name) return t.toolbox.serverNameRequired;
     if (name === oldName) return null;
+    if (oldName && serverOwners[oldName]) return format(t.toolbox.mcpFromPlugin, { name: serverOwners[oldName] });
     if (servers[name]) return format(t.toolbox.serverNameExists, { name });
     // Importing a known marketplace config by its canonical name is valid.
     // Only a rename may not claim another template's identity.
@@ -247,12 +245,6 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
     updateServer(newName, { ...config, name: newName });
     setServerErrors((prev) => {
-      const next = { ...prev };
-      delete next[oldName];
-      delete next[newName];
-      return next;
-    });
-    setTestResults((prev) => {
       const next = { ...prev };
       delete next[oldName];
       delete next[newName];
@@ -292,10 +284,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   // "我的": user-added custom servers (not matching any template)
   const customServers = useMemo(() => {
-    const list = mcpServers.filter((s) => !templateNames.has(s.config.name));
+    const visibleNames = new Set(availableTemplates.map((template) => template.name));
+    const list = mcpServers.filter((s) => !visibleNames.has(s.config.name));
     if (!searchLower) return list;
     return list.filter((s) => s.config.name.toLowerCase().includes(searchLower));
-  }, [mcpServers, templateNames, searchLower]);
+  }, [mcpServers, availableTemplates, searchLower]);
 
   // "示例": all templates — installed ones first, then uninstalled
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: MCPTemplate };
@@ -597,7 +590,6 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setConnectingServer(name);
     // Connect/disconnect is the authoritative action — clear any stale test result.
     setServerErrors((prev) => { const next = { ...prev }; delete next[name]; return next; });
-    setTestResults((prev) => { const next = { ...prev }; delete next[name]; return next; });
     try {
       if (entry.status === 'connected') await disconnectServer(name);
       else {
@@ -613,31 +605,18 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     const name = entry.config.name;
     setTestingServer(name);
     // Clear both stale test result and stale connect error — test is a fresh probe.
-    setTestResults((prev) => { const next = { ...prev }; delete next[name]; return next; });
     setServerErrors((prev) => { const next = { ...prev }; delete next[name]; return next; });
     try {
       const result = await mcpManager.testConnection(entry.config);
       const message = result.success
         ? `${t.toolbox.testSuccess} · ${toolCountLabel(t, result.toolCount, result.appToolCount)}`
         : (result.error ?? t.toolbox.testFailed);
-      setTestResults((prev) => ({ ...prev, [name]: { success: result.success, message } }));
+      useToastStore.getState().addToast({ type: result.success ? 'success' : 'error', title: name, message });
       // A successful test invalidates any prior connect-time error.
       if (result.success) clearServerError(name);
     } catch (err) {
-      setTestResults((prev) => ({ ...prev, [name]: { success: false, message: err instanceof Error ? err.message : String(err) } }));
+      useToastStore.getState().addToast({ type: 'error', title: name, message: err instanceof Error ? err.message : String(err) });
     } finally { setTestingServer(null); }
-  };
-
-  // Connection-status indicator dot (card top-right) — the icon itself stays a
-  // neutral colour so it doesn't flicker green/red as the connection changes.
-  const statusDotClass = (entry: MCPServerEntry) => {
-    const { status } = entry;
-    const isConn = connectingServer === entry.config.name;
-    if (status === 'reconnecting') return 'bg-[var(--abu-warning-solid)] animate-pulse';
-    if (isConn || status === 'connecting') return 'bg-[var(--abu-warning-solid)] animate-pulse';
-    if (status === 'connected') return 'bg-[var(--abu-success-solid)]';
-    if (status === 'error') return 'bg-[var(--abu-danger-solid)]';
-    return 'bg-[var(--abu-text-placeholder)]';
   };
 
   // Get selected server entry or template
@@ -649,7 +628,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   // Reset detail state when selection changes
   const selectedKey = selected?.kind === 'server' ? selected.name : selected?.kind === 'template' ? selected.id : null;
   useEffect(() => {
-    setExpandedTools(false);
+    setExpandedTools(true);
     setShowLogs(false);
   }, [selectedKey]);
 
@@ -669,7 +648,17 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
           name: c.name,
           description,
           avatar: <Server className="h-6 w-6 text-[var(--abu-text-muted)]" />,
-          badge: <span className={cn('block w-2 h-2 rounded-full', statusDotClass(entry))} title={entry.status} />,
+          toggle: (
+            <span title={entry.error || (entry.status === 'connected' ? t.toolbox.disconnect : t.toolbox.connect)} onClick={event => event.stopPropagation()}>
+              <Toggle
+                checked={entry.status === 'connected'}
+                disabled={connectingServer !== null || entry.status === 'connecting' || entry.status === 'reconnecting'}
+                onChange={() => void handleToggleConnection(entry)}
+                size="sm"
+                tone="green"
+              />
+            </span>
+          ),
         }}
         onClick={() => setSelected({ kind: 'server', name: c.name })}
       />
@@ -691,8 +680,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
-      {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
-          TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
+      {/* Shared connector rows for My items; standalone views retain their template grid. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
         {sourceFilter === 'mine' ? (
           mineServers.length === 0 ? (
@@ -715,14 +703,14 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
             {/* "我的" — user-added custom servers */}
             {customServers.length > 0 && (
               <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.myServers}</div>
+                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.myServers}</div>
                 <ToolGrid>{customServers.map((entry) => renderServerCard(entry))}</ToolGrid>
               </div>
             )}
             {/* "示例" — template-based (installed + uninstalled together) */}
             {exampleItems.length > 0 && (
               <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.exampleServers}</div>
+                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.exampleServers}</div>
                 <ToolGrid>
                   {exampleItems.map((item) => item.kind === 'installed' ? renderServerCard(item.entry) : renderTemplateCard(item.template))}
                 </ToolGrid>
@@ -737,53 +725,65 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         open={!!selected}
         onClose={() => setSelected(null)}
         maxWidth="max-w-2xl"
-        avatar={selected ? <Server className="h-6 w-6 text-[var(--abu-text-muted)]" /> : undefined}
-        title={
-          selectedServer ? selectedServer.config.name
-          : selectedTemplate ? (
-              <span className="inline-flex items-center gap-2">
-                {pickLocale(locale, selectedTemplate.name, selectedTemplate.nameEn)}
-                {selectedTemplate.transport === 'http' && (
-                  <span className="px-1.5 py-0.5 rounded text-caption font-medium bg-[var(--abu-info-bg)] text-[var(--abu-info)]">HTTP</span>
-                )}
-              </span>
-            )
-          : undefined
-        }
-        subtitle={selectedServer ? (
-          <span className={cn('font-medium', serverStatusMeta(selectedServer, connectingServer, testingServer, t).statusColor)}>
-            {serverStatusMeta(selectedServer, connectingServer, testingServer, t).statusLabel}
-          </span>
+        avatar={showLogs && selectedServer ? <button type="button" aria-label={t.toolbox.backToDetails} title={t.toolbox.backToDetails} onClick={() => setShowLogs(false)} className="flex h-full w-full items-center justify-center rounded-full hover:bg-[var(--abu-bg-active)]"><ArrowLeft className="h-5 w-5 text-[var(--abu-text-muted)]" /></button> : selected ? <Server className="h-6 w-6 text-[var(--abu-text-muted)]" /> : undefined}
+        stackedHeader
+        panelClassName="h-[min(640px,85vh)]"
+        footer={selectedServer && !showLogs ? (
+          <div className="flex items-center justify-between gap-3">
+          <Button variant="ghost" size="sm"
+            className="rounded-xl bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)]"
+            disabled={!!serverOwners[selectedServer.config.name]}
+            title={serverOwners[selectedServer.config.name] ? format(t.toolbox.mcpFromPlugin, { name: serverOwners[selectedServer.config.name] }) : undefined}
+            onClick={() => handleRemoveServer(selectedServer.config.name)}>
+            {t.common.delete}
+          </Button>
+          <Button size="sm" className="rounded-xl"
+            disabled={testingServer !== null || connectingServer !== null || selectedServer.status === 'connecting' || selectedServer.status === 'reconnecting'}
+            onClick={() => void handleTestConnection(selectedServer)}>
+            {testingServer === selectedServer.config.name && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+            {t.toolbox.testConnection}
+          </Button>
+          </div>
+        ) : selectedTemplate ? (
+          <div className="flex justify-end">
+            <Button size="sm" className="rounded-xl" onClick={() => handleInstallTemplate(selectedTemplate)}
+              disabled={installingTemplate === selectedTemplate.id || !templateRequiredFilled(selectedTemplate, templateArgs)}>
+              {installingTemplate === selectedTemplate.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+              {t.toolbox.install}
+            </Button>
+          </div>
         ) : undefined}
-        headerActions={
+        headerActions={showLogs ? undefined :
           selectedServer ? (
             <ServerHeaderActions
               entry={selectedServer}
               connectingServer={connectingServer}
-              testingServer={testingServer}
               onToggleLogs={() => setShowLogs(!showLogs)}
               onToggleConnection={() => handleToggleConnection(selectedServer)}
-              onTestConnection={() => handleTestConnection(selectedServer)}
-              onRemove={() => handleRemoveServer(selectedServer.config.name)}
               onEdit={() => handleEditServer(selectedServer)}
             />
-          ) : selectedTemplate ? (
-            <button onClick={() => handleInstallTemplate(selectedTemplate)}
-              disabled={installingTemplate === selectedTemplate.id || !templateRequiredFilled(selectedTemplate, templateArgs)}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-body font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 transition-colors">
-              {installingTemplate === selectedTemplate.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-              {t.toolbox.install}
-            </button>
           ) : undefined
         }
       >
+        {showLogs && selectedServer ? <div data-testid="mcp-logs-view" className="space-y-4">
+          <h2 className="text-h-lg font-semibold text-[var(--abu-text-primary)]">{t.toolbox.viewLogs}</h2>
+          <p className="text-body text-[var(--abu-text-muted)]">{selectedServer.config.name}</p>
+          <ServerLogsPanel serverName={selectedServer.config.name} />
+        </div> : <>
+        <div className="mb-5 flex items-center justify-between gap-4">
+          <h2 className="min-w-0 text-h-lg font-semibold text-[var(--abu-text-primary)] break-words">
+            {selectedServer?.config.name ?? (selectedTemplate ? pickLocale(locale, selectedTemplate.name, selectedTemplate.nameEn) : '')}{' '}
+            <span className="font-normal text-[var(--abu-text-muted)]">{t.toolbox.connectors}</span>
+          </h2>
+          {selectedServer && <p data-testid="mcp-detail-status" className={cn('shrink-0 text-body', serverStatusMeta(selectedServer, connectingServer, testingServer, t).statusColor)}>
+            {serverStatusMeta(selectedServer, connectingServer, testingServer, t).statusLabel}
+          </p>}
+        </div>
         {selectedServer ? (
           <ServerDetail
             entry={selectedServer}
             serverErrors={serverErrors}
-            testResults={testResults}
             expandedTools={expandedTools}
-            showLogs={showLogs}
             onToggleTools={() => setExpandedTools(!expandedTools)}
           />
         ) : selectedTemplate ? (
@@ -793,6 +793,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
             setTemplateArgs={setTemplateArgs}
           />
         ) : null}
+        </>}
       </ToolDetailModal>
 
       {/* Add / Edit Server Modal */}
@@ -849,7 +850,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
                     className={cn('w-full px-3 py-1.5 rounded-lg border border-[var(--abu-border)] text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
                       editingNameLocked && 'opacity-60 cursor-not-allowed')} />
                   {serverNameError && <p className="text-minor text-[var(--abu-danger)] mt-1">{serverNameError}</p>}
-                  {editingNameLocked && <p className="text-caption text-[var(--abu-text-muted)] mt-1">{t.toolbox.serverNameLockedHint}</p>}
+                  {editingNameLocked && <p className="text-caption text-[var(--abu-text-muted)] mt-1">{editingServerName && serverOwners[editingServerName] ? format(t.toolbox.mcpFromPlugin, { name: serverOwners[editingServerName] }) : t.toolbox.serverNameLockedHint}</p>}
                 </div>
                 <div>
                   <label className="block text-minor font-medium text-[var(--abu-text-secondary)] mb-1">{t.toolbox.transportType}</label>
@@ -944,68 +945,52 @@ function serverStatusMeta(
   return { isConnected, isConnecting, isTesting, statusLabel, statusColor };
 }
 
-/** Header action buttons for a server, hoisted into ToolDetailModal.headerActions. */
+/** Connection control and secondary actions share the extension detail header. */
 function ServerHeaderActions({
-  entry, connectingServer, testingServer,
-  onToggleLogs, onToggleConnection, onTestConnection, onRemove, onEdit,
+  entry, connectingServer,
+  onToggleLogs, onToggleConnection, onEdit,
 }: {
   entry: MCPServerEntry;
   connectingServer: string | null;
-  testingServer: string | null;
   onToggleLogs: () => void;
   onToggleConnection: () => void;
-  onTestConnection: () => void;
-  onRemove: () => void;
   onEdit: () => void;
 }) {
   const { t } = useI18n();
-  const { isConnected, isConnecting, isTesting } = serverStatusMeta(entry, connectingServer, testingServer, t);
+  const { isConnected, isConnecting } = serverStatusMeta(entry, connectingServer, null, t);
+  const busy = isConnecting || entry.status === 'reconnecting' || connectingServer !== null;
   return (
     <>
-      <button onClick={onToggleLogs} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors" title={t.toolbox.viewLogs}>
-        <ScrollText className="h-4 w-4" />
-      </button>
-      <button onClick={onEdit} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors" title={t.toolbox.skillEdit}>
-        <Pencil className="h-4 w-4" />
-      </button>
-      <button onClick={onTestConnection} disabled={isTesting || isConnecting}
-        className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-info)] hover:bg-[var(--abu-info-bg)] transition-colors disabled:opacity-50" title={t.toolbox.testConnection}>
-        {isTesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
-      </button>
-      <button onClick={onToggleConnection} disabled={isConnecting}
-        data-testid="mcp-server-toggle-connection"
-        data-connected={isConnected ? 'true' : 'false'}
-        className={cn('p-1.5 rounded-lg transition-colors',
-          isConnecting ? 'text-[var(--abu-warning)] cursor-wait' : isConnected ? 'text-[var(--abu-success)] hover:text-[var(--abu-success)] hover:bg-[var(--abu-success-bg)]' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)]'
-        )} title={isConnecting ? t.toolbox.connecting : isConnected ? t.toolbox.disconnect : t.toolbox.connect}>
-        {isConnecting ? <Loader2 className="h-4 w-4 animate-spin" /> : isConnected ? <PlugZap className="h-4 w-4" /> : <Plug className="h-4 w-4" />}
-      </button>
-      <button onClick={onRemove} className="p-1.5 rounded-lg text-[var(--abu-text-muted)] hover:text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors">
-        <Trash2 className="h-4 w-4" />
-      </button>
+      <span className="flex items-center" data-testid="mcp-server-toggle-connection" data-connected={isConnected ? 'true' : 'false'}
+        title={busy ? t.toolbox.connecting : isConnected ? t.toolbox.disconnect : t.toolbox.connect}>
+        <Toggle checked={isConnected} disabled={busy} onChange={onToggleConnection} tone="green" size="sm" />
+      </span>
+      <InstalledItemMenu testId="mcp-detail-menu"
+        ariaLabel={format(t.toolbox.itemMenuLabel, { name: entry.config.name })}
+        actions={[
+          { id: 'edit', label: t.toolbox.skillEdit, onSelect: onEdit },
+          { id: 'view', label: t.toolbox.viewLogs, onSelect: onToggleLogs },
+        ]}
+      />
     </>
   );
 }
 
 function ServerDetail({
-  entry, serverErrors, testResults,
-  expandedTools, showLogs,
+  entry, serverErrors,
+  expandedTools,
   onToggleTools,
 }: {
   entry: MCPServerEntry;
   serverErrors: Record<string, string>;
-  testResults: Record<string, { success: boolean; message: string }>;
   expandedTools: boolean;
-  showLogs: boolean;
   onToggleTools: () => void;
 }) {
   const { t } = useI18n();
   const { config, status, tools } = entry;
   const isConnected = status === 'connected';
   const error = serverErrors[config.name] || (status === 'error' ? entry.error : undefined);
-  const testResult = testResults[config.name];
   const toolDetails = (tools ?? []) as { name: string; description?: string }[];
-  const isHttp = !!(config.url || config.transport === 'http');
 
   return (
     <>
@@ -1016,36 +1001,6 @@ function ServerDetail({
           <p className="text-minor text-[var(--abu-danger)] break-words">{error}</p>
         </div>
       )}
-
-      {/* Test result */}
-      {testResult && (
-        <div className={cn('mb-4 px-3 py-2 text-minor rounded-lg flex items-center gap-1.5',
-          testResult.success ? 'bg-[var(--abu-success-bg)] text-[var(--abu-success)] border border-[var(--abu-success)]' : 'bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] border border-[var(--abu-danger)]'
-        )}>
-          {testResult.success ? <Check className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
-          {testResult.message}
-        </div>
-      )}
-
-      {/* Connection info */}
-      <div className="mb-5">
-        <span className="text-minor text-[var(--abu-text-muted)]">{isHttp ? 'URL' : 'Command'}</span>
-        <p className="text-body text-[var(--abu-text-primary)] mt-1 font-mono break-all">
-          {config.url ? config.url : `${config.command} ${config.args?.join(' ') ?? ''}`}
-        </p>
-        {isHttp && config.headers && Object.keys(config.headers).length > 0 && (
-          <div className="mt-2">
-            <span className="text-minor text-[var(--abu-text-muted)]">Headers</span>
-            <p className="text-minor text-[var(--abu-text-primary)] mt-0.5 font-mono break-all">{JSON.stringify(config.headers)}</p>
-          </div>
-        )}
-        {!isHttp && config.env && Object.keys(config.env).length > 0 && (
-          <div className="mt-2">
-            <span className="text-minor text-[var(--abu-text-muted)]">Env</span>
-            <p className="text-minor text-[var(--abu-text-primary)] mt-0.5 font-mono break-all">{JSON.stringify(config.env)}</p>
-          </div>
-        )}
-      </div>
 
       {/* Tools */}
       {isConnected && toolDetails.length > 0 && (
@@ -1059,8 +1014,7 @@ function ServerDetail({
         </div>
       )}
 
-      {/* Logs */}
-      {showLogs && <ServerLogsPanel serverName={config.name} />}
+
     </>
   );
 }
@@ -1150,7 +1104,7 @@ function ServerLogsPanel({ serverName }: { serverName: string }) {
   }
 
   return (
-    <div className="max-h-[200px] overflow-y-auto rounded-lg border border-[var(--abu-border)] bg-neutral-900 p-2">
+    <div className="overflow-x-auto rounded-lg border border-[var(--abu-border)] bg-neutral-900 p-2">
       {logs.map((log, i) => (
         <div key={i} className="flex gap-2 text-caption font-mono leading-4">
           <span className="text-[var(--abu-text-tertiary)] shrink-0">

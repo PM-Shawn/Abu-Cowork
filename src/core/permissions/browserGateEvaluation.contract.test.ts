@@ -29,6 +29,7 @@
  * breaks when someone edits one side.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { lstat } from '@tauri-apps/plugin-fs';
 import { checkToolApproval } from '../tools/registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
@@ -47,6 +48,27 @@ import {
   setUnattendedConfirmationResolver,
 } from './unattendedConfirmation';
 import { evaluateBrowserGate, browserGatePreviewVerdict } from './browserGateEvaluation';
+
+/**
+ * T5 — the upload row is in the matrix, so the gate has to be able to RESOLVE
+ * a file when it decides an upload may proceed. Both dependencies of that
+ * resolution are faked to "yes, an ordinary 4-byte file inside an authorized
+ * workspace", because what this file measures is the SITE decision and the ask
+ * channel; the file-side refusals (outside the workspace, symlink, too large)
+ * are `browserUploadFiles.test.ts`'s subject and are proved against the real
+ * gate in `registry.browserUploadGate.test.ts`.
+ *
+ * Only `checkReadPath` is replaced — the rest of `pathSafety` stays real, so a
+ * future browser tool that grows a filesystem dependency does not silently get
+ * a stub.
+ */
+vi.mock('../tools/pathSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tools/pathSafety')>()),
+  checkReadPath: vi.fn(async (candidate: string) => ({
+    allowed: true,
+    resolvedPath: candidate,
+  })),
+}));
 
 vi.mock('@/core/enterprise/policy/enforcer', () => ({
   getCurrentPolicy: () => ({ mode: 'test-policy' }),
@@ -75,12 +97,21 @@ const OP_CLASS_TOOLS: Record<BrowserOperationClass, { tool: string; input: Recor
   'read-only': { tool: 'abu-browser__snapshot', input: { tabId: OWNED_TAB_ID } },
   interactive: { tool: 'abu-browser__click', input: { tabId: OWNED_TAB_ID, ref: 'ref_1' } },
   scripting: { tool: 'abu-browser__execute_js', input: { tabId: OWNED_TAB_ID, code: '1' } },
+  upload: {
+    tool: 'abu-browser__upload_file',
+    input: {
+      tabId: OWNED_TAB_ID,
+      target: '{"css":"input[type=file]"}',
+      files: '[{"path":"/ws/report.xlsx"}]',
+    },
+  },
 };
 
 const POLICY_KEY: Record<BrowserOperationClass, keyof BrowserOperationPolicy> = {
   'read-only': 'readOnly',
   interactive: 'interactive',
   scripting: 'scripting',
+  upload: 'upload',
 };
 
 let mockCallTool: ReturnType<typeof vi.fn>;
@@ -176,6 +207,17 @@ function predictedGate(
 
 describe('browser gate — preview and the real gate agree', () => {
   beforeEach(() => {
+    // The gate lstat's a path it was told about twice (as written, and
+    // canonical). One ordinary 4-byte file answers both.
+    vi.mocked(lstat).mockResolvedValue(
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
+    );
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
     }));
@@ -197,7 +239,11 @@ describe('browser gate — preview and the real gate agree', () => {
     __resetUnattendedConfirmationForTests();
   });
 
-  const opClasses: BrowserOperationClass[] = ['read-only', 'interactive', 'scripting'];
+  // T5 — `upload` is a full member here rather than a special case. The whole
+  // point of the 2026-09-07 ruling is that its row means what the other rows
+  // mean, and «means the same thing» is exactly what an exhaustive agreement
+  // sweep can prove: 48 more rows, none of them hand-written.
+  const opClasses: BrowserOperationClass[] = ['read-only', 'interactive', 'scripting', 'upload'];
   const states: BrowserOperationState[] = ['allow', 'ask', 'deny'];
   const sites = Object.keys(SITE_STATES) as SiteState[];
   const runModes: Array<'attended' | 'unattended'> = ['attended', 'unattended'];
@@ -216,8 +262,8 @@ describe('browser gate — preview and the real gate agree', () => {
     }
   }
 
-  it('covers the whole declared matrix (3 classes x 3 states x 4 site states x 2 contexts x 2 switch positions)', () => {
-    expect(matrix).toHaveLength(3 * 3 * 4 * 2 * 2);
+  it('covers the whole declared matrix (4 classes x 3 states x 4 site states x 2 contexts x 2 switch positions)', () => {
+    expect(matrix).toHaveLength(4 * 3 * 4 * 2 * 2);
   });
 
   it.each(matrix)(
@@ -280,6 +326,17 @@ describe('browser gate — preview and the real gate agree', () => {
 describe('browser gate — a call that names a region agrees too', () => {
   // Its own setup: a sibling describe does not inherit the other one's.
   beforeEach(() => {
+    // The gate lstat's a path it was told about twice (as written, and
+    // canonical). One ordinary 4-byte file answers both.
+    vi.mocked(lstat).mockResolvedValue(
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
+    );
     mockCallTool = vi.fn(() => Promise.resolve({
       content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
     }));
@@ -306,14 +363,34 @@ describe('browser gate — a call that names a region agrees too', () => {
   const REGION = 'https://region.example.net';
   const REGION_URL = `${REGION}/widget`;
 
-  /** What the user's settings say about the region's own site. */
+  /** A page the grant was NOT given on — the "somewhere else" scope. */
+  const ELSEWHERE = 'https://elsewhere.example.com';
+
+  /**
+   * What the user's settings say about the region's own site.
+   *
+   * `scope` is the via-embed qualification, and replaces the old boolean
+   * `marked` (2026-09-08): the axis a scoped grant varies on is WHICH PAGE it
+   * was given on, not who is watching. `undefined` = no via-embed grant at all.
+   */
   const REGION_STATES = {
-    none: { stored: undefined, marked: false, present: false },
-    default: { stored: undefined, marked: false, present: true },
-    allowed: { stored: 'allowed' as const, marked: false, present: true },
-    'via-embed': { stored: 'allowed' as const, marked: true, present: true },
-    denied: { stored: 'denied' as const, marked: false, present: true },
-  } satisfies Record<string, { stored?: 'allowed' | 'denied'; marked: boolean; present: boolean }>;
+    none: { stored: undefined, scope: undefined, present: false },
+    default: { stored: undefined, scope: undefined, present: true },
+    allowed: { stored: 'allowed' as const, scope: undefined, present: true },
+    // Given on THIS page — the grant covers exactly this situation.
+    'via-embed-here': { stored: 'allowed' as const, scope: { [PAGE]: true }, present: true },
+    // Given on some other page — no authorization here.
+    'via-embed-elsewhere': {
+      stored: 'allowed' as const, scope: { [ELSEWHERE]: true }, present: true,
+    },
+    // Pre-v51, page never recorded: valid as a region on any page.
+    'via-embed-legacy': { stored: 'allowed' as const, scope: {}, present: true },
+    denied: { stored: 'denied' as const, scope: undefined, present: true },
+  } satisfies Record<string, {
+    stored?: 'allowed' | 'denied';
+    scope?: Record<string, true>;
+    present: boolean;
+  }>;
 
   type RegionState = keyof typeof REGION_STATES;
 
@@ -367,13 +444,19 @@ describe('browser gate — a call that names a region agrees too', () => {
     );
   }
 
-  /** The strictest of the sites this call touches — what the gate folds to. */
+  /**
+   * The strictest of the sites this call touches — what the gate folds to.
+   *
+   * No `runMode` parameter, and that absence is the assertion: the stored
+   * verdict is the same for both contexts, so the matrix below runs every row
+   * against BOTH and the real gate has to agree each time.
+   */
   function foldedVerdict(
     page: PageState,
     region: RegionState,
-    runMode: 'attended' | 'unattended',
   ): DecideBrowserOperationSiteVerdict {
     const each: Array<'allowed' | 'denied' | 'default'> = [
+      // The page is judged AS the page, so no via-embed scope reaches it.
       PAGE_STATES[page] ?? 'default',
     ];
     const spec = REGION_STATES[region];
@@ -382,8 +465,13 @@ describe('browser gate — a call that names a region agrees too', () => {
         ? 'default'
         : spec.stored === 'denied'
           ? 'denied'
-          // The mark is what an automatic run does not get to use.
-          : (spec.marked && runMode === 'unattended') ? 'default' : 'allowed';
+          // A scoped grant reaches this call only if it was given on THIS
+          // page (or predates pages being recorded at all).
+          : spec.scope === undefined
+            || Object.keys(spec.scope).length === 0
+            || spec.scope[PAGE] === true
+            ? 'allowed'
+            : 'default';
       each.push(regionVerdict);
     }
     if (each.includes('denied')) return 'denied';
@@ -401,8 +489,8 @@ describe('browser gate — a call that names a region agrees too', () => {
     }
   }
 
-  it('covers the whole region matrix (3 page states x 5 region states x 2 contexts)', () => {
-    expect(matrix).toHaveLength(3 * 5 * 2);
+  it('covers the whole region matrix (3 page states x 7 region states x 2 contexts)', () => {
+    expect(matrix).toHaveLength(3 * 7 * 2);
   });
 
   it.each(matrix)('page=%s region=%s %s', async (page, region, runMode) => {
@@ -416,7 +504,7 @@ describe('browser gate — a call that names a region agrees too', () => {
         ...(PAGE_STATES[page] !== undefined ? { [PAGE]: PAGE_STATES[page] } : {}),
         ...(spec.present && spec.stored !== undefined ? { [REGION]: spec.stored } : {}),
       }),
-      browserSiteGrantViaEmbed: spec.marked ? { [REGION]: true } : {},
+      browserSiteGrantViaEmbed: spec.scope !== undefined ? { [REGION]: spec.scope } : {},
     });
 
     let askChannel: 'dialog' | 'im' | null = null;
@@ -450,7 +538,7 @@ describe('browser gate — a call that names a region agrees too', () => {
       runMode,
       policy: DEFAULT_BROWSER_OPERATION_POLICY,
       masterSwitchUnattended: true,
-      siteVerdict: foldedVerdict(page, region, runMode),
+      siteVerdict: foldedVerdict(page, region),
       permissionMode: 'standard',
       runPermissionCeiling: null,
       toolTargetsPage: true,

@@ -148,4 +148,15 @@ describe('QueuedMessagesStrip', () => {
     });
     expect(screen.getByText('当前回复已停止，队列已暂停')).toBeInTheDocument();
   });
+  it('preserves the approval selection when resuming its paused retry turn', async () => {
+    const user = userEvent.setup();
+    enqueueUserInput(CONV, 'selected retry', false, 'approval-1');
+    pauseUserInputQueue(CONV);
+    render(<QueuedMessagesStrip conversationId={CONV} />);
+    await user.click(screen.getByRole('button', { name: '继续队列' }));
+    expect(runAgentLoopDispatchedMock).toHaveBeenCalledWith(CONV, 'selected retry', {
+      initiatedBy: 'user', teamConfirmationRetryId: 'approval-1',
+    });
+  });
+
 });

@@ -1,3 +1,8 @@
+import { acquirePluginUse } from '../plugin/runtimeLease';
+import { assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
+import { acknowledgeDispatchInstruction } from './dispatchInput';
+import { digestApprovalParameters } from './teamConfirmationIdentity';
+import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Subagent run-session registry + selector — the ONLY entry point callers
  * should use to run a subagent going forward (P1-3a "正式步 3a", see
@@ -215,6 +220,8 @@ export interface SubagentRunParams {
    *  exactly the runtime that serves most runs. */
   preloadedSkills?: SubagentLoopOptions['preloadedSkills'];
   initiatedBy?: import('./runInteractionMode').RunInitiator;
+  /** Hand-off key so the member loop (wherever it runs) can take direct instructions. */
+  dispatchKey?: string;
   locale: string;
   uiStrings: ReturnType<typeof buildSubagentUiStrings>;
   settingsSnapshot: ReturnType<ReturnType<typeof getSettingsReader>['getSnapshot']>;
@@ -275,6 +282,7 @@ export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
   // source of the same fact. The in-process engine reads it from these options
   // directly, which is why the field exists at all.
   'agentRunId',
+  'teamApprovalDispatch',
 ] as const satisfies readonly (keyof SubagentLoopOptions)[];
 
 export type SubagentLoopOptionsWireExhaustive = AssertNever<
@@ -381,6 +389,8 @@ function buildTrustedSubagentToolContext(
     loopId: session.options.parentLoopId,
     conversationId: session.options.parentConversationId,
     agentRunId: session.runId,
+    agentName: session.options.agent.name,
+    teamApprovalDispatch: session.options.teamApprovalDispatch,
     imReplyTarget: session.imReplyTarget ? { ...session.imReplyTarget } : undefined,
     interactionMode: resolveSubagentInteractionMode(session.options),
     // Inherited from the parent run at delegation time — the sidecar's copy
@@ -721,6 +731,7 @@ function buildSubagentRunParams(
     scheduledTaskId: options.scheduledTaskId,
     preloadedSkills: options.preloadedSkills,
     initiatedBy: options.initiatedBy,
+    dispatchKey: options.dispatchKey,
     locale: getLocale(),
     uiStrings: buildSubagentUiStrings(getI18n()),
     settingsSnapshot,
@@ -765,7 +776,31 @@ function cancelledSubagentResult(): SubagentResult {
  * protocol and fallback discipline.
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
-  const trustedOptions = withTrustedSkillCommandApproval(options);
+  const release = acquirePluginUse(pluginOwnerForAgent(options.agent));
+  try { return await runAdmittedSubagent(options); } finally { release(); }
+}
+
+async function runAdmittedSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
+  assertPluginAgentEnabled(options.agent);
+  // Register the original dispatch before any child tool can request consent.
+  // The retry association is shell-owned and includes the actual delegated task.
+  const dispatchId = options.dispatchKey;
+  const fingerprint = dispatchId ? await digestApprovalParameters({
+    agent: options.agent.name, task: options.task, context: options.context,
+  }) : undefined;
+  if (dispatchId && fingerprint && options.parentConversationId && options.parentLoopId) {
+    useTeamConfirmationStore.getState().claimDispatch(options.parentConversationId,
+      options.parentLoopId, dispatchId, fingerprint, options.agent.name);
+  }
+  const trustedOptions = withTrustedSkillCommandApproval({ ...options,
+    teamApprovalDispatch: dispatchId && fingerprint ? { id: dispatchId, fingerprint } : undefined,
+    ...(dispatchId ? { onProgress: (event: SubagentProgressEvent) => {
+      if (dispatchId && event.type === 'instruction-consumed') {
+        acknowledgeDispatchInstruction(dispatchId, event.instructionId);
+      }
+      options.onProgress?.(event);
+    } } : {}),
+  });
   if (options.authorizationScopeId === undefined) {
     return runSubagentForSignal(trustedOptions);
   }
@@ -802,6 +837,7 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
  */
 async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
   try {
+    assertPluginAgentEnabled(options.agent);
     return await runSubagentLoop(options);
   } finally {
     disposeRunBrowserViews(options.parentConversationId, options.agentRunId);
@@ -845,6 +881,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   // are only run-local; exposing them raw to the parent causes cross-agent
   // collisions in child-step replay and hidden image persistence.
   const runId = createSubagentProgressScopeId();
+  assertPluginAgentEnabled(options.agent);
   const localOptions = scopeSubagentLoopProgress(withPreloadedSkills, runId);
 
   if (getSidecarStatus() !== 'running') {

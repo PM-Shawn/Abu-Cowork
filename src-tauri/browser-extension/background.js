@@ -25,8 +25,268 @@
     "scroll",
     "keyboard",
     "start_recording",
-    "stop_recording"
+    "stop_recording",
+    // T5 — the DOM write lives in the content script and is the SAME routine
+    // the built-in browser drives (`electron/browserHost.cjs` hands it the same
+    // payload). What differs between the channels is only who opened the file.
+    "upload_file"
   ]);
+
+  // src/shared/captureArea.ts
+  function noCaptureAreaRefusal(scrollHeight, viewportHeight) {
+    const measured = (value) => Number.isFinite(value) && value > 0;
+    if (measured(scrollHeight) && measured(viewportHeight)) return null;
+    return `Page reports no area to capture (content ${describe(scrollHeight)} by viewport ${describe(viewportHeight)}). A hidden, zero-height or embedded document has nothing to stitch. Bring the content into view, or use screenshot for the visible area.`;
+  }
+  function describe(value) {
+    return Number.isFinite(value) ? `${value}px` : String(value);
+  }
+
+  // src/background/downloads.ts
+  function hostOf(url) {
+    if (!url) return null;
+    const inner = url.startsWith("blob:") ? url.slice(5) : url;
+    try {
+      const host = new URL(inner).hostname.toLowerCase().replace(/\.$/, "");
+      return host === "" ? null : host;
+    } catch {
+      return null;
+    }
+  }
+  function isSameSiteHost(a, b) {
+    if (a === null || b === null) return false;
+    if (a === b) return true;
+    return a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+  }
+  function downloadMatchesSite(item, site) {
+    if (site === null) return false;
+    const referrerHost = hostOf(item.referrer);
+    if (referrerHost !== null) return isSameSiteHost(referrerHost, site);
+    return isSameSiteHost(hostOf(item.finalUrl), site);
+  }
+  function isTerminal(state2) {
+    return state2 === "complete" || state2 === "interrupted";
+  }
+  function suggestedDownloadPath(ownerKey, filename) {
+    return `Abu/${safeSegment(ownerKey)}/${safeDownloadName(filename)}`;
+  }
+  function safeSegment(value) {
+    const cleaned = String(value ?? "").replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 64);
+    return cleaned || "shared";
+  }
+  var WINDOWS_RESERVED_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;
+  function utf8Length(value) {
+    return new TextEncoder().encode(value).length;
+  }
+  function truncateUtf8(value, maxBytes) {
+    if (utf8Length(value) <= maxBytes) return value;
+    let out = "";
+    let used = 0;
+    for (const ch of value) {
+      const size = utf8Length(ch);
+      if (used + size > maxBytes) break;
+      out += ch;
+      used += size;
+    }
+    return out;
+  }
+  function safeDownloadName(raw) {
+    const base = String(raw ?? "").split(/[\\/]/).pop() ?? "";
+    let cleaned = base.replace(/[\u0000-\u001f\u007f]/g, "").replace(/[:*?"<>|]/g, "_").replace(/^\.+/, "").trim().replace(/[. ]+$/, "");
+    if (WINDOWS_RESERVED_NAMES.test(cleaned)) cleaned = `_${cleaned}`;
+    if (!cleaned) return "download";
+    return truncateUtf8(cleaned, 200);
+  }
+  var MAX_RECENT = 20;
+  function createDownloadTracker(deps) {
+    const recent = [];
+    const byChromeId = /* @__PURE__ */ new Map();
+    const byDownloadId = /* @__PURE__ */ new Map();
+    const waitersByOwner = /* @__PURE__ */ new Map();
+    const pendingOwnerByChromeId = /* @__PURE__ */ new Map();
+    const doneWaiters = /* @__PURE__ */ new Map();
+    const takeWaiter = (ownerKey, item) => {
+      const queue = waitersByOwner.get(ownerKey);
+      if (!queue || queue.length === 0) return null;
+      const at = queue.findIndex((waiter2) => downloadMatchesSite(item, waiter2.site));
+      if (at < 0) return null;
+      const [waiter] = queue.splice(at, 1);
+      if (queue.length === 0) waitersByOwner.delete(ownerKey);
+      return waiter ?? null;
+    };
+    const ownerFor = (item) => {
+      const already = pendingOwnerByChromeId.get(item.id);
+      if (already !== void 0) return already;
+      for (const [ownerKey, queue] of waitersByOwner) {
+        if (!queue.some((waiter) => downloadMatchesSite(item, waiter.site))) continue;
+        pendingOwnerByChromeId.set(item.id, ownerKey);
+        return ownerKey;
+      }
+      return null;
+    };
+    const notifyDone = (downloadId) => {
+      const list = doneWaiters.get(downloadId);
+      if (!list) return;
+      doneWaiters.delete(downloadId);
+      for (const resolve of list.slice()) resolve();
+    };
+    return {
+      expect(ownerKey, site) {
+        let claimed = null;
+        let onClaim = null;
+        const waiter = {
+          ownerKey,
+          site,
+          claim: (item) => {
+            claimed = item;
+            if (onClaim) onClaim();
+          }
+        };
+        const queue = waitersByOwner.get(ownerKey) ?? [];
+        queue.push(waiter);
+        waitersByOwner.set(ownerKey, queue);
+        const cancel = () => {
+          const live = waitersByOwner.get(ownerKey);
+          if (!live) return;
+          const at = live.indexOf(waiter);
+          if (at >= 0) live.splice(at, 1);
+          if (live.length === 0) waitersByOwner.delete(ownerKey);
+        };
+        return {
+          cancel,
+          claimed: () => claimed,
+          wait: (ms) => new Promise((resolve) => {
+            if (claimed) {
+              resolve(claimed);
+              return;
+            }
+            let settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true;
+              deps.clearTimeout(timer);
+              onClaim = null;
+              resolve(claimed);
+            };
+            onClaim = finish;
+            const timer = deps.setTimeout(finish, ms);
+          })
+        };
+      },
+      onCreated(item) {
+        const ownerKey = ownerFor(item);
+        if (ownerKey === null) return null;
+        const record = {
+          downloadId: `dl_${deps.now().toString(36)}_${deps.randomId()}`,
+          chromeId: item.id,
+          ownerKey,
+          filename: safeDownloadName(item.filename ?? item.url ?? ""),
+          url: item.url ?? "",
+          state: item.state ?? "in_progress",
+          time: deps.now(),
+          path: item.filename ?? "",
+          size: item.totalBytes ?? 0,
+          mime: item.mime ?? ""
+        };
+        recent.unshift(record);
+        byChromeId.set(item.id, record);
+        byDownloadId.set(record.downloadId, record);
+        let seen = 0;
+        for (let i = 0; i < recent.length; i += 1) {
+          if (recent[i].ownerKey !== record.ownerKey) continue;
+          seen += 1;
+          if (seen <= MAX_RECENT) continue;
+          byChromeId.delete(recent[i].chromeId);
+          byDownloadId.delete(recent[i].downloadId);
+          recent.splice(i, 1);
+          i -= 1;
+        }
+        pendingOwnerByChromeId.delete(item.id);
+        const waiter = takeWaiter(ownerKey, item);
+        if (waiter) waiter.claim(record);
+        if (isTerminal(record.state)) notifyDone(record.downloadId);
+        return record;
+      },
+      onChanged(delta) {
+        const record = byChromeId.get(delta.id);
+        if (!record) return;
+        if (delta.filename?.current) {
+          record.path = delta.filename.current;
+          record.filename = safeDownloadName(delta.filename.current);
+        }
+        if (typeof delta.totalBytes?.current === "number") record.size = delta.totalBytes.current;
+        if (delta.error?.current) record.interruptReason = delta.error.current;
+        if (delta.state?.current) {
+          record.state = delta.state.current;
+          if (isTerminal(record.state)) {
+            if (record.state === "interrupted" && !record.interruptReason) {
+              record.interruptReason = "the download was interrupted before it finished";
+            }
+            notifyDone(record.downloadId);
+          }
+        }
+      },
+      suggestFilename(item) {
+        const ownerKey = ownerFor(item);
+        if (ownerKey === null) return null;
+        return suggestedDownloadPath(ownerKey, item.filename ?? item.url ?? "");
+      },
+      listFor(ownerKey) {
+        return recent.filter((record) => record.ownerKey === ownerKey);
+      },
+      find(ownerKey, downloadId) {
+        const record = byDownloadId.get(downloadId);
+        return record && record.ownerKey === ownerKey ? record : null;
+      },
+      awaitDone(downloadId, ms) {
+        const record = byDownloadId.get(downloadId);
+        if (!record || isTerminal(record.state)) return Promise.resolve();
+        return new Promise((resolve) => {
+          let settled = false;
+          const done = () => {
+            if (settled) return;
+            settled = true;
+            deps.clearTimeout(timer);
+            const list2 = doneWaiters.get(downloadId);
+            if (list2) {
+              const at = list2.indexOf(done);
+              if (at >= 0) list2.splice(at, 1);
+            }
+            resolve();
+          };
+          const timer = deps.setTimeout(done, ms);
+          const list = doneWaiters.get(downloadId) ?? [];
+          list.push(done);
+          doneWaiters.set(downloadId, list);
+        });
+      }
+    };
+  }
+  function downloadResultFor(record) {
+    if (!record) {
+      return {
+        started: false,
+        message: "That click produced no download. Nothing was saved, and no other file was adopted in its place. Check the page \u2014 the export may have opened a dialog, failed, or rendered inline instead of downloading."
+      };
+    }
+    const done = record.state === "complete";
+    return {
+      started: true,
+      complete: done,
+      download: {
+        downloadId: record.downloadId,
+        filename: record.filename,
+        url: record.url,
+        state: record.state,
+        time: record.time,
+        path: record.path,
+        size: record.size,
+        mime: record.mime,
+        ...record.interruptReason ? { interruptReason: record.interruptReason } : {}
+      },
+      message: done ? `Saved to ${record.path}. The file is complete.` : record.state === "in_progress" ? 'Still downloading. Call download again with action "wait" and this downloadId; the file is not usable until it reports complete.' : `The download did not finish (${record.state}). Nothing usable was saved.`
+    };
+  }
 
   // src/background/frames.ts
   var MAX_FRAMES = 40;
@@ -392,7 +652,12 @@
     "get_dialog",
     "handle_dialog",
     "start_recording",
-    "stop_recording"
+    "stop_recording",
+    // T5/T6 — both name a tab, so both must resolve an owner-scoped target
+    // before they run. `download`'s isolation depends on it twice over: the tab
+    // it clicks in AND the task the resulting file is filed under.
+    "upload_file",
+    "download"
   ]);
   var NO_ACTIVE_TAB_MESSAGE = "No active browser tab is available. Call get_tabs and pass tabId.";
   function staleTabMessage(tabId2) {
@@ -484,6 +749,11 @@
   }
 
   // src/background/index.ts
+  function clampDownloadWait(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 3e4;
+    return Math.min(Math.floor(n), 12e4);
+  }
   var DISCOVERY_URL = "http://127.0.0.1:9875/status";
   var FIXED_WS_PORT = 9876;
   var RECONNECT_DELAYS = [1e3, 2e3, 4e3, 8e3, 15e3, 3e4];
@@ -521,7 +791,24 @@
     lastActiveWindowId = windowId;
     chrome.storage.session.set({ lastActiveTabId: tabId2, lastActiveWindowId: windowId });
   }
+  var screenshotActivations = /* @__PURE__ */ new Set();
+  async function activateForScreenshot(tabId2, windowId) {
+    const activation = { tabId: tabId2, windowId };
+    screenshotActivations.add(activation);
+    try {
+      await chrome.tabs.update(tabId2, { active: true });
+    } finally {
+      screenshotActivations.delete(activation);
+    }
+  }
   chrome.tabs.onActivated.addListener((activeInfo) => {
+    const activation = [...screenshotActivations].find(
+      (pending) => pending.tabId === activeInfo.tabId && pending.windowId === activeInfo.windowId
+    );
+    if (activation) {
+      screenshotActivations.delete(activation);
+      return;
+    }
     saveTracking(activeInfo.tabId, activeInfo.windowId);
   });
   chrome.windows.onFocusChanged.addListener((windowId) => {
@@ -708,26 +995,26 @@
       connect();
     }, delay);
   }
-  var recentDownloads = [];
+  var downloadTracker = createDownloadTracker({
+    now: () => Date.now(),
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (handle) => clearTimeout(handle),
+    randomId: () => Math.random().toString(36).slice(2, 10)
+  });
   chrome.downloads.onCreated.addListener((item) => {
-    recentDownloads.unshift({
-      id: item.id,
-      filename: item.filename || item.url.split("/").pop() || "unknown",
-      url: item.url,
-      state: item.state,
-      time: Date.now()
-    });
-    if (recentDownloads.length > 20) recentDownloads.length = 20;
+    downloadTracker.onCreated(item);
   });
   chrome.downloads.onChanged.addListener((delta) => {
-    const dl = recentDownloads.find((d) => d.id === delta.id);
-    if (dl && delta.state) {
-      dl.state = delta.state.current;
-    }
-    if (dl && delta.filename) {
-      dl.filename = delta.filename.current;
-    }
+    downloadTracker.onChanged(delta);
   });
+  if (chrome.downloads.onDeterminingFilename) {
+    chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+      const suggestion = downloadTracker.suggestFilename(item);
+      if (suggestion === null) return false;
+      suggest({ filename: suggestion, conflictAction: "uniquify" });
+      return true;
+    });
+  }
   function isAllowedUrl(url) {
     try {
       const parsed = new URL(url);
@@ -765,6 +1052,14 @@
     throw new Error(
       `Refused: this tab is no longer on the page this action was approved for (approved ${expected}, now ${current ?? "an unknown page"}). The page moved \u2014 a redirect, a script navigation, or a reload. Take a fresh snapshot to re-read the current state before acting again; the earlier approval does not carry over to a different site.`
     );
+  }
+  async function tabUrl(tabId2) {
+    try {
+      const tab = await chrome.tabs.get(tabId2);
+      return typeof tab.url === "string" ? tab.url : "";
+    } catch {
+      return "";
+    }
   }
   async function handleRequest(request) {
     const { id, action, payload } = request;
@@ -897,7 +1192,47 @@
           return { id, success: true, data };
         }
         case "get_downloads": {
-          return { id, success: true, data: recentDownloads };
+          return {
+            id,
+            success: true,
+            data: downloadTracker.listFor(ownerFromPayload(payload).key)
+          };
+        }
+        // T6 — press an export control and come back with the file.
+        case "download": {
+          const owner = ownerFromPayload(payload);
+          const timeoutMs = clampDownloadWait(payload.timeoutMs);
+          if (payload.action === "wait") {
+            const downloadId = String(payload.downloadId ?? "");
+            const known = downloadTracker.find(owner.key, downloadId);
+            if (!known) {
+              return {
+                id,
+                success: false,
+                error: `No download with id ${downloadId} belongs to this task. Call get_downloads to see the ones it has, or start a new one with action "click".`
+              };
+            }
+            await downloadTracker.awaitDone(downloadId, timeoutMs);
+            return { id, success: true, data: downloadResultFor(known) };
+          }
+          const clickedSite = hostOf(await tabUrl(tabId));
+          const expectation = downloadTracker.expect(owner.key, clickedSite);
+          const deadline = Date.now() + timeoutMs;
+          const remainingMs = () => Math.max(0, deadline - Date.now());
+          let claimed;
+          try {
+            await sendToContentScript(tabId, "click", {
+              locator: payload.locator,
+              ...payload.frameId !== void 0 ? { frameId: payload.frameId } : {},
+              ...payload.expectedOrigin !== void 0 ? { expectedOrigin: payload.expectedOrigin } : {},
+              ...payload.unattended === true ? { unattended: true } : {}
+            });
+            claimed = await expectation.wait(remainingMs());
+          } finally {
+            expectation.cancel();
+          }
+          if (claimed) await downloadTracker.awaitDone(claimed.downloadId, remainingMs());
+          return { id, success: true, data: downloadResultFor(claimed) };
         }
         // ## Both screenshots are pinned reads (round-3 R3-A)
         //
@@ -916,7 +1251,7 @@
         case "screenshot": {
           const tab = await chrome.tabs.get(tabId);
           if (!tab.active) {
-            await chrome.tabs.update(tabId, { active: true });
+            await activateForScreenshot(tabId, tab.windowId);
             await new Promise((r) => setTimeout(r, 300));
           }
           await assertTabOriginPin(tabId, payload, void 0, { read: true });
@@ -926,7 +1261,7 @@
         case "screenshot_full_page": {
           const tab = await chrome.tabs.get(tabId);
           if (!tab.active) {
-            await chrome.tabs.update(tabId, { active: true });
+            await activateForScreenshot(tabId, tab.windowId);
             await new Promise((r) => setTimeout(r, 300));
           }
           await assertTabOriginPin(tabId, payload, void 0, { read: true });
@@ -984,15 +1319,36 @@
         case "execute_js": {
           const code = payload.code;
           await assertTabOriginPin(tabId, payload);
+          const documents = await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [0] },
+            world: "ISOLATED",
+            func: () => ({ url: location.href })
+          });
+          const document = documents[0];
+          if (documents.length !== 1 || document?.frameId !== 0 || typeof document.documentId !== "string" || !document.documentId.trim() || typeof document.result?.url !== "string" || !normalizedOrigin(document.result.url)) {
+            throw new Error("Refused: could not verify the page document identity. Take a fresh snapshot before acting again.");
+          }
+          const observedUrl = document.result.url;
+          await assertTabOriginPin(tabId, payload, async () => ({ url: observedUrl }));
           const results = await chrome.scripting.executeScript({
-            target: { tabId },
-            func: (jsCode) => {
-              return eval(jsCode);
+            target: { tabId, documentIds: [document.documentId] },
+            func: async (jsCode, approvedOrigin) => {
+              if (location.origin !== approvedOrigin) {
+                return { __proto__: null, originMatched: false };
+              }
+              return { __proto__: null, originMatched: true, value: await eval(jsCode) };
             },
-            args: [code],
+            args: [code, new URL(observedUrl).origin],
             world: "MAIN"
           });
-          return { id, success: true, data: results[0]?.result };
+          const execution = results[0]?.result;
+          if (execution?.originMatched === false) {
+            throw new Error("Refused: page origin changed before script execution. Take a fresh snapshot before acting again.");
+          }
+          if (execution?.originMatched !== true) {
+            throw new Error("Script execution did not return a result. Take a fresh snapshot before acting again.");
+          }
+          return { id, success: true, data: execution.value };
         }
         default: {
           if (!CONTENT_SCRIPT_ACTIONS.has(action)) {
@@ -1178,11 +1534,7 @@
     const hint = await framesHint(tabId2);
     return hint ? { ...record, message: `${record.message ?? ""}${hint}` } : record;
   }
-  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === "tab_visible" && sender.tab?.id && sender.tab?.windowId) {
-      saveTracking(sender.tab.id, sender.tab.windowId);
-      return;
-    }
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "get_status") {
       sendResponse({
         connected: state.connected,
@@ -1228,13 +1580,23 @@
     }
     await chrome.offscreen.createDocument({
       url: "offscreen.html",
-      // Pre-existing bug, deliberately not fixed by the typecheck-gate change:
-      // `CANVAS` is not a `chrome.offscreen.Reason` (none of the enum's 15 values
-      // in @types/chrome), so this is `undefined` at runtime and createDocument
-      // rejects. Picking a valid reason changes behaviour (full-page capture
-      // would start working), so it is tracked as its own fix.
-      // @ts-expect-error pre-existing bug: CANVAS is not a chrome.offscreen.Reason; fixing it changes runtime behaviour
-      reasons: [chrome.offscreen.Reason.CANVAS],
+      // BLOBS, not CANVAS: there is no CANVAS in `chrome.offscreen.Reason`, so
+      // the old value was `undefined` at runtime and Chrome rejected the whole
+      // call ("Invalid type: expected offscreen.Reason, found undefined") —
+      // every full-page capture failed, after the page had already been scrolled
+      // and every slice captured.
+      //
+      // No reason in the enum names canvas work, so this picks the closest
+      // documented one rather than a literal match. The reason is declarative:
+      // per the offscreen docs it determines the document's LIFETIME, and only
+      // AUDIO_PLAYBACK carries a limit (closed after 30s without audio), so any
+      // other member gives the unbounded lifetime a stitch needs. BLOBS is what
+      // shipped extensions doing this same job declare — Anthropic's own Claude
+      // extension composites images in an offscreen document under
+      // `[AUDIO_PLAYBACK, BLOBS]`. DOM_SCRAPING, the other candidate, is
+      // explicitly about embedding an iframe and scraping its DOM, which this
+      // document does not do.
+      reasons: [chrome.offscreen.Reason.BLOBS],
       justification: "Stitching full-page screenshot slices on canvas"
     });
     offscreenCreated = true;
@@ -1242,6 +1604,8 @@
   async function captureFullPage(tabId2, windowId) {
     const dims = await sendToContentScript(tabId2, "fullpage_prepare", {});
     const { scrollHeight, viewportHeight, viewportWidth, scrollX, scrollY } = dims;
+    const noArea = noCaptureAreaRefusal(scrollHeight, viewportHeight);
+    if (noArea) throw new Error(noArea);
     const sliceCount = Math.ceil(scrollHeight / viewportHeight);
     const slices = [];
     try {

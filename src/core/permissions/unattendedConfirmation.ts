@@ -487,10 +487,14 @@ export function mayUnattendedTierApproveBrowser(info: ConfirmationInfo): boolean
       siteVerdict: getSiteVerdict(
         info.browserOrigin ?? null,
         settings.browserSitePermissions ?? {},
-        // Unattended by construction — this function answers "may the
-        // capability tier approve this on its own". A grant minted through the
-        // merged embedded-region prompt is not a standing grant here (R2-C-②).
-        { viaEmbed: settings.browserSiteGrantViaEmbed ?? {}, runMode: 'unattended' },
+        // `browserPageOrigin` is set exactly when the action lands somewhere
+        // other than the top page — i.e. it IS the "which page is this region
+        // inside" answer a scoped via-embed grant is measured against. Absent,
+        // the origin is the page itself and no scoped grant covers it.
+        {
+          viaEmbed: settings.browserSiteGrantViaEmbed ?? {},
+          embeddedIn: info.browserPageOrigin ?? null,
+        },
       ),
     }) === 'allow'
   );

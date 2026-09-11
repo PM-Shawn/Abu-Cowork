@@ -34,15 +34,15 @@ const BUILTIN_BROWSER = /^(阿布内置浏览器|Abu built-in browser)$/;
 const MY_CHROME = /^(我的 Chrome|My Chrome)$/;
 const COMPUTER_USE = /^(电脑操控|Computer Use)$/;
 const READY = /^(已就绪|Ready)$/;
+const CONNECTED = /^(已连接|Connected)$/;
 const NOT_CONNECTED = /^(未连接|Not connected)$/;
 const SETUP_REQUIRED = /^(需要设置|Setup required)$/;
 const OFF = /^(已关闭|Off)$/;
 const START_SETUP = /^(开始设置|Start setup)$/;
-const ENABLE = /^(开启|Enable)$/;
+const ENABLE = /^(开启电脑操控|Enable Computer Use)$/;
 const CONNECT_CHROME = /^(连接 Chrome|Connect Chrome)$/;
 const CHROME_HEADER = /^(我的 Chrome|My Chrome)$/;
-const COMPUTER_OFF_ACTION = /^(开启|Enable)$/;
-const DISCONNECT = /^(断开|Disconnect)$/;
+const DISCONNECT = /^(断开我的 Chrome|Disconnect My Chrome)$/;
 const INSTALL_STEPS = /^(安装扩展|Install the extension)$/;
 const BACK_TO_CAPABILITIES = /^(返回能力|Back to Capabilities)$/;
 const COMPUTER_SETUP = /^(开启电脑操控|Enable Computer Use)$/;
@@ -92,6 +92,22 @@ function capabilityCard(page: Page, title: RegExp) {
   return page.getByRole('button', { name: new RegExp(title.source.replace(/\$$/, '')) });
 }
 
+/** Assert the status/action pair without changing the external Chrome session. */
+async function expectChromeConnectionActions(page: Page): Promise<boolean> {
+  await expect(page.getByText(CONNECTED).or(page.getByText(NOT_CONNECTED)))
+    .toBeVisible({ timeout: READY_TIMEOUT });
+  const connected = await page.getByText(CONNECTED).isVisible();
+  await expect(page.getByText(connected ? NOT_CONNECTED : CONNECTED)).toHaveCount(0);
+  if (connected) {
+    await expect(page.getByRole('button', { name: DISCONNECT })).toBeVisible();
+    await expect(page.getByText(INSTALL_STEPS)).toHaveCount(0);
+  } else {
+    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
+    await expect(page.getByText(INSTALL_STEPS)).toBeVisible();
+  }
+  return connected;
+}
+
 /**
  * Write persisted settings straight into the real store and reload, so the
  * page under test renders the state a returning user would actually see.
@@ -131,6 +147,59 @@ test.describe.serial('Electron capability overview', () => {
     }
   });
 
+  test('routes either permission button through Electron to its matching system pane', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+    // Replace only native consent/status and external navigation. Renderer,
+    // preload IPC, request helper and Electron permission host remain real.
+    await app.evaluate(({ systemPreferences, shell, desktopCapturer }) => {
+      const fixture = { screen: false, control: false, opened: [] as string[], prompts: [] as boolean[] };
+      (globalThis as typeof globalThis & { permissionFixture?: typeof fixture }).permissionFixture = fixture;
+      systemPreferences.getMediaAccessStatus = () => fixture.screen ? 'granted' : 'denied';
+      systemPreferences.isTrustedAccessibilityClient = (prompt) => {
+        fixture.prompts.push(prompt);
+        return fixture.control;
+      };
+      desktopCapturer.getSources = async () => [];
+      shell.openExternal = async (url) => { fixture.opened.push(url); };
+    });
+    const page = await app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await seedSettings(page, { language: 'zh-CN', computerUseEnabled: true });
+    await waitForWelcomeScreen(page);
+    await openCapabilities(page);
+    await capabilityCard(page, COMPUTER_USE).click();
+    const controlRow = page.getByRole('heading', { name: '操作界面', exact: true }).locator('..');
+    const screenRow = page.getByRole('heading', { name: '查看屏幕', exact: true }).locator('..');
+    await expect(page.getByRole('button', { name: '去授权', exact: true })).toHaveCount(2);
+    await controlRow.getByRole('button', { name: '去授权' }).click();
+    await expect.poll(() => app!.evaluate(() => {
+      const state = (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture;
+      return state.opened.length;
+    })).toBeGreaterThan(0);
+    const urls = await app.evaluate(() => (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture.opened);
+    expect(urls.every(url => url.endsWith('Privacy_Accessibility'))).toBe(true);
+    await app.evaluate(() => {
+      const state = (globalThis as typeof globalThis & { permissionFixture: { control: boolean; opened: string[] } }).permissionFixture;
+      state.control = true;
+      state.opened.length = 0;
+    });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(controlRow.getByText('已授权', { exact: true })).toBeVisible();
+    await screenRow.getByRole('button', { name: '去授权' }).click();
+    await expect.poll(() => app!.evaluate(() => (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture.opened.length)).toBeGreaterThan(0);
+    const screenUrls = await app.evaluate(() => (globalThis as typeof globalThis & { permissionFixture: { opened: string[] } }).permissionFixture.opened);
+    expect(screenUrls.every(url => url.endsWith('Privacy_ScreenCapture'))).toBe(true);
+    await app.evaluate(() => { (globalThis as typeof globalThis & { permissionFixture: { screen: boolean } }).permissionFixture.screen = true; });
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(page.getByText('已授权', { exact: true })).toHaveCount(2);
+    await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
+    await page.getByRole('switch', { name: '关闭电脑操控' }).click();
+    await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
+    await expect(page.getByRole('switch', { name: '开启电脑操控' })).toHaveAttribute('aria-checked', 'false');
+  });
+
   test('shows real runtime readiness and keeps optional capabilities explicit', async () => {
     const launched = await launchAbuElectron();
     app = launched.app;
@@ -148,20 +217,18 @@ test.describe.serial('Electron capability overview', () => {
     await expect(builtinBrowser.getByText(READY)).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(computerUse.getByText(OFF)).toBeVisible({ timeout: READY_TIMEOUT });
 
-    // This machine has no extension installed, and that is ONE state with one
-    // description. It used to depend on whether the local bridge finished
-    // connecting before the probe answered — amber "setup required" if the
-    // probe won, grey "not connected" if it lost. The badge is now decided by
-    // whether the extension has ever handshaked, which never un-happens, so
-    // the amber fault must not appear at any point.
-    await expect(myChrome.getByText(NOT_CONNECTED))
+    // The real Chrome extension uses a machine-wide bridge, outside this
+    // test's isolated app data. Both settled states are valid; neither is a
+    // setup fault. Do not disconnect a developer's Chrome to force a fixture.
+    await expect(myChrome.getByText(NOT_CONNECTED).or(myChrome.getByText(READY)))
       .toBeVisible({ timeout: READY_TIMEOUT });
     await expect(myChrome.getByText(SETUP_REQUIRED)).toHaveCount(0);
-    await expect(myChrome.getByText(READY)).toHaveCount(0);
-
-    // Not connected is not a fault, so the card spends its one line on what
-    // connecting would buy rather than restating the badge next to it.
-    await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
+    if (await myChrome.getByText(NOT_CONNECTED).isVisible()) {
+      await expect(myChrome.getByText(READY)).toHaveCount(0);
+      await expect(myChrome).toContainText(/Chrome tabs|Chrome 标签页/);
+    } else {
+      await expect(myChrome.getByText(NOT_CONNECTED)).toHaveCount(0);
+    }
     // The overview carries decisions ABOUT capabilities, never the rules
     // inside them — those all live one level down now.
     await expect(page.getByText(ACTION_PERMISSIONS)).toHaveCount(0);
@@ -187,27 +254,25 @@ test.describe.serial('Electron capability overview', () => {
     // first-party local bridge is already prepared in the background.
     await myChrome.click();
     await expect(page.getByRole('heading', { name: CHROME_HEADER })).toBeVisible();
-    // Install guidance is for someone with no extension attached, and the
-    // developer-mode warning now lives inside it rather than on its own.
-    await expect(page.getByText(INSTALL_STEPS)).toBeVisible();
-    await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
-    await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
-    // Nothing is connected, so nothing offers to disconnect it.
-    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
-    const chromeCheckButton = page.getByRole('button', {
-      name: /^(检查连接|Check connection)$/,
-    });
-    await expect(chromeCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
-    await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
-    await page.waitForTimeout(2_500);
-    await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+    const chromeConnected = await expectChromeConnectionActions(page);
+    if (!chromeConnected) {
+      await expect(page.getByText(/local extension|本地扩展/)).toBeVisible();
+      await expect(page.getByText(/Chrome Web Store|Chrome 应用商店/)).toBeVisible();
+      const chromeCheckButton = page.getByRole('button', {
+        name: /^(检查连接|Check connection)$/,
+      });
+      await expect(chromeCheckButton).toBeEnabled({ timeout: READY_TIMEOUT });
+      await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+      await page.waitForTimeout(2_500);
+      await expect(chromeCheckButton.locator('.animate-spin')).toHaveCount(0);
+    }
     await page.getByRole('button', { name: BACK_TO_CAPABILITIES }).click();
 
     await computerUse.click();
     await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
-    await expect(page.getByRole('button', { name: ENABLE })).toBeVisible();
+    await expect(page.getByRole('switch', { name: ENABLE })).toBeVisible();
     await expect(page.getByText(/current task needs|当前任务需要/)).toHaveCount(0);
-    await page.getByRole('button', { name: ENABLE }).click();
+    await page.getByRole('switch', { name: ENABLE }).click();
     await expect(page.getByText(/View screen|查看屏幕/, { exact: true }).first()).toBeVisible();
     await expect(page.getByText(/Control interface|操作界面/, { exact: true }).first()).toBeVisible();
 
@@ -300,14 +365,16 @@ test.describe.serial('Electron capability overview', () => {
     await scriptCell.click();
 
     /*
-      One setting, two execution contexts — so 「每次询问」 has to say both, on
-      one line: a dialog while the user is here, and the IM channel the task
-      itself named when it is running alone (`core/im/approvalTarget.ts`),
-      refused when none is bound. The two withdrawn per-column strings must
-      not survive anywhere on this surface.
+      One setting, one intent (acceptance F4). This row answers 「这个权限档
+      位是什么意思」, and the answer is a promise about what Abu will do —
+      「每次执行前先征得你的同意」 — not a tour of the two places the question
+      can appear. Where it is asked is the approval channel's business, and
+      「你在场 / 自动任务 / IM」 left a reader wondering whether one upload
+      permission secretly has a second set of rules. The two withdrawn
+      per-column strings must still not survive anywhere on this surface.
     */
     const askOption = page.getByText(
-      /你在场时弹窗确认，自动任务发到 IM 审批|Asks you here, and over IM in automatic tasks/,
+      /每次执行前先征得你的同意|Asks for your go-ahead before each one/,
     );
     await expect(askOption).toBeVisible();
     await expect(page.getByText(/只在始终允许的网站上生效|Only on sites set to Always allow/))
@@ -429,10 +496,8 @@ test.describe.serial('Electron capability overview', () => {
     // Header carries the one-liner, not the paragraph it used to open with.
     await expect(page.getByText(/复用你已登录的 Chrome 标签页/)).toBeVisible();
     await expect(page.getByText(/让阿布在你明确要求时使用现有标签页/)).toHaveCount(0);
-    // One status row, one action — and on a machine with no extension the
-    // action is never "disconnect".
-    await expect(page.getByText(NOT_CONNECTED)).toBeVisible();
-    await expect(page.getByRole('button', { name: DISCONNECT })).toHaveCount(0);
+    // Re-read live state here: Chrome may connect after the overview opens.
+    await expectChromeConnectionActions(page);
     await expect(page.getByText(ACTION_PERMISSIONS)).toBeVisible();
     await expect(page.getByText(SITE_PERMISSIONS).first()).toBeVisible();
     await page.screenshot({ path: iaScreenshot('04-my-chrome-detail-zh') });
@@ -450,16 +515,13 @@ test.describe.serial('Electron capability overview', () => {
     // ---- Computer Use detail: now owns the active-model block -----------
     await capabilityCard(page, COMPUTER_USE).click();
     // Titled by the capability, like the other two pages — the verb lives on
-    // the status row's button.
+    // the header switch.
     await expect(page.getByRole('heading', { name: COMPUTER_USE })).toBeVisible();
-    await expect(page.getByText(COMPUTER_SETUP, { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: COMPUTER_SETUP, exact: true })).toHaveCount(0);
     await expect(page.getByText(/^(当前模型|Current model)$/)).toBeVisible();
-    // Same skeleton: the one-line subtitle, then ONE status row saying it is
-    // off with the single button that changes that — no consent callout, and
-    // no closing paragraph restating both.
+    // The header switch communicates the opt-in state without another status row.
     await expect(page.getByText(/读取屏幕并操作界面|Reads the screen and operates/)).toBeVisible();
-    await expect(page.getByText(OFF)).toBeVisible();
-    await expect(page.getByRole('button', { name: COMPUTER_OFF_ACTION })).toBeVisible();
+    await expect(page.getByRole('switch', { name: ENABLE })).toHaveAttribute('aria-checked', 'false');
     await expect(page.getByText(/阿布不会自行开启电脑操控|cannot enable Computer Use by itself/))
       .toHaveCount(0);
     await expect(page.getByText(/敏感应用和危险按键|dangerous key combinations/)).toHaveCount(0);

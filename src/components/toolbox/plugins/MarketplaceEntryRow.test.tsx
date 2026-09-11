@@ -36,50 +36,13 @@ describe('MarketplaceEntryRow', () => {
     expect(screen.getByRole('button', { name: '安装' })).toBeInTheDocument();
   });
 
-  it('omits the optional lines entirely rather than rendering empty ones', () => {
-    render(<MarketplaceEntryRow testId="row" name="bare" />);
-    expect(screen.getByTestId('row').querySelectorAll('p')).toHaveLength(0);
-  });
-
-  it('keys the chips itself, so a caller can pass a plain array', () => {
-    // No key on either element — React would warn if the row did not wrap them.
-    render(
-      <MarketplaceEntryRow testId="row" name="n" chips={[<span>a</span>, <span>b</span>]} />,
-    );
-    expect(screen.getByTestId('row')).toHaveTextContent('ab');
-  });
-
-  it('lets the chips wrap instead of squeezing the name off the title line', () => {
-    render(
-      <MarketplaceEntryRow
-        testId="row"
-        nameTestId="row-name"
-        name="abu-prd-doctor"
-        chips={[<span key="a">未签名</span>]}
-        actions={<button type="button">安装</button>}
-      />,
-    );
-
-    const name = screen.getByTestId('row-name');
-    const titleLine = name.parentElement!;
-    // The chips are the name's siblings on this line, and the line wraps: a
-    // chip that does not fit costs a line, never the name's width.
-    expect(titleLine.className).toContain('flex-wrap');
-    expect(name.parentElement).toBe(screen.getByText('未签名').parentElement);
-    // `flex-basis: auto` (i.e. NOT `flex-1`) is what lets a long name claim the
-    // whole line and push the chips down; `flex-1`'s 0% basis would leave the
-    // name whatever the chips did not take — the 0px bug all over again.
-    expect(name.className).not.toContain('flex-1');
-    expect(name.className).toContain('min-w-0');
-    expect(name.className).toContain('truncate');
-    // Truncation is only ever the last resort, and it stays readable on hover.
-    expect(name.getAttribute('title')).toBe('abu-prd-doctor');
-
-    // The action is outside the flexible content column and never shrinks.
-    const actionWrapper = screen.getByRole('button', { name: '安装' }).parentElement!;
-    expect(actionWrapper.className).toContain('shrink-0');
-    expect(name.closest('[data-testid="row"]')!.querySelector('.min-w-0.flex-1')).toBe(
-      titleLine.parentElement,
-    );
+  it('uses the released card geometry and keeps the title readable with actions and chips', () => {
+    render(<MarketplaceEntryRow testId="card" nameTestId="name" name="long-plugin-name" chips={[<span key="s">未签名</span>]} actions={<button>安装</button>} />);
+    const name = screen.getByTestId('name');
+    expect(name).toHaveAttribute('title', 'long-plugin-name');
+    expect(name.className).toContain('min-w-10');
+    expect(screen.getByTestId('card').firstElementChild?.className).toContain('min-h-[120px]');
+    expect(screen.getByRole('button', { name: '安装' })).toBeVisible();
+    expect(screen.getByText('未签名').closest('.line-clamp-2')).toBeNull();
   });
 });

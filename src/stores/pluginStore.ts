@@ -1,7 +1,14 @@
+import { finishPluginConfiguration, sweepPluginConfigurations } from '@/core/plugin/configuration';
+import { preparePluginSnapshot, releasePluginSnapshot } from '@/core/plugin/snapshotBridge';
+import { useChatStore } from './chatStore';
+import { pluginOwnerForSkill } from '@/core/plugin/activationPolicy';
+import { skillLoader } from '@/core/skill/loader';
+import { agentRegistry } from '@/core/agent/registry';
+import { format, getI18n } from '@/i18n';
 /**
  * UI-side state for the plugin system.
  *
- * Two halves with deliberately different lifetimes:
+ * State with deliberately different lifetimes:
  *
  * - `marketplaces` is **persisted**. It is only the user's list of local
  *   marketplace directories — a pointer, not a cache. Entries are re-read from
@@ -11,6 +18,10 @@
  *   is the single source of truth for what is installed; mirroring it into
  *   localStorage would create a second truth that can disagree with disk after
  *   a manual edit, a failed uninstall, or a profile copy.
+ * - `activationByKey` persists the independent master preference and the last
+ *   verified capability ownership snapshot. Runtime admission stays protected
+ *   while discovery/installed records are loading or unreadable; successful
+ *   reconciliation refreshes ownership without rewriting child preferences.
  *
  * ## The security-critical part
  *
@@ -42,12 +53,14 @@
 import { homeDir } from '@tauri-apps/api/path';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { installPlugin } from '@/core/plugin/installer';
+import { installPlugin, validatePreparedInstall, prepareInstallRecord } from '@/core/plugin/installer';
 import { uninstallPlugin } from '@/core/plugin/uninstaller';
 import { readInstalledResult, upsertInstalled, type InstalledPlugin } from '@/core/plugin/installedStore';
 import { BUILTIN_MARKET_NAME } from '@/core/plugin/builtinMarket';
 import { registerPluginServers, deregisterPluginServers, type McpStoreOps } from '@/core/plugin/pluginMcpBridge';
 import { useMCPStore } from '@/stores/mcpStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { publishPluginActivation, reconcilePluginActivation, sanitizePluginActivations, pluginOwnerForMcp, type PluginActivations } from '@/core/plugin/activationPolicy';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { copyPluginDir, removePluginDir } from '@/core/plugin/fsOps';
 import { fetchRemotePluginSource } from '@/core/plugin/remoteFetch';
@@ -58,6 +71,12 @@ import { setPluginServerNames } from '@/core/permissions/pluginToolPolicy';
 import { ENTERPRISE_MARKET_NAME } from '@/core/plugin/enterpriseMarket';
 import { parsePluginKey } from '@/core/plugin/paths';
 import type { MarketplaceEntry } from '@/core/plugin/marketplace';
+import { hasPluginOperationHost, beginPluginOperation, commitPluginOperation, recoverPluginOperation, pluginOperationStatus,
+  acknowledgePluginOperation, runPluginOperation, type PluginOperationResult, type PluginRuntimeSnapshot } from '@/core/plugin/operationBridge';
+import { runtimeAfterInstall } from '@/core/plugin/runtimeTransition';
+import { acquirePluginChange } from '@/core/plugin/runtimeLease';
+
+let applyingPluginRuntime = false;
 
 /** A marketplace directory the user added. `dir` is absolute (tilde expanded). */
 export interface MarketplaceRef {
@@ -71,6 +90,9 @@ export interface MarketplaceRef {
 }
 
 export interface InstallRequest {
+  pluginConfiguration?: string;
+  enableMcp?: boolean;
+  preparedToken?: string;
   home: string;
   marketplaceName: string;
   marketplaceDir: string;
@@ -85,6 +107,10 @@ export interface UpdateRequest extends InstallRequest {
 }
 
 interface PluginState {
+  activationByKey: PluginActivations;
+  activationReady: boolean;
+  recoveryError: string | null;
+  unreadableOperation: import('@/core/plugin/operationBridge').UnreadablePluginOperation | null;
   /** Persisted: local marketplace directories the user added. */
   marketplaces: MarketplaceRef[];
   /** Runtime mirror of installed.json — never persisted (see module doc). */
@@ -128,6 +154,7 @@ interface PluginState {
 }
 
 interface PluginActions {
+  setPluginEnabled: (key: string, enabled: boolean) => Promise<void>;
   /** Add (or replace, by name) a marketplace pointer. */
   addMarketplace: (name: string, dir: string) => void;
   removeMarketplace: (name: string) => void;
@@ -140,7 +167,7 @@ interface PluginActions {
    * `skipDiscovery` is for the one caller that has just triggered a discovery
    * scan of its own (app start); every other caller wants the default.
    */
-  refreshInstalled: (home: string, options?: { skipDiscovery?: boolean }) => Promise<void>;
+  refreshInstalled: (home: string, options?: { skipDiscovery?: boolean; strict?: boolean }) => Promise<void>;
   install: (req: InstallRequest) => Promise<InstalledPlugin>;
   uninstall: (home: string, key: string) => Promise<void>;
   /**
@@ -203,6 +230,10 @@ function updateKeysPatch(keys: string[]): { updateAvailableKeys: string[]; updat
  * tests, since only "am I still the newest call" is ever asked.
  */
 let recomputeSeq = 0;
+// A replacement retains the old master intent without briefly enabling a new
+// version during the install refresh. Full update rollback is a separate seam.
+const updatingActivation = new Map<string, boolean>();
+const managedChanges = new Set<string>();
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -211,6 +242,10 @@ function messageOf(error: unknown): string {
 export const usePluginStore = create<PluginStore>()(
   persist(
     (set, get) => ({
+      activationByKey: {},
+      activationReady: false,
+      recoveryError: null,
+      unreadableOperation: null,
       marketplaces: [],
       installed: [],
       knownMcpServerNames: [],
@@ -223,17 +258,20 @@ export const usePluginStore = create<PluginStore>()(
         // The enterprise market name is reserved for the organization-managed
         // catalog installed through the private module — a user-added market
         // must never be able to claim that identity.
-        if (name === ENTERPRISE_MARKET_NAME) {
+        if (name === ENTERPRISE_MARKET_NAME || name.startsWith('author-')) {
           throw new Error(`reserved marketplace name: ${ENTERPRISE_MARKET_NAME}`);
         }
         // The built-in name is reserved; a user market must not be able to
         // shadow the official one out of the picker.
         if (name === BUILTIN_MARKET_NAME) return;
         set((state) => {
-          const rest = state.marketplaces.filter((m) => m.name !== name);
-          const builtin = state.marketplaces.filter((m) => m.builtin);
-          const users = rest.filter((m) => !m.builtin);
-          return { marketplaces: [...builtin, ...users, { name, dir }] };
+          const existing = state.marketplaces.find(m => m.name === name);
+          if (existing) {
+            if (existing.dir !== dir) throw new Error(getI18n().toolbox.pluginsMarketplaceNameConflict);
+            return {};
+          }
+          if (state.marketplaces.some(m => m.dir === dir)) throw new Error(getI18n().toolbox.pluginsMarketplaceIdentityChanged);
+          return { marketplaces: [...state.marketplaces, { name, dir }] };
         });
       },
 
@@ -260,6 +298,23 @@ export const usePluginStore = create<PluginStore>()(
       },
 
       refreshInstalled: async (home, options) => {
+        const pending = hasPluginOperationHost() ? await pluginOperationStatus() : null;
+        if (pending && 'unreadable' in pending) {
+          const result = await readInstalledResult(home);
+          set({ unreadableOperation: pending, recoveryError: getI18n().toolbox.pluginsJournalUnreadable, activationReady: false,
+            ...(result.ok ? { installed: result.plugins } : {}) });
+          if (options?.strict) throw new Error('Plugin recovery is still pending');
+          return;
+        }
+        if ((pending || managedChanges.size > 0) && !applyingPluginRuntime) {
+          set({ activationReady: false });
+          if (options?.strict) throw new Error('Plugin recovery is still pending');
+          return;
+        }
+        if (!options?.skipDiscovery) {
+          if (options?.strict) await useDiscoveryStore.getState().refresh(undefined, { strict: true });
+          else await useDiscoveryStore.getState().refresh().catch(() => undefined);
+        }
         const result = await readInstalledResult(home);
         if (!result.ok) {
           // Fail closed. An unreadable manifest (half-written file, EACCES, a
@@ -269,15 +324,35 @@ export const usePluginStore = create<PluginStore>()(
           // then persist that narrowed gate for the next launch. Keep the
           // previous `installed` and leave the gate exactly as it is; the next
           // successful refresh reconciles.
+          if (options?.strict) throw result.error;
           console.warn('[pluginStore] installed.json unreadable — keeping the previous plugin state:', result.error);
           return;
         }
         const installed = result.plugins;
+        const settings = useSettingsStore.getState();
+        const activationByKey = reconcilePluginActivation(get().activationByKey, installed, home, {
+          skills: skillLoader.getAvailableSkills({ includeDisabledPlugins: true }).flatMap(meta => {
+            const skill = skillLoader.getSkill(meta.name, { includeDisabledPlugins: true });
+            return skill ? [skill] : [];
+          }),
+          agents: agentRegistry.getAvailableAgents({ includeDisabledPlugins: true }).flatMap(meta => {
+            const agent = agentRegistry.getAgent(meta.name, { includeDisabledPlugins: true });
+            return agent ? [agent] : [];
+          }),
+          disabledSkills: settings.disabledSkills,
+          disabledAgents: settings.disabledAgents,
+          servers: useMCPStore.getState().servers,
+        });
+        for (const key of updatingActivation.keys()) {
+          if (Object.hasOwn(activationByKey, key)) activationByKey[key].enabled = false;
+        }
         // Drop update flags whose install is gone (uninstall goes through
         // here) — the badge must not keep counting a plugin that no longer
         // exists on disk.
         set((state) => ({
           installed,
+          activationByKey,
+          activationReady: pending === null && managedChanges.size === 0,
           ...updateKeysPatch(
             state.updateAvailableKeys.filter((k) => installed.some((p) => p.key === k)),
           ),
@@ -291,20 +366,37 @@ export const usePluginStore = create<PluginStore>()(
         const serverNames = mcpServerNamesOf(installed);
         set({ knownMcpServerNames: serverNames });
         setPluginServerNames(serverNames);
-        // Re-scan skills so a plugin's skills appear immediately, without an
-        // app restart. Plugin skills live under ~/.abu/plugin-packages, which
-        // the registry fs-watcher does NOT observe (it watches ~/.abu/skills
-        // and ~/.abu/agents only), so nothing else triggers this discovery —
-        // unless the caller says it is already scanning (app start).
-        if (!options?.skipDiscovery) {
-          await useDiscoveryStore.getState().refresh().catch(() => undefined);
-        }
+
+      },
+
+      setPluginEnabled: async (key, enabled) => {
+        if (managedChanges.has(key)) throw new Error(getI18n().toolbox.pluginsChanging);
+        const activation = get().activationByKey[key];
+        if (!activation || activation.conflicted || !get().installed.some(p => p.key === key)) throw new Error(format(getI18n().toolbox.pluginsDisabledCapability, { name: key }));
+        // Zustand subscribers publish the runtime deny gate synchronously,
+        // before any asynchronous disconnect. Child preferences never change.
+        set(state => ({ activationByKey: { ...state.activationByKey, [key]: { ...activation, enabled } } }));
+        const owned = activation.mcpServers.filter(name => pluginOwnerForMcp(name) === key);
+        const results = await Promise.allSettled(owned.map(async name => {
+          const mcp = useMCPStore.getState();
+          if (!mcp.servers[name]) return;
+          if (!enabled) await mcp.disconnectServer(name);
+          else if (mcp.servers[name].config.enabled) {
+            await mcp.connectServer(name);
+            const server = useMCPStore.getState().servers[name];
+            if (server?.status === 'error') throw new Error(server.error || name);
+          }
+        }));
+        const failed = results.find(result => result.status === 'rejected');
+        if (failed?.status === 'rejected') throw failed.reason;
       },
 
       install: async (req) => {
+        if (req.preparedToken && hasPluginOperationHost()) return managedPluginChange('install', req);
         set({ loading: true, error: null });
         try {
           const { record, mcpServers } = await installPlugin({
+            preparedToken: req.preparedToken,
             home: req.home,
             marketplaceName: req.marketplaceName,
             marketplaceDir: req.marketplaceDir,
@@ -339,7 +431,7 @@ export const usePluginStore = create<PluginStore>()(
           let persistedRecord = record;
           if (mcpServers.length > 0) {
             const specs = Object.fromEntries(
-              mcpServers.map((s) => [s.name, { command: s.command, args: s.args, url: s.url }]),
+              mcpServers.map(({ name, ...spec }) => [name, spec]),
             );
             const { registered } = registerPluginServers(specs, getMcpStoreOps());
             if (registered.length !== record.contributed.mcpServers.length) {
@@ -369,8 +461,10 @@ export const usePluginStore = create<PluginStore>()(
       },
 
       uninstall: async (home, key) => {
+        if (hasPluginOperationHost()) { await managedPluginChange('uninstall', { home, key }); return; }
         set({ loading: true, error: null });
         try {
+          if (get().activationByKey[key]) await get().setPluginEnabled(key, false);
           const { withdrawn } = await uninstallPlugin({
             home,
             key,
@@ -396,16 +490,28 @@ export const usePluginStore = create<PluginStore>()(
       },
 
       update: async (req) => {
-        // Uninstall first; if it throws, install never runs and the old
-        // version stays intact (no half-updated state).
-        await get().uninstall(req.home, req.key);
-        return get().install({
-          home: req.home,
-          marketplaceName: req.marketplaceName,
-          marketplaceDir: req.marketplaceDir,
-          entry: req.entry,
-          checksum: req.checksum,
-        });
+        if (req.preparedToken && hasPluginOperationHost()) return managedPluginChange('update', req);
+        // Keep execution gated through replacement and restore the user's
+        // master preference only after success. Transactional rollback is separate.
+        if (req.preparedToken) await validatePreparedInstall(req);
+        const enabled = get().activationByKey[req.key]?.enabled;
+        if (enabled !== undefined) updatingActivation.set(req.key, enabled);
+        try {
+          await get().uninstall(req.home, req.key);
+          const record = await get().install({
+            preparedToken: req.preparedToken,
+            home: req.home,
+            marketplaceName: req.marketplaceName,
+            marketplaceDir: req.marketplaceDir,
+            entry: req.entry,
+            checksum: req.checksum,
+          });
+          updatingActivation.delete(req.key);
+          if (enabled !== undefined) await get().setPluginEnabled(req.key, enabled);
+          return record;
+        } finally {
+          updatingActivation.delete(req.key);
+        }
       },
 
       clearError: () => set({ error: null }),
@@ -432,6 +538,7 @@ export const usePluginStore = create<PluginStore>()(
             // is belt-and-braces for a hand-edited localStorage value — and it
             // is the only thing `home` is needed for.
             const marketplace = await loadMarketplaceFromDir(expandHome(market.dir, home));
+            if (marketplace.name !== market.name) continue;
             keys.push(
               ...updateAvailableKeysFor(
                 marketplace.plugins,
@@ -442,6 +549,21 @@ export const usePluginStore = create<PluginStore>()(
                 market.name,
               ),
             );
+            if (hasPluginOperationHost()) {
+              const byName = installedByEntryName(installed, market.name, marketplace.renames);
+              for (const entry of marketplace.plugins) {
+                if (seq !== recomputeSeq) return;
+                const previous = byName.get(entry.name);
+                if (entry.source.kind !== 'relative' || !previous?.checksum) continue;
+                let token: string | undefined;
+                try {
+                  const snapshot = await preparePluginSnapshot({ marketplaceDir: market.dir, marketplaceName: market.name, entryName: entry.name });
+                  token = snapshot.token;
+                  if (snapshot.checksum !== previous.checksum) keys.push(`${entry.name}@${market.name}`);
+                } catch { /* Unavailable source never authorizes an update. */ }
+                finally { if (token) await releasePluginSnapshot(token).catch(() => {}); }
+              }
+            }
           } catch {
             // A market whose manifest is missing or malformed contributes no
             // flags. The browser surfaces that failure with a readable error
@@ -456,12 +578,13 @@ export const usePluginStore = create<PluginStore>()(
     }),
     {
       name: 'abu-plugins',
-      version: 2,
+      version: 3,
       // Marketplace pointers + the approval-gate server names survive a reload.
       // `installed` is re-derived from disk on mount.
       partialize: (state) => ({
         marketplaces: state.marketplaces.filter((m) => !m.builtin),
         knownMcpServerNames: state.knownMcpServerNames,
+        activationByKey: state.activationByKey,
       }),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<PluginState>;
@@ -472,6 +595,7 @@ export const usePluginStore = create<PluginStore>()(
         }
         return {
           marketplaces: Array.isArray(state.marketplaces) ? state.marketplaces : [],
+          activationByKey: sanitizePluginActivations(state.activationByKey),
           // v1 had no persisted server names. Empty is the correct v1→v2 value:
           // the first refreshInstalled fills it from disk.
           knownMcpServerNames: Array.isArray(state.knownMcpServerNames)
@@ -484,11 +608,18 @@ export const usePluginStore = create<PluginStore>()(
        * tool call can reach `classifyPluginTool`.
        */
       onRehydrateStorage: () => (state) => {
-        if (state) setPluginServerNames(state.knownMcpServerNames ?? []);
+        if (state) {
+          state.activationByKey = sanitizePluginActivations(state.activationByKey);
+          state.activationReady = false;
+          setPluginServerNames(state.knownMcpServerNames ?? []);
+          publishPluginActivation(state.activationByKey, state.knownMcpServerNames ?? [], false);
+        }
       },
     },
   ),
 );
+
+usePluginStore.subscribe(state => publishPluginActivation(state.activationByKey, state.knownMcpServerNames, state.activationReady));
 
 /**
  * App-start bootstrap for the plugin update badge.
@@ -499,18 +630,207 @@ export const usePluginStore = create<PluginStore>()(
  * the earliest hydrate (see PluginsTab's module doc) — which is exactly why a
  * user who never opened it never learned an update existed.
  *
- * Best-effort by design: every failure here degrades to "no badge", never to a
+ * Recovery errors stop automatic activation. Update badge refresh is best-effort.
+ * Legacy behavior: every failure here degrades to "no badge", never to a
  * broken launch. The MCP approval gate does NOT depend on this running — it is
  * armed synchronously from persisted `knownMcpServerNames` on rehydrate, and a
  * failed manifest read here leaves it untouched rather than empty.
  *
- * `skipDiscovery` because App's boot effect already calls `refreshDiscovery()`
- * on the same tick: without it, launch pays for two identical skill/agent
- * scans. Only this caller may skip — every other `refreshInstalled` runs
- * because something changed on disk and nobody else is scanning.
+ * Recovery precedes discovery. Tests/legacy callers may supply an already-started
+ * discovery promise; the Electron application always lets this routine own boot.
  */
-export async function bootstrapPluginUpdates(): Promise<void> {
+export async function bootstrapPluginUpdates(discoveryReady?: Promise<void>): Promise<void> {
+  usePluginStore.setState({ recoveryError: null, unreadableOperation: null, activationReady: false });
+  try {
+  await discoveryReady;
   const home = await homeDir();
+  if (hasPluginOperationHost()) {
+    // Recovery owns reopening a dead worker; status cannot run ahead of it.
+    const recovery = await recoverPluginOperation().catch(async error => {
+      const status = await pluginOperationStatus().catch(() => null);
+      if (status && 'unreadable' in status) {
+        await usePluginStore.getState().refreshInstalled(home);
+        throw new Error(getI18n().toolbox.pluginsJournalUnreadable);
+      }
+      throw error;
+    });
+    if (recovery) { await applyPluginRuntime(recovery, home); await acknowledgePluginOperation(recovery.id); }
+  }
+  if (!discoveryReady || hasPluginOperationHost()) await useDiscoveryStore.getState().refresh();
   await usePluginStore.getState().refreshInstalled(home, { skipDiscovery: true });
-  await usePluginStore.getState().recomputeUpdates(home);
+  // Startup hydration may have deferred plugin MCP connections until ownership was known.
+  await useMCPStore.getState().connectAllEnabled();
+  await usePluginStore.getState().recomputeUpdates(home).catch(() => undefined);
+  await cleanupPluginConfiguration();
+  } catch (error) {
+    usePluginStore.setState({ recoveryError: messageOf(error), activationReady: false });
+    throw error;
+  }
+}
+
+
+function capturePluginRuntime(record: InstalledPlugin | undefined, next?: InstalledPlugin): PluginRuntimeSnapshot {
+  const settings = useSettingsStore.getState();
+  const servers = useMCPStore.getState().servers;
+  const otherOwners = new Set(usePluginStore.getState().installed
+    .filter(plugin => plugin.key !== (record?.key ?? next?.key)).flatMap(plugin => plugin.contributed.mcpServers));
+  const owned = new Set((record?.contributed.mcpServers ?? []).filter(name => !otherOwners.has(name)));
+  return {
+    enabled: record ? usePluginStore.getState().activationByKey[record.key]?.enabled === true : false,
+    // Null remembers absence so rollback can remove only newly introduced names.
+    servers: Object.fromEntries([...new Set([...owned, ...(next?.contributed.mcpServers ?? [])])]
+      .filter(name => !otherOwners.has(name) && (owned.has(name) || !servers[name]))
+      .map(name => [name, servers[name] ? structuredClone(servers[name].config) : null])),
+    disabledSkills: Object.fromEntries([...new Set([...(record?.contributed.skills ?? []), ...(next?.contributed.skills ?? [])])].map(name => [name, settings.disabledSkills.includes(name)])),
+    disabledAgents: Object.fromEntries([...new Set([...(record?.contributed.agents ?? []), ...(next?.contributed.agents ?? [])])].map(name => [name, settings.disabledAgents.includes(name)])),
+  };
+}
+
+async function applyPluginRuntime(resolution: PluginOperationResult, home: string): Promise<void> {
+  const runtime = resolution.runtime;
+  if (!runtime || typeof runtime.enabled !== 'boolean' || !runtime.servers || !runtime.disabledSkills || !runtime.disabledAgents) {
+    throw new Error('Plugin recovery state is invalid');
+  }
+  const expected = resolution.expectedRuntime;
+  const assertCurrentRuntime = () => {
+    if (!expected) return;
+    const canonical = (value: unknown): string => JSON.stringify(value, (_key, item) =>
+      item && typeof item === 'object' && !Array.isArray(item)
+        ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+    for (const [name, desired] of Object.entries(runtime.servers)) {
+      const actual = useMCPStore.getState().servers[name]?.config ?? null;
+      if (canonical(actual) !== canonical(expected.servers[name] ?? null) && canonical(actual) !== canonical(desired)) {
+        throw new Error(`Plugin configuration changed during installation: ${name}. Resolve the conflicting connector before retrying recovery.`);
+      }
+    }
+    const settings = useSettingsStore.getState();
+    for (const field of ['disabledSkills', 'disabledAgents'] as const) {
+      for (const [name, desired] of Object.entries(runtime[field])) {
+        const actual = settings[field].includes(name);
+        if (actual !== (expected[field][name] ?? false) && actual !== desired) {
+          throw new Error(`Plugin preference changed during installation: ${name}`);
+        }
+      }
+    }
+  }
+  assertCurrentRuntime();
+  for (const [name, config] of Object.entries(runtime.servers)) {
+    const mcp = useMCPStore.getState();
+    if (mcp.servers[name]) await mcp.disconnectServer(name);
+    // A user can edit while disconnect is pending. Check again in the same
+    // synchronous turn as remove/add, before replacing any configuration.
+    assertCurrentRuntime();
+    if (config === null) mcp.removeServer(name);
+    else {
+      // Replace the complete config: merge would retain a removed URL/env.
+      if (mcp.servers[name]) mcp.removeServer(name);
+      mcp.addServer(config);
+    }
+  }
+  useSettingsStore.setState(state => {
+    assertCurrentRuntime();
+    return {
+    disabledSkills: [...state.disabledSkills.filter(name => !Object.hasOwn(runtime.disabledSkills, name)),
+      ...Object.keys(runtime.disabledSkills).filter(name => runtime.disabledSkills[name])],
+    disabledAgents: [...state.disabledAgents.filter(name => !Object.hasOwn(runtime.disabledAgents, name)),
+      ...Object.keys(runtime.disabledAgents).filter(name => runtime.disabledAgents[name])],
+  }; });
+  applyingPluginRuntime = true;
+  try { await usePluginStore.getState().refreshInstalled(home, { strict: true }); }
+  finally { applyingPluginRuntime = false; }
+  assertCurrentRuntime();
+  const activation = usePluginStore.getState().activationByKey[resolution.key];
+  if (resolution.installed !== undefined && Boolean(activation) !== resolution.installed) {
+    throw new Error('Plugin recovery could not restore the installed activation state');
+  }
+  if (activation) {
+    // Do not connect until durable resolution and runtime reconstruction finish.
+    usePluginStore.setState(state => ({ activationByKey: { ...state.activationByKey,
+      [resolution.key]: { ...activation, enabled: runtime.enabled } } }));
+  }
+}
+
+async function managedPluginChange(kind: 'install' | 'update', request: InstallRequest & { key?: string }): Promise<InstalledPlugin>;
+async function managedPluginChange(kind: 'uninstall', request: { home: string; key: string }): Promise<null>;
+async function managedPluginChange(kind: 'install' | 'update' | 'uninstall', request: (InstallRequest & { key?: string }) | { home: string; key: string }): Promise<InstalledPlugin | null> {
+  const req = 'entry' in request ? request : undefined;
+  const key = request.key ?? (req ? `${req.entry.name}@${req.marketplaceName}` : '');
+  if (managedChanges.size > 0) throw new Error(getI18n().toolbox.pluginsChanging);
+  const release = acquirePluginChange(key);
+  managedChanges.add(key);
+  const previous = usePluginStore.getState().installed.find(plugin => plugin.key === key);
+  const wasEnabled = usePluginStore.getState().activationByKey[key]?.enabled === true;
+  usePluginStore.setState({ loading: true, error: null, activationReady: false });
+  try {
+    const options = req ? { ...req, requireAllContributions: true, copyDir: async (from: string, to: string) => { await copyPluginDir(from, to); }, fetchRemote: fetchRemotePluginSource } : undefined;
+    const candidate = options ? await prepareInstallRecord(options) : undefined;
+    if (previous && Object.values(useChatStore.getState().conversations).some(conversation =>
+      conversation.status === 'running' && conversation.activeSkills?.some(name => {
+        const skill = skillLoader.getSkill(name, { includeDisabledPlugins: true });
+        return skill && pluginOwnerForSkill(skill.skillDir) === key;
+      }))) throw new Error(getI18n().toolbox.pluginsBusy);
+    const runtime = capturePluginRuntime(previous, candidate);
+    // Deny new use without changing the persisted activation intent. If the
+    // app exits before begin, no journal is needed to recover that intent.
+    if (previous) {
+      for (const name of previous.contributed.mcpServers) {
+        if (pluginOwnerForMcp(name) === key && useMCPStore.getState().servers[name]) {
+          await useMCPStore.getState().disconnectServer(name);
+        }
+      }
+    }
+    // Keep all discovery-triggered reconciliations denied during replacement.
+
+    const record = await runPluginOperation({
+      begin: () => beginPluginOperation({ kind, key, record: candidate, token: req?.preparedToken, expected: previous ?? null, runtime }),
+      stage: async () => {
+        if (!options) return { record: null, runtime: { ...runtime, enabled: false,
+          servers: Object.fromEntries(Object.keys(runtime.servers).map(name => [name, null])) } };
+        const outcome = await installPlugin(options);
+        const permitted = outcome.mcpServers.filter(server => Object.hasOwn(runtime.servers, server.name));
+        const record = { ...outcome.record, contributed: { ...outcome.record.contributed, mcpServers: permitted.map(server => server.name) } };
+        return { record, runtime: runtimeAfterInstall(runtime, permitted, record.contributed.skills, record.contributed.agents, kind === 'update', req?.enableMcp === true) };
+      },
+      commit: (id, outcome) => commitPluginOperation(id, outcome.record, outcome.runtime),
+      recover: () => recoverPluginOperation(key),
+      apply: async resolution => {
+        await applyPluginRuntime(resolution, request.home);
+      },
+      unchanged: async () => {
+        managedChanges.delete(key);
+        if (previous) await usePluginStore.getState().setPluginEnabled(key, runtime.enabled);
+      },
+    });
+    managedChanges.delete(key);
+    await usePluginStore.getState().refreshInstalled(request.home);
+    await useMCPStore.getState().connectAllEnabled();
+    await usePluginStore.getState().recomputeUpdates(request.home).catch(() => undefined);
+    return record.record;
+  } catch (error) {
+    // Only reopen admission after a verified terminal journal state. A failed
+    // recovery keeps the gate closed and its backups available for retry.
+    try {
+      if (await pluginOperationStatus() === null) {
+        managedChanges.delete(key);
+        await usePluginStore.getState().refreshInstalled(request.home);
+        if (previous) await usePluginStore.getState().setPluginEnabled(key, wasEnabled);
+        await useMCPStore.getState().connectAllEnabled();
+      }
+    } catch { /* Preserve the operation error; unresolved plugins remain denied. */ }
+    usePluginStore.setState({ error: messageOf(error), ...(!usePluginStore.getState().activationReady ? { recoveryError: messageOf(error) } : {}) });
+    throw error;
+  } finally {
+    managedChanges.delete(key);
+    usePluginStore.setState({ loading: false });
+    release();
+    await cleanupPluginConfiguration();
+  }
+}
+
+export async function cleanupPluginConfiguration(reference?: string): Promise<void> {
+  finishPluginConfiguration(reference);
+  await sweepPluginConfigurations(() => {
+    if (managedChanges.size || !usePluginStore.getState().activationReady || usePluginStore.getState().recoveryError) return null;
+    return Object.values(useMCPStore.getState().servers).flatMap(server => server.config.pluginConfiguration ? [server.config.pluginConfiguration] : []);
+  }).catch(error => console.warn('[pluginStore] Deferred unused configuration cleanup:', messageOf(error)));
 }

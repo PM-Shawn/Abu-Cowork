@@ -3,6 +3,11 @@
  * Provides full type safety and IDE autocompletion for translations
  */
 
+// Type-only: keeps `stopReasonLabel` exhaustive over the stop-reason union, so
+// a new SubagentStopReason member is a compile error here instead of an
+// `undefined` label rendered to the leader.
+import type { SubagentStopReason } from '@/types';
+
 export type SupportedLocale = 'zh-CN' | 'en-US';
 export type LanguageSetting = 'system' | SupportedLocale;
 
@@ -137,6 +142,7 @@ export interface TranslationDict {
     triggers: string;
     /** Sidebar entry for the Extensions view (插件 / 技能 / 连接器). */
     extensions: string;
+    team: string;
     recents: string;
     searchPlaceholder: string;
     noSearchResults: string;
@@ -404,6 +410,8 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     addAttachment: string;
+    /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
+    composerMenu: { open: string; addFile: string; teamOrMember: string; skill: string };
     // Agent selector in toolbar
     pickAgent: string;
     pickAgentEmpty: string;
@@ -441,8 +449,34 @@ export interface TranslationDict {
       conversation: string;
       free: string;
     };
-    // Agent loop max turns
+    /** An @agent delegate ran out of turns inside the main run (a sentence — the
+     *  card below is for the MAIN loop's own cap). {n} = the delegate's cap. */
     maxTurnsReached: string;
+    // Agent loop turn cap — the notice card the run ends with.
+    maxTurns: {
+      /** Card title, first time this run chain hits the cap. {n} = the cap. */
+      title: string;
+      /** Card title from the second consecutive cap onwards. {n} = the cap. */
+      titleAgain: string;
+      /** Card body, first time. */
+      body: string;
+      /** Card body from the second consecutive cap onwards. */
+      bodyAgain: string;
+      /** Primary/secondary action: resume the unfinished task. */
+      continueAction: string;
+      /** Button label while the previous run is being wound down. */
+      continuing: string;
+      /** Action: jump to the 「最大轮次」 setting. */
+      adjustAction: string;
+      /** Settled state left in the transcript after 「继续执行」. */
+      continued: string;
+      /** The user message the continue button dispatches. */
+      continuePrompt: string;
+      /** Toast title when continuing fails. */
+      continueFailedTitle: string;
+      /** Toast body when continuing fails. */
+      continueFailed: string;
+    };
     // Agent loop no-progress guard (model stuck emitting unparseable tool calls)
     noProgressStopped: string;
     // Agent loop semantic guard (well-formed but repetitive/meta-only calls)
@@ -493,14 +527,23 @@ export interface TranslationDict {
     attachmentAdmissionPending: string;
     /** Composer has an in-flight initial send for this draft. */
     sendAlreadyPending: string;
+    /** Toast after a direct instruction was queued for a running team member. */
+    memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;
+    suggestionSectionTeams: string;
+    suggestionSectionAgents: string;
+    suggestionSectionSkills: string;
     /** Subagent (subagentLoop.ts) result/status strings. */
     subagent: {
       /** Subagent task was cancelled. */
       taskCancelled: string;
+      /** User content wrapping a direct instruction to a running team member. */
+      memberInstruction: string;
+      /** Abort reason attached when the stall watchdog stops a hand-off. */
+      stalledStopped: string;
       /** Output repeatedly hit the token limit; result may be incomplete. */
       outputLimitIncomplete: string;
       /** Subagent stopped: repeated incomplete tool calls / truncated output. */
@@ -685,6 +728,7 @@ export interface TranslationDict {
     skillDraftReady: string;
     imInbound: string;
     updateAvailable: string;
+    stuckDetection: string;
   };
 
   // Scratchpad entry titles (scratchpadStore.ts)
@@ -829,6 +873,14 @@ export interface TranslationDict {
     /** "{count} 次被页面拦住（验证码 / 频率限制等）" */
     blockedPages: string;
     nextStepsTitle: string;
+    /** Section header over the files this run downloaded (T6 / R-1). */
+    artifactsTitle: string;
+    /** "另有 {count} 个文件未列出" */
+    moreArtifacts: string;
+    /** Tooltip on an artifact row — click opens it in the preview panel. */
+    artifactOpenHint: string;
+    /** Label of the reveal-in-folder button on an artifact row. */
+    artifactReveal: string;
     /** Short label per denial reason code. */
     reason: {
       masterSwitchOff: string;
@@ -911,6 +963,11 @@ export interface TranslationDict {
     detailBrowserToolsNotReady: string;
     /** "接下来：{step}" — second line, only when there is something to do. */
     nextStep: string;
+    /**
+     * "产物：{name}（{size}）· {path}" — one line per file the run downloaded.
+     * Name, size and location; never the file itself (T6 / R-1).
+     */
+    artifactLine: string;
   };
 
   // Settings Modal
@@ -1134,14 +1191,18 @@ export interface TranslationDict {
      *  imply, that an explicitly allowed site will still ask. */
     browserHighRiskTag: string;
     /** Row tag: this 「始终允许」 was minted through the merged prompt a page's
-     *  embedded regions get, so an automatic task is refused when it tries to
-     *  ACT there. Scoped to acting on purpose (round-3 R3-G): the mark takes
-     *  the grant down to `'default'`, and reading a default-verdict site is
-     *  something an unattended run has always been allowed to do — a tag that
-     *  said 「不适用」 promised a wall that is not there. */
+     *  embedded regions get, so it is SCOPED — valid only inside the embedded
+     *  regions of the page it was given on, whoever is watching. Used when the
+     *  stored grant does not say which page that was (a pre-v51 mark). */
     browserViaEmbedTag: string;
-    /** `title` for {@link browserViaEmbedTag} — what is refused, what is not,
-     *  and how to promote it. */
+    /** {@link browserViaEmbedTag} when the page IS known — `{page}` is that
+     *  page's address, or {@link browserViaEmbedTagPageMore}. */
+    browserViaEmbedTagOnPage: string;
+    /** The `{page}` of {@link browserViaEmbedTagOnPage} when the same region was
+     *  granted on several pages: the first address plus how many others. */
+    browserViaEmbedTagPageMore: string;
+    /** `title` for both tags — what the scope covers, what it does not, and how
+     *  to promote it to an ordinary standing grant. */
     browserViaEmbedTagHint: string;
     browserUnattendedReachSummary: string;
     browserUnattendedReachNone: string;
@@ -1154,6 +1215,8 @@ export interface TranslationDict {
     browserOpPolicyDesc: string;
     browserOpClassReadOnly: string;
     browserOpClassInteractive: string;
+    /** T5 — the fourth operation class, one row on the same card. */
+    browserOpClassUpload: string;
     /** Scripting is split out into its own card: it is the one row an ordinary
      *  user should not skim past, and the only one that carries a risk
      *  warning. The class name is that card's title, so it carries a
@@ -1294,6 +1357,15 @@ export interface TranslationDict {
     capabilityChromeProbeUnavailable: string;
     capabilityComputerPermissionMissing: string;
     capabilityComputerPartial: string;
+    capabilityComputerAuthorize: string;
+    capabilityComputerUsable: string;
+    capabilityComputerSetupIntro: string;
+    capabilityComputerScreenShort: string;
+    capabilityComputerControlShort: string;
+    capabilityComputerViewHelp: string;
+    capabilityComputerSystemPermissions: string;
+    capabilityComputerPermissionProgress: string;
+    capabilityComputerRestartNote: string;
     capabilityComputerModel: string;
     capabilityComputerModelFull: string;
     capabilityComputerModelStructured: string;
@@ -1370,6 +1442,13 @@ export interface TranslationDict {
     closeWindowBehavior: string;
     composerEnterBehavior: string;
     composerEnterBehaviorDesc: string;
+    /** Global turn cap for a single run (settings › general). */
+    agentMaxTurns: string;
+    agentMaxTurnsDesc: string;
+    /** One dropdown option. {n} = the number of turns. */
+    agentMaxTurnsOption: string;
+    /** Shown only when a cap of "no cap" is already in force from outside the UI. */
+    agentMaxTurnsUnlimited: string;
     composerEnterSends: string;
     /** `{modifier}` = ⌘ / Ctrl. */
     composerEnterNewline: string;
@@ -1555,7 +1634,6 @@ export interface TranslationDict {
     revoke: string;
     appAutomationTitle: string;
     appAutomationDescription: string;
-    appAutomationConnectorPending: string;
     appAutomationUseComputer: string;
     appAutomationStop: string;
     appAutomationAdvanced: string;
@@ -1764,7 +1842,96 @@ export interface TranslationDict {
   };
 
   // Toolbox Modal
+  team: {
+    tabMembers: string;
+    tabTeams: string;
+    searchPlaceholder: string;
+    newTeam: string;
+    editTeam: string;
+    createTeamAction: string;
+    teamCreated: string;
+    teamSaved: string;
+    teamSaveFailed: string;
+    fieldName: string;
+    fieldNamePlaceholder: string;
+    fieldAvatar: string;
+    fieldAvatarPlaceholder: string;
+    fieldAvatarHint: string;
+    fieldMembers: string;
+    fieldMembersHint: string;
+    noMembersYet: string;
+    createMemberNow: string;
+    fieldLeaderNote: string;
+    fieldLeaderNoteHint: string;
+    fieldLeaderNotePlaceholder: string;
+    teamRowSummary: string;
+    detailStartChat: string;
+    detailLeader: string;
+    detailMembers: string;
+    detailNoMembers: string;
+    detailPlanApproval: string;
+    detailPlanApprovalOn: string;
+    detailPlanApprovalOff: string;
+    detailLeaderNote: string;
+    detailSkills: string;
+    detailSkillsHint: string;
+    detailNoSkills: string;
+    detailEdit: string;
+    aiCreateTeamPrompt: string;
+    unknownMember: string;
+    teamsEmpty: string;
+    teamsEmptyHint: string;
+    /** Follow-up chips under a finished team turn. */
+    followUpRedoStep: string;
+    followUpMemberRevise: string;
+    followUpMemberAppend: string;
+    confirmationStripTitle: string;
+    confirmationSeparator: string;
+    confirmationLeader: string;
+    confirmationApproveRun: string;
+    confirmationAllowSite: string;
+    confirmationWriteRead: string;
+    confirmationWrite: string;
+    confirmationRead: string;
+    confirmationCwd: string;
+    confirmationOrigin: string;
+    confirmationRequestOrdinal: string;
+    confirmationDefaultCwd: string;
+    confirmationLegacy: string;
+    confirmationRunRule: string;
+    confirmationRevoke: string;
+    confirmationApprove: string;
+    confirmationReject: string;
+    confirmationNotice: string;
+    confirmationApprovedFollowUp: string;
+    confirmationRejectedFollowUp: string;
+    stallStoppedNotice: string;
+    resumeAfterRestart: string;
+    resumeAfterRestartFailed: string;
+    followUpHint: string;
+    fieldPlanApproval: string;
+    fieldPlanApprovalHint: string;
+    chatReceiptEmptyGoal: string;
+    chatReceiptOtherTeam: string;
+    fieldLeader: string;
+    fieldLeaderHint: string;
+    leaderPlaceholder: string;
+    membersPlaceholder: string;
+    pickerEmpty: string;
+    suggestionTeamHint: string;
+    deleteTeamAction: string;
+    deleteTeamTitle: string;
+    deleteTeamMessage: string;
+    teamArchived: string;
+  };
+
   toolbox: {
+    agentNamePlaceholder: string;
+    agentNameFormatHint: string;
+    agentInstructionsLabel: string;
+    agentAdvancedSection: string;
+    agentSkillsPlaceholder: string;
+    agentSkillsEmpty: string;
     title: string;
     skills: string;
     agents: string;
@@ -1799,6 +1966,47 @@ export interface TranslationDict {
     trialPromptFallback: string;
     pluginsAddMarketplace: string;
     pluginsAddMarketplaceTitle: string;
+    pluginsManifestInvalidField: string;
+    pluginsComponentMissing: string;
+    pluginsComponentEmptySkills: string;
+    pluginsBusy: string;
+    pluginsChanging: string;
+    pluginsCreate: string;
+    pluginsDraft: string;
+    pluginsAuthorConversation: string;
+    pluginsAuthorPrompt: string;
+    pluginsContinueEditing: string;
+    pluginsUpdating: string;
+    pluginsCheckChanges: string;
+    pluginsPreviewUpdate: string;
+    pluginsAuthorUpdateAvailable: string;
+    pluginsAuthorUpdateHint: string;
+    pluginsValidationPassed: string;
+    pluginsUpdateDisclosureTitle: string;
+    pluginsUpdateDisclosureSubtitle: string;
+    pluginsReviewChanges: string;
+    pluginsAuthoredSource: string;
+    pluginsReadyToInstall: string;
+    pluginsSourceFiles: string;
+    pluginsUnchanged: string;
+    pluginsDraftHint: string;
+    pluginsConfiguration: string;
+    pluginsConfigurationHint: string;
+    pluginsMarketplaceNameConflict: string;
+    pluginsMarketplaceIdentityChanged: string;
+    pluginsRefreshMarketplace: string;
+    pluginsCachedMarketplace: string;
+    pluginsRecoveryNeeded: string;
+    pluginsDeleteDraft: string;
+    pluginsDeleteDraftWarning: string;
+    pluginsJournalUnreadable: string;
+    pluginsArchiveContinue: string;
+    pluginsArchiveWarning: string;
+    pluginsArchivedNotice: string;
+    pluginsRetryRecovery: string;
+    pluginsDisabledCapability: string;
+    pluginsComponentInvalidJson: string;
+    pluginsComponentConflict: string;
     pluginsMarketplaceDirLabel: string;
     pluginsMarketplaceDirPlaceholder: string;
     pluginsMarketplaceDirHint: string;
@@ -2032,6 +2240,8 @@ export interface TranslationDict {
     skillEnabled: string;
     skillDisabled: string;
     skillEdit: string;
+    backToDetails: string;
+    useNow: string;
     skillTryInChat: string;
     skillSave: string;
     skillSaveAndTest: string;
@@ -2066,6 +2276,7 @@ export interface TranslationDict {
     skillSourceBuiltin: string;
     skillSourceUser: string;
     skillSourcePlugin: string;
+    skillPluginDisabled: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;
@@ -2254,6 +2465,7 @@ export interface TranslationDict {
     // Enterprise capability source (a skill/plugin the organization pushed)
     enterpriseSkills: string;
     enterpriseMcp: string;
+    personalSource: string;
     organizationSource: string;
   };
 
@@ -2507,6 +2719,33 @@ export interface TranslationDict {
     agentTokens: string;
     agentNoSteps: string;
     agentFullProcessUnavailable: string;
+    /** Member tab header note when the process is replayed from the message snapshot. */
+    agentPersistedProcess: string;
+    /** Member tab header note while the dispatch is still running (live execution source). */
+    teamLiveProcess: string;
+    /** Team overview tab (in-conversation team). */
+    teamTitle: string;
+    teamNotPinned: string;
+    teamLeaderBadge: string;
+    teamLeaderIdle: string;
+    teamMembersHeader: string;
+    teamNoMembers: string;
+    teamMemberIdle: string;
+    teamDispatchCount: string;
+    teamNoDispatchYet: string;
+    teamDispatchOrdinal: string;
+    teamOpenDispatch: string;
+    teamOpenOverview: string;
+    teamStopDispatch: string;
+    teamStopDispatchShort: string;
+    teamStopDispatchShortNamed: string;
+    teamAppendInstruction: string;
+    teamStalledFor: string;
+    teamDispatchInterrupted: string;
+    teamDispatchNoToolCalls: string;
+    teamMemberBarCollapse: string;
+    teamMemberBarExpand: string;
+    teamMemberBarCollapsed: string;
     agentRichContentReleased: string;
     agentRichContentPartiallyRetained: string;
     startHere: string;
@@ -2541,6 +2780,13 @@ export interface TranslationDict {
 
   // Scheduled Tasks
   schedule: {
+    teamExecutor: string;
+    teamExecutorNone: string;
+    teamExecutorSearch: string;
+    teamExecutorEmpty: string;
+    teamExecutorHint: string;
+    teamAutoPaused: string;
+    teamPlanUnconfirmed: string;
     title: string;
     newTask: string;
     editTask: string;
@@ -2987,10 +3233,8 @@ export interface TranslationDict {
   // About
   about: {
     feedback: string;
-    wechatSectionTitle: string;
-    feedbackDesc: string;
-    sponsor: string;
-    sponsorDesc: string;
+    /** 版本 page header description. */
+    versionDescription: string;
     deviceId: string;
     deviceIdHint: string;
     copied: string;
@@ -3000,6 +3244,34 @@ export interface TranslationDict {
     licenseLinkLabel: string;
     disclaimerTitle: string;
     disclaimerClose: string;
+  };
+
+  // 「关于作者」 page
+  author: {
+    title: string;
+    name: string;
+    tagline: string;
+    role: string;
+    vibe: string;
+    build: string;
+    contactTitle: string;
+    wechatLabel: string;
+    /** One line under the tile. */
+    wechatCaption: string;
+    /** Fuller sentence shown in the zoomed view. */
+    wechatCaptionFull: string;
+    sponsorLabel: string;
+    sponsorCaption: string;
+    sponsorCaptionFull: string;
+    xiaohongshu: string;
+    x: string;
+    github: string;
+    website: string;
+    zoomHint: string;
+    /** Feedback page footer: the question … */
+    feedbackLink: string;
+    /** … and the link that answers it. */
+    feedbackLinkAction: string;
   };
 
   // First-launch disclaimer banner
@@ -3038,6 +3310,8 @@ export interface TranslationDict {
     confirm: string;
     blocked: string;
     userCancelled: string;
+    /** Team run: action refused pending the user's confirmation (never blocks). */
+    teamPendingConfirmation: string;
     aiDenied: string;
     browserAction: string;
     browserReason: string;
@@ -3073,6 +3347,48 @@ export interface TranslationDict {
     /** Unattended or attended run whose operation-class policy is set to
      *  'deny' for this kind of browser action. */
     browserPolicyDenied: string;
+    /** Why an upload is being asked about — the sentence every ask channel
+     *  (desktop dialog and IM) shows above the file list and the target
+     *  site. */
+    browserUploadReason: string;
+    /**
+     * The upload confirmation's own wording (acceptance F5).
+     *
+     * An upload had been asked about with the generic browser-action box, so
+     * the question read 「浏览器操作: abu-browser__upload_file (origin)」 over a
+     * button that said 「确认执行」 — an internal tool name and a verb that
+     * does not say a file is leaving the machine. These say the decision
+     * instead: how many files, to which site, confirmed with 「确认上传」.
+     * `{host}` is a hostname, never a full path.
+     */
+    browserUploadTitle: string;
+    /** Singular of `browserUploadTitle`; both locales read badly with "1 files". */
+    browserUploadTitleOne: string;
+    /** Stands in for `{host}` when the target origin could not be resolved. */
+    browserUploadHostThisSite: string;
+    /** Wraps `{host}` when the upload targets a region embedded in the page. */
+    browserUploadHostEmbedded: string;
+    /** The line under the upload title. */
+    browserUploadDescription: string;
+    /** Primary button of the upload confirmation. */
+    browserUploadConfirm: string;
+    /** Primary button when 「以后都允许该网站」 is offered beside it. */
+    browserUploadConfirmOnce: string;
+    /** `files` could not be read as a list of paths. */
+    browserUploadMalformed: string;
+    /** More files than one submission may carry. `{max}` */
+    browserUploadTooManyFiles: string;
+    /** Outside every workspace the user authorized. `{name}` */
+    browserUploadNotAuthorized: string;
+    /** Missing, or not a regular file. `{name}` */
+    browserUploadNotAFile: string;
+    /** A symbolic link — refused rather than followed. `{name}` */
+    browserUploadSymlink: string;
+    /** Over the per-file or per-call size ceiling. `{name}` `{max}` */
+    browserUploadTooLarge: string;
+    /** The filesystem reported neither an mtime nor an inode for the file, so
+     *  nothing could be frozen that identifies it later (review F1). */
+    browserUploadUnidentifiable: string;
     browserEnterprisePolicyDenied: string;
     /** Unattended run on a site that carries no standing "allowed" verdict —
      *  the cross-origin fail-closed baseline. */
@@ -3485,6 +3801,12 @@ export interface TranslationDict {
       planImApprovalNeeded: string;
       /** Plan-approval card header. */
       planApprovalHeader: string;
+      /** Strict-team variants of the approval card (先确认分工). */
+      planApprovalHeaderTeam: string;
+      planApprovalQuestionTeam: string;
+      planApproveLabelTeam: string;
+      planRejectLabelTeam: string;
+      planApprovedTeam: string;
       /** Plan-approval card question (rendered after step list). */
       planApprovalQuestion: string;
       /** Approve option label. */
@@ -3686,6 +4008,21 @@ export interface TranslationDict {
       errAgentNotFound: string;
       /** Error: agent disabled. {agentName} */
       errAgentDisabled: string;
+      errNotTeamMember: string;
+      /** Team run hit its hand-off cap (teamRunBounds). */
+      errDispatchCapReached: string;
+      /** Member blocked after consecutive failed hand-offs. */
+      errMemberBlocked: string;
+      /** Declared artifacts missing after the member finished (define-done check). */
+      errExpectedFilesMissing: string;
+      delegateNoToolCallsNote: string;
+      /** Member stopped before finishing; appended to the hand-off result. {reason} */
+      delegateStoppedNote: string;
+      /** Human label per non-completed stop reason (exhaustive by construction). */
+      stopReasonLabel: Record<Exclude<SubagentStopReason, 'completed'>, string>;
+      /** The user addressed the member mid-run; verbatim instructions appended to the hand-off result. */
+      delegateUnconfirmedInstructionsNote: string;
+      delegateUserInstructionsNote: string;
       /** Error: must specify agent_name or type. */
       errMustSpecifyAgent: string;
       // save_skill / save_agent (createSaveItemTool)
@@ -3721,6 +4058,10 @@ export interface TranslationDict {
       errBatchAgentNotFound: string;
       /** Error: agent disabled in batch task. {i}, {agentName} */
       errBatchAgentDisabled: string;
+      errBatchNotTeamMember: string;
+      errBatchDispatchCapReached: string;
+      errBatchMemberBlocked: string;
+      errBatchExpectedFilesMissing: string;
       /** Activity label when a sub-agent calls a tool. {toolName} */
       activityCalling: string;
       /** Timeout error message for runWithTimeout. */
@@ -3731,8 +4072,13 @@ export interface TranslationDict {
       batchHeader: string;
       /** aggregateBatchResults section title. {n}, {label} */
       batchSectionTitle: string;
+      /** Marks a batch task whose member did not finish. {reason} */
+      batchStoppedSuffix: string;
       /** aggregateBatchResults failure prefix. {text} */
       batchFailPrefix: string;
+      /** Appended to a member result that made zero tool calls (team leader review). */
+      batchNoToolCallsNote: string;
+      batchUserInstructionsNote: string;
       /** Structured path: could not parse JSON. */
       errJsonParseFailed: string;
       /** Structured path: missing required fields. {fields} */

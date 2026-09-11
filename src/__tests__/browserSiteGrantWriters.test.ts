@@ -69,18 +69,31 @@ const TEST_VERDICT_HELPER = join('src', 'test', 'browserSiteVerdicts.ts');
  *   clicking in a settings page they navigated to; the add row additionally
  *   refuses to mint `'allowed'` for a high-risk origin, which the dialog also
  *   refuses (`allowPersistentGrant: false`).
+ * - `TeamConfirmationsStrip.tsx` (P1-a) — 「以后都允许该网站」 on a refused
+ *   TEAM request the user is looking at. Same act as the dialog's button,
+ *   in the surface a team run puts the question in: a team conversation
+ *   never opens a dialog, so without this the strip could offer no scope at
+ *   all and a form fill was asked field by field. It is the same decision by
+ *   the same person, and it runs the same floor — `mayOfferPersistentGrant`
+ *   over the requester's `allowPersistentGrant`, which the gate sets from
+ *   `offersPersistentGrant` (no grant for a script, a high-risk page, an
+ *   「每次询问」 row, or an unresolved origin). It grants ONLY the action's
+ *   own origin and never a region's: it is not region-aware below, and the
+ *   payload it reads carries no `browserPageOrigin`.
  *
- * ## The mark is the WIDE default when omitted (round-3 R3-H)
+ * ## The scope is the WIDE default when omitted (round-3 R3-H)
  *
- * `setBrowserSitePermission(origin, verdict, { viaEmbed })` takes the mark as
- * an OPTIONAL option, and leaving it out mints a full grant — the kind an
- * automatic task may act on. So the dangerous edit is not a new writer, it is
- * an existing-shaped writer that learns to grant on behalf of an EMBEDDED
- * REGION and forgets the third argument: nothing would be red, and a region
- * grant would silently become a standing one. The last two cases below make
- * that an enumerated decision as well.
+ * `setBrowserSitePermission(origin, verdict, { viaEmbedPage })` takes the
+ * scope as an OPTIONAL option, and leaving it out mints a full grant — one
+ * that is valid on that site anywhere, in either run mode. So the dangerous
+ * edit is not a new writer, it is an existing-shaped writer that learns to
+ * grant on behalf of an EMBEDDED REGION and forgets the third argument:
+ * nothing would be red, and a grant the user gave for one page's regions would
+ * silently become a standing one. The last two cases below make that an
+ * enumerated decision as well.
  */
 const PERMITTED_WRITERS = [
+  join('src', 'components', 'chat', 'TeamConfirmationsStrip.tsx'),
   join('src', 'components', 'common', 'CommandConfirmDialog.tsx'),
   join('src', 'components', 'settings', 'sections', 'BrowserPermissionCards.tsx'),
 ];
@@ -129,7 +142,7 @@ function filesMatching(predicate: (source: string) => boolean): string[] {
     .sort();
 }
 
-describe('standing browser site verdicts have exactly two writers', () => {
+describe('standing browser site verdicts have an enumerated set of writers', () => {
   it('finds the files it is asserting about (the scan is not silently empty)', () => {
     const files = sourceFiles();
     expect(files.length).toBeGreaterThan(200);
@@ -164,11 +177,11 @@ describe('standing browser site verdicts have exactly two writers', () => {
     expect(forced).toEqual([]);
   });
 
-  it('lets nobody but the merged region prompt mint a MARKED grant', () => {
-    // The mark itself is a small enumerable set, so that "which screens can
-    // produce a grant an automatic task may NOT act on" stays answerable by
+  it('lets nobody but the merged region prompt mint a SCOPED grant', () => {
+    // The scope itself is a small enumerable set, so that "which screens can
+    // produce a grant that is only valid inside one page" stays answerable by
     // reading one list.
-    const markers = filesMatching((src) => /viaEmbed:\s*true/.test(src));
+    const markers = filesMatching((src) => /viaEmbedPage:/.test(src));
     expect(markers).toEqual([...REGION_AWARE_WRITERS].sort());
   });
 
@@ -181,7 +194,7 @@ describe('standing browser site verdicts have exactly two writers', () => {
     const grantsForRegionsUnmarked = filesMatching(
       (src) => src.includes('setBrowserSitePermission(')
         && src.includes('browserPageOrigin')
-        && !src.includes('viaEmbed'),
+        && !src.includes('viaEmbedPage'),
     );
     expect(grantsForRegionsUnmarked).toEqual([]);
 

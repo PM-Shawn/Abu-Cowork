@@ -2,7 +2,7 @@ import type { Conversation, DocumentContent, ImageContent, Message, MessageConte
 import { base64ToUint8Array, uint8ArrayToBase64 } from '../../utils/base64';
 import { getConversationReader } from '../agent/ports/conversationReader';
 import { readRecoverableImageBytes } from '../llm/imageRehydration';
-import { redactSensitiveMediaText } from '../security/redaction';
+import { redactSensitiveMediaText, redactInlineMediaPayloads } from '../security/redaction';
 import {
   persistDelegatedMedia,
   readDelegatedMedia,
@@ -398,6 +398,24 @@ export function redactAbsoluteMediaPaths(value: string): string {
   return redactSensitiveMediaText(value);
 }
 
+/**
+ * Media-free wire frames travel verbatim (paths are the shell's business), but
+ * an inline `data:…;base64,…` blob inside an ordinary string is still media:
+ * collapse it so a fetched page or a base64 dump never becomes a multi-MB JSON
+ * frame in the transcript.
+ */
+export function collapseInlineMediaForWire<T>(value: T): T {
+  const visit = (entry: unknown): unknown => {
+    if (typeof entry === 'string') return redactInlineMediaPayloads(entry);
+    if (Array.isArray(entry)) return entry.map((child) => visit(child));
+    if (!entry || typeof entry !== 'object') return entry;
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(entry as Record<string, unknown>)) output[key] = visit(child);
+    return output;
+  };
+  return visit(value) as T;
+}
+
 async function prepareMessageContentForSidecarWire(
   conversationId: string,
   content: string | readonly MessageContent[],
@@ -544,20 +562,72 @@ export function sidecarValueNeedsMediaEncoding(value: unknown): boolean {
   return found;
 }
 
+/**
+ * Shortest string this treats as a media payload rather than a label/identifier.
+ *
+ * The smallest real inline image (a 1x1 PNG) is ~96 base64 characters, so 64 sits
+ * below every genuine payload and above every descriptor a media node carries
+ * (`image`, `image/png`, `base64`, a file name, a request id).
+ */
+const MEDIA_PAYLOAD_STRING_MIN_LENGTH = 64;
+const MEDIA_PAYLOAD_STRING_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * Payload-shaped string test, applied ONLY inside a media node (see
+ * `redactSidecarValueForWireFailure`) — never to ordinary text elsewhere.
+ */
+function looksLikeMediaPayloadString(value: string): boolean {
+  return value.length >= MEDIA_PAYLOAD_STRING_MIN_LENGTH
+    && value.length % 4 === 0
+    && MEDIA_PAYLOAD_STRING_PATTERN.test(value);
+}
+
+/**
+ * Best-effort scrub of a value that could not be prepared for the wire.
+ *
+ * Media nodes (the shapes `hasRawMediaBase64Source` / `hasRawDetailImageDataBase64`
+ * recognise) are the only place raw bytes are expected, and once one of them is
+ * being rewritten the whole node is suspect: a payload can sit in a sibling key
+ * the redactor does not recognise (`alt`, `source.raw`) just as easily as in
+ * `source.data`. So inside a media node this recurses into every remaining key —
+ * nothing is spread through un-visited — and additionally blanks any string that
+ * is payload-shaped (`looksLikeMediaPayloadString`). Opaque handles nested in
+ * there (a delegated media ref / a strict `MediaRef`) are safe by construction
+ * and pass through whole, so the rule cannot mangle a 64-char `sha256`.
+ *
+ * Outside media nodes nothing changes: strings only get the pre-existing path /
+ * data-URL redaction, so ordinary base64-looking text is left alone.
+ *
+ * This is deliberately not a proof of cleanliness — the caller must still gate on
+ * `sidecarValueHasOpaqueMediaRefs` afterwards and fail closed if it still throws.
+ */
 export function redactSidecarValueForWireFailure<T>(value: T): T {
-  const visit = (entry: unknown): unknown => {
-    if (typeof entry === 'string') return redactAbsoluteMediaPaths(entry);
-    if (Array.isArray(entry)) return entry.map((child) => visit(child));
+  const visit = (entry: unknown, inMediaNode: boolean): unknown => {
+    if (typeof entry === 'string') {
+      return inMediaNode && looksLikeMediaPayloadString(entry) ? '' : redactAbsoluteMediaPaths(entry);
+    }
+    if (Array.isArray(entry)) return entry.map((child) => visit(child, inMediaNode));
     if (!entry || typeof entry !== 'object') return entry;
+    if (inMediaNode && (isDelegatedRefContent(entry) || isStrictMediaRef(entry))) return entry;
     if (hasRawMediaBase64Source(entry)) {
-      const record = entry as { source: Record<string, unknown> };
-      return { ...record, source: { ...record.source, data: '' } };
+      const record = entry as Record<string, unknown> & { source: Record<string, unknown> };
+      const output: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(record)) {
+        if (key === 'source') continue;
+        output[key] = visit(child, true);
+      }
+      const source: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(record.source)) {
+        if (key === 'data') continue;
+        source[key] = visit(child, true);
+      }
+      return { ...output, source: { ...source, data: '' } };
     }
     if (hasRawDetailBlockImageData(entry)) {
       const output: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(entry as Record<string, unknown>)) {
         if (key === 'imageData') continue;
-        output[key] = visit(child);
+        output[key] = visit(child, true);
       }
       return {
         ...output,
@@ -570,16 +640,16 @@ export function redactSidecarValueForWireFailure<T>(value: T): T {
       return {
         mediaType: record.mediaType,
         transportError: 'Error: Could not prepare sidecar media for transport.',
-        ...(record.outputRef === undefined ? {} : { outputRef: record.outputRef }),
+        ...(record.outputRef === undefined ? {} : { outputRef: visit(record.outputRef, true) }),
       };
     }
     const output: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(entry as Record<string, unknown>)) {
-      output[key] = visit(child);
+      output[key] = visit(child, inMediaNode);
     }
     return output;
   };
-  return visit(value) as T;
+  return visit(value, false) as T;
 }
 
 export async function prepareSidecarValueForWire<T>(

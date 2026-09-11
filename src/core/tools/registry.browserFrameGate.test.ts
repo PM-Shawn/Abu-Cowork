@@ -49,6 +49,9 @@ const PAGE = 'https://oa.example.com';
 const PAGE_URL = `${PAGE}/apply`;
 const VENDOR = 'https://vendor.example.net';
 const VENDOR_URL = `${VENDOR}/form`;
+/** A SECOND page that embeds the same vendor region — the "somewhere else" arm. */
+const OTHER_PAGE = 'https://portal.example.org';
+const OTHER_PAGE_URL = `${OTHER_PAGE}/desk`;
 const BANK = 'https://bank.example.com';
 const BANK_URL = `${BANK}/transfer`;
 const OWNER = 'run-owner';
@@ -526,74 +529,226 @@ describe('the merged ask lists what the call named, before what the page ordered
   });
 });
 
-describe('a grant minted through the merged ask is not one an automatic task may use', () => {
+/**
+ * 2026-09-08 — a grant minted through the merged ask is SCOPED, not tiered.
+ *
+ * The rule it replaces ("a full grant with a human present, no grant at all
+ * for an automatic run") protected something real: what the user read in that
+ * prompt was "the page I am on also contains regions from X", so what they
+ * agreed to was work on those regions HERE. But it protected it by asking WHO
+ * IS WATCHING, and the 2026-09-07 ruling forbids that axis — an authorization
+ * the user gave is theirs in both run modes; `runMode` may only decide how a
+ * MISSING one is asked for.
+ *
+ * So the same protection, expressed as scope: valid inside the embedded
+ * regions of the page it was given on, and nowhere else. Every case below is
+ * paired attended/unattended for exactly that reason — the pairs are the proof
+ * that the answer no longer depends on who is present.
+ */
+describe('a grant minted through the merged ask is valid only where it was given', () => {
   beforeEach(() => {
     useSettingsStore.setState({
-      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
-      browserSiteGrantViaEmbed: { [VENDOR]: true },
+      browserSitePermissions: {
+        [PAGE]: 'allowed', [OTHER_PAGE]: 'allowed', [VENDOR]: 'allowed',
+      },
+      // Given on PAGE, for PAGE's embedded regions.
+      browserSiteGrantViaEmbed: { [VENDOR]: { [PAGE]: true } },
     });
   });
 
-  it('refuses an unattended action in the marked region', async () => {
-    const decision = await checkToolApproval(
-      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
-      unattended,
-    );
+  /** The page that embeds the vendor region, whichever one the case is about. */
+  function embeddingPage(pageOrigin: string, pageUrl: string): void {
+    servePage(pageUrl, [
+      { frameId: 'f0', origin: pageOrigin, url: pageUrl, sameOriginAsTop: true, accessible: true },
+      { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
+    ]);
+  }
+
+  const fillTheRegion = { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' };
+  const fillThePage = { tabId: TAB, locator: '{"css":"#name"}', value: '张三' };
+
+  // ① The context the grant WAS given for.
+  describe('inside the embedded region of the page it was given on', () => {
+    it('lets an AUTOMATIC task act, with nothing to ask', async () => {
+      const decision = await checkToolApproval(
+        'abu-browser__fill', fillTheRegion, unattended,
+      );
+
+      expect(decision.decision).toBe('allow');
+    });
+
+    // ⑤, the other half: the SAME answer with a human here. A pair that agreed
+    // only by accident would break the moment the old runMode rule came back —
+    // it made this pair disagree.
+    it('and does exactly the same with a human present, with no dialog', async () => {
+      const { cb, asks } = recordingConfirm();
+
+      const decision = await checkToolApproval(
+        'abu-browser__fill', fillTheRegion, attended, cb as never,
+      );
+
+      expect({ decision: decision.decision, asked: asks.length }).toEqual({
+        decision: 'allow', asked: 0,
+      });
+    });
+  });
+
+  // ② The lever the original rule was written to close: a top-level standing
+  //   grant obtained sideways. Scoping closes it in both run modes.
+  describe('on that same site opened as a page of its own', () => {
+    beforeEach(() => { servePage(VENDOR_URL, []); });
+
+    it('refuses an automatic task', async () => {
+      const decision = await checkToolApproval('abu-browser__fill', fillThePage, unattended);
+
+      expect(decision.decision).toBe('deny');
+    });
+
+    it('asks a human rather than acting on the grant', async () => {
+      const { cb, asks } = recordingConfirm();
+
+      const decision = await checkToolApproval(
+        'abu-browser__fill', fillThePage, attended, cb as never,
+      );
+
+      // Approved because the fake says yes — the point is that it was ASKED.
+      expect({ decision: decision.decision, asked: asks.length }).toEqual({
+        decision: 'allow', asked: 1,
+      });
+    });
+  });
+
+  // ③ Same region, someone else's page. The page here is itself 「始终允许」,
+  //   so the only thing that can refuse is the region's scope.
+  describe('inside a DIFFERENT page that embeds the same region', () => {
+    beforeEach(() => { embeddingPage(OTHER_PAGE, OTHER_PAGE_URL); });
+
+    it('refuses an automatic task', async () => {
+      const decision = await checkToolApproval('abu-browser__fill', fillTheRegion, unattended);
+
+      expect(decision.decision).toBe('deny');
+    });
+
+    it('asks a human rather than acting on the grant', async () => {
+      const { cb, asks } = recordingConfirm();
+
+      const decision = await checkToolApproval(
+        'abu-browser__fill', fillTheRegion, attended, cb as never,
+      );
+
+      expect({ decision: decision.decision, asked: asks.length }).toEqual({
+        decision: 'allow', asked: 1,
+      });
+    });
+  });
+
+  /**
+   * The migrated shape. A pre-v51 grant records no page, and the migration
+   * reads that as "only as an embedded region, page unknown" — wide enough not
+   * to revoke what the user gave, narrow enough not to invent a standing grant
+   * they never gave. One judgement function serves both shapes.
+   */
+  describe('a pre-v51 grant, whose page was never recorded', () => {
+    beforeEach(() => {
+      useSettingsStore.setState({ browserSiteGrantViaEmbed: { [VENDOR]: {} } });
+    });
+
+    it('still works as a region — on a page it was never given on', async () => {
+      embeddingPage(OTHER_PAGE, OTHER_PAGE_URL);
+
+      const decision = await checkToolApproval('abu-browser__fill', fillTheRegion, unattended);
+
+      expect(decision.decision).toBe('allow');
+    });
+
+    it('but is still not a grant for that site as a page', async () => {
+      servePage(VENDOR_URL, []);
+
+      const decision = await checkToolApproval('abu-browser__fill', fillThePage, unattended);
+
+      expect(decision.decision).toBe('deny');
+    });
+  });
+
+  /**
+   * The embedding PAGE is judged as a page, never as a region of itself.
+   *
+   * Surfaced by a surviving mutant: passing `embeddedIn: topOrigin` for the
+   * page itself looks harmless (a page is not usually its own region), but a
+   * pre-v51 scope covers ANY page, so a site that carries one would authorize
+   * itself the moment a call named any region inside it — the fold's whole job
+   * being to make the page pass on its own account.
+   */
+  it('judges the embedding page AS the page, not as a region of itself', async () => {
+    useSettingsStore.setState({
+      // The VENDOR site is now the page, and its only grant is a migrated,
+      // page-unknown one. It embeds an ordinary allowed region.
+      browserSitePermissions: { [VENDOR]: 'allowed', [OTHER_PAGE]: 'allowed' },
+      browserSiteGrantViaEmbed: { [VENDOR]: {} },
+    });
+    servePage(VENDOR_URL, [
+      { frameId: 'f0', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: true, accessible: true },
+      {
+        frameId: 'f4',
+        origin: OTHER_PAGE,
+        url: OTHER_PAGE_URL,
+        sameOriginAsTop: false,
+        accessible: true,
+      },
+    ]);
+
+    const decision = await checkToolApproval('abu-browser__fill', fillTheRegion, unattended);
 
     expect(decision.decision).toBe('deny');
   });
 
-  it('refuses an unattended action on the marked site as the PAGE, too', async () => {
-    // The lever this closes is a TOP-LEVEL standing grant obtained sideways —
-    // so the mark has to hold when that site is later visited on its own.
+  it('leaves an unmarked grant on the same site working everywhere', async () => {
+    useSettingsStore.setState({ browserSiteGrantViaEmbed: {} });
     servePage(VENDOR_URL, []);
 
-    const decision = await checkToolApproval(
-      'abu-browser__fill', { tabId: TAB, locator: '{"css":"#name"}', value: '张三' },
-      unattended,
-    );
+    const decision = await checkToolApproval('abu-browser__fill', fillThePage, unattended);
 
-    expect(decision.decision).toBe('deny');
+    expect(decision.decision).toBe('allow');
   });
 
-  it('still lets the user act there while they are watching, with no dialog', async () => {
+  /**
+   * ④, the arm that a scope-before-block edit actually reaches. In the case
+   * below the scope COVERS the call, so a rule that let it win still lands on
+   * the block by accident; here it does not cover, so a scope evaluated ahead
+   * of the block would turn 「一律不操作」 into an ordinary confirmation.
+   */
+  it('never turns a BLOCK into an ask, not even where the scope does not reach', async () => {
+    useSettingsStore.setState({
+      browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
+      browserSiteGrantViaEmbed: { [VENDOR]: { [OTHER_PAGE]: true } },
+    });
+    servePage(VENDOR_URL, []);
     const { cb, asks } = recordingConfirm();
 
     const decision = await checkToolApproval(
-      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
-      attended, cb as never,
+      'abu-browser__fill', fillThePage, attended, cb as never,
     );
 
-    expect(decision.decision).toBe('allow');
-    expect(asks).toHaveLength(0);
+    expect({ decision: decision.decision, asked: asks.length }).toEqual({
+      decision: 'deny', asked: 0,
+    });
   });
 
-  it('leaves an unmarked grant on the same site working unattended', async () => {
-    useSettingsStore.setState({ browserSiteGrantViaEmbed: {} });
-
-    const decision = await checkToolApproval(
-      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
-      unattended,
-    );
-
-    expect(decision.decision).toBe('allow');
-  });
-
-  it('never turns a BLOCK into anything softer', async () => {
-    // A mark can only ever take authorization away.
+  // ④ A scope can only ever take authorization away.
+  it('never turns a BLOCK into anything softer, even in the granted context', async () => {
     useSettingsStore.setState({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
-      browserSiteGrantViaEmbed: { [VENDOR]: true },
+      browserSiteGrantViaEmbed: { [VENDOR]: { [PAGE]: true } },
     });
     const { cb, asks } = recordingConfirm();
 
     const decision = await checkToolApproval(
-      'abu-browser__fill', { tabId: TAB, frameId: 'f4', locator: '{"css":"#name"}', value: '张三' },
-      attended, cb as never,
+      'abu-browser__fill', fillTheRegion, attended, cb as never,
     );
 
-    expect(decision.decision).toBe('deny');
-    expect(asks).toHaveLength(0);
+    expect({ decision: decision.decision, asked: asks.length }).toEqual({
+      decision: 'deny', asked: 0,
+    });
   });
 });
 

@@ -1,4 +1,5 @@
 import { isHighRiskUrl } from './highRiskSites';
+import type { BrowserSiteGrantScopes } from './browserToolPolicy';
 
 /**
  * "Which sites can a run without me act on?" — answered once, for every screen
@@ -35,16 +36,20 @@ export interface BrowserAuthorizationSummary {
   highRiskAllowed: string[];
   /**
    * Origins marked `'allowed'` whose grant was minted through the merged
-   * embedded-region prompt (round-2 R2-C-②, `settingsStore`'s
-   * `browserSiteGrantViaEmbed`). Like `highRiskAllowed` they are NOT
-   * unattended-reachable — `getSiteVerdict` reads them as `'default'` for a
-   * run nobody is watching — so they are reported separately rather than
-   * inflating the "a scheduled task can act here" count.
+   * embedded-region prompt and is therefore SCOPED to the page it was given
+   * on (`settingsStore`'s `browserSiteGrantViaEmbed`).
    *
-   * "Reachable" means ACT (round-3 R3-G). A marked site behaves exactly like
-   * any never-listed site for an unattended run: no clicking, filling or
-   * scripting, and reading unchanged. Every string built on this field is
-   * scoped to acting for that reason.
+   * Like `highRiskAllowed` they are not counted as reachable, and for a reason
+   * that no longer has anything to do with who is watching (2026-09-07
+   * ruling): this list answers "where may a run GO", and a run that goes to
+   * one of these sites arrives at it as a top-level page — the one role a
+   * scoped grant never covers. `getSiteVerdict` reads that as `'default'` in
+   * both run modes, so counting them here would promise reach the gate does
+   * not give.
+   *
+   * Reaching them the way the grant DOES cover — as a region inside the page
+   * it was given on — needs that page, which this summary is not given and
+   * does not model. The per-site row in Settings names the page instead.
    */
   viaEmbedAllowed: string[];
   /** Origins with a `'denied'` verdict — blocked in both run modes. */
@@ -54,7 +59,7 @@ export interface BrowserAuthorizationSummary {
 export function summarizeBrowserAuthorization(
   sitePermissions: Record<string, 'allowed' | 'denied'> | undefined,
   allowUnattendedBrowser: boolean | undefined,
-  viaEmbed?: Record<string, true> | undefined,
+  viaEmbed?: BrowserSiteGrantScopes | undefined,
 ): BrowserAuthorizationSummary {
   const masterSwitchOn = allowUnattendedBrowser === true;
   const reachableUnattended: string[] = [];
@@ -77,8 +82,9 @@ export function summarizeBrowserAuthorization(
       continue;
     }
     // Reported before the reach count, in the same shape high-risk is: a grant
-    // the gate will not honour unattended must not be counted as one it will.
-    if (viaEmbed?.[origin] === true) {
+    // the gate will not honour for a visit to this site must not be counted as
+    // one it will.
+    if (viaEmbed?.[origin] !== undefined) {
       viaEmbedAllowed.push(origin);
       continue;
     }

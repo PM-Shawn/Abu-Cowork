@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveSubagentToolNames } from './subagentToolRoster';
+import { checkDispatchToolBoundary, resolveSubagentToolNames } from './subagentToolRoster';
 
 const KNOWN_TOOLS = [
   'read_file',
@@ -31,6 +31,17 @@ describe('resolveSubagentToolNames', () => {
     expect(resolveSubagentToolNames(KNOWN_TOOLS, { disallowedTools: ['read_file', ''] })).toEqual({
       toolNames: [],
       invalidField: 'disallowedTools',
+    });
+  });
+});
+
+describe('protocol tools', () => {
+  describe('checkDispatchToolBoundary (dispatch-time re-check)', () => {
+    it('still refuses ordinary tools outside the declared list or the run allowlist', () => {
+      const frozen = ['read_file'];
+      expect(checkDispatchToolBoundary(frozen, undefined, 'write_file', { path: '/x' })).toMatch(/fixed tool boundary/);
+      expect(checkDispatchToolBoundary(undefined, ['read_file'], 'write_file', { path: '/x' })).toMatch(/not allowed for this agent run/);
+      expect(checkDispatchToolBoundary(frozen, undefined, 'read_file', { path: '/x' })).toBeNull();
     });
   });
 });

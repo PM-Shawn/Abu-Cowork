@@ -10,6 +10,16 @@ import {
 } from './marketplace';
 
 describe('parseSource', () => {
+  it('accepts a local source object using the existing relative source contract', () => {
+    expect(parseSource({ source: 'local', path: './plugins/demo' })).toEqual({
+      kind: 'relative', path: './plugins/demo',
+    });
+  });
+
+  it.each([undefined, null, 42, '', '  '])('rejects an invalid local source path: %s', (path) => {
+    expect(() => parseSource({ source: 'local', path })).toThrow(MarketplaceParseError);
+  });
+
   it('parses a relative-path string source', () => {
     expect(parseSource('./plugins/agent-sdk-dev')).toEqual({
       kind: 'relative',
@@ -96,6 +106,19 @@ describe('resolveRename', () => {
 });
 
 describe('parseMarketplace', () => {
+  it('loads the Codex local marketplace entry shape', () => {
+    const result = parseMarketplace({
+      name: 'local-repo',
+      plugins: [{
+        name: 'my-plugin',
+        source: { source: 'local', path: './plugins/my-plugin' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        category: 'Productivity',
+      }],
+    });
+    expect(result.plugins[0].source).toEqual({ kind: 'relative', path: './plugins/my-plugin' });
+  });
+
   const minimalValid = {
     name: 'test-marketplace',
     plugins: [

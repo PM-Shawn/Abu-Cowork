@@ -652,7 +652,7 @@ function assertUnderPackagesRoot(destDir, packagesRoot) {
  * `packagesRoot` rescopes the destination guard to a scratch dir. Production
  * callers never pass it — tauriHost forwards `{ args }` alone.
  */
-function pluginGitDispatch(cmd, payload) {
+function pluginGitDispatch(cmd, payload, hostOptions = {}) {
   if (cmd !== 'plugin_git_fetch') return PLUGIN_GIT_MISS;
 
   const { source, destDir } = (payload && payload.args) || {};
@@ -675,7 +675,9 @@ function pluginGitDispatch(cmd, payload) {
     assertSafeGitUrl(source.url);
     if (!source.sha) throw new PluginGitError('remote plugin source must declare a sha', 'no_sha');
 
-    const packagesRoot = overrides.packagesRoot || defaultPackagesRoot();
+    // The main process supplies its profile root; renderer args cannot select
+    // it. This also keeps isolated Electron runs out of the system home.
+    const packagesRoot = hostOptions.packagesRoot || overrides.packagesRoot || defaultPackagesRoot();
     const finalDir = assertUnderPackagesRoot(destDir, packagesRoot);
 
     const stagingDir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-plugin-fetch-'));

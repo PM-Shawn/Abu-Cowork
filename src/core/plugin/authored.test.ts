@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { isSelfAuthoredPlugin, orphanedInstalls } from './authored';
+import { isAuthoredInstall, isSelfAuthoredPlugin, orphanedInstalls } from './authored';
 import { BUILTIN_MARKET_NAME } from './builtinMarket';
 import { ENTERPRISE_MARKET_NAME } from './enterpriseMarket';
 import type { InstalledPlugin } from './installedStore';
@@ -18,66 +18,17 @@ function makePlugin(overrides: Partial<InstalledPlugin> = {}): InstalledPlugin {
 }
 
 describe('isSelfAuthoredPlugin', () => {
-  it('is false for the built-in Abu market — we authored it, the user did not', () => {
-    expect(
-      isSelfAuthoredPlugin(makePlugin({ marketplace: BUILTIN_MARKET_NAME, sourceKind: 'relative' })),
-    ).toBe(false);
-  });
-
-  it('is false for an enterprise install — the org authored it', () => {
-    expect(
-      isSelfAuthoredPlugin(makePlugin({ marketplace: ENTERPRISE_MARKET_NAME, sourceKind: 'relative' })),
-    ).toBe(false);
-  });
-
-  it('is true for a user market installed from a local (relative) source', () => {
-    expect(isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sourceKind: 'relative' }))).toBe(true);
-  });
-
-  it('is false for a user market installed from a url source', () => {
-    expect(
-      isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sourceKind: 'url', sha: 'abc123' })),
-    ).toBe(false);
-  });
-
-  it('is false for a user market installed from a git-subdir source', () => {
-    expect(
-      isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sourceKind: 'git-subdir', sha: 'abc123' })),
-    ).toBe(false);
-  });
-
-  describe('sourceKind takes precedence over the legacy sha fallback', () => {
-    it('is false for a url source even with no sha — the fallback alone would say true', () => {
-      expect(isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sourceKind: 'url' }))).toBe(false);
-    });
-
-    it('is true for a relative source even with a sha — the fallback alone would say false', () => {
-      expect(
-        isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sourceKind: 'relative', sha: 'abc123' })),
-      ).toBe(true);
-    });
-  });
-
-  it('is false for an enterprise install recorded as relative — enterprise staging copies bytes locally', () => {
-    expect(
-      isSelfAuthoredPlugin(
-        makePlugin({ marketplace: ENTERPRISE_MARKET_NAME, sourceKind: 'relative', sha: undefined }),
-      ),
-    ).toBe(false);
-  });
-
-  describe('legacy records written before sourceKind existed', () => {
-    it('falls back to "has a sha" ⇒ remote ⇒ not self-authored', () => {
-      expect(isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sha: 'abc123' }))).toBe(false);
-    });
-
-    it('falls back to "no sha" ⇒ local ⇒ self-authored', () => {
-      expect(isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market' }))).toBe(true);
-    });
-
-    it('treats an explicitly undefined sha the same as an absent one', () => {
-      expect(isSelfAuthoredPlugin(makePlugin({ marketplace: 'my-market', sha: undefined }))).toBe(true);
-    });
+  it.each([
+    { marketplace: 'agent-market', sourceKind: 'relative' as const },
+    { marketplace: 'my-market', sourceKind: 'relative' as const, sha: 'abc123' },
+    { marketplace: 'my-market', sourceKind: 'url' as const },
+    { marketplace: 'my-market', sourceKind: 'git-subdir' as const, sha: 'abc123' },
+    { marketplace: 'legacy-market' },
+    { marketplace: 'legacy-market', sha: 'abc123' },
+    { marketplace: BUILTIN_MARKET_NAME, sourceKind: 'relative' as const },
+    { marketplace: ENTERPRISE_MARKET_NAME, sourceKind: 'relative' as const },
+  ])('does not infer authorship from a market install: %j', (record) => {
+    expect(isSelfAuthoredPlugin(makePlugin(record))).toBe(false);
   });
 });
 
@@ -111,5 +62,32 @@ describe('orphanedInstalls', () => {
 
   it('returns [] for an empty install list', () => {
     expect(orphanedInstalls([], [{ name: 'here' }])).toEqual([]);
+  });
+});
+
+/**
+ * Regression: orphanedInstalls exempted only the enterprise and built-in
+ * markets, so a locally created plugin — whose synthesised `author-<id>`
+ * marketplace is never in the user's market list — was reported as a market
+ * plugin whose source had disappeared, labelled with the raw author id. The
+ * page's join against the author store hid it, which meant one failed author
+ * read relabelled everything the user had written.
+ */
+describe('isAuthoredInstall', () => {
+  const authored = (over: Partial<InstalledPlugin> = {}) => makePlugin({
+    key: 'mine@author-9f3c', name: 'mine', marketplace: 'author-9f3c',
+    authoringId: '9f3c', ...over,
+  });
+
+  it('reads provenance off the record, not the author list', () => {
+    expect(isAuthoredInstall(authored())).toBe(true);
+    // A record written before authoringId existed still has the marketplace.
+    expect(isAuthoredInstall(authored({ authoringId: undefined }))).toBe(true);
+    expect(isAuthoredInstall(makePlugin({ marketplace: 'community' }))).toBe(false);
+  });
+
+  it('keeps authored installs out of the orphan group with no markets at all', () => {
+    expect(orphanedInstalls([authored()], [])).toEqual([]);
+    expect(orphanedInstalls([authored({ authoringId: undefined })], [])).toEqual([]);
   });
 });

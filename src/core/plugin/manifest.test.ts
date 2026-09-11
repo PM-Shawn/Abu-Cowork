@@ -25,6 +25,58 @@ describe('normalizeAuthor', () => {
 });
 
 describe('parsePluginManifest', () => {
+  it('accepts bundled component paths without treating them as runtime MCP maps', () => {
+    expect(parsePluginManifest({ name: 'demo', skills: './capabilities/', mcpServers: './config/mcp.json' }))
+      .toMatchObject({ skills: './capabilities/', mcpServers: './config/mcp.json' });
+    expect(parsePluginManifest({ name: 'demo', skills: ['./skills', './extras/review'] }).skills)
+      .toEqual(['./skills', './extras/review']);
+  });
+
+  it.each([42, {}, [1], ''])('rejects malformed skills declarations: %j', (skills) => {
+    expect(() => parsePluginManifest({ name: 'demo', skills })).toThrow(PluginManifestError);
+  });
+
+  it.each([
+    ['version', { version: 42 }],
+    ['description', { description: [] }],
+    ['mcpServers.demo.command', { mcpServers: { demo: { command: 42 } } }],
+    ['mcpServers.demo.args', { mcpServers: { demo: { args: 'bad' } } }],
+    ['mcpServers.demo.args', { mcpServers: { demo: { args: [1] } } }],
+    ['mcpServers.demo.url', { mcpServers: { demo: { url: 3 } } }],
+    ['mcpServers.demo.env', { mcpServers: { demo: { env: [] } } }],
+    ['mcpServers.demo.env', { mcpServers: { demo: { env: { KEY: 42 } } } }],
+  ])('rejects an invalid field with its path: %s', (field, payload) => {
+    expect.assertions(2);
+    try {
+      parsePluginManifest({ name: 'demo', ...payload });
+    } catch (error) {
+      expect(error).toBeInstanceOf(PluginManifestError);
+      expect((error as PluginManifestError).field).toBe(field);
+    }
+  });
+
+  it('keeps valid optional and forward-compatible fields', () => {
+    const manifest = {
+      name: 'demo', version: 'dev-build', description: '', futureOption: true,
+      mcpServers: {
+        demo: { command: 'node', args: [], env: { OPTIONAL: '', TEMPLATE: '${HOME}' } },
+        remote: { url: 'https://example.test/mcp' },
+        empty: { command: 'node', env: {} },
+      },
+    };
+    expect(parsePluginManifest(manifest)).toMatchObject(manifest);
+  });
+
+  it('does not echo invalid configuration values in diagnostics', () => {
+    expect.assertions(2);
+    try {
+      parsePluginManifest({ name: 'demo', mcpServers: { demo: { env: 'sensitive-value' } } });
+    } catch (error) {
+      expect(error).toBeInstanceOf(PluginManifestError);
+      expect((error as Error).message).not.toContain('sensitive-value');
+    }
+  });
+
   it('最小合法清单（只有 name）应通过', () => {
     const manifest = parsePluginManifest({ name: 'my-plugin' });
     expect(manifest.name).toBe('my-plugin');
@@ -71,7 +123,7 @@ describe('parsePluginManifest', () => {
       name: 'p',
       mcpServers: { foo: { command: 'node', args: ['server.js'] } },
     });
-    expect(manifest.mcpServers?.foo.command).toBe('node');
+    expect(manifest.mcpServers).toMatchObject({ foo: { command: 'node' } });
   });
 
   it('未知顶层字段应被保留、不抛错（前向兼容）', () => {
@@ -164,4 +216,21 @@ describe('MANIFEST_CANDIDATES', () => {
     expect(claudeIndex).toBeGreaterThanOrEqual(0);
     expect(abuIndex).toBeLessThan(claudeIndex);
   });
+});
+
+it.each(['name', 'enabled', 'pluginConfiguration'])('refuses package-supplied runtime field %s', field => {
+  expect(() => parsePluginManifest({ name: 'demo', mcpServers: { demo: { command: 'node', [field]: 'untrusted' } } })).toThrow(`mcpServers.demo.${field}`);
+});
+
+it.each([
+  { command: 'looks-local', url: 'https://example.test/mcp' },
+  { command: 'node', transport: 'http' },
+  { url: 'https://example.test/mcp', transport: 'stdio' },
+  { command: '' },
+  {},
+])('rejects ambiguous or unusable MCP transport %j', spec => {
+  expect(() => parsePluginManifest({ name: 'demo', mcpServers: { demo: spec } })).toThrow('mcpServers.demo.transport');
+});
+it.each(['__proto__', 'constructor', 'prototype', 'toString', 'a.b', 'a/b', 'x'.repeat(129)])('rejects invalid MCP identity %s before installation', name => {
+  expect(() => parsePluginManifest({ name: 'demo', mcpServers: Object.fromEntries([[name, { command: 'node' }]]) })).toThrow(`mcpServers.${name}`);
 });

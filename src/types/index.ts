@@ -441,6 +441,15 @@ export interface Message {
    * Nothing in the render path may go back to the buffer.
    */
   browserRunReport?: import('../core/observability/browserRunReport').BrowserRunReportSnapshot;
+  /**
+   * Turn-cap notice payload. Present only on marker messages (id prefix
+   * `max-turns-`), appended when a run stops because it reached its turn cap.
+   *
+   * The cap is recorded on the marker rather than read from settings at render
+   * time: the notice explains a run that already happened, and changing the
+   * setting afterwards must not rewrite what an old card says.
+   */
+  maxTurnsNotice?: import('../core/agent/maxTurnsNotice').MaxTurnsNotice;
 }
 
 /**
@@ -503,6 +512,7 @@ export interface Conversation {
   enabledMCPServers?: string[];  // Per-session MCP server filter (undefined = all enabled)
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
   triggerId?: string;  // If set, this conversation was created by a trigger
+  teamId?: string;      // If set, the main loop runs as this team's leader (in-conversation team, 2026-09-04); cleared = ordinary chat
   imChannelId?: string;  // If set, this conversation was created by an IM channel
   imPlatform?: string;  // IM platform name (dchat/feishu/dingtalk/wecom/slack)
   projectId?: string;  // If set, this conversation belongs to a project
@@ -625,8 +635,16 @@ export interface ToolExecutionContext {
    * every tab, "current tab" and takeover record on `{conversationId, runKey}`).
    */
   agentRunId?: string;
+  /** Shell-owned originating dispatch; never accepted from model/wire input. */
+  teamApprovalDispatch?: { id: string; fingerprint: string };
   /** Tool call ID — injected by toolExecutor; lets a tool locate itself and key per-call state (e.g. run_agent_batch progress) */
   toolCallId?: string;
+  /**
+   * Member identity stamped by the trusted runner (the shell session's agent
+   * definition across RPC, never the incoming context). Team approval keys
+   * bind it alongside the run, dispatch and exact tool parameters.
+   */
+  agentName?: string;
   /** Assistant message ID owning this tool call; injected by toolExecutor for trusted metadata checkpoints. */
   assistantMessageId?: string;
   /**
@@ -674,6 +692,15 @@ export interface ToolExecutionContext {
    * registry for schemas without relying on cross-process module state.
    */
   deferredToolNames?: string[];
+  /**
+   * In-conversation team mode: exact agent names the leader may delegate to.
+   * Set by the trusted runtime from the pinned team's roster (never from model
+   * input); delegate_to_agent / run_agent_batch refuse any other agent or
+   * preset type while it is present. Wire-safe (plain strings).
+   */
+  teamRoster?: string[];
+  /** Strict team (先确认分工): report_plan must get the user's approval before anything is dispatched. */
+  teamRequirePlanApproval?: boolean;
   /**
    * In-process cancellation signal. This is intentionally local-only: it must
    * never be relied on across JSON/RPC serialization, where AbortSignal would
@@ -901,6 +928,12 @@ export interface ManagedAgentMetadata {
 export interface SubagentMetadata {
   /** Canonical name — primary key in agentRegistry, also the `@mention` token. */
   name: string;
+  /** Stable role identity for team membership (write-once, survives rename).
+   *  Written into AGENT.md frontmatter the first time an agent joins a team. */
+  roleId?: string;
+  /** Creation timestamp (ms), written once on first save — drives newest-first
+   *  ordering in the 队员 list. Absent on older agents (they sort last). */
+  createdAt?: number;
   /** Default-locale description shown in toolbox / agent selector. */
   description: string;
   avatar?: string;

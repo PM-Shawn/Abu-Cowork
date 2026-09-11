@@ -61,6 +61,16 @@ afterEach(() => {
 });
 
 describe('SkillHistoryModal', () => {
+  it('allows inspecting package history without exposing a revert that can delete installed files', async () => {
+    mockReadHistory.mockResolvedValueOnce([{ turnId: 'package-history', ts: FIXED_TIMESTAMP, op: 'patch', files: [{ relPath: 'SKILL.md', snapshotPath: null, action: 'created' }] }]);
+    const user = userEvent.setup();
+    render(<SkillHistoryModal skillDir="/plugin/skill" skillName="managed" readOnly onClose={onClose} />);
+    await user.click(await screen.findByText(/Patched/));
+    expect(screen.getAllByText('SKILL.md').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /Revert this change/ })).toBeNull();
+    expect(mockRevertTurn).not.toHaveBeenCalled();
+  });
+
   it('shows empty-state copy when the skill has no recorded modifications', async () => {
     mockReadHistory.mockResolvedValueOnce([]);
 

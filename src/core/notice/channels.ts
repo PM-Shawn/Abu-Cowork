@@ -44,6 +44,7 @@ function getTitle(notice: Notice): string {
     skill_draft_ready: n.skillDraftReady,
     im_inbound: n.imInbound,
     update_available: n.updateAvailable,
+    stuck_detection: n.stuckDetection,
   };
   return noticeTitle[notice.type] ?? 'Abu';
 }

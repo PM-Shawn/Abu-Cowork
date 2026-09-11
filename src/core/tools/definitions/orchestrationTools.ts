@@ -19,6 +19,12 @@ import type {
   SubagentStopReason,
 } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
+import { withDispatchController } from '../../agent/subagentAbort';
+import { takeDispatchInstructionReport } from '../../agent/dispatchInstructionReport';
+import { isTeamRosterMember } from '../../team/leaderRoute';
+import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
+import { createParentStepResolver } from '../../agent/delegateParentStep';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -185,7 +191,8 @@ export async function runWithConcurrency<T, R>(
  *               `### 子任务 N: <label>\n[失败] <text>` (error)
  */
 export function aggregateBatchResults(
-  entries: Array<{ label: string; status: 'ok' | 'error'; text: string }>,
+  entries: Array<{ label: string; status: 'ok' | 'error'; text: string; toolCallCount?: number; stopReason?: SubagentStopReason; userInstructions?: string[] }>,
+  options: { flagNoToolCalls?: boolean } = {},
 ): string {
   const total = entries.length;
   const successCount = entries.filter((e) => e.status === 'ok').length;
@@ -197,9 +204,22 @@ export function aggregateBatchResults(
   if (total === 0) return header;
 
   const sections = entries.map((entry, i) => {
-    const title = format(t.batchSectionTitle, { n: i + 1, label: entry.label });
+    // A member that stopped short (turn cap, abort, error) used to produce a
+    // section indistinguishable from a finished one, so the leader folded it
+    // into the final report as done. Say it on the task line itself.
+    const stopped = entry.stopReason && entry.stopReason !== 'completed'
+      ? format(t.batchStoppedSuffix, { reason: getI18n().toolResult.agent.stopReasonLabel[entry.stopReason] })
+      : '';
+    const title = format(t.batchSectionTitle, { n: i + 1, label: entry.label }) + stopped;
     const body = entry.status === 'ok' ? entry.text : format(t.batchFailPrefix, { text: entry.text });
-    return `${title}\n${body}`;
+    // A member that answered without a single tool call produced nothing it
+    // could have verified — say so, so the leader reviews instead of trusting.
+    const note = options.flagNoToolCalls && entry.status === 'ok' && entry.toolCallCount === 0 ? `\n\n${t.batchNoToolCallsNote}` : '';
+    // The user spoke to this member mid-run: the leader must treat those as the user's instructions.
+    const instructions = entry.userInstructions?.length
+      ? `\n\n${format(t.batchUserInstructionsNote, { n: entry.userInstructions.length, list: entry.userInstructions.map((line) => `- ${line}`).join('\n') })}`
+      : '';
+    return `${title}\n${body}${note}${instructions}`;
   });
 
   return [header, ...sections].join('\n\n');
@@ -284,20 +304,25 @@ function structuredEntryForSettledResult(
 export function aggregateSubagentTextResults(
   settled: PromiseSettledResult<SubagentResult>[],
   labels: string[],
+  options: { flagNoToolCalls?: boolean; userInstructions?: string[][] } = {},
 ): string {
   const entries = settled.map((result, i) => {
     const label = labels[i];
+    const userInstructions = options.userInstructions?.[i];
     if (result.status === 'fulfilled') {
       return {
         label,
         status: isSubagentResultError(result.value) ? 'error' as const : 'ok' as const,
         text: result.value.text,
+        toolCallCount: result.value.toolCallCount,
+        stopReason: result.value.stopReason,
+        userInstructions,
       };
     }
     const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
-    return { label, status: 'error' as const, text: errMsg };
+    return { label, status: 'error' as const, text: errMsg, userInstructions };
   });
-  return aggregateBatchResults(entries);
+  return aggregateBatchResults(entries, options);
 }
 
 // ─── Task item type ────────────────────────────────────────────────────────
@@ -307,6 +332,7 @@ interface BatchTaskItem {
   agent_name?: string;
   task: string;
   context?: string;
+  expected_files?: unknown;
 }
 
 // ─── Tool definition ───────────────────────────────────────────────────────
@@ -346,6 +372,11 @@ export const runAgentBatchTool: ToolDefinition = {
             context: {
               type: 'string',
               description: 'Additional context (optional)',
+            },
+            expected_files: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Files this task must produce (absolute, or relative to the workspace). Checked after the agent finishes: a missing file fails the task.',
             },
           },
           required: ['task'],
@@ -424,8 +455,22 @@ export const runAgentBatchTool: ToolDefinition = {
       signal: loopCtx?.signal,
     });
 
+    // Persisted per-member process: mirror delegate_to_agent's child-step
+    // recording under the (running) run_agent_batch step. The live batch
+    // store stays the in-run view; these children are what survives on the
+    // message snapshot so a member tab can replay after restart / reopen.
+    // Parent step resolved lazily per event (delegateParentStep.ts): over the
+    // reverse channel this tool can start before its own step-start frame
+    // reached the shell mirror, and an eager lookup recorded nothing.
+    const resolveBatchParentStepId = loopCtx?.eventRouter
+      && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function'
+      && typeof loopCtx.eventRouter.completeChildStep === 'function'
+      ? createParentStepResolver(loopCtx, toolExecContext?.toolCallId)
+      : null;
+    const canRecordChildSteps = resolveBatchParentStepId !== null;
+
     // ── 4. Resolve each task's agent ──────────────────────────────────────
-    type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string };
+    type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string; expectedFiles: string[] };
 
     const resolvedTasks: ResolvedTask[] = [];
     for (let i = 0; i < rawTasks.length; i++) {
@@ -434,6 +479,9 @@ export const runAgentBatchTool: ToolDefinition = {
       const agentType = item.type;
       const agentName = item.agent_name;
 
+      if (toolExecContext?.teamRoster && !isTeamRosterMember(toolExecContext.teamRoster, agentName)) {
+        return format(ot.errBatchNotTeamMember, { i, agentName: agentName ?? (agentType ? `type:${agentType}` : getI18n().toolResult.valueNone), roster: toolExecContext.teamRoster.join(', ') });
+      }
       if (agentType && PRESET_AGENTS[agentType]) {
         agent = buildPresetAgent(agentType);
       } else if (agentName) {
@@ -461,7 +509,20 @@ export const runAgentBatchTool: ToolDefinition = {
         task: item.task,
         context: item.context,
         label: item.task.slice(0, 60) + (item.task.length > 60 ? '…' : ''),
+        expectedFiles: parseExpectedFiles(item.expected_files),
       });
+    }
+
+    // Hard bounds for a team run (teamRunBounds.ts): the whole batch is admitted
+    // or refused as one, so a refusal never starts a partial fan-out.
+    const boundsLoopId = toolExecContext?.teamRoster && toolExecContext.loopId ? toolExecContext.loopId : undefined;
+    if (boundsLoopId) {
+      const admission = admitDispatches(boundsLoopId, resolvedTasks.map((task) => task.agent.name));
+      if (!admission.ok) {
+        return admission.reason === 'run_cap'
+          ? format(ot.errBatchDispatchCapReached, { max: admission.max })
+          : format(ot.errBatchMemberBlocked, { agentName: admission.member, n: admission.failures });
+      }
     }
 
     // ── 5. Run all sub-agents with concurrency pool ────────────────────────
@@ -534,9 +595,10 @@ export const runAgentBatchTool: ToolDefinition = {
             ? resolved.task + buildSchemaInstruction(schema)
             : resolved.task;
         let currentTurn = 0;
+        const childStepIds = new Map<string, string>(); // member tool_use id -> child step id
         try {
           const result = await runWithTimeout(
-            (sig) => runSubagent({
+            (sig) => withDispatchController(resolved.agent.name, sig, `${batchIdentity.batchToolCallId}:${idx}`, (dispatchSignal) => runSubagent({
               agent: resolved.agent,
               task: effectiveTask,
               context: resolved.context,
@@ -545,20 +607,39 @@ export const runAgentBatchTool: ToolDefinition = {
               parentLoopId: delegatedUserTurn.origin.loopId,
               parentConversationId: delegatedUserTurn.origin.conversationId,
               parentUserMessageId: delegatedUserTurn.origin.messageId,
-              signal: sig,
+              signal: dispatchSignal,
               commandConfirmCallback: loopCtx?.commandConfirmCallback,
               filePermissionCallback: loopCtx?.filePermissionCallback,
               allowedTools: loopCtx?.allowedTools,
               blockedTools: loopCtx?.blockedTools,
               imContext: loopCtx?.imContext,
+              dispatchKey: `${batchIdentity.batchToolCallId}:${idx}`,
               ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
               onProgress: (event) => {
                 try {
                   const store = useBatchProgressStore.getState();
                   if (event.type === 'tool-start') {
+                    const batchParentStepId = resolveBatchParentStepId?.();
+                    if (canRecordChildSteps && loopCtx && batchParentStepId) {
+                      const childStepId = loopCtx.eventRouter.addChildStepToDelegate(loopCtx.loopId, batchParentStepId, {
+                        toolName: event.toolName,
+                        toolInput: event.toolInput,
+                        toolCallId: event.id,
+                        batchTask: { index: idx, label: resolved.label, agent: resolved.agent.name },
+                      });
+                      if (childStepId) childStepIds.set(event.id, childStepId);
+                    }
                     store.startTaskStep(batchIdentity, idx, event);
                     store.setTaskActivity(batchIdentity, idx, format(getI18n().toolResult.orchestration.activityCalling, { toolName: event.toolName }), currentTurn);
                   } else if (event.type === 'tool-end') {
+                    const childStepId = childStepIds.get(event.id);
+                    childStepIds.delete(event.id);
+                    const batchParentStepId = resolveBatchParentStepId?.();
+                    if (childStepId && loopCtx && batchParentStepId) {
+                      loopCtx.eventRouter.completeChildStep(
+                        loopCtx.loopId, batchParentStepId, childStepId, event.result, event.error, event.resultContent,
+                      );
+                    }
                     // Preserve rich blocks verbatim: BatchProgress turns image
                     // blocks into DetailBlockView input while this in-memory
                     // batch card remains open.
@@ -580,10 +661,17 @@ export const runAgentBatchTool: ToolDefinition = {
                   // Best-effort: never let store errors break the batch
                 }
               },
-            }),
+            })),
             SUBAGENT_WALLCLOCK_TIMEOUT_MS,
             loopCtx?.signal,
           );
+          // Define-done check: declared artifacts must exist, whatever the text says.
+          if (resolved.expectedFiles.length > 0) {
+            const missingFiles = await findMissingExpectedFiles(resolved.expectedFiles, toolExecContext?.workspacePath);
+            if (missingFiles.length > 0) {
+              throw new Error(format(ot.errBatchExpectedFilesMissing, { i: idx, agentName: resolved.agent.name, files: missingFiles.join(', ') }));
+            }
+          }
           const settledResult = { status: 'fulfilled', value: result } as const satisfies PromiseSettledResult<SubagentResult>;
           if (structuredEntries !== undefined && schema !== undefined) {
             structuredEntries[idx] = structuredEntryForSettledResult(settledResult, resolved.label, schema);
@@ -625,15 +713,29 @@ export const runAgentBatchTool: ToolDefinition = {
       if (result.status === 'rejected' && !latestTerminalSummary?.tasks.some((task) => task.taskIndex === i)) {
         terminalizeTask(i, terminalForSettledResult(result, structuredEntries?.[i]?.ok));
       }
+      if (boundsLoopId) {
+        recordDispatchOutcome(boundsLoopId, resolvedTasks[i].agent.name, result.status === 'fulfilled' && result.value.stopReason === 'completed');
+      }
     }
 
     // ── 6. Aggregate results ───────────────────────────────────────────────
+    const instructionReports = resolvedTasks.map((task, idx) =>
+      takeDispatchInstructionReport(`${batchIdentity.batchToolCallId}:${idx}`, task.agent.name));
     if (structuredEntries !== undefined) {
-      return aggregateStructuredResults(structuredEntries);
+      // Keep valid JSON and the existing result schema; receipt metadata is
+      // outside each member's schema-validated data object.
+      return aggregateStructuredResults(structuredEntries.map((entry, idx) => ({ ...entry,
+        ...(instructionReports[idx] ? { userInstructionReport: instructionReports[idx] } : {}),
+      })));
     }
 
     // Text aggregation path (behavior-preserving, schema absent)
-    return aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label));
+    // Team leaders must not trust a member that never checked anything; an
+    // ordinary batch keeps the plain report.
+    const report = aggregateSubagentTextResults(settled, resolvedTasks.map((task) => task.label), {
+      flagNoToolCalls: !!toolExecContext?.teamRoster,
+    });
+    return [report, ...instructionReports.filter(Boolean)].join('\n\n');
   },
 
   // Already parallelizes internally — parent must not double-parallelize this tool.

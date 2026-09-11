@@ -48,10 +48,11 @@ import { emitHook } from './lifecycleHooks';
 import type { SubagentStartEvent, SubagentEndEvent, PreToolCallEvent } from './lifecycleHooks';
 import { startSubagentSpan } from '../observability/langfuse';
 import { format, getI18n } from '../../i18n';
-import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
+import { appendInstructionToHistory, drainDispatchInstructionEntries, hasDispatchInput, MEMBER_INSTRUCTION_STEP } from './dispatchInput';
+import { matchesToolName } from '../skill/toolFilter';
 import { createLogger } from '../logging/logger';
 import { deriveRunInteractionMode } from './runInteractionMode';
-import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { resolveSubagentToolRoster, checkDispatchToolBoundary } from './subagentToolRoster';
 import { browserNarrationSection } from './browserNarrationRules';
 import {
   appendPreloadedSkills,
@@ -197,6 +198,13 @@ export function shouldRecoverMaxTokens(params: {
  * max_tokens truncation) is concatenated with no separator so a mid-thought /
  * mid-word cut is stitched back together rather than gaining a spurious break.
  */
+/** Abort reason (a string on the signal, e.g. the stall watchdog's note) appended to the abort result. */
+function abortedResultText(resultBuffer: string, signal: AbortSignal | undefined): string {
+  const base = resultBuffer || getI18n().chat.subagent.taskCancelled;
+  const reason = typeof signal?.reason === 'string' ? signal.reason.trim() : '';
+  return reason ? `${base}\n\n${reason}` : base;
+}
+
 export function appendTurnText(buffer: string, text: string, seamless: boolean): string {
   if (!text) return buffer;
   if (!buffer) return text;
@@ -204,6 +212,7 @@ export function appendTurnText(buffer: string, text: string, seamless: boolean):
 }
 
 export type SubagentProgressEvent =
+  | { type: 'instruction-consumed'; instructionId: string }
   | { type: 'tool-start'; id: string; toolName: string; toolInput: Record<string, unknown> }
   /**
    * `resultContent` carries the raw rich blocks (screenshots / read_file
@@ -433,6 +442,7 @@ export function buildSubagentMcpPreflightFailure(
 }
 
 export interface SubagentLoopOptions {
+  teamApprovalDispatch?: { id: string; fingerprint: string };
   agent: SubagentDefinition;
   task: string;
   context?: string;
@@ -499,6 +509,12 @@ export interface SubagentLoopOptions {
    */
   reportBrowserDenial?: (kind?: import('./browserDenialTracker').BrowserDenialKind) => void;
   reportBrowserAllow?: (consent?: import('./browserDenialTracker').BrowserAllowConsent) => void;
+  /**
+   * `${toolCallId}:${taskIndex}` of the hand-off this run serves (in-conversation
+   * team). Lets the user address THIS member while it runs: the loop drains
+   * dispatchInput.ts's queue for the key between turns.
+   */
+  dispatchKey?: string;
   /** Parent conversation ID for Langfuse parent-child span linking */
   parentConversationId?: string;
   /** Parent loop owner for run-scoped skill hooks activated by delegated work. */
@@ -814,7 +830,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     for (let turn = 0; turn < maxTurns; turn++) {
       if (signal?.aborted) {
         const abortResult = new SubagentResult({
-          text: resultBuffer || getI18n().chat.subagent.taskCancelled,
+          text: abortedResultText(resultBuffer, signal),
           toolCallCount: totalToolCalls,
           turnCount: turn,
           tokenUsage: { input: totalInputTokens, output: totalOutputTokens },
@@ -825,6 +841,15 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         subagentSpan.end({ output: abortResult.text, tokenUsage: abortResult.tokenUsage, toolCallCount: abortResult.toolCallCount, turnCount: abortResult.turnCount, duration: abortResult.duration });
         return abortResult;
       }
+
+      // A direct user instruction to THIS member while it runs (block M):
+      // show it in the member's process as a step, then put it in front of the
+      // model as user content before this turn's request.
+      const turnInstructions = options.dispatchKey ? drainDispatchInstructionEntries(options.dispatchKey) : [];
+      turnInstructions.forEach((note, noteIndex) => {
+        appendInstructionToHistory(messages, format(getI18n().chat.subagent.memberInstruction, { text: note.text }), `sub-note-${turn}-${noteIndex}`);
+        onProgress?.({ type: 'tool-start', id: `note-${turn}-${noteIndex}`, toolName: MEMBER_INSTRUCTION_STEP, toolInput: { text: note.text } });
+      });
 
       const collectedToolCalls: Array<{
         id: string;
@@ -1010,6 +1035,20 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         signal,
       );
 
+      // A successful request carrying the full instruction is the receipt.
+      // If budget trimming dropped it, or the request failed, the shell outbox
+      // retains it as unconfirmed and hands it back to the leader at settle.
+      turnInstructions.forEach((note, noteIndex) => {
+        const included = preparedMessages.some((message) => {
+          const content = typeof message.content === 'string' ? message.content
+            : message.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+          return content.includes(note.text);
+        });
+        if (included) onProgress?.({ type: 'instruction-consumed', instructionId: note.id });
+        onProgress?.({ type: 'tool-end', id: `note-${turn}-${noteIndex}`, toolName: MEMBER_INSTRUCTION_STEP,
+          result: note.text, error: !included });
+      });
+
       // L4: learn that a statically-non-reasoning model actually reasons, so future
       // runs bound it (treated as 'uncontrollable' → full budget + reactive net).
       if (sawThinking && baseCaps.thinking === false && provider) {
@@ -1089,6 +1128,11 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         consecutiveNoProgress = 0;
       }
 
+      if (!shouldContinue && options.dispatchKey && hasDispatchInput(options.dispatchKey) && turn + 1 < maxTurns) {
+        messages.push({ id: `sub-final-before-input-${turn}`, role: 'assistant', content: turnText, timestamp: Date.now() });
+        // Drain at the next iteration, then submit another model request.
+        continue;
+      }
       if (!shouldContinue) {
         if (terminalStopReason !== 'error') {
           terminalStopReason = noProgressTurn ? 'error' : 'completed';
@@ -1129,16 +1173,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             return { id: tc.id, result: `Error: tool "${tc.name}" is outside this agent's fixed tool boundary` };
           }
           // Name-level roster filtering cannot express input constraints such
-          // as run_command(npm run *); enforce those at dispatch time.
-          if (
-            agent.tools?.length
-            && !agent.tools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))
-          ) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" input is outside this agent's fixed tool boundary` };
-          }
-          if (options.allowedTools?.length && !options.allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" is not allowed for this agent run` };
-          }
+          // as run_command(npm run *); enforce those at dispatch time. Shared
+          // with the post-hook re-check so both apply the same rules.
+          const boundaryError = checkDispatchToolBoundary(agent.tools, options.allowedTools, tc.name, tc.input);
+          if (boundaryError) return { id: tc.id, result: boundaryError };
           // Denylist checked at execution too, not just when the tool list
           // was assembled: the model can name a tool that was never offered.
           if (options.blockedTools?.some((pattern) => matchesToolName(tc.name, pattern))) {
@@ -1152,7 +1190,10 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             // {conversation, run}: without this, sibling delegations of one
             // conversation share one pool and steal each other's tabs.
             agentRunId: options.agentRunId,
+            teamApprovalDispatch: options.teamApprovalDispatch,
+            toolCallId: tc.id,
             loopId: options.parentLoopId,
+            agentName: agent.name,
             interactionMode: resolveSubagentInteractionMode(options),
             authorizationScopeId: options.authorizationScopeId,
             runPermissionCeiling: options.runPermissionCeiling,
@@ -1192,18 +1233,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // input-sensitive allowlist to the value that will actually be
           // executed, otherwise a hook could turn an allowed command into an
           // out-of-bound one after the first check above.
-          if (
-            agent.tools?.length
-            && !agent.tools.some((pattern) => matchesToolPattern(tc.name, pattern, effectiveInput))
-          ) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" input is outside this agent's fixed tool boundary` };
-          }
-          if (
-            options.allowedTools?.length
-            && !options.allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, effectiveInput))
-          ) {
-            return { id: tc.id, result: `Error: tool "${tc.name}" is not allowed for this agent run` };
-          }
+          const postHookBoundaryError = checkDispatchToolBoundary(agent.tools, options.allowedTools, tc.name, effectiveInput);
+          if (postHookBoundaryError) return { id: tc.id, result: postHookBoundaryError };
 
           const toolStart = Date.now();
           try {
@@ -1336,7 +1367,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       || (err instanceof LLMError && err.code === 'cancelled');
     if (wasAborted) {
       const abortResult = new SubagentResult({
-        text: resultBuffer || getI18n().chat.subagent.taskCancelled,
+        text: abortedResultText(resultBuffer, signal),
         toolCallCount: totalToolCalls,
         turnCount: completedTurns,
         tokenUsage: { input: totalInputTokens, output: totalOutputTokens },

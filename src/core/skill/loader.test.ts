@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
 import { homeDir, resolve } from '@tauri-apps/api/path';
 import { SkillLoader } from './loader';
+import { publishPluginActivation } from '../plugin/activationPolicy';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { EnterpriseBinding, EnterpriseConfigSnapshot } from '@/core/enterprise/types';
 
@@ -34,8 +35,61 @@ description: Test skill ${name}
 Body content for ${name}.
 `;
 
+describe('SkillLoader plugin component locations', () => {
+  it('loads only recorded custom skills, retaining user precedence on name collisions', async () => {
+    const home = '/home/plugin-a2-test';
+    const root = `${home}/.abu/plugin-packages/official/weather/1.0.0`;
+    mockHomeDir.mockResolvedValue(home);
+    const files: Record<string, string> = {
+      [`${home}/.abu/plugin-packages/installed.json`]: JSON.stringify([{
+        key: 'weather@official', marketplace: 'official', name: 'weather', version: '1.0.0',
+        componentLayoutVersion: 1, skillPaths: ['extras/review', 'skills/hello', '.'],
+        contributed: { skills: ['review', 'hello', 'root-skill'], mcpServers: [], agents: [] },
+      }]),
+      [`${root}/extras/review/SKILL.md`]: SKILL_TEMPLATE('review'),
+      [`${root}/skills/hello/SKILL.md`]: SKILL_TEMPLATE('hello'),
+      [`${root}/skills/unapproved/SKILL.md`]: SKILL_TEMPLATE('unapproved'),
+      [`${root}/SKILL.md`]: SKILL_TEMPLATE('root-skill'),
+      [`${home}/.abu/skills/hello/SKILL.md`]: SKILL_TEMPLATE('hello'),
+    };
+    mockReadTextFile.mockImplementation(async path => {
+      if (!(String(path) in files)) throw new Error('ENOENT');
+      return files[String(path)];
+    });
+    mockExists.mockImplementation(async path => Object.keys(files).some(file => file === path || file.startsWith(`${path}/`)));
+    mockReadDir.mockImplementation(async path => {
+      const prefix = `${path}/`;
+      return [...new Set(Object.keys(files).filter(file => file.startsWith(prefix)).map(file => file.slice(prefix.length).split('/')[0]))]
+        .map(name => ({ name, isFile: `${prefix}${name}` in files, isDirectory: !(`${prefix}${name}` in files), isSymlink: false }));
+    });
+    mockLstat.mockImplementation(async path => ({ isSymlink: false, isFile: String(path) in files, isDirectory: !(String(path) in files) }) as never);
+    const activation = { enabled: true, root, skillDirs: [root, `${root}/extras/review`, `${root}/skills/hello`], legacySkills: false, agentFiles: [], mcpServers: [] };
+    publishPluginActivation({ 'weather@official': activation }, [], true);
+    const loader = new SkillLoader();
+    await loader.discoverSkills();
+    expect(loader.getSkill('review')?.skillDir).toBe(`${root}/extras/review`);
+    expect(loader.getSkill('root-skill')?.skillDir).toBe(root);
+    expect(loader.getSkill('hello')?.source).toBe('user');
+    expect(loader.getSkill('unapproved')).toBeUndefined();
+    publishPluginActivation({ 'weather@official': { ...activation, enabled: false } }, [], true);
+    expect(loader.getSkill('review')).toBeUndefined();
+    expect(await loader.loadSkill('review')).toBeNull();
+    expect(loader.findMatchingSkills('review')).toEqual([]);
+    expect(loader.getAvailableSkills().map(s => s.name)).not.toContain('review');
+    expect(loader.getAvailableSkills({ includeDisabledPlugins: true }).map(s => s.name)).toContain('review');
+    expect(loader.getSkill('hello')?.source).toBe('user');
+    mockReadTextFile.mockClear();
+    expect(await loader.refreshSkill('review')).toBeUndefined();
+    expect(await loader.listSupportingFiles('review')).toEqual([]);
+    expect(await loader.loadSupportingFile('review', 'README.md')).toBeNull();
+    expect(mockReadTextFile).not.toHaveBeenCalled();
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
+  publishPluginActivation({}, [], true);
+  mockHomeDir.mockResolvedValue('/Users/testuser');
   mockExists.mockResolvedValue(true);
   mockReadDir.mockResolvedValue([]);
   mockReadTextFile.mockRejectedValue(new Error('not found'));

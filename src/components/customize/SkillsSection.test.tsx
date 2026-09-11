@@ -23,6 +23,7 @@ import { skillLoader } from '@/core/skill/loader';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { usePluginStore } from '@/stores/pluginStore';
 import type { DraftRecord } from '@/core/skill/drafts';
 import SkillsSection from './SkillsSection';
 
@@ -33,6 +34,9 @@ const meta = (name: string, source: SkillMetadata['source']): SkillMetadata =>
 
 const CATALOG: SkillMetadata[] = [
   meta('my-notes', 'user'),
+  // Shares a name with a builtin marketplace template while living in the
+  // user's own directory — the case the inlined edit/delete condition missed.
+  meta('docx', 'user'),
   meta('auto-thing', 'workspace-auto'),
   meta('cross-client', 'standard'),
   meta('team-rules', 'project'),
@@ -129,5 +133,90 @@ describe('SkillsSection · sourceFilter="mine"', () => {
     expect(await screen.findByText('my-notes')).toBeTruthy();
     expect(screen.getByText('weather-report')).toBeTruthy();
     expect(screen.getByText('pdf-fill')).toBeTruthy();
+  });
+  it.each(['pdf-fill', 'weather-report', 'expense-policy'])('retains detail actions but not independent removal for %s', async (name) => {
+    render(<SkillsSection />);
+    fireEvent.click(await screen.findByText(name));
+    expect(screen.getByTestId('skill-detail')).toBeVisible();
+    fireEvent.click(screen.getByTestId('skill-detail-menu'));
+    expect(screen.getByText(tb().exportSkill)).toBeVisible();
+    expect(screen.getByText(tb().historyMenuLabel)).toBeVisible();
+    expect(screen.queryByText(tb().uninstall)).toBeNull();
+  });
+
+});
+
+/**
+ * The list deliberately includes skills whose owning plugin is switched off, so
+ * they stay discoverable. The card must not also claim they are active: the
+ * model's strict getAvailableSkills() has already dropped them, so a green
+ * switch and a live 试用 button would be the UI lying about what Abu can see.
+ */
+describe('SkillsSection · disabled plugin ownership', () => {
+  const activation = (enabled: boolean) => ({
+    'weather@market': {
+      enabled, root: '/skills/weather-report', skillDirs: ['/skills/weather-report'],
+      legacySkills: false, agentFiles: [], mcpServers: [],
+    },
+  });
+  const switchFor = (name: string) => {
+    const card = screen.getByText(name).closest('[role="button"]');
+    if (!card) throw new Error(`no card for ${name}`);
+    return within(card as HTMLElement).getByRole('switch');
+  };
+
+  it('shows the skill as off and locks its switch while the owning plugin is disabled', async () => {
+    usePluginStore.setState({ activationByKey: activation(false), activationReady: true });
+    render(<SkillsSection />);
+    await screen.findByText('weather-report');
+    const toggle = switchFor('weather-report');
+    expect(toggle.getAttribute('aria-checked')).toBe('false');
+    expect((toggle as HTMLButtonElement).disabled).toBe(true);
+    // A skill nobody owns is unaffected.
+    expect(switchFor('my-notes').getAttribute('aria-checked')).toBe('true');
+    expect((switchFor('my-notes') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('blocks the trial button and says why', async () => {
+    usePluginStore.setState({ activationByKey: activation(false), activationReady: true });
+    render(<SkillsSection />);
+    fireEvent.click(await screen.findByText('weather-report'));
+    expect(screen.getByText(tb().skillPluginDisabled)).toBeTruthy();
+    expect((screen.getByText(tb().menuTrial).closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('leaves the switch on once the owning plugin is enabled', async () => {
+    usePluginStore.setState({ activationByKey: activation(true), activationReady: true });
+    render(<SkillsSection />);
+    await screen.findByText('weather-report');
+    const toggle = switchFor('weather-report');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect((toggle as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+/**
+ * Regression: the edit/delete condition was inlined at two call sites and lost
+ * isSystemSkill's template-name branch, so a user-directory skill named after a
+ * builtin template became editable and deletable.
+ */
+describe('SkillsSection · system skill protection', () => {
+  const openMenu = async (name: string) => {
+    render(<SkillsSection />);
+    fireEvent.click(await screen.findByText(name));
+    fireEvent.click(screen.getByTestId('skill-detail-menu'));
+  };
+
+  it('withholds edit and delete from a user skill that shares a builtin template name', async () => {
+    await openMenu('docx');
+    expect(screen.getByText(tb().exportSkill)).toBeVisible();
+    expect(screen.queryByText(tb().skillEdit)).toBeNull();
+    expect(screen.queryByText(tb().uninstall)).toBeNull();
+  });
+
+  it('still offers them for an ordinary user skill', async () => {
+    await openMenu('my-notes');
+    expect(screen.getByText(tb().skillEdit)).toBeVisible();
+    expect(screen.getByText(tb().uninstall)).toBeVisible();
   });
 });

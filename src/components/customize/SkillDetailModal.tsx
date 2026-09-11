@@ -70,7 +70,7 @@ export default function SkillDetailModal({
     license = skill.license;
   } else if (template?.content) {
     // Parse the template SKILL.md to extract metadata
-    const parsedSkill = skillLoader.getSkill(template.name);
+    const parsedSkill = skillLoader.getSkill(template.name, { includeDisabledPlugins: true });
     if (parsedSkill) {
       trigger = parsedSkill.trigger;
       doNotTrigger = parsedSkill.doNotTrigger;

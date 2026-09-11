@@ -1,4 +1,8 @@
 import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { isTeamRosterMember } from '../../team/leaderRoute';
+import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
+import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
+import { createParentStepResolver } from '../../agent/delegateParentStep';
 import type { ToolDefinition, Conversation, SubagentDefinition } from '../../../types';
 import { skillLoader } from '../../skill/loader';
 import { agentRegistry } from '../../agent/registry';
@@ -8,12 +12,13 @@ import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunn
 import { materializeDelegatedUserTurn } from '../../subagent/delegatedUserTurnMaterializer';
 import type { SubagentProgressEvent } from '../../agent/subagentLoop';
 import { createSubagentController } from '../../agent/subagentAbort';
+import { takeDispatchInstructionReport } from '../../agent/dispatchInstructionReport';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
-import { ITEM_NAME_RE } from '../../../utils/validation';
+import { ITEM_NAME_RE, AGENT_NAME_RE } from '../../../utils/validation';
 import { getSystemInfoData } from '../helpers/toolHelpers';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
@@ -77,16 +82,16 @@ export const useSkillTool: ToolDefinition = {
     const skillName = (input.skill_name as string).replace(/^\/+/, '');
     const context = input.context as string | undefined;
 
-    // Auto-enable skill if disabled — user intent to use it takes precedence
-    const { disabledSkills, toggleSkillEnabled } = useSettingsStore.getState();
-    if (disabledSkills?.includes(skillName)) {
-      toggleSkillEnabled(skillName);
-    }
-
     const skill = skillLoader.getSkill(skillName);
     if (!skill) {
       const available = skillLoader.getAvailableSkills().map(s => s.name).join(', ');
       return `Error: Skill "${skillName}" not found. Available skills: ${available}`;
+    }
+
+    // Auto-enable skill if disabled — only after resolving through the plugin gate
+    const { disabledSkills, toggleSkillEnabled } = useSettingsStore.getState();
+    if (disabledSkills?.includes(skillName)) {
+      toggleSkillEnabled(skillName);
     }
 
     // Dedup: if already active in this conversation, short-circuit to prevent
@@ -211,6 +216,7 @@ export const delegateToAgentTool: ToolDefinition = {
       type: { type: 'string', description: 'Built-in role with a fixed tool boundary: research (lookup-focused: file reads, search, web and general HTTP requests), writer (content authoring: read/write/edit files plus web search), executor (full toolset — includes browser, image and MCP tools, except nested delegation and user prompts). Mutually exclusive with agent_name', enum: ['research', 'writer', 'executor'] },
       task: { type: 'string', description: 'Task description to delegate' },
       context: { type: 'string', description: 'Additional context (optional)' },
+      expected_files: { type: 'array', items: { type: 'string' }, description: 'Files this step must produce (absolute, or relative to the workspace). Checked after the agent finishes: a missing file fails the step.' },
     },
     required: ['task'],
   },
@@ -219,10 +225,28 @@ export const delegateToAgentTool: ToolDefinition = {
     const agentType = input.type as string | undefined;
     const task = input.task as string;
     const context = input.context as string | undefined;
+    const expectedFiles = parseExpectedFiles(input.expected_files);
 
     // 1. Resolve agent: by name (user-defined) or by type (system preset)
     let agent: SubagentDefinition | undefined;
 
+    // In-conversation team mode: only roster members may be dispatched (presets included).
+    if (toolExecContext?.teamRoster && !isTeamRosterMember(toolExecContext.teamRoster, agentName)) {
+      const t = getI18n().toolResult.agent;
+      return format(t.errNotTeamMember, { agentName: agentName ?? (agentType ? `type:${agentType}` : getI18n().toolResult.valueNone), roster: toolExecContext.teamRoster.join(', ') });
+    }
+    // Hard bounds for the run (teamRunBounds.ts): refuse loudly so the leader
+    // stops dispatching and reports instead of looping.
+    const boundsLoopId = toolExecContext?.teamRoster && agentName && toolExecContext.loopId ? toolExecContext.loopId : undefined;
+    if (boundsLoopId && agentName) {
+      const admission = admitDispatches(boundsLoopId, [agentName]);
+      if (!admission.ok) {
+        const t = getI18n().toolResult.agent;
+        return admission.reason === 'run_cap'
+          ? format(t.errDispatchCapReached, { max: admission.max })
+          : format(t.errMemberBlocked, { agentName: admission.member, n: admission.failures });
+      }
+    }
     if (agentType && PRESET_AGENTS[agentType]) {
       // System preset role
       agent = buildPresetAgent(agentType, task);
@@ -269,61 +293,55 @@ export const delegateToAgentTool: ToolDefinition = {
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
 
-    if (loopCtx) {
-      // Find the parent delegate step ID from toolCallToStepId
-      // The tool call ID for this execution should be the last entry mapped
-      let parentStepId: string | undefined;
-      for (const [, sId] of loopCtx.toolCallToStepId) {
-        parentStepId = sId; // Will end up as last entry
-      }
-      // More precise: find step with toolName=delegate_to_agent and status=running
-      if (!parentStepId) {
-        const exec = loopCtx.eventRouter.getCurrentStepId(loopCtx.loopId);
-        if (exec) parentStepId = exec;
-      }
+    if (loopCtx?.eventRouter && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function') {
+      // Parent step resolved lazily, by this call's tool_use id — see
+      // delegateParentStep.ts (eager lookup lost the member process when the
+      // leader loop ran in the sidecar).
+      const resolveParentStepId = createParentStepResolver(loopCtx, toolExecContext?.toolCallId);
+      const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
 
-      if (parentStepId) {
-        const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
-        const capturedParentStepId = parentStepId;
-
-        onProgress = (event) => {
-          if (event.type === 'tool-start') {
-            const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
-              loopCtx.loopId,
-              capturedParentStepId,
-              { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
-            );
-            if (childStepId) {
-              childIdMap.set(event.id, childStepId);
-            }
-          } else if (event.type === 'tool-end') {
-            const childStepId = childIdMap.get(event.id);
-            childIdMap.delete(event.id);
-            if (childStepId) {
-              loopCtx.eventRouter.completeChildStep(
-                loopCtx.loopId,
-                capturedParentStepId,
-                childStepId,
-                event.result,
-                event.error,
-                event.resultContent
-              );
-            }
+      onProgress = (event) => {
+        const parentStepId = resolveParentStepId();
+        if (!parentStepId) return;
+        if (event.type === 'tool-start') {
+          const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
+            loopCtx.loopId,
+            parentStepId,
+            { toolName: event.toolName, toolInput: event.toolInput, toolCallId: event.id }
+          );
+          if (childStepId) {
+            childIdMap.set(event.id, childStepId);
           }
-        };
-      }
+        } else if (event.type === 'tool-end') {
+          const childStepId = childIdMap.get(event.id);
+          childIdMap.delete(event.id);
+          if (childStepId) {
+            loopCtx.eventRouter.completeChildStep(
+              loopCtx.loopId,
+              parentStepId,
+              childStepId,
+              event.result,
+              event.error,
+              event.resultContent
+            );
+          }
+        }
+      };
     }
 
     // 6. Extract parent conversation summary for context injection
     const parentConversationSummary = resolveParentConversationSummary(toolExecContext);
 
     // 7. Create per-subagent AbortController (linked to parent)
+    const dispatchKey = toolExecContext?.toolCallId ? `${toolExecContext.toolCallId}:0` : undefined;
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
       effectiveAgentName,
-      loopCtx?.signal
+      loopCtx?.signal,
+      dispatchKey,
     );
 
     // 8. Sync mode: blocking await
+    let outcomeRecorded = false;
     try {
       // A model tool call may describe its task, but it never chooses the
       // source message. The active shell loop owns both ids. Refuse to
@@ -354,6 +372,7 @@ export const delegateToAgentTool: ToolDefinition = {
         blockedTools: loopCtx?.blockedTools,
         imContext: loopCtx?.imContext,
         persistParentToolImages: true,
+        ...(dispatchKey ? { dispatchKey } : {}),
         ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
@@ -363,12 +382,51 @@ export const delegateToAgentTool: ToolDefinition = {
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
       }
-      toolExecContext?.reportMetadata?.({ subagentStopReason: result.stopReason });
-      return result.text;
+      // Define-done check: declared artifacts must exist, whatever the text says.
+      const missingFiles = expectedFiles.length > 0
+        ? await findMissingExpectedFiles(expectedFiles, toolExecContext?.workspacePath)
+        : [];
+      toolExecContext?.reportMetadata?.({ subagentStopReason: missingFiles.length > 0 ? 'error' : result.stopReason });
+      if (boundsLoopId && agentName) {
+        recordDispatchOutcome(boundsLoopId, agentName, result.stopReason === 'completed' && missingFiles.length === 0);
+        outcomeRecorded = true;
+      }
+      if (missingFiles.length > 0) {
+        throw new Error(format(getI18n().toolResult.agent.errExpectedFilesMissing, {
+          agentName: effectiveAgentName,
+          files: missingFiles.join(', '),
+          text: result.text,
+        }));
+      }
+      let text = result.text;
+      // The stop reason must survive the hand-off in the BODY, not only in
+      // `reportMetadata`: OpenAI-compatible providers carry no `is_error`
+      // channel, so a metadata-only signal reaches Claude and nobody else —
+      // and the leader then reads a truncated answer as a finished one.
+      if (result.stopReason !== 'completed') {
+        const labels = getI18n().toolResult.agent.stopReasonLabel;
+        text += `\n\n${format(getI18n().toolResult.agent.delegateStoppedNote, { reason: labels[result.stopReason] })}`;
+      }
+      // No tool call at all = nothing the member could have checked; flag it for the leader.
+      if (result.toolCallCount === 0 && toolExecContext?.teamRoster) {
+        text += `\n\n${getI18n().toolResult.agent.delegateNoToolCallsNote}`;
+      }
+      // The user spoke to this member mid-run: say so structurally, with the
+      // verbatim instructions, so the leader treats them as the user's.
+      const instructionReport = takeDispatchInstructionReport(dispatchKey, effectiveAgentName);
+      if (instructionReport) text += `\n\n${instructionReport}`;
+      return text;
     } catch (err) {
       subagentCleanup();
+      if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);
+      }
+      const instructionReport = takeDispatchInstructionReport(dispatchKey, effectiveAgentName);
+      if (instructionReport) {
+        const error = new Error(`${err instanceof Error ? err.message : String(err)}\n\n${instructionReport}`, { cause: err });
+        if (err instanceof Error) error.name = err.name;
+        throw error;
       }
       throw err;
     }
@@ -460,7 +518,9 @@ function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       const t = getI18n().toolResult.agent;
       const label = isSkill ? t.labelSkill : t.labelAgent;
 
-      if (!ITEM_NAME_RE.test(name)) {
+      // Agents allow unicode names (数据分析师); skills keep the strict slug.
+      const nameRe = isSkill ? ITEM_NAME_RE : AGENT_NAME_RE;
+      if (!nameRe.test(name)) {
         return format(t.errInvalidName, { label, name });
       }
 

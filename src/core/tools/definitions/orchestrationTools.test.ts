@@ -26,6 +26,7 @@ import {
   SUBAGENT_WALLCLOCK_TIMEOUT_MS,
 } from './orchestrationTools';
 import { SubagentResult } from '../../agent/subagentLoop';
+import { getLanguageSetting, setLanguage } from '@/i18n';
 import * as subagentRunner from '../../agent/subagentRunner';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 import { useChatStore } from '../../../stores/chatStore';
@@ -71,6 +72,12 @@ function subagentResult(text: string, stopReason: 'completed' | 'aborted' | 'err
     duration: 0,
   });
 }
+
+const findMissingExpectedFilesMock = vi.fn(async (_files: readonly string[], _ws: string | null | undefined): Promise<string[]> => []);
+vi.mock('../../team/expectedFiles', async () => {
+  const actual = await vi.importActual<typeof import('../../team/expectedFiles')>('../../team/expectedFiles');
+  return { ...actual, findMissingExpectedFiles: (files: readonly string[], ws: string | null | undefined) => findMissingExpectedFilesMock(files, ws) };
+});
 
 describe('runAgentBatchTool preset boundaries', () => {
   it('describes the fixed tool boundaries of built-in role presets', () => {
@@ -137,6 +144,96 @@ describe('runAgentBatchTool progress wiring', () => {
       resultContent: image,
       status: 'completed',
     });
+  });
+
+  it('quotes the instructions the user sent a member mid-run in that member\'s section', () => {
+    const report = aggregateBatchResults([
+      { label: 'A', status: 'ok', text: 'done', toolCallCount: 2, userInstructions: ['只看 Q3'] },
+      { label: 'B', status: 'ok', text: 'done', toolCallCount: 2 },
+    ]);
+    const [, sectionA, sectionB] = report.split('\n\n### ');
+    expect(sectionA).toContain('- 只看 Q3');
+    expect(sectionB).not.toContain('只看 Q3');
+  });
+
+  it('flags a member result that made zero tool calls in the aggregated report', () => {
+    const report = aggregateBatchResults([
+      { label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 },
+      { label: 'B', status: 'ok', text: 'checked', toolCallCount: 3 },
+    ], { flagNoToolCalls: true });
+    expect(aggregateBatchResults([{ label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 }])).not.toContain('no tool calls');
+    const [, sectionA, sectionB] = report.split('\n\n### ');
+    expect(sectionA).toContain('did it');
+    expect(sectionA).toContain('no tool calls');
+    expect(sectionB).not.toContain('no tool calls');
+  });
+
+  it('records each member tool call as a batchTask-tagged child of the batch step (persisted process)', async () => {
+    const addChildStepToDelegate = vi.fn(() => 'child-1');
+    const completeChildStep = vi.fn();
+    const signal = new AbortController().signal;
+    setLoopContext('loop-children', {
+      loopId: 'loop-children',
+      conversationId: 'conv-children',
+      signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: {
+        route: vi.fn(),
+        getCurrentStepId: () => 'unrelated-sibling-step',
+        addChildStepToDelegate,
+        completeChildStep,
+      } as never,
+      toolCallToStepId: new Map([['batch-children', 'batch-step']]),
+    });
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
+      options.onProgress?.({ type: 'tool-start', id: 'sub-tool-1', toolName: 'read_file', toolInput: { path: 'a.md' } });
+      options.onProgress?.({ type: 'tool-end', id: 'sub-tool-1', toolName: 'read_file', result: 'ok', error: false });
+      return new SubagentResult({
+        text: 'done', stopReason: 'completed', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 1, output: 1 }, duration: 1,
+      });
+    });
+    try {
+      await runAgentBatchTool.execute(
+        { tasks: [{ type: 'executor', task: 'read the doc' }] },
+        { conversationId: 'conv-children', loopId: 'loop-children', toolCallId: 'batch-children' },
+      );
+      expect(addChildStepToDelegate).toHaveBeenCalledWith('loop-children', 'batch-step', {
+        toolName: 'read_file',
+        toolInput: { path: 'a.md' },
+        toolCallId: 'sub-tool-1',
+        batchTask: expect.objectContaining({ index: 0, label: 'read the doc' }),
+      });
+      expect(completeChildStep).toHaveBeenCalledWith('loop-children', 'batch-step', 'child-1', 'ok', false, undefined);
+    } finally {
+      clearLoopContext('loop-children');
+    }
+  });
+
+  it('fails a batch task whose declared expected file is missing', async () => {
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async () => new SubagentResult({
+      text: 'done', stopReason: 'completed', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 1, output: 1 }, duration: 1,
+    }));
+    findMissingExpectedFilesMock.mockImplementationOnce(async () => ['/ws/a/out.md']);
+    setLoopContext('loop-files', {
+      loopId: 'loop-files',
+      conversationId: 'conv-files',
+      signal: new AbortController().signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: { route: vi.fn(), getCurrentStepId: () => undefined } as never,
+      toolCallToStepId: new Map(),
+    });
+    try {
+      const report = await runAgentBatchTool.execute(
+        { tasks: [{ type: 'executor', task: 'make a', expected_files: ['a/out.md'] }, { type: 'executor', task: 'make b', expected_files: ['b/out.md'] }] },
+        { conversationId: 'conv-files', loopId: 'loop-files', toolCallId: 'batch-files', workspacePath: '/ws' },
+      );
+      expect(String(report)).toContain('/ws/a/out.md');
+      expect(findMissingExpectedFilesMock).toHaveBeenCalledTimes(2);
+    } finally {
+      clearLoopContext('loop-files');
+    }
   });
 
   it('hands the triggering multimodal user turn to every run_agent_batch child', async () => {
@@ -459,6 +556,26 @@ describe('structured subagent terminal aggregation', () => {
     expect(output).toContain('2 sub-tasks total: 1 succeeded, 1 failed');
     expect(output).toContain('Error: quoted log heading');
     expect(output).toContain('[Failed] stopped before finishing');
+  });
+
+  // Same failure as delegate_to_agent: a member that ran out of turns produced
+  // a section indistinguishable from a finished one, so the leader merged it
+  // into the final report as done.
+  it('marks a batch task line with the stop reason when the member did not finish', () => {
+    const previous = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const output = aggregateSubagentTextResults([
+        { status: 'fulfilled', value: subagentResult('全部做完', 'completed') },
+        { status: 'fulfilled', value: subagentResult('做到一半', 'max_turns') },
+      ], ['已完成的活', '没做完的活']);
+
+      const lines = output.split('\n');
+      expect(lines.find((l) => l.includes('已完成的活'))).not.toContain('（');
+      expect(lines.find((l) => l.includes('没做完的活'))).toContain('轮数用尽');
+    } finally {
+      setLanguage(previous);
+    }
   });
 
   it('aggregates mixed terminal reasons with deterministic failure priority', () => {

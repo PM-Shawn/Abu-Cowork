@@ -74,7 +74,12 @@ export type WorkspaceTab =
   // user-opened / legacy, which every conversation may see.
   | { id: string; kind: 'browser'; url: string; ownerConversationId?: string }
   | { id: string; kind: 'terminal' }
-  | { id: string; kind: 'subagent'; identity: BatchIdentity; taskIndex: number; title: string };
+  | { id: string; kind: 'subagent'; identity: BatchIdentity; taskIndex: number; title: string }
+  | { id: string; kind: 'team'; conversationId: string };
+
+export function teamTabId(conversationId: string): string {
+  return `team:${conversationId}`;
+}
 
 /**
  * Whether `conversationId`'s panel may list/activate `tab`.
@@ -209,6 +214,8 @@ interface PreviewState {
   // Open a new terminal tab (terminals are never deduped — each is its own session).
   openTerminal: () => void;
   openSubagent: (identity: BatchIdentity, taskIndex: number, title: string) => string;
+  // Open (or activate) the singleton team overview tab of a team-pinned conversation.
+  openTeam: (conversationId: string, options?: { activate?: boolean }) => string;
   // Make an existing tab the active one. No-op if the id doesn't exist.
   activateTab: (id: string) => void;
   consumeFocusTabRequest: (id: string) => void;
@@ -458,6 +465,24 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     expandRightPanel();
   },
 
+  openTeam: (conversationId, options) => {
+    const { tabs, activeTabId } = get();
+    const id = teamTabId(conversationId);
+    const activate = options?.activate !== false;
+    const existing = tabs.find((tab) => tab.id === id);
+    if (existing) {
+      if (activate) commitTabs(tabs, id, { focusTabId: id });
+      return id;
+    }
+    // Right after the summary tab (both are conversation-level views).
+    const summaryIdx = tabs.findIndex((tab) => tab.kind === 'summary');
+    const nextTabs: WorkspaceTab[] = [...tabs];
+    nextTabs.splice(summaryIdx + 1, 0, { id, kind: 'team', conversationId });
+    commitTabs(nextTabs, activate ? id : activeTabId ?? id, activate ? { focusTabId: id } : {});
+    if (activate) expandRightPanel();
+    return id;
+  },
+
   openSubagent: (identity, taskIndex, title) => {
     const { tabs } = get();
     const id = subagentTabId(identity, taskIndex);
@@ -545,7 +570,9 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   },
 
   closeSubagentTabsForConversation: (conversationId) => {
-    removeTabsWhere((tab) => tab.kind === 'subagent' && tab.identity.conversationId === conversationId);
+    removeTabsWhere((tab) =>
+      (tab.kind === 'subagent' && tab.identity.conversationId === conversationId)
+      || (tab.kind === 'team' && tab.conversationId === conversationId));
   },
 
   closeOwnedTabsForConversation: (conversationId) => {

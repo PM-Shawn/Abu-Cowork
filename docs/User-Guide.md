@@ -299,3 +299,6 @@ Open **Settings → Preferences**. Choose Simplified Chinese, English, or Follow
 ---
 
 If the issue remains, file a reproducible report in [GitHub Issues](https://github.com/PM-Shawn/Abu-Cowork/issues). Do not publish API keys, access tokens, internal addresses, or diagnostic material containing confidential information.
+
+
+[Personal plugins: creation and maintenance (Chinese)](../PLUGINS.zh-CN.md)

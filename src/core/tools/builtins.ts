@@ -1,4 +1,5 @@
 // Path safety checks are now handled centrally in registry.ts executeAnyTool
+import { preparePluginTool } from './definitions/pluginTools';
 import { toolRegistry } from './registry';
 
 // --- File tools ---
@@ -62,6 +63,7 @@ export { setComputerUseBatchMode, setSkipAutoScreenshot } from './definitions/co
 import { sendFileTool } from './definitions/imTools';
 
 export function registerBuiltinTools(): void {
+  toolRegistry.register(preparePluginTool);
   toolRegistry.register(getSystemInfoTool);
   toolRegistry.register(readFileTool);
   toolRegistry.register(writeFileTool);

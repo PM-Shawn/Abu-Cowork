@@ -11,6 +11,13 @@
 import type { BridgeRequest, BridgeResponse, FrameTree, JsDialogAction } from '../shared/types.js';
 import { MAIN_FRAME_REF } from '../shared/types.js';
 import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
+import { noCaptureAreaRefusal } from '../shared/captureArea.js';
+import {
+  createDownloadTracker,
+  downloadResultFor,
+  hostOf,
+  type DownloadItemLike,
+} from './downloads.js';
 import {
   ambiguousFrameMessage,
   createFrameStore,
@@ -35,6 +42,19 @@ import {
   type BridgeInbound,
   type TabResolutionDeps,
 } from './tabClaims.js';
+
+/**
+ * Mirrors `clampDownloadWait` in `abu-browser-bridge/src/locators.ts`.
+ *
+ * The bridge already clamps, so this is the second lock rather than the first:
+ * a payload that reached this worker with an unbounded wait would otherwise
+ * hold a service worker open for as long as it liked.
+ */
+function clampDownloadWait(value: unknown): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 30_000;
+  return Math.min(Math.floor(n), 120_000);
+}
 
 // Discovery endpoint (fixed port) and fallback WS ports
 const DISCOVERY_URL = 'http://127.0.0.1:9875/status';
@@ -86,7 +106,29 @@ function saveTracking(tabId: number, windowId: number): void {
   chrome.storage.session.set({ lastActiveTabId: tabId, lastActiveWindowId: windowId });
 }
 
+// Only an activation requested by a screenshot is excluded. Consume its event
+// once, and always release on update completion/failure; capture/paint waits do
+// not mask user switches. Chrome delivers onActivated before update resolves.
+const screenshotActivations = new Set<{ tabId: number; windowId: number }>();
+
+async function activateForScreenshot(tabId: number, windowId: number): Promise<void> {
+  const activation = { tabId, windowId };
+  screenshotActivations.add(activation);
+  try {
+    await chrome.tabs.update(tabId, { active: true });
+  } finally {
+    screenshotActivations.delete(activation);
+  }
+}
+
 chrome.tabs.onActivated.addListener((activeInfo) => {
+  const activation = [...screenshotActivations].find(
+    pending => pending.tabId === activeInfo.tabId && pending.windowId === activeInfo.windowId,
+  );
+  if (activation) {
+    screenshotActivations.delete(activation);
+    return;
+  }
   saveTracking(activeInfo.tabId, activeInfo.windowId);
 });
 
@@ -361,32 +403,50 @@ function scheduleReconnect(): void {
   }, delay);
 }
 
-// --- Download Tracking ---
+// --- Download Tracking (batch-三 T6) ---
 
-// `filename` / `state` mirror `chrome.downloads.StringDelta.current`, which the
-// API typings declare optional — the onChanged handler below copies it verbatim.
-const recentDownloads: { id: number; filename: string | undefined; url: string; state: string | undefined; time: number }[] = [];
+/**
+ * Downloads used to be a browser-wide list of names, shared by every task and
+ * by the user: `get_downloads` returned the last 20 downloads Chrome had seen,
+ * whoever started them. T6 replaces it with per-task ownership — see
+ * `downloads.ts` for how a download is attributed and what this channel
+ * genuinely cannot do about where the file lands.
+ */
+const downloadTracker = createDownloadTracker({
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  randomId: () => Math.random().toString(36).slice(2, 10),
+});
 
 chrome.downloads.onCreated.addListener((item) => {
-  recentDownloads.unshift({
-    id: item.id,
-    filename: item.filename || item.url.split('/').pop() || 'unknown',
-    url: item.url,
-    state: item.state,
-    time: Date.now(),
-  });
-  if (recentDownloads.length > 20) recentDownloads.length = 20;
+  downloadTracker.onCreated(item as DownloadItemLike);
 });
 
 chrome.downloads.onChanged.addListener((delta) => {
-  const dl = recentDownloads.find(d => d.id === delta.id);
-  if (dl && delta.state) {
-    dl.state = delta.state.current;
-  }
-  if (dl && delta.filename) {
-    dl.filename = delta.filename.current;
-  }
+  downloadTracker.onChanged(delta as Parameters<typeof downloadTracker.onChanged>[0]);
 });
+
+/**
+ * Steer a download Abu asked for into a per-task folder.
+ *
+ * `suggest()` takes a path RELATIVE to Chrome's own download directory and
+ * refuses anything that escapes it, so this cannot reach Abu's app-data
+ * folder the way the built-in browser does — `Downloads/Abu/<task>/` is the
+ * furthest an extension may go, and it still gives the user one place to look
+ * and keeps two tasks' exports apart.
+ *
+ * A download nobody armed for is left completely alone: the user's own
+ * downloads must not be renamed or moved because an extension is installed.
+ */
+if (chrome.downloads.onDeterminingFilename) {
+  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    const suggestion = downloadTracker.suggestFilename(item as DownloadItemLike);
+    if (suggestion === null) return false;
+    suggest({ filename: suggestion, conflictAction: 'uniquify' });
+    return true;
+  });
+}
 
 // --- URL Validation ---
 
@@ -470,6 +530,23 @@ export async function assertTabOriginPin(
     + 'reload. Take a fresh snapshot to re-read the current state before acting again; the earlier '
     + 'approval does not carry over to a different site.',
   );
+}
+
+/**
+ * The address of a tab, or `''` when Chrome will not say.
+ *
+ * Its own function because the caller must not care WHY it failed: a tab that
+ * closed, a page the extension has no host permission for and a `chrome://`
+ * URL all mean the same thing to a download waiter — nothing to match against,
+ * so claim nothing (review F2).
+ */
+async function tabUrl(tabId: number): Promise<string> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return typeof tab.url === 'string' ? tab.url : '';
+  } catch {
+    return '';
+  }
 }
 
 // --- Request Handler ---
@@ -655,7 +732,66 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       }
 
       case 'get_downloads': {
-        return { id, success: true, data: recentDownloads };
+        // Owner-scoped, like the built-in host's: a task sees what IT
+        // downloaded and nothing else.
+        return {
+          id,
+          success: true,
+          data: downloadTracker.listFor(ownerFromPayload(payload).key),
+        };
+      }
+
+      // T6 — press an export control and come back with the file.
+      case 'download': {
+        const owner = ownerFromPayload(payload);
+        const timeoutMs = clampDownloadWait(payload.timeoutMs);
+        if (payload.action === 'wait') {
+          const downloadId = String(payload.downloadId ?? '');
+          const known = downloadTracker.find(owner.key, downloadId);
+          if (!known) {
+            return {
+              id,
+              success: false,
+              error: `No download with id ${downloadId} belongs to this task. Call `
+                + 'get_downloads to see the ones it has, or start a new one with action "click".',
+            };
+          }
+          await downloadTracker.awaitDone(downloadId, timeoutMs);
+          return { id, success: true, data: downloadResultFor(known) };
+        }
+        // The waiter is armed BEFORE the click: a small file can finish before
+        // `sendToContentScript` returns, and a waiter armed afterwards would
+        // miss the download its own click produced.
+        //
+        // It is armed for ONE SITE — the one this tab is on (review F2).
+        // `chrome.downloads` is browser-wide, so a waiter that claims anything
+        // claims the user's own downloads too: an export that produced nothing
+        // left this armed for up to 120 s, and whatever the user downloaded in
+        // that window was renamed into the task's folder and reported to the
+        // model as its product. An unreadable tab address claims nothing.
+        const clickedSite = hostOf(await tabUrl(tabId));
+        const expectation = downloadTracker.expect(owner.key, clickedSite);
+        // ONE deadline for both phases, not one each (review F5): the bridge's
+        // transport gives up at `waitMs + 15 s`, so waiting `timeoutMs` for
+        // the click and another `timeoutMs` for the file reported a working
+        // download as an unresponsive browser — and lost the id to poll with.
+        const deadline = Date.now() + timeoutMs;
+        const remainingMs = () => Math.max(0, deadline - Date.now());
+        let claimed;
+        try {
+          await sendToContentScript(tabId, 'click', {
+            locator: payload.locator,
+            ...(payload.frameId !== undefined ? { frameId: payload.frameId } : {}),
+            ...(payload.expectedOrigin !== undefined
+              ? { expectedOrigin: payload.expectedOrigin } : {}),
+            ...(payload.unattended === true ? { unattended: true } : {}),
+          });
+          claimed = await expectation.wait(remainingMs());
+        } finally {
+          expectation.cancel();
+        }
+        if (claimed) await downloadTracker.awaitDone(claimed.downloadId, remainingMs());
+        return { id, success: true, data: downloadResultFor(claimed) };
       }
 
       // ## Both screenshots are pinned reads (round-3 R3-A)
@@ -676,7 +812,7 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         const tab = await chrome.tabs.get(tabId);
         // Activate the target tab first to ensure we capture the right one
         if (!tab.active) {
-          await chrome.tabs.update(tabId, { active: true });
+          await activateForScreenshot(tabId, tab.windowId);
           // Brief wait for tab switch to render
           await new Promise(r => setTimeout(r, 300));
         }
@@ -688,7 +824,7 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       case 'screenshot_full_page': {
         const tab = await chrome.tabs.get(tabId);
         if (!tab.active) {
-          await chrome.tabs.update(tabId, { active: true });
+          await activateForScreenshot(tabId, tab.windowId);
           await new Promise(r => setTimeout(r, 300));
         }
         // Scrolls the page and stitches many captures, so it is a strictly
@@ -748,29 +884,50 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       case 'execute_js': {
         // Execute JS via chrome.scripting.executeScript to bypass CSP restrictions
         const code = payload.code as string;
-        // The one state-changing action on this channel that never reaches the
-        // content script, so the content script's own pin cannot cover it —
-        // and the strongest capability of the set (arbitrary code with the
-        // page's full authority). Pinned here against the tab's live URL.
-        //
-        // The tab pinned is the OWNER-RESOLVED one — the same `tabId` the
-        // script is about to run in. It used to be a local `execTabId` read
-        // straight from the payload; the tab-claims change (632d40cc) removed
-        // that local and rewrote the `executeScript` target, but left this
-        // call referring to the now-undefined name, so every `execute_js` on
-        // this channel died with a ReferenceError before the pin ever ran.
-        // Nothing caught it: this channel had no test for `execute_js` until
-        // this branch added one.
+        // Keep the early refusal, then pin the actual document observed by a
+        // read-only ISOLATED probe. tabs.get alone races with navigation; a
+        // second tab lookup would have the same race. Chrome supplies the
+        // documentId alongside the probe result, outside the page's control.
         await assertTabOriginPin(tabId, payload);
+        const documents = await chrome.scripting.executeScript({
+          target: { tabId, frameIds: [0] },
+          world: 'ISOLATED',
+          func: () => ({ url: location.href }),
+        });
+        const document = documents[0];
+        if (documents.length !== 1 || document?.frameId !== 0
+          || typeof document.documentId !== 'string' || !document.documentId.trim()
+          || typeof document.result?.url !== 'string' || !normalizedOrigin(document.result.url)) {
+          throw new Error('Refused: could not verify the page document identity. Take a fresh snapshot before acting again.');
+        }
+        const observedUrl = document.result.url;
+        await assertTabOriginPin(tabId, payload, async () => ({ url: observedUrl }));
+        // documentIds avoids ordinary retargeting, but Chromium can resolve a
+        // BFCache document through its frame tree node to a new active page.
+        // Recheck the native, unforgeable Location origin synchronously in MAIN
+        // before eval; no URL/Object helper or await may sit on this boundary.
+        // Never retry against the tab or repeat a script after a failure.
         const results = await chrome.scripting.executeScript({
-          target: { tabId },
-          func: (jsCode: string) => {
-            return eval(jsCode);
+          target: { tabId, documentIds: [document.documentId] },
+          func: async (jsCode: string, approvedOrigin: string) => {
+            if (location.origin !== approvedOrigin) {
+              return { __proto__: null, originMatched: false as const };
+            }
+            return { __proto__: null, originMatched: true as const, value: await eval(jsCode) };
           },
-          args: [code],
+          args: [code, new URL(observedUrl).origin],
           world: 'MAIN',
         });
-        return { id, success: true, data: results[0]?.result };
+        const execution = results[0]?.result;
+        // Chrome may resolve with a null result when injected code throws.
+        // An explicit envelope distinguishes refusal from a valid null value.
+        if (execution?.originMatched === false) {
+          throw new Error('Refused: page origin changed before script execution. Take a fresh snapshot before acting again.');
+        }
+        if (execution?.originMatched !== true) {
+          throw new Error('Script execution did not return a result. Take a fresh snapshot before acting again.');
+        }
+        return { id, success: true, data: execution.value };
       }
 
       default: {
@@ -1079,11 +1236,10 @@ async function annotateWithFrames(tabId: number, action: string, result: unknown
 
 // --- Popup Communication ---
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'tab_visible' && sender.tab?.id && sender.tab?.windowId) {
-    saveTracking(sender.tab.id, sender.tab.windowId);
-    return;
-  }
+// Visibility reports cannot identify user intent: content initialization and
+// automation activation also make a page visible. Track native tab/window
+// events above instead (including when an old content script still reports).
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === 'get_status') {
     sendResponse({
@@ -1138,13 +1294,23 @@ async function ensureOffscreen(): Promise<void> {
   }
   await chrome.offscreen.createDocument({
     url: 'offscreen.html',
-    // Pre-existing bug, deliberately not fixed by the typecheck-gate change:
-    // `CANVAS` is not a `chrome.offscreen.Reason` (none of the enum's 15 values
-    // in @types/chrome), so this is `undefined` at runtime and createDocument
-    // rejects. Picking a valid reason changes behaviour (full-page capture
-    // would start working), so it is tracked as its own fix.
-    // @ts-expect-error pre-existing bug: CANVAS is not a chrome.offscreen.Reason; fixing it changes runtime behaviour
-    reasons: [chrome.offscreen.Reason.CANVAS],
+    // BLOBS, not CANVAS: there is no CANVAS in `chrome.offscreen.Reason`, so
+    // the old value was `undefined` at runtime and Chrome rejected the whole
+    // call ("Invalid type: expected offscreen.Reason, found undefined") —
+    // every full-page capture failed, after the page had already been scrolled
+    // and every slice captured.
+    //
+    // No reason in the enum names canvas work, so this picks the closest
+    // documented one rather than a literal match. The reason is declarative:
+    // per the offscreen docs it determines the document's LIFETIME, and only
+    // AUDIO_PLAYBACK carries a limit (closed after 30s without audio), so any
+    // other member gives the unbounded lifetime a stitch needs. BLOBS is what
+    // shipped extensions doing this same job declare — Anthropic's own Claude
+    // extension composites images in an offscreen document under
+    // `[AUDIO_PLAYBACK, BLOBS]`. DOM_SCRAPING, the other candidate, is
+    // explicitly about embedding an iframe and scraping its DOM, which this
+    // document does not do.
+    reasons: [chrome.offscreen.Reason.BLOBS],
     justification: 'Stitching full-page screenshot slices on canvas',
   });
   offscreenCreated = true;
@@ -1170,6 +1336,15 @@ async function captureFullPage(tabId: number, windowId: number): Promise<string>
   };
 
   const { scrollHeight, viewportHeight, viewportWidth, scrollX, scrollY } = dims;
+  // Refuse BEFORE the scroll-and-capture loop. A page that measures zero
+  // yields zero slices, and the empty list used to travel all the way to the
+  // stitcher, where `images[0].naturalWidth` threw `Cannot read properties of
+  // undefined` — no explanation for the user, and nothing for the model to act
+  // on but the same capture again. Same reasoning and the same wording policy
+  // as `canvasLimitRefusal`, applied at the producer so none of the scroll is
+  // paid for first.
+  const noArea = noCaptureAreaRefusal(scrollHeight, viewportHeight);
+  if (noArea) throw new Error(noArea);
   const sliceCount = Math.ceil(scrollHeight / viewportHeight);
 
   // Step 2: Capture each viewport slice

@@ -76,6 +76,7 @@ import {
 } from './installer';
 import { InstalledManifestUnreadableError } from './installedStore';
 import type { PluginSource } from './marketplace';
+import { parseSource } from './marketplace';
 import { copyPluginDir, PluginPackageNotFoundError, PluginSymlinkRootError } from './fsOps';
 
 const mockRead = vi.mocked(readTextFile);
@@ -137,6 +138,37 @@ describe('assertInsideDir', () => {
   });
 });
 
+describe('prepared confirmation', () => {
+  it('installs the host snapshot and original plan without re-reading a changed source or disclosure', async () => {
+    const manifest = JSON.stringify({ name: 'demo', version: '1', mcpServers: { server: { command: 'approved', env: { REGION: 'east' } } } });
+    // A writable preview may lie; disclosure must read host memory instead.
+    mountFiles({ '/snapshot/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo', version: '1', mcpServers: { server: { command: 'benign-preview' } } }) });
+    vi.mocked(exists).mockResolvedValue(false);
+    const bridge = vi.fn(async (action: string) => {
+      if (action === 'prepare') return { token: 'prepared-one', packageDir: '/snapshot', sourceDir: '/market/demo', checksum: 'a'.repeat(64), version: '1', source: { kind: 'relative', path: './demo' }, skippedSymlinks: [] };
+      if (action === 'inspect') return [{ path: '.abu-plugin', isDirectory: true }, { path: '.abu-plugin/plugin.json', isDirectory: false }];
+      if (action === 'read') return manifest;
+      return { targetDir: '/home/.abu/plugin-packages/market/demo/1', checksum: 'a'.repeat(64), agents: [] };
+    });
+    const runtime = globalThis as typeof globalThis & { __ABU_SHELL__?: unknown };
+    runtime.__ABU_SHELL__ = { pluginSnapshot: bridge, pluginRegistry: vi.fn().mockResolvedValue(null) };
+    try {
+      const opts = { home: '/home', marketplaceName: 'market', marketplaceDir: '/market', entry: { name: 'demo', source: { kind: 'relative' as const, path: './demo' } } };
+      const disclosure = await planInstall({ ...opts, prepareSnapshot: true });
+      expect(disclosure.preparedToken).toBe('prepared-one');
+      expect(disclosure.mcpServers[0].command).toBe('approved');
+      disclosure.manifest.mcpServers!.server.command = 'mutated-display';
+      mountFiles({});
+      const copyDir = vi.fn();
+      const outcome = await installPlugin({ ...opts, copyDir, preparedToken: disclosure.preparedToken });
+      expect(copyDir).not.toHaveBeenCalled();
+      expect(outcome.mcpServers[0]).toMatchObject({ command: 'approved', env: { REGION: 'east' } });
+      expect(outcome.record.checksum).toBe('a'.repeat(64));
+      expect(bridge).toHaveBeenCalledWith('materialize', { token: 'prepared-one' });
+    } finally { delete runtime.__ABU_SHELL__; }
+  });
+});
+
 describe('resolveSourceDir', () => {
   const marketplaceDir = '/mkt';
 
@@ -148,6 +180,13 @@ describe('resolveSourceDir', () => {
   it('rejects a relative source that escapes the marketplace directory', () => {
     const source: PluginSource = { kind: 'relative', path: '../../../etc' };
     expect(() => resolveSourceDir(source, marketplaceDir)).toThrow(PluginSecurityError);
+  });
+
+  it('applies the same containment check to parsed local source objects', () => {
+    expect(resolveSourceDir(parseSource({ source: 'local', path: './plugins/demo' }), marketplaceDir))
+      .toBe('/mkt/plugins/demo');
+    expect(() => resolveSourceDir(parseSource({ source: 'local', path: '../outside' }), marketplaceDir))
+      .toThrow(PluginSecurityError);
   });
 
   it('throws a typed error for url sources (git fetch not wired yet)', () => {
@@ -162,6 +201,75 @@ describe('resolveSourceDir', () => {
 });
 
 describe('readManifestFrom', () => {
+  const server = { command: 'node', args: ['server.js'], env: { REGION: 'cn east', OPTIONAL: '' } };
+
+  it.each(['direct', 'mcpServers', 'mcp_servers'])('loads the default MCP file using a %s map', async (wrapper) => {
+    const servers = { docs: server };
+    mountFiles({
+      '/p/.codex-plugin/plugin.json': JSON.stringify({ name: 'demo' }),
+      '/p/.mcp.json': JSON.stringify(wrapper === 'direct' ? servers : { [wrapper]: servers }),
+    });
+    expect((await readManifestFrom('/p')).mcpServers).toEqual(servers);
+  });
+
+  it('loads an explicitly referenced MCP file relative to the plugin root', async () => {
+    mountFiles({
+      '/p/.codex-plugin/plugin.json': JSON.stringify({ name: 'demo', mcpServers: './config/mcp.json' }),
+      '/p/config/mcp.json': JSON.stringify({ mcp_servers: { docs: server } }),
+    });
+    expect((await readManifestFrom('/p')).mcpServers).toEqual({ docs: server });
+  });
+
+  it('merges distinct inline and file servers and reads a referenced default only once', async () => {
+    mountFiles({
+      '/p/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo', mcpServers: { extra: server } }),
+      '/p/.mcp.json': JSON.stringify({ docs: server }),
+    });
+    expect((await readManifestFrom('/p')).mcpServers).toEqual({ extra: server, docs: server });
+    mountFiles({
+      '/p/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo', mcpServers: './.mcp.json' }),
+      '/p/.mcp.json': JSON.stringify({ docs: server }),
+    });
+    expect((await readManifestFrom('/p')).mcpServers).toEqual({ docs: server });
+  });
+
+  it.each([
+    { docs: { args: 'bad' } },
+    { mcpServers: { docs: server }, extra: server },
+    { mcpServers: { docs: server }, mcp_servers: { docs: server } },
+    [],
+  ])('rejects invalid or ambiguous external MCP configuration', async (config) => {
+    mountFiles({
+      '/p/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo' }),
+      '/p/.mcp.json': JSON.stringify(config),
+    });
+    await expect(readManifestFrom('/p')).rejects.toThrow();
+  });
+
+  it('bounds configuration fields across inline and external declarations before disclosure', async () => {
+    const env = Object.fromEntries(Array.from({ length: 32 }, (_, i) => [`K${i}`, '${config.K' + i + '}']));
+    mountFiles({
+      '/p/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo', mcpServers: { inline: { command: 'node', env } } }),
+      '/p/.mcp.json': JSON.stringify({ extra: { command: 'node', env: { LAST: '${config.LAST}' } } }),
+    });
+    await expect(readManifestFrom('/p')).rejects.toThrow('mcpServers.configuration');
+  });
+
+  it('refuses same-name MCP declarations instead of silently replacing one', async () => {
+    mountFiles({
+      '/p/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo', mcpServers: { docs: server } }),
+      '/p/.mcp.json': JSON.stringify({ docs: { command: 'other' } }),
+    });
+    await expect(readManifestFrom('/p')).rejects.toThrow(/mcpServers\.docs/);
+  });
+
+  it.each(['../outside.json', '/outside.json', 'C:\\outside.json', './config/../../outside.json', './missing.json'])(
+    'refuses an unsafe or missing explicit MCP file: %s', async (mcpServers) => {
+    mountFiles({ '/p/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo', mcpServers }) });
+    await expect(readManifestFrom('/p')).rejects.toThrow();
+    expect(mockRead.mock.calls.some(([path]) => String(path).includes('outside'))).toBe(false);
+    });
+
   it('prefers .abu-plugin over .claude-plugin', async () => {
     mountFiles({
       '/p/.abu-plugin/plugin.json': JSON.stringify({ name: 'abu-one' }),
@@ -209,6 +317,62 @@ describe('readManifestFrom', () => {
 describe('planInstall', () => {
   const entry = { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } as PluginSource };
 
+  it('includes default, custom collection and direct skill directories, once each', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.codex-plugin/plugin.json': JSON.stringify({
+        name: 'weather', skills: ['./extras/', './extras/review', './skills/'],
+      }),
+      '/mkt/plugins/weather/skills/today/SKILL.md': '---\nname: today\n---\n',
+      '/mkt/plugins/weather/extras/review/SKILL.md': '---\nname: review\n---\n',
+      '/mkt/plugins/weather/extras/readme/README.md': 'Not a skill',
+    });
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+    expect(d.skills).toEqual(['today', 'review']);
+  });
+
+  it.each(['../outside', '/outside', 'C:\\outside', './missing'])('refuses unsafe/missing skill declarations: %s', async (skills) => {
+    mountFiles({ '/mkt/plugins/weather/.abu-plugin/plugin.json': JSON.stringify({ name: 'weather', skills }) });
+    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).rejects.toThrow();
+  });
+
+  it('supports a declared root skill and uses the frontmatter name in the disclosure', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.claude-plugin/plugin.json': JSON.stringify({ name: 'weather', skills: '.' }),
+      '/mkt/plugins/weather/SKILL.md': '---\nname: forecast\n---\n',
+    });
+    expect((await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry })).skills).toEqual(['forecast']);
+  });
+
+  it.each([false, true])('keeps default child skills when skills/SKILL.md exists (explicit: %s)', async (explicit) => {
+    mountFiles({
+      '/mkt/plugins/weather/.codex-plugin/plugin.json': JSON.stringify({
+        name: 'weather', ...(explicit ? { skills: './skills' } : {}),
+      }),
+      '/mkt/plugins/weather/skills/SKILL.md': '---\nname: collection-root\n---\n',
+      '/mkt/plugins/weather/skills/today/SKILL.md': '---\nname: today\n---\n',
+    });
+    const d = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+    expect(d.skills).toEqual(explicit ? ['collection-root', 'today'] : ['today']);
+  });
+
+  it('rejects an explicitly declared directory without a skill', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.codex-plugin/plugin.json': JSON.stringify({ name: 'weather', skills: './extras' }),
+      '/mkt/plugins/weather/extras/README.md': 'No SKILL.md',
+    });
+    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry }))
+      .rejects.toThrow(/extras/);
+  });
+
+  it('rejects an unreadable skill definition before promising it in a disclosure', async () => {
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': JSON.stringify({ name: 'weather' }),
+      '/mkt/plugins/weather/skills/broken/SKILL.md': '# Missing skill metadata',
+    });
+    await expect(planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry }))
+      .rejects.toThrow(/skills\/broken\/SKILL.md/);
+  });
+
   it('reports the skills and MCP servers the plugin will contribute', async () => {
     mountFiles({
       '/mkt/plugins/weather/.abu-plugin/plugin.json': JSON.stringify({
@@ -250,6 +414,22 @@ describe('planInstall', () => {
 });
 
 describe('installPlugin', () => {
+  it('records exact approved skill locations and carries standalone MCP env to registration', async () => {
+    vi.mocked(exists).mockResolvedValue(false);
+    mountFiles({
+      '/mkt/plugins/weather/.codex-plugin/plugin.json': JSON.stringify({ name: 'weather', skills: './extras', mcpServers: './.mcp.json' }),
+      '/mkt/plugins/weather/extras/review/SKILL.md': '---\nname: review\n---\n',
+      '/mkt/plugins/weather/.mcp.json': JSON.stringify({ mcp_servers: { docs: { command: 'node', env: { REGION: 'cn east' } } } }),
+    });
+    const result = await installPlugin({
+      home: '/home/u', marketplaceName: 'official', marketplaceDir: '/mkt',
+      entry: { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } },
+      copyDir: vi.fn().mockResolvedValue(undefined), now: () => new Date('2026-09-09T00:00:00Z'),
+    });
+    expect(result.record).toMatchObject({ componentLayoutVersion: 1, skillPaths: ['extras/review'] });
+    expect(result.record.contributed.skills).toEqual(['review']);
+    expect(result.mcpServers).toEqual([{ name: 'docs', command: 'node', env: { REGION: 'cn east' } }]);
+  });
   const entry = { name: 'weather', source: { kind: 'relative', path: './plugins/weather' } as PluginSource };
 
   beforeEach(() => {
@@ -287,6 +467,23 @@ describe('installPlugin', () => {
     // The outcome also carries the mcp specs (for registration) out of the one
     // planInstall, so no caller has to re-plan.
     expect(mcpServers).toEqual([{ name: 'forecast', command: 'npx', args: undefined, url: undefined }]);
+  });
+
+  it('preserves MCP environment values for registration without adding them to the display projection', async () => {
+    const env = { REGION: 'cn east', OPTIONAL: '', TEMPLATE: '${HOME}' };
+    mountFiles({
+      '/mkt/plugins/weather/.abu-plugin/plugin.json': JSON.stringify({
+        name: 'weather', version: '1.2.0',
+        mcpServers: { forecast: { command: 'node', args: ['server.js'], env } },
+      }),
+    });
+    const disclosure = await planInstall({ marketplaceName: 'official', marketplaceDir: '/mkt', entry });
+    expect(disclosure.mcpServers[0]).not.toHaveProperty('env');
+    const outcome = await installPlugin({
+      home: '/home/u', marketplaceName: 'official', marketplaceDir: '/mkt', entry,
+      copyDir: vi.fn(async () => {}), now: () => new Date('2026-09-09T00:00:00.000Z'),
+    });
+    expect(outcome.mcpServers[0]).toMatchObject({ name: 'forecast', env });
   });
 
   // 🔴 Ordering, not just refusal: `upsertInstalled` refuses an unreadable
@@ -1284,7 +1481,7 @@ describe('installing the agents payload', () => {
       }),
     );
     mkdirSync(join(pkg, 'skills', 'forecast'), { recursive: true });
-    writeFileSync(join(pkg, 'skills', 'forecast', 'SKILL.md'), '# forecast\n');
+    writeFileSync(join(pkg, 'skills', 'forecast', 'SKILL.md'), '---\nname: forecast\n---\n\nBody.\n');
     const realReadDir = vi.mocked(readDir).getMockImplementation()!;
     vi.mocked(readDir).mockImplementation(async (path) => {
       if (posix(String(path)) === posix(join(installDir, 'agents')))
@@ -1321,5 +1518,26 @@ describe('installing the agents payload', () => {
     expect(d.skippedSymlinks).toEqual(
       expect.arrayContaining(['agents/sneaky.md', 'agents/linkdir', 'agents/halflinked/AGENT.md']),
     );
+  });
+});
+
+describe('Electron registry preflight', () => {
+  it('checks the prospective record in the host before copying any package bytes', async () => {
+    mountFiles({ '/mkt/demo/.abu-plugin/plugin.json': JSON.stringify({ name: 'demo', version: 'dev:build' }) });
+    const copyDir = vi.fn();
+    const bridge = vi.fn(async (action: string) => {
+      if (action === 'read') return null;
+      if (action === 'validate') throw new Error('Plugin registry: invalid record');
+      throw new Error('unexpected mutation');
+    });
+    vi.stubGlobal('__ABU_SHELL__', { pluginRegistry: bridge });
+    try {
+      await expect(installPlugin({ home: '/home/u', marketplaceName: 'market', marketplaceDir: '/mkt',
+        entry: { name: 'demo', source: { kind: 'relative', path: './demo' } }, copyDir,
+      })).rejects.toThrow('invalid record');
+      expect(bridge).toHaveBeenCalledWith('validate', expect.objectContaining({ record: expect.objectContaining({ name: 'demo', version: 'dev:build' }) }));
+      expect(copyDir).not.toHaveBeenCalled();
+      expect(bridge).not.toHaveBeenCalledWith('upsert', expect.anything());
+    } finally { vi.unstubAllGlobals(); }
   });
 });

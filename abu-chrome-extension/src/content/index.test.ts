@@ -3258,3 +3258,151 @@ describe('shadow DOM', () => {
     expect(found.closedShadowHosts).toBeUndefined();
   });
 });
+
+/**
+ * ── Uploads (batch-三 T5) ──────────────────────────────────────────────────
+ *
+ * The DOM write is the SAME routine on both channels — the Electron main
+ * process and the Node bridge differ only in who opened the file — so this
+ * block covers both surfaces at once, the way the rest of this file does.
+ *
+ * Why `DataTransfer` at all: `input.files` accepts nothing but a `FileList`,
+ * and `DataTransfer.files` is the only `FileList` a script can construct. The
+ * alternative — clicking the page's own 「选择文件」 button — raises a native
+ * modal no automated run can answer, which is the deadlock this tool exists to
+ * avoid.
+ */
+describe('upload_file (T5)', () => {
+  const upload = (locator: Record<string, unknown>, files: unknown) =>
+    handleAction('upload_file', { locator, files }) as Promise<{
+      success: boolean; message: string; attached: Array<{ name: string; size: number }>;
+    }>;
+
+  /** One file in the shape a privileged tier hands over: name, size, bytes. */
+  const payloadFile = (name: string, content: string) => ({
+    name,
+    size: content.length,
+    base64: btoa(content),
+  });
+
+  beforeEach(() => {
+    document.body.innerHTML = `
+      <form>
+        <input id="one" type="file" />
+        <input id="many" type="file" multiple />
+        <input id="off" type="file" disabled />
+        <input id="text" type="text" />
+      </form>`;
+  });
+
+  it('puts the file into the input and reports what the field actually holds', async () => {
+    const result = await upload({ css: '#one' }, [payloadFile('排班表.xlsx', 'hello')]);
+
+    expect(result.success).toBe(true);
+    expect(result.attached).toEqual([{ name: '排班表.xlsx', size: 5 }]);
+    const input = document.querySelector<HTMLInputElement>('#one')!;
+    expect(input.files?.[0]?.name).toBe('排班表.xlsx');
+  });
+
+  /**
+   * Without these a React/Vue-backed form never learns the field changed and
+   * the submit button stays disabled — the failure that looks like "the upload
+   * silently did nothing".
+   */
+  it('fires the input and change events a framework-backed form listens for', async () => {
+    const seen: string[] = [];
+    const input = document.querySelector<HTMLInputElement>('#one')!;
+    input.addEventListener('input', () => seen.push('input'));
+    input.addEventListener('change', () => seen.push('change'));
+
+    await upload({ css: '#one' }, [payloadFile('a.txt', 'x')]);
+
+    expect(seen).toEqual(['input', 'change']);
+  });
+
+  it('attaches several files to a multiple input', async () => {
+    const result = await upload({ css: '#many' }, [
+      payloadFile('a.txt', 'aa'),
+      payloadFile('b.txt', 'bbb'),
+    ]);
+
+    expect(result.attached).toEqual([{ name: 'a.txt', size: 2 }, { name: 'b.txt', size: 3 }]);
+  });
+
+  it('refuses several files on a single-file input rather than silently dropping one', async () => {
+    await expect(upload({ css: '#one' }, [payloadFile('a.txt', 'a'), payloadFile('b.txt', 'b')]))
+      .rejects.toThrow(/one file and 2 were offered/);
+    expect(document.querySelector<HTMLInputElement>('#one')!.files?.length ?? 0).toBe(0);
+  });
+
+  /**
+   * The single most common mis-aim, and the message has to teach the way out:
+   * pages hide the real input behind a styled button, and clicking that button
+   * is the thing that opens the OS picker.
+   */
+  it('refuses a non-file element and points at the input instead of the visible button', async () => {
+    await expect(upload({ css: '#text' }, [payloadFile('a.txt', 'a')]))
+      .rejects.toThrow(/not a file input/);
+    await expect(upload({ css: '#text' }, [payloadFile('a.txt', 'a')]))
+      .rejects.toThrow(/input\[type=file\]/);
+  });
+
+  it('refuses a disabled input', async () => {
+    await expect(upload({ css: '#off' }, [payloadFile('a.txt', 'a')]))
+      .rejects.toThrow(/disabled/);
+  });
+
+  it('refuses a call that carries no file, and one whose entries are unreadable', async () => {
+    await expect(upload({ css: '#one' }, [])).rejects.toThrow(/no file/);
+    await expect(upload({ css: '#one' }, undefined)).rejects.toThrow(/no file/);
+    await expect(upload({ css: '#one' }, [{ name: 'a.txt' }])).rejects.toThrow(/not readable/);
+    await expect(upload({ css: '#one' }, ['/ws/a.txt'])).rejects.toThrow(/not readable/);
+  });
+
+  /**
+   * The transport check. The size came from the gate's own `lstat` and travels
+   * with the bytes; a mismatch means the content is not what the user approved,
+   * so nothing is attached rather than "probably fine".
+   */
+  it('refuses a file whose bytes did not arrive intact', async () => {
+    const corrupt = { ...payloadFile('a.txt', 'hello'), size: 99 };
+    await expect(upload({ css: '#one' }, [corrupt])).rejects.toThrow(/did not arrive intact/);
+    expect(document.querySelector<HTMLInputElement>('#one')!.files?.length ?? 0).toBe(0);
+  });
+
+  it('refuses a file over the ceiling even if something upstream let it through', async () => {
+    const huge = { ...payloadFile('a.bin', 'x'), size: 21 * 1024 * 1024 };
+    await expect(upload({ css: '#one' }, [huge])).rejects.toThrow(/larger than this browser will attach/);
+  });
+
+  /**
+   * The page can read the status bubble, and where a file lives on the user's
+   * disk is not the page's business — the same rule the fill status follows
+   * for typed values.
+   */
+  it('shows the file NAME on the page, never a path', async () => {
+    await upload({ css: '#one' }, [payloadFile('salary.xlsx', 'x')]);
+
+    const bubble = document.getElementById('abu-status');
+    expect(bubble?.textContent).toContain('salary.xlsx');
+    expect(document.documentElement.outerHTML).not.toContain('/ws/');
+  });
+
+  /**
+   * The page may have an `accept` filter, a size rule, or an onchange handler
+   * that clears the field. Reporting "I attached it" while the field is empty
+   * is the single most useless thing this tool could say.
+   */
+  it('reads the result BACK from the input and says so when the page rejected the file', async () => {
+    const input = document.querySelector<HTMLInputElement>('#one')!;
+    input.addEventListener('change', () => {
+      Object.defineProperty(input, 'files', { configurable: true, value: null });
+    });
+
+    const result = await upload({ css: '#one' }, [payloadFile('a.exe', 'x')]);
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/the field is empty again/);
+    expect(result.attached).toEqual([]);
+  });
+});

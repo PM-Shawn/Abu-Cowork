@@ -18,20 +18,27 @@ import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import CompactDivider from './CompactDivider';
 import BrowserRunReportCard from './BrowserRunReportCard';
+import MaxTurnsNoticeCard from './MaxTurnsNoticeCard';
 import ChapterRail from './ChapterRail';
 import ChapterMenu from './ChapterMenu';
 import { activeChapterIndex, deriveChapters, shouldShowRail, topVisibleGroup, type Chapter, type RowPosition } from './chapters';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
+import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
+import TeamMemberBar from './TeamMemberBar';
+import TeamConfirmationsStrip from './TeamConfirmationsStrip';
+import TeamFollowUpChips from './TeamFollowUpChips';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
+import { matchTeamMention } from '@/core/team/chatEntry';
+import { useTeamStore } from '@/stores/teamStore';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
@@ -48,6 +55,9 @@ import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
+import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
+import AgentAvatar from '@/components/common/AgentAvatar';
+import TeamAvatar from '@/components/team/TeamAvatar';
 import {
   VIRTUOSO_ITEM_TRAILING_PAD,
   TYPING_FOOTER_GAP_COMPENSATION,
@@ -128,11 +138,13 @@ const VirtuosoTypingFooter: NonNullable<Components<Message[], MessageListContext
   // Xs" fold header — keeps the label on the same baseline at the same size
   // instead of hopping between typographies ("错行"). The negative top margin
   // bridges the item-pad vs in-group-gap difference — see chatSpacing.ts.
+  const footerConv = useActiveConversation();
+  const footerLeader = useConversationTeamLeader(footerConv?.id);
   return (
     <>
       {context?.showTypingIndicator && (
         <div className={cn(TYPING_FOOTER_GAP_COMPENSATION, 'flex gap-3')}>
-          <AssistantRowAvatar />
+          <AssistantRowAvatar avatar={footerLeader ? <AgentAvatar agent={footerLeader.leader} size="md" round /> : undefined} name={footerLeader?.leaderName} />
           <ThinkingStatusLine label={context.retryingLabel ?? context.thinkingLabel} />
         </div>
       )}
@@ -191,6 +203,7 @@ export default function ChatView({
   const renameConversation = useChatStore((s) => s.renameConversation);
   const [isRenamingTitle, setIsRenamingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const titleTeamLeader = useConversationTeamLeader(activeConv?.id);
 
   // Cancel any in-progress title rename when the active conversation changes.
   // The rename state is component-local; without this reset a draft started on
@@ -201,6 +214,7 @@ export default function ChatView({
     setIsRenamingTitle(false);
   }, [activeConvId]);
   const createConversation = useChatStore((s) => s.createConversation);
+  const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
   const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
   // Subscribe to messages count so ChatView re-renders when background processes
   // (IM agentLoop) add messages — even if the conversation object reference is stale
@@ -817,10 +831,29 @@ export default function ChatView({
       return;
     }
 
+    // A typed `@<team> …` that the composer did not turn into the team chip
+    // (sent before the exact-name detection, pasted, …) still pins the
+    // conversation to that team; the mention itself is not sent to the model.
+    const teamMention = matchTeamMention(text);
+    // A conversation already pinned to another team is not silently re-pinned:
+    // say so and send the text as typed (the chip is the way to switch).
+    if (teamMention && activeConv?.teamId && activeConv.teamId !== teamMention.teamId) {
+      const current = useTeamStore.getState().teams.find((team) => team.id === activeConv.teamId)?.name ?? '';
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptOtherTeam, { current, other: teamMention.teamName }) });
+      return false;
+    }
+    if (teamMention && !teamMention.rest) {
+      useToastStore.getState().addToast({ type: 'info', title: format(t.team.chatReceiptEmptyGoal, { team: teamMention.teamName }) });
+      return false; // hand the text back to the composer
+    }
+    const sendText = teamMention ? teamMention.rest : text;
+
     let convId = activeConv?.id;
     const isNewConversation = !convId;
     if (!convId) {
-      convId = createConversation(workspacePath);
+      convId = createConversation(workspacePath, teamMention ? { teamId: teamMention.teamId } : undefined);
+    } else if (teamMention && activeConv?.teamId !== teamMention.teamId) {
+      setConversationTeamId(convId, teamMention.teamId);
     }
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
@@ -836,7 +869,7 @@ export default function ChatView({
     announceChatTurnScrollIntent({ conversationId: convId, source: 'composer' });
     let dispatch: AgentLoopDispatchResult;
     try {
-      dispatch = await runAgentLoopDispatched(convId, text, {
+      dispatch = await runAgentLoopDispatched(convId, sendText, {
         images,
         onMessageTaken: () => onAccepted?.(),
         // A human typed this — attended, even inside a scheduled/trigger
@@ -1379,6 +1412,16 @@ export default function ChatView({
             {activeConv.title}
           </span>
         )}
+        {titleTeamLeader && !isRenamingTitle && (
+          <span
+            data-testid="chat-title-team-badge"
+            className="ml-2 inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--abu-bg-muted)] px-2 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+            title={`${titleTeamLeader.leaderName} · ${titleTeamLeader.teamName}`}
+          >
+            <TeamAvatar avatar={titleTeamLeader.teamAvatar} size="xs" round />
+            <span className="truncate max-w-[160px]">{titleTeamLeader.teamName}</span>
+          </span>
+        )}
         {/* Chapter navigation moves into the header exactly when the gutter can
             no longer hold the rail, so the two never appear at once. */}
         {chapterNavVisible && !railFits && (
@@ -1510,6 +1553,11 @@ export default function ChatView({
             itemContent={(index, group) =>
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider message={group[0]} />
+              ) : group.length === 1 && isMaxTurnsNoticeMessage(group[0]) ? (
+                // The turn-cap notice. Its own group by construction: the
+                // marker carries no loopId, and `groupMessagesByLoop` starts a
+                // fresh group at every message without one.
+                <MaxTurnsNoticeCard conversationId={activeConv.id} message={group[0]} />
               ) : group.length === 1 && isBrowserRunReportMessage(group[0]) ? (
                 // U7 — the unattended run's report card. Its own group by
                 // construction: the marker carries no loopId, and
@@ -1582,6 +1630,9 @@ export default function ChatView({
           )}
           {/* Live agent status — compaction / retry, so a slow provider isn't a
               silent dead wait above the composer. */}
+          {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
+          {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
+          {activeConv.teamId && <TeamFollowUpChips conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}

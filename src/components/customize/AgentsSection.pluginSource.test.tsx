@@ -17,7 +17,7 @@ import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 
 vi.mock('@/core/agent/registry', () => ({
-  agentRegistry: { getAgent: vi.fn() },
+  agentRegistry: { getAgent: vi.fn(), getAvailableAgents: vi.fn(() => []) },
 }));
 
 // Only the disk read is faked; `pluginDisplayName` stays real — the point of

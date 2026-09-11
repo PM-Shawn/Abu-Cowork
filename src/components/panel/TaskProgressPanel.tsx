@@ -209,6 +209,14 @@ function ProgressStepRow({ step, isLive }: ProgressStepRowProps) {
         )}
       >
         {step.description}
+        {step.owner && (
+          <span
+            data-testid="plan-step-owner"
+            className="ml-2 inline-flex items-center rounded-md bg-[var(--abu-bg-hover)] px-1.5 py-0.5 align-middle text-caption font-medium text-[var(--abu-text-tertiary)]"
+          >
+            @{step.owner}
+          </span>
+        )}
       </span>
     </div>
   );

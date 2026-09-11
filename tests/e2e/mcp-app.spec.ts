@@ -50,6 +50,9 @@ import {
   REPO_ROOT,
   type ElectronDataRoot,
 } from './electronHelpers';
+// Zero-import module of plain data — safe to pull into the node-side runner,
+// unlike `appHost.ts` (see `hostTextPrimary`).
+import { WIDGET_THEME_VARS } from '../../src/core/widget/designSystem';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -258,7 +261,6 @@ async function toggleDemoConnector(page: Page, expectConnected: boolean): Promis
   await page.getByLabel('Main navigation').getByRole('button', { name: /^(扩展|Extensions)$/ }).click();
   const panel = page.getByRole('main');
   await panel.getByRole('button', { name: /^(连接器|Connectors)$/ }).click({ timeout: READY_TIMEOUT });
-  await page.getByTestId('extensions-source-mine').click();
   await panel.getByRole('button', { name: new RegExp(SERVER_NAME) }).first().click();
   const toggle = page.getByTestId('mcp-server-toggle-connection');
   await expect(toggle).toBeVisible({ timeout: READY_TIMEOUT });
@@ -358,6 +360,66 @@ async function clickInApp(content: ReturnType<typeof appFrameContent>, testId: s
   const control = content.getByTestId(testId);
   await expect(control).toBeInViewport({ timeout: READY_TIMEOUT });
   await control.dispatchEvent('click');
+}
+
+/**
+ * WCAG relative luminance of a computed `rgb()` / `rgba()` string, so a theme
+ * assertion can say "light text on a dark surface" instead of hard-coding the
+ * host palette's hex values into the test.
+ */
+function relativeLuminance(color: string): number {
+  const parts = color.match(/-?[\d.]+/g);
+  if (!parts || parts.length < 3) throw new Error(`unparseable colour: ${color}`);
+  const [r, g, b] = parts.slice(0, 3).map((part) => {
+    const channel = Number(part) / 255;
+    return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * A host style variable as the SANDBOX resolves it — i.e. what the app put on
+ * its own root after adopting `hostContext.styles.variables`. Empty string when
+ * the host never sent one.
+ */
+async function readAppHostVariable(
+  content: ReturnType<typeof appFrameContent>,
+  name: string,
+): Promise<string> {
+  return content
+    .getByTestId('demo-value-alpha')
+    .evaluate(
+      (element, variable) =>
+        window
+          .getComputedStyle(element.ownerDocument.documentElement)
+          .getPropertyValue(variable)
+          .trim(),
+      name,
+    );
+}
+
+/**
+ * What `buildAppStyleVariables` puts in `--color-text-primary`, without
+ * importing `src/core/mcp/appHost.ts`: that module pulls in the renderer's MCP
+ * client (Tauri APIs, Zustand stores), which cannot load in Playwright's node
+ * runner. The design tokens it reads have no imports at all, so the value is
+ * taken from the same source — and the mapping between the two names is pinned
+ * by `appHost.test.ts`, not restated here.
+ */
+function hostTextPrimary(dark: boolean): string {
+  const spec = WIDGET_THEME_VARS.find((v) => v.name === '--w-fg');
+  if (!spec) throw new Error('--w-fg is gone from the widget design system');
+  return dark ? spec.dark : spec.light;
+}
+
+/** What the interface actually PAINTS, read from inside the sandbox. */
+async function readAppColours(
+  content: ReturnType<typeof appFrameContent>,
+): Promise<{ text: string; background: string }> {
+  return content.getByTestId('demo-value-alpha').evaluate((element) => ({
+    text: window.getComputedStyle(element).color,
+    background: window.getComputedStyle(document.body).backgroundColor,
+  }));
 }
 
 let app: ElectronApplication | undefined;
@@ -465,6 +527,21 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(frameBody).toHaveAttribute('data-theme', 'theme:light', {
       timeout: READY_TIMEOUT,
     });
+    // The marker only proves the app was TOLD. What follows proves it ACTED:
+    // the 2026-09-08 walkthrough found a sample that flipped the marker while
+    // painting hard-coded light-theme text onto Abu's dark surface, and every
+    // marker assertion in this block passed. So read the colours the sandbox
+    // really computes — the text of a table cell and the surface behind it —
+    // and require the pair to stay readable in both themes.
+    const lightColours = await readAppColours(content);
+    // An unpainted (transparent) body would make the comparison meaningless.
+    expect(lightColours.background).not.toMatch(/rgba\([^)]*,\s*0\)/);
+    expect(relativeLuminance(lightColours.text)).toBeLessThan(
+      relativeLuminance(lightColours.background),
+    );
+    // The handshake handed over the LIGHT palette and the app adopted it.
+    expect(await readAppHostVariable(content, '--color-text-primary'))
+      .toBe(hostTextPrimary(false));
     await page.emulateMedia({ colorScheme: 'dark' });
     // Two separate claims, asserted separately so a failure says which one
     // broke: (1) the emulated OS preference reached the renderer at all,
@@ -480,11 +557,48 @@ test.describe.serial('MCP Apps host in Electron', () => {
     await expect(frameBody).toHaveAttribute('data-theme', 'theme:dark', {
       timeout: READY_TIMEOUT,
     });
+    // Repaint, not just re-marking: the text colour has to move, and it has to
+    // land light-on-dark. (Polled — the repaint follows the notification.)
+    await expect
+      .poll(async () => (await readAppColours(content)).text, { timeout: READY_TIMEOUT })
+      .not.toBe(lightColours.text);
+    const darkColours = await readAppColours(content);
+    expect(darkColours.background).not.toBe(lightColours.background);
+    expect(relativeLuminance(darkColours.text)).toBeGreaterThan(
+      relativeLuminance(darkColours.background),
+    );
+    // 🔴 The one claim the luminance pair CANNOT make: that the app received
+    // the NEW palette rather than merely discarding the stale one. The
+    // fixture's own `light-dark()` fallbacks land on the very same dark
+    // colour, so "host sent the dark palette" and "host sent a bare theme name
+    // and the app fell back" are indistinguishable from the painted pixels.
+    // Reading the custom property separates them: until 2026-09-08 the host's
+    // theme patch was `{ theme }` with no `styles`, the app cleared the stale
+    // set, and this resolved to ''.
+    await expect
+      .poll(() => readAppHostVariable(content, '--color-text-primary'), {
+        timeout: READY_TIMEOUT,
+      })
+      .toBe(hostTextPrimary(true));
     // And back — a one-way notification would look identical above.
     await page.emulateMedia({ colorScheme: 'light' });
     await expect(frameBody).toHaveAttribute('data-theme', 'theme:light', {
       timeout: READY_TIMEOUT,
     });
+    await expect
+      .poll(
+        async () => {
+          const colours = await readAppColours(content);
+          return relativeLuminance(colours.text) < relativeLuminance(colours.background);
+        },
+        { timeout: READY_TIMEOUT },
+      )
+      .toBe(true);
+    await expect
+      .poll(() => readAppHostVariable(content, '--color-text-primary'), {
+        timeout: READY_TIMEOUT,
+      })
+      .toBe(hostTextPrimary(false));
 
     const requestsBeforeDraft = mock.requestCount();
     await clickInApp(content, 'demo-send');

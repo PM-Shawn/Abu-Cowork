@@ -3,15 +3,16 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSkillDraftsStore } from '@/stores/skillDraftsStore';
 import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
 import { skillLoader } from '@/core/skill/loader';
 import SkillEditor from './SkillEditor';
 import SkillDraftsPanel from './SkillDraftsPanel';
 import SkillCategoryBlocksPanel from './SkillCategoryBlocksPanel';
 import SkillHistoryModal from './SkillHistoryModal';
 import SkillUploadModal from './SkillUploadModal';
+import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
-import { Trash2, FileText, Pencil, MoreHorizontal, MessageCircle, Download, Clock } from 'lucide-react';
+import { FileText, Pencil, MoreHorizontal, MessageCircle, Download, Clock } from 'lucide-react';
 import { remove } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -23,7 +24,8 @@ import { sourceToUXCategory } from '@/core/skill/uxCategory';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import SkillDetailPanel from '@/components/toolbox/skills/SkillDetailPanel';
-import { isSystemSkill } from '@/components/toolbox/skills/isSystemSkill';
+import { usePluginSkillGate } from '@/components/toolbox/plugins/usePluginSkillGate';
+import { isUserOwnedSkill } from '@/components/toolbox/skills/isSystemSkill';
 
 // Build a set of system skill names from marketplace templates
 /**
@@ -51,13 +53,7 @@ const SOURCE_BADGE_TONE: Record<'neutral' | 'clay' | 'blue' | 'slate', string> =
   slate: 'bg-slate-100 dark:bg-[var(--abu-bg-muted)] text-slate-600 dark:text-[var(--abu-text-secondary)]',
 };
 
-/**
- * 「我的」 = skills the user or their project/team authored on disk. The
- * complement (builtin / plugin / enterprise) came from outside and lives in
- * 「市场」 — see EXTERNAL_SOURCES in `toolbox/skills/ExternalSkillsPanel.tsx`.
- * `standard` (~/.agents/skills) counts as the user's own: it is their global
- * cross-client folder, just not Abu's.
- */
+/** Optional authored-only filtering for embedded callers; the released page shows every source. */
 const MINE_SOURCES: ReadonlySet<SkillSource> = new Set<SkillSource>([
   'user', 'workspace-auto', 'draft', 'project', 'project-standard', 'standard',
 ]);
@@ -69,11 +65,7 @@ interface SkillsSectionProps {
    *  showAddForm, with an internal fallback so the component still works standalone. */
   showUploadModal?: boolean;
   onUploadModalChange?: (open: boolean) => void;
-  /** `'mine'` narrows the list to skills the user (or their project/team) put on
-   *  disk — the 「我的」 half of the Extensions source sub-nav. Everything that
-   *  arrived from outside (builtin / plugin / organization) belongs to 「市场」,
-   *  which is {@link ExternalSkillsPanel}, not this list. Omitted = every source,
-   *  the pre-split behaviour. */
+  /** Optional authored-only view. Omit to retain the released grouped page. */
   sourceFilter?: 'mine';
 }
 
@@ -91,7 +83,14 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const { t } = useI18n();
 
-  const [installedSkills, setInstalledSkills] = useState<Skill[]>([]);
+  const installedSkills = useMemo(() => skills.flatMap((meta) => {
+    const skill = skillLoader.getSkill(meta.name, { includeDisabledPlugins: true });
+    return skill ? [skill] : [];
+  }), [skills]);
+  // The list above deliberately keeps disabled plugins' skills visible; this
+  // gate stops the card from also claiming they are active (the model's
+  // strict getAvailableSkills() has already dropped them).
+  const pluginAllowed = usePluginSkillGate();
   const [selectedSkill, setSelectedSkill] = useState<string | null>(null);
   const [editorSkill, setEditorSkill] = useState<Skill | 'new' | null>(null);
   const [menuSkill, setMenuSkill] = useState<string | null>(null);
@@ -113,17 +112,6 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
   // Load full skill details. No auto-selection: the detail is a modal now,
   // so it stays closed until the user clicks a card.
-  useEffect(() => {
-    const loadSkillDetails = async () => {
-      const fullSkills: Skill[] = [];
-      for (const meta of skills) {
-        const full = skillLoader.getSkill(meta.name);
-        if (full) fullSkills.push(full);
-      }
-      setInstalledSkills(fullSkills);
-    };
-    loadSkillDetails();
-  }, [skills]);
 
   const disabledSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
 
@@ -214,7 +202,8 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   }, [menuSkill]);
 
   const renderSkillCard = (skill: Skill) => {
-    const isEnabled = !disabledSet.has(skill.name);
+    const gated = !pluginAllowed(skill);
+    const isEnabled = !disabledSet.has(skill.name) && !gated;
     const badge = sourceBadge(skill);
     return (
       <ToolCard
@@ -230,8 +219,8 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             </span>
           ) : undefined,
           toggle: (
-            <span onClick={(e) => e.stopPropagation()}>
-              <Toggle checked={isEnabled} onChange={() => toggleSkillEnabled(skill.name)} size="sm" tone="green" />
+            <span onClick={(event) => event.stopPropagation()} title={gated ? t.toolbox.skillPluginDisabled : undefined}>
+              <Toggle checked={isEnabled} disabled={gated} onChange={() => toggleSkillEnabled(skill.name)} size="sm" tone="green" />
             </span>
           ),
         }}
@@ -284,7 +273,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                 implementation-level SkillSource enum. */}
             {skillGroups.mine.length > 0 && (
               <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryMine}</div>
+                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryMine}</div>
                 <ToolGrid>{skillGroups.mine.map((skill) => renderSkillCard(skill))}</ToolGrid>
               </div>
             )}
@@ -297,7 +286,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                 kept as-is rather than reshaped into ToolCards. */}
             {draftsCount > 0 && (
               <div>
-                <div className="mb-3 flex items-center gap-1.5 text-body font-medium text-[var(--abu-text-muted)]">
+                <div className="mb-3 pl-3 flex items-center gap-1.5 text-body font-medium text-[var(--abu-text-muted)]">
                   <span>{t.toolbox.categoryAgentEvolved}</span>
                   <span className="px-1.5 py-0.5 text-caption rounded bg-purple-100 text-purple-700">{t.toolbox.categoryAgentEvolvedBadge}</span>
                   <span className="text-caption text-[var(--abu-text-placeholder)]">{draftsCount}</span>
@@ -309,7 +298,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             {/* Category · Built-in — bundled with Abu. Read-only. */}
             {skillGroups.builtin.length > 0 && (
               <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryBuiltin}</div>
+                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryBuiltin}</div>
                 <ToolGrid>{skillGroups.builtin.map((skill) => renderSkillCard(skill))}</ToolGrid>
               </div>
             )}
@@ -317,8 +306,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
         )}
       </div>
 
-      {/* Detail modal — shared with 「市场」 (ExternalSkillsPanel); only the
-          header actions differ, because only 「我的」 can edit or delete. */}
+      {/* Released detail actions remain available from every skill card. */}
       <SkillDetailPanel
         skill={selected}
         onClose={() => { setSelectedSkill(null); setMenuSkill(null); }}
@@ -333,28 +321,15 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             {/* "..." menu: export always available; user skills also have edit/delete */}
             <div className="relative">
               <button
+                aria-label={format(t.toolbox.itemMenuLabel, { name: selected.name })}
+                data-testid="skill-detail-menu"
                 onClick={(e) => { e.stopPropagation(); setMenuSkill(menuSkill === selected.name ? null : selected.name); }}
                 className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
               >
                 <MoreHorizontal className="h-4 w-4" />
               </button>
               {menuSkill === selected.name && (
-                <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
-                  {/* Try in chat - only when enabled */}
-                  {!disabledSet.has(selected.name) && (
-                    <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                      onClick={() => {
-                        setMenuSkill(null);
-                        startNewConversation();
-                        setPendingInput(`/${selected.name} `);
-                        closeExtensions();
-                      }}
-                    >
-                      <MessageCircle className="h-3 w-3" />
-                      {t.toolbox.skillTryInChat}
-                    </button>
-                  )}
+                <div className="absolute right-0 top-full mt-2 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                   {/* Export - available for all skills */}
                   <button
                     className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
@@ -374,7 +349,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                     {t.toolbox.historyMenuLabel}
                   </button>
                   {/* Edit & Delete - available for non-builtin skills */}
-                  {selected.source !== 'builtin' && !isSystemSkill(selected) && (
+                  {isUserOwnedSkill(selected) && (
                     <>
                       <button
                         className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
@@ -383,20 +358,31 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                         <Pencil className="h-3 w-3" />
                         {t.toolbox.skillEdit}
                       </button>
-                      <button
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-                        onClick={() => { handleDelete(selected); setMenuSkill(null); }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                        {t.toolbox.uninstall}
-                      </button>
+
                     </>
                   )}
                 </div>
               )}
             </div>
+
+
           </>
         ) : undefined}
+        footer={selected ? <div className="flex items-center justify-between gap-3">
+          {isUserOwnedSkill(selected) ? (
+            <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.uninstall}</Button>
+          ) : !pluginAllowed(selected) ? (
+            <span className="text-caption text-[var(--abu-text-muted)]">{t.toolbox.skillPluginDisabled}</span>
+          ) : <span />}
+
+
+          <Button size="sm" className="rounded-xl" disabled={disabledSet.has(selected.name) || !pluginAllowed(selected)} onClick={() => {
+            startNewConversation();
+            setPendingInput(`/${selected.name} `);
+            setSelectedSkill(null);
+            closeExtensions();
+          }}><MessageCircle className="h-3.5 w-3.5" />{t.toolbox.menuTrial}</Button>
+        </div> : undefined}
       />
 
       {/* Unified upload modal — conditionally mounted so useFileDragDrop's
@@ -411,6 +397,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
       {/* Skill history modal (Task #24) — mounted only when opened. */}
       {historySkill && (
         <SkillHistoryModal
+          readOnly={historySkill.source === 'plugin' || historySkill.source === 'enterprise'}
           skillDir={historySkill.skillDir}
           skillName={historySkill.name}
           onClose={() => setHistorySkill(null)}

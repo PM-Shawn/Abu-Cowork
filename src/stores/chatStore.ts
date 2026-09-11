@@ -1,9 +1,11 @@
+import { useTeamConfirmationStore } from './teamConfirmationStore';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { current, enableMapSet } from 'immer';
 import type { Message, Conversation, AgentStatus, RetryInfo, TokenUsage, ConversationStatus, ToolCallForContext, ToolResultContent, ToolCall, NoticeCardAction, SandboxRecoveryAction, ToolExecutionMetadata, UserQuestionResult, UpstreamErrorDetails } from '../types';
 import type { ExecutionStepSnapshot, PlannedStep } from '../types/execution';
+import type { MaxTurnsNoticeAction } from '../core/agent/maxTurnsNotice';
 import { useWorkspaceStore } from './workspaceStore';
 import { useProjectStore } from './projectStore';
 import { useTaskExecutionStore } from './taskExecutionStore';
@@ -13,6 +15,25 @@ import { clearPlanMode } from '../core/agent/planMode';
 import { setComputerUseActive } from '../core/agent/computerUseStatus';
 import { isConversationRunningInSidecar } from '../core/agent/sidecarRunPredicate';
 import type { ConversationMeta } from '../core/session/conversationStorage';
+import { getMessageText } from '../core/context/contextUtils';
+
+/**
+ * A later execution snapshot that arrives without child steps must not
+ * discard the children an earlier one recorded (the sidecar's mirror never
+ * has the shell-only delegate children). Matched by step id, then tool_use id.
+ */
+export function keepExistingChildSteps(
+  previous: readonly ExecutionStepSnapshot[] | undefined,
+  next: ExecutionStepSnapshot[],
+): ExecutionStepSnapshot[] {
+  if (!previous?.length) return next;
+  return next.map((step) => {
+    if (step.childSteps?.length) return step;
+    const old = previous.find((p) => p.id === step.id)
+      ?? (step.toolCallId ? previous.find((p) => p.toolCallId === step.toolCallId) : undefined);
+    return old?.childSteps?.length ? { ...step, childSteps: old.childSteps } : step;
+  });
+}
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
@@ -629,15 +650,21 @@ interface ChatState {
    *  Consumed by createConversation() and applied as the new conversation's initial
    *  permissionMode. Does NOT modify the global settingsStore default. Ephemeral. */
   pendingPermissionMode: PermissionMode | undefined;
+  /** Team picked in the composer before a conversation exists (welcome page);
+   *  consumed by createConversation, mirrors pendingPermissionMode. */
+  pendingTeamId: string | undefined;
 }
 
 interface ChatActions {
-  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
+  createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; teamId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
   startNewConversation: () => void;
   switchConversation: (id: string) => Promise<void>;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
   setConversationModel: (convId: string, model: { providerId: string; modelId: string } | undefined) => void;
+  /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
+  setConversationTeamId: (convId: string, teamId: string | undefined) => void;
+  setPendingTeamId: (teamId: string | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
   setPendingPermissionMode: (mode: PermissionMode | undefined) => void;
   deleteConversation: (id: string) => void;
@@ -674,6 +701,8 @@ interface ChatActions {
    */
   setToolCallModelContext: (convId: string, messageId: string, toolCallId: string, modelContext: string) => void;
   setToolCallSandboxRecoveryAction: (convId: string, messageId: string, toolCallId: string, action: SandboxRecoveryAction) => Promise<void>;
+  /** Settle a turn-cap notice card so the choice survives a reload. */
+  setMaxTurnsNoticeAction: (convId: string, messageId: string, action: MaxTurnsNoticeAction) => Promise<void>;
   setToolCallUserQuestionAnswers: (convId: string, messageId: string, toolCallId: string, answers: UserQuestionResult) => void;
   /**
    * Stash a post-loop proposal signal on the conversation so the next
@@ -837,6 +866,7 @@ export const useChatStore = create<ChatStore>()(
       pendingReferences: [],
       pendingAttachmentRequests: [],
       pendingPermissionMode: undefined,
+      pendingTeamId: undefined,
 
       createConversation: (workspacePath, options) => {
         const id = generateId();
@@ -850,6 +880,11 @@ export const useChatStore = create<ChatStore>()(
           const project = useProjectStore.getState().getProjectByWorkspace(workspacePath);
           if (project) resolvedProjectId = project.id;
         }
+        // The welcome-page chip belongs to the conversation the user is about
+        // to open. Background creators (scheduler / trigger / IM / watcher /
+        // project click) pass skipActivate and must neither inherit nor clear it.
+        const consumePendingTeam = !options?.skipActivate;
+        const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
         const meta: ConversationMeta = {
           id,
           title: getDefaultConvTitle(),
@@ -859,6 +894,7 @@ export const useChatStore = create<ChatStore>()(
           workspacePath: workspacePath ?? null,
           ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
           ...(options?.triggerId ? { triggerId: options.triggerId } : {}),
+          ...(initialTeamId ? { teamId: initialTeamId } : {}),
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
         };
@@ -875,6 +911,7 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = id;
           }
           state.pendingPermissionMode = undefined;
+          if (consumePendingTeam) state.pendingTeamId = undefined;
         });
         // Sync index to disk (fire-and-forget). Also write-through the SQLite
         // catalog (message-storage P0) — best-effort, reconcile is the net.
@@ -1001,6 +1038,29 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      setConversationTeamId: (convId, teamId) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (conv) {
+            conv.teamId = teamId;
+          }
+          if (state.conversationIndex[convId]) {
+            state.conversationIndex[convId].teamId = teamId;
+          }
+        });
+        // Persist to disk index (same path as the per-conversation model pin)
+        import('../core/session/conversationStorage').then(({ updateIndexEntry }) => {
+          const meta = get().conversationIndex[convId];
+          if (meta) updateIndexEntry(meta).catch(() => {});
+        });
+      },
+
+      setPendingTeamId: (teamId) => {
+        set((state) => {
+          state.pendingTeamId = teamId;
+        });
+      },
+
       setConversationPermissionMode: (convId, mode) => {
         set((state) => {
           const conv = state.conversations[convId];
@@ -1043,6 +1103,7 @@ export const useChatStore = create<ChatStore>()(
         }
         // Clean up per-conversation state in external modules
         clearInputQueue(id);
+        useTeamConfirmationStore.getState().clearConversation(id);
         clearSkillHooksByConversation(id);
         resetSessionPromotions(id);
         useTaskExecutionStore.getState().clearConversation(id);
@@ -1564,6 +1625,34 @@ export const useChatStore = create<ChatStore>()(
         }
       },
 
+      setMaxTurnsNoticeAction: async (convId, messageId, action) => {
+        const currentMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
+        if (!currentMsg?.maxTurnsNotice) {
+          throw new Error(`Max-turns notice "${messageId}" no longer exists`);
+        }
+        // Write-through BEFORE the in-memory flip, exactly as the sandbox
+        // recovery card does: a card that looked settled but wasn't persisted
+        // would come back actionable after a reload and continue a second time.
+        const persistedMsg: Message = {
+          ...currentMsg,
+          maxTurnsNotice: { ...currentMsg.maxTurnsNotice, action },
+        };
+        const { replaceMessageByIdStrict } = await import('../core/session/conversationStorage');
+        await replaceMessageByIdStrict(convId, persistedMsg);
+
+        let updated = false;
+        set((state) => {
+          const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
+          if (msg?.maxTurnsNotice) {
+            msg.maxTurnsNotice.action = action;
+            updated = true;
+          }
+        });
+        if (!updated) {
+          throw new Error(`Max-turns notice "${messageId}" no longer exists`);
+        }
+      },
+
       setToolCallUserQuestionAnswers: (convId, messageId, toolCallId, answers) => {
         set((state) => {
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
@@ -1875,7 +1964,7 @@ export const useChatStore = create<ChatStore>()(
           for (let i = conv.messages.length - 1; i >= 0; i--) {
             const m = conv.messages[i];
             if (m.role === 'assistant' && m.loopId === loopId) {
-              m.executionSteps = steps;
+              m.executionSteps = keepExistingChildSteps(m.executionSteps, steps);
               targetMsgId = m.id;
               break;
             }
@@ -1896,6 +1985,22 @@ export const useChatStore = create<ChatStore>()(
 
       setPlannedStepsSnapshot: (convId, loopId, steps) => {
         let targetMsgId: string | undefined;
+        // Team conversations remember the split on the Team record so the
+        // leader can reuse it next time as reference input (block S).
+        const teamId = get().conversations[convId]?.teamId;
+        if (teamId && steps.length > 0) {
+          const firstUser = get().conversations[convId]?.messages.find((m) => m.role === 'user' && !m.isSystem);
+          const request = firstUser ? getMessageText(firstUser.content).trim().slice(0, 300) : '';
+          import('./teamStore').then(({ useTeamStore }) => {
+            useTeamStore.getState().updateTeam(teamId, {
+              lastPlan: {
+                request,
+                steps: steps.map((s) => (s.owner ? `${s.description} @${s.owner}` : s.description)),
+                savedAt: Date.now(),
+              },
+            });
+          }).catch(() => {});
+        }
         set((state) => {
           const conv = state.conversations[convId];
           if (!conv) return;
@@ -2247,7 +2352,13 @@ export const useChatStore = create<ChatStore>()(
             // transitioning INTO a terminal state — not on a redundant
             // re-set of a status it's already in (e.g. a duplicate
             // 'completed' call), and never for a convId absent from state.
-            shouldReindex = isTerminal && prevStatus !== status;
+            // A run that ends WITHOUT 'completed' still settles this
+            // conversation's messages for the round — the turn cap now lands
+            // on 'idle' (agentLoop's max_turns path), and gating the
+            // write-through on `isTerminal` alone would leave the catalog row
+            // and FTS body stale until the next startup reconcile. Additive:
+            // every transition that re-indexed before still does.
+            shouldReindex = prevStatus !== status && (isTerminal || prevStatus === 'running');
             conv.status = status;
             if (status === 'completed') {
               conv.completedAt = Date.now();
@@ -2507,6 +2618,7 @@ export const useChatStore = create<ChatStore>()(
               imPlatform: meta.imPlatform,
               scheduledTaskId: meta.scheduledTaskId,
               triggerId: meta.triggerId,
+              teamId: meta.teamId,
               projectId: meta.projectId,
               readOnly: meta.readOnly,
               importedFrom: meta.importedFrom,
@@ -2540,6 +2652,7 @@ export const useChatStore = create<ChatStore>()(
                 imPlatform: meta.imPlatform,
                 scheduledTaskId: meta.scheduledTaskId,
                 triggerId: meta.triggerId,
+                teamId: meta.teamId,
                 projectId: meta.projectId,
                 readOnly: meta.readOnly,
                 importedFrom: meta.importedFrom,
@@ -2587,7 +2700,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 8,
+      version: 12,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2606,11 +2719,24 @@ export const useChatStore = create<ChatStore>()(
         if (version < 7) { /* no transform needed */ }
         // v7 → v8: added the unattended browser run report card (U7) — an
         // append-only Message (id prefix `browser-run-report-`) carrying an
-        // optional `browserRunReport` snapshot. Same shape of change as v6→v7:
-        // messages live in JSONL, not in the persisted `conversationIndex`, so
-        // there is nothing to transform. The bump exists so an older build
-        // cannot silently mis-read a newer store.
+        // optional `browserRunReport` snapshot. Messages live in JSONL, not in
+        // the persisted `conversationIndex`, so there is nothing to transform.
+        // (The team branch used v8 for teamTaskId; both were no-transform.)
         if (version < 8) { /* no transform needed */ }
+        // v8 → v9: added teamId on Conversation/ConversationMeta (optional field;
+        // absent = ordinary chat, present = the main loop runs as that team's
+        // leader. Nothing to transform for pre-team conversations).
+        if (version < 9) { /* no transform needed */ }
+        // v9 → v10: teamTaskId removed with the task board (optional, never written
+        // by the in-conversation team; stale values are simply ignored).
+        if (version < 10) { /* no transform needed */ }
+        // v10 → v11: merge of the two v8 lineages above (no transform).
+        if (version < 11) { /* no transform needed */ }
+        // v11 → v12: added the turn-cap notice card — an append-only Message
+        // (id prefix `max-turns-`) carrying an optional `maxTurnsNotice`
+        // payload. Messages live in JSONL, not in the persisted
+        // `conversationIndex`, so there is nothing to transform.
+        if (version < 12) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

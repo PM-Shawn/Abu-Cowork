@@ -285,6 +285,11 @@ export const TAB_TARGETED_ACTIONS: ReadonlySet<string> = new Set([
   'handle_dialog',
   'start_recording',
   'stop_recording',
+  // T5/T6 — both name a tab, so both must resolve an owner-scoped target
+  // before they run. `download`'s isolation depends on it twice over: the tab
+  // it clicks in AND the task the resulting file is filed under.
+  'upload_file',
+  'download',
 ]);
 
 /**

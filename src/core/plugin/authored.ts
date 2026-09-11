@@ -21,28 +21,33 @@ interface NamedMarketplace {
 }
 
 /**
- * Whether the user authored this plugin themselves.
- *
- * "Mine" means: it came from a market the user runs, and the package itself
- * lives on their disk rather than having been fetched from someone else's
- * repo. Abu's own bundled market and org-managed installs are excluded — the
- * user did not write those, even though the packages are local.
- *
- * Records written before `sourceKind` existed fall back to `sha`: every remote
- * install pins a verified sha, and a relative one never has one, so "no sha"
- * is a sound reading of "installed from a local directory" for legacy data.
- *
- * Order matters: `sourceKind` records how the bytes were copied in, not where
- * they came from. Enterprise installs stage a verified artifact on disk and so
- * record `'relative'` like a hand-written plugin does, which is why the
- * enterprise check runs before `sourceKind` is consulted at all.
+ * InstalledPlugin records are produced by marketplace installation. Neither a
+ * relative package path nor a missing commit SHA is evidence of local authorship.
+ * There is currently no authoring record in this model, so none of these records
+ * belongs in the authored group. A future authoring flow must supply its own
+ * explicit provenance rather than infer it from the download mechanism.
  */
 export function isSelfAuthoredPlugin(
-  p: Pick<InstalledPlugin, 'marketplace' | 'sourceKind' | 'sha'>,
+  _plugin: Pick<InstalledPlugin, 'marketplace' | 'sourceKind' | 'sha'>,
 ): boolean {
-  if (p.marketplace === BUILTIN_MARKET_NAME) return false;
-  if (isEnterpriseInstall(p)) return false;
-  return p.sourceKind ? p.sourceKind === 'relative' : p.sha == null;
+  return false;
+}
+
+/** Authored installs live under a marketplace named for their author record. */
+export const AUTHORED_MARKET_PREFIX = 'author-';
+
+/**
+ * "The user made this here." Unlike `isSelfAuthoredPlugin` above — which
+ * predates the authoring flow and is no longer wired to anything — this reads
+ * provenance the installer wrote onto the record, so it stays true even when
+ * the author store cannot be read. Anything deriving ownership must use this
+ * one; deriving it from a join against the author list makes a transient read
+ * failure look like a change of provenance.
+ */
+export function isAuthoredInstall(
+  plugin: Pick<InstalledPlugin, 'marketplace' | 'authoringId'>,
+): boolean {
+  return plugin.authoringId !== undefined || plugin.marketplace.startsWith(AUTHORED_MARKET_PREFIX);
 }
 
 /**
@@ -52,8 +57,11 @@ export function isSelfAuthoredPlugin(
  * — but nothing can update or reinstall it, so the UI needs to say so rather
  * than silently showing it as healthy.
  *
- * The enterprise and built-in markets are exempt: neither can be removed by
- * the user, so neither can produce a genuine orphan. Enterprise's catalog is
+ * The enterprise, built-in and authoring markets are exempt: none can be
+ * removed by the user, so none can produce a genuine orphan. An authored
+ * plugin's marketplace is synthesised from its author record and never appears
+ * in the user's market list, so measuring it against that list would report
+ * every locally created plugin as coming from a market that is gone. Enterprise's catalog is
  * managed elsewhere and deliberately absent from the user's market list. The
  * built-in market is absent for a different reason — it is stripped by the
  * store's `partialize` and re-injected asynchronously after hydration, so
@@ -71,6 +79,7 @@ export function orphanedInstalls(
   return installed.filter(
     (p) =>
       !isEnterpriseInstall(p) &&
+      !isAuthoredInstall(p) &&
       p.marketplace !== BUILTIN_MARKET_NAME &&
       !known.has(p.marketplace),
   );

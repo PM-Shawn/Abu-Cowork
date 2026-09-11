@@ -3234,10 +3234,8 @@ export interface TranslationDict {
   // About
   about: {
     feedback: string;
-    wechatSectionTitle: string;
-    feedbackDesc: string;
-    sponsor: string;
-    sponsorDesc: string;
+    /** 版本 page header description. */
+    versionDescription: string;
     deviceId: string;
     deviceIdHint: string;
     copied: string;
@@ -3247,6 +3245,34 @@ export interface TranslationDict {
     licenseLinkLabel: string;
     disclaimerTitle: string;
     disclaimerClose: string;
+  };
+
+  // 「关于作者」 page
+  author: {
+    title: string;
+    name: string;
+    tagline: string;
+    role: string;
+    vibe: string;
+    build: string;
+    contactTitle: string;
+    wechatLabel: string;
+    /** One line under the tile. */
+    wechatCaption: string;
+    /** Fuller sentence shown in the zoomed view. */
+    wechatCaptionFull: string;
+    sponsorLabel: string;
+    sponsorCaption: string;
+    sponsorCaptionFull: string;
+    xiaohongshu: string;
+    x: string;
+    github: string;
+    website: string;
+    zoomHint: string;
+    /** Feedback page footer: the question … */
+    feedbackLink: string;
+    /** … and the link that answers it. */
+    feedbackLinkAction: string;
   };
 
   // First-launch disclaimer banner

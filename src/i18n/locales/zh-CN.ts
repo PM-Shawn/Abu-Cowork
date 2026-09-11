@@ -2715,10 +2715,7 @@ const zhCN: TranslationDict = {
 
   about: {
     feedback: '反馈',
-    wechatSectionTitle: '联系开发者',
-    feedbackDesc: '扫码添加微信，反馈问题或交流想法',
-    sponsor: '支持',
-    sponsorDesc: '如果觉得阿布好用，请作者喝杯咖啡吧',
+    versionDescription: '当前版本与更新',
     deviceId: '设备 ID',
     deviceIdHint: '遇到问题时发给开发者，用于定位你的设备记录',
     copied: '已复制',
@@ -2727,6 +2724,29 @@ const zhCN: TranslationDict = {
     licenseLinkLabel: 'Apache 2.0 许可证',
     disclaimerTitle: '免责声明',
     disclaimerClose: '收起',
+  },
+
+  author: {
+    title: '关于作者',
+    name: 'Shawn',
+    tagline: '📔 爱折腾、理性、去噪、深度实践',
+    role: '🧑🏻‍💻 产品经理｜AI 产品实践者',
+    vibe: '🗳️ Vibe Coding 时长超过 1200 小时',
+    build: '🛠️ 独立开发 30+ 产品 · 月消耗 Token 300 亿',
+    contactTitle: '联系与支持',
+    wechatLabel: '关注公众号',
+    wechatCaption: '关注后自动收到微信号',
+    wechatCaptionFull: '关注后自动收到作者微信号，反馈问题或交流想法',
+    sponsorLabel: '请作者喝杯咖啡',
+    sponsorCaption: '觉得阿布好用就请一杯',
+    sponsorCaptionFull: '如果觉得阿布好用，请作者喝杯咖啡吧',
+    xiaohongshu: '小红书',
+    x: 'X',
+    github: 'GitHub',
+    website: '阿布官网',
+    zoomHint: '点击放大',
+    feedbackLink: '想直接找作者？',
+    feedbackLinkAction: '去「关于作者」页',
   },
 
   disclaimerBanner: {

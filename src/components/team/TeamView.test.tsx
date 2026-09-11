@@ -163,7 +163,10 @@ describe('TeamView', () => {
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-gone-lead', memberRoleIds: ['r-gone-lead', 'r-mem'], createdAt: 1 }] });
     render(<TeamView />);
     const card = screen.getByTestId('team-row-数据小队');
+    // Short copy: the card summary is one ` · ` line, not a place for the
+    // explanatory clause (that stays in the detail row).
     expect(card.textContent).toContain('已失效');
+    expect(card.textContent).not.toContain('专家已删除');
     expect(card.textContent).toContain('1 名成员');
   });
 

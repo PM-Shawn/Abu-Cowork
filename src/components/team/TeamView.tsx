@@ -329,8 +329,10 @@ export default function TeamView() {
   // `_agents` is unused by value — it exists only to make `discoveredAgents`
   // a visible input of this derived text, so the caller's subscription to the
   // discovery store isn't dead code from the compiler's point of view.
+  // The card's leader slot is one segment of a ` · ` summary line, so it takes
+  // the short label; the explanatory clause lives in the detail and the editor.
   const cardSummary = (team: Team, _agents: typeof discoveredAgents) => format(t.team.teamRowSummary, {
-    leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalid,
+    leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalidShort,
     count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length),
   });
 
@@ -532,7 +534,7 @@ export default function TeamView() {
                 {validMembers.length === 0 && invalidMembers.length === 0
                   ? <div className="text-caption text-[var(--abu-text-tertiary)]">{t.team.detailNoMembers}</div>
                   : <div className="space-y-0.5">
-                      {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.unknownMember)}</div>)}
+                      {validMembers.map((m) => <div key={m.id}>{row(m.agent, t.team.memberInvalid)}</div>)}
                       {invalidMembers.map((m) => (
                         <div key={m.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid={`team-member-invalid-${m.id}`}>
                           <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />

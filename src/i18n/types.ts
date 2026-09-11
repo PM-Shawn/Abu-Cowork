@@ -1881,6 +1881,7 @@ export interface TranslationDict {
     unknownMember: string;
     /** Detail / edit row for a stored member no live agent answers to. */
     memberInvalid: string;
+    memberInvalidShort: string;
     memberInvalidRemove: string;
     editInvalidMembers: string;
     teamsEmpty: string;

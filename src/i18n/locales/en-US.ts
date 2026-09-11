@@ -1442,6 +1442,7 @@ const enUS: TranslationDict = {
     aiCreateTeamPrompt: 'Help me put together a team. My requirements are:',
     unknownMember: 'Unknown member',
     memberInvalid: 'Unavailable · the expert was deleted or changed, or its plugin is disabled',
+    memberInvalidShort: 'Unavailable',
     memberInvalidRemove: 'Remove',
     editInvalidMembers: 'These members are no longer available. They stay on the team unless you remove them:',
     teamsEmpty: 'No teams yet',

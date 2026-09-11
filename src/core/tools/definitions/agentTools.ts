@@ -737,7 +737,20 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       }
 
       await ensureParentDir(filePath);
-      await writeTextFile(filePath, mainContent);
+      if (target.existingRaw === null) {
+        // Creating: the host writes only if the manifest is still absent, so
+        // another loop creating the same name since the check above cannot be
+        // overwritten. A manifest now there is that loop's — report it as
+        // existing; any other failure is a real one.
+        try {
+          await writeTextFile(filePath, mainContent, { createNew: true });
+        } catch (err) {
+          if (await exists(filePath)) return format(t.errItemExists, { label, name });
+          throw err;
+        }
+      } else {
+        await writeTextFile(filePath, mainContent);
+      }
 
       // Supporting files, all checked above before the manifest was written.
       const writtenFiles: string[] = [];

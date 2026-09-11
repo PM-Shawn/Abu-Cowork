@@ -667,6 +667,7 @@ describe('save_agent multi-file support', () => {
       expect(writeTextFile).toHaveBeenCalledWith(
         '/Users/testuser/.abu/agents/my-agent/AGENT.md',
         expect.any(String),
+        { createNew: true },
       );
       expect(writeTextFile).toHaveBeenCalledWith(
         '/Users/testuser/.abu/agents/my-agent/scripts/helper.py',
@@ -932,6 +933,8 @@ describe('save_agent / save_skill name guard', () => {
       }));
       const written = vi.mocked(writeTextFile).mock.calls.find(([path]) => path === `${AGENTS_DIR}/reviewer/AGENT.md`);
       expect(parseAgentFile(String(written?.[1]), `${AGENTS_DIR}/reviewer/AGENT.md`)?.systemPrompt).toBe('You review code carefully.');
+      // Replacing is what was asked for: no createNew on the manifest.
+      expect(written).toHaveLength(2);
       expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/reviewer/notes.md`, 'x');
     });
 
@@ -1082,7 +1085,36 @@ describe('save_agent / save_skill name guard', () => {
 
       await saveAgentTool.execute({ name: 'doc-writer', content: agentMd('doc-writer') });
 
-      expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/AGENT.md`, expect.any(String));
+      expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/AGENT.md`, expect.any(String), { createNew: true });
+    });
+
+    // Two loops (team members, IM + desktop) can both find the name free and
+    // both write: the host creates a new manifest only if it is still absent.
+    it('reports a manifest that appeared between the check and the write as existing, writing no files', async () => {
+      vi.mocked(writeTextFile).mockImplementationOnce(async (path) => {
+        vi.mocked(exists).mockImplementation(async (p) => p === path);
+        throw new Error('fs: file already exists and createNew is set');
+      });
+
+      const result = await saveAgentTool.execute({
+        name: 'doc-writer', content: agentMd('doc-writer'), files: [{ path: 'notes.md', content: 'x' }],
+      });
+
+      expect(result).toBe(alreadyExists(label(), 'doc-writer'));
+      expect(writeTextFile).toHaveBeenCalledTimes(1);
+      expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/AGENT.md`, expect.any(String), { createNew: true });
+    });
+
+    it('rethrows a manifest write failure that is not a manifest appearing meanwhile', async () => {
+      vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(saveAgentTool.execute({ name: 'doc-writer', content: agentMd('doc-writer') })).rejects.toThrow('disk full');
+    });
+
+    it('creates with createNew even when overwrite is true but nothing is there yet', async () => {
+      await saveAgentTool.execute({ name: 'doc-writer', content: agentMd('doc-writer'), overwrite: true });
+
+      expect(writeTextFile).toHaveBeenCalledWith(`${AGENTS_DIR}/doc-writer/AGENT.md`, expect.any(String), { createNew: true });
     });
   });
 
@@ -1099,6 +1131,7 @@ describe('save_agent / save_skill name guard', () => {
 
       await saveSkillTool.execute({ name: 'git-commit', content: skillMd('git-commit'), overwrite: true });
       expect(writeTextFile).toHaveBeenCalledWith(`${SKILLS_DIR}/git-commit/SKILL.md`, skillMd('git-commit'));
+      expect(vi.mocked(writeTextFile).mock.calls[0]).toHaveLength(2);
     });
 
     it.each([
@@ -1123,7 +1156,7 @@ describe('save_agent / save_skill name guard', () => {
     it('writes a skill under a name nothing uses', async () => {
       await saveSkillTool.execute({ name: 'git-commit', content: skillMd('git-commit') });
 
-      expect(writeTextFile).toHaveBeenCalledWith(`${SKILLS_DIR}/git-commit/SKILL.md`, skillMd('git-commit'));
+      expect(writeTextFile).toHaveBeenCalledWith(`${SKILLS_DIR}/git-commit/SKILL.md`, skillMd('git-commit'), { createNew: true });
     });
   });
 });

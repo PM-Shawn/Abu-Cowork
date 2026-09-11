@@ -1863,6 +1863,7 @@ const enUS: TranslationDict = {
     agentFromPluginDeleteDisabled: 'Removed when the plugin is uninstalled',
     agentDeleteInTeamsTitle: 'Delete "{name}"?',
     agentDeleteInTeamsMessage: 'It belongs to {count} team(s): {teams}. Deleting it leaves those teams one member short — you will need to adjust them.',
+    agentDeleteLeaderInTeamsMessage: 'It leads {count} team(s): {teams}. Deleting it stops those teams from working until you pick a new leader.',
     agentDeleteAnyway: 'Delete anyway',
     agentSave: 'Save',
     agentSaveAndTest: 'Save & Test',

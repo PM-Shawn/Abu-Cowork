@@ -1864,6 +1864,7 @@ const zhCN: TranslationDict = {
     agentFromPluginDeleteDisabled: '卸载插件才会移除',
     agentDeleteInTeamsTitle: '删除「{name}」？',
     agentDeleteInTeamsMessage: '它在 {count} 个专家团里（{teams}）。删除后这些团队会少一名成员，需要你另行调整。',
+    agentDeleteLeaderInTeamsMessage: '它是 {count} 个专家团的队长（{teams}）。删除后这些团队将无法继续工作，需要你另选队长。',
     agentDeleteAnyway: '仍然删除',
     agentSave: '保存',
     agentSaveAndTest: '保存并测试',

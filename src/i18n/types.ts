@@ -2338,6 +2338,7 @@ export interface TranslationDict {
     /** Deleting an agent that one or more teams reference. */
     agentDeleteInTeamsTitle: string;
     agentDeleteInTeamsMessage: string;
+    agentDeleteLeaderInTeamsMessage: string;
     agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;

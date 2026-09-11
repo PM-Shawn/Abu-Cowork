@@ -81,11 +81,17 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
   const teams = useTeamStore((s) => s.teams);
   // Deleting an agent that a team lists leaves that team with a roleId no
   // agent answers to. Ask first and say which teams — the user decides.
-  const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<{ agent: SubagentDefinition; teams: string[] } | null>(null);
-  const teamsReferencing = (agent: SubagentDefinition): string[] => {
+  const [confirmDeleteAgent, setConfirmDeleteAgent] = useState<{ agent: SubagentDefinition; teams: string[]; leads: string[] } | null>(null);
+  // `leads` is the subset it captains. Losing a member leaves a team one short;
+  // losing the leader stops the team altogether, so the two say different things.
+  const teamsReferencing = (agent: SubagentDefinition): { teams: string[]; leads: string[] } => {
     const roleId = effectiveRoleId(agent);
-    if (!roleId) return [];
-    return teams.filter((team) => team.memberRoleIds.includes(roleId)).map((team) => team.name);
+    if (!roleId) return { teams: [], leads: [] };
+    const referencing = teams.filter((team) => team.memberRoleIds.includes(roleId));
+    return {
+      teams: referencing.map((team) => team.name),
+      leads: referencing.filter((team) => team.leaderRoleId === roleId).map((team) => team.name),
+    };
   };
   const knownToolNames = getAllTools().map((tool) => tool.name);
 
@@ -342,7 +348,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                       title={selectedPluginSource ? t.toolbox.agentFromPluginDeleteDisabled : undefined}
                       onClick={() => {
                         const using = teamsReferencing(selected);
-                        if (using.length > 0) setConfirmDeleteAgent({ agent: selected, teams: using });
+                        if (using.teams.length > 0) setConfirmDeleteAgent({ agent: selected, ...using });
                         else handleDelete(selected);
                         setMenuAgent(null);
                       }}
@@ -498,10 +504,15 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       <ConfirmDialog
         open={!!confirmDeleteAgent}
         title={format(t.toolbox.agentDeleteInTeamsTitle, { name: confirmDeleteAgent?.agent.name ?? '' })}
-        message={format(t.toolbox.agentDeleteInTeamsMessage, {
-          count: String(confirmDeleteAgent?.teams.length ?? 0),
-          teams: (confirmDeleteAgent?.teams ?? []).join('、'),
-        })}
+        message={confirmDeleteAgent?.leads.length
+          ? format(t.toolbox.agentDeleteLeaderInTeamsMessage, {
+              count: String(confirmDeleteAgent.leads.length),
+              teams: confirmDeleteAgent.leads.join('、'),
+            })
+          : format(t.toolbox.agentDeleteInTeamsMessage, {
+              count: String(confirmDeleteAgent?.teams.length ?? 0),
+              teams: (confirmDeleteAgent?.teams ?? []).join('、'),
+            })}
         confirmText={t.toolbox.agentDeleteAnyway}
         cancelText={t.common.cancel}
         variant="danger"

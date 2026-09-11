@@ -554,6 +554,7 @@ export default function TeamView() {
           // Same predicate the run uses (resolveRoleId), so the count here never
           // disagrees with the "队员 · N" the workspace tab shows mid-run.
           const leader = resolveRoleId(detailTeam.leaderRoleId) ?? undefined;
+          const leaderGhostName = leader ? undefined : roleIdAgentName(detailTeam.leaderRoleId);
           const members = memberIds.map((id) => ({ id, agent: resolveRoleId(id) ?? undefined }));
           const validMembers = members.filter((m) => m.agent);
           const invalidMembers = invalidMemberLabels(members.filter((m) => !m.agent).map((m) => m.id), t.team.memberInvalidNamed, t.team.memberInvalidNumbered);
@@ -583,7 +584,19 @@ export default function TeamView() {
             <div className="space-y-5">
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
-                {row(leader, t.team.memberInvalid)}
+                {leader
+                  ? row(leader, t.team.memberInvalid)
+                  : (
+                    // Same two-line ghost as the members below, named when the id
+                    // carries a name. No 移除: a leader is replaced via 编辑.
+                    <div className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5" data-testid="team-leader-invalid">
+                      <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />
+                      <InvalidMemberText
+                        label={leaderGhostName ? format(t.team.memberInvalidNamed, { name: leaderGhostName }) : t.team.memberInvalidShort}
+                        reason={t.team.memberInvalidReason}
+                      />
+                    </div>
+                  )}
               </div>
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{format(t.team.detailMembers, { count: String(validMembers.length) })}</div>

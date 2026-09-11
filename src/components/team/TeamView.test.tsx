@@ -254,6 +254,34 @@ describe('TeamView', () => {
     expect(card.textContent).toContain('1 名成员');
   });
 
+  it('teams tab: an unresolvable leader in the detail is the same two-line ghost as a member, without 移除', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('校对', { roleId: 'r-mem' });
+    discoveryState.agents = [{ name: '校对' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'role-gone-lead', memberRoleIds: ['role-gone-lead', 'r-mem'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    const ghost = screen.getByTestId('team-leader-invalid');
+    const [primary, caption] = Array.from(ghost.querySelectorAll('span > span')).map((el) => el.textContent);
+    expect(primary).toBe('已失效');
+    expect(caption).toBe('专家已删除、修改，或所属插件已停用');
+    // A leader is replaced via 编辑, never removed from the detail.
+    expect(ghost.querySelector('button')).toBeNull();
+    expect(screen.queryByText('移除')).toBeNull();
+    // The leader is not a member: it never joins the member ghosts.
+    expect(screen.queryByTestId('team-member-invalid-role-gone-lead')).toBeNull();
+  });
+
+  it('teams tab: an unresolvable leader whose id carries a name is shown by that name', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'builtin:产品经理', memberRoleIds: ['builtin:产品经理'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    const ghost = screen.getByTestId('team-leader-invalid');
+    expect(ghost.textContent).toContain('「产品经理」已失效');
+    expect(ghost.textContent).toContain('专家已删除、修改，或所属插件已停用');
+  });
+
   it('teams tab: the detail labels an unresolvable member as invalid and removes it on request', () => {
     settingsState.activeTeamTab = 'teams';
     seedAgent('分析师', { roleId: 'r-lead' });

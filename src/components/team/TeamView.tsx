@@ -316,7 +316,6 @@ export default function TeamView() {
   useEffect(() => { setSearch(''); }, [activeTeamTab]);
 
   const activeTeams = teams;
-  const agents = useMemberPool();
 
   const navItems = [
     { id: 'members' as TeamTab, label: t.team.tabMembers, icon: Bot },
@@ -407,7 +406,7 @@ export default function TeamView() {
                       testId: `team-row-${team.name}`,
                       name: team.name,
                       description: format(t.team.teamRowSummary, {
-                        leader: roleLabel(agents, team.leaderRoleId, t.team.unknownMember),
+                        leader: resolveRoleId(team.leaderRoleId)?.name ?? t.team.memberInvalid,
                         count: String(team.memberRoleIds.filter((id) => id !== team.leaderRoleId && resolveRoleId(id) !== null).length),
                       }),
                       avatar: <TeamAvatar avatar={team.avatar} />,

@@ -1442,7 +1442,7 @@ const zhCN: TranslationDict = {
     detailEdit: '编辑',
     aiCreateTeamPrompt: '帮我组建一个团队，我的需求是：',
     unknownMember: '未知队员',
-    memberInvalid: '已失效 · 专家已被删除或修改',
+    memberInvalid: '已失效 · 专家已删除、修改，或所属插件已停用',
     memberInvalidRemove: '移除',
     editInvalidMembers: '以下成员已失效。保存时会保留，除非你移除：',
     teamsEmpty: '还没有团队',

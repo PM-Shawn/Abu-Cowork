@@ -3358,6 +3358,8 @@ const zhCN: TranslationDict = {
       installed: '技能 "{name}" 安装成功（{count} 个文件）{skippedNote}{linksNote}，已出现在"我的技能"中。',
       draftProposed: '草稿 "{name}" 已提议。用户可在聊天里直接采纳或拒绝；也可到「工具箱 → 技能」的草稿面板处理。路径：{path}。',
       skillCreated: '技能 "{name}" 已创建，立即生效。路径：{path}',
+      errNameInUse: 'Error: 技能「{name}」未创建，没有写入任何文件：这个名字已被另一个技能占用（内置的、插件提供的（包括已停用的插件）、企业下发的，或另一个只差大小写的技能或文件夹），用它新建会覆盖或遮住那个技能。请换一个名字。',
+      errSkillExists: 'Error: 技能「{name}」未创建，没有写入任何文件：同名技能已经存在。要新建技能，请换一个名字；要修改这个已有技能，请对它用 patch 或 edit——仅当用户要求修改它时。',
     },
     system: {
       errSearchNeedsQuery: 'Error: action=search 时必须提供 query 参数',

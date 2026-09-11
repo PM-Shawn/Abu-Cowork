@@ -77,6 +77,13 @@ describe('SkillLoader plugin component locations', () => {
     expect(loader.findMatchingSkills('review')).toEqual([]);
     expect(loader.getAvailableSkills().map(s => s.name)).not.toContain('review');
     expect(loader.getAvailableSkills({ includeDisabledPlugins: true }).map(s => s.name)).toContain('review');
+    // A disabled plugin's skills still claim their names, and so does the
+    // plugin's `hello` the user's own shadows.
+    expect(loader.getNameClaims()).toEqual(expect.arrayContaining([
+      { name: 'review', source: 'plugin' },
+      { name: 'hello', source: 'user' },
+      { name: 'hello', source: 'plugin' },
+    ]));
     expect(loader.getSkill('hello')?.source).toBe('user');
     mockReadTextFile.mockClear();
     expect(await loader.refreshSkill('review')).toBeUndefined();
@@ -320,6 +327,39 @@ describe('SkillLoader.discoverSkills · workspace awareness', () => {
     // Workspace version should win (project source, priority 1)
     expect(shared!.content).toContain('WORKSPACE');
     expect(shared!.source).toBe('project');
+  });
+
+  it('getNameClaims keeps every scanned skill, the ones first-win shadowed included', async () => {
+    const workspace = '/Users/testuser/projects/myapp';
+    const draftDir = '/Users/testuser/.abu/projects/-Users-testuser-projects-myapp/skills/drafts';
+    stubFs(
+      {
+        [draftDir]: ['shared-name'],
+        '/Users/testuser/.abu/skills': ['shared-name', 'Solo'],
+      },
+      {
+        [`${draftDir}/shared-name/SKILL.md`]: SKILL_TEMPLATE('shared-name'),
+        '/Users/testuser/.abu/skills/shared-name/SKILL.md': SKILL_TEMPLATE('shared-name'),
+        '/Users/testuser/.abu/skills/Solo/SKILL.md': SKILL_TEMPLATE('Solo'),
+      },
+    );
+
+    const loader = new SkillLoader();
+    await loader.discoverSkills(workspace);
+
+    // The draft wins the name, so the user skill under it is out of the map…
+    expect(loader.getSkill('shared-name')?.source).toBe('draft');
+    // …but not out of the claims.
+    expect(loader.getNameClaims()).toEqual(expect.arrayContaining([
+      { name: 'shared-name', source: 'draft' },
+      { name: 'shared-name', source: 'user' },
+      { name: 'Solo', source: 'user' },
+    ]));
+
+    // A re-scan starts over.
+    stubFs({}, {});
+    await loader.discoverSkills(workspace);
+    expect(loader.getNameClaims()).toEqual([]);
   });
 
   it('switching workspace causes full re-scan', async () => {

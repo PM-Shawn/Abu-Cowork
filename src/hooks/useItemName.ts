@@ -1,27 +1,8 @@
 import { useState } from 'react';
-import { ITEM_NAME_RE, AGENT_NAME_RE } from '@/utils/validation';
+import { ITEM_NAME_RE, AGENT_NAME_RE, isItemNameTaken } from '@/utils/validation';
 
-/**
- * Does `candidate` collide with a name some OTHER item already uses?
- *
- * Case-insensitive: an item lives in `~/.abu/<folder>/<name>/`, and the macOS
- * and Windows file systems treat `Reviewer` and `reviewer` as the same folder —
- * saving one would overwrite the other. The item being edited (`existingName`)
- * never collides with itself, so renaming `reviewer` → `Reviewer` stays allowed.
- */
-export function isItemNameTaken(
-  candidate: string,
-  existingName: string | null,
-  takenNames: Iterable<string>,
-): boolean {
-  const wanted = candidate.trim().toLowerCase();
-  if (!wanted) return false;
-  for (const taken of takenNames) {
-    if (taken === existingName) continue;
-    if (taken.toLowerCase() === wanted) return true;
-  }
-  return false;
-}
+// Re-exported: the editors import it from here alongside the hook.
+export { isItemNameTaken };
 
 /**
  * Shared name validation logic for AgentEditor and SkillEditor.

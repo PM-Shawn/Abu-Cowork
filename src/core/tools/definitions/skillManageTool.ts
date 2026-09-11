@@ -440,6 +440,9 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
  */
 const RESERVED_SKILL_SOURCES: ReadonlySet<SkillSource> = new Set<SkillSource>(['builtin', 'plugin', 'enterprise']);
 
+/** The workspace-auto subfolder drafts live in (see drafts.ts) — never a skill's folder. */
+const DRAFTS_DIRNAME = 'drafts';
+
 async function folderNames(dir: string): Promise<string[]> {
   try {
     return (await readDir(dir)).filter((entry) => entry.isDirectory).map((entry) => entry.name);
@@ -457,9 +460,10 @@ async function folderNames(dir: string): Promise<string[]> {
  * - `in-use`: a built-in / plugin (disabled included) / enterprise skill has
  *   the name in any letter case; another skill, or a folder in the
  *   workspace-auto or drafts dir, has it in other letter case (the same folder
- *   on macOS / Windows); or a workspace-auto folder of that name is already
- *   there — its SKILL.md filed under another name, or none. Writing would
- *   replace or hide what is there.
+ *   on macOS / Windows); a workspace-auto folder of that name is already
+ *   there — its SKILL.md filed under another name, or none; or the name is
+ *   `drafts`, the folder the drafts live in. Writing would replace or hide
+ *   what is there.
  * - `exists`: one of the user's skills has exactly this name. Changing it is
  *   patch / edit's job.
  *
@@ -469,11 +473,11 @@ async function folderNames(dir: string): Promise<string[]> {
 async function checkCreateName(name: string, workspacePath: string): Promise<'in-use' | 'exists' | null> {
   const claims = skillLoader.getNameClaims();
   const reserved = claims.filter((claim) => RESERVED_SKILL_SOURCES.has(claim.source)).map((claim) => claim.name);
-  if (isItemNameTaken(name, null, reserved)) return 'in-use';
+  if (isItemNameTaken(name, null, [...reserved, DRAFTS_DIRNAME])) return 'in-use';
 
   const skillsDir = await getWorkspaceAutoSkillsDir(workspacePath);
   const autoFolders = await folderNames(skillsDir);
-  const draftFolders = await folderNames(joinPath(skillsDir, 'drafts'));
+  const draftFolders = await folderNames(joinPath(skillsDir, DRAFTS_DIRNAME));
   if (isItemNameTaken(name, name, [...claims.map((claim) => claim.name), ...autoFolders, ...draftFolders])) {
     return 'in-use';
   }

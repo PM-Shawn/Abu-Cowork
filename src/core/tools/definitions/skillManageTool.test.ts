@@ -88,6 +88,9 @@ beforeEach(() => {
   mockAtomicWriteWithBackup.mockResolvedValue({ wrote: true, backupPath: null });
   mockExists.mockResolvedValue(true);
   mockReadTextFile.mockResolvedValue('');
+  // clearAllMocks keeps implementations: reset the ones tests below replace.
+  mockReadDir.mockResolvedValue([]);
+  mockMkdir.mockResolvedValue(undefined);
 
   // Reset settings safety config
   useSettingsStore.setState({
@@ -97,6 +100,7 @@ beforeEach(() => {
 
   // Reset skillLoader state
   vi.spyOn(skillLoader, 'discoverSkills').mockResolvedValue([]);
+  vi.spyOn(skillLoader, 'getNameClaims').mockReturnValue([]);
 });
 
 // ── Workspace enforcement ──────────────────────────────────────────────
@@ -443,9 +447,6 @@ describe('skill_manage · create name guard', () => {
 
   beforeEach(() => {
     vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
-    claims();
-    folders({});
-    mockMkdir.mockResolvedValue(undefined);
   });
 
   describe('refused', () => {
@@ -505,6 +506,14 @@ describe('skill_manage · create name guard', () => {
       folders({ [WS_AUTO]: ['foo'] });
       expect(await create('foo')).toEqual({ success: false, error: inUse('foo') });
       expect(await create('foo', { agent_proposed: true })).toEqual({ success: false, error: inUse('foo') });
+      expectNothingWritten();
+    });
+
+    it('"drafts", the folder the drafts live in, even before it exists', async () => {
+      // skills/drafts/SKILL.md would make the drafts folder a skill too — and a
+      // later delete of that skill removes the folder, every draft with it.
+      expect(await create('drafts')).toEqual({ success: false, error: inUse('drafts') });
+      expect(await create('drafts', { agent_proposed: true })).toEqual({ success: false, error: inUse('drafts') });
       expectNothingWritten();
     });
 

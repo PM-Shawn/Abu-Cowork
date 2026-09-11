@@ -67,28 +67,33 @@ function useRealFs() {
 }
 
 /**
- * `discoverAgents` scans `.abu/agents` inside the OPENED WORKSPACE, so every
- * manifest it reads is repository content that arrived by `git clone` — which
- * materialises a mode-120000 entry as a real symlink. The manifest names the
- * agent and supplies its system prompt, so a linked one puts a file the
- * directory does not own into the prompt; a FIFO is worse than wrong, because
- * `readTextFile` lands on `fs.readFileSync` inside
+ * `discoverAgents` scans `~/.abu/agents`, which users fill by dropping whole
+ * folders into it (see registryWatcher) — a copied repository checkout keeps
+ * its symlinks, since `git clone` materialises a mode-120000 entry as a real
+ * link. The manifest names the agent and supplies its system prompt, so a
+ * linked one puts a file the directory does not own into the prompt; a FIFO is
+ * worse than wrong, because `readTextFile` lands on `fs.readFileSync` inside
  * `ipcMain.handle('tauri:invoke')` — on the MAIN process event loop — where a
  * writer-less pipe never returns.
  */
 describe('AgentRegistry.discoverAgents over a real tree', () => {
   let root: string;
-  let workspaceAgents: string;
+  let userAgents: string;
+  let cwdAgents: string;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'abu-agent-registry-'));
-    workspaceAgents = join(root, 'cloned-repo', '.abu', 'agents');
-    mkdirSync(workspaceAgents, { recursive: true });
-
     // $HOME lives inside the fixture so the user-level scan root cannot reach
     // the developer's real ~/.abu/agents, and there is no bundled resource dir.
+    userAgents = join(root, 'home', '.abu', 'agents');
+    mkdirSync(userAgents, { recursive: true });
     mockHomeDir.mockResolvedValue(join(root, 'home'));
-    mockResolve.mockResolvedValue(workspaceAgents);
+    // What `path.resolve('.abu/agents')` answers in the main process: a
+    // directory under whatever cwd the app was launched from.
+    cwdAgents = join(root, 'launch-cwd', '.abu', 'agents');
+    mkdirSync(cwdAgents, { recursive: true });
+    mockResolve.mockClear();
+    mockResolve.mockResolvedValue(cwdAgents);
     // `resolveResource` is absent from the global path mock, so the registry's
     // own try/catch around it settles the bundled-agents dir as "none".
     useRealFs();
@@ -108,24 +113,44 @@ describe('AgentRegistry.discoverAgents over a real tree', () => {
   }
 
   it('adopts an agent whose AGENT.md the directory owns', async () => {
-    mkdirSync(join(workspaceAgents, 'helper'), { recursive: true });
-    writeFileSync(join(workspaceAgents, 'helper', 'AGENT.md'), '---\nname: helper\n---\n# body');
+    mkdirSync(join(userAgents, 'helper'), { recursive: true });
+    writeFileSync(join(userAgents, 'helper', 'AGENT.md'), '---\nname: helper\n---\n# body');
 
     expect(await discoveredFromDisk()).toEqual(['helper']);
+  });
+
+  // The launch cwd is the repo root under `electron:dev` / E2E, `/` for a
+  // macOS app opened from Finder, the install dir on Windows — never the
+  // workspace the user opened. An agent there must not load, let alone
+  // replace the user's own agent of the same name.
+  it('does not scan an agents dir under the launch cwd', async () => {
+    mkdirSync(join(userAgents, 'helper'), { recursive: true });
+    writeFileSync(join(userAgents, 'helper', 'AGENT.md'), '---\nname: helper\ndescription: mine\n---\n# body');
+    for (const name of ['helper', 'cwd-only']) {
+      mkdirSync(join(cwdAgents, name), { recursive: true });
+      writeFileSync(join(cwdAgents, name, 'AGENT.md'), `---\nname: ${name}\ndescription: from cwd\n---\n# body`);
+    }
+
+    const registry = new AgentRegistry();
+    await registry.discoverAgents();
+
+    expect(registry.hasLocal('cwd-only')).toBe(false);
+    expect(registry.getAgent('helper')?.filePath).toBe(join(userAgents, 'helper', 'AGENT.md'));
+    expect(mockResolve).not.toHaveBeenCalled();
   });
 
   it('does not adopt an agent whose AGENT.md is a symlink', async () => {
     mkdirSync(join(root, 'elsewhere'), { recursive: true });
     writeFileSync(join(root, 'elsewhere', 'AGENT.md'), '---\nname: stolen\n---\n# from outside');
-    mkdirSync(join(workspaceAgents, 'linked'), { recursive: true });
-    symlinkSync(join(root, 'elsewhere', 'AGENT.md'), join(workspaceAgents, 'linked', 'AGENT.md'));
+    mkdirSync(join(userAgents, 'linked'), { recursive: true });
+    symlinkSync(join(root, 'elsewhere', 'AGENT.md'), join(userAgents, 'linked', 'AGENT.md'));
 
     expect(await discoveredFromDisk()).toEqual([]);
   });
 
   it.skipIf(process.platform === 'win32')('does not read an AGENT.md that is a FIFO', async () => {
-    mkdirSync(join(workspaceAgents, 'pipey'), { recursive: true });
-    const fifo = join(workspaceAgents, 'pipey', 'AGENT.md');
+    mkdirSync(join(userAgents, 'pipey'), { recursive: true });
+    const fifo = join(userAgents, 'pipey', 'AGENT.md');
     execFileSync('mkfifo', [fifo]);
 
     expect(await discoveredFromDisk()).toEqual([]);

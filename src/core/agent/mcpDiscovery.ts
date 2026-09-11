@@ -6,7 +6,7 @@
  * and install servers with user confirmation.
  */
 
-import { resolveResource } from '@tauri-apps/api/path';
+import { resolveResource, resolve } from '@tauri-apps/api/path';
 import { exists } from '@tauri-apps/plugin-fs';
 import { useMCPStore } from '../../stores/mcpStore';
 import { getI18n, format } from '../../i18n';
@@ -469,7 +469,6 @@ async function resolveBundledResource(dirName: string): Promise<string | null> {
   // Dev mode: Electron resolves from the repository root, while Tauri resolves
   // from src-tauri/. Prefer the extension's real build output, then retain the
   // compatibility copy used by the legacy host.
-  const { resolve } = await import('@tauri-apps/api/path');
   const candidates = dirName === 'browser-extension'
     ? [
         'abu-chrome-extension/dist',

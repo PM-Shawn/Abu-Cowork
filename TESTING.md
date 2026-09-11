@@ -51,7 +51,7 @@ under `scripts/`). E2E (`e2e/*.spec.ts`) is handled by Playwright and runs as a 
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Quarantined specs (`e2e/**/*.spec.ts`, `tests/e2e/**/*.spec.ts`) | 0 |
 | Web E2E (`e2e/*.spec.ts`, Playwright) | 8 |
-| Real-Electron E2E (`tests/e2e/*.spec.ts`) | 32 |
+| Real-Electron E2E (`tests/e2e/*.spec.ts`) | 33 |
 | Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 60 |
 <!-- test-inventory:end -->
 
@@ -109,6 +109,71 @@ Rules:
   the evidence in a comment (see `NOTICE_SQLITE_TEST_TIMEOUT_MS` in `electron/tauriMigration.test.ts`).
   No timeout can interrupt a sync body anyway — vitest only checks elapsed time after it returns —
   so that ceiling is a slowness threshold, not hang protection. Never raise `testTimeout` globally.
+
+### Mocked modules must not be `await import()`ed concurrently from one module
+
+Verified 2026-09-11 on vitest 4.1.10 / vite 8.0.16 with a probe (reproduced 5/5 and
+against real call sites — see the regression tests named below):
+
+```ts
+vi.mock('../core/memdir/scan', async () => ({ ...(await vi.importActual('../core/memdir/scan')), __mocked: true }));
+await Promise.all([import('../core/memdir/scan'), import('../core/memdir/scan')]);
+// → first importer gets the mock, SECOND importer gets the REAL module (and resolves first)
+```
+
+Mechanism (Vite `module-runner.js` `directRequest` + vitest `startVitestModuleRunner`
+`requestWithMockedModule`): Vite creates **one `callstack` array per evaluated module** and every
+`import()` issued from that module shares it. For a factory (`vi.mock(id, factory)`) mock, vitest
+pushes the mock id onto that array, `await`s the factory, then splices it back out. A second
+`import()` of the same mocked id from the same module that arrives inside that window sees its own
+mock id in the callstack, is classified as a *mock factory importing the module it mocks* (the
+self-import escape hatch), and is served `?_vitest_original` — the real module. Vitest's source
+even says: "this will not work if user does Promise.all(import(), import())".
+
+Consequences that matter here:
+
+- **Pre-warming does not help.** The push/await/splice bracket runs on every request, even when
+  the factory result is already cached, so a prior import of the mocked module (static or
+  dynamic) does not close the window.
+- The symptom is usually *silent*: the real Tauri plugin throws `window is not defined` from
+  `invoke()`, a `try/catch` turns that into a degraded result (placeholder text, empty memory
+  list), and the test asserts against the wrong data. Only sometimes does it surface as
+  "single-file green / `npm run verify` red".
+- Imports from *different* modules do not interfere (separate callstacks). Static import chains
+  are evaluated sequentially and are safe.
+
+Rules:
+
+- **Production source: import a mocked module statically** from any code path that can run
+  concurrently — `Promise.all` fan-outs (`imageRehydration.ts`), batch subagents
+  (`subagentLoop.ts`), parallel conversations (`orchestrator.ts`), fire-and-forget appends
+  (`pathUtils.ensureParentDir`), sidecar request handlers (`agentLoopRunner.ts`'s
+  `native.invoke`). "Mocked" means: any `vi.mock` target in `src/test/setup.ts` (all
+  `@tauri-apps/*` packages) or in the test files that exercise the module. The sidecar bundle
+  guard is not an argument for a dynamic import: `@tauri-apps/plugin-fs`, `api/core`, `api/path`,
+  `plugin-os` are shimmed by bare specifier and `memdir/scan.ts` by module, so the static form
+  passes `npm run build:sidecar` unchanged.
+- **If the dynamic import exists for a hard reason** (a module cycle — `memdir/write.ts` →
+  `settingsReader`; a Tauri-only package with no sidecar shim — `tauriFetch.ts` →
+  `@tauri-apps/plugin-http`), memoize it in a module-level promise so the module issues exactly
+  **one** `import()` for its lifetime (the `_loadPromise` pattern in `tauriFetch.ts`). Do not
+  "serialize with a lock" at each call site; do not rely on pre-warming.
+- **Tests: never `Promise.all([import(x), import(x)])`.** Import once (top level or in
+  `beforeAll`), then fan out.
+- Remaining dynamic sites of mocked modules were audited on 2026-09-11 and left as-is because
+  their callers are single-shot per module (`logger.ts` debounced flush, `computerUseStatus.ts`
+  guarded init, `pluginHeartbeat.ts`, `skillManageTool.ts` `remove`, `svgExport.ts`, the
+  `src/components/**` save/reveal handlers) or run sequentially inside one agent loop (tool calls
+  execute one at a time: `recallTool.ts`, `memoryTools.ts`, `webTools.ts`, `extractor.ts`,
+  `agentTools.ts`). If one of those gains a concurrent caller, apply the rules above first.
+- Detection: `grep -rn "await import(" src --include='*.ts' | grep -v test` cross-referenced
+  with the `vi.mock(` targets in `src/test/setup.ts`; then ask whether two calls from that module
+  can overlap in one test.
+
+Regression tests: `pathUtils.test.ts` ("ensureParentDir under concurrency"),
+`imageRehydration.test.ts` ("rehydrates every stripped image when several are read
+concurrently"), `subagentRecovery.integration.test.ts` ("injects the mocked memdir headers into
+BOTH concurrently started runs"), `orchestrator.test.ts` ("memory index under concurrency").
 
 **Flaky test quarantine:** If a test is found to be flaky (non-deterministic failure), open a
 GitHub issue tagged `flaky-test` and move the test into `src/__tests__/quarantine/` with a

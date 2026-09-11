@@ -1703,7 +1703,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close} aria-label={`👥${pinnedTeam.name}`}>
           <span aria-hidden="true" className={chipMarkClass}><TeamAvatar avatar={pinnedTeam.avatar} size="xs" round /></span>
           <X aria-hidden="true" className={chipCloseClass} />
-          <span className="truncate">{pinnedTeam.name}</span>
+          {/* Last stop of the toolbar's degradation ladder: the avatar alone
+              still says which team is pinned, and `aria-label` keeps the name
+              for assistive tech. Only the team chip earns this — `@agent` and
+              `/skill` have no icon, so a nameless mark would say nothing. */}
+          <span className="truncate @max-[330px]:hidden">{pinnedTeam.name}</span>
         </button>
       )}
       {selectedAgent && (
@@ -1941,15 +1945,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           {/* Bottom Toolbar */}
           {isWelcome ? (
             /* Workspace context lives below the input card. The send toolbar
-               stays a single, calm row even in a narrow center pane. */
-            <div className="flex items-center gap-2 px-5 pb-3.5">
+               stays a single, calm row even in a narrow center pane — same
+               degradation ladder as the chat variant below, minus the context
+               ring (there is no conversation yet to measure). */
+            <div data-testid="composer-toolbar" className="@container flex items-center gap-2 px-5 pb-3.5">
               <div className="flex min-w-0 flex-1 items-center gap-1">
                 {plusMenu}
                 {composerChips}
               </div>
 
               {/* Model picker — right-aligned, before Start button */}
-              <div className="ml-auto flex min-w-0 max-w-full items-center gap-1">
+              <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={null} />
                 <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
                   <button
@@ -1990,16 +1996,38 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               </div>
             </div>
           ) : (
-            /* Chat variant: [+] --- [Model ∨] [Stop/Send] */
-            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 pb-2.5 pt-0.5">
-              {/* Left Actions */}
-              <div className="flex min-w-0 items-center gap-1">
+            /* Chat variant: [+] [chips] --- [Perm] [Model ∨] [◯] [Stop/Send]
+               One row at every width. This row used to be `flex-wrap` with two
+               content-sized groups, and CSS resolves wrapping against content
+               size *before* it shrinks anything: once the workspace panel
+               starved the chat column, the whole right half went to a second,
+               `ml-auto`-aligned line instead of the model name truncating the
+               way the code below intends (measured 72px tall at a ~300px
+               toolbar; the guard for it is tests/e2e/composer-narrow-toolbar).
+
+               What actually holds the row together is `flex-1` on the left
+               group below — a zero basis means it can only ever take leftover
+               space, so it yields continuously instead of forcing a break.
+               Dropping `flex-wrap` on top of that is belt and braces: with the
+               zero basis in place the row no longer wraps even if `flex-wrap`
+               comes back, so don't read its absence as the fix.
+
+               Space is then given up in a fixed order: chip names truncate →
+               the permission label collapses to its icon → the context ring
+               hides → the chip goes avatar-only. `+` and send/stop never move.
+               Widths are queried on this toolbar (`@container`), not the
+               window: this pane narrows while the window itself stays wide. */
+            <div data-testid="composer-toolbar" className="@container flex items-center gap-x-2 px-4 pb-2.5 pt-0.5">
+              {/* Left Actions — `flex-1` on a zero basis, so the chips absorb
+                  every bit of slack and give it back first. Load-bearing: see
+                  the note above before "simplifying" it back to `flex`. */}
+              <div className="flex min-w-0 flex-1 items-center gap-1">
                 {plusMenu}
                 {composerChips}
               </div>
 
               {/* Right Actions: Model picker + Context indicator + Send / Stop */}
-              <div className="ml-auto flex min-w-0 max-w-full items-center gap-1">
+              <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
                 <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
@@ -2023,9 +2051,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   />
                 </div>
 
-                {/* Context usage ring — between model picker and send button */}
+                {/* Context usage ring — between model picker and send button.
+                    Third rung of the ladder: at the narrowest widths its 30px
+                    buy back a readable model name, and the same number is one
+                    click away in the usage chip under the composer. */}
                 {activeConvIdForIndicator && (
-                  <div className="flex items-center justify-center h-7 px-1">
+                  <div className="flex items-center justify-center h-7 px-1 @max-[360px]:hidden">
                     <ContextIndicator conversationId={activeConvIdForIndicator} />
                   </div>
                 )}

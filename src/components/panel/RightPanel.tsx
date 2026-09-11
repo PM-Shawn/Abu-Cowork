@@ -7,8 +7,10 @@ import WorkspacePanel from './workspace/WorkspacePanel';
 import {
   PREVIEW_MIN_WIDTH,
   clampChatWidth,
+  clampNarrowPanelWidth,
   resolveChatWidth,
   getViewportWidth,
+  useViewportWidth,
 } from './panelWidths';
 
 // Narrow mode (task summary / empty) keeps its own fixed, resizable width.
@@ -92,12 +94,19 @@ export default function RightPanel() {
         usePreviewStore.getState().setChatWidth(next);
       };
     } else {
-      // Narrow mode: the divider resizes the panel itself.
+      // Narrow mode: the divider resizes the panel itself — bounded by what the
+      // chat column can spare, not by MAX_PANEL_WIDTH alone.
       const startWidth = dragWidthRef.current ?? PANEL_WIDTH;
       onMouseMove = (ev) => {
         ev.preventDefault();
         const delta = startX - ev.clientX;
-        const newWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, startWidth + delta));
+        const newWidth = clampNarrowPanelWidth(
+          startWidth + delta,
+          getViewportWidth(),
+          sidebarOpen,
+          MIN_PANEL_WIDTH,
+          MAX_PANEL_WIDTH,
+        );
         setDragWidth(newWidth);
       };
     }
@@ -222,7 +231,20 @@ export default function RightPanel() {
 
   // Narrow-panel width (only meaningful when NOT wide — in wide mode the panel
   // flex-fills and the chat owns the width).
-  const currentWidth = dragWidth ?? PANEL_WIDTH;
+  //
+  // Re-clamped at render time, the way resolveChatWidth is: a width that was
+  // fine when dragged would otherwise keep starving the chat after the window
+  // shrinks or the sidebar opens, and would stay shrunk after the space comes
+  // back. The default is clamped too — on a small window with the sidebar open,
+  // even the untouched 320 leaves the chat below its floor.
+  const viewportWidth = useViewportWidth();
+  const currentWidth = clampNarrowPanelWidth(
+    dragWidth ?? PANEL_WIDTH,
+    viewportWidth,
+    !sidebarCollapsed,
+    MIN_PANEL_WIDTH,
+    MAX_PANEL_WIDTH,
+  );
 
   // Hide the panel when collapsed (the toggle lives in the title bar), when the
   // app is not on the chat view, or before a conversation has anything to show.

@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import type { SubagentDefinition, SubagentMetadata } from '@/types';
+import type { SubagentDefinition } from '@/types';
 
-// Discovery metadata — the installed.json-backed authority on plugin ownership.
-const discovery: { agents: SubagentMetadata[] } = { agents: [] };
-vi.mock('@/stores/discoveryStore', () => ({
-  useDiscoveryStore: { getState: () => discovery },
+// Activation records — the persisted, fail-closed ownership the execution gate
+// uses. `owner`: a key = plugin-owned, null = conflicting claims, undefined =
+// independent / unknown. `ready`: whether records have been read from disk.
+const activation: { owners: Record<string, string | null | undefined>; ready: boolean } = { owners: {}, ready: true };
+vi.mock('@/core/plugin/activationPolicy', () => ({
+  pluginOwnerForAgent: (agent: { filePath: string }) => activation.owners[agent.filePath],
+  pluginActivationRecordsReady: () => activation.ready,
 }));
 
 const registry: { agents: SubagentDefinition[] } = { agents: [] };
@@ -27,7 +30,7 @@ function def(name: string, extra: Partial<SubagentDefinition> = {}): SubagentDef
 }
 
 describe('roleIdentity', () => {
-  beforeEach(() => { registry.agents = []; discovery.agents = []; saved.length = 0; });
+  beforeEach(() => { registry.agents = []; activation.owners = {}; activation.ready = true; saved.length = 0; });
 
   it('recognises builtin agents by the in-memory marker or the bundled resource dir', () => {
     expect(isBuiltinAgent({ filePath: '__builtin__' })).toBe(true);
@@ -62,8 +65,48 @@ describe('roleIdentity', () => {
     expect(saved[0].filePath).toBe('/Users/me/.abu/agents/b/AGENT.md');
   });
 
-  it('before discovery lists the agent (cold start), the frontmatter source: decides: plugin agents get a name-keyed plugin: id and never a role-id written', async () => {
-    // discovery.agents is empty here — nothing has been scanned yet.
+  it('an activation-record owner makes an agent plugin-owned even when its frontmatter has no source: key', async () => {
+    // `source:` in AGENT.md is only a cache — an agent installed before the key
+    // existed has none. Ownership follows the persisted activation records, or
+    // ensureRoleId would write a role-id into the plugin's file.
+    const noSource = def('y');
+    registry.agents = [noSource];
+    activation.owners[noSource.filePath] = 'x@official';
+    expect(effectiveRoleId(noSource)).toBe('plugin:y');
+    expect(resolveRoleId('plugin:y')?.name).toBe('y');
+    const ensured = await ensureRoleId(noSource);
+    expect(ensured).toEqual({ roleId: 'plugin:y', wrote: false });
+    expect(saved).toHaveLength(0);
+  });
+
+  it('conflicting ownership claims (owner null) fail closed: plugin-managed, never written', async () => {
+    const contested = def('c');
+    registry.agents = [contested];
+    activation.owners[contested.filePath] = null;
+    expect(effectiveRoleId(contested)).toBe('plugin:c');
+    const ensured = await ensureRoleId(contested);
+    expect(ensured).toEqual({ roleId: 'plugin:c', wrote: false });
+    expect(saved).toHaveLength(0);
+  });
+
+  it('an orphaned frontmatter source: (records ready, no plugin claims the file) is a user agent', async () => {
+    // Plugin uninstalled, AGENT.md left behind in ~/.abu/agents with a stale
+    // `source:` key — no activation record claims it, so it is the user's now.
+    const orphan = def('z', { roleId: 'role-z', source: { kind: 'plugin', plugin: 'gone@official' } });
+    registry.agents = [orphan];
+    expect(effectiveRoleId(orphan)).toBe('role-z');
+    expect(resolveRoleId('plugin:z')).toBeNull();
+    // Deliberate: the file is user-owned now, so joining a team pins a role-id in it.
+    const bare = def('w', { source: { kind: 'plugin', plugin: 'gone@official' } });
+    const ensured = await ensureRoleId(bare);
+    expect(ensured.wrote).toBe(true);
+    expect(ensured.roleId).toMatch(/^role-/);
+    expect(saved).toHaveLength(1);
+    expect(saved[0].filePath).toBe('/Users/me/.abu/agents/w/AGENT.md');
+  });
+
+  it('before activation records are ready (cold start), the frontmatter source: decides', async () => {
+    activation.ready = false;
     const fromPlugin = def('reviewer', { source: { kind: 'plugin', plugin: 'weather@official' } });
     registry.agents = [fromPlugin, def('reviewer-copy')];
     expect(effectiveRoleId(fromPlugin)).toBe('plugin:reviewer');
@@ -76,28 +119,17 @@ describe('roleIdentity', () => {
     expect(saved).toHaveLength(0);
   });
 
-  it('discovery metadata makes an agent plugin-owned even when its frontmatter has no source: key', async () => {
-    // `source:` in AGENT.md is only a cache — an agent installed before the key
-    // existed has none. Discovery backfills it from installed.json; ownership
-    // must follow that, or ensureRoleId would write a role-id into the plugin's file.
-    const noSource = def('y');
-    registry.agents = [noSource];
-    discovery.agents = [{ name: 'y', description: 'y desc', source: { kind: 'plugin', plugin: 'x@official' } }];
-    expect(effectiveRoleId(noSource)).toBe('plugin:y');
-    expect(resolveRoleId('plugin:y')?.name).toBe('y');
-    const ensured = await ensureRoleId(noSource);
-    expect(ensured).toEqual({ roleId: 'plugin:y', wrote: false });
+  it('regression: a recorded owner is enough on its own — ensureRoleId never writes into a plugin file', async () => {
+    // The discovery-based check lost this when a failed installed.json read
+    // stripped every source; activation records survive such a read.
+    const owned = def('p');
+    registry.agents = [owned];
+    activation.owners[owned.filePath] = 'x@official';
+    for (const ready of [true, false]) {
+      activation.ready = ready;
+      expect(await ensureRoleId(owned)).toEqual({ roleId: 'plugin:p', wrote: false });
+    }
     expect(saved).toHaveLength(0);
-  });
-
-  it('an orphaned frontmatter source: (discovery says no plugin claims it) is a user agent', () => {
-    // Plugin uninstalled, AGENT.md left behind in ~/.abu/agents with a stale
-    // `source:` key — discovery strips the source, so it is the user's now.
-    const orphan = def('z', { roleId: 'role-z', source: { kind: 'plugin', plugin: 'gone@official' } });
-    registry.agents = [orphan];
-    discovery.agents = [{ name: 'z', description: 'z desc', roleId: 'role-z' }];
-    expect(effectiveRoleId(orphan)).toBe('role-z');
-    expect(resolveRoleId('plugin:z')).toBeNull();
   });
 
   it('createRoleId yields distinct role- ids', () => {

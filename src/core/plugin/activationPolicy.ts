@@ -109,6 +109,8 @@ export function pluginOwnerForMcp(name: string): string | null | undefined {
 export function isPluginEnabled(key: string): boolean {
   return ready && Object.hasOwn(activations, key) && activations[key].enabled === true && !activations[key].conflicted;
 }
+/** Whether the published records reflect a successful read of installed.json (false during cold start / a refresh). */
+export function pluginActivationRecordsReady(): boolean { return ready; }
 export function assertPluginEnabled(key: string): void {
   if (!isPluginEnabled(key)) throw new Error(format(getI18n().toolbox.pluginsDisabledCapability, { name: key }));
 }

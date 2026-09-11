@@ -3,7 +3,7 @@ import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { agentRegistry, serializeAgentMd } from '@/core/agent/registry';
 import { saveItemToAbuDir } from '@/utils/itemStorage';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
-import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { pluginActivationRecordsReady, pluginOwnerForAgent } from '@/core/plugin/activationPolicy';
 
 /**
  * Stable role identity for team membership (PRD docs/abu-team-prd-v2.md §2).
@@ -38,23 +38,26 @@ const PLUGIN_ROLE_PREFIX = 'plugin:';
 /**
  * Does a plugin own this agent's AGENT.md, for identity purposes?
  *
- * The authority is discovery metadata (`useDiscoveryStore`), whose `source` is
- * set from `installed.json`'s `contributed.agents` by `applyPluginAgentSources`
- * (src/stores/discoveryStore.ts): it is backfilled for plugin agents installed
- * before the frontmatter key existed, and stripped from a name no plugin claims
- * (an orphan left behind after uninstall, or a user's hand-written `source:`).
- * The frontmatter `source:` that `agentRegistry.getAgent` returns is only the
- * installer's cache of that answer.
+ * The authority is the plugin activation records (`pluginOwnerForAgent`, the
+ * same ownership the execution gate `isPluginAgentAllowed` enforces). They are
+ * the persisted ownership derived from `installed.json` — which agent files
+ * each plugin contributed — and pluginStore keeps the last good records when a
+ * later read fails, so a broken manifest never turns a plugin file into a
+ * user file. A file claimed by more than one plugin fails closed: it is still
+ * plugin-managed and must never be written. A file no record claims, once the
+ * records are ready, is independent (an orphan left after uninstall, or a
+ * user's hand-written `source:`), matching how AgentsSection treats it.
  *
- * Cold start: until discovery has listed this agent, there is no authoritative
- * answer yet, so the frontmatter cache decides.
+ * Cold start: until the records have been read, the frontmatter `source:` —
+ * the installer's cache of the answer — decides.
+ *
+ * Not discovery metadata: its non-strict refresh reads the manifest with
+ * `readInstalledPluginsSafely`, which yields `[]` on any failure, and then
+ * strips `source` from every agent — which would make plugin files writable.
  */
 function isPluginManagedAgent(agent: SubagentDefinition): boolean {
-  // Authority: discovery metadata, whose `source` is backfilled and corrected
-  // from installed.json. Only while discovery has not listed this agent yet
-  // (cold start) does the frontmatter cache decide.
-  const meta = useDiscoveryStore.getState().agents.find((m) => m.name === agent.name);
-  if (meta) return meta.source?.kind === 'plugin';
+  if (pluginOwnerForAgent(agent) !== undefined) return true; // an owner key, or null for a conflict
+  if (pluginActivationRecordsReady()) return false;
   return isPluginOwnedAgent(agent);
 }
 

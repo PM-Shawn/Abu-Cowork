@@ -1,4 +1,5 @@
 import { acquirePluginUse } from '../plugin/runtimeLease';
+import { invoke } from '@tauri-apps/api/core';
 import { assertPluginEnabled, assertPluginAgentEnabled, pluginOwnerForAgent } from '../plugin/activationPolicy';
 import { clearRunBounds } from '../team/teamRunBounds';
 import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
@@ -1267,10 +1268,8 @@ async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {
     }
   };
   return owner.run(async () => {
-    assertMayStart();
-    const { invoke } = await import('@tauri-apps/api/core');
-    // Dynamic import is an await boundary. Stop can win while it loads, so
-    // fence again immediately before the native side effect.
+    // Fence immediately before the native side effect — there is no await
+    // between this check and invoke(), so Stop cannot win in between.
     assertMayStart();
     return invoke(params.cmd as string, params.args as Record<string, unknown> | undefined);
   });

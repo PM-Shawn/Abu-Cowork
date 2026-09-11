@@ -49,6 +49,22 @@ describe('isSafeSkillDirName', () => {
     expect(isSafeSkillDirName(`evil${ch}name`)).toBe(false);
   });
 
+  // C1 controls: `isPlainSegment` (src/utils/itemStorage.ts), the editor's
+  // rule for the same folder name, refuses them, so this predicate must too —
+  // the two routes must not disagree about which names can become a folder.
+  it.each([
+    ['\u0080', 'the first C1 control character'],
+    ['\u0085', 'NEL, a line break to some readers'],
+    ['\u009f', 'the last C1 control character'],
+  ])('rejects a name containing %j (%s), as isPlainSegment does', (ch) => {
+    expect(isSafeSkillDirName(`evil${ch}name`)).toBe(false);
+  });
+
+  // U+00A0 is where C1 ends; the Latin-1 letters after it are real names.
+  it.each(['evil\u00a0name', 'café'])('accepts %j, just past the C1 range', (name) => {
+    expect(isSafeSkillDirName(name)).toBe(true);
+  });
+
   // Deliberately still accepted. ZWNJ and ZWJ are ordinary characters in
   // Persian, Arabic and Indic orthographies and inside emoji sequences — they
   // are not the spoofing characters above, and rejecting them would refuse

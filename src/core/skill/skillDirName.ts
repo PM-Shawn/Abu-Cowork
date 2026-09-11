@@ -5,7 +5,8 @@
  * Shared by `installer.ts` (local folder), `npmInstaller.ts` (registry),
  * `urlInstaller.ts` (URL / GitHub archive) and, since they turn a stranger's
  * frontmatter into a directory under `~/.abu/` too, the `.askill` unpacker and
- * the agent installer — so the routes cannot drift.
+ * the agent installer — so the routes cannot drift. The AGENT.md and SKILL.md
+ * parsers apply it too, since a scanned folder can be a cloned repository's.
  */
 
 /**
@@ -40,16 +41,19 @@
  * because it throws a `PluginPathError` naming a plugin field while an
  * installer needs a boolean; but a plugin name and a skill name must not get
  * different answers, so the rules are deliberately identical, plus the display
- * rule below. Both are denylists rather than a charset allowlist: names
- * legitimately carry `@`, `.`, spaces and unicode (`中文技能`), and an
- * allowlist narrow enough to be safe would refuse real packages.
+ * rule below and the C1 controls. Both are denylists rather than a charset
+ * allowlist: names legitimately carry `@`, `.`, spaces and unicode
+ * (`中文技能`), and an allowlist narrow enough to be safe would refuse real
+ * packages.
  *
  *   - **separators and NUL** — the escape itself, plus the byte that truncates
  *     a path at the OS boundary. Backslash counts on every platform: on Windows
  *     `assertAllowed` returns before any scope check at all.
  *   - **control characters** — never part of a real name, and one embedded in a
  *     name hides what the path is from whoever reads the install toast, the
- *     confirm dialog or the tool result.
+ *     confirm dialog or the tool result. C1 (U+0080–U+009F) included, as
+ *     `isPlainSegment` (src/utils/itemStorage.ts) refuses it for the editor's
+ *     save of the same folder.
  *   - **only dots** — `.`, `..` and `...` are directory references, not names.
  *   - **leading or trailing whitespace** — `" "` alone is a directory nobody can
  *     type, name in the UI, or pass back to `skill_manage` (whose NAME_REGEX
@@ -78,7 +82,7 @@ export function isSafeSkillDirName(name: string): boolean {
     name.trim() === name &&
     !/[/\\]/.test(name) &&
     // eslint-disable-next-line no-control-regex
-    !/[\u0000-\u001f\u007f]/.test(name) &&
+    !/[\u0000-\u001f\u007f-\u009f]/.test(name) &&
     !/^\.+$/.test(name) &&
     // ZWSP, LRM/RLM, the bidi embeddings and overrides, the isolates, and BOM.
     !/[\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/.test(name)

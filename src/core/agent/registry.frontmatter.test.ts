@@ -2,9 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { parseAgentFile, serializeAgentMd } from './registry';
 
 /**
- * `name:` frontmatter is one plain path segment. The registry also scans
- * `.abu/agents` in whatever directory Abu runs from — possibly a cloned
- * repository — and an agent's name is its folder under `~/.abu/agents/`, where
+ * `name:` frontmatter is one plain path segment. `~/.abu/agents` is filled by
+ * dropping whole folders into it, so a scanned AGENT.md need not be one the
+ * user wrote, and an agent's name is its folder under that root, where
  * `joinPath` does not collapse `..`. A name that is not one segment is refused
  * at parse time, loudly enough that the author can find the file.
  */

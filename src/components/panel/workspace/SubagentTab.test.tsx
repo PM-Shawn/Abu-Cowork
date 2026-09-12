@@ -8,6 +8,8 @@ import {
   BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES,
   useBatchProgressStore,
 } from '@/stores/batchProgressStore';
+import { useChatStore } from '@/stores/chatStore';
+import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import SubagentTab from './SubagentTab';
 
@@ -58,6 +60,12 @@ describe('SubagentTab', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    // Conversations and live executions seeded by a test must not leak into
+    // the next one — a failed assertion would otherwise skip the cleanup.
+    useTaskExecutionStore.getState().clearAll();
+    useChatStore.setState((state) => {
+      state.conversations = {};
+    });
   });
 
   it('renders live status, tool detail, token usage, and retained screenshot rich content', () => {
@@ -76,8 +84,7 @@ describe('SubagentTab', () => {
     );
   });
 
-  it('replays a member process from the message snapshot when the live batch is gone', async () => {
-    const { useChatStore } = await import('@/stores/chatStore');
+  it('replays a member process from the message snapshot when the live batch is gone', () => {
     const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
     useChatStore.getState().addMessage(convId, {
       id: 'assistant-1',
@@ -105,9 +112,7 @@ describe('SubagentTab', () => {
     expect(screen.queryByText('The full subagent process is only retained during this app run.')).toBeNull();
   });
 
-  it('keeps the child steps already shown when the next live update has zero steps', async () => {
-    const { useChatStore } = await import('@/stores/chatStore');
-    const { useTaskExecutionStore } = await import('@/stores/taskExecutionStore');
+  it('keeps the child steps already shown when the next live update has zero steps', () => {
     const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
     useChatStore.getState().addMessage(convId, {
       id: 'assistant-live-race',
@@ -149,7 +154,6 @@ describe('SubagentTab', () => {
 
     expect(screen.getByText('1 tool calls')).toBeInTheDocument();
     expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');
-    useTaskExecutionStore.getState().clearAll();
   });
 
   it('renders queued status with a static icon instead of a spinner', () => {

@@ -4,6 +4,8 @@ import { useChatStore } from '../../../stores/chatStore';
 import { ensureParentDir } from '../../../utils/pathUtils';
 import { agentRegistry, parseAgentFile, serializeAgentMd } from '../../agent/registry';
 import { skillLoader } from '../../skill/loader';
+import { createInProcessExecutionPort, setExecutionPort } from '../../agent/ports/executionPort';
+import type { ExecutionStep, ExecutionStepSnapshot, TaskExecution } from '@/types/execution';
 import { saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool } from './agentTools';
 import { format, getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 
@@ -67,6 +69,7 @@ vi.mock('../../../stores/chatStore', () => ({
       setAgentStatus: vi.fn(),
       addActiveAgent: vi.fn(),
       removeActiveAgent: vi.fn(),
+      setExecutionStepsSnapshot: vi.fn(),
     }),
   },
 }));
@@ -110,6 +113,68 @@ describe('delegateToAgentTool', () => {
       content: Object.freeze([Object.freeze({ type: 'text', text: 'source turn' })]),
     }));
   });
+
+  afterEach(() => {
+    // Tests below install fake timers and a stub execution port; put both back
+    // even when an assertion throws, so the next test starts clean.
+    vi.useRealTimers();
+    setExecutionPort(createInProcessExecutionPort());
+  });
+
+  /** Run a delegation to completion under fake timers: the tool arms its own
+   *  timers only once the member run is under way, so a single
+   *  `advanceTimersByTime` can outrun the chain. Pumps in small steps until
+   *  the promise settles and reports how much fake time that took. */
+  async function settleUnderFakeTimers<T>(promise: Promise<T>): Promise<{ result: Promise<T>; fakeMs: number }> {
+    let settled = false;
+    const tracked = promise.then(
+      (value) => { settled = true; return value; },
+      (err) => { settled = true; throw err; },
+    );
+    tracked.catch(() => undefined); // the caller does the asserting
+    let fakeMs = 0;
+    while (!settled && fakeMs < 3000) {
+      await vi.advanceTimersByTimeAsync(5);
+      fakeMs += 5;
+    }
+    return { result: tracked, fakeMs };
+  }
+
+  /** Swap in a chat-store facade that records the persisted step snapshots.
+   *  Explicit per test: an earlier test in this file replaces `getState`
+   *  wholesale, and `clearAllMocks` does not put a return value back. */
+  function stubChatStore(): ReturnType<typeof vi.fn<(convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void>> {
+    const setExecutionStepsSnapshot = vi.fn<(convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void>();
+    vi.mocked(useChatStore.getState).mockReturnValue({
+      activeConversationId: 'conv-1',
+      conversations: { 'conv-1': { messages: [] } },
+      getActiveConversation: vi.fn(),
+      setAgentStatus: vi.fn(),
+      addActiveAgent: vi.fn(),
+      removeActiveAgent: vi.fn(),
+      setExecutionStepsSnapshot,
+    } as never);
+    return setExecutionStepsSnapshot;
+  }
+
+  /** A live execution holding one delegate step, as the shell's store would.
+   *  Omit `toolCallId` to model the window where the shell has not yet applied
+   *  the parent's step frame, so the step cannot be found by call id. */
+  function stubExecution(loopId: string, parentStepId: string, toolCallId?: string): {
+    execution: TaskExecution;
+    parentStep: ExecutionStep;
+  } {
+    const parentStep: ExecutionStep = {
+      id: parentStepId, executionId: `exec-${loopId}`, toolCallId, type: 'delegate', label: 'delegate',
+      status: 'completed', toolName: 'delegate_to_agent', toolInput: {}, source: 'agent', detailBlocks: [], childSteps: [],
+    };
+    const execution: TaskExecution = {
+      id: `exec-${loopId}`, conversationId: 'conv-1', loopId, status: 'running', startTime: 0,
+      plannedSteps: [], planParsed: false, steps: [parentStep],
+    };
+    setExecutionPort({ ...createInProcessExecutionPort(), getExecutionByLoopId: () => execution });
+    return { execution, parentStep };
+  }
 
   it('describes the fixed tool boundaries of built-in role presets', () => {
     const type = delegateToAgentTool.inputSchema.properties.type as { description: string };
@@ -380,6 +445,7 @@ describe('delegateToAgentTool', () => {
     const { createSubagentController } = await import('../../agent/subagentAbort');
     const { runSubagentLoop } = await import('../../agent/subagentLoop');
 
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const toolCallToStepId = new Map<string, string>();
     const addChildStepToDelegate = vi.fn().mockReturnValue('child-step-delayed');
     vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
@@ -403,16 +469,196 @@ describe('delegateToAgentTool', () => {
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    await delegateToAgentTool.execute(
+    const { result } = await settleUnderFakeTimers(delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'write the report' },
       { conversationId: 'conv-1', loopId: 'loop-delayed-parent', toolCallId: 'delegate-delayed' } as never,
-    );
+    ));
+    await result;
 
     expect(addChildStepToDelegate).toHaveBeenCalledWith(
       'loop-delayed-parent',
       'parent-step-delayed',
       expect.objectContaining({ toolName: 'write_file', toolCallId: expect.stringContaining(':toolu_delayed') }),
     );
+  });
+
+  // Persisting a snapshot rewrites the whole assistant message to disk, so a
+  // member that calls ten tools must not cost ten writes.
+  it('coalesces a burst of member progress into one persisted snapshot, flushed when the delegation ends', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { parentStep } = stubExecution('loop-burst', 'parent-step-burst', 'delegate-burst');
+    const setExecutionStepsSnapshot = stubChatStore();
+    const addChildStepToDelegate = vi.fn((_loopId: string, _parentId: string, child: { toolName: string; toolCallId: string }) => {
+      parentStep.childSteps?.push({
+        id: `child-${parentStep.childSteps.length}`, executionId: 'exec-loop-burst', toolCallId: child.toolCallId,
+        type: 'tool', label: child.toolName, status: 'completed', toolName: child.toolName,
+        toolInput: {}, source: 'agent', detailBlocks: [],
+      });
+      return `child-${(parentStep.childSteps?.length ?? 1) - 1}`;
+    });
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['delegate-burst', 'parent-step-burst']]),
+      loopId: 'loop-burst',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate, completeChildStep: vi.fn() },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      for (let i = 0; i < 10; i += 1) {
+        options.onProgress?.({ type: 'tool-start', id: `toolu_${i}`, toolName: 'write_file', toolInput: { path: `note-${i}.md` } });
+      }
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    const { result } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write ten notes' },
+      { conversationId: 'conv-1', loopId: 'loop-burst', toolCallId: 'delegate-burst' } as never,
+    ));
+    await result;
+
+    // Ten child events, one write — and it happened on the completion flush,
+    // because the 250ms coalescing timer was never allowed to fire.
+    expect(addChildStepToDelegate).toHaveBeenCalledTimes(10);
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1);
+    const [, , snapshot] = setExecutionStepsSnapshot.mock.calls[0];
+    expect(snapshot[0].childSteps).toHaveLength(10);
+    // Nothing is left armed: advancing well past the window adds no write.
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up on queued member progress once the drain budget runs out, and says how much it dropped', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // An execution that never grows the parent step: nothing can resolve it.
+    setExecutionPort({
+      ...createInProcessExecutionPort(),
+      getExecutionByLoopId: () => ({
+        id: 'exec-loop-orphan', conversationId: 'conv-1', loopId: 'loop-orphan', status: 'running',
+        startTime: 0, plannedSteps: [], planParsed: false, steps: [],
+      }),
+    });
+    stubChatStore();
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const addChildStepToDelegate = vi.fn().mockReturnValue('child-orphan');
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map<string, string>(),
+      loopId: 'loop-orphan',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate, completeChildStep: vi.fn() },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_a', toolName: 'write_file', toolInput: {} });
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_b', toolName: 'read_file', toolInput: {} });
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    const { result, fakeMs } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-orphan', toolCallId: 'delegate-orphan' } as never,
+    ));
+    await expect(result).resolves.toContain('done');
+    // Bounded at 100 polls × 5ms — it must give up, not wait forever.
+    expect(fakeMs).toBeLessThanOrEqual(600);
+
+    expect(addChildStepToDelegate).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy.mock.calls[0][0]).toContain('dropped 2 member progress event(s)');
+    expect(vi.getTimerCount()).toBe(0);
+    debugSpy.mockRestore();
+  });
+
+  it('flushes queued member progress and returns early when the parent step appears mid-drain', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // No toolCallId on the parent step: nothing can resolve it until the
+    // shell's step map catches up, mid-drain.
+    stubExecution('loop-mid', 'parent-step-mid');
+    stubChatStore();
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const toolCallToStepId = new Map<string, string>();
+    const addChildStepToDelegate = vi.fn().mockReturnValue('child-mid');
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId,
+      loopId: 'loop-mid',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate, completeChildStep: vi.fn() },
+    } as never);
+    // The member finishes before the shell applies the parent's step frame, so
+    // the event is still queued when the drain starts.
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_mid', toolName: 'write_file', toolInput: {} });
+      setTimeout(() => toolCallToStepId.set('delegate-mid', 'parent-step-mid'), 20);
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    const { result, fakeMs } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-mid', toolCallId: 'delegate-mid' } as never,
+    ));
+    await expect(result).resolves.toContain('done');
+    // Returned as soon as the parent appeared, not after the full budget.
+    expect(fakeMs).toBeLessThan(500);
+
+    expect(addChildStepToDelegate).toHaveBeenCalledWith(
+      'loop-mid',
+      'parent-step-mid',
+      expect.objectContaining({ toolName: 'write_file' }),
+    );
+    expect(debugSpy).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    debugSpy.mockRestore();
+  });
+
+  it('still writes the member progress snapshot when the delegated run throws', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    stubExecution('loop-throws', 'parent-step-throws', 'delegate-throws');
+    const setExecutionStepsSnapshot = stubChatStore();
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['delegate-throws', 'parent-step-throws']]),
+      loopId: 'loop-throws',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: vi.fn().mockReturnValue('child-throws'), completeChildStep: vi.fn() },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_throws', toolName: 'write_file', toolInput: {} });
+      throw new Error('member run aborted');
+    });
+
+    await expect(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-throws', toolCallId: 'delegate-throws' } as never,
+    )).rejects.toThrow('member run aborted');
+
+    // The drain never ran, so the catch path owes the write — and the cleanup.
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('forgets a completed child id so a duplicate tool-end cannot complete it twice', async () => {

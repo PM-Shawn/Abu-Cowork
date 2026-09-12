@@ -1842,6 +1842,17 @@ export interface TranslationDict {
   };
 
   // Toolbox Modal
+  avatarPicker: {
+    chooseAvatar: string;
+    chooseAvatarWithSelection: string;
+    color: string;
+    icon: string;
+    defaultAvatar: string;
+    optionLabel: string;
+    icons: Record<string, string>;
+    tints: Record<string, string>;
+  };
+
   team: {
     tabMembers: string;
     tabTeams: string;
@@ -1854,9 +1865,6 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
-    fieldAvatar: string;
-    fieldAvatarPlaceholder: string;
-    fieldAvatarHint: string;
     fieldMembers: string;
     fieldMembersHint: string;
     noMembersYet: string;
@@ -2348,7 +2356,6 @@ export interface TranslationDict {
     agentMemoryUser: string;
     agentMaxTurns: string;
     agentBackground: string;
-    agentAvatar: string;
     agentSystemPrompt: string;
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
@@ -4082,6 +4089,8 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
+      /** Error: nothing written — the avatar is neither a built-in icon reference nor a single emoji. */
+      errInvalidAvatar: string;
       /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */
       errUnsafeFilePath: string;
       /**

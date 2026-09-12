@@ -2,6 +2,7 @@ import { Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import abuAvatar from '@/assets/abu-avatar.png';
 import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
+import { AVATAR_ICON_MAP, AVATAR_TINT_MAP, parseAvatarValue } from '@/core/team/avatarPresets';
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg';
 
@@ -26,14 +27,14 @@ export interface AvatarAgentLike {
 // eslint-disable-next-line react-refresh/only-export-components
 export function userAgentAvatar(agent: Pick<AvatarAgentLike, 'avatar' | 'filePath'> | null | undefined): string | null {
   if (!agent) return null;
-  const emoji = agent.avatar?.trim();
-  if (!emoji || isBuiltinAgentPath(agent.filePath)) return null;
-  return emoji;
+  const avatar = agent.avatar?.trim();
+  if (!avatar || isBuiltinAgentPath(agent.filePath)) return null;
+  return avatar;
 }
 
 /**
  * One avatar for an agent everywhere (队员 cards, team dialog, chat rows, team
- * tab, member bar): Abu's mascot for abu, the user's emoji for their own
+ * tab, member bar): Abu's mascot for abu, the user's avatar for their own
  * agents, otherwise the uniform robot mark.
  */
 export default function AgentAvatar({ agent, size = 'md', round = false, className }: {
@@ -46,15 +47,18 @@ export default function AgentAvatar({ agent, size = 'md', round = false, classNa
   if (agent.name === 'abu') {
     return <img src={abuAvatar} alt="Abu" className={cn(BOX[size], shape, 'object-cover shrink-0', className)} />;
   }
-  const emoji = userAgentAvatar(agent);
+  const parsed = parseAvatarValue(userAgentAvatar(agent) ?? undefined);
+  const AvatarIcon = parsed.kind === 'icon' ? AVATAR_ICON_MAP[parsed.icon] : Bot;
+  const tint = parsed.kind === 'icon' ? AVATAR_TINT_MAP[parsed.tint] : undefined;
   return (
     <span
       aria-hidden="true"
       data-testid="agent-avatar"
-      data-avatar-kind={emoji ? 'emoji' : 'default'}
+      data-avatar-kind={parsed.kind}
+      style={tint ? { backgroundColor: tint.bg, color: tint.fg } : undefined}
       className={cn(BOX[size], shape, 'inline-flex shrink-0 items-center justify-center bg-[var(--abu-bg-muted)] leading-none select-none', className)}
     >
-      {emoji ? <span className={EMOJI[size]}>{emoji}</span> : <Bot className={cn(ICON[size], 'text-[var(--abu-text-muted)]')} strokeWidth={1.75} />}
+      {parsed.kind === 'emoji' ? <span className={EMOJI[size]}>{parsed.emoji}</span> : <AvatarIcon className={cn(ICON[size], !tint && 'text-[var(--abu-text-muted)]')} strokeWidth={1.75} />}
     </span>
   );
 }

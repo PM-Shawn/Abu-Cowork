@@ -43,6 +43,7 @@ import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
 import abuAvatar from '@/assets/abu-avatar.png';
+import WelcomeAvatar from '@/components/chat/WelcomeAvatar';
 import IMInfoBar from './IMInfoBar';
 import SourceInfoBar from './SourceInfoBar';
 import ComputerUseStatusBar from './ComputerUseStatusBar';
@@ -240,7 +241,7 @@ export default function ChatView({
     ? {
         name: pendingAgent.displayNames?.[locale] ?? pendingAgent.name,
         description: pendingAgent.descriptions?.[locale] ?? pendingAgent.description,
-        avatar: pendingAgent.avatar ?? '🤖',
+        avatar: pendingAgent.avatar,
         intro: pendingAgent.intros?.[locale] ?? pendingAgent.intro,
       }
     : null;
@@ -1295,10 +1296,8 @@ export default function ChatView({
             <div className="text-center mb-8">
               {pendingAgentDisplay ? (
                 <>
-                  {/* Agent avatar (emoji in tinted circle) */}
-                  <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-[var(--abu-bg-active)] flex items-center justify-center text-5xl select-none">
-                    {pendingAgentDisplay.avatar}
-                  </div>
+                  {/* Agent avatar: a built-in icon reference, an emoji, or the default mark */}
+                  <WelcomeAvatar avatar={pendingAgentDisplay.avatar} />
 
                   <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
                     {pendingAgentDisplay.name}

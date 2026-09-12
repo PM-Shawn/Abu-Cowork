@@ -409,6 +409,9 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('search-select-option-writer'));
     expect(save.disabled).toBe(false);
 
+    fireEvent.click(screen.getByTestId('avatar-picker-trigger'));
+    fireEvent.click(screen.getByTestId('avatar-icon-users'));
+
     fireEvent.click(save);
     await waitFor(() => expect(useTeamStore.getState().teams).toHaveLength(1));
     const team = useTeamStore.getState().teams[0];

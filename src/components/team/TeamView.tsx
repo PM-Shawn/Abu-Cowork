@@ -14,6 +14,7 @@ import TopTabNav from '@/components/toolbox/TopTabNav';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
+import AvatarPicker from '@/components/common/AvatarPicker';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
@@ -217,17 +218,10 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         <div>
           <label className="text-caption font-medium text-[var(--abu-text-secondary)]">{t.team.fieldName}</label>
           <div className="mt-1 flex items-center gap-2">
-            <TeamAvatar avatar={avatar} size="lg" />
+            <AvatarPicker value={avatar} onChange={setAvatar}>
+              <TeamAvatar avatar={avatar} size="lg" />
+            </AvatarPicker>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className="flex-1" data-testid="team-name-input" />
-            <Input
-              value={avatar}
-              onChange={(e) => setAvatar(e.target.value.slice(0, 4))}
-              placeholder={t.team.fieldAvatarPlaceholder}
-              aria-label={t.team.fieldAvatar}
-              title={t.team.fieldAvatarHint}
-              className="w-20 text-center"
-              data-testid="team-avatar-input"
-            />
           </div>
         </div>
 

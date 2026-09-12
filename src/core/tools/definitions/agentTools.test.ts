@@ -684,6 +684,31 @@ describe('save_agent multi-file support', () => {
       expect(writeTextFile).not.toHaveBeenCalled();
     });
 
+    it('refuses a tool name nothing answers to, writing nothing', async () => {
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: '---\nname: my-agent\ntools: [web_serach]\n---\nHelp with a task.',
+      });
+      expect(result).toBe(format(getI18n().toolResult.agent.errUnknownAgentTool, { names: 'web_serach' }));
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+
+    // A wildcard covers names that cannot be enumerated, and a `server__tool`
+    // name belongs to a connector that may be offline right now — neither may
+    // make saving an expert depend on what happens to be running.
+    it('accepts wildcards and connector tool names it cannot enumerate', async () => {
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: '---\nname: my-agent\ntools: [read_file, "abu-browser__*", "some-mcp__tool"]\n---\nHelp with a task.',
+      });
+      expect(result).not.toMatch(/^Error:/);
+      expect(writeTextFile).toHaveBeenCalledWith(
+        '/Users/testuser/.abu/agents/my-agent/AGENT.md',
+        expect.stringContaining('tools: [read_file, "abu-browser__*", "some-mcp__tool"]'),
+        { createNew: true },
+      );
+    });
+
     it.each([
       ['omitted constraints', ''],
       ['empty role lists', 'tools: []\ndisallowed-tools: []\n'],

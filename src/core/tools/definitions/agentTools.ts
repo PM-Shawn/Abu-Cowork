@@ -9,6 +9,7 @@ import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { parseAvatarValue } from '@/core/team/avatarPresets';
 import { resolveSubagentToolNames } from '../../agent/subagentToolRoster';
+import { matchesToolName } from '../../skill/toolFilter';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -523,6 +524,26 @@ function agentMdWithIdentity(
 }
 
 /**
+ * Entries of a role card's `tools:` / `disallowed-tools:` that name a tool
+ * nothing answers to — a typo like `web_serach` used to be saved as written
+ * and then silently narrowed the expert to nothing at dispatch time.
+ *
+ * Only plain built-in names are checked. A `*` pattern covers names that
+ * cannot be enumerated up front, and an MCP `server__tool` name belongs to a
+ * connector that may simply be disconnected while the expert is saved —
+ * refusing either would make saving depend on what happens to be running.
+ */
+function unknownAgentToolNames(agent: SubagentDefinition): string[] {
+  const builtinNames: string[] = Object.values(TOOL_NAMES);
+  const declared = [...(agent.tools ?? []), ...(agent.disallowedTools ?? [])];
+  return [...new Set(declared.filter((entry) =>
+    !entry.includes('*')
+    && !entry.includes('__')
+    && !builtinNames.some((name) => matchesToolName(name, entry)),
+  ))];
+}
+
+/**
  * Skill sources a user skill must never take the name of: the loader scans
  * `~/.abu/skills` before them, so a user SKILL.md under that name would hide
  * the builtin / plugin / enterprise skill everywhere it is referenced.
@@ -751,6 +772,10 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
         const { invalidField } = resolveSubagentToolNames([], declaredTools);
         if (invalidField) {
           return format(t.errInvalidAgentTools, { field: invalidField === 'tools' ? 'tools' : 'disallowed-tools' });
+        }
+        const unknownTools = unknownAgentToolNames(declaredTools);
+        if (unknownTools.length > 0) {
+          return format(t.errUnknownAgentTool, { names: unknownTools.join(', ') });
         }
       }
 

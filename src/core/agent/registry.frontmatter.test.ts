@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { parseAgentFile, serializeAgentMd } from './registry';
+import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
+import type { RouteResult } from './orchestrator';
 
 /**
  * `name:` frontmatter is one plain path segment. `~/.abu/agents` is filled by
@@ -213,6 +215,17 @@ describe('parseAgentFile / serializeAgentMd — role tool inheritance', () => {
   function agentFile(declaration: string): string {
     return `---\nname: specialist\ndescription: Help with the task\n${declaration}\n---\n\nComplete the requested work.\n`;
   }
+
+  // An expert whose file names no tools must start with the tools the user
+  // actually has, not with none: a "researcher" without a `tools:` line could
+  // otherwise neither search nor read a file.
+  it('an ordinary user expert without tools: inherits the runtime tool inventory', async () => {
+    const def = parseAgentFile('---\nname: plain\ndescription: d\n---\nprompt', '/home/u/.abu/agents/plain/AGENT.md');
+    expect(def).not.toBeNull();
+    expect(def?.tools).toBeUndefined();
+    expect(resolveAgentToolNames(['read_file', 'web_search'], agentToolPolicyForRoute({ type: 'agent', definition: def, team: undefined } as RouteResult)!).toolNames)
+      .toEqual(['read_file', 'web_search']);
+  });
 
   it.each([
     ['omitted constraints', ''],

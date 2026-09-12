@@ -850,7 +850,7 @@ describe('settingsStore labs flags', () => {
     });
 
     /**
-     * V50. An install that already carries a heartbeat plugin was binding
+     * V52. An install that already carries a heartbeat plugin was binding
      * 0.0.0.0 without ever being asked; the upgrade must CLOSE that listener,
      * not grandfather it — so the default is false for every existing store.
      */
@@ -864,6 +864,17 @@ describe('settingsStore labs flags', () => {
     it('keeps an explicit LAN webhook opt-in and any sibling field beside it', () => {
       const migrated = getMigrate()({ imChannel: { allowLanWebhook: true, other: 1 } }, 49);
       expect(migrated.imChannel).toEqual({ allowLanWebhook: true, other: 1 });
+    });
+
+    /**
+     * The gap this port has to close: the field was authored against v50, but
+     * dev shipped v51 first, so it lands at v52. A store written by the
+     * released v51 build has never seen `imChannel` and must still have the
+     * listener closed on upgrade — a migration left at `version < 51` would
+     * skip it and leave 0.0.0.0 bound.
+     */
+    it('closes the LAN listener for a store persisted by the released v51 build', () => {
+      expect(getMigrate()({ theme: 'light' }, 51).imChannel).toEqual({ allowLanWebhook: false });
     });
 
     it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {

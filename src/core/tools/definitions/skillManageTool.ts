@@ -58,7 +58,8 @@ import {
   type ScanContext,
   type Finding,
 } from '../../safety/contentGuard';
-import { skillLoader, serializeSkillMd } from '../../skill/loader';
+import { skillLoader, serializeSkillMd, parseSkillFile } from '../../skill/loader';
+import { skillPolicyDenial, SkillPolicyDeniedError } from '../../skill/skillPolicy';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { writeDraft, writeSkillDirect, rejectDraft } from '../../skill/drafts';
 import { appendHistoryEntry, writeTombstone, newTurnId } from '../../skill/history';
@@ -301,6 +302,26 @@ interface ErrorResult {
 
 type ActionResult = SuccessResult | ErrorResult;
 
+// ── Organization skill policy ───────────────────────────────────────────
+
+/**
+ * The refusal when the organization's policy blocks the skill name `name`,
+ * otherwise `null`. Every action that writes applies it to the skill it
+ * touches — a copy-on-modify fork creates a new copy under that name — and,
+ * for a SKILL.md rewrite, to the name the new frontmatter declares, since
+ * that is the name the loader will answer to. delete / remove_file are never
+ * refused.
+ */
+function policyRefusal(name: string | null | undefined): ErrorResult | null {
+  if (!name || !skillPolicyDenial(name)) return null;
+  return { success: false, error: format(getI18n().toolResult.skill.policyDenied, { name }) };
+}
+
+/** The name a SKILL.md's frontmatter declares, or `null` when it declares none. */
+function declaredSkillName(skillMd: string): string | null {
+  return parseSkillFile(skillMd, 'SKILL.md')?.name ?? null;
+}
+
 // ── Post-write scan + rollback ──────────────────────────────────────────
 
 /**
@@ -391,6 +412,9 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
         if (r.code === 'SYMLINK_ROOT') {
           return { success: false, error: format(t.symlinkRootRefused, { path: source }) };
         }
+        if (r.code === 'POLICY_DENIED') {
+          return { success: false, error: format(t.policyDenied, { name: r.skillName }) };
+        }
         return { success: false, error: r.message };
       }
       skillName = r.name;
@@ -407,6 +431,9 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
       fileCount = r.files.length;
     }
   } catch (e) {
+    if (e instanceof SkillPolicyDeniedError) {
+      return { success: false, error: format(t.policyDenied, { name: e.skillName }) };
+    }
     return { success: false, error: format(t.installFailed, { error: e instanceof Error ? e.message : String(e) }) };
   }
 
@@ -494,6 +521,10 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
   // Validate
   const nameErr = validateName(name);
   if (nameErr) return { success: false, error: nameErr };
+  // Before either branch below: a draft under a blocked name is still a skill
+  // under that name, one click away from being accepted.
+  const policyRefused = policyRefusal(name);
+  if (policyRefused) return policyRefused;
 
   if (!content) {
     return { success: false, error: 'create requires content (the SKILL.md body)' };
@@ -721,6 +752,8 @@ async function patchAction(input: Record<string, unknown>, context?: ToolExecuti
   if (nameErr) return { success: false, error: nameErr };
   if (oldString === undefined) return { success: false, error: 'old_string is required' };
   if (newString === undefined) return { success: false, error: 'new_string is required' };
+  const refused = policyRefusal(name);
+  if (refused) return refused;
 
   // Require explicit scope guard on user-scope mutations.
   const requestedScope = (input.scope as SkillScope | undefined) ?? 'workspace-auto';
@@ -787,6 +820,9 @@ async function patchAction(input: Record<string, unknown>, context?: ToolExecuti
         error: 'Patch would break the SKILL.md frontmatter. Preserve the `---` delimiters and required fields.',
       };
     }
+    // Patching `name:` renames the skill.
+    const renamedRefusal = policyRefusal(declaredSkillName(fuzzy.newContent));
+    if (renamedRefusal) return renamedRefusal;
   }
   if (fuzzy.newContent.length > MAX_CONTENT_CHARS) {
     return {
@@ -891,6 +927,8 @@ async function writeFileAction(input: Record<string, unknown>, context?: ToolExe
 
   const pathErr = validateFilePath(filePath);
   if (pathErr) return { success: false, error: pathErr };
+  const refused = policyRefusal(name);
+  if (refused) return refused;
 
   if (fileContent === undefined) return { success: false, error: 'file_content is required' };
   if (fileContent.length > MAX_CONTENT_CHARS) {
@@ -974,6 +1012,10 @@ async function editAction(input: Record<string, unknown>, context?: ToolExecutio
   if (content.length > MAX_CONTENT_CHARS) {
     return { success: false, error: `content exceeds ${MAX_CONTENT_CHARS} chars` };
   }
+  // The skill being edited, and — for a SKILL.md rewrite — the name the new
+  // frontmatter gives it.
+  const refused = policyRefusal(name) ?? (filePath ? null : policyRefusal(declaredSkillName(content)));
+  if (refused) return refused;
 
   const requestedScope = (input.scope as SkillScope | undefined) ?? 'workspace-auto';
   if (requestedScope === 'user') {

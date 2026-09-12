@@ -467,7 +467,12 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     // Session-level window management: only hide on first interactive batch.
     // Subsequent batches in the same agent loop skip hide/show to avoid flickering.
     if (hasInteractiveAction && !isSessionWindowHidden()) {
-      try { await invoke('show_screen_border', { stopLabel: getI18n().computerUse.stopControl }); } catch { /* ignore */ }
+      try {
+        await invoke('show_screen_border', {
+          stopLabel: getI18n().computerUse.stopControl,
+          unresponsiveLabel: getI18n().computerUse.unresponsive,
+        });
+      } catch { /* ignore */ }
       if (isMacOS()) {
         try { await invoke('window_hide'); } catch { /* ignore */ }
       }

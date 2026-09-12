@@ -3797,6 +3797,8 @@ export interface TranslationDict {
     overlayStep: string;
     /** Overlay stop-button label. */
     stopControl: string;
+    /** Overlay watchdog caption when the Host stops sending heartbeats. */
+    unresponsive: string;
     phaseChecking: string;
     phaseAwaitingApproval: string;
     phaseObserving: string;

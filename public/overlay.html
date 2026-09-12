@@ -55,6 +55,13 @@
     50% { opacity: 1.0; }
   }
 
+  /* Host stopped answering (heartbeat watchdog): the chrome must never look
+     alive when nothing is driving it. Grey, still, and it closes itself. */
+  body.stale .overlay { animation: none; opacity: 0.45; }
+  body.stale .overlay::before { border-color: rgba(160, 160, 170, 0.7); box-shadow: none; }
+  body.stale .overlay::after { background: none; }
+  body.stale .cursor { display: none; }
+
   /* Bottom status bar */
   .status-bar {
     position: fixed;
@@ -79,18 +86,171 @@
     pointer-events: none;
   }
   .status-bar.visible { opacity: 1; }
+  body.stale .status-bar { border-color: rgba(160, 160, 170, 0.5); color: rgba(220, 220, 225, 0.9); }
+
+  /* Virtual cursor: a marker on the REAL pointer, shown only while Abu is
+     the one moving it (the Host pushes positions while its input lease is
+     active). The system cursor is never hidden or replaced. */
+  .cursor {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 30px;
+    height: 30px;
+    margin: -15px 0 0 -15px;
+    border: 3px solid rgba(255, 122, 26, 0.95);
+    border-radius: 50%;
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6), 0 0 14px rgba(255, 122, 26, 0.6);
+    opacity: 0;
+    transition: transform 45ms linear, opacity 160ms ease;
+    will-change: transform;
+    pointer-events: none;
+  }
+  .cursor.active { opacity: 1; }
+  .cursor .tag {
+    position: absolute;
+    left: 30px;
+    top: 26px;
+    padding: 2px 7px;
+    background: rgba(255, 122, 26, 0.95);
+    color: #fff;
+    font-size: 11px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    border-radius: 9px;
+    white-space: nowrap;
+  }
+  .cursor .keys {
+    position: absolute;
+    left: 30px;
+    top: 2px;
+    padding: 1px 6px;
+    background: rgba(20, 20, 30, 0.85);
+    color: rgba(255, 210, 170, 0.95);
+    font-size: 11px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+  .cursor.typing .keys { opacity: 1; }
+
+  .ripple {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 36px;
+    height: 36px;
+    margin: -18px 0 0 -18px;
+    border: 3px solid rgba(255, 122, 26, 0.9);
+    border-radius: 50%;
+    pointer-events: none;
+    animation: ripple 520ms ease-out forwards;
+  }
+  .ripple.scroll { border-style: dashed; }
+  .ripple.drag { border-radius: 8px; }
+  @keyframes ripple {
+    0% { transform: scale(0.4); opacity: 1; }
+    100% { transform: scale(2.2); opacity: 0; }
+  }
 </style>
 </head>
 <body>
   <div class="overlay"></div>
+  <div class="cursor" id="cursor"><span class="keys" id="cursorKeys">⌨</span><span class="tag">阿布</span></div>
   <div class="status-bar" id="statusBar"></div>
 
   <script>
     const statusBar = document.getElementById('statusBar');
+    const cursor = document.getElementById('cursor');
+    const i18n = window.__CU_I18N__ || {};
+
+    // ── Heartbeat watchdog (L5 W4) ───────────────────────────────────────
+    // The Host beats once a second while a task runs. This page is its own
+    // renderer process, so the timer below keeps running even if the main
+    // process hangs: after 3 s of silence the chrome goes grey and says so,
+    // after 8 s it removes itself. Nothing on screen may look alive when
+    // nothing is driving it.
+    const STALE_MS = 3000;
+    const CLOSE_MS = 8000;
+    let lastBeat = Date.now();
+    let beats = 0;
+    let stale = false;
+    let closed = false;
+    setInterval(() => {
+      const silence = Date.now() - lastBeat;
+      if (silence > STALE_MS && !stale) {
+        stale = true;
+        document.body.classList.add('stale');
+        statusBar.textContent = i18n.unresponsive || 'Abu is not responding; control has stopped';
+        statusBar.classList.add('visible');
+      }
+      if (silence > CLOSE_MS && !closed) {
+        closed = true;
+        try { window.close(); } catch (e) { /* main may close us instead */ }
+      }
+    }, 500);
+
+    // ── Virtual cursor (L5 W2) ────────────────────────────────────────────
+    let cursorState = { active: false, x: null, y: null };
+    let hideTimer = null;
+    let typingTimer = null;
+    let ripples = 0;
+    function placeCursor(x, y) {
+      cursorState.x = x;
+      cursorState.y = y;
+      cursor.style.transform = `translate(${x}px, ${y}px)`;
+    }
+    function ripple(kind, x, y) {
+      const el = document.createElement('div');
+      el.className = `ripple ${kind}`;
+      // Positioned by left/top: the keyframes own `transform` for the scale.
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      document.body.appendChild(el);
+      ripples += 1;
+      setTimeout(() => el.remove(), 600);
+    }
+    function onCursor(payload) {
+      if (!payload || stale) return;
+      if (payload.pulse) {
+        if (payload.pulse === 'keys' || payload.pulse === 'element') {
+          cursor.classList.add('typing');
+          clearTimeout(typingTimer);
+          typingTimer = setTimeout(() => cursor.classList.remove('typing'), 700);
+        } else if (Number.isFinite(payload.x) && Number.isFinite(payload.y)) {
+          ripple(payload.pulse, payload.x, payload.y);
+        }
+        return;
+      }
+      if (payload.active === false) {
+        // Linger briefly so a 100 ms action is still legible as Abu's.
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+          cursorState.active = false;
+          cursor.classList.remove('active');
+        }, 600);
+        return;
+      }
+      if (payload.active === true && Number.isFinite(payload.x) && Number.isFinite(payload.y)) {
+        clearTimeout(hideTimer);
+        cursorState.active = true;
+        placeCursor(payload.x, payload.y);
+        cursor.classList.add('active');
+      }
+    }
+
+    // Diagnostic surface for electron/spike/overlayChromeVerify.cjs only.
+    window.__cuChromeState = () => ({
+      beats,
+      stale,
+      cursor: { ...cursorState, visible: cursor.classList.contains('active') },
+      ripples,
+    });
 
     // Listen for status updates from main window via Tauri event
     if (window.__TAURI__) {
       window.__TAURI__.event.listen('computer-use-status', (event) => {
+        if (stale) return;
         const { step, action, stepLabel, targetApp } = event.payload;
         if (action) {
           // stepLabel is pre-localized by the frontend (this HTML is a dumb view
@@ -102,6 +262,11 @@
           statusBar.classList.remove('visible');
         }
       });
+      window.__TAURI__.event.listen('computer-use-heartbeat', () => {
+        lastBeat = Date.now();
+        beats += 1;
+      });
+      window.__TAURI__.event.listen('computer-use-cursor', (event) => onCursor(event.payload));
     }
   </script>
 </body>

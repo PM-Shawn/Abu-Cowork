@@ -48,7 +48,7 @@ const RESTRICTED_EMITTED_EVENTS = new Map([
 ]);
 const RESTRICTED_LISTENED_EVENTS = new Map([
   ['pet', new Set(['pet-status-update', 'tauri://move'])],
-  ['overlay', new Set(['computer-use-status'])],
+  ['overlay', new Set(['computer-use-status', 'computer-use-heartbeat', 'computer-use-cursor'])],
 ]);
 const BASE_DIRECTORY_VALUES = new Set(Array.from({ length: 23 }, (_v, i) => i + 1));
 const PATH_KEYS = new Set([

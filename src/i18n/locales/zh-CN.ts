@@ -3095,6 +3095,7 @@ const zhCN: TranslationDict = {
     stop: '停止',
     overlayStep: '第 {step} 步',
     stopControl: '停止操控',
+    unresponsive: '阿布没有响应，已停止操作',
     phaseChecking: '正在检查运行条件',
     phaseAwaitingApproval: '等待你确认授权',
     phaseObserving: '正在读取界面',

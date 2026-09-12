@@ -89,8 +89,11 @@ contextBridge.exposeInMainWorld('__TAURI__', {
 // `__CU_I18N__`.
 try {
   const params = new URLSearchParams(location.search);
-  if (params.has('stopLabel')) {
-    contextBridge.exposeInMainWorld('__CU_I18N__', { stopControl: params.get('stopLabel') });
+  if (params.has('stopLabel') || params.has('unresponsiveLabel')) {
+    contextBridge.exposeInMainWorld('__CU_I18N__', {
+      stopControl: params.get('stopLabel') ?? '',
+      unresponsive: params.get('unresponsiveLabel') ?? '',
+    });
   }
 } catch {
   /* URL parsing failure — harmless no-op */

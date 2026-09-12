@@ -223,6 +223,20 @@ const STOP_BTN_HEIGHT = 40;
 
 const GUI_PRELOAD = path.join(__dirname, 'guiTauriGlobalPreload.cjs');
 
+// ─── Chrome liveness and virtual cursor (L5 W4 / W2) ───
+// The Host beats once a second while the chrome is up; each page watches the
+// beats in its own renderer process and greys out / closes itself when they
+// stop, so a hung main process can never leave a live-looking border behind.
+// The cursor push runs only while the native input lease is active — the
+// strict meaning of "Abu is the one moving the pointer".
+const HEARTBEAT_MS = 1000;
+const CURSOR_PUSH_MS = 33;
+let heartbeatTimer = null;
+let heartbeatSeq = 0;
+let cursorTimer = null;
+/** DIP bounds of the display the chrome currently covers. */
+let chromeDisplayBounds = null;
+
 /** Common no-chrome/always-on-top/all-Spaces window options shared by overlay + stop-button + pet — port of the NSWindow tweaks in overlay.rs/pet.rs, expressed via Electron's cross-platform BrowserWindow options where possible. */
 function baseFloatingWindowOptions(extra) {
   return {
@@ -275,12 +289,13 @@ function showWhenReady(win, timeoutMs = 1500) {
   setTimeout(doShow, timeoutMs);
 }
 
-function showOverlay() {
+function showOverlay(unresponsiveLabel) {
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.show();
     return;
   }
   const display = screen.getPrimaryDisplay();
+  chromeDisplayBounds = display.bounds;
   const { x, y, width, height } = display.bounds; // Electron bounds are already logical/DIP — no scale-factor math needed (unlike Tauri's monitor.size()/position(), which are physical pixels)
   overlayWindow = new BrowserWindow(
     baseFloatingWindowOptions({
@@ -292,6 +307,10 @@ function showOverlay() {
       alwaysOnTop: true,
     })
   );
+  // Windows clamps a new frameless window to the work area (taskbar
+  // excluded); the border must frame the whole display, so re-apply the
+  // full bounds after creation — the same call the display-follow path makes.
+  overlayWindow.setBounds({ x, y, width, height }, false);
   overlayWindow.setIgnoreMouseEvents(true);
   overlayWindow.setAlwaysOnTop(true, 'screen-saver');
   // On Windows this maps to WDA_EXCLUDEFROMCAPTURE, keeping Abu's control
@@ -300,7 +319,9 @@ function showOverlay() {
   applyAllSpaces(overlayWindow);
   const page = resolveHtml('overlay.html');
   registerPrivilegedWindow(overlayWindow, page, { label: 'overlay' });
-  void overlayWindow.loadFile(page);
+  // The watchdog caption travels in the URL like the stop label does
+  // (guiTauriGlobalPreload.cjs exposes it as window.__CU_I18N__.unresponsive).
+  void overlayWindow.loadFile(page, { query: { unresponsiveLabel: unresponsiveLabel ?? '' } });
   showWhenReady(overlayWindow);
 }
 
@@ -344,9 +365,156 @@ function showStopButton(stopLabel) {
 
 /** `show_screen_border {stopLabel}` — overlay.rs:21. */
 function showScreenBorder(args) {
-  showOverlay();
-  showStopButton(String(args.stopLabel ?? ''));
+  showOverlay(String(args?.unresponsiveLabel ?? ''));
+  showStopButton(String(args?.stopLabel ?? ''));
+  startChromeHeartbeat();
   return null;
+}
+
+function emitToChrome(event, payload) {
+  try {
+    tauriHost().emitEvent(event, payload);
+  } catch {
+    /* chrome windows may already be gone */
+  }
+}
+
+function startChromeHeartbeat() {
+  if (heartbeatTimer) return;
+  const beat = () => emitToChrome('computer-use-heartbeat', { seq: ++heartbeatSeq, at: Date.now() });
+  beat();
+  heartbeatTimer = setInterval(beat, HEARTBEAT_MS);
+  heartbeatTimer.unref?.();
+}
+
+function stopChromeHeartbeat() {
+  if (!heartbeatTimer) return;
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = null;
+}
+
+/** DIP point → page coordinates of the chrome covering `displayBounds`. */
+function chromePointFromDip(point, displayBounds) {
+  if (!point || !displayBounds) return null;
+  return { x: Math.round(point.x - displayBounds.x), y: Math.round(point.y - displayBounds.y) };
+}
+
+/** Physical-pixel point (what the helper speaks) → chrome page coordinates. */
+function chromePointFromPhysical(x, y) {
+  let point = { x, y };
+  try {
+    point = screen.screenToDipPoint(point);
+  } catch {
+    /* screenToDipPoint is Windows-only; coordinates are already DIP elsewhere */
+  }
+  return chromePointFromDip(point, chromeDisplayBounds);
+}
+
+function setCursorPushActive(active) {
+  if (active) {
+    if (cursorTimer || !chromeDisplayBounds) return;
+    const push = () => {
+      const point = chromePointFromDip(screen.getCursorScreenPoint(), chromeDisplayBounds);
+      if (point) emitToChrome('computer-use-cursor', { active: true, x: point.x, y: point.y });
+    };
+    push();
+    cursorTimer = setInterval(push, CURSOR_PUSH_MS);
+    cursorTimer.unref?.();
+    return;
+  }
+  if (cursorTimer) {
+    clearInterval(cursorTimer);
+    cursorTimer = null;
+  }
+  emitToChrome('computer-use-cursor', { active: false });
+}
+
+/**
+ * What a completed native command means for the chrome. Pure so it can be
+ * tested without Electron: the caller applies the result.
+ *   { kind:'cursor', active }         input lease activated / released
+ *   { kind:'pulse', pulse, x?, y? }   an action landed (x, y physical px)
+ *   { kind:'follow', bounds }         the target window was (re)resolved
+ */
+function describeChromeEvent(cmd, args, value) {
+  switch (cmd) {
+    case 'input_lease_activate':
+      return { kind: 'cursor', active: true };
+    case 'input_lease_observe':
+    case 'input_lease_pause':
+    case 'input_lease_end':
+      return { kind: 'cursor', active: false };
+    case 'mouse_click':
+      return { kind: 'pulse', pulse: 'click', x: Number(args?.x), y: Number(args?.y) };
+    case 'mouse_move':
+      return { kind: 'pulse', pulse: 'move', x: Number(args?.x), y: Number(args?.y) };
+    case 'mouse_scroll':
+      return { kind: 'pulse', pulse: 'scroll', x: Number(args?.x), y: Number(args?.y) };
+    case 'mouse_drag':
+      return { kind: 'pulse', pulse: 'drag', x: Number(args?.end_x), y: Number(args?.end_y) };
+    case 'keyboard_type':
+    case 'keyboard_press':
+      return { kind: 'pulse', pulse: 'keys' };
+    case 'ax_press':
+    case 'ax_set_value':
+    case 'ax_replace_text':
+    case 'ax_perform_action':
+      return { kind: 'pulse', pulse: 'element' };
+    case 'activate_window':
+    case 'get_window':
+      return Array.isArray(value?.bounds) && value.bounds.length === 4
+        ? { kind: 'follow', bounds: value.bounds }
+        : null;
+    default:
+      return null;
+  }
+}
+
+/** Called by tauriHost after every successful native Computer Use command. */
+function noteComputerUseNativeCommand(cmd, args, value) {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  const event = describeChromeEvent(cmd, args, value);
+  if (!event) return;
+  if (event.kind === 'cursor') {
+    setCursorPushActive(event.active);
+  } else if (event.kind === 'pulse') {
+    const point = Number.isFinite(event.x) && Number.isFinite(event.y)
+      ? chromePointFromPhysical(event.x, event.y)
+      : null;
+    emitToChrome('computer-use-cursor', { pulse: event.pulse, ...(point ?? {}) });
+  } else if (event.kind === 'follow') {
+    followComputerUseWindow(event.bounds);
+  }
+}
+
+function moveChromeToDisplay(display) {
+  if (!display) return;
+  chromeDisplayBounds = display.bounds;
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.setBounds(display.bounds, false);
+  }
+  if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
+    stopBtnWindow.setBounds({
+      x: Math.round(display.bounds.x + (display.bounds.width - STOP_BTN_WIDTH) / 2),
+      y: display.bounds.y + 8,
+      width: STOP_BTN_WIDTH,
+      height: STOP_BTN_HEIGHT,
+    }, false);
+  }
+}
+
+/** Move the chrome to the display holding a target window (physical-pixel bounds [x, y, w, h]). */
+function followComputerUseWindow(bounds) {
+  if (!Array.isArray(bounds) || bounds.length !== 4 || !bounds.every(Number.isFinite)) return;
+  const [x, y, width, height] = bounds;
+  if (width <= 0 || height <= 0) return;
+  let point = { x: Math.round(x + width / 2), y: Math.round(y + height / 2) };
+  try {
+    point = screen.screenToDipPoint(point);
+  } catch {
+    /* already DIP outside Windows */
+  }
+  moveChromeToDisplay(screen.getDisplayNearestPoint(point));
 }
 
 /** Move the Computer Use chrome to the display represented by a native WGC frame. */
@@ -368,22 +536,13 @@ function updateComputerUseOverlayBounds(capture) {
   } catch {
     /* screenToDipPoint is Windows-only; coordinates are already DIP elsewhere */
   }
-  const display = screen.getDisplayNearestPoint(point);
-  if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.setBounds(display.bounds, false);
-  }
-  if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
-    stopBtnWindow.setBounds({
-      x: Math.round(display.bounds.x + (display.bounds.width - STOP_BTN_WIDTH) / 2),
-      y: display.bounds.y + 8,
-      width: STOP_BTN_WIDTH,
-      height: STOP_BTN_HEIGHT,
-    }, false);
-  }
+  moveChromeToDisplay(screen.getDisplayNearestPoint(point));
 }
 
 /** `hide_screen_border` — overlay.rs:29 (Rust hide()s then destroy()s both; recreated fresh next `show_screen_border`, matching Rust's not-cached-across-hide semantics). */
 function hideScreenBorder() {
+  stopChromeHeartbeat();
+  setCursorPushActive(false);
   // Rust: hide() then destroy() (not a plain close(), which dispatches the
   // normal close lifecycle) — destroy() is the immediate, undeferred
   // teardown, matching that exactly.
@@ -420,6 +579,11 @@ function getOverlayWindowId() {
 }
 
 function destroyOverlayWindows() {
+  stopChromeHeartbeat();
+  if (cursorTimer) {
+    clearInterval(cursorTimer);
+    cursorTimer = null;
+  }
   if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
   overlayWindow = null;
   if (stopBtnWindow && !stopBtnWindow.isDestroyed()) stopBtnWindow.destroy();
@@ -756,9 +920,15 @@ module.exports = {
   hasTray,
   showMainWindowFromTray,
   updateComputerUseOverlayBounds,
+  noteComputerUseNativeCommand,
+  followComputerUseWindow,
   __test: {
     WINDOWS_ACTIVE_WINDOW_SCRIPT,
     getActiveWindowForPlatform,
     initialPetPosition,
+    describeChromeEvent,
+    chromePointFromDip,
+    stopChromeHeartbeat,
+    chromeState: () => ({ heartbeatRunning: Boolean(heartbeatTimer), heartbeatSeq, cursorRunning: Boolean(cursorTimer) }),
   },
 };

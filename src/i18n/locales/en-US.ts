@@ -3093,6 +3093,7 @@ const enUS: TranslationDict = {
     stop: 'Stop',
     overlayStep: 'Step {step}',
     stopControl: 'Stop control',
+    unresponsive: 'Abu is not responding; control has stopped',
     phaseChecking: 'Checking readiness',
     phaseAwaitingApproval: 'Waiting for your approval',
     phaseObserving: 'Reading interface',

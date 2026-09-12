@@ -141,6 +141,7 @@ const {
   initGuiHost,
   teardownGuiHost,
   updateComputerUseOverlayBounds,
+  noteComputerUseNativeCommand,
 } = require('./guiHost.cjs');
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
@@ -902,8 +903,12 @@ function registerTauriHost(app, options = {}) {
         throw new Error(`native helper does not own Computer Use command ${cmd}`);
       }
       const value = await result;
-      if (process.platform === 'win32' && cmd.startsWith('capture_screen')) {
-        updateComputerUseOverlayBounds(value);
+      if (process.platform === 'win32') {
+        if (cmd.startsWith('capture_screen')) updateComputerUseOverlayBounds(value);
+        // Virtual cursor, click ripples and display-follow for the on-screen
+        // chrome (guiHost.cjs). Only completed commands count; a refused one
+        // never touched the pointer.
+        noteComputerUseNativeCommand(cmd, args, value);
       }
       return value;
     },

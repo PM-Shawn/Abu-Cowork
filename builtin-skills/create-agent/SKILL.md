@@ -19,7 +19,7 @@ ABU 代理是一个 `AGENT.md` 文件，包含 YAML 前置元数据和系统提�
 ---
 name: agent-name
 description: 代理描述
-avatar: 🤖
+avatar: icon:pen/coral
 model: claude-sonnet-4-6
 max-turns: 20
 tools:
@@ -37,7 +37,7 @@ background: false
 
 - **name**: 代理名称
 - **description**: 代理描述
-- **avatar**: 代理头像（emoji）
+- **avatar**: 内置图标引用，格式 `icon:<图标>/<颜色>`；也接受一个 emoji；不指定则用默认头像
 - **model**: 使用的模型（可选，默认继承主设置）
 - **max-turns**: 最大对话轮数（默认 20）
 - **tools**: 允许使用的工具列表
@@ -111,3 +111,9 @@ background: false
 ```
 
 现在请告诉我，你想创建什么样的代理？
+
+## 内置图标头像
+
+格式：`icon:<图标>/<颜色>`。可用图标：`chart-bar`、`code`、`flask`、`pen`、`shield`、`users`、`search`、`database`、`palette`、`compass`、`wrench`、`book`、`megaphone`、`scale`、`sparkles`、`cpu`、`globe`、`camera`、`calculator`、`bot`。
+
+可用颜色：`blue`、`purple`、`teal`、`coral`、`amber`、`pink`。例如 `icon:chart-bar/blue`。这是应用内置图标，不需要下载、生成或保存图片文件。

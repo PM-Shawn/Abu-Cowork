@@ -2752,7 +2752,7 @@ const zhCN: TranslationDict = {
   author: {
     title: '关于作者',
     name: 'Shawn',
-    tagline: '📔 爱折腾、理性、去噪、深度实践',
+    tagline: '📔 爱折腾、理性、去噪、极客精神、深度实践',
     role: '🧑🏻‍💻 产品经理｜AI 产品实践者',
     vibe: '🗳️ Vibe Coding 时长超过 1200 小时',
     build: '🛠️ 独立开发 30+ 产品 · 月消耗 Token 300 亿',

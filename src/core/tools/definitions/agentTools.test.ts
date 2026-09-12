@@ -534,6 +534,43 @@ describe('delegateToAgentTool', () => {
     expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1);
   });
 
+  // The window must not starve: a member that keeps working past it gets its
+  // progress on disk before it finishes, not only at the end.
+  it('writes an in-flight snapshot once the coalescing window elapses', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    stubExecution('loop-slow', 'parent-step-slow', 'delegate-slow');
+    const setExecutionStepsSnapshot = stubChatStore();
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['delegate-slow', 'parent-step-slow']]),
+      loopId: 'loop-slow',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: vi.fn().mockReturnValue('child-slow'), completeChildStep: vi.fn() },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_early', toolName: 'write_file', toolInput: {} });
+      await new Promise<void>((resolve) => setTimeout(resolve, 400)); // past the 250ms window
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_late', toolName: 'read_file', toolInput: {} });
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    const { result } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'work for a while' },
+      { conversationId: 'conv-1', loopId: 'loop-slow', toolCallId: 'delegate-slow' } as never,
+    ));
+    await result;
+
+    // One write from the elapsed window, one from the completion flush.
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('gives up on queued member progress once the drain budget runs out, and says how much it dropped', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getCurrentLoopContext } = await import('../../agent/permissionBridge');

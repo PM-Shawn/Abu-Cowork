@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const {
   createComputerUseGate,
+  classifyHelperFailure,
+  classifyInputRejection,
   COMPUTER_USE_GATE_MISS,
   TASK_GRANT_TTL_MS,
   MAX_TASK_CU_STEPS,
@@ -61,6 +63,7 @@ function harness(overrides = {}) {
   let stateSequence = 0;
   let axSessionSequence = 0;
   let failingNativeCommand = null;
+  let failingNativeError = null;
   let helperGeneration = 1;
   let listedWindows = null;
   let lastResolvedIdentity = null;
@@ -127,6 +130,7 @@ function harness(overrides = {}) {
         };
       }
       if (cmd === failingNativeCommand) {
+        if (failingNativeError) throw failingNativeError;
         throw new Error(`simulated ${cmd} uncertainty`);
       }
       return { ok: true };
@@ -185,8 +189,9 @@ function harness(overrides = {}) {
     setAxSnapshotExtra(value) {
       axSnapshotExtra = value && typeof value === 'object' ? value : {};
     },
-    failNativeCommand(cmd) {
+    failNativeCommand(cmd, error = null) {
       failingNativeCommand = cmd;
+      failingNativeError = error;
     },
     restartHelper() {
       helperGeneration += 1;
@@ -386,6 +391,8 @@ test('Host Gate consumes state_id before an uncertain native failure', async () 
   );
   assert.deepEqual(status.outcome_unknown_receipt, {
     status: 'outcome-unknown',
+    execution: 'outcome-unknown',
+    helper_code: 'legacy',
     command: 'mouse_move',
     before_state_id: snapshot.state_id,
     attempt_count: 1,
@@ -450,6 +457,7 @@ test('Host Gate requires a verification snapshot before the next write and retur
     command: 'mouse_click',
     before_state_id: before.state_id,
     after_state_id: after.state_id,
+    execution: 'dispatched',
     status: 'verified-change',
     observation: 'changed',
     expectation: 'not-requested',
@@ -3499,4 +3507,150 @@ test('Host Gate blocks Windows shell and security shortcuts before native input'
     /blocked dangerous system shortcut/,
   );
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
+});
+
+function helperError(message, helper) {
+  return Object.assign(new Error(message), { helper: Object.freeze(helper) });
+}
+
+test('a helper refusal before dispatch releases the attempt instead of blocking replay', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  h.failNativeCommand('mouse_move', helperError('frontmost target changed; observe again', {
+    code: 'target-changed',
+    execution: 'not-executed',
+    retryable: true,
+  }));
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /frontmost target changed/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.deepEqual(status.not_executed_receipt, {
+    status: 'not-executed',
+    execution: 'not-executed',
+    helper_code: 'target-changed',
+    retryable: true,
+    command: 'mouse_move',
+    before_state_id: snapshot.state_id,
+    attempt_count: 1,
+    consequential: false,
+    decision: 'observe-required',
+  });
+
+  // The world may have moved, so the next action still needs a fresh
+  // observation — but that observation has nothing to verify and the run
+  // is not stopped.
+  h.failNativeCommand(null);
+  const fresh = await observeState(h, { toolCallId: 'tool-after-refusal' });
+  assert.equal(fresh.verification_receipt, undefined);
+  const next = await begin(h, { toolCallId: 'tool-retry', expectedStateId: fresh.state_id });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+    x: 2,
+    y: 2,
+    [COMPUTER_USE_TOKEN_ARG]: next.token,
+  });
+  const after = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(after.not_executed_receipt, null);
+  assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move').length, 2);
+});
+
+test('a structured outcome-unknown helper error still blocks replay and stamps the receipt', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  h.failNativeCommand('mouse_move', helperError('SendInput was blocked after 1/3 events', {
+    code: 'send-input-failed',
+    execution: 'outcome-unknown',
+    retryable: false,
+  }));
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /outcome is unknown after 'mouse_move'/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.not_executed_receipt, null);
+  assert.equal(status.outcome_unknown_receipt.execution, 'outcome-unknown');
+  assert.equal(status.outcome_unknown_receipt.helper_code, 'send-input-failed');
+  assert.equal(status.outcome_unknown_receipt.status, 'outcome-unknown');
+});
+
+test('classifyHelperFailure trusts a structured verdict and falls back by command kind', () => {
+  const structured = classifyHelperFailure('stateful', helperError('m', {
+    code: 'screenshot-stale', execution: 'not-executed', retryable: true,
+  }));
+  assert.deepEqual(structured, { code: 'screenshot-stale', execution: 'not-executed', retryable: true });
+
+  // retryable is never inferred.
+  assert.equal(classifyHelperFailure('stateful', helperError('m', {
+    code: 'screenshot-stale', execution: 'not-executed', retryable: 'yes',
+  })).retryable, false);
+
+  // Unstructured: the kind decides, always pessimistic for stateful commands.
+  assert.deepEqual(classifyHelperFailure('stateful', new Error('boom')),
+    { code: 'legacy', execution: 'outcome-unknown', retryable: false });
+  assert.deepEqual(classifyHelperFailure('observation', new Error('boom')),
+    { code: 'legacy', execution: 'not-executed', retryable: false });
+  assert.deepEqual(classifyHelperFailure('stateful', helperError('m', {
+    code: 'legacy', execution: 'outcome-unknown', retryable: false,
+  })), { code: 'legacy', execution: 'outcome-unknown', retryable: false });
+  // A structured object with an unknown verdict is not trusted either.
+  assert.equal(classifyHelperFailure('stateful', helperError('m', {
+    code: 'target-changed', execution: 'maybe', retryable: true,
+  })).execution, 'outcome-unknown');
+  // Even an explicit "internal" verdict is the helper's own word.
+  assert.equal(classifyHelperFailure('stateful', helperError('m', {
+    code: 'internal', execution: 'not-executed', retryable: false,
+  })).execution, 'not-executed');
+});
+
+test('classifyInputRejection reads the helper code before any message', () => {
+  assert.equal(classifyInputRejection(helperError('nothing recognisable here', {
+    code: 'secure-desktop', execution: 'not-executed', retryable: false,
+  })), 'secure-desktop');
+  assert.equal(classifyInputRejection(helperError('frontmost target changed', {
+    code: 'target-changed', execution: 'not-executed', retryable: true,
+  })), 'window-invalidated');
+  assert.equal(classifyInputRejection(helperError('screenshot_id belongs elsewhere', {
+    code: 'internal', execution: 'not-executed', retryable: false,
+  })), 'native-rejected');
+  // Only a legacy (string) error may still be classified from its text.
+  assert.equal(classifyInputRejection(helperError('input is blocked on secure desktop', {
+    code: 'legacy', execution: 'outcome-unknown', retryable: false,
+  })), 'secure-desktop');
+  assert.equal(classifyInputRejection(new Error('physical user input occurred')), 'physical-input');
 });

@@ -43,6 +43,8 @@ mod windows_backend;
 // exclusion-capture + permission-check internals are macOS-gated, same as
 // src-tauri). See src/cu.rs.
 mod cu;
+mod error;
+use error::HelperError;
 
 const HELPER_PROTOCOL_VERSION: u32 = 2;
 static STARTED_AT_MS: OnceLock<u128> = OnceLock::new();
@@ -211,13 +213,13 @@ fn normalize_request_context(req: &Value) -> Option<Value> {
     }))
 }
 
-fn parse_wire_request(req: &Value) -> Result<WireRequest, String> {
+fn parse_wire_request(req: &Value) -> Result<WireRequest, HelperError> {
     let method = req
         .get("method")
         .or_else(|| req.get("command"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "missing request method/command".to_string())?;
+        .ok_or_else(|| HelperError::not_executed("invalid-params", "missing request method/command"))?;
     let params = req
         .get("params")
         .or_else(|| req.get("args"))
@@ -232,38 +234,38 @@ fn parse_wire_request(req: &Value) -> Result<WireRequest, String> {
 }
 
 /// Read a required string param, e.g. `session_id`.
-fn require_str(params: &Value, key: &str) -> Result<String, String> {
+fn require_str(params: &Value, key: &str) -> Result<String, HelperError> {
     params
         .get(key)
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| format!("missing required param '{key}'"))
+        .ok_or_else(|| HelperError::not_executed("invalid-params", format!("missing required param '{key}'")))
 }
 
 /// Read a required u32 param, e.g. `element_id`.
-fn require_u32(params: &Value, key: &str) -> Result<u32, String> {
+fn require_u32(params: &Value, key: &str) -> Result<u32, HelperError> {
     params
         .get(key)
         .and_then(Value::as_u64)
         .map(|v| v as u32)
-        .ok_or_else(|| format!("missing required param '{key}'"))
+        .ok_or_else(|| HelperError::not_executed("invalid-params", format!("missing required param '{key}'")))
 }
 
 /// Read a required u64 param used for monotonic observation/input epochs.
-fn require_u64(params: &Value, key: &str) -> Result<u64, String> {
+fn require_u64(params: &Value, key: &str) -> Result<u64, HelperError> {
     params
         .get(key)
         .and_then(Value::as_u64)
-        .ok_or_else(|| format!("missing required param '{key}'"))
+        .ok_or_else(|| HelperError::not_executed("invalid-params", format!("missing required param '{key}'")))
 }
 
 /// Read a required i32 param, e.g. mouse/drag coordinates.
-fn require_i32(params: &Value, key: &str) -> Result<i32, String> {
+fn require_i32(params: &Value, key: &str) -> Result<i32, HelperError> {
     params
         .get(key)
         .and_then(Value::as_i64)
         .map(|v| v as i32)
-        .ok_or_else(|| format!("missing required param '{key}'"))
+        .ok_or_else(|| HelperError::not_executed("invalid-params", format!("missing required param '{key}'")))
 }
 
 /// Optional i32 param (None when absent or null — distinct from `0`).
@@ -340,7 +342,7 @@ fn assert_expected_target(params: &Value) -> Result<(), String> {
     }
 }
 
-fn handle(method: &str, params: &Value) -> Result<Value, String> {
+fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
     match method {
         "ping" => Ok(json!({ "pong": true })),
         "hello" | "version" => Ok(helper_identity()),
@@ -382,7 +384,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
         #[cfg(target_os = "windows")]
         "input_lease_pause" => {
             let owner = u32::try_from(require_u64(params, "consent_owner_process_id")?)
-                .map_err(|_| "consent owner process id is invalid".to_string())?;
+                .map_err(|_| HelperError::not_executed("invalid-params", "consent owner process id is invalid"))?;
             let epoch =
                 windows_backend::pause_input_lease(&require_str(params, "lease_id")?, owner)?;
             Ok(json!({ "input_epoch": epoch, "phase": "paused-for-consent" }))
@@ -410,18 +412,18 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             {
                 let name = require_str(params, "app_name")?;
                 let identity = ax::resolve_app_identity_impl(name)?;
-                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(identity).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "macos"))]
             #[cfg(not(target_os = "windows"))]
             {
-                Err("App identity resolution is macOS-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "App identity resolution is macOS-only"))
             }
             #[cfg(target_os = "windows")]
             {
                 let name = require_str(params, "app_name")?;
                 let identity = windows_backend::resolve_app_identity_impl(name)?;
-                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(identity).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
         }
 
@@ -429,17 +431,17 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             #[cfg(target_os = "macos")]
             {
                 let identity = ax::frontmost_app_identity_impl()?;
-                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(identity).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "macos"))]
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Frontmost app identity resolution is macOS-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Frontmost app identity resolution is macOS-only"))
             }
             #[cfg(target_os = "windows")]
             {
                 let identity = windows_backend::frontmost_app_identity_impl()?;
-                serde_json::to_value(identity).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(identity).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
         }
 
@@ -456,7 +458,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             #[cfg(not(target_os = "macos"))]
             #[cfg(not(target_os = "windows"))]
             {
-                Err("AX is macOS-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "AX is macOS-only"))
             }
             #[cfg(target_os = "windows")]
             {
@@ -471,11 +473,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             {
                 let expected_app_id = opt_str(params, "expected_app_id");
                 let windows = windows_backend::list_windows_impl(expected_app_id)?;
-                serde_json::to_value(windows).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(windows).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Window enumeration is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Window enumeration is Windows-only"))
             }
         }
 
@@ -483,11 +485,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             #[cfg(target_os = "windows")]
             {
                 let apps = windows_backend::list_apps_impl()?;
-                serde_json::to_value(apps).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(apps).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Application catalog is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Application catalog is Windows-only"))
             }
         }
 
@@ -496,11 +498,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             {
                 let query = require_str(params, "app_name")?;
                 let app = windows_backend::launch_app_impl(query)?;
-                serde_json::to_value(app).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(app).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Application launch is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Application launch is Windows-only"))
             }
         }
 
@@ -509,11 +511,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             {
                 let window_id = require_str(params, "window_id")?;
                 let window = windows_backend::get_window_impl(window_id)?;
-                serde_json::to_value(window).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(window).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Window lookup is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Window lookup is Windows-only"))
             }
         }
 
@@ -523,14 +525,14 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 let graph = windows_backend::get_window_graph_impl(
                     require_str(params, "expected_app_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                 )?;
-                serde_json::to_value(graph).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(graph).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Window graph lookup is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Window graph lookup is Windows-only"))
             }
         }
 
@@ -540,14 +542,14 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 let result = windows_backend::frontmost_matches_target_impl(
                     require_str(params, "expected_app_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                 )?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Window target matching is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Window target matching is Windows-only"))
             }
         }
 
@@ -556,11 +558,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             {
                 let window_id = require_str(params, "window_id")?;
                 let window = windows_backend::activate_window_impl(window_id)?;
-                serde_json::to_value(window).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(window).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("Window activation is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Window activation is Windows-only"))
             }
         }
 
@@ -576,7 +578,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 let expected_process_id = opt_i32(params, "expected_process_id");
                 let result =
                     ax::ax_snapshot_impl(app, Some(expected_bundle_id), expected_process_id)?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(target_os = "windows")]
             {
@@ -594,11 +596,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     expected_process_id,
                     opt_str(params, "expected_window_id"),
                 )?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                Err("Accessibility snapshots are unsupported on this platform".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Accessibility snapshots are unsupported on this platform"))
             }
         }
 
@@ -619,7 +621,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                Err("Accessibility actions are unsupported on this platform".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Accessibility actions are unsupported on this platform"))
             }
         }
 
@@ -642,7 +644,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                Err("Accessibility actions are unsupported on this platform".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Accessibility actions are unsupported on this platform"))
             }
         }
 
@@ -655,7 +657,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 let expected_app_id = require_str(params, "expected_bundle_id")?;
                 let expected_process_id =
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?;
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?;
                 let expected_window_id = require_str(params, "expected_window_id")?;
                 let expected_input_epoch = require_u64(params, "expected_input_epoch")?;
 
@@ -698,7 +700,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("guarded accessibility text replacement is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "guarded accessibility text replacement is Windows-only"))
             }
         }
 
@@ -721,7 +723,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                Err("Accessibility actions are unsupported on this platform".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Accessibility actions are unsupported on this platform"))
             }
         }
 
@@ -734,7 +736,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             }
             #[cfg(not(target_os = "windows"))]
             {
-                Err("UIA focus restoration is Windows-only".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "UIA focus restoration is Windows-only"))
             }
         }
 
@@ -753,7 +755,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
-                Err("Accessibility actions are unsupported on this platform".to_string())
+                Err(HelperError::not_executed("unsupported-platform", "Accessibility actions are unsupported on this platform"))
             }
         }
 
@@ -766,7 +768,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     require_str(params, "screenshot_id")?,
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                     require_u64(params, "expected_input_epoch")?,
                 )?;
@@ -823,12 +825,12 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                         .and_then(|value| u32::try_from(value).ok()),
                     opt_str(params, "expected_window_id"),
                 )?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
                 let result = cu::capture_screen_impl(x, y, width, height, max_width)?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
         }
 
@@ -856,7 +858,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     anchor_x,
                     anchor_y,
                 )?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(target_os = "windows")]
             {
@@ -874,7 +876,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                         .and_then(|value| u32::try_from(value).ok()),
                     opt_str(params, "expected_window_id"),
                 )?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             {
@@ -882,13 +884,13 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                 // same as computer_use.rs's non-macOS branch.
                 let _ = (exclude_window_id, anchor_x, anchor_y);
                 let result = cu::capture_screen_impl(x, y, width, height, max_width)?;
-                serde_json::to_value(result).map_err(|e| format!("serialize failed: {e}"))
+                serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
         }
 
         "check_macos_permissions" => {
             let perms = cu::check_macos_permissions_impl();
-            serde_json::to_value(perms).map_err(|e| format!("serialize failed: {e}"))
+            serde_json::to_value(perms).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
         }
 
         "mouse_click" => {
@@ -904,7 +906,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     require_str(params, "screenshot_id")?,
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                     require_u64(params, "expected_input_epoch")?,
                 )?;
@@ -933,7 +935,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     require_str(params, "screenshot_id")?,
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                     require_u64(params, "expected_input_epoch")?,
                 )?;
@@ -963,7 +965,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     require_str(params, "screenshot_id")?,
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                     require_u64(params, "expected_input_epoch")?,
                 )?;
@@ -986,7 +988,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     text,
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                     require_u64(params, "expected_input_epoch")?,
                 )?;
@@ -1009,7 +1011,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
                     modifiers.unwrap_or_default(),
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
-                        .map_err(|_| "expected process id is invalid".to_string())?,
+                        .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
                     require_str(params, "expected_window_id")?,
                     require_u64(params, "expected_input_epoch")?,
                 )?;
@@ -1024,7 +1026,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, String> {
             }
         }
 
-        other => Err(format!("unknown method: {other}")),
+        other => Err(HelperError::not_executed("unknown-method", format!("unknown method: {other}"))),
     }
 }
 
@@ -1053,7 +1055,9 @@ fn main() {
         let req: Value = match serde_json::from_str(line) {
             Ok(v) => v,
             Err(e) => {
-                emit_json(&json!({ "error": format!("parse error: {e}") }));
+                emit_json(&json!({
+                    "error": HelperError::not_executed("invalid-params", format!("parse error: {e}")),
+                }));
                 continue;
             }
         };

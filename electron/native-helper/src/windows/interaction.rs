@@ -1,3 +1,4 @@
+use crate::error::HelperError;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread;
@@ -71,9 +72,9 @@ fn input_lease() -> &'static Mutex<InputLease> {
     INPUT_LEASE.get_or_init(|| Mutex::new(InputLease::default()))
 }
 
-fn require_lease(lease: &InputLease, lease_id: &str) -> Result<(), String> {
+fn require_lease(lease: &InputLease, lease_id: &str) -> Result<(), HelperError> {
     if lease.id.as_deref() != Some(lease_id) || lease.phase == LeasePhase::Idle {
-        return Err("Computer Use input lease is stale or inactive".to_string());
+        return Err(HelperError::not_executed("input-lease", "Computer Use input lease is stale or inactive"));
     }
     Ok(())
 }
@@ -93,18 +94,18 @@ pub fn input_lease_running() -> bool {
         .unwrap_or(false)
 }
 
-pub fn begin_input_lease(lease_id: &str) -> Result<u64, String> {
+pub fn begin_input_lease(lease_id: &str) -> Result<u64, HelperError> {
     if lease_id.is_empty() || lease_id.len() > 256 {
-        return Err("Computer Use input lease id is invalid".to_string());
+        return Err(HelperError::not_executed("invalid-params", "Computer Use input lease id is invalid"));
     }
     if !initialize_input_monitoring() {
-        return Err("physical input monitoring is unavailable; input is blocked".to_string());
+        return Err(HelperError::not_executed("input-lease", "physical input monitoring is unavailable; input is blocked"));
     }
     let mut lease = input_lease()
         .lock()
-        .map_err(|_| "Computer Use input lease is unavailable".to_string())?;
+        .map_err(|_| HelperError::not_executed("input-lease", "Computer Use input lease is unavailable"))?;
     if lease.phase != LeasePhase::Idle && lease.id.as_deref() != Some(lease_id) {
-        return Err("another Computer Use input lease is already active".to_string());
+        return Err(HelperError::not_executed("input-lease", "another Computer Use input lease is already active"));
     }
     lease.id = Some(lease_id.to_string());
     lease.phase = LeasePhase::Observing;
@@ -126,18 +127,18 @@ pub fn begin_input_observation() {
     }
 }
 
-pub fn activate_input_lease(lease_id: &str, expected_epoch: u64) -> Result<u64, String> {
+pub fn activate_input_lease(lease_id: &str, expected_epoch: u64) -> Result<u64, HelperError> {
     let mut lease = input_lease()
         .lock()
-        .map_err(|_| "Computer Use input lease is unavailable".to_string())?;
+        .map_err(|_| HelperError::not_executed("input-lease", "Computer Use input lease is unavailable"))?;
     require_lease(&lease, lease_id)?;
     if lease.phase == LeasePhase::PausedForConsent {
-        return Err("Computer Use input lease is paused for consent".to_string());
+        return Err(HelperError::not_executed("input-lease", "Computer Use input lease is paused for consent"));
     }
     let current_epoch = input_epoch();
     if lease.dirty || current_epoch != expected_epoch {
         lease.phase = LeasePhase::Observing;
-        return Err("physical user input occurred during observation; observe again".to_string());
+        return Err(HelperError::observe_again("physical-input", "physical user input occurred during observation; observe again"));
     }
     lease.phase = LeasePhase::Running;
     lease.resume_phase = LeasePhase::Running;
@@ -147,19 +148,19 @@ pub fn activate_input_lease(lease_id: &str, expected_epoch: u64) -> Result<u64, 
 /// Commits a completed observation without arming takeover detection. Physical
 /// input after this point invalidates the observation epoch, but does not abort
 /// the whole agent run while the model is merely thinking or using other tools.
-pub fn commit_input_observation(lease_id: &str, expected_epoch: u64) -> Result<u64, String> {
+pub fn commit_input_observation(lease_id: &str, expected_epoch: u64) -> Result<u64, HelperError> {
     let mut lease = input_lease()
         .lock()
-        .map_err(|_| "Computer Use input lease is unavailable".to_string())?;
+        .map_err(|_| HelperError::not_executed("input-lease", "Computer Use input lease is unavailable"))?;
     require_lease(&lease, lease_id)?;
     if lease.phase == LeasePhase::PausedForConsent {
-        return Err("Computer Use input lease is paused for consent".to_string());
+        return Err(HelperError::not_executed("input-lease", "Computer Use input lease is paused for consent"));
     }
     let current_epoch = input_epoch();
     if lease.dirty || current_epoch != expected_epoch {
         lease.phase = LeasePhase::Observing;
         lease.resume_phase = LeasePhase::Observing;
-        return Err("physical user input occurred during observation; observe again".to_string());
+        return Err(HelperError::observe_again("physical-input", "physical user input occurred during observation; observe again"));
     }
     lease.phase = LeasePhase::Observing;
     lease.resume_phase = LeasePhase::Observing;
@@ -170,10 +171,10 @@ pub fn commit_input_observation(lease_id: &str, expected_epoch: u64) -> Result<u
 /// Leaves the short native-action critical section. Subsequent physical input
 /// invalidates state but is not published as takeover until the Host activates
 /// the lease again immediately before another native write.
-pub fn observe_input_lease(lease_id: &str) -> Result<u64, String> {
+pub fn observe_input_lease(lease_id: &str) -> Result<u64, HelperError> {
     let mut lease = input_lease()
         .lock()
-        .map_err(|_| "Computer Use input lease is unavailable".to_string())?;
+        .map_err(|_| HelperError::not_executed("input-lease", "Computer Use input lease is unavailable"))?;
     require_lease(&lease, lease_id)?;
     lease.phase = LeasePhase::Observing;
     lease.resume_phase = LeasePhase::Observing;
@@ -182,10 +183,10 @@ pub fn observe_input_lease(lease_id: &str) -> Result<u64, String> {
     Ok(input_epoch())
 }
 
-pub fn pause_input_lease(lease_id: &str, consent_owner_process_id: u32) -> Result<u64, String> {
+pub fn pause_input_lease(lease_id: &str, consent_owner_process_id: u32) -> Result<u64, HelperError> {
     let mut lease = input_lease()
         .lock()
-        .map_err(|_| "Computer Use input lease is unavailable".to_string())?;
+        .map_err(|_| HelperError::not_executed("input-lease", "Computer Use input lease is unavailable"))?;
     require_lease(&lease, lease_id)?;
     if lease.phase != LeasePhase::PausedForConsent {
         lease.resume_phase = lease.phase;
@@ -196,13 +197,13 @@ pub fn pause_input_lease(lease_id: &str, consent_owner_process_id: u32) -> Resul
     Ok(input_epoch())
 }
 
-pub fn resume_input_lease(lease_id: &str) -> Result<(bool, u64), String> {
+pub fn resume_input_lease(lease_id: &str) -> Result<(bool, u64), HelperError> {
     let mut lease = input_lease()
         .lock()
-        .map_err(|_| "Computer Use input lease is unavailable".to_string())?;
+        .map_err(|_| HelperError::not_executed("input-lease", "Computer Use input lease is unavailable"))?;
     require_lease(&lease, lease_id)?;
     if lease.phase != LeasePhase::PausedForConsent {
-        return Err("Computer Use input lease is not paused for consent".to_string());
+        return Err(HelperError::not_executed("input-lease", "Computer Use input lease is not paused for consent"));
     }
     let dirty = lease.dirty;
     lease.phase = if dirty {
@@ -215,10 +216,10 @@ pub fn resume_input_lease(lease_id: &str) -> Result<(bool, u64), String> {
     Ok((dirty, input_epoch()))
 }
 
-pub fn end_input_lease(lease_id: &str) -> Result<(), String> {
+pub fn end_input_lease(lease_id: &str) -> Result<(), HelperError> {
     let mut lease = input_lease()
         .lock()
-        .map_err(|_| "Computer Use input lease is unavailable".to_string())?;
+        .map_err(|_| HelperError::not_executed("input-lease", "Computer Use input lease is unavailable"))?;
     require_lease(&lease, lease_id)?;
     *lease = InputLease::default();
     Ok(())

@@ -1,3 +1,4 @@
+use crate::error::HelperError;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -39,13 +40,20 @@ const ABU_INJECTED_INPUT_MARKER: usize = 0x4142_5543_5553_4532;
 static ABU_LEFT_BUTTON_HELD: AtomicBool = AtomicBool::new(false);
 static HELD_INPUT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn send(inputs: &[INPUT]) -> Result<(), String> {
+fn send(inputs: &[INPUT]) -> Result<(), HelperError> {
     let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
     if sent != inputs.len() as u32 {
-        return Err(format!(
+        let message = format!(
             "SendInput was blocked after {sent}/{} events (possible UIPI restriction)",
             inputs.len()
-        ));
+        );
+        // Nothing injected is a plain refusal; anything injected means the
+        // target may have seen part of the batch.
+        return Err(if sent == 0 {
+            HelperError::not_executed("send-input-failed", message)
+        } else {
+            HelperError::outcome_unknown("send-input-failed", message)
+        });
     }
     Ok(())
 }
@@ -54,19 +62,19 @@ fn held_input_lock() -> &'static Mutex<()> {
     HELD_INPUT_LOCK.get_or_init(|| Mutex::new(()))
 }
 
-pub(crate) fn release_held_inputs() -> Result<(), String> {
+pub(crate) fn release_held_inputs() -> Result<(), HelperError> {
     let _guard = held_input_lock()
         .lock()
-        .map_err(|_| "held input state is unavailable".to_string())?;
+        .map_err(|_| HelperError::preflight("held input state is unavailable"))?;
     if ABU_LEFT_BUTTON_HELD.swap(false, Ordering::AcqRel) {
         send(&[mouse_input(0, 0, 0, MOUSEEVENTF_LEFTUP)])?;
     }
     Ok(())
 }
 
-fn input_desktop_is_default() -> Result<(), String> {
+fn input_desktop_is_default() -> Result<(), HelperError> {
     let desktop = unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) }
-        .map_err(|_| "input desktop is unavailable (locked or secure desktop)".to_string())?;
+        .map_err(|_| HelperError::not_executed("secure-desktop", "input desktop is unavailable (locked or secure desktop)"))?;
     let desktop_handle = HANDLE(desktop.0);
     let result = (|| {
         let mut required = 0u32;
@@ -74,7 +82,7 @@ fn input_desktop_is_default() -> Result<(), String> {
             GetUserObjectInformationW(desktop_handle, UOI_NAME, None, 0, Some(&mut required))
         };
         if required < 2 || required > 65_536 {
-            return Err("input desktop identity is unavailable".to_string());
+            return Err(HelperError::not_executed("secure-desktop", "input desktop identity is unavailable"));
         }
         let mut buffer = vec![0u16; required.div_ceil(2) as usize];
         unsafe {
@@ -86,14 +94,14 @@ fn input_desktop_is_default() -> Result<(), String> {
                 Some(&mut required),
             )
         }
-        .map_err(|error| format!("input desktop identity failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("input desktop identity failed: {error}")))?;
         let end = buffer
             .iter()
             .position(|value| *value == 0)
             .unwrap_or(buffer.len());
         let name = String::from_utf16_lossy(&buffer[..end]);
         if !name.eq_ignore_ascii_case("default") {
-            return Err(format!("input is blocked on secure desktop '{name}'"));
+            return Err(HelperError::not_executed("secure-desktop", format!("input is blocked on secure desktop '{name}'")));
         }
         Ok(())
     })();
@@ -101,22 +109,22 @@ fn input_desktop_is_default() -> Result<(), String> {
     result
 }
 
-fn integrity_level(process_id: u32) -> Result<u32, String> {
+fn integrity_level(process_id: u32) -> Result<u32, HelperError> {
     let is_current = process_id == unsafe { GetCurrentProcessId() };
     let process = if is_current {
         unsafe { GetCurrentProcess() }
     } else {
         unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id) }
-            .map_err(|error| format!("OpenProcess({process_id}) for integrity failed: {error}"))?
+            .map_err(|error| HelperError::preflight(format!("OpenProcess({process_id}) for integrity failed: {error}")))?
     };
     let mut token = HANDLE::default();
     let result = (|| {
         unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) }
-            .map_err(|error| format!("OpenProcessToken({process_id}) failed: {error}"))?;
+            .map_err(|error| HelperError::preflight(format!("OpenProcessToken({process_id}) failed: {error}")))?;
         let mut required = 0u32;
         let _ = unsafe { GetTokenInformation(token, TokenIntegrityLevel, None, 0, &mut required) };
         if required < size_of::<TOKEN_MANDATORY_LABEL>() as u32 || required > 65_536 {
-            return Err("process integrity information is unavailable".to_string());
+            return Err(HelperError::preflight("process integrity information is unavailable"));
         }
         let mut buffer = vec![0u8; required as usize];
         unsafe {
@@ -128,11 +136,11 @@ fn integrity_level(process_id: u32) -> Result<u32, String> {
                 &mut required,
             )
         }
-        .map_err(|error| format!("GetTokenInformation({process_id}) failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("GetTokenInformation({process_id}) failed: {error}")))?;
         let label = unsafe { &*(buffer.as_ptr() as *const TOKEN_MANDATORY_LABEL) };
         let count = unsafe { *GetSidSubAuthorityCount(label.Label.Sid) } as u32;
         if count == 0 {
-            return Err("process integrity SID is invalid".to_string());
+            return Err(HelperError::preflight("process integrity SID is invalid"));
         }
         Ok(unsafe { *GetSidSubAuthority(label.Label.Sid, count - 1) })
     })();
@@ -145,11 +153,11 @@ fn integrity_level(process_id: u32) -> Result<u32, String> {
     result
 }
 
-fn assert_integrity(target_process_id: u32) -> Result<(), String> {
+fn assert_integrity(target_process_id: u32) -> Result<(), HelperError> {
     let current = integrity_level(unsafe { GetCurrentProcessId() })?;
     let target = integrity_level(target_process_id)?;
     if !integrity_allows(current, target) {
-        return Err("target has higher Windows integrity; input is blocked by UIPI".to_string());
+        return Err(HelperError::not_executed("higher-integrity", "target has higher Windows integrity; input is blocked by UIPI"));
     }
     Ok(())
 }
@@ -171,17 +179,15 @@ fn assert_target(
     expected_process_id: u32,
     expected_window_id: &str,
     expected_input_epoch: u64,
-) -> Result<super::window::AppIdentity, String> {
+) -> Result<super::window::AppIdentity, HelperError> {
     if !super::interaction::input_monitoring_ready() {
-        return Err("physical input monitoring is unavailable; input is blocked".to_string());
+        return Err(HelperError::not_executed("input-lease", "physical input monitoring is unavailable; input is blocked"));
     }
     if !super::interaction::input_lease_running() {
-        return Err(
-            "Computer Use input lease is not active; observe again before input".to_string(),
-        );
+        return Err(HelperError::observe_again("input-lease", "Computer Use input lease is not active; observe again before input"));
     }
     if super::interaction::input_epoch() != expected_input_epoch {
-        return Err("physical user input occurred after observation; observe again".to_string());
+        return Err(HelperError::observe_again("physical-input", "physical user input occurred after observation; observe again"));
     }
     input_desktop_is_default()?;
     let actual = frontmost_app_identity_impl()?;
@@ -190,12 +196,12 @@ fn assert_target(
         || !super::window::window_ids_related(&actual.window_id, expected_window_id)
     {
         crate::emit_helper_event("window-invalidated", "foreground-target-changed");
-        return Err("frontmost target changed; observe again".to_string());
+        return Err(HelperError::observe_again("target-changed", "frontmost target changed; observe again"));
     }
     let window = inspect_window(super::window::parse_hwnd(&actual.window_id)?)?;
     if window.minimized {
         crate::emit_helper_event("window-invalidated", "target-minimized");
-        return Err("target window is minimized; observe again".to_string());
+        return Err(HelperError::observe_again("target-minimized", "target window is minimized; observe again"));
     }
     assert_integrity(expected_process_id)?;
     Ok(actual)
@@ -209,7 +215,7 @@ fn assert_point(
     expected_process_id: u32,
     expected_window_id: &str,
     expected_input_epoch: u64,
-) -> Result<(), String> {
+) -> Result<(), HelperError> {
     let actual = assert_target(
         expected_app_id,
         expected_process_id,
@@ -218,21 +224,17 @@ fn assert_point(
     )?;
     let screenshot = get_screenshot_ref(screenshot_id)?;
     if screenshot.input_epoch != expected_input_epoch {
-        return Err(
-            "screenshot was captured before the latest observation; observe again".to_string(),
-        );
+        return Err(HelperError::observe_again("screenshot-stale", "screenshot was captured before the latest observation; observe again"));
     }
     if screenshot.app_id.as_deref() != Some(expected_app_id)
         || screenshot.process_id != Some(expected_process_id)
         || screenshot.window_id.as_deref() != Some(actual.window_id.as_str())
     {
-        return Err("screenshot_id belongs to a different target window".to_string());
+        return Err(HelperError::observe_again("screenshot-stale", "screenshot_id belongs to a different target window"));
     }
     let current_window = inspect_window(super::window::parse_hwnd(&actual.window_id)?)?;
     if screenshot.window_bounds != Some(current_window.bounds) {
-        return Err(
-            "target window moved or resized after the screenshot; observe again".to_string(),
-        );
+        return Err(HelperError::observe_again("screenshot-stale", "target window moved or resized after the screenshot; observe again"));
     }
     let mapped_width = mapped_source_extent(screenshot.returned_width, screenshot.scale_factor);
     let mapped_height = mapped_source_extent(screenshot.returned_height, screenshot.scale_factor);
@@ -251,21 +253,21 @@ fn assert_point(
         max_y.saturating_sub(screenshot.origin_y) as u32,
         y,
     ) {
-        return Err("input coordinate is outside the screenshot bounds".to_string());
+        return Err(HelperError::observe_again("coordinate-out-of-bounds", "input coordinate is outside the screenshot bounds"));
     }
     let hit = unsafe { WindowFromPoint(POINT { x, y }) };
     if hit.0.is_null() {
-        return Err("no window is present at the input coordinate".to_string());
+        return Err(HelperError::observe_again("no-window-at-point", "no window is present at the input coordinate"));
     }
     let root = unsafe { GetAncestor(hit, GA_ROOT) };
     let hit_window = inspect_window(if root.0.is_null() { hit } else { root })?;
     if hit_window.process_id != expected_process_id
         || !hit_window.app_id.eq_ignore_ascii_case(expected_app_id)
     {
-        return Err(format!(
+        return Err(HelperError::observe_again("occluded", format!(
             "input coordinate is occluded by another app window ({})",
             hwnd_id(if root.0.is_null() { hit } else { root })
-        ));
+        )));
     }
     Ok(())
 }
@@ -339,13 +341,10 @@ fn send_keyboard_sequence_with(
     events: &[KeyboardEvent],
     mut modifier_is_down: impl FnMut(u16) -> bool,
     mut sender: impl FnMut(&[KeyboardEvent]) -> usize,
-) -> Result<(), String> {
+) -> Result<(), HelperError> {
     for modifier in [VK_CONTROL.0, VK_MENU.0, VK_SHIFT.0, VK_LWIN.0, VK_RWIN.0] {
         if modifier_is_down(modifier) {
-            return Err(
-                "physical modifier input is already active; release held modifier and observe again"
-                    .to_string(),
-            );
+            return Err(HelperError::observe_again("physical-input", "physical modifier input is already active; release held modifier and observe again"));
         }
     }
 
@@ -379,13 +378,13 @@ fn send_keyboard_sequence_with(
     } else {
         "injected held-key cleanup was incomplete"
     };
-    Err(format!(
+    Err(HelperError::outcome_unknown("send-input-failed", format!(
         "outcome-unknown: SendInput completed {sent}/{} planned events; {cleanup_status}",
         events.len()
-    ))
+    )))
 }
 
-fn send_keyboard_sequence(events: &[KeyboardEvent]) -> Result<(), String> {
+fn send_keyboard_sequence(events: &[KeyboardEvent]) -> Result<(), HelperError> {
     send_keyboard_sequence_with(
         events,
         |vk| unsafe { GetAsyncKeyState(vk as i32) < 0 },
@@ -400,7 +399,7 @@ fn send_keyboard_sequence(events: &[KeyboardEvent]) -> Result<(), String> {
     )
 }
 
-pub(crate) fn permit_foreground_activation() -> Result<(), String> {
+pub(crate) fn permit_foreground_activation() -> Result<(), HelperError> {
     // A balanced, marked Alt chord releases Windows' foreground-lock timeout
     // without leaving a modifier pressed. Low-level hooks classify both events
     // as Abu injection, so this cannot invalidate an observation state.
@@ -410,13 +409,13 @@ pub(crate) fn permit_foreground_activation() -> Result<(), String> {
     ])
 }
 
-fn move_event(x: i32, y: i32) -> Result<INPUT, String> {
+fn move_event(x: i32, y: i32) -> Result<INPUT, HelperError> {
     let left = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
     let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
     let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
     let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
     if width <= 1 || height <= 1 {
-        return Err("virtual desktop bounds are unavailable".to_string());
+        return Err(HelperError::preflight("virtual desktop bounds are unavailable"));
     }
     let dx = absolute_coordinate(x, left, width)?;
     let dy = absolute_coordinate(y, top, height)?;
@@ -428,9 +427,9 @@ fn move_event(x: i32, y: i32) -> Result<INPUT, String> {
     ))
 }
 
-fn absolute_coordinate(value: i32, origin: i32, span: i32) -> Result<i32, String> {
+fn absolute_coordinate(value: i32, origin: i32, span: i32) -> Result<i32, HelperError> {
     if span <= 1 {
-        return Err("virtual desktop span is invalid".to_string());
+        return Err(HelperError::preflight("virtual desktop span is invalid"));
     }
     Ok(
         ((value.saturating_sub(origin)) as i64 * 65_535 / (span - 1) as i64).clamp(0, 65_535)
@@ -446,7 +445,7 @@ pub fn mouse_move_impl(
     process_id: u32,
     window_id: String,
     expected_input_epoch: u64,
-) -> Result<String, String> {
+) -> Result<String, HelperError> {
     assert_point(
         x,
         y,
@@ -469,7 +468,7 @@ pub fn mouse_click_impl(
     process_id: u32,
     window_id: String,
     expected_input_epoch: u64,
-) -> Result<String, String> {
+) -> Result<String, HelperError> {
     assert_point(
         x,
         y,
@@ -509,7 +508,7 @@ pub fn mouse_scroll_impl(
     process_id: u32,
     window_id: String,
     expected_input_epoch: u64,
-) -> Result<String, String> {
+) -> Result<String, HelperError> {
     assert_point(
         x,
         y,
@@ -548,7 +547,7 @@ pub fn mouse_drag_impl(
     process_id: u32,
     window_id: String,
     expected_input_epoch: u64,
-) -> Result<String, String> {
+) -> Result<String, HelperError> {
     assert_point(
         start_x,
         start_y,
@@ -571,7 +570,7 @@ pub fn mouse_drag_impl(
     {
         let _guard = held_input_lock()
             .lock()
-            .map_err(|_| "held input state is unavailable".to_string())?;
+            .map_err(|_| HelperError::preflight("held input state is unavailable"))?;
         ABU_LEFT_BUTTON_HELD.store(true, Ordering::Release);
         if let Err(error) = send(&[start_move, mouse_input(0, 0, 0, MOUSEEVENTF_LEFTDOWN)]) {
             ABU_LEFT_BUTTON_HELD.store(false, Ordering::Release);
@@ -581,17 +580,17 @@ pub fn mouse_drag_impl(
     for step in 1..=16 {
         if super::interaction::input_epoch() != expected_input_epoch {
             let _ = release_held_inputs();
-            return Err("physical user input interrupted the drag".to_string());
+            return Err(HelperError::outcome_unknown("physical-input", "physical user input interrupted the drag"));
         }
         let x = start_x + (end_x - start_x) * step / 16;
         let y = start_y + (end_y - start_y) * step / 16;
-        if let Err(error) = send(&[move_event(x, y)?]) {
+        if let Err(error) = send(&[move_event(x, y).map_err(HelperError::after_dispatch)?]) {
             let _ = release_held_inputs();
-            return Err(error);
+            return Err(error.after_dispatch());
         }
         thread::sleep(Duration::from_millis(8));
     }
-    release_held_inputs()?;
+    release_held_inputs().map_err(HelperError::after_dispatch)?;
     Ok(format!("dragged to ({end_x}, {end_y})"))
 }
 
@@ -601,11 +600,11 @@ pub fn keyboard_type_impl(
     process_id: u32,
     window_id: String,
     expected_input_epoch: u64,
-) -> Result<String, String> {
+) -> Result<String, HelperError> {
     assert_target(&app_id, process_id, &window_id, expected_input_epoch)?;
     let unit_count = text.encode_utf16().count();
     if unit_count > 32_768 {
-        return Err("text input exceeds the 32768 UTF-16 unit safety limit".to_string());
+        return Err(HelperError::not_executed("text-too-long", "text input exceeds the 32768 UTF-16 unit safety limit"));
     }
     let mut inputs = Vec::with_capacity(unit_count * 2);
     for unit in text.encode_utf16() {
@@ -651,14 +650,14 @@ fn named_key(key: &str) -> Option<VIRTUAL_KEY> {
 pub(crate) fn resolve_character_key(
     scan: i16,
     explicit: &[u16],
-) -> Result<(u16, Vec<u16>), String> {
+) -> Result<(u16, Vec<u16>), HelperError> {
     if scan == -1 {
-        return Err("key is unavailable in the target layout".to_string());
+        return Err(HelperError::not_executed("key-unavailable", "key is unavailable in the target layout"));
     }
     let scan = scan as u16;
     let layout_modifiers = scan >> 8;
     if layout_modifiers & !0x07 != 0 {
-        return Err("key requires unsupported target-layout modifiers".to_string());
+        return Err(HelperError::not_executed("key-unavailable", "key requires unsupported target-layout modifiers"));
     }
 
     let mut control = explicit.contains(&VK_CONTROL.0);
@@ -683,8 +682,11 @@ pub(crate) fn resolve_character_key(
     Ok((scan & 0xff, modifiers))
 }
 
-fn character_layout_error(_key: &str, error: &str) -> String {
-    format!("target keyboard layout cannot resolve requested key: {error}")
+fn character_layout_error(_key: &str, error: &HelperError) -> HelperError {
+    HelperError::not_executed(
+        "key-unavailable",
+        format!("target keyboard layout cannot resolve requested key: {}", error.message),
+    )
 }
 
 pub fn keyboard_press_impl(
@@ -694,7 +696,7 @@ pub fn keyboard_press_impl(
     process_id: u32,
     window_id: String,
     expected_input_epoch: u64,
-) -> Result<String, String> {
+) -> Result<String, HelperError> {
     let actual = assert_target(&app_id, process_id, &window_id, expected_input_epoch)?;
     let mut modifier_keys = Vec::new();
     for modifier in modifiers {
@@ -703,25 +705,25 @@ pub fn keyboard_press_impl(
             "shift" => modifier_keys.push(VK_SHIFT),
             "alt" | "option" => modifier_keys.push(VK_MENU),
             "meta" | "win" | "super" => modifier_keys.push(VK_LWIN),
-            _ => return Err(format!("unsupported modifier '{modifier}'")),
+            _ => return Err(HelperError::not_executed("invalid-params", format!("unsupported modifier '{modifier}'"))),
         }
     }
     let vk = if let Some(value) = named_key(&key) {
         value
     } else {
         let mut units = key.encode_utf16();
-        let unit = units.next().ok_or_else(|| "key is empty".to_string())?;
+        let unit = units.next().ok_or_else(|| HelperError::not_executed("invalid-params", "key is empty"))?;
         if units.next().is_some() {
-            return Err("key must be one character or a supported key name".to_string());
+            return Err(HelperError::not_executed("invalid-params", "key must be one character or a supported key name"));
         }
         let target = super::window::parse_hwnd(&actual.window_id)?;
         let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
         if target_thread == 0 {
-            return Err("target window keyboard thread is unavailable".to_string());
+            return Err(HelperError::preflight("target window keyboard thread is unavailable"));
         }
         let target_layout = unsafe { GetKeyboardLayout(target_thread) };
         if target_layout.0.is_null() {
-            return Err("target window keyboard layout is unavailable".to_string());
+            return Err(HelperError::preflight("target window keyboard layout is unavailable"));
         }
         let scan = unsafe { VkKeyScanExW(unit, target_layout) };
         let explicit = modifier_keys
@@ -748,6 +750,7 @@ pub fn keyboard_press_impl(
 
 #[cfg(test)]
 mod tests {
+    use crate::error::HelperError;
     use super::{
         absolute_coordinate, character_layout_error, coordinate_within, integrity_allows,
         mapped_source_extent, resolve_character_key, send_keyboard_sequence_with, KeyboardEvent,
@@ -795,7 +798,9 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("outcome-unknown"));
+        assert!(error.message.contains("outcome-unknown"));
+        assert_eq!(error.code, "send-input-failed");
+        assert_eq!(error.execution, crate::error::Execution::OutcomeUnknown);
         assert_eq!(
             batches,
             vec![
@@ -825,7 +830,10 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("release held modifier"));
+        assert!(error.message.contains("release held modifier"));
+        assert_eq!(error.code, "physical-input");
+        assert_eq!(error.execution, crate::error::Execution::NotExecuted);
+        assert!(error.retryable);
         assert_eq!(sends, 0);
     }
 
@@ -846,7 +854,9 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.contains("outcome-unknown"));
+        assert!(error.message.contains("outcome-unknown"));
+        assert_eq!(error.code, "send-input-failed");
+        assert_eq!(error.execution, crate::error::Execution::OutcomeUnknown);
         assert_eq!(sends, 1);
     }
 
@@ -870,13 +880,16 @@ mod tests {
     #[test]
     fn character_layout_errors_do_not_expose_the_requested_key() {
         let raw_key = "private-layout-key";
-        let error = character_layout_error(raw_key, "unsupported keyboard layout modifiers");
+        let cause = HelperError::not_executed("key-unavailable", "unsupported keyboard layout modifiers");
+        let error = character_layout_error(raw_key, &cause);
 
-        assert!(!error.contains(raw_key));
+        assert!(!error.message.contains(raw_key));
         assert_eq!(
-            error,
+            error.message,
             "target keyboard layout cannot resolve requested key: unsupported keyboard layout modifiers"
         );
+        assert_eq!(error.code, "key-unavailable");
+        assert_eq!(error.execution, crate::error::Execution::NotExecuted);
     }
 
     #[test]

@@ -251,7 +251,37 @@ function resolveBrowserOriginFromSnapshot(result) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
+// Execution verdicts the helper may report (electron/native-helper/src/error.rs).
+// Duplicated in nativeHelperManager.cjs; the contract test keeps them equal.
+const HELPER_EXECUTIONS = new Set(['not-executed', 'dispatched', 'outcome-unknown']);
+
+// helper error code -> input-rejection class for observability. Telemetry
+// only: the Gate's own decisions come from classifyHelperFailure.
+const HELPER_CODE_REJECTIONS = Object.freeze({
+  'physical-input': 'physical-input',
+  'secure-desktop': 'secure-desktop',
+  'higher-integrity': 'higher-integrity',
+  occluded: 'occluded',
+  'screenshot-stale': 'screenshot-invalidated',
+  'coordinate-out-of-bounds': 'screenshot-invalidated',
+  'element-not-found': 'element-invalidated',
+  'element-stale': 'element-invalidated',
+  'target-changed': 'window-invalidated',
+  'target-minimized': 'window-invalidated',
+  'window-not-found': 'window-invalidated',
+  'window-not-visible': 'window-invalidated',
+  'no-window-at-point': 'window-invalidated',
+  'activation-refused': 'window-invalidated',
+  'input-lease': 'state-invalidated',
+});
+
 function classifyInputRejection(error) {
+  const code = error?.helper?.code;
+  if (typeof code === 'string' && code !== 'legacy') {
+    return HELPER_CODE_REJECTIONS[code] ?? 'native-rejected';
+  }
+  // Legacy string errors only (a helper predating the structured contract):
+  // message sniffing survives here for telemetry continuity and nowhere else.
   const message = String(error?.message || error || '').toLowerCase();
   if (message.includes('physical user input') || message.includes('input epoch')) return 'physical-input';
   if (message.includes('secure desktop') || message.includes('desktop is locked')) return 'secure-desktop';
@@ -262,6 +292,35 @@ function classifyInputRejection(error) {
   if (message.includes('window') || message.includes('target changed')) return 'window-invalidated';
   if (message.includes('state_id') || message.includes('observation')) return 'state-invalidated';
   return 'native-rejected';
+}
+
+/**
+ * The Gate's only source of "did the action reach the app?".
+ *
+ * A structured helper error is trusted as-is: the raising site is the only
+ * code that knows whether input had already been sent. Anything unstructured
+ * — an old helper, a transport failure, a Host-side throw around the dispatch
+ * — falls back to the command kind: an observation cannot have side effects,
+ * a stateful command must be assumed to have had one.
+ */
+function classifyHelperFailure(kind, error) {
+  const helper = error?.helper;
+  const structured = Boolean(helper)
+    && typeof helper.code === 'string'
+    && helper.code !== 'legacy'
+    && HELPER_EXECUTIONS.has(helper.execution);
+  if (structured) {
+    return Object.freeze({
+      code: helper.code,
+      execution: helper.execution,
+      retryable: helper.retryable === true,
+    });
+  }
+  return Object.freeze({
+    code: 'legacy',
+    execution: kind === 'observation' ? 'not-executed' : 'outcome-unknown',
+    retryable: false,
+  });
 }
 
 function assertSafeKeyboardCommand(platform, cmd, args) {
@@ -580,6 +639,7 @@ function createComputerUseGate(options) {
       outcomeUnknown: false,
     };
     ledger.outcomeUnknownReceipt = null;
+    ledger.notExecutedReceipt = null;
     noteComputerUseTrajectory(session.taskKey, 'action-attempted', {
       command: cmd,
       attemptCount: ledger.attemptCount,
@@ -589,7 +649,7 @@ function createComputerUseGate(options) {
     return ledger;
   }
 
-  function failTaskAttempt(ledger) {
+  function failTaskAttempt(ledger, failure = null) {
     if (!ledger?.pendingAttempt) return null;
     ledger.pendingAttempt.outcomeUnknown = true;
     if (ledger.pendingAttempt.consequential) {
@@ -598,6 +658,8 @@ function createComputerUseGate(options) {
     }
     ledger.outcomeUnknownReceipt = Object.freeze({
       status: 'outcome-unknown',
+      execution: failure?.execution === 'dispatched' ? 'dispatched' : 'outcome-unknown',
+      helper_code: failure?.code ?? 'legacy',
       command: ledger.pendingAttempt.command,
       before_state_id: ledger.pendingAttempt.beforeStateId,
       attempt_count: ledger.pendingAttempt.attemptCount,
@@ -613,6 +675,35 @@ function createComputerUseGate(options) {
       reason: ledger.outcomeUnknownReceipt.decision,
     });
     return ledger.outcomeUnknownReceipt;
+  }
+
+  // The helper refused before anything reached the target. The attempt is
+  // closed without a verdict on the app: no replay block, no ambiguity stop,
+  // no no-progress count — it was not done, as opposed to done without effect.
+  function releaseTaskAttempt(ledger, failure) {
+    if (!ledger?.pendingAttempt) return null;
+    const attempt = ledger.pendingAttempt;
+    ledger.pendingAttempt = null;
+    ledger.notExecutedReceipt = Object.freeze({
+      status: 'not-executed',
+      execution: 'not-executed',
+      helper_code: failure.code,
+      retryable: failure.retryable,
+      command: attempt.command,
+      before_state_id: attempt.beforeStateId,
+      attempt_count: attempt.attemptCount,
+      consequential: attempt.consequential,
+      decision: 'observe-required',
+    });
+    noteComputerUseTrajectory(ledger.key, 'action-outcome', {
+      command: attempt.command,
+      attemptCount: attempt.attemptCount,
+      consequential: attempt.consequential,
+      outcome: 'not-executed',
+      outcomeUnknown: false,
+      reason: 'observe-required',
+    });
+    return ledger.notExecutedReceipt;
   }
 
   function beginUnverifiedTaskAttempt(sender, session, cmd, consequential) {
@@ -653,6 +744,7 @@ function createComputerUseGate(options) {
       command: attempt.command,
       before_state_id: attempt.beforeStateId,
       after_state_id: stateId,
+      execution: 'dispatched',
       status: changed ? 'verified-change' : 'no-change',
       observation: changed ? 'changed' : 'unchanged',
       expectation: 'not-requested',
@@ -2145,6 +2237,7 @@ function createComputerUseGate(options) {
         stopped: Boolean(stopMarker || ledger?.stoppedReason),
         stopped_reason: stopMarker?.reason || ledger?.stoppedReason || null,
         outcome_unknown_receipt: ledger?.outcomeUnknownReceipt ?? null,
+        not_executed_receipt: ledger?.notExecutedReceipt ?? null,
       };
     }
 
@@ -2343,10 +2436,18 @@ function createComputerUseGate(options) {
           protocol_error: manualHandoffProtocolError(),
         };
       }
+      const failure = classifyHelperFailure(statefulCommand ? 'stateful' : 'observation', error);
       if (statefulCommand) {
         observability.noteComputerUseInputRejected?.(classifyInputRejection(error));
       }
-      const receipt = failTaskAttempt(attemptLedger);
+      if (failure.execution === 'not-executed') {
+        // Nothing reached the target: the state_id stays consumed (the world
+        // may have moved), but the run is not blocked. The renderer reads the
+        // receipt from computer_use_get_task_status and re-observes.
+        releaseTaskAttempt(attemptLedger, failure);
+        throw error;
+      }
+      const receipt = failTaskAttempt(attemptLedger, failure);
       if (receipt) {
         throw new Error(
           `Computer Use outcome is unknown after '${cmd}'; automatic replay is blocked: `
@@ -2492,6 +2593,9 @@ function createComputerUseGate(options) {
 
 module.exports = {
   createComputerUseGate,
+  classifyHelperFailure,
+  classifyInputRejection,
+  HELPER_EXECUTIONS,
   resolveBrowserOriginFromSnapshot,
   COMPUTER_USE_GATE_MISS,
   SESSION_TTL_MS,

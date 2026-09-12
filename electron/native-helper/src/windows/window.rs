@@ -1,3 +1,4 @@
+use crate::error::HelperError;
 use serde::Serialize;
 use std::cmp::Reverse;
 use std::ffi::c_void;
@@ -88,12 +89,12 @@ pub(crate) fn hwnd_id(hwnd: HWND) -> String {
     format!("0x{:X}", hwnd.0 as usize)
 }
 
-pub(crate) fn parse_hwnd(value: &str) -> Result<HWND, String> {
+pub(crate) fn parse_hwnd(value: &str) -> Result<HWND, HelperError> {
     let raw = value.trim().strip_prefix("0x").unwrap_or(value.trim());
     let address =
-        usize::from_str_radix(raw, 16).map_err(|_| format!("invalid window_id '{value}'"))?;
+        usize::from_str_radix(raw, 16).map_err(|_| HelperError::not_executed("invalid-params", format!("invalid window_id '{value}'")))?;
     if address == 0 {
-        return Err("window_id must not be null".to_string());
+        return Err(HelperError::not_executed("invalid-params", "window_id must not be null"));
     }
     Ok(HWND(address as *mut c_void))
 }
@@ -109,10 +110,10 @@ fn window_title(hwnd: HWND) -> String {
         .to_string()
 }
 
-fn process_path(process_id: u32) -> Result<String, String> {
+fn process_path(process_id: u32) -> Result<String, HelperError> {
     let process = unsafe {
         OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, process_id)
-            .map_err(|error| format!("OpenProcess({process_id}) failed: {error}"))?
+            .map_err(|error| HelperError::preflight(format!("OpenProcess({process_id}) failed: {error}")))?
     };
     let result = (|| {
         let mut buffer = vec![0u16; 32_768];
@@ -124,7 +125,7 @@ fn process_path(process_id: u32) -> Result<String, String> {
                 PWSTR(buffer.as_mut_ptr()),
                 &mut length,
             )
-            .map_err(|error| format!("QueryFullProcessImageNameW({process_id}) failed: {error}"))?;
+            .map_err(|error| HelperError::preflight(format!("QueryFullProcessImageNameW({process_id}) failed: {error}")))?;
         }
         Ok(String::from_utf16_lossy(&buffer[..length as usize]))
     })();
@@ -237,15 +238,15 @@ fn stable_app_id(aumid: Option<String>, executable_path: &str) -> String {
         .unwrap_or_else(|| executable_path.to_lowercase())
 }
 
-pub(crate) fn inspect_window(hwnd: HWND) -> Result<WindowRef, String> {
+pub(crate) fn inspect_window(hwnd: HWND) -> Result<WindowRef, HelperError> {
     if !unsafe { IsWindowVisible(hwnd) }.as_bool() {
-        return Err("window is not visible".to_string());
+        return Err(HelperError::observe_again("window-not-visible", "window is not visible"));
     }
     let title = window_title(hwnd);
     let mut process_id = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process_id)) };
     if process_id == 0 {
-        return Err("window process identity is unavailable".to_string());
+        return Err(HelperError::preflight("window process identity is unavailable"));
     }
     let owner_path = process_path(process_id)?;
     let (process_id, executable_path) =
@@ -262,11 +263,11 @@ pub(crate) fn inspect_window(hwnd: HWND) -> Result<WindowRef, String> {
     }
     let mut rect = RECT::default();
     unsafe { GetWindowRect(hwnd, &mut rect) }
-        .map_err(|error| format!("GetWindowRect failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("GetWindowRect failed: {error}")))?;
     let width = rect.right.saturating_sub(rect.left);
     let height = rect.bottom.saturating_sub(rect.top);
     if width <= 0 || height <= 0 {
-        return Err("window bounds are empty".to_string());
+        return Err(HelperError::observe_again("window-not-visible", "window bounds are empty"));
     }
     Ok(WindowRef {
         app_name: app_name_from_path(&executable_path),
@@ -299,7 +300,7 @@ unsafe extern "system" fn enum_window_handle(hwnd: HWND, lparam: LPARAM) -> BOOL
     BOOL(1)
 }
 
-pub fn list_windows_impl(expected_app_id: Option<String>) -> Result<Vec<WindowRef>, String> {
+pub fn list_windows_impl(expected_app_id: Option<String>) -> Result<Vec<WindowRef>, HelperError> {
     let mut windows = list_windows_z_order()?;
     if let Some(expected) = expected_app_id {
         windows.retain(|window| window.app_id.eq_ignore_ascii_case(expected.trim()));
@@ -317,14 +318,14 @@ pub fn list_windows_impl(expected_app_id: Option<String>) -> Result<Vec<WindowRe
 /// the first entry is the topmost window. Keep this separate from the
 /// alphabetically sorted public catalog so screenshots can bind their zIndex
 /// to the exact window stack observed around capture time.
-pub(crate) fn list_windows_z_order() -> Result<Vec<WindowRef>, String> {
+pub(crate) fn list_windows_z_order() -> Result<Vec<WindowRef>, HelperError> {
     let mut windows: Vec<WindowRef> = Vec::new();
     unsafe {
         EnumWindows(
             Some(enum_window),
             LPARAM((&mut windows as *mut Vec<WindowRef>) as isize),
         )
-        .map_err(|error| format!("EnumWindows failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("EnumWindows failed: {error}")))?;
     }
     Ok(windows)
 }
@@ -343,12 +344,12 @@ pub fn get_window_graph_impl(
     expected_app_id: String,
     expected_process_id: u32,
     expected_window_id: String,
-) -> Result<WindowGraph, String> {
+) -> Result<WindowGraph, HelperError> {
     let target = get_window_impl(expected_window_id.clone())?;
     if target.process_id != expected_process_id
         || !target.app_id.eq_ignore_ascii_case(expected_app_id.trim())
     {
-        return Err("window graph target identity changed".to_string());
+        return Err(HelperError::observe_again("target-changed", "window graph target identity changed"));
     }
     let mut handles: Vec<HWND> = Vec::new();
     unsafe {
@@ -356,7 +357,7 @@ pub fn get_window_graph_impl(
             Some(enum_window_handle),
             LPARAM((&mut handles as *mut Vec<HWND>) as isize),
         )
-        .map_err(|error| format!("EnumWindows failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("EnumWindows failed: {error}")))?;
     }
     let foreground = unsafe { GetForegroundWindow() };
     let foreground_window_id = (!foreground.0.is_null()).then(|| hwnd_id(foreground));
@@ -525,7 +526,7 @@ fn bounds_contain_auxiliary(container: [i32; 4], candidate: [i32; 4]) -> bool {
     contained && candidate_area.saturating_mul(4) <= container_area
 }
 
-pub(crate) fn window_z_index(window_id: &str) -> Result<i32, String> {
+pub(crate) fn window_z_index(window_id: &str) -> Result<i32, HelperError> {
     let mut current = parse_hwnd(window_id)?;
     let mut z_index = 0i32;
     // Walk towards the top of the native z-order. Count visible windows only,
@@ -539,10 +540,10 @@ pub(crate) fn window_z_index(window_id: &str) -> Result<i32, String> {
             z_index = z_index.saturating_add(1);
         }
     }
-    Err("window z-order traversal exceeded the safety bound".to_string())
+    Err(HelperError::preflight("window z-order traversal exceeded the safety bound"))
 }
 
-pub fn get_window_impl(window_id: String) -> Result<WindowRef, String> {
+pub fn get_window_impl(window_id: String) -> Result<WindowRef, HelperError> {
     inspect_window(parse_hwnd(&window_id)?)
 }
 
@@ -560,10 +561,10 @@ fn identity(window: &WindowRef) -> AppIdentity {
     }
 }
 
-pub fn frontmost_app_identity_impl() -> Result<AppIdentity, String> {
+pub fn frontmost_app_identity_impl() -> Result<AppIdentity, HelperError> {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.0.is_null() {
-        return Err("foreground window is unavailable".to_string());
+        return Err(HelperError::observe_again("window-not-found", "foreground window is unavailable"));
     }
     Ok(identity(&inspect_window(hwnd)?))
 }
@@ -572,7 +573,7 @@ pub fn frontmost_matches_target_impl(
     expected_app_id: String,
     expected_process_id: u32,
     expected_window_id: String,
-) -> Result<WindowTargetMatch, String> {
+) -> Result<WindowTargetMatch, HelperError> {
     let actual = frontmost_app_identity_impl()?;
     let actual_window = get_window_impl(actual.window_id.clone())?;
     let expected_window = get_window_impl(expected_window_id.clone())?;
@@ -634,10 +635,10 @@ fn select_preferred_window(
     windows.remove(0)
 }
 
-pub(crate) fn resolve_window(name: &str) -> Result<WindowRef, String> {
+pub(crate) fn resolve_window(name: &str) -> Result<WindowRef, HelperError> {
     let needle = canonical_app_query(name);
     if needle.is_empty() {
-        return Err("app name must not be empty".to_string());
+        return Err(HelperError::not_executed("invalid-params", "app name must not be empty"));
     }
     let windows = list_windows_impl(None)?;
     let mut exact: Vec<WindowRef> = windows
@@ -660,14 +661,14 @@ pub(crate) fn resolve_window(name: &str) -> Result<WindowRef, String> {
             .collect();
     }
     if exact.is_empty() {
-        return Err(format!("app '{name}' has no visible window"));
+        return Err(HelperError::not_executed("app-not-found", format!("app '{name}' has no visible window")));
     }
     let first_app_id = exact[0].app_id.clone();
     if exact
         .iter()
         .any(|window| !window.app_id.eq_ignore_ascii_case(&first_app_id))
     {
-        return Err(format!("app name '{name}' is ambiguous"));
+        return Err(HelperError::not_executed("app-ambiguous", format!("app name '{name}' is ambiguous")));
     }
     let foreground = unsafe { GetForegroundWindow() };
     let foreground_window_id = if foreground.0.is_null() {
@@ -681,11 +682,11 @@ pub(crate) fn resolve_window(name: &str) -> Result<WindowRef, String> {
     ))
 }
 
-pub fn resolve_app_identity_impl(name: String) -> Result<AppIdentity, String> {
+pub fn resolve_app_identity_impl(name: String) -> Result<AppIdentity, HelperError> {
     Ok(identity(&resolve_window(&name)?))
 }
 
-pub fn activate_window_impl(window_id: String) -> Result<WindowRef, String> {
+pub fn activate_window_impl(window_id: String) -> Result<WindowRef, HelperError> {
     let hwnd = parse_hwnd(&window_id)?;
     let before = inspect_window(hwnd)?;
     if unsafe { GetForegroundWindow() } == hwnd {
@@ -741,11 +742,11 @@ pub fn activate_window_impl(window_id: String) -> Result<WindowRef, String> {
     }
     thread::sleep(Duration::from_millis(100));
     if unsafe { GetForegroundWindow() } != hwnd {
-        return Err(format!("Windows refused to activate '{}'", before.app_name));
+        return Err(HelperError::observe_again("activation-refused", format!("Windows refused to activate '{}'", before.app_name)));
     }
     let after = inspect_window(hwnd)?;
     if after.process_id != before.process_id || !after.app_id.eq_ignore_ascii_case(&before.app_id) {
-        return Err("window identity changed during activation".to_string());
+        return Err(HelperError::observe_again("target-changed", "window identity changed during activation"));
     }
     Ok(after)
 }
@@ -825,7 +826,7 @@ mod tests {
     }
 }
 
-pub fn activate_app_impl(name: String) -> Result<String, String> {
+pub fn activate_app_impl(name: String) -> Result<String, HelperError> {
     let window = resolve_window(&name)?;
     let activated = activate_window_impl(window.window_id)?;
     Ok(activated.app_name)

@@ -18,6 +18,7 @@ import {
   type ComputerWindowTarget,
 } from '@/core/computer-use/windowProtocol';
 import { computerObservationContexts } from '@/core/computer-use/observationContext';
+import { recoveryBudget, runBudgetKey } from '@/core/computer-use/recoveryBudget';
 import type { ToolDefinition, ToolResult, ToolResultContent } from '../../../types';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
@@ -152,11 +153,31 @@ interface ComputerUseTaskStatus {
   stopped_reason: string | null;
   outcome_unknown_receipt: {
     status: 'outcome-unknown';
+    /** Host attestation of how far the action got (execution-receipt contract). */
+    execution?: 'dispatched' | 'outcome-unknown';
+    helper_code?: string;
     command: string;
     before_state_id: string;
     attempt_count: number;
     consequential: boolean;
     decision: 'observe-required' | 'stop-ambiguous-side-effect';
+  } | null;
+  /**
+   * The helper refused before anything reached the target. Nothing is
+   * uncertain, so the Host neither blocks replay nor stops the run; the
+   * renderer decides between one fresh observation and a hand-off via the
+   * recovery budget.
+   */
+  not_executed_receipt?: {
+    status: 'not-executed';
+    execution: 'not-executed';
+    helper_code: string;
+    retryable: boolean;
+    command: string;
+    before_state_id: string;
+    attempt_count: number;
+    consequential: boolean;
+    decision: 'observe-required';
   } | null;
 }
 
@@ -599,6 +620,7 @@ export async function closeAxSession(
 ): Promise<void> {
   if (conversationId && loopId) {
     computerObservationContexts.clear({ conversationId, loopId });
+    recoveryBudget.clear(runBudgetKey({ conversationId, loopId }));
     await closeNativeAxSession(computerUseController.invalidate({ conversationId, loopId }));
     return;
   }
@@ -2026,6 +2048,9 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             observation,
             expectedEffect,
           );
+          if (completion.verification.status === 'verified-change') {
+            recoveryBudget.recordVerifiedProgress(runBudgetKey(runKey));
+          }
           nextSnapshot = snap;
           nextState = completion.state;
           resultElements = snap.elements;
@@ -2151,6 +2176,37 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       } catch {
         // A broken status channel after native dispatch is itself uncertain.
         // Keep the conservative no-replay result below.
+      }
+      const notExecuted = status?.not_executed_receipt ?? null;
+      if (notExecuted) {
+        // The Host attests nothing reached the target, so a fresh observation
+        // is safe. The budget bounds it: one per refusal, a few per run — a
+        // target that keeps refusing is the user's to fix, not a retry loop.
+        const decision = recoveryBudget.decide(
+          runBudgetKey(runKey),
+          'not-executed',
+          status?.stopped === true,
+        );
+        computerObservationContexts.clear(runKey);
+        await closeNativeAxSession(computerUseController.clearObservation(runKey));
+        actionCompleted = true;
+        setComputerUsePhase('blocked');
+        traceComputerUse('action_not_executed', context, {
+          stage: action,
+          reason: notExecuted.helper_code,
+          outcome: decision,
+        });
+        const msg = error instanceof Error ? error.message : String(error);
+        if (decision === 'observe-once') {
+          return format(t.actionNotExecuted, { msg, code: notExecuted.helper_code });
+        }
+        if (decision === 'handoff') {
+          context?.reportMetadata?.({
+            requiresUserRecovery: 'computer-target-unavailable',
+          });
+          return format(t.actionNotExecutedHandoff, { msg });
+        }
+        return format(t.actionNotExecutedStopped, { msg });
       }
       const hostDeclaredUnknown = status?.outcome_unknown_receipt?.status === 'outcome-unknown';
       if (!hostDeclaredUnknown && status !== null) throw error;

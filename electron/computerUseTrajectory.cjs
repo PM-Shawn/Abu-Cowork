@@ -9,7 +9,7 @@ const STAGES = new Set(['approval', 'observation', 'action-attempted', 'action-o
 const ENUMS = {
   approvalKind: new Set(['task', 'app', 'action', 'browser-origin']),
   approvalDecision: new Set(['requested', 'allowed', 'denied', 'error']),
-  outcome: new Set(['success', 'stopped', 'verified-change', 'no-change', 'outcome-unknown']),
+  outcome: new Set(['success', 'stopped', 'verified-change', 'no-change', 'outcome-unknown', 'not-executed']),
   verificationStatus: new Set(['verified-change', 'no-change']),
   reason: new Set(['continue', 'recover', 'observe-required', 'stop-no-progress', 'stop-ambiguous-side-effect',
     'outcome-unknown', 'physical-input', 'emergency-stop', 'user-stopped', 'user-stop', 'aborted',
@@ -162,6 +162,12 @@ function projectRun(events, inputIncomplete) {
           pendingAttempt = null;
           phase = 'ready';
         }
+      } else if (e.outcome === 'not-executed') {
+        // Refused before dispatch: the attempt closes with no verdict on the
+        // target — neither progress nor an unknown outcome.
+        attempt.released = true;
+        pendingAttempt = null;
+        phase = 'ready';
       } else issues.add('invalid-outcome');
     } else if (e.stage === 'turn-stopped') {
       if (!stopped && ['physical-input', 'emergency-stop', 'user-stop', 'user-stopped',

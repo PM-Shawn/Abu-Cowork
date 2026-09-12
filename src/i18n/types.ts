@@ -4721,6 +4721,9 @@ export interface TranslationDict {
       ambiguousSideEffectStopped: string;
       /** Native input returned an ambiguous failure and must not be retried automatically. {msg} */
       errActionAmbiguous: string;
+      actionNotExecuted: string;
+      actionNotExecutedHandoff: string;
+      actionNotExecutedStopped: string;
       /** Invalid state/effect protocol input. {reason} */
       errStateProtocol: string;
       /** Observation state header. {stateId} */

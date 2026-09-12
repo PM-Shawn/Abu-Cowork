@@ -19,6 +19,7 @@ import zhCN from '../../../i18n/locales/zh-CN';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import { computerUseController } from '../../agent/computerUseController';
+import { recoveryBudget, runBudgetKey } from '@/core/computer-use/recoveryBudget';
 import { computerObservationContexts } from '../../computer-use/observationContext';
 import {
   drainCapabilitySetupRequests,
@@ -1483,6 +1484,120 @@ describe('computerTool — accessibility permission branch', () => {
     expect(String(result)).toMatch(/outcome is unknown|结果.*不确定/i);
     expect(keyCount).toBe(1);
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'computer_use_get_task_status')).toBe(true);
+  });
+
+  it('re-observes once after a Windows action the helper refused before dispatch, then hands off', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-refused' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    let keyCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-refused-token',
+          target: {
+            window_ref: 'wr-notepad-refused',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-refused-ax-${snapshotCount}`,
+          state_id: `windows-refused-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        keyCount += 1;
+        return Promise.reject(new Error('frontmost target changed; observe again'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'target-changed',
+            retryable: true,
+            command: 'keyboard_press',
+            before_state_id: `windows-refused-state-${snapshotCount}`,
+            attempt_count: keyCount,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observeStateId = async (toolCallId: string) => {
+      const observed = await computerTool.execute(
+        { action: 'get_app_state', consequence: 'none' },
+        { ...context, toolCallId },
+      );
+      return String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    };
+    const press = (toolCallId: string, stateId: string | undefined) => computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-refused',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId },
+    );
+
+    // First refusal: nothing reached the app, so the model is told to observe
+    // again — not that the outcome is uncertain, and not to hand off.
+    const first = await press('tool-refused-1', await observeStateId('tool-refused-observe-1'));
+    expect(String(first)).toMatch(/not executed|没有执行/i);
+    expect(String(first)).not.toMatch(/outcome is unknown|结果.*不确定/i);
+    expect(reportMetadata).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requiresUserRecovery: expect.anything() }),
+    );
+    expect(keyCount).toBe(1);
+
+    // Same refusal again with no verified progress in between: the per-event
+    // budget is spent, so the run hands off to the user instead of looping.
+    const second = await press('tool-refused-2', await observeStateId('tool-refused-observe-2'));
+    expect(String(second)).toMatch(/recovery budget|自动恢复次数/i);
+    expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-target-unavailable' });
+    expect(keyCount).toBe(2);
   });
 
   it('stops before native input when the task aborts during UI settling', async () => {

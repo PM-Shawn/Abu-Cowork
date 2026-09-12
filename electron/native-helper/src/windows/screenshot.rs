@@ -1,3 +1,4 @@
+use crate::error::HelperError;
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -73,17 +74,17 @@ fn capture_next_monitor_frame(
     monitor: &Monitor,
     monitor_id: &str,
     input_epoch: u64,
-) -> Result<RgbaImage, String> {
+) -> Result<RgbaImage, HelperError> {
     let mut sessions = wgc_sessions()
         .lock()
-        .map_err(|_| "WGC session cache is unavailable".to_string())?;
+        .map_err(|_| HelperError::preflight("WGC session cache is unavailable"))?;
     if !sessions.contains_key(monitor_id) {
         let (recorder, frames) = monitor
             .video_recorder()
-            .map_err(|error| format!("WGC monitor session creation failed: {error}"))?;
+            .map_err(|error| HelperError::preflight(format!("WGC monitor session creation failed: {error}")))?;
         recorder
             .start()
-            .map_err(|error| format!("WGC monitor session start failed: {error}"))?;
+            .map_err(|error| HelperError::preflight(format!("WGC monitor session start failed: {error}")))?;
         sessions.insert(
             monitor_id.to_string(),
             WgcMonitorSession {
@@ -94,7 +95,7 @@ fn capture_next_monitor_frame(
     }
     let session = sessions
         .get_mut(monitor_id)
-        .ok_or_else(|| "WGC monitor session disappeared".to_string())?;
+        .ok_or_else(|| HelperError::preflight("WGC monitor session disappeared"))?;
     let mut newest = None;
     loop {
         match session.frames.try_recv() {
@@ -102,7 +103,7 @@ fn capture_next_monitor_frame(
             Err(TryRecvError::Empty) => break,
             Err(TryRecvError::Disconnected) => {
                 sessions.remove(monitor_id);
-                return Err("WGC monitor session disconnected; observe again".to_string());
+                return Err(HelperError::observe_again("capture-failed", "WGC monitor session disconnected; observe again"));
             }
         }
     }
@@ -112,25 +113,23 @@ fn capture_next_monitor_frame(
     } else {
         loop {
             if input_epoch != super::interaction::input_epoch() {
-                return Err(
-                    "physical user input occurred during capture; observe again".to_string()
-                );
+                return Err(HelperError::observe_again("physical-input", "physical user input occurred during capture; observe again"));
             }
             match session.frames.recv_timeout(Duration::from_millis(10)) {
                 Ok(frame) => break frame,
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                     if started.elapsed() < Duration::from_secs(3) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    return Err("WGC monitor frame wait timed out".to_string());
+                    return Err(HelperError::observe_again("capture-failed", "WGC monitor frame wait timed out"));
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err("WGC monitor session disconnected; observe again".to_string());
+                    return Err(HelperError::observe_again("capture-failed", "WGC monitor session disconnected; observe again"));
                 }
             }
         }
     };
     RgbaImage::from_raw(frame.width, frame.height, frame.raw)
-        .ok_or_else(|| "WGC monitor frame buffer is invalid".to_string())
+        .ok_or_else(|| HelperError::preflight("WGC monitor frame buffer is invalid"))
 }
 
 fn prune_cache(entries: &mut VecDeque<CachedScreenshot>) {
@@ -145,16 +144,16 @@ fn prune_cache(entries: &mut VecDeque<CachedScreenshot>) {
     }
 }
 
-pub fn get_screenshot_ref(screenshot_id: &str) -> Result<CachedScreenshot, String> {
+pub fn get_screenshot_ref(screenshot_id: &str) -> Result<CachedScreenshot, HelperError> {
     let mut entries = cache()
         .lock()
-        .map_err(|_| "screenshot cache is unavailable".to_string())?;
+        .map_err(|_| HelperError::preflight("screenshot cache is unavailable"))?;
     prune_cache(&mut entries);
     entries
         .iter()
         .find(|entry| entry.screenshot_id == screenshot_id)
         .cloned()
-        .ok_or_else(|| "screenshot_id is unknown or expired; observe again".to_string())
+        .ok_or_else(|| HelperError::observe_again("screenshot-stale", "screenshot_id is unknown or expired; observe again"))
 }
 
 fn target_window(
@@ -182,25 +181,25 @@ fn choose_monitor(
     target: Option<&WindowRef>,
     anchor_x: Option<f64>,
     anchor_y: Option<f64>,
-) -> Result<Monitor, String> {
+) -> Result<Monitor, HelperError> {
     if let Some(window) = target {
         let x = window.bounds[0].saturating_add(window.bounds[2] / 2);
         let y = window.bounds[1].saturating_add(window.bounds[3] / 2);
         return Monitor::from_point(x, y)
-            .map_err(|error| format!("target monitor lookup failed: {error}"));
+            .map_err(|error| HelperError::preflight(format!("target monitor lookup failed: {error}")));
     }
     if let (Some(x), Some(y)) = (anchor_x, anchor_y) {
         return Monitor::from_point(x.round() as i32, y.round() as i32)
-            .map_err(|error| format!("anchor monitor lookup failed: {error}"));
+            .map_err(|error| HelperError::preflight(format!("anchor monitor lookup failed: {error}")));
     }
     let monitors =
-        Monitor::all().map_err(|error| format!("monitor enumeration failed: {error}"))?;
+        Monitor::all().map_err(|error| HelperError::preflight(format!("monitor enumeration failed: {error}")))?;
     monitors
         .iter()
         .find(|monitor| monitor.is_primary().unwrap_or(false))
         .cloned()
         .or_else(|| monitors.into_iter().next())
-        .ok_or_else(|| "no monitor is available".to_string())
+        .ok_or_else(|| HelperError::preflight("no monitor is available"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -215,9 +214,9 @@ pub fn capture_screen_state_impl(
     expected_app_id: Option<String>,
     expected_process_id: Option<u32>,
     expected_window_id: Option<String>,
-) -> Result<ScreenshotResult, String> {
+) -> Result<ScreenshotResult, HelperError> {
     if !super::interaction::input_monitoring_ready() {
-        return Err("physical input monitoring is unavailable; capture is blocked".to_string());
+        return Err(HelperError::not_executed("input-lease", "physical input monitoring is unavailable; capture is blocked"));
     }
     let input_epoch = super::interaction::input_epoch();
     let target = target_window(
@@ -226,20 +225,20 @@ pub fn capture_screen_state_impl(
         expected_window_id.as_deref(),
     );
     if expected_app_id.is_some() && target.is_none() {
-        return Err("target window identity is unavailable for capture; observe again".to_string());
+        return Err(HelperError::observe_again("window-not-found", "target window identity is unavailable for capture; observe again"));
     }
     let monitor = choose_monitor(target.as_ref(), anchor_x, anchor_y)?;
     let monitor_x = monitor
         .x()
-        .map_err(|error| format!("monitor x failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("monitor x failed: {error}")))?;
     let monitor_y = monitor
         .y()
-        .map_err(|error| format!("monitor y failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("monitor y failed: {error}")))?;
     let monitor_id = format!(
         "monitor:{}",
         monitor
             .id()
-            .map_err(|error| format!("monitor id failed: {error}"))?
+            .map_err(|error| HelperError::preflight(format!("monitor id failed: {error}")))?
     );
     let z_order = list_windows_z_order()?;
     let target_z_index = target
@@ -279,7 +278,7 @@ pub fn capture_screen_state_impl(
     });
     let image = capture_next_monitor_frame(&monitor, &monitor_id, input_epoch)?;
     if input_epoch != super::interaction::input_epoch() {
-        return Err("physical user input occurred during capture; observe again".to_string());
+        return Err(HelperError::observe_again("physical-input", "physical user input occurred during capture; observe again"));
     }
     // With an exact target, default to the union of its physical-pixel
     // rectangle and owned top-level popups/menus above it. They are all cut
@@ -296,7 +295,7 @@ pub fn capture_screen_state_impl(
     let crop_x = x.unwrap_or(default_x).max(0) as u32;
     let crop_y = y.unwrap_or(default_y).max(0) as u32;
     if crop_x >= image.width() || crop_y >= image.height() {
-        return Err("capture region origin is outside the target monitor".to_string());
+        return Err(HelperError::observe_again("capture-failed", "capture region origin is outside the target monitor"));
     }
     let default_width = capture_bounds
         .as_ref()
@@ -313,7 +312,7 @@ pub fn capture_screen_state_impl(
         .unwrap_or(default_height)
         .min(image.height().saturating_sub(crop_y));
     if crop_width == 0 || crop_height == 0 {
-        return Err("capture region is empty".to_string());
+        return Err(HelperError::observe_again("capture-failed", "capture region is empty"));
     }
     let cropped = DynamicImage::from(image).crop_imm(crop_x, crop_y, crop_width, crop_height);
     let final_image = if let Some(limit) = max_width.filter(|value| *value > 0) {
@@ -338,7 +337,7 @@ pub fn capture_screen_state_impl(
             returned_height,
             final_image.color().into(),
         )
-        .map_err(|error| format!("PNG encode failed: {error}"))?;
+        .map_err(|error| HelperError::preflight(format!("PNG encode failed: {error}")))?;
     let snapshot_revision = SCREENSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let screenshot_id = format!("shot-{}-{}", std::process::id(), snapshot_revision,);
     let origin_x = monitor_x.saturating_add(crop_x as i32);
@@ -361,7 +360,7 @@ pub fn capture_screen_state_impl(
     };
     let mut entries = cache()
         .lock()
-        .map_err(|_| "screenshot cache is unavailable".to_string())?;
+        .map_err(|_| HelperError::preflight("screenshot cache is unavailable"))?;
     prune_cache(&mut entries);
     entries.push_back(cached);
     Ok(ScreenshotResult {

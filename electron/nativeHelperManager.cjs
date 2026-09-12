@@ -364,6 +364,39 @@ function rejectAllPending(err) {
   pending.clear();
 }
 
+const HELPER_EXECUTIONS = new Set(['not-executed', 'dispatched', 'outcome-unknown']);
+
+/**
+ * Turn a helper `error` payload into an Error that carries the structured
+ * verdict as `error.helper = { code, execution, retryable }`.
+ *
+ * The helper classifies at the raising site (electron/native-helper/src/error.rs);
+ * this only preserves that classification across the process boundary. A
+ * legacy string error — or a malformed object — becomes `legacy` with the
+ * pessimistic `outcome-unknown` verdict, so nothing downstream can treat an
+ * unclassified failure as safe to replay. Nobody may branch on `message`.
+ */
+function normalizeHelperError(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const code = typeof raw.code === 'string' && raw.code.trim() ? raw.code.trim() : null;
+    const execution = HELPER_EXECUTIONS.has(raw.execution) ? raw.execution : null;
+    const message = typeof raw.message === 'string' && raw.message
+      ? raw.message
+      : JSON.stringify(raw);
+    if (code && execution) {
+      const error = new Error(message);
+      error.helper = Object.freeze({ code, execution, retryable: raw.retryable === true });
+      return error;
+    }
+    const error = new Error(message);
+    error.helper = Object.freeze({ code: 'legacy', execution: 'outcome-unknown', retryable: false });
+    return error;
+  }
+  const error = new Error(typeof raw === 'string' ? raw : JSON.stringify(raw));
+  error.helper = Object.freeze({ code: 'legacy', execution: 'outcome-unknown', retryable: false });
+  return error;
+}
+
 function handleLine(line) {
   const trimmed = line.trim();
   if (!trimmed) return;
@@ -390,7 +423,7 @@ function handleLine(line) {
   pending.delete(msg.id);
   clearTimeout(p.timer);
   if (msg.error !== undefined && msg.error !== null) {
-    p.reject(new Error(typeof msg.error === 'string' ? msg.error : JSON.stringify(msg.error)));
+    p.reject(normalizeHelperError(msg.error));
   } else {
     p.resolve(msg.result);
   }
@@ -703,6 +736,8 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 
 module.exports = {
   nativeHelperDispatch,
+  normalizeHelperError,
+  HELPER_EXECUTIONS,
   NATIVE_HELPER_MISS,
   killNativeHelper,
   getNativeHelperGeneration,

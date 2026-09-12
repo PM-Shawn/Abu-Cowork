@@ -1,3 +1,4 @@
+use crate::error::HelperError;
 use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
@@ -110,7 +111,7 @@ fn start_menu_roots() -> Vec<(PathBuf, &'static str)> {
     roots
 }
 
-pub fn list_apps_impl() -> Result<Vec<AppCatalogEntry>, String> {
+pub fn list_apps_impl() -> Result<Vec<AppCatalogEntry>, HelperError> {
     let mut result = Vec::new();
     let mut running_by_id = HashMap::<String, WindowRef>::new();
     for window in list_windows_impl(None)? {
@@ -141,7 +142,7 @@ pub fn list_apps_impl() -> Result<Vec<AppCatalogEntry>, String> {
     Ok(result)
 }
 
-fn shell_execute(target: &str) -> Result<(), String> {
+fn shell_execute(target: &str) -> Result<(), HelperError> {
     let wide: Vec<u16> = OsStr::new(target).encode_wide().chain(Some(0)).collect();
     let result = unsafe {
         ShellExecuteW(
@@ -154,18 +155,18 @@ fn shell_execute(target: &str) -> Result<(), String> {
         )
     };
     if result.0 as isize <= 32 {
-        return Err(format!(
+        return Err(HelperError::not_executed("activation-refused", format!(
             "Windows refused to launch the selected application ({})",
             result.0 as isize
-        ));
+        )));
     }
     Ok(())
 }
 
-pub fn launch_app_impl(query: String) -> Result<AppCatalogEntry, String> {
+pub fn launch_app_impl(query: String) -> Result<AppCatalogEntry, HelperError> {
     let needle = normalize(&query);
     if needle.is_empty() {
-        return Err("application name must not be empty".to_string());
+        return Err(HelperError::not_executed("invalid-params", "application name must not be empty"));
     }
 
     // Activating an already-running exact match avoids creating duplicate
@@ -182,9 +183,9 @@ pub fn launch_app_impl(query: String) -> Result<AppCatalogEntry, String> {
         .map(|window| normalize(&window.app_id))
         .collect();
     if exact_running.len() > 1 && distinct_running_ids.len() > 1 {
-        return Err(format!(
+        return Err(HelperError::not_executed("app-ambiguous", format!(
             "application '{query}' is ambiguous across multiple application identities"
-        ));
+        )));
     }
     if !exact_running.is_empty() {
         let foreground_window_id = frontmost_app_identity_impl()
@@ -219,9 +220,9 @@ pub fn launch_app_impl(query: String) -> Result<AppCatalogEntry, String> {
     matches
         .dedup_by(|left, right| normalize(&left.launch_target) == normalize(&right.launch_target));
     if matches.is_empty() {
-        return Err(format!(
+        return Err(HelperError::not_executed("app-not-found", format!(
             "application '{query}' was not found in running windows or Start Menu"
-        ));
+        )));
     }
     if matches.len() > 1 {
         let choices = matches
@@ -230,7 +231,7 @@ pub fn launch_app_impl(query: String) -> Result<AppCatalogEntry, String> {
             .map(|entry| entry.app_id.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(format!("application '{query}' is ambiguous: {choices}"));
+        return Err(HelperError::not_executed("app-ambiguous", format!("application '{query}' is ambiguous: {choices}")));
     }
     let selected = matches.remove(0);
     shell_execute(&selected.launch_target)?;

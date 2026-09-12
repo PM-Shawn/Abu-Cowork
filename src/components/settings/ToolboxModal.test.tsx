@@ -32,13 +32,17 @@ vi.mock('@/stores/chatStore', () => ({
 }));
 
 vi.mock('@/stores/enterpriseStore', () => ({
-  useEnterpriseStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    mode: {
-      kind: 'enterprise',
-      binding: { serverUrl: 'https://enterprise.example' },
-      config: null,
-    },
-  }),
+  // A store, not just a selector: discoveryStore subscribes to it at import.
+  useEnterpriseStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({
+      mode: {
+        kind: 'enterprise',
+        binding: { serverUrl: 'https://enterprise.example' },
+        config: null,
+      },
+    }),
+    { subscribe: () => () => {} },
+  ),
 }));
 
 vi.mock('@/i18n', () => ({

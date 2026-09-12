@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useSkillDraftsStore, stopDraftsSweeper } from './skillDraftsStore';
 import { useWorkspaceStore } from './workspaceStore';
 import { useChatStore } from './chatStore';
@@ -8,6 +8,8 @@ import type { Conversation, ToolCall } from '../types';
 import { skillLoader } from '../core/skill/loader';
 import { SkillPolicyDeniedError } from '../core/skill/skillPolicy';
 import { getI18n, format } from '../i18n';
+import { setSkillNamePolicy } from '../core/skill/skillNamePolicy';
+import { useEnterpriseStore } from './enterpriseStore';
 
 // The store imports these stores at module init; they're real zustand so we
 // just manipulate state via setState. Drafts module is mocked — we're testing
@@ -369,5 +371,42 @@ describe('skillDraftsStore · cleanExpired / cleanTrash', () => {
     useWorkspaceStore.setState({ currentPath: null });
     expect(await useSkillDraftsStore.getState().cleanExpired()).toBe(0);
     expect(await useSkillDraftsStore.getState().cleanTrash()).toBe(0);
+  });
+});
+
+describe('skillDraftsStore · organization skill blacklist', () => {
+  afterEach(() => setSkillNamePolicy(() => true));
+
+  it('never lists a draft under a name the policy blocks', async () => {
+    setSkillNamePolicy((name) => name !== 'blocked');
+    mockListDrafts.mockResolvedValue([makeRecord('blocked'), makeRecord('ok')]);
+
+    await useSkillDraftsStore.getState().refresh(WS);
+
+    expect(useSkillDraftsStore.getState().drafts.map((d) => d.skillName)).toEqual(['ok']);
+  });
+
+  it('lists again when a policy change hides or restores a listed draft, and only then', async () => {
+    let blocked = new Set<string>();
+    setSkillNamePolicy((name) => !blocked.has(name));
+    mockListDrafts.mockResolvedValue([makeRecord('a'), makeRecord('b')]);
+    await useSkillDraftsStore.getState().refresh(WS);
+    mockListDrafts.mockClear();
+
+    useEnterpriseStore.setState({});
+    expect(mockListDrafts).not.toHaveBeenCalled();
+
+    blocked = new Set(['b']);
+    useEnterpriseStore.setState({});
+    expect(mockListDrafts).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(useSkillDraftsStore.getState().drafts.map((d) => d.skillName)).toEqual(['a']));
+
+    useEnterpriseStore.setState({});
+    expect(mockListDrafts).toHaveBeenCalledTimes(1);
+
+    blocked = new Set();
+    useEnterpriseStore.setState({});
+    expect(mockListDrafts).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(useSkillDraftsStore.getState().drafts).toHaveLength(2));
   });
 });

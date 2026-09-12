@@ -224,6 +224,11 @@ export const SHIM_TARGETS = [
   // module's toast/settings-store coupling has no sidecar-local equivalent,
   // see sandboxRecoveryRun.ts's doc.
   { real: path.resolve(srcDir, 'core/sandbox/recovery.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/sandboxRecoveryRun.ts') },
+  // Bundle-graph shim — skill/loader.ts asks the organization's skill
+  // blacklist through this port, whose default reaches the enterprise store
+  // via getCurrentPolicy(). The sidecar's loader is never populated, so the
+  // shim refuses every name (fail-closed), see skillNamePolicyRun.ts's doc.
+  { real: path.resolve(srcDir, 'core/skill/skillNamePolicy.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/skillNamePolicyRun.ts') },
 ];
 
 /**

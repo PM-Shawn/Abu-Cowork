@@ -96,6 +96,45 @@ describe('applyTeamLeaderRoute', () => {
     expect(leader.tools).toEqual(['read_file']);
   });
 
+  // A builtin expert's `tools` is Abu's curated roster for that ROLE (registry.ts),
+  // not a boundary the user drew. It omits the tools the leader planning
+  // instruction tells a root agent to use (ask_user_question, list_directory),
+  // so keeping it would have toolExecutor refuse the leader mid-plan.
+  it('drops the card tools of a builtin leader so it keeps the full root roster', () => {
+    const leader = def('产品经理', { filePath: '__builtin__', tools: ['read_file', 'write_file', 'web_search'] });
+    const r = applyTeamLeaderRoute(general, { ...team, leader });
+    expect(r.definition?.tools).toBeUndefined();
+    expect(r.definition && 'tools' in r.definition).toBe(false);
+    // Only the curated roster goes; an explicit deny is still the user's word.
+    expect(applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('产品经理', { filePath: '__builtin__', tools: ['read_file'], disallowedTools: ['run_command'] }),
+    }).definition?.disallowedTools).toEqual(['run_command']);
+    expect(leader.tools).toEqual(['read_file', 'write_file', 'web_search']);
+  });
+
+  it('keeps the card tools of a user-created leader', () => {
+    const leader = def('lead', { filePath: '/Users/me/.abu/agents/lead/AGENT.md', tools: ['read_file'] });
+    expect(applyTeamLeaderRoute(general, { ...team, leader }).definition?.tools).toEqual(['read_file']);
+  });
+
+  // The regression this guards: a builtin leader following its own planning
+  // instruction was refused with "outside this agent's fixed tool boundary".
+  it('lets a builtin leader call ask_user_question through the policy path', () => {
+    const runtimeNames = ['read_file', 'write_file', 'web_search', 'ask_user_question', 'list_directory', 'report_plan'];
+    const builtin = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('产品经理', { filePath: '__builtin__', tools: ['read_file', 'write_file', 'web_search'] }),
+    });
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(builtin)!).toolNames).toEqual(runtimeNames);
+    const userMade = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('lead', { filePath: '/Users/me/.abu/agents/lead/AGENT.md', tools: ['read_file', 'write_file', 'web_search'] }),
+    });
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(userMade)!).toolNames)
+      .toEqual(['read_file', 'write_file', 'web_search', 'report_plan']);
+  });
+
   it('leaves explicit skill / @agent routes and un-pinned conversations alone', () => {
     const skill: RouteResult = { type: 'skill', name: 's', cleanInput: 'x' };
     const delegate: RouteResult = { type: 'delegate', name: 'a', cleanInput: 'x', delegateAgent: def('a') };

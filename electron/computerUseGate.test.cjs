@@ -344,7 +344,9 @@ test('a read-intent session cannot bypass state_id by dispatching native input',
       y: 1,
       [COMPUTER_USE_TOKEN_ARG]: session.token,
     }),
-    /fresh state_id/,
+    // The intent binding now refuses first; the state assertion behind it
+    // is the second line of defence.
+    /does not authorize|fresh state_id/,
   );
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), false);
 });
@@ -3508,7 +3510,127 @@ test('Host Gate blocks Windows shell and security shortcuts before native input'
     }),
     /blocked dangerous system shortcut/,
   );
+  // Review finding: modifiers were sorted but not deduplicated, so a repeated
+  // or aliased modifier spelled a combo the blocklist had never seen while
+  // the OS still saw Alt+F4 / Win+R.
+  for (const [key, modifiers] of [['f4', ['alt', 'alt']], ['r', ['win', 'meta']], ['escape', ['ctrl', 'control', 'shift']]]) {
+    await assert.rejects(
+      h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+        key,
+        modifiers,
+        [COMPUTER_USE_TOKEN_ARG]: session.token,
+      }),
+      /blocked dangerous system shortcut/,
+      `${modifiers.join('+')}+${key}`,
+    );
+  }
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
+});
+
+test('a session begun for an observation intent cannot dispatch stateful input', async () => {
+  // Review finding: browser-origin approval and the pre-write origin re-check
+  // keyed off the declared intent only. A renderer that begins a session as
+  // get_app_state but attaches a state_id could then type into the browser
+  // on an origin the user never approved.
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'msedge',
+    bundle_id: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+    process_id: 700,
+  });
+  h.setAxElements([{
+    id: 1,
+    role: 'TextField',
+    class_name: 'OmniboxViewViews',
+    automation_id: 'view_1012',
+    value: 'https://example.com/start',
+    bounds: [100, 20, 800, 40],
+    patterns: ['Value'],
+    actions: ['SetValue'],
+    depth: 4,
+  }]);
+  const snapshot = await observeState(h, { targetApp: 'msedge', permissionMode: 'autonomous' });
+  const session = await begin(h, {
+    targetApp: 'msedge',
+    permissionMode: 'autonomous',
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+  assert.equal(h.browserSiteApprovalRequests.length, 0);
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'hello',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /does not authorize/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_type'), false);
+  assert.equal(h.browserSiteApprovalRequests.length, 0);
+});
+
+test('a line break typed as text or pressed as a raw key gets Return semantics; other control characters are refused', async () => {
+  const requests = [];
+  const h = harness({
+    requestActionApproval: async (request) => {
+      requests.push(request);
+      return false;
+    },
+  });
+  h.setIdentity({
+    app_name: 'Slack',
+    bundle_id: 'com.tinyspeck.slackmacgap',
+    process_id: 300,
+  });
+  const typing = await begin(h, {
+    targetApp: 'Slack',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'hello\r',
+      [COMPUTER_USE_TOKEN_ARG]: typing.token,
+    }),
+    /was not approved/,
+  );
+  assert.deepEqual(requests.at(-1).consequence, {
+    category: 'ambiguous',
+    summary: 'Type text containing a line break in Slack; this may submit or send content',
+    source: 'host-ambiguous-input',
+  });
+
+  const pressing = await begin(h, {
+    targetApp: 'Slack',
+    toolCallId: 'tool-raw-return',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'key', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: '\r',
+      modifiers: [],
+      [COMPUTER_USE_TOKEN_ARG]: pressing.token,
+    }),
+    /was not approved/,
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(requests.at(-1).consequence.summary, 'Press Return in Slack; this may submit or send content');
+
+  const control = await begin(h, {
+    targetApp: 'Slack',
+    toolCallId: 'tool-control-char',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'a\u0003b',
+      [COMPUTER_USE_TOKEN_ARG]: control.token,
+    }),
+    /control character/,
+  );
+  assert.equal(requests.length, 2);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_type' || cmd === 'keyboard_press'), false);
 });
 
 function helperError(message, helper) {

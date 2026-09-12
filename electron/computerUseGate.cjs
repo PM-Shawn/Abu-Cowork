@@ -359,7 +359,21 @@ function refusedUnless(code, check) {
   }
 }
 
+// C0/DEL control characters other than tab, line feed and carriage return
+// have no keyboard meaning a model could legitimately want; injected as text
+// they reach an app only as raw WM_CHARs. Line breaks are allowed and get
+// Return's semantics (computerUseActionPolicy inferAmbiguousConsequence).
+const BLOCKED_CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+
 function assertSafeKeyboardCommand(platform, cmd, args) {
+  if (cmd === 'keyboard_type' || cmd === 'keyboard_press') {
+    const raw = cmd === 'keyboard_type' ? args?.text : args?.key;
+    if (typeof raw === 'string' && BLOCKED_CONTROL_CHARACTERS.test(raw)) {
+      throw new Error(
+        `Computer Use blocked a control character in ${cmd === 'keyboard_type' ? 'text' : 'key'}; use a named key instead`,
+      );
+    }
+  }
   if (cmd !== 'keyboard_press') return;
   const aliases = new Map([
     ['control', 'ctrl'],
@@ -369,11 +383,14 @@ function assertSafeKeyboardCommand(platform, cmd, args) {
     ['win', 'meta'],
     ['option', 'alt'],
   ]);
+  // Deduplicated after alias normalization: ['alt', 'alt'] or ['win', 'meta']
+  // must not spell a combo the blocklist has never heard of while the OS
+  // still sees Alt+F4 or Win+R.
   const modifiers = Array.isArray(args?.modifiers)
-    ? args.modifiers.map((value) => {
+    ? [...new Set(args.modifiers.map((value) => {
         const lower = String(value).toLowerCase();
         return aliases.get(lower) || lower;
-      }).sort()
+      }))].sort()
     : [];
   const key = typeof args?.key === 'string' ? args.key.toLowerCase() : '';
   const combo = [...modifiers, key].join('+');
@@ -2356,6 +2373,15 @@ function createComputerUseGate(options) {
     let consequence = null;
     let consumedState = null;
     let attemptLedger = null;
+    // A session begun for an observation intent never received the checks a
+    // stateful intent gets at begin_session (browser-origin approval, state
+    // assertion); a stateful command on such a token would ride past them.
+    // The command class is bound to the declared intent here.
+    if (statefulCommand && !STATEFUL_ACTIONS.has(session.actionIntent?.action)) {
+      throw new Error(
+        `Computer Use session for "${session.actionIntent?.action ?? 'unknown'}" does not authorize '${cmd}'`,
+      );
+    }
     try {
       await assertCommandTarget(session, cmd, args);
       if (COMPUTER_USE_CONTROL_COMMANDS.has(cmd) && cmd !== 'activate_app') {
@@ -2448,7 +2474,10 @@ function createComputerUseGate(options) {
     } catch (error) {
       // Refused before dispatch: nothing reached the app. Record it against
       // the state the renderer offered so the renderer can re-observe, and
-      // leave the run unblocked — there is no attempt to verify.
+      // leave the run unblocked — there is no attempt to verify. A state
+      // consumed just before the refusal stays consumed but is no longer
+      // "in flight": nothing was dispatched for it.
+      if (consumedState) consumedState.actionInFlight = false;
       if (statefulCommand) refuseTaskAttempt(sender, session, cmd, error, Boolean(consequence));
       throw error;
     }

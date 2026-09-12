@@ -632,6 +632,12 @@ pub fn keyboard_type_impl(
     if unit_count > 32_768 {
         return Err(HelperError::not_executed("text-too-long", "text input exceeds the 32768 UTF-16 unit safety limit"));
     }
+    if contains_blocked_control(&text) {
+        return Err(HelperError::not_executed(
+            "invalid-params",
+            "text contains control characters; use key for named keys",
+        ));
+    }
     let mut inputs = Vec::with_capacity(unit_count * 2);
     for unit in text.encode_utf16() {
         inputs.push(keyboard_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE));
@@ -715,6 +721,39 @@ fn character_layout_error(_key: &str, error: &HelperError) -> HelperError {
     )
 }
 
+/// Modifier names → virtual keys, deduplicated: `["alt", "alt"]` presses Alt
+/// once and `["win", "meta"]` is one Win key. A duplicated modifier would
+/// otherwise spell a chord the Host blocklist never saw.
+fn modifier_virtual_keys(modifiers: &[String]) -> Result<Vec<VIRTUAL_KEY>, HelperError> {
+    let mut keys = Vec::new();
+    for modifier in modifiers {
+        let vk = match modifier.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => VK_CONTROL,
+            "shift" => VK_SHIFT,
+            "alt" | "option" => VK_MENU,
+            "meta" | "win" | "super" => VK_LWIN,
+            _ => {
+                return Err(HelperError::not_executed(
+                    "invalid-params",
+                    format!("unsupported modifier '{modifier}'"),
+                ))
+            }
+        };
+        if !keys.contains(&vk) {
+            keys.push(vk);
+        }
+    }
+    Ok(keys)
+}
+
+/// C0/DEL controls other than tab, line feed and carriage return: never
+/// something a model can want typed. The Host refuses them first; this is
+/// the helper's own line.
+fn contains_blocked_control(text: &str) -> bool {
+    text.chars()
+        .any(|c| c.is_control() && !matches!(c, '\t' | '\n' | '\r'))
+}
+
 pub fn keyboard_press_impl(
     key: String,
     modifiers: Vec<String>,
@@ -724,16 +763,13 @@ pub fn keyboard_press_impl(
     expected_input_epoch: u64,
 ) -> Result<String, HelperError> {
     let actual = assert_target(&app_id, process_id, &window_id, expected_input_epoch)?;
-    let mut modifier_keys = Vec::new();
-    for modifier in modifiers {
-        match modifier.to_ascii_lowercase().as_str() {
-            "ctrl" | "control" => modifier_keys.push(VK_CONTROL),
-            "shift" => modifier_keys.push(VK_SHIFT),
-            "alt" | "option" => modifier_keys.push(VK_MENU),
-            "meta" | "win" | "super" => modifier_keys.push(VK_LWIN),
-            _ => return Err(HelperError::not_executed("invalid-params", format!("unsupported modifier '{modifier}'"))),
-        }
+    if contains_blocked_control(&key) {
+        return Err(HelperError::not_executed(
+            "invalid-params",
+            "key contains a control character; use a key name",
+        ));
     }
+    let mut modifier_keys = modifier_virtual_keys(&modifiers)?;
     let vk = if let Some(value) = named_key(&key) {
         value
     } else {
@@ -788,8 +824,10 @@ pub fn keyboard_press_impl(
 #[cfg(test)]
 mod tests {
     use crate::error::HelperError;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LWIN, VK_MENU};
     use super::{
         absolute_coordinate, assert_no_physical_modifier, character_layout_error,
+        contains_blocked_control, modifier_virtual_keys,
         coordinate_within, integrity_allows, mapped_source_extent, resolve_character_key,
         send_keyboard_sequence_with, unicode_key_events, KeyboardEvent,
     };
@@ -974,5 +1012,28 @@ mod tests {
         assert!(integrity_allows(0x2000, 0x1000));
         assert!(integrity_allows(0x2000, 0x2000));
         assert!(!integrity_allows(0x2000, 0x3000));
+    }
+
+    #[test]
+    fn deduplicates_modifier_virtual_keys() {
+        let keys = modifier_virtual_keys(&[
+            "alt".to_string(),
+            "ALT".to_string(),
+            "win".to_string(),
+            "meta".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(keys, vec![VK_MENU, VK_LWIN]);
+        assert_eq!(
+            modifier_virtual_keys(&["hyper".to_string()]).unwrap_err().code,
+            "invalid-params"
+        );
+    }
+
+    #[test]
+    fn blocks_control_characters_except_whitespace_controls() {
+        assert!(!contains_blocked_control("plain text\twith\r\nbreaks"));
+        assert!(contains_blocked_control("a\u{3}b"));
+        assert!(contains_blocked_control("del\u{7f}"));
     }
 }

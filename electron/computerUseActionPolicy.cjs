@@ -233,11 +233,25 @@ function inferKeyboardConsequence(session, cmd, args) {
  */
 function inferAmbiguousConsequence(session, cmd, args, axSession) {
   if (cmd === 'keyboard_press') {
-    const key = typeof args?.key === 'string' ? args.key.trim().toLowerCase() : '';
-    if (key === 'enter' || key === 'return') {
+    const rawKey = typeof args?.key === 'string' ? args.key : '';
+    const key = rawKey.trim().toLowerCase();
+    // A raw CR/LF is injected as text and lands as a Return in every Win32
+    // edit and Chromium app; it gets Return's semantics.
+    const lineBreak = rawKey === '\r' || rawKey === '\n' || rawKey === '\r\n';
+    if (key === 'enter' || key === 'return' || lineBreak) {
       return {
         category: 'ambiguous',
-        summary: `Press ${args.key} in ${session.target.app_name}; this may submit or send content`,
+        summary: `Press ${lineBreak ? 'Return' : args.key} in ${session.target.app_name}; this may submit or send content`,
+        source: 'host-ambiguous-input',
+      };
+    }
+  }
+  if (cmd === 'keyboard_type') {
+    const text = typeof args?.text === 'string' ? args.text : '';
+    if (/[\r\n]/.test(text)) {
+      return {
+        category: 'ambiguous',
+        summary: `Type text containing a line break in ${session.target.app_name}; this may submit or send content`,
         source: 'host-ambiguous-input',
       };
     }

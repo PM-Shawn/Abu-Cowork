@@ -117,14 +117,16 @@ const BLOCKED_KEYS_WINDOWS = new Set([
  */
 export function checkBlockedKeyCombo(key: string, modifiers?: string[]): string | null {
   // Normalize: sort modifiers alphabetically + lowercase key
-  const mods = (modifiers ?? []).map(m => {
+  // Deduplicated after alias normalization, like the Host Gate: a repeated
+  // or aliased modifier must not dodge the blocklist.
+  const mods = Array.from(new Set((modifiers ?? []).map(m => {
     const lower = m.toLowerCase();
     // Normalize aliases
     if (lower === 'cmd' || lower === 'command' || lower === 'super' || lower === 'win') return 'meta';
     if (lower === 'control') return 'ctrl';
     if (lower === 'option') return 'alt';
     return lower;
-  }).sort();
+  }))).sort();
 
   const normalized = [...mods, key.toLowerCase()].join('+');
 

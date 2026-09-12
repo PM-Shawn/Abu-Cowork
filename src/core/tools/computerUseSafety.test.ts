@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { checkSensitiveApp, classifyComputerUseApp } from './computerUseSafety';
+import { checkBlockedKeyCombo, checkSensitiveApp, classifyComputerUseApp } from './computerUseSafety';
 
 vi.mock('../../utils/platform', () => ({
   isMacOS: vi.fn(() => true),
@@ -110,5 +110,16 @@ describe('Windows approval-required process-name drift', () => {
       expect(checkSensitiveApp(identity, appName, { approvalHandledByHost: true }), identity)
         .toBeNull();
     }
+  });
+});
+
+describe('blocked key combos', () => {
+  it('deduplicates repeated and aliased modifiers before matching the blocklist', async () => {
+    const platform = await import('../../utils/platform');
+    vi.mocked(platform.isMacOS).mockReturnValue(false);
+    expect(checkBlockedKeyCombo('f4', ['alt'])).not.toBeNull();
+    expect(checkBlockedKeyCombo('f4', ['alt', 'alt'])).not.toBeNull();
+    expect(checkBlockedKeyCombo('l', ['win', 'meta'])).not.toBeNull();
+    expect(checkBlockedKeyCombo('r', ['ctrl'])).toBeNull();
   });
 });

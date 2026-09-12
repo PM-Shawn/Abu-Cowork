@@ -164,3 +164,23 @@ test('native action confirmation defaults to cancel and explains one-time scope'
   assert.match(options.detail, /删除一次性测试笔记/);
   assert.match(options.detail, /一次操作有效/);
 });
+
+test('line breaks typed as text or pressed as a raw key are ambiguous like Return', () => {
+  const session = {
+    target: { app_name: 'Slack', bundle_id: 'com.tinyspeck.slackmacgap' },
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  };
+  assert.deepEqual(resolveConsequence(session, 'keyboard_type', { text: 'hello\n' }, null), {
+    category: 'ambiguous',
+    summary: 'Type text containing a line break in Slack; this may submit or send content',
+    source: 'host-ambiguous-input',
+  });
+  assert.equal(resolveConsequence(session, 'keyboard_type', { text: 'hello' }, null), null);
+  for (const key of ['\r', '\n', '\r\n']) {
+    assert.deepEqual(resolveConsequence(session, 'keyboard_press', { key }, null), {
+      category: 'ambiguous',
+      summary: 'Press Return in Slack; this may submit or send content',
+      source: 'host-ambiguous-input',
+    }, JSON.stringify(key));
+  }
+});

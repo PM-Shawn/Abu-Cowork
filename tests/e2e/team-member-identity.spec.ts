@@ -118,7 +118,14 @@ test.describe('team member identity integrity', () => {
       await detailMenuButton(page).click();
       // The "…" menu items are plain buttons with an icon; match by text like the component tests do.
       await page.getByText('编辑', { exact: true }).click();
-      await page.getByPlaceholder('🤖').fill('🧪');
+      // The avatar is a picker now, not a free-text emoji box.
+      await page.getByTestId('avatar-picker-trigger').click();
+      await page.getByTestId('avatar-icon-flask').click();
+      // Escape closes the popover only; the editor behind it stays open.
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await expect(page.getByTestId('avatar-picker-trigger').getByTestId('agent-avatar'))
+        .toHaveAttribute('data-avatar-kind', 'icon');
       await page.getByRole('button', { name: '保存', exact: true }).click();
       await switchTab(page, '团队');
       await expect(row).toContainText('1 名成员');

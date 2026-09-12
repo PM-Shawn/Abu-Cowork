@@ -165,7 +165,7 @@ fn driver_capabilities() -> Value {
                     "ScrollIntoView", "Scroll",
                 ],
             },
-            "boundaries": ["secure-desktop", "higher-integrity"],
+            "boundaries": windows_backend::session_boundaries(),
             "activation": { "can_activate_window": true },
         })
     }

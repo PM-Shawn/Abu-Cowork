@@ -3644,6 +3644,8 @@ const enUS: TranslationDict = {
       boundaryInputLease: 'Error: Abu cannot confirm you are not using the computer (input monitoring or the input lease is unavailable: {msg}) and has stopped. Start the task again; if this keeps happening, restart Abu.',
       boundaryDpiUnaware: 'Error: The Abu desktop helper did not get the display-scaling awareness it needs ({msg}); coordinate-based actions are disabled. Restart Abu; if this keeps happening, please report it.',
       boundaryInputBlocked: 'Error: Windows rejected the input Abu sent ({msg}); nothing reached the target. Check whether the program needs higher privileges or is protected by other software, then let Abu continue.',
+      boundaryRemoteSessionDisconnected: 'Error: The remote desktop session is disconnected or minimised ({msg}); this screen is not being rendered, so Abu can neither see nor act on it. Reconnect the remote desktop and keep its window open, then let Abu continue.',
+      boundarySessionZero: 'Error: Abu is running in the desktop-less system session (Session 0, {msg}) and cannot see or act on the screen. Start Abu as the logged-in user, not from a service or scheduled task.',
       userTakeoverPaused: 'Error: Paused: you took over the mouse or keyboard, so Abu stopped. The scene is left as it is and completed steps are not undone. Carry on by hand if you like; when you want Abu to continue, reply "continue" and it will observe the screen again before acting.',
       errStateProtocol: 'Error: Invalid Computer Use state protocol input: {reason}. No action was executed.',
       stateHeader: 'Computer state_id: {stateId} (valid for 30 seconds and one write action)',

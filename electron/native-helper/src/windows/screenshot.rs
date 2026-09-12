@@ -254,6 +254,7 @@ pub fn capture_screen_state_impl(
     if !super::interaction::input_monitoring_ready() {
         return Err(HelperError::not_executed("input-lease", "physical input monitoring is unavailable; capture is blocked"));
     }
+    super::session::assert_session_usable()?;
     let input_epoch = super::interaction::input_epoch();
     let target = target_window(
         expected_app_id.as_deref(),

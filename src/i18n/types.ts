@@ -4784,6 +4784,8 @@ export interface TranslationDict {
       boundaryInputLease: string;
       boundaryDpiUnaware: string;
       boundaryInputBlocked: string;
+      boundaryRemoteSessionDisconnected: string;
+      boundarySessionZero: string;
       /** The user took over mouse/keyboard mid-action; the run pauses and can be resumed by replying. */
       userTakeoverPaused: string;
       /** Invalid state/effect protocol input. {reason} */

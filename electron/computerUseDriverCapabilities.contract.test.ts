@@ -105,7 +105,7 @@ describe('driver capability contract', () => {
       expect(caps.input.unicode_text).toBe(true); // §2.6
       expect(caps.input.clipboard_paste).toBe(true); // §2.6 paste fallback
       expect(caps.input.foreground_required).toBe(true);
-      expect(caps.boundaries).toEqual(['secure-desktop', 'higher-integrity']);
+      expect(caps.boundaries).toEqual(['secure-desktop', 'higher-integrity', 'session-zero', 'remote-session-disconnected']);
       expect(caps.capture.dpi_awareness).toBe('per-monitor-v2'); // §2.8 startup self-check
     },
   );

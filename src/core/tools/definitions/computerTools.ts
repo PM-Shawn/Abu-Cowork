@@ -272,6 +272,8 @@ function platformBoundaryCopy(
     case 'input-lease': return t.boundaryInputLease;
     case 'dpi-unaware': return t.boundaryDpiUnaware;
     case 'send-input-failed': return t.boundaryInputBlocked;
+    case 'remote-session-disconnected': return t.boundaryRemoteSessionDisconnected;
+    case 'session-zero': return t.boundarySessionZero;
     default: return null;
   }
 }

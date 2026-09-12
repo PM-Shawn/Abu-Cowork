@@ -189,6 +189,7 @@ fn assert_target(
     if super::interaction::input_epoch() != expected_input_epoch {
         return Err(HelperError::observe_again("physical-input", "physical user input occurred after observation; observe again"));
     }
+    super::session::assert_session_usable()?;
     input_desktop_is_default()?;
     let actual = frontmost_app_identity_impl()?;
     if actual.process_id != expected_process_id as i32

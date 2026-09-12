@@ -9,6 +9,7 @@ mod dpi;
 mod input;
 mod interaction;
 mod screenshot;
+mod session;
 mod signature;
 mod uia;
 mod window;
@@ -20,6 +21,7 @@ pub use uia::{
 
 pub use app_catalog::{launch_app_impl, list_apps_impl};
 pub use dpi::{dpi_awareness, initialize_dpi_awareness};
+pub use session::boundaries as session_boundaries;
 pub use input::{
     keyboard_press_impl, keyboard_type_impl, mouse_click_impl, mouse_drag_impl, mouse_move_impl,
     mouse_scroll_impl,

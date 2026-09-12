@@ -3646,6 +3646,8 @@ const zhCN: TranslationDict = {
       boundaryInputLease: 'Error: 阿布无法确认你没有在操作电脑（输入监控或输入租约不可用：{msg}），已停止操作。请重新发起任务；反复出现时重启阿布。',
       boundaryDpiUnaware: 'Error: 阿布的桌面助手没有拿到正确的显示缩放感知（{msg}），按坐标的操作已禁用。请重启阿布；反复出现时请反馈。',
       boundaryInputBlocked: 'Error: 系统拒绝了阿布发出的输入（{msg}），没有任何输入到达目标。请检查目标程序是否需要更高权限或正被其他软件保护，处理后再让阿布继续。',
+      boundaryRemoteSessionDisconnected: 'Error: 远程桌面会话已断开或被最小化（{msg}），这台电脑的屏幕现在没有在渲染，阿布看不到也无法操作。请重新连接远程桌面并保持窗口打开，再让阿布继续。',
+      boundarySessionZero: 'Error: 阿布运行在没有桌面的系统会话里（Session 0，{msg}），无法看到或操作屏幕。请以登录用户的身份启动阿布，不要通过服务或计划任务启动。',
       userTakeoverPaused: 'Error: 已暂停：检测到你在操作电脑，阿布已停手。现场保留，已完成的步骤不会撤销。你可以继续手动操作；需要阿布接着做时回复"继续"，它会先重新观察屏幕再决定下一步。',
       errStateProtocol: 'Error: 电脑操控状态协议参数无效：{reason}。本次没有执行。',
       stateHeader: '电脑状态 state_id：{stateId}（30 秒内有效，且只能用于一次写操作）',

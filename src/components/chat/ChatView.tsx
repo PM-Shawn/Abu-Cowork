@@ -17,7 +17,7 @@ import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
 import MessageBubble from './MessageBubble';
-import { expertIdentity, teamIdentity, introductionMessage, isIntroductionMessage } from '@/core/team/expertContact';
+import { expertIdentity, teamIdentity, isIntroductionMessage } from '@/core/team/expertContact';
 import type { ExpertContact } from '@/types/expertContact';
 import CompactDivider from './CompactDivider';
 import BrowserRunReportCard from './BrowserRunReportCard';
@@ -257,10 +257,6 @@ export default function ChatView({
   const pendingTeamId = useChatStore((s) => s.pendingTeamId);
   const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
   const welcomeTeam = useTeamStore((s) => s.teams.find((team) => team.id === welcomeTeamId));
-  const visibleIntroduction = pendingExpertContact
-    && (pendingAgent ? pendingExpertContact.identity.agentName === pendingAgent.name
-      : pendingExpertContact.identity.key === `team:${welcomeTeamId}`)
-    ? introductionMessage(pendingExpertContact, 'draft', 0) : undefined;
   const expertPrompts = pendingAgent
     ? pendingAgent.samplePromptsI18n?.[locale] ?? pendingAgent.samplePrompts
     : welcomeTeam?.samplePrompts;
@@ -1345,21 +1341,6 @@ export default function ChatView({
   // user actually types. Downstream handleSend already reuses the existing
   // activeConv.id when present, so no createConversation churn happens.
   if (!activeConv || activeConv.messages.length === 0) {
-    if (visibleIntroduction) {
-      return (
-        <div className="flex flex-col h-full min-h-0 min-w-0 bg-[var(--abu-bg-base)]">
-          <div {...windowDragRowProps()} className="shrink-0 h-11" />
-          <div className="flex-1 min-h-0 overflow-y-auto">
-            <div className="w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16">
-              <MessageBubble message={visibleIntroduction} />
-            </div>
-          </div>
-          <div className="shrink-0 px-6 md:px-10 pb-4 pt-1.5">
-            <div className="max-w-4xl mx-auto"><ChatInput variant="welcome" onSend={handleSend} /></div>
-          </div>
-        </div>
-      );
-    }
     return (
       <div className="flex flex-col h-full bg-[var(--abu-bg-base)]">
         {/* The welcome screen has no header row, so it gets the same 44px drag
@@ -1459,7 +1440,7 @@ export default function ChatView({
             {/* Scenario Guide */}
             {pendingAgent || welcomeTeam ? (
               !!expertPrompts?.length && guideVisible && <div className="flex flex-wrap gap-2 mt-4" data-testid="expert-prompts">
-                {expertPrompts.map((prompt, index) => <Button key={index} variant="outline" className="h-auto whitespace-normal text-left" onClick={() => handleSelectPrompt(prompt)}>{prompt}</Button>)}
+                {expertPrompts.map((prompt, index) => <Button key={index} variant="outline" className="h-auto whitespace-normal text-left border-[var(--abu-border-subtle)] dark:border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] dark:bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] shadow-none hover:bg-[var(--abu-bg-hover)] hover:border-[var(--abu-border-hover)]" onClick={() => handleSelectPrompt(prompt)}>{prompt}</Button>)}
               </div>
             ) : <ScenarioGuide
               onSelectPrompt={handleSelectPrompt}

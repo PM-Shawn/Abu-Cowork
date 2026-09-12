@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile as nodeReadFile, rm, stat as nodeStat, writeFile as nodeWriteFile } from 'node:fs/promises';
+import { chmod as nodeChmod, lstat as nodeLstat, mkdtemp, readFile as nodeReadFile, rm, stat as nodeStat, symlink as nodeSymlink, writeFile as nodeWriteFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { copyFile, mkdir, remove, rename, writeFile, writeTextFile } from './pluginFsRun';
+import { pathToFileURL } from 'node:url';
+import { copyFile, exists, lstat, mkdir, readDir, readFile, readTextFile, remove, rename, stat, writeFile, writeTextFile } from './pluginFsRun';
 
 // The sidecar bundle swaps `@tauri-apps/plugin-fs` for this shim at build
 // time, while TypeScript keeps checking every caller against the real
@@ -206,6 +207,134 @@ describe('sidecar plugin-fs shim', () => {
       await nodeWriteFile(from, 'x');
       await expect(rename(from, join(dir, 'to.txt'), { oldPathBaseDir: 14 })).rejects.toThrow(/oldPathBaseDir/);
       expect(await read(from)).toBe('x');
+    });
+  });
+  // Every read-side export took only `path` before this, so plugin-fs's
+  // `options` was dropped by JS at runtime with no compile error. A baseDir
+  // caller passes a RELATIVE path, so ignoring it does not merely lose the
+  // scoping — it resolves against the sidecar's cwd and reads a DIFFERENT
+  // file, a silently wrong answer. Same rule as the write side: honor or throw.
+  describe('read-side options', () => {
+    it.each([
+      ['exists', (p: string, o: object) => exists(p, o)],
+      ['readTextFile', (p: string, o: object) => readTextFile(p, o)],
+      ['readFile', (p: string, o: object) => readFile(p, o)],
+      ['readDir', (p: string, o: object) => readDir(p, o)],
+      ['stat', (p: string, o: object) => stat(p, o)],
+      ['lstat', (p: string, o: object) => lstat(p, o)],
+    ])('%s rejects baseDir instead of resolving against the sidecar cwd', async (_name, call) => {
+      await expect(call(join(dir, 'a.txt'), { baseDir: 14 })).rejects.toThrow(/baseDir/);
+    });
+
+    it.each([
+      ['readTextFile', (p: string, o: object) => readTextFile(p, o)],
+      ['readFile', (p: string, o: object) => readFile(p, o)],
+    ])('%s rejects encoding, which it cannot honor', async (_name, call) => {
+      const path = join(dir, 'a.txt');
+      await nodeWriteFile(path, 'x');
+      await expect(call(path, { encoding: 'utf-8' })).rejects.toThrow(/encoding/);
+    });
+
+    it('accepts read options whose values are all undefined', async () => {
+      const path = join(dir, 'a.txt');
+      await nodeWriteFile(path, 'hello');
+      expect(await readTextFile(path, { baseDir: undefined })).toBe('hello');
+      expect(await exists(path, { baseDir: undefined })).toBe(true);
+    });
+  });
+
+  // plugin-fs types every path as `string | URL`; node:fs's PathLike accepts a
+  // file: URL too, so the shim honors it rather than narrowing to string.
+  describe('file: URL paths', () => {
+    it('reads and writes through a URL the same as through a string', async () => {
+      const path = join(dir, 'url.txt');
+      const url = pathToFileURL(path);
+      await writeTextFile(url, 'via url');
+      expect(await readTextFile(url)).toBe('via url');
+      expect(await exists(url)).toBe(true);
+      expect((await stat(url)).size).toBe('via url'.length);
+    });
+  });
+
+  // FsFileInfo used to carry 8 of plugin-fs's 18 FileInfo fields. A caller
+  // reading stat(p).mode compiled against the real type and got undefined.
+  describe('stat exposes the whole FileInfo surface', () => {
+    it('fills every POSIX field from node:fs Stats', async () => {
+      const path = join(dir, 'a.txt');
+      await nodeWriteFile(path, 'x');
+      const info = await stat(path);
+      const native = await nodeStat(path);
+      expect(info.mode).toBe(native.mode);
+      expect(info.ino).toBe(native.ino);
+      expect(info.dev).toBe(native.dev);
+      expect(info.nlink).toBe(native.nlink);
+      expect(info.uid).toBe(native.uid);
+      expect(info.gid).toBe(native.gid);
+      expect(info.rdev).toBe(native.rdev);
+      expect(info.blksize).toBe(native.blksize);
+      expect(info.blocks).toBe(native.blocks);
+    });
+
+    it('reports fileAttributes as null, which node cannot supply', async () => {
+      const path = join(dir, 'a.txt');
+      await nodeWriteFile(path, 'x');
+      expect((await stat(path)).fileAttributes).toBeNull();
+    });
+
+    it.skipIf(isWindows)('lstat describes the link itself, not its target', async () => {
+      const target = join(dir, 'target.txt');
+      const link = join(dir, 'link.txt');
+      await nodeWriteFile(target, 'x');
+      await nodeSymlink(target, link);
+      const info = await lstat(link);
+      expect(info.isSymlink).toBe(true);
+      expect(info.ino).toBe((await nodeLstat(link)).ino);
+    });
+  });
+
+  describe('writeFile data variants', () => {
+    it('rejects a ReadableStream rather than writing "[object ReadableStream]"', async () => {
+      const path = join(dir, 'stream.bin');
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(new TextEncoder().encode('x')); controller.close(); },
+      });
+      await expect(writeFile(path, stream)).rejects.toThrow(/ReadableStream/);
+      await missing(path);
+    });
+  });
+  // plugin-fs derives `readonly` from Rust's std::fs::Permissions::readonly(),
+  // which on Unix is `mode & 0o222 == 0` — ANY write bit, not just the owner's.
+  // This shim used an owner-only mask (`& 0o200`), so a group-writable file
+  // whose owner cannot write it was reported readonly when the plugin says it
+  // is not. electron/fsHost.cjs, the other shim of this same contract, already
+  // used 0o222; the two disagreed on exactly these modes.
+  describe('readonly mirrors the plugin, not an owner-only approximation', () => {
+    async function readonlyOf(mode: number): Promise<boolean> {
+      const path = join(dir, `mode-${mode.toString(8)}.txt`);
+      await nodeWriteFile(path, 'x');
+      await nodeChmod(path, mode);
+      try {
+        return (await stat(path)).readonly;
+      } finally {
+        await nodeChmod(path, 0o644); // so the temp dir can be removed on Windows
+      }
+    }
+
+    it('a file nobody can write is readonly', async () => {
+      expect(await readonlyOf(0o444)).toBe(true);
+    });
+
+    it('a file the owner can write is not readonly', async () => {
+      expect(await readonlyOf(0o644)).toBe(false);
+    });
+
+    // The divergence: owner-only masking calls these readonly, the plugin does not.
+    it.skipIf(isWindows)('a file only the group can write is not readonly', async () => {
+      expect(await readonlyOf(0o464)).toBe(false);
+    });
+
+    it.skipIf(isWindows)('a file only others can write is not readonly', async () => {
+      expect(await readonlyOf(0o446)).toBe(false);
     });
   });
 });

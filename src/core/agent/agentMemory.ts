@@ -11,6 +11,7 @@
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { ensureParentDir, joinPath } from '../../utils/pathUtils';
+import { isSafeSkillDirName } from '../skill/skillDirName';
 
 const MAX_MEMORY_CHARS = 4000; // Limit memory size to prevent context bloat
 
@@ -36,9 +37,14 @@ async function getCachedHomeDir(): Promise<string> {
 }
 
 /**
- * Get the memory file path for an agent
+ * Get the memory file path for an agent.
+ * Throws unless the name is one plain path segment: `joinPath` does not
+ * collapse `..`, so `../../x` would address a file outside ~/.abu/agents/.
  */
 async function getMemoryPath(agentName: string): Promise<string> {
+  if (!isSafeSkillDirName(agentName)) {
+    throw new Error(`invalid agent name: ${JSON.stringify(agentName)}`);
+  }
   const home = await getCachedHomeDir();
   return joinPath(home, '.abu', 'agents', agentName, 'memory.md');
 }

@@ -257,6 +257,109 @@ test('createNew never overwrites a file that appears after an existence check', 
   assert.equal(fs.readFileSync(file, 'utf8'), 'someone else');
 });
 
+function writeWithOptions(file, text, options) {
+  return fsDispatch(app, 'plugin:fs|write_text_file', {
+    body: Buffer.from(text),
+    headers: { path: encodeURIComponent(file), options: JSON.stringify(options) },
+  });
+}
+
+test('create:false refuses a file deleted since the caller probed it, and creates nothing', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+  // The race `ensureRoleId()` depends on: the agent registry read this
+  // AGENT.md, so it existed then; it is gone by the time the roleId is written
+  // back. Tauri's plugin opens a handle that cannot create, so the open itself
+  // is the check. existsSync is pinned to the stale "yes, it's there" a probe
+  // would have returned, so reintroducing any probe-then-write brings the file
+  // back as a half-agent nobody asked for and fails this test.
+  t.mock.method(fs, 'existsSync', () => true);
+
+  assert.throws(
+    () => writeWithOptions(file, 'recreated', { create: false }),
+    /does not exist and create is false/
+  );
+  // Asserted through readdir, not existsSync — that one is mocked.
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('create:false still writes an existing file, truncating it the way the plugin does', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'AGENT.md');
+  fs.writeFileSync(file, 'a much longer previous body');
+
+  writeWithOptions(file, 'short', { create: false });
+
+  assert.equal(fs.readFileSync(file, 'utf8'), 'short');
+});
+
+test('append adds to an existing file instead of truncating it', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'messages.jsonl');
+  fs.writeFileSync(file, 'first\n');
+
+  writeWithOptions(file, 'second\n', { append: true });
+
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first\nsecond\n');
+});
+
+test('create:false appends to an existing file without truncating it', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'messages.jsonl');
+  fs.writeFileSync(file, 'first\n');
+
+  writeWithOptions(file, 'second\n', { create: false, append: true });
+
+  assert.equal(fs.readFileSync(file, 'utf8'), 'first\nsecond\n');
+});
+
+test('create:false refuses to append to a file that is not there', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'messages.jsonl');
+
+  assert.throws(
+    () => writeWithOptions(file, 'orphan\n', { create: false, append: true }),
+    /does not exist and create is false/
+  );
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test(
+  'create:false writes a file whose owner left it write-only',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const dir = tempDir(t);
+    const file = path.join(dir, 'AGENT.md');
+    fs.writeFileSync(file, 'old');
+    fs.chmodSync(file, 0o200);
+
+    // The plugin opens write-only (`O_WRONLY`), so it does not need read
+    // permission. Reaching for `'r+'` as the "never create" stand-in asks for
+    // `O_RDWR` and fails here with EACCES on a file Abu can legitimately write.
+    writeWithOptions(file, 'new', { create: false });
+
+    // Readable again only so this assertion can run — the write above is the
+    // part that had to work without read permission.
+    fs.chmodSync(file, 0o644);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'new');
+  }
+);
+
+test(
+  'a write honors the mode on the file it creates',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const dir = tempDir(t);
+    const file = path.join(dir, 'secret.json');
+
+    writeWithOptions(file, '{"token":"x"}', { mode: 0o600 });
+
+    // Ignoring `mode` hands a caller that asked for owner-only a
+    // world-readable secrets file instead, silently.
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  }
+);
+
 test(
   'custom append and atomic writes reject paths below an escaping symlink',
   { skip: process.platform === 'win32' },

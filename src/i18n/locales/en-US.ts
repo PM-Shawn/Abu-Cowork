@@ -3283,6 +3283,7 @@ const enUS: TranslationDict = {
     },
     agent: {
       skillAlreadyActive: 'Skill "{skillName}" is already active in this conversation. No need to call it again — continue using the already-injected skill instructions.',
+      skillBlockedByPolicy: 'Skill "{skillName}" is blocked by your organization\'s policy and cannot be used. Do not try to use it another way (such as reading its files directly); tell the user this skill is blocked by their organization\'s policy.',
       skillLoaded: 'Loaded skill "{name}": {description}',
       skillContextLine: '\nUser context: {context}',
       skillInjected: '\nSkill instructions injected into the system prompt for this turn; released automatically when the task ends.',

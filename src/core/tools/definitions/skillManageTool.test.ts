@@ -1422,12 +1422,15 @@ describe("skill_manage · the organization's skill policy", () => {
   it('never refuses removing a skill under a blocked name', async () => {
     const { remove } = await import('@tauri-apps/plugin-fs');
     vi.mocked(remove).mockResolvedValueOnce(undefined);
-    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(
-      makeSkill('blocked-skill', { source: 'workspace-auto', skillDir: '/ws/skills/blocked-skill' }),
-    );
+    // The loader hides a blocked skill from every lookup that does not ask
+    // for policy-blocked ones too — delete must ask.
+    const skill = makeSkill('blocked-skill', { source: 'workspace-auto', skillDir: '/ws/skills/blocked-skill' });
+    vi.spyOn(skillLoader, 'getSkill').mockImplementation((_name, options) =>
+      (options?.includePolicyBlocked ? skill : undefined));
 
     const result = await run({ action: 'delete', name: 'blocked-skill' });
 
     expect(result.success).toBe(true);
+    expect(remove).toHaveBeenCalledWith('/ws/skills/blocked-skill', { recursive: true });
   });
 });

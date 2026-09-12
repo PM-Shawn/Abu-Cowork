@@ -16,9 +16,13 @@ vi.mock('@/stores/chatStore', () => ({
 }));
 
 vi.mock('@/stores/enterpriseStore', () => ({
-  useEnterpriseStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    mode: { kind: 'personal' },
-  }),
+  // A store, not just a selector: discoveryStore subscribes to it at import.
+  useEnterpriseStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({
+      mode: { kind: 'personal' },
+    }),
+    { subscribe: () => () => {} },
+  ),
 }));
 
 vi.mock('@/i18n', () => ({

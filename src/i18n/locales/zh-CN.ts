@@ -1441,7 +1441,6 @@ const zhCN: TranslationDict = {
     fieldSamplePrompts: '推荐提问（可选）',
     fieldLinesHint: '每行一条',
     fieldSamplePromptsHint: '每行一条；点击只会填入新对话，不会发送',
-    detailIntro: '开场白',
     detailExpertise: '擅长',
     detailSamplePrompts: '推荐提问',
     fieldMembers: '成员',

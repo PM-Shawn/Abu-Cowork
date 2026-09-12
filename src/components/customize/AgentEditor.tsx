@@ -151,14 +151,15 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
       // named after the agent, so an unchanged name could still point at another
       // agent's folder. saveItemToAbuDir writes this agent's own file in place,
       // wherever it lives (a project agent stays in its project), and on a
-      // rename moves its folder to the name within the same parent (a move
-      // onto an occupied folder fails instead of overwriting).
+      // rename — and only a rename — moves its folder to the name within the
+      // same parent (a move onto an occupied folder fails instead of
+      // overwriting).
       const oldPath = agent?.filePath;
       // A letter-case-only rename moves this agent's own folder: on the
       // case-insensitive file systems the manifest already "at" the target is
       // its own, so the must-be-new probe would wrongly refuse it.
       const mustBeNew = !agent || (nameChanged && trimmed.toLowerCase() !== agent.name.toLowerCase());
-      await saveItemToAbuDir('agents', 'AGENT.md', trimmed, md, oldPath, { mustBeNew });
+      await saveItemToAbuDir('agents', 'AGENT.md', trimmed, md, oldPath, { mustBeNew, renaming: !!agent && nameChanged });
       await onSave();
       return true;
     } catch (err) {

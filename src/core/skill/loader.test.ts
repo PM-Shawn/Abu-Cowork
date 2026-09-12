@@ -16,6 +16,8 @@ import { join } from 'node:path';
 import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
 import { homeDir, resolve } from '@tauri-apps/api/path';
 import { SkillLoader } from './loader';
+import { setSkillNamePolicy } from './skillNamePolicy';
+import { sanitizePath } from '../memdir/paths';
 import { publishPluginActivation } from '../plugin/activationPolicy';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import type { EnterpriseBinding, EnterpriseConfigSnapshot } from '@/core/enterprise/types';
@@ -589,5 +591,115 @@ describe('SkillLoader over a real tree with real symlinks', () => {
     expect(await loader.loadSupportingFile('helper', 'pipe.md')).toBeNull();
     // The read that would have frozen the main process was never issued.
     expect(readTextTargets).not.toContain(fifo);
+  });
+});
+
+describe('SkillLoader · organization skill blacklist', () => {
+  const ws = '/Users/testuser/proj';
+  const projectStandard = `${ws}/.agents/skills`;
+  const draftsDir = `/Users/testuser/.abu/projects/${sanitizePath(ws)}/skills/drafts`;
+  const userDir = '/Users/testuser/.abu/skills';
+
+  beforeEach(() => {
+    setSkillNamePolicy((name) => name !== 'blocked' && name !== 'blocked-draft');
+    stubFs(
+      {
+        [projectStandard]: ['blocked', 'ok'],
+        [draftsDir]: ['blocked-draft'],
+        [userDir]: ['blocked'],
+      },
+      {
+        [`${projectStandard}/blocked/SKILL.md`]: SKILL_TEMPLATE('blocked'),
+        [`${projectStandard}/ok/SKILL.md`]: SKILL_TEMPLATE('ok'),
+        [`${draftsDir}/blocked-draft/SKILL.md`]: SKILL_TEMPLATE('blocked-draft'),
+        [`${userDir}/blocked/SKILL.md`]: SKILL_TEMPLATE('blocked'),
+      },
+    );
+  });
+
+  afterEach(() => {
+    setSkillNamePolicy(() => true);
+  });
+
+  it('never lists a blacklisted skill, whichever directory it came from', async () => {
+    const loader = new SkillLoader();
+    const discovered = await loader.discoverSkills(ws);
+
+    expect(discovered.map((s) => s.name)).toEqual(['ok']);
+    expect(loader.getAvailableSkills({ includeDrafts: true, includeDisabledPlugins: true }).map((s) => s.name)).toEqual(['ok']);
+    expect(loader.findMatchingSkills('blocked')).toEqual([]);
+    expect(loader.getDraftSkills()).toEqual([]);
+  });
+
+  it('never resolves, loads or reads the files of a blacklisted skill', async () => {
+    const loader = new SkillLoader();
+    await loader.discoverSkills(ws);
+    mockReadTextFile.mockClear();
+
+    expect(loader.getSkill('blocked')).toBeUndefined();
+    expect(loader.getSkill('blocked', { includeDisabledPlugins: true })).toBeUndefined();
+    expect(loader.has('blocked')).toBe(false);
+    expect(await loader.loadSkill('blocked')).toBeNull();
+    expect(await loader.refreshSkill('blocked')).toBeUndefined();
+    expect(await loader.listSupportingFiles('blocked')).toEqual([]);
+    expect(await loader.loadSupportingFile('blocked', 'README.md')).toBeNull();
+    expect(mockReadTextFile).not.toHaveBeenCalled();
+  });
+
+  it('still reports the name to writers checking whether it is taken', async () => {
+    const loader = new SkillLoader();
+    await loader.discoverSkills(ws);
+
+    expect(loader.getNameClaims()).toEqual(expect.arrayContaining([
+      { name: 'blocked', source: 'project-standard' },
+      { name: 'blocked', source: 'user' },
+      { name: 'blocked-draft', source: 'draft' },
+    ]));
+    expect(loader.isBlockedByPolicy('blocked')).toBe(true);
+    expect(loader.isBlockedByPolicy('ok')).toBe(false);
+  });
+
+  it('does not reveal a blocked name no skill on disk answers to', async () => {
+    setSkillNamePolicy((name) => name !== 'blocked' && name !== 'secret-listed-name');
+    const loader = new SkillLoader();
+    await loader.discoverSkills(ws);
+
+    expect(loader.isBlockedByPolicy('secret-listed-name')).toBe(false);
+  });
+
+  it('lets bookkeeping see a blacklisted skill when it asks to', async () => {
+    const loader = new SkillLoader();
+    await loader.discoverSkills(ws);
+
+    expect(loader.getSkill('blocked', { includeDisabledPlugins: true, includePolicyBlocked: true })?.source).toBe('project-standard');
+    expect(loader.getAvailableSkills({ includeDisabledPlugins: true, includePolicyBlocked: true }).map((s) => s.name).sort())
+      .toEqual(['blocked', 'ok']);
+  });
+
+  it('follows a policy change on the next lookup, without a rescan', async () => {
+    const loader = new SkillLoader();
+    await loader.discoverSkills(ws);
+    mockReadDir.mockClear();
+
+    setSkillNamePolicy(() => true);
+    expect(loader.getSkill('blocked')?.source).toBe('project-standard');
+    expect(loader.getAvailableSkills().map((s) => s.name).sort()).toEqual(['blocked', 'ok']);
+
+    setSkillNamePolicy((name) => name !== 'ok');
+    expect(loader.getSkill('ok')).toBeUndefined();
+    expect(mockReadDir).not.toHaveBeenCalled();
+  });
+
+  it('drops a skill whose SKILL.md is renamed to a blacklisted name', async () => {
+    const loader = new SkillLoader();
+    await loader.discoverSkills(ws);
+    mockReadTextFile.mockImplementation(async (path: string) => {
+      if (path === `${projectStandard}/ok/SKILL.md`) return SKILL_TEMPLATE('blocked');
+      throw new Error('not found');
+    });
+
+    expect(await loader.refreshSkill('ok')).toBeUndefined();
+    expect(loader.getSkill('blocked')).toBeUndefined();
+    expect(loader.getAvailableSkills().map((s) => s.name)).not.toContain('blocked');
   });
 });

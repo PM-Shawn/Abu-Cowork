@@ -3285,6 +3285,7 @@ const zhCN: TranslationDict = {
     },
     agent: {
       skillAlreadyActive: '技能 "{skillName}" 已在本对话激活，无需重复调用。直接根据已注入的技能指令继续工作。',
+      skillBlockedByPolicy: '技能 "{skillName}" 已被所在组织的策略禁用，不能使用。不要换别的方式使用它（例如直接读取它的文件）；请告诉用户这个技能被组织策略禁用了。',
       skillLoaded: '已加载技能 "{name}": {description}',
       skillContextLine: '\n用户上下文: {context}',
       skillInjected: '\n技能指令已注入本轮系统提示，任务结束后自动释放。',

@@ -568,9 +568,9 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
 
   // Name collision: abort unless nothing but a same-name draft claims the name.
   // Drafts with the same name are allowed to be overwritten (superseded).
-  const refused = await checkCreateName(name, workspacePath);
-  if (refused !== null) {
-    return { success: false, error: format(refused === 'in-use' ? t.errNameInUse : t.errSkillExists, { name }) };
+  const nameClash = await checkCreateName(name, workspacePath);
+  if (nameClash !== null) {
+    return { success: false, error: format(nameClash === 'in-use' ? t.errNameInUse : t.errSkillExists, { name }) };
   }
   const existing = skillLoader.getSkill(name);
 
@@ -1119,7 +1119,9 @@ async function deleteAction(input: Record<string, unknown>, context?: ToolExecut
 
   const workspacePath = requireWorkspace(context);
 
-  const existing = skillLoader.getSkill(name);
+  // A skill the organization's blacklist hides can still be removed: removal
+  // is never refused (skillPolicy.ts).
+  const existing = skillLoader.getSkill(name, { includePolicyBlocked: true });
   if (!existing) {
     return { success: false, error: `skill "${name}" not found` };
   }

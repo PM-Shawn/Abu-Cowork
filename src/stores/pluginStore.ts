@@ -331,8 +331,10 @@ export const usePluginStore = create<PluginStore>()(
         const installed = result.plugins;
         const settings = useSettingsStore.getState();
         const activationByKey = reconcilePluginActivation(get().activationByKey, installed, home, {
-          skills: skillLoader.getAvailableSkills({ includeDisabledPlugins: true }).flatMap(meta => {
-            const skill = skillLoader.getSkill(meta.name, { includeDisabledPlugins: true });
+          // Bookkeeping, not a listing: a skill the organization's blacklist
+          // hides still tells whether its plugin was in use.
+          skills: skillLoader.getAvailableSkills({ includeDisabledPlugins: true, includePolicyBlocked: true }).flatMap(meta => {
+            const skill = skillLoader.getSkill(meta.name, { includeDisabledPlugins: true, includePolicyBlocked: true });
             return skill ? [skill] : [];
           }),
           agents: agentRegistry.getAvailableAgents({ includeDisabledPlugins: true }).flatMap(meta => {

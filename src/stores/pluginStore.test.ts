@@ -1122,3 +1122,30 @@ describe('boot with an unreadable journal', () => {
     } finally { shell().__ABU_SHELL__ = original; }
   });
 });
+
+describe('plugin activation bookkeeping vs. the organization skill blacklist', () => {
+  it('still infers a plugin in use from a skill the blacklist hides', async () => {
+    const { skillLoader } = await import('@/core/skill/loader');
+    const { pluginInstallDir } = await import('@/core/plugin/paths');
+    const { useSettingsStore } = await import('./settingsStore');
+    useSettingsStore.setState({ disabledSkills: [], disabledAgents: [] });
+    useMCPStore.setState({ servers: {} });
+    const skillDir = `${pluginInstallDir(HOME, weather.marketplace, weather.name, weather.version)}/skills/forecast`;
+    const forecast = {
+      name: 'forecast', description: '', content: '', filePath: `${skillDir}/SKILL.md`, skillDir, source: 'plugin' as const,
+    };
+    // The loader hides the skill unless asked for policy-blocked ones too.
+    const listed = vi.spyOn(skillLoader, 'getAvailableSkills')
+      .mockImplementation((options) => (options?.includePolicyBlocked ? [forecast] : []));
+    const got = vi.spyOn(skillLoader, 'getSkill')
+      .mockImplementation((name, options) => (options?.includePolicyBlocked && name === 'forecast' ? forecast : undefined));
+    try {
+      vi.mocked(readInstalled).mockResolvedValue([weather]);
+      await usePluginStore.getState().refreshInstalled(HOME);
+      expect(usePluginStore.getState().activationByKey[weather.key].enabled).toBe(true);
+    } finally {
+      listed.mockRestore();
+      got.mockRestore();
+    }
+  });
+});

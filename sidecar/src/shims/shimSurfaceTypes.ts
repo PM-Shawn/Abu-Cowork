@@ -135,6 +135,8 @@ import type * as realAuthorizedPathsReaderRun from '@/core/agent/ports/authorize
 import type * as shimAuthorizedPathsReaderRun from './authorizedPathsReaderRun';
 import type * as realSandboxRecoveryRun from '@/core/sandbox/recovery';
 import type * as shimSandboxRecoveryRun from './sandboxRecoveryRun';
+import type * as realSkillNamePolicyRun from '@/core/skill/skillNamePolicy';
+import type * as shimSkillNamePolicyRun from './skillNamePolicyRun';
 import type * as realTauriCoreInvokeRun from '@tauri-apps/api/core';
 import type * as shimTauriCoreInvokeRun from './tauriCoreInvokeRun';
 import type * as realPluginFsRun from '@tauri-apps/plugin-fs';
@@ -302,6 +304,8 @@ export type AuthorizedPathsReaderRunReturns = NoDrift<ReturnDrift<typeof realAut
 
 export type SandboxRecoveryRunParams = NoDrift<ParamDrift<typeof realSandboxRecoveryRun, typeof shimSandboxRecoveryRun>>;
 export type SandboxRecoveryRunReturns = NoDrift<ReturnDrift<typeof realSandboxRecoveryRun, typeof shimSandboxRecoveryRun>>;
+export type SkillNamePolicyRunParams = NoDrift<ParamDrift<typeof realSkillNamePolicyRun, typeof shimSkillNamePolicyRun>>;
+export type SkillNamePolicyRunReturns = NoDrift<ReturnDrift<typeof realSkillNamePolicyRun, typeof shimSkillNamePolicyRun>>;
 
 export type TauriCoreInvokeRunParams = NoDrift<ParamDrift<typeof realTauriCoreInvokeRun, typeof shimTauriCoreInvokeRun>>;
 export type TauriCoreInvokeRunReturns = NoDrift<ReturnDrift<typeof realTauriCoreInvokeRun, typeof shimTauriCoreInvokeRun>>;

@@ -13,6 +13,8 @@ import { joinPath } from '@/utils/pathUtils';
 import { getI18n, format } from '@/i18n';
 import { parse as parseYaml } from 'yaml';
 import { isSafeSkillDirName } from './skillDirName';
+import { assertSkillNameAllowed } from './skillPolicy';
+import { rootManifestCount } from './rootManifest';
 
 // ── Constants ──────────────────────────────────────────────────────
 
@@ -234,6 +236,15 @@ export async function unpackSkill(
   if (!name || !isSafeSkillDirName(name)) {
     throw new UnsafeSkillNameError(name ?? '');
   }
+  // The name checked above must be the name that goes live — see rootManifest.ts.
+  const relativePaths = Object.keys(entries)
+    .map((p) => (prefix ? p.replace(prefix, '') : p))
+    .filter((rel) => rel && !rel.endsWith('/'));
+  if (rootManifestCount(relativePaths) > 1) {
+    throw new AmbiguousManifestError();
+  }
+  // The organization's skill blacklist, before anything reaches disk.
+  assertSkillNameAllowed(name);
 
   const targetDir = joinPath(baseDir, name);
 
@@ -312,6 +323,21 @@ export class UnsafeSkillNameError extends Error {
     super(format(getI18n().toolbox.importUnsafeName, { name: skillName }));
     this.name = 'UnsafeSkillNameError';
     this.skillName = skillName;
+  }
+}
+
+/**
+ * The archive holds more than one entry that lands on the skill's root
+ * SKILL.md (see rootManifest.ts), so the manifest that would go live need not
+ * be the one whose name was checked.
+ *
+ * Rendered by the upload modal straight from `.message`, so the text is the
+ * locale's, not a developer string.
+ */
+export class AmbiguousManifestError extends Error {
+  constructor() {
+    super(getI18n().toolbox.importAmbiguousManifest);
+    this.name = 'AmbiguousManifestError';
   }
 }
 

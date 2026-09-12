@@ -1,6 +1,6 @@
-import { writeTextFile, mkdir, rename, exists } from '@tauri-apps/plugin-fs';
+import { writeTextFile, mkdir, rename, exists, lstat, readTextFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
-import { joinPath, getParentDir, getBaseName } from '@/utils/pathUtils';
+import { joinPath, getBaseName, normalizeSeparators } from '@/utils/pathUtils';
 
 /** `code` of the error {@link saveItemToAbuDir} throws when `mustBeNew` finds the file already there. */
 export const ITEM_EXISTS_CODE = 'ITEM_EXISTS';
@@ -21,42 +21,78 @@ function isPlainSegment(segment: string): boolean {
 }
 
 /**
- * The item folder `oldFilePath` lives in, when that folder is one of
- * `root`'s own item folders (`root/<plain name>`), else undefined. Purely
- * structural: the folder must be spelled exactly as `root` plus one plain
- * segment, so `root/.`, `root/..`, `root/x/..` or a trailing slash never
- * qualify. Compared case-insensitively for the Windows drive letter.
+ * Where the item whose manifest is `filePath` lives, when the path is spelled
+ * like one: absolute, without `.`/`..`/empty segments, and ending in
+ * `<folder>/<plain item folder>/<manifest>` (manifest name compared
+ * case-insensitively, so a lower-case `agent.md` qualifies). Purely
+ * structural — every root the agent registry and skill loader scan has this
+ * shape (~/.abu/<folder>, a project's .abu/<folder> or .agents/skills, the
+ * per-project skills under ~/.abu/projects, ~/.agents/skills), while the
+ * bundled builtin-* and enterprise roots, a manifest sitting directly in a
+ * root, and `__builtin__` do not. Returns the normalized manifest path, the
+ * item folder and its parent (the folder a rename stays in).
  */
-function ownedItemDir(oldFilePath: string, root: string): string | undefined {
-  const oldDir = getParentDir(oldFilePath);
-  const base = getBaseName(oldDir);
-  if (!isPlainSegment(base)) return undefined;
-  return joinPath(root, base).toLowerCase() === oldDir.toLowerCase() ? oldDir : undefined;
+function itemLocation(
+  filePath: string,
+  folder: 'skills' | 'agents',
+  fileName: 'SKILL.md' | 'AGENT.md',
+): { manifest: string; itemDir: string; root: string } | undefined {
+  const segments = normalizeSeparators(filePath).split('/');
+  const [first, ...rest] = segments;
+  const absolute = first === '' || /^[A-Za-z]:$/.test(first);
+  if (!absolute || rest.length < 3) return undefined;
+  if (rest.some((segment) => segment === '' || segment === '.' || segment === '..')) return undefined;
+  const [container, item, manifest] = segments.slice(-3);
+  if (container !== folder || !isPlainSegment(item) || manifest.toLowerCase() !== fileName.toLowerCase()) return undefined;
+  return {
+    manifest: segments.join('/'),
+    itemDir: segments.slice(0, -1).join('/'),
+    root: segments.slice(0, -2).join('/'),
+  };
+}
+
+function itemExistsError(folder: string, name: string): Error {
+  return Object.assign(new Error(`${folder}/${name} already exists`), { code: ITEM_EXISTS_CODE });
 }
 
 /**
- * Save a skill or agent .md file to ~/.abu/{folder}/{name}/{fileName}.
+ * Save a skill or agent .md file.
  *
- * Nothing is ever deleted here. A rename is a MOVE: when `oldFilePath` lies in
- * one of ~/.abu/{folder}/'s own item folders under a different name, that
- * folder is renamed to `name` first — so whatever else it holds (a skill's
- * scripts/ and references/, an agent's memory.md) goes with it — and the
- * manifest is then written in place. A letter-case-only rename moves too, so
- * the folder's case really changes on the case-insensitive macOS/Windows file
- * systems. An `oldFilePath` anywhere else (a project-level, workspace or draft
- * item) is only copied from: the manifest is written into ~/.abu and the
- * original stays where it is.
+ * A NEW item (no `oldFilePath`) is written to ~/.abu/{folder}/{name}/{fileName}.
+ *
+ * An EXISTING item is saved where it lives — ~/.abu, a project's folder, the
+ * shared ~/.agents/skills — into the very file the registry read
+ * (`oldFilePath`). It is never copied into ~/.abu: a copy there overwrote the
+ * user's own same-named item and was then shadowed by the project item, so
+ * the edit never took. Only a RENAME (`renaming`) touches the folder: it
+ * writes the manifest in place first and then MOVES the item's folder to
+ * `name` within the same parent folder — so whatever else it holds (a skill's
+ * scripts/ and references/, an agent's memory.md) goes with it; if the move
+ * fails the old text is put back. A letter-case-only rename moves too, so the
+ * folder's case really changes on the case-insensitive macOS/Windows file
+ * systems. An ordinary save never moves anything, even when the folder is not
+ * named after the item — the item's folder is the user's (in a project it is
+ * repository content, and a move shows up in their git), so only the rename
+ * they asked for may rename it. `oldFilePath` must be
+ * spelled like an item (see {@link itemLocation}) and its manifest must be a
+ * plain file right now — not a link, not gone — or nothing is touched.
+ *
+ * Nothing is ever deleted here.
  *
  * `name` must be one plain folder name; anything else throws an error whose
  * `code` is {@link ITEM_NAME_INVALID_CODE} before the disk is touched.
+ *
+ * `renaming`: the user changed the name in the editor (a letter-case-only
+ * change included). Not `name !== the folder's name`: an item whose folder was
+ * never named after it would then be moved by any save.
  *
  * `mustBeNew`: the caller is creating or renaming, so an item already at the
  * target is somebody else's — refuse (throw an error whose `code` is
  * {@link ITEM_EXISTS_CODE}) instead of overwriting it. The editors check names
  * against the registry first; this is the last line against a file that
- * appeared since, or one the registry never listed. A fresh write also asks
- * the host to create the file only if it is still absent; a move cannot land
- * on an occupied folder (the OS refuses to rename onto a non-empty one).
+ * appeared since, or one the registry never listed. A new item is also
+ * written with the host's create-only flag; a move cannot land on an occupied
+ * folder (the OS refuses to rename onto a non-empty one).
  */
 export async function saveItemToAbuDir(
   folder: 'skills' | 'agents',
@@ -64,29 +100,54 @@ export async function saveItemToAbuDir(
   name: string,
   mdContent: string,
   oldFilePath?: string,
-  options: { mustBeNew?: boolean } = {},
+  options: { mustBeNew?: boolean; renaming?: boolean } = {},
 ): Promise<void> {
   if (!isPlainSegment(name)) {
     throw Object.assign(new Error(`invalid ${folder} name: ${JSON.stringify(name)}`), { code: ITEM_NAME_INVALID_CODE });
   }
-  const home = await homeDir();
-  const root = joinPath(home, '.abu', folder);
-  const targetDir = joinPath(root, name);
-  const manifest = joinPath(targetDir, fileName);
-  if (options.mustBeNew && await exists(manifest)) {
-    throw Object.assign(new Error(`${folder}/${name} already exists`), { code: ITEM_EXISTS_CODE });
-  }
 
-  const oldDir = oldFilePath ? ownedItemDir(oldFilePath, root) : undefined;
-  // Exact compare: a folder differing only in letter case is still moved.
-  // A folder that is already gone has nothing to carry — write afresh.
-  const moving = oldDir !== undefined && getBaseName(oldDir) !== name && await exists(oldDir);
-  if (moving) {
-    await rename(oldDir, targetDir);
-    await writeTextFile(manifest, mdContent);
+  if (oldFilePath === undefined) {
+    const targetDir = joinPath(await homeDir(), '.abu', folder, name);
+    const manifest = joinPath(targetDir, fileName);
+    if (options.mustBeNew && await exists(manifest)) throw itemExistsError(folder, name);
+    await mkdir(targetDir, { recursive: true });
+    if (options.mustBeNew) await writeTextFile(manifest, mdContent, { createNew: true });
+    else await writeTextFile(manifest, mdContent);
     return;
   }
-  await mkdir(targetDir, { recursive: true });
-  if (options.mustBeNew) await writeTextFile(manifest, mdContent, { createNew: true });
-  else await writeTextFile(manifest, mdContent);
+
+  const location = itemLocation(oldFilePath, folder, fileName);
+  if (!location) throw new Error(`not an editable ${folder} item: ${JSON.stringify(oldFilePath)}`);
+  const { manifest, itemDir, root } = location;
+  // The same rule the registry and loader read by: a real item folder that
+  // OWNS its manifest. A link put in place of either since the scan would
+  // carry this write into another item's file. (The host resolves every
+  // parent of an lstat'ed path, so the manifest check alone passes through a
+  // linked folder.)
+  const folderInfo = await lstat(itemDir);
+  if (!folderInfo.isDirectory || folderInfo.isSymlink) throw new Error(`${folder} item folder is not a plain folder: ${itemDir}`);
+  const info = await lstat(manifest);
+  if (!info.isFile || info.isSymlink) throw new Error(`${folder} manifest is not a plain file: ${manifest}`);
+
+  // Exact compare: a folder differing only in letter case is still moved.
+  if (!options.renaming || getBaseName(itemDir) === name) {
+    // create: false — refuse rather than recreate a manifest that is gone.
+    await writeTextFile(manifest, mdContent, { create: false });
+    return;
+  }
+
+  const targetDir = joinPath(root, name);
+  if (options.mustBeNew && await exists(joinPath(targetDir, fileName))) throw itemExistsError(folder, name);
+  // Write before moving: a failed write leaves the item as it was, and a
+  // retry after a failed move finds nothing of its own at the target.
+  const original = await readTextFile(manifest);
+  await writeTextFile(manifest, mdContent, { create: false });
+  try {
+    await rename(itemDir, targetDir);
+  } catch (err) {
+    // Best effort: the move's error is the one to surface. If this fails too
+    // the folder keeps its old name with the new text, and a retry moves it.
+    await writeTextFile(manifest, original, { create: false }).catch(() => undefined);
+    throw err;
+  }
 }

@@ -363,7 +363,6 @@ src/
 └── utils/            # 工具函数
 
 builtin-skills/       # 29 个内置技能（每个为独立目录）
-builtin-agents/       # 内置 Agent 定义（预留）
 abu-browser-bridge/   # 浏览器桥接 MCP Server
 abu-chrome-extension/ # Chrome 扩展（Abu-Chrome-Bridge 技能依赖）
 electron/             # Electron 主进程、preload 桥和原生 host

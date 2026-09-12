@@ -15,6 +15,7 @@ import type { SubagentDefinition } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
 import { getAgentToolSummary } from '@/utils/agentToolPresentation';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
+import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { getAllTools } from '@/core/tools/registry';
@@ -182,7 +183,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
 
   // Delete a user-installed agent
   const handleDelete = async (agent: SubagentDefinition) => {
-    if (agent.filePath === '__builtin__' || agent.filePath.includes('builtin-agents')) return;
+    if (isBuiltinAgentPath(agent.filePath)) return;
     // A plugin owns this file: removing it belongs to uninstalling the plugin,
     // and the next refresh would bring it back anyway. The menu entry is
     // disabled for the same reason — this keeps the invariant local to the

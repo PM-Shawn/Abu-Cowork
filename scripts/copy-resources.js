@@ -1,5 +1,5 @@
 /**
- * Copy builtin-skills/ and builtin-agents/ into src-tauri/resources/
+ * Copy builtin-skills/ into src-tauri/resources/
  * so that Tauri bundles them without the _up_/ prefix issue.
  *
  * Run via: npm run copy-resources
@@ -14,14 +14,14 @@ const root = resolve(__dirname, '..');
 const dest = resolve(root, 'src-tauri');
 
 // Clean previous copies
-for (const name of ['builtin-skills', 'builtin-agents', 'sidecar']) {
+for (const name of ['builtin-skills', 'sidecar']) {
   const target = resolve(dest, name);
   if (existsSync(target)) {
     rmSync(target, { recursive: true });
   }
 }
 
-const resources = ['builtin-skills', 'builtin-agents'];
+const resources = ['builtin-skills'];
 
 for (const name of resources) {
   const src = resolve(root, name);

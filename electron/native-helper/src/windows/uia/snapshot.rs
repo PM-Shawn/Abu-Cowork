@@ -377,6 +377,12 @@ fn is_modal_window(native: &IUIAutomationElement, cached: &IUIAutomationElement)
     }
 }
 
+/// Text that a pattern reports as present: empty stays `Some("")`, so a
+/// cleared field is distinguishable from a control with no value pattern.
+fn present_text(raw: String, max_chars: usize) -> Option<String> {
+    Some(clean_text(raw, max_chars).unwrap_or_default())
+}
+
 fn value(element: &IUIAutomationElement) -> Option<String> {
     if unsafe { element.CachedIsPassword() }.map_or(true, |value| value.as_bool()) {
         return None;
@@ -384,13 +390,13 @@ fn value(element: &IUIAutomationElement) -> Option<String> {
     if let Ok(pattern) =
         unsafe { element.GetCachedPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) }
     {
-        return clean_text(unsafe { pattern.CachedValue() }.ok()?.to_string(), 2_000);
+        return present_text(unsafe { pattern.CachedValue() }.ok()?.to_string(), 2_000);
     }
     if let Ok(pattern) =
         unsafe { element.GetCachedPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) }
     {
         let range = unsafe { pattern.DocumentRange() }.ok()?;
-        return clean_text(unsafe { range.GetText(2_000) }.ok()?.to_string(), 2_000);
+        return present_text(unsafe { range.GetText(2_000) }.ok()?.to_string(), 2_000);
     }
     let range = unsafe {
         element.GetCachedPatternAs::<IUIAutomationRangeValuePattern>(UIA_RangeValuePatternId)
@@ -686,7 +692,15 @@ pub fn build_snapshot(
 
 #[cfg(test)]
 mod element_ref_tests {
-    use super::element_ref;
+    use super::{element_ref, present_text};
+
+    #[test]
+    fn present_text_keeps_an_empty_value_distinct_from_no_value() {
+        assert_eq!(present_text(String::new(), 10), Some(String::new()));
+        assert_eq!(present_text("   ".to_string(), 10), Some(String::new()));
+        assert_eq!(present_text(" a  b ".to_string(), 10), Some("a b".to_string()));
+        assert_eq!(present_text("abcdef".to_string(), 3), Some("abc".to_string()));
+    }
 
     #[test]
     fn element_ref_is_opaque_deterministic_and_order_sensitive() {

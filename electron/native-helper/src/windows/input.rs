@@ -337,16 +337,33 @@ impl KeyboardEvent {
     }
 }
 
-fn send_keyboard_sequence_with(
-    events: &[KeyboardEvent],
-    mut modifier_is_down: impl FnMut(u16) -> bool,
-    mut sender: impl FnMut(&[KeyboardEvent]) -> usize,
-) -> Result<(), HelperError> {
+/// A physically held modifier would silently turn any injected key into a
+/// chord, so every keyboard path refuses until the user lets go.
+fn assert_no_physical_modifier(mut modifier_is_down: impl FnMut(u16) -> bool) -> Result<(), HelperError> {
     for modifier in [VK_CONTROL.0, VK_MENU.0, VK_SHIFT.0, VK_LWIN.0, VK_RWIN.0] {
         if modifier_is_down(modifier) {
             return Err(HelperError::observe_again("physical-input", "physical modifier input is already active; release held modifier and observe again"));
         }
     }
+    Ok(())
+}
+
+/// Down/up pair for one UTF-16 unit as a Unicode (VK_PACKET) keystroke — the
+/// same primitive `type` uses, so the target's keyboard layout and IME
+/// composition never see a virtual key.
+fn unicode_key_events(unit: u16) -> [INPUT; 2] {
+    [
+        keyboard_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE),
+        keyboard_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+    ]
+}
+
+fn send_keyboard_sequence_with(
+    events: &[KeyboardEvent],
+    modifier_is_down: impl FnMut(u16) -> bool,
+    mut sender: impl FnMut(&[KeyboardEvent]) -> usize,
+) -> Result<(), HelperError> {
+    assert_no_physical_modifier(modifier_is_down)?;
 
     let sent = sender(events);
     if sent == events.len() {
@@ -716,6 +733,17 @@ pub fn keyboard_press_impl(
         if units.next().is_some() {
             return Err(HelperError::not_executed("invalid-params", "key must be one character or a supported key name"));
         }
+        if modifier_keys.is_empty() {
+            // A plain character is text, not a key. Resolving it through the
+            // target layout and pressing the virtual key hands it to the IME:
+            // measured on Microsoft Pinyin (2026-09-11), `!:?` came out
+            // full-width and letters vanished into an uncommitted composition.
+            // Unicode injection is what `type` does and is IME-neutral.
+            // Chords keep the virtual-key route below — Ctrl+C needs a real C.
+            assert_no_physical_modifier(|vk| unsafe { GetAsyncKeyState(vk as i32) < 0 })?;
+            send(&unicode_key_events(unit))?;
+            return Ok(format!("pressed {key}"));
+        }
         let target = super::window::parse_hwnd(&actual.window_id)?;
         let target_thread = unsafe { GetWindowThreadProcessId(target, None) };
         if target_thread == 0 {
@@ -752,9 +780,33 @@ pub fn keyboard_press_impl(
 mod tests {
     use crate::error::HelperError;
     use super::{
-        absolute_coordinate, character_layout_error, coordinate_within, integrity_allows,
-        mapped_source_extent, resolve_character_key, send_keyboard_sequence_with, KeyboardEvent,
+        absolute_coordinate, assert_no_physical_modifier, character_layout_error,
+        coordinate_within, integrity_allows, mapped_source_extent, resolve_character_key,
+        send_keyboard_sequence_with, unicode_key_events, KeyboardEvent,
     };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{KEYEVENTF_KEYUP, KEYEVENTF_UNICODE};
+
+    #[test]
+    fn plain_character_becomes_a_unicode_packet_pair_with_no_virtual_key() {
+        let events = unicode_key_events(0x4e2d); // '中'
+        let down = unsafe { events[0].Anonymous.ki };
+        let up = unsafe { events[1].Anonymous.ki };
+        assert_eq!(down.wVk.0, 0);
+        assert_eq!(up.wVk.0, 0);
+        assert_eq!(down.wScan, 0x4e2d);
+        assert_eq!(up.wScan, 0x4e2d);
+        assert_eq!(down.dwFlags, KEYEVENTF_UNICODE);
+        assert_eq!(up.dwFlags, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP);
+    }
+
+    #[test]
+    fn held_physical_modifier_refuses_before_any_injection() {
+        let error = assert_no_physical_modifier(|vk| vk == 0x11).unwrap_err();
+        assert_eq!(error.code, "physical-input");
+        assert_eq!(error.execution, crate::error::Execution::NotExecuted);
+        assert!(error.retryable);
+        assert!(assert_no_physical_modifier(|_| false).is_ok());
+    }
 
     #[test]
     fn keyboard_sequence_snapshot_sends_the_complete_batch_once() {

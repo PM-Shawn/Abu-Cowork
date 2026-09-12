@@ -62,9 +62,23 @@ lines.on('line', (line) => {
   if (!request) return;
   pending.delete(message.id);
   clearTimeout(request.timer);
-  if (message.error != null) request.reject(new Error(String(message.error)));
+  if (message.error != null) request.reject(helperError(message.error));
   else request.resolve(message.result);
 });
+
+// The helper reports failures as { code, execution, retryable, message }
+// (native-helper/src/error.rs). Keep the message for the assertions below and
+// carry the verdict on error.helper, the way nativeHelperManager.cjs does.
+function helperError(raw) {
+  const message = typeof raw === 'string'
+    ? raw
+    : raw && typeof raw.message === 'string' ? raw.message : JSON.stringify(raw);
+  const error = new Error(message);
+  if (raw && typeof raw === 'object') {
+    error.helper = { code: raw.code, execution: raw.execution, retryable: raw.retryable === true };
+  }
+  return error;
+}
 
 function call(method, params = {}, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
@@ -305,7 +319,13 @@ async function verifyWgcAndGuardedInput(window) {
     expected_process_id: window.process_id,
     expected_window_id: window.window_id,
     expected_input_epoch: state.input_epoch,
-  })), /unknown or expired/);
+  })), (error) => {
+    assert.match(error.message, /unknown or expired/);
+    assert.equal(error.helper?.code, 'screenshot-stale');
+    assert.equal(error.helper?.execution, 'not-executed');
+    assert.equal(error.helper?.retryable, true);
+    return true;
+  });
   await withGuardedInput(state.input_epoch, () => call('mouse_move', {
     x,
     y,

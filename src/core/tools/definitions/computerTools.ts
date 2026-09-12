@@ -1072,7 +1072,7 @@ immediately before that one action, even in Full Autonomy.
 ⌨️ Low-level operations (when AX is unavailable)
 • move            Move mouse. Parameters: x, y.
 • drag            Drag. Parameters: startX, startY, endX, endY.
-• key             Press key. Parameters: key (Return/Tab/Escape/a etc.), modifiers ([ctrl/shift/alt/meta]).
+• key             Press a named key or a modifier chord. Parameters: key (Return/Tab/Escape/Space/ArrowUp/Home/F1…), modifiers ([ctrl/shift/alt/meta]). A single plain character is injected as text (IME-safe); for words use type.
 • wait            Wait. Parameters: duration (ms, default 1000, max 10000).
 
 All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px) and are automatically converted to real screen coordinates.`,
@@ -1140,7 +1140,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       // Text input (type / ax_type)
       text: { type: 'string', description: 'Text to type or set on the element' },
       // Key
-      key: { type: 'string', description: 'Key name: Return, Tab, Escape, Space, ArrowUp, ArrowDown, a, etc.' },
+      key: { type: 'string', description: 'Key name (Return, Tab, Escape, Space, ArrowUp, ArrowDown, Home, End, PageUp, PageDown, Delete, Backspace, F1-F12) or one character for a chord such as ctrl+c. A plain character without modifiers is typed as text.' },
       modifiers: {
         type: 'array',
         items: { type: 'string' },

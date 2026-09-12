@@ -1,19 +1,20 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { SubagentDefinition } from '@/types';
 
-const { agents, disabled, refresh, saveItem, serialize } = vi.hoisted(() => ({
+const { agents, disabled, refresh, serialize } = vi.hoisted(() => ({
   agents: {} as Record<string, SubagentDefinition>, disabled: [] as string[],
-  refresh: vi.fn(async () => {}), saveItem: vi.fn(async () => '/agents/new/AGENT.md'),
+  refresh: vi.fn(async () => {}),
   serialize: vi.fn((_metadata: unknown, _systemPrompt: string) => 'agent markdown'),
 }));
 vi.mock('@/core/agent/registry', () => ({
   agentRegistry: { getAvailableAgents: () => Object.values(agents).map(({ filePath: _path, systemPrompt: _prompt, ...meta }) => meta), getAgent: (name: string) => agents[name] },
   serializeAgentMd: serialize,
 }));
-vi.mock('@/utils/itemStorage', () => ({ saveItemToAbuDir: saveItem }));
 vi.mock('@/stores/discoveryStore', () => ({ useDiscoveryStore: { getState: () => ({ refresh }) } }));
 vi.mock('@/stores/settingsStore', () => ({ useSettingsStore: { getState: () => ({ disabledAgents: disabled }) } }));
 
+// Identity writes go through the globally mocked plugin-fs (roleIdentity.ts).
+import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useTeamStore } from '@/stores/teamStore';
 import { saveTeamTool } from './teamTools';
 import { buildScheduledRunPermissionCeiling, buildIMRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
@@ -33,7 +34,7 @@ describe('save_team', () => {
   it('resolves full agent identities and includes the leader once', async () => {
     await saveTeamTool.execute({ ...input, members: ['Fetcher', 'Analyst', 'Fetcher'] }, {});
     expect(useTeamStore.getState().teams[0]).toMatchObject({ name: input.name, leaderRoleId: 'builtin:Analyst', memberRoleIds: ['builtin:Analyst', 'role-fetch'] });
-    expect(saveItem).not.toHaveBeenCalled();
+    expect(writeTextFile).not.toHaveBeenCalled();
   });
 
   it('overwrites the same name while retaining its id and saved plan', async () => {
@@ -58,6 +59,15 @@ describe('save_team', () => {
     expect(String(out)).toContain('"requirePlanApproval":true');
   });
 
+  // The UI writes the profile straight into the store, so "omitted means keep"
+  // has to hold for values this tool never saw — not just for its own writes.
+  it('keeps user-entered profile fields when the model omits them', async () => {
+    useTeamStore.getState().createTeam({ name: 'Data team', leaderRoleId: 'builtin:Analyst', memberRoleIds: ['builtin:Analyst'], description: 'keep me', expertise: ['keep this too'] });
+    await saveTeamTool.execute(input, {});
+    expect(useTeamStore.getState().teams).toHaveLength(1);
+    expect(useTeamStore.getState().teams.find((team) => team.name === 'Data team')).toMatchObject({ description: 'keep me', expertise: ['keep this too'], memberRoleIds: ['builtin:Analyst', 'role-fetch'] });
+  });
+
   it('clears optional fields only when explicitly requested', async () => {
     await saveTeamTool.execute({ ...input, description: 'Before', intro: 'Before', expertise: ['Before'], samplePrompts: ['Before'], avatar: '📊', leaderNote: 'Before', requirePlanApproval: true }, {});
     await saveTeamTool.execute({ ...input, description: '', intro: ' ', expertise: [], samplePrompts: [' '], avatar: '', leaderNote: '', requirePlanApproval: false }, {});
@@ -69,7 +79,7 @@ describe('save_team', () => {
     const out = await saveTeamTool.execute({ ...input, avatar }, {});
     expect(String(out)).toContain('Error:');
     expect(useTeamStore.getState().teams).toEqual([]);
-    expect(saveItem).not.toHaveBeenCalled();
+    expect(writeTextFile).not.toHaveBeenCalled();
   });
 
   it.each(['📊', '👩🏽‍💻', '👨‍👩‍👧‍👦', '🇨🇳', '1️⃣'])('accepts a single legacy emoji including joined sequences: %s', async (avatar) => {
@@ -86,7 +96,7 @@ describe('save_team', () => {
     const out = await saveTeamTool.execute({ ...input, ...roster }, {});
     for (const name of [roster.leader, ...roster.members].filter((name) => !agents[name])) expect(String(out)).toContain(name);
     expect(useTeamStore.getState().teams).toEqual([]);
-    expect(saveItem).not.toHaveBeenCalled();
+    expect(writeTextFile).not.toHaveBeenCalled();
   });
 
   it('does not partially overwrite an existing team when a member is missing', async () => {
@@ -99,7 +109,7 @@ describe('save_team', () => {
   it('persists a stable identity before saving a newly created custom member', async () => {
     delete agents.Fetcher.roleId;
     await saveTeamTool.execute(input, {});
-    expect(saveItem).toHaveBeenCalledOnce();
+    expect(writeTextFile).toHaveBeenCalledOnce();
     expect(refresh).toHaveBeenCalledOnce();
     const metadata = serialize.mock.calls[0][0] as unknown as { roleId: string };
     expect(metadata.roleId).toEqual(expect.any(String));
@@ -108,7 +118,7 @@ describe('save_team', () => {
 
   it('leaves the team untouched if assigning an identity fails', async () => {
     delete agents.Fetcher.roleId;
-    saveItem.mockRejectedValueOnce(new Error('write failed'));
+    vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('write failed'));
     const out = await saveTeamTool.execute(input, {});
     expect(String(out)).toContain('write failed');
     expect(useTeamStore.getState().teams).toEqual([]);
@@ -132,7 +142,7 @@ describe('save_team', () => {
       const out = await saveTeamTool.execute(input, { runPermissionCeiling });
       expect(String(out)).toContain('Error:');
       expect(useTeamStore.getState().teams).toEqual([]);
-      expect(saveItem).not.toHaveBeenCalled();
+      expect(writeTextFile).not.toHaveBeenCalled();
     }
   });
 });

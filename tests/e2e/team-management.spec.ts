@@ -7,7 +7,9 @@
  * Journey: sidebar entry is there out of the box → tab order
  * 队员·团队 (task board shelved) → create a team with a builtin leader →
  * team survives an app restart → a row opens the read-only detail (not the
- * edit form) → 删除 behind "…" removes it for good.
+ * edit form) → the optional display fields round-trip into that detail and a
+ * suggested question only prefills a fresh team conversation → 删除 behind "…"
+ * removes it for good.
  */
 import { expect, test } from '@playwright/test';
 import type { Page } from 'playwright';

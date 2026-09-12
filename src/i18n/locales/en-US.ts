@@ -1942,7 +1942,7 @@ const enUS: TranslationDict = {
     noLogs: 'No logs',
     // MarketplaceCard i18n
     installing: 'Installing',
-    aiCreateAgentPrompt: 'Help me create an Agent. My requirements are:',
+    aiCreateAgentPrompt: '/create-agent Help me create a team member. My requirements are:',
     aiCreateSkillPrompt: 'Help me create a Skill. My requirements are:',
     agentTestPrompt: 'Use the {name} agent to help me with a simple task to test if it works correctly.',
     // JSON config import

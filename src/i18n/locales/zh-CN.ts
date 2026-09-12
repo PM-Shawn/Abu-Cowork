@@ -1944,7 +1944,7 @@ const zhCN: TranslationDict = {
     noLogs: '暂无日志',
     // MarketplaceCard i18n
     installing: '安装中',
-    aiCreateAgentPrompt: '帮我创建一个 Agent，我的需求是：',
+    aiCreateAgentPrompt: '/create-agent 帮我创建一个队员，我的需求是：',
     aiCreateSkillPrompt: '帮我创建一个 Skill，我的需求是：',
     agentTestPrompt: '请使用 {name} 代理来帮我完成一个简单任务，测试一下它是否正常工作。',
     // JSON config import

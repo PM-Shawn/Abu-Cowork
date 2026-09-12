@@ -262,7 +262,7 @@ describe('ChatView welcome composer dispatch ownership', () => {
       expect(screen.getByRole('heading', { name: leader.name })).toBeTruthy();
       expect(screen.queryByTestId('team-welcome')).toBeNull();
       expect(screen.queryByText('icon:code/purple')).toBeNull();
-      expect(screen.getAllByTestId('agent-avatar').some((avatar) => avatar.dataset.avatarKind === 'icon')).toBe(true);
+      expect(screen.getByTestId('welcome-avatar')).toHaveAttribute('data-avatar-kind', 'icon');
     });
 
     it('uses the active empty conversation pin and hides the team when the pin is removed', () => {

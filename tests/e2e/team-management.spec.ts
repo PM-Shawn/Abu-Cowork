@@ -138,12 +138,15 @@ test.describe('team management surface', () => {
       await expect(welcome.getByText(INTRO, { exact: true })).toBeVisible();
       await expect(welcome.getByText('产品经理', { exact: true })).toBeVisible();
       await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue(QUESTION);
-      // Nothing was sent: no conversation is persisted yet.
+      // The pin is durable, the question is only a draft: exactly one
+      // conversation carries the team and it holds no message.
       const conversations = await page.evaluate(() => {
         const stored = JSON.parse(localStorage.getItem('abu-chat') ?? '{}');
         return Object.values(stored.state.conversationIndex ?? {}) as Array<{ teamId?: string; messageCount: number }>;
       });
-      expect(conversations.filter((conversation) => conversation.teamId)).toHaveLength(0);
+      const pinned = conversations.filter((conversation) => conversation.teamId);
+      expect(pinned).toHaveLength(1);
+      expect(pinned[0].messageCount).toBe(0);
       await page.screenshot({ path: test.info().outputPath('team-welcome.png') });
 
       await openTeamSurface(page);

@@ -113,6 +113,20 @@ describe('applyTeamLeaderRoute', () => {
     expect(leader.tools).toEqual(['read_file', 'write_file', 'web_search']);
   });
 
+  // The production shape: every builtin expert in registry.ts carries a card
+  // maxTurns (50/30/40/30/30), so the floor branch runs too. Pinned together
+  // because rebuilding the definition from `leaderAsRoot` there — the spread
+  // this branch used before — would silently resurrect the curated `tools`
+  // while all the maxTurns-less cases above stayed green.
+  it('sheds the curated tools of a builtin leader that also carries a card maxTurns', () => {
+    const r = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('产品经理', { filePath: '__builtin__', tools: ['read_file', 'write_file', 'web_search'], maxTurns: 30 }),
+    });
+    expect(r.definition && 'tools' in r.definition).toBe(false);
+    expect(r.definition?.maxTurns).toBe(TEAM_LEADER_MAX_TURNS);
+  });
+
   it('keeps the card tools of a user-created leader', () => {
     const leader = def('lead', { filePath: '/Users/me/.abu/agents/lead/AGENT.md', tools: ['read_file'] });
     expect(applyTeamLeaderRoute(general, { ...team, leader }).definition?.tools).toEqual(['read_file']);

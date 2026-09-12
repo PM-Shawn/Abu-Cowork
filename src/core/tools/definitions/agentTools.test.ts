@@ -6,7 +6,10 @@ import { agentRegistry, parseAgentFile, serializeAgentMd } from '../../agent/reg
 import { skillLoader } from '../../skill/loader';
 import { createInProcessExecutionPort, setExecutionPort } from '../../agent/ports/executionPort';
 import type { ExecutionStep, ExecutionStepSnapshot, TaskExecution } from '@/types/execution';
-import { saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool } from './agentTools';
+import {
+  saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool,
+  DELEGATE_SNAPSHOT_COALESCE_MS, DELEGATE_DRAIN_POLL_MS, DELEGATE_DRAIN_MAX_ATTEMPTS,
+} from './agentTools';
 import { format, getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
@@ -121,23 +124,28 @@ describe('delegateToAgentTool', () => {
     setExecutionPort(createInProcessExecutionPort());
   });
 
-  /** Run a delegation to completion under fake timers: the tool arms its own
-   *  timers only once the member run is under way, so a single
-   *  `advanceTimersByTime` can outrun the chain. Pumps in small steps until
-   *  the promise settles and reports how much fake time that took. */
-  async function settleUnderFakeTimers<T>(promise: Promise<T>): Promise<{ result: Promise<T>; fakeMs: number }> {
+  /** Finish a delegation that is waiting on faked timers.
+   *
+   *  Plumbing, never an assertion: the tool re-arms its poll from inside
+   *  promise callbacks, so a single `advanceTimersByTime` (or even
+   *  `runAllTimersAsync`) can return while the chain is between turns, with the
+   *  next timer not yet armed — the call would then hang forever. Pumping one
+   *  poll interval at a time keeps that from happening. How many pumps it takes
+   *  depends on the machine, so no test asserts on it; the budget itself is
+   *  pinned by the DELEGATE_DRAIN_* advances the tests make before calling this.
+   *  The cap only turns a hang into a readable failure. */
+  async function finishUnderFakeTimers<T>(promise: Promise<T>): Promise<T> {
     let settled = false;
     const tracked = promise.then(
       (value) => { settled = true; return value; },
       (err) => { settled = true; throw err; },
     );
     tracked.catch(() => undefined); // the caller does the asserting
-    let fakeMs = 0;
-    while (!settled && fakeMs < 3000) {
-      await vi.advanceTimersByTimeAsync(5);
-      fakeMs += 5;
+    for (let pump = 0; !settled && pump < 1000; pump += 1) {
+      await vi.advanceTimersByTimeAsync(DELEGATE_DRAIN_POLL_MS);
     }
-    return { result: tracked, fakeMs };
+    if (!settled) throw new Error('delegation never settled under fake timers');
+    return tracked;
   }
 
   /** Swap in a chat-store facade that records the persisted step snapshots.
@@ -469,11 +477,11 @@ describe('delegateToAgentTool', () => {
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    const { result } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+    const delegation = delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'write the report' },
       { conversationId: 'conv-1', loopId: 'loop-delayed-parent', toolCallId: 'delegate-delayed' } as never,
-    ));
-    await result;
+    );
+    await finishUnderFakeTimers(delegation);
 
     expect(addChildStepToDelegate).toHaveBeenCalledWith(
       'loop-delayed-parent',
@@ -516,11 +524,12 @@ describe('delegateToAgentTool', () => {
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    const { result } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+    // Nothing here is timer-gated: the parent resolves on the first event, so
+    // awaiting the call is enough — and the clock never reaches the window.
+    await delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'write ten notes' },
       { conversationId: 'conv-1', loopId: 'loop-burst', toolCallId: 'delegate-burst' } as never,
-    ));
-    await result;
+    );
 
     // Ten child events, one write — and it happened on the completion flush,
     // because the 250ms coalescing timer was never allowed to fire.
@@ -553,20 +562,33 @@ describe('delegateToAgentTool', () => {
       conversationId: 'conv-1',
       eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: vi.fn().mockReturnValue('child-slow'), completeChildStep: vi.fn() },
     } as never);
+    const memberWorkMs = DELEGATE_SNAPSHOT_COALESCE_MS * 2;
+    let memberStarted = (): void => {};
+    const memberHasStarted = new Promise<void>((resolve) => { memberStarted = resolve; });
     vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
       options.onProgress?.({ type: 'tool-start', id: 'toolu_early', toolName: 'write_file', toolInput: {} });
-      await new Promise<void>((resolve) => setTimeout(resolve, 400)); // past the 250ms window
+      const working = new Promise<void>((resolve) => setTimeout(resolve, memberWorkMs));
+      memberStarted();
+      await working;
       options.onProgress?.({ type: 'tool-start', id: 'toolu_late', toolName: 'read_file', toolInput: {} });
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    const { result } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+    const delegation = delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'work for a while' },
       { conversationId: 'conv-1', loopId: 'loop-slow', toolCallId: 'delegate-slow' } as never,
-    ));
-    await result;
+    );
+    // Wait for the member to arm its own timer rather than counting turns.
+    await memberHasStarted;
 
-    // One write from the elapsed window, one from the completion flush.
+    await vi.advanceTimersByTimeAsync(DELEGATE_SNAPSHOT_COALESCE_MS);
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1); // the window elapsed mid-run
+
+    await vi.advanceTimersByTimeAsync(memberWorkMs - DELEGATE_SNAPSHOT_COALESCE_MS);
+    await delegation;
+
+    // The second event re-armed the window; the completion flush wrote it and
+    // cleared the timer, so the total is exactly two writes.
     expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(2);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -603,13 +625,22 @@ describe('delegateToAgentTool', () => {
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    const { result, fakeMs } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+    let resolved = false;
+    const delegation = delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'write the report' },
       { conversationId: 'conv-1', loopId: 'loop-orphan', toolCallId: 'delegate-orphan' } as never,
-    ));
-    await expect(result).resolves.toContain('done');
-    // Bounded at 100 polls × 5ms — it must give up, not wait forever.
-    expect(fakeMs).toBeLessThanOrEqual(600);
+    ).then((text) => { resolved = true; return text; });
+    delegation.catch(() => undefined); // asserted below
+
+    // One poll short of the budget the drain cannot have given up yet. This
+    // holds however slowly the surrounding promise chain runs: a late start
+    // only means fewer polls have happened, never more.
+    await vi.advanceTimersByTimeAsync(DELEGATE_DRAIN_POLL_MS * (DELEGATE_DRAIN_MAX_ATTEMPTS - 1));
+    expect(resolved).toBe(false);
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    // Let the last poll land: it must give up rather than keep retrying.
+    await expect(finishUnderFakeTimers(delegation)).resolves.toContain('done');
 
     expect(addChildStepToDelegate).not.toHaveBeenCalled();
     expect(debugSpy).toHaveBeenCalledTimes(1);
@@ -641,26 +672,34 @@ describe('delegateToAgentTool', () => {
       eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate, completeChildStep: vi.fn() },
     } as never);
     // The member finishes before the shell applies the parent's step frame, so
-    // the event is still queued when the drain starts.
+    // the event is still queued when the drain starts. The frame lands four
+    // polls in — well inside the budget.
+    const parentAppearsMs = DELEGATE_DRAIN_POLL_MS * 4;
     vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
       options.onProgress?.({ type: 'tool-start', id: 'toolu_mid', toolName: 'write_file', toolInput: {} });
-      setTimeout(() => toolCallToStepId.set('delegate-mid', 'parent-step-mid'), 20);
+      setTimeout(() => toolCallToStepId.set('delegate-mid', 'parent-step-mid'), parentAppearsMs);
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
-    const { result, fakeMs } = await settleUnderFakeTimers(delegateToAgentTool.execute(
+    const delegation = delegateToAgentTool.execute(
       { agent_name: 'researcher', task: 'write the report' },
       { conversationId: 'conv-1', loopId: 'loop-mid', toolCallId: 'delegate-mid' } as never,
-    ));
-    await expect(result).resolves.toContain('done');
-    // Returned as soon as the parent appeared, not after the full budget.
-    expect(fakeMs).toBeLessThan(500);
+    );
+
+    // Before the frame lands nothing can be attached — a late start only makes
+    // that more true, so this cannot flake the other way.
+    await vi.advanceTimersByTimeAsync(parentAppearsMs - DELEGATE_DRAIN_POLL_MS);
+    expect(addChildStepToDelegate).not.toHaveBeenCalled();
+
+    await expect(finishUnderFakeTimers(delegation)).resolves.toContain('done');
 
     expect(addChildStepToDelegate).toHaveBeenCalledWith(
       'loop-mid',
       'parent-step-mid',
       expect.objectContaining({ toolName: 'write_file' }),
     );
+    // Nothing was dropped, so the drain returned early instead of exhausting
+    // its budget — that is the early-return path, without measuring the clock.
     expect(debugSpy).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
     debugSpy.mockRestore();

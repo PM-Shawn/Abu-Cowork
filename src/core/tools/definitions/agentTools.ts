@@ -225,11 +225,13 @@ function buildPresetAgent(type: string, _task: string): SubagentDefinition {
  * (`setExecutionStepsSnapshot`), so a burst of child tool events has to
  * collapse into one write — otherwise a long delegation costs O(n^2) I/O.
  */
-const DELEGATE_SNAPSHOT_COALESCE_MS = 250;
+export const DELEGATE_SNAPSHOT_COALESCE_MS = 250;
 /** Poll interval, and attempt budget, for the delayed-parent-step drain
- *  below (~500 ms in total). See `createParentStepResolver`. */
-const DELEGATE_DRAIN_POLL_MS = 5;
-const DELEGATE_DRAIN_MAX_ATTEMPTS = 100;
+ *  below (~500 ms in total). See `createParentStepResolver`.
+ *  Exported with the window above so the tests advance the clock by the real
+ *  budget rather than a number that can drift away from it. */
+export const DELEGATE_DRAIN_POLL_MS = 5;
+export const DELEGATE_DRAIN_MAX_ATTEMPTS = 100;
 
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,

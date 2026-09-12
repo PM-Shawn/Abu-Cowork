@@ -51,6 +51,13 @@ export class EnterpriseLlmUnavailableError extends Error {
 }
 
 export function resolveEnterpriseLlm(): ResolvedEnterpriseLlm | null { return null }
+export interface EnterpriseQuotaError {
+  message: string | null
+  resetAt: string
+}
+export function parseEnterpriseQuotaError(_rawBody: string | undefined): EnterpriseQuotaError | null {
+  return null
+}
 export function isEnterpriseLlmEnforced(): boolean { return false }
 export function canCallEnterpriseLlm(): boolean { return false }
 export function resolveEffectiveLlmCreds(
@@ -109,12 +116,17 @@ export interface PendingEnroll {
   serverUrl: string
   enrollmentToken?: string
 }
+export interface PendingOpen {
+  serverUrl: string
+}
 
 export function useDeepLinkEnroll(): {
   pendingEnroll: PendingEnroll | null
   dismissEnroll: () => void
+  pendingOpen: PendingOpen | null
+  dismissOpen: () => void
 } {
-  return { pendingEnroll: null, dismissEnroll() {} }
+  return { pendingEnroll: null, dismissEnroll() {}, pendingOpen: null, dismissOpen() {} }
 }
 
 export function BindToEnterpriseFlow(_props: {
@@ -122,5 +134,6 @@ export function BindToEnterpriseFlow(_props: {
   onCancel: () => void
   initialServerUrl?: string
 }): null { return null }
+
 export function PolicyConfirmModal(): null { return null }
 export function EnterpriseLlmBadge(): null { return null }

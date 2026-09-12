@@ -279,7 +279,7 @@ function App() {
   const setShowCloseDialog = usePreviewStore((s) => s.setAppModalOpen);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
-  const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
+  const { pendingEnroll, dismissEnroll, pendingOpen, dismissOpen } = useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -996,6 +996,13 @@ function App() {
             initialServerUrl={pendingEnroll.serverUrl}
             onDone={dismissEnroll}
             onCancel={dismissEnroll}
+          />
+        )}
+        {pendingOpen && (
+          <BindToEnterpriseFlow
+            initialServerUrl={pendingOpen.serverUrl}
+            onDone={dismissOpen}
+            onCancel={dismissOpen}
           />
         )}
       </div>

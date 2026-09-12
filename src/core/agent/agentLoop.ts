@@ -104,7 +104,11 @@ import {
   buildDeferredToolsSummary,
   promoteSearchedDeferredTools,
 } from '../tools/toolSearch';
-import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
+import {
+  resolveEffectiveLlmCreds,
+  EnterpriseLlmUnavailableError,
+  parseEnterpriseQuotaError,
+} from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 import {
@@ -1486,8 +1490,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (err instanceof LLMError && isConfigFailureCode(err.code)) {
         recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
       }
+      const enterpriseQuota = err instanceof LLMError
+        ? parseEnterpriseQuotaError(err.rawBody)
+        : null;
       let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
         ? getI18n().chat.gatewayUnreachable
+        : enterpriseQuota
+        ? `${enterpriseQuota.message ?? getI18n().chat.enterpriseQuotaExceeded}\n\n${format(getI18n().chat.enterpriseQuotaResetsAt, { resetAt: enterpriseQuota.resetAt })}`
         : err instanceof LLMError && err.code === 'content_policy'
         ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
@@ -3102,9 +3111,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // while the terminal/store path keeps only the bounded provider summary.
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
       const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const enterpriseQuota = err instanceof LLMError
+        ? parseEnterpriseQuotaError(err.rawBody)
+        : null;
       const isContextBudgetError = err instanceof ContextBudgetError;
       let displayError = isEnterpriseGatewayUnavailable
         ? getI18n().chat.gatewayUnreachable
+        : enterpriseQuota
+        ? `${enterpriseQuota.message ?? getI18n().chat.enterpriseQuotaExceeded}\n\n${format(getI18n().chat.enterpriseQuotaResetsAt, { resetAt: enterpriseQuota.resetAt })}`
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
         : isContextBudgetError

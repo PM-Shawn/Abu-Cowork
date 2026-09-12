@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { lstat as nodeLstat, mkdtemp, readFile as nodeReadFile, rm, stat as nodeStat, symlink as nodeSymlink, writeFile as nodeWriteFile } from 'node:fs/promises';
+import { chmod as nodeChmod, lstat as nodeLstat, mkdtemp, readFile as nodeReadFile, rm, stat as nodeStat, symlink as nodeSymlink, writeFile as nodeWriteFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -300,6 +300,41 @@ describe('sidecar plugin-fs shim', () => {
       });
       await expect(writeFile(path, stream)).rejects.toThrow(/ReadableStream/);
       await missing(path);
+    });
+  });
+  // plugin-fs derives `readonly` from Rust's std::fs::Permissions::readonly(),
+  // which on Unix is `mode & 0o222 == 0` — ANY write bit, not just the owner's.
+  // This shim used an owner-only mask (`& 0o200`), so a group-writable file
+  // whose owner cannot write it was reported readonly when the plugin says it
+  // is not. electron/fsHost.cjs, the other shim of this same contract, already
+  // used 0o222; the two disagreed on exactly these modes.
+  describe('readonly mirrors the plugin, not an owner-only approximation', () => {
+    async function readonlyOf(mode: number): Promise<boolean> {
+      const path = join(dir, `mode-${mode.toString(8)}.txt`);
+      await nodeWriteFile(path, 'x');
+      await nodeChmod(path, mode);
+      try {
+        return (await stat(path)).readonly;
+      } finally {
+        await nodeChmod(path, 0o644); // so the temp dir can be removed on Windows
+      }
+    }
+
+    it('a file nobody can write is readonly', async () => {
+      expect(await readonlyOf(0o444)).toBe(true);
+    });
+
+    it('a file the owner can write is not readonly', async () => {
+      expect(await readonlyOf(0o644)).toBe(false);
+    });
+
+    // The divergence: owner-only masking calls these readonly, the plugin does not.
+    it.skipIf(isWindows)('a file only the group can write is not readonly', async () => {
+      expect(await readonlyOf(0o464)).toBe(false);
+    });
+
+    it.skipIf(isWindows)('a file only others can write is not readonly', async () => {
+      expect(await readonlyOf(0o446)).toBe(false);
     });
   });
 });

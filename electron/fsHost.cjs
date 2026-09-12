@@ -432,6 +432,16 @@ function msecOrNull(ms) {
 }
 
 /** Convert Node's fs.Stats into @tauri-apps/plugin-fs FileInfo wire shape. */
+/**
+ * plugin-fs's `FileInfo.readonly` is Rust's `std::fs::Permissions::readonly()`
+ * — on Unix `mode & 0o222 == 0` (ANY write bit), on Windows the
+ * `FILE_ATTRIBUTE_READONLY` attribute. `node:fs` synthesizes `mode` on Windows
+ * from that same attribute, so ONE expression serves both; this used to
+ * hardcode `false` on Windows, i.e. "no file is ever readonly".
+ * `electron/fsHost.readonly.test.ts` pins it on both platforms (it runs on the
+ * `test-windows` job too). The per-field `unix` guard stays for the numeric
+ * POSIX fields below, which Windows genuinely does not report.
+ */
 function toFileInfo(info) {
   const unix = process.platform !== 'win32';
   return {
@@ -442,7 +452,7 @@ function toFileInfo(info) {
     mtime: msecOrNull(info.mtimeMs),
     atime: msecOrNull(info.atimeMs),
     birthtime: msecOrNull(info.birthtimeMs),
-    readonly: unix ? (info.mode & 0o222) === 0 : false,
+    readonly: (info.mode & 0o222) === 0,
     fileAttributes: null,
     dev: unix ? info.dev : null,
     ino: unix ? info.ino : null,

@@ -1865,16 +1865,6 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
-    fieldDescription: string;
-    fieldDescriptionPlaceholder: string;
-    fieldIntro: string;
-    fieldExpertise: string;
-    fieldSamplePrompts: string;
-    fieldLinesHint: string;
-    fieldSamplePromptsHint: string;
-    detailIntro: string;
-    detailExpertise: string;
-    detailSamplePrompts: string;
     fieldMembers: string;
     fieldMembersHint: string;
     noMembersYet: string;
@@ -3837,14 +3827,6 @@ export interface TranslationDict {
   // LLM, so they go through i18n (resolved at execution time by the current
   // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
   toolResult: {
-    team: {
-      invalidInput: string;
-      unavailableAgents: string;
-      saved: string;
-      approvalOn: string;
-      approvalOff: string;
-      saveFailed: string;
-    };
     // Shared value fragments reused across tools.
     valueNone: string;
     valueNever: string;

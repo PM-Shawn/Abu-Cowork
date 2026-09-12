@@ -62,10 +62,10 @@
   body.stale .overlay::after { background: none; }
   body.stale .cursor { display: none; }
 
-  /* Bottom status bar */
+  /* Stale caption (top centre — the bottom belongs to the strip window) */
   .status-bar {
     position: fixed;
-    bottom: 12px;
+    top: 12px;
     left: 50%;
     transform: translateX(-50%);
     padding: 6px 20px;
@@ -247,21 +247,10 @@
       ripples,
     });
 
-    // Listen for status updates from main window via Tauri event
+    // Status text lives on the strip window (overlay-strip.html) since L5 W3;
+    // this page only frames the display, marks the pointer and watches the
+    // heartbeat. The pill below is kept solely for the stale caption.
     if (window.__TAURI__) {
-      window.__TAURI__.event.listen('computer-use-status', (event) => {
-        if (stale) return;
-        const { step, action, stepLabel, targetApp } = event.payload;
-        if (action) {
-          // stepLabel is pre-localized by the frontend (this HTML is a dumb view
-          // outside the React i18n tree); fall back if an older emitter omits it.
-          const label = stepLabel || `Step ${step}`;
-          statusBar.textContent = `${targetApp ? `${targetApp} · ` : ''}${label} · ${action} · Esc`;
-          statusBar.classList.add('visible');
-        } else {
-          statusBar.classList.remove('visible');
-        }
-      });
       window.__TAURI__.event.listen('computer-use-heartbeat', () => {
         lastBeat = Date.now();
         beats += 1;

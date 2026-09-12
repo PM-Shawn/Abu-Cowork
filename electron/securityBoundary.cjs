@@ -32,6 +32,7 @@ const RESTRICTED_WINDOW_COMMANDS = new Map([
   ],
   ['overlay', new Set(['plugin:event|listen', 'plugin:event|unlisten'])],
   ['stop-button', new Set(['plugin:event|emit'])],
+  ['overlay-strip', new Set(['plugin:event|listen', 'plugin:event|unlisten', 'plugin:event|emit'])],
 ]);
 const RESTRICTED_EMITTED_EVENTS = new Map([
   [
@@ -45,10 +46,12 @@ const RESTRICTED_EMITTED_EVENTS = new Map([
     ]),
   ],
   ['stop-button', new Set(['computer-use-abort'])],
+  ['overlay-strip', new Set(['computer-use-abort', 'computer-use-resume', 'computer-use-dismiss'])],
 ]);
 const RESTRICTED_LISTENED_EVENTS = new Map([
   ['pet', new Set(['pet-status-update', 'tauri://move'])],
   ['overlay', new Set(['computer-use-status', 'computer-use-heartbeat', 'computer-use-cursor'])],
+  ['overlay-strip', new Set(['computer-use-status', 'computer-use-heartbeat'])],
 ]);
 const BASE_DIRECTORY_VALUES = new Set(Array.from({ length: 23 }, (_v, i) => i + 1));
 const PATH_KEYS = new Set([

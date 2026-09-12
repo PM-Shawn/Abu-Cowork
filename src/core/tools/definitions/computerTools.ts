@@ -34,6 +34,7 @@ import {
   setComputerUseContext,
   setComputerUsePhase,
   beginComputerUseConsentPause,
+  notePausedByTakeover,
 } from '../../agent/computerUseStatus';
 import { checkSensitiveApp, checkBlockedKeyCombo } from '../computerUseSafety';
 import { requestCapabilitySetup } from '../../capabilityPlugins/setupBridge';
@@ -2233,6 +2234,10 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         actionCompleted = true;
         setComputerUsePhase('blocked');
         traceComputerUse('user_takeover', context, { stage: action, reason: 'user-input-detected' });
+        // Keep the on-screen strip up in its paused form with 【继续】; the
+        // run ends when this result returns, and the strip outlives it.
+        notePausedByTakeover(runKey.conversationId);
+        try { await invoke('computer_use_chrome_paused', {}); } catch { /* chrome may already be gone */ }
         context?.reportMetadata?.({ requiresUserRecovery: 'computer-user-takeover' });
         return t.userTakeoverPaused;
       }

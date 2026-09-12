@@ -93,6 +93,9 @@ try {
     contextBridge.exposeInMainWorld('__CU_I18N__', {
       stopControl: params.get('stopLabel') ?? '',
       unresponsive: params.get('unresponsiveLabel') ?? '',
+      paused: params.get('pausedLabel') ?? '',
+      resume: params.get('resumeLabel') ?? '',
+      end: params.get('endLabel') ?? '',
     });
   }
 } catch {

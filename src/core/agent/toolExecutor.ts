@@ -471,6 +471,9 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
         await invoke('show_screen_border', {
           stopLabel: getI18n().computerUse.stopControl,
           unresponsiveLabel: getI18n().computerUse.unresponsive,
+          pausedLabel: getI18n().computerUse.pausedByTakeover,
+          resumeLabel: getI18n().computerUse.resume,
+          endLabel: getI18n().computerUse.end,
         });
       } catch { /* ignore */ }
       if (isMacOS()) {

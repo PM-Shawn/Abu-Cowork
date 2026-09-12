@@ -8,7 +8,27 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { __test } = require('./guiHost.cjs');
 
-const { describeChromeEvent, chromePointFromDip } = __test;
+const { describeChromeEvent, chromePointFromDip, stripBounds, STRIP_WIDTH, STRIP_HEIGHT } = __test;
+
+test('the strip sits bottom-centre of its display, follows the drag offset, and never leaves the display', () => {
+  const display = { x: 2560, y: 0, width: 1920, height: 1080 };
+  const home = stripBounds(display, null);
+  assert.equal(home.width, STRIP_WIDTH);
+  assert.equal(home.height, STRIP_HEIGHT);
+  assert.equal(home.x + home.width / 2, display.x + display.width / 2);
+  assert.equal(home.y + home.height, display.y + display.height - 16);
+
+  const dragged = stripBounds(display, { dx: -300, dy: -500 });
+  assert.deepEqual([dragged.x, dragged.y], [home.x - 300, home.y - 500]);
+
+  const clamped = stripBounds(display, { dx: 99_999, dy: 99_999 });
+  assert.equal(clamped.x, display.x + display.width - STRIP_WIDTH);
+  assert.equal(clamped.y, display.y + display.height - STRIP_HEIGHT);
+  const clampedUp = stripBounds(display, { dx: -99_999, dy: -99_999 });
+  assert.deepEqual([clampedUp.x, clampedUp.y], [display.x, display.y]);
+  // Garbage offsets count as none.
+  assert.deepEqual(stripBounds(display, { dx: 'left', dy: null }), home);
+});
 
 test('the input lease drives the cursor marker: active on activate, off on observe/pause/end', () => {
   assert.deepEqual(describeChromeEvent('input_lease_activate', {}, {}), { kind: 'cursor', active: true });

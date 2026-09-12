@@ -42,6 +42,10 @@
  */
 
 import { getI18n, format } from '@/i18n';
+// Static on purpose: a dynamic import() of this module from here is not
+// interceptable by the test-time mock, and every other core module that
+// talks to the event bridge imports it statically as well.
+import { emit, listen } from '@tauri-apps/api/event';
 
 export type CUSessionStatus = 'idle' | 'active' | 'paused';
 export type CUPhase = 'checking' | 'awaiting-approval' | 'observing' | 'acting' | 'verifying' | 'blocked';
@@ -133,8 +137,21 @@ function updateActive(partial: Partial<CUState>) {
   if (!activeConversationId) return;
   const current = sessions.get(activeConversationId);
   if (!current) return;
-  sessions.set(activeConversationId, { ...current, ...partial });
+  const next = { ...current, ...partial };
+  sessions.set(activeConversationId, next);
   notify();
+  // The on-screen strip mirrors the same state the chat banner shows; push
+  // it whenever something it displays changed (never for a screenshot-only
+  // update — the payload carries no pixels, but there is nothing to say).
+  if (next.status === 'active' && statusKey(next) !== lastEmittedStatusKey) {
+    lastEmittedStatusKey = statusKey(next);
+    emitStatusToOverlay(next);
+  }
+}
+
+let lastEmittedStatusKey: string | null = null;
+function statusKey(state: CUState): string {
+  return [state.stepCount, state.currentAction ?? '', state.phase, state.targetApp ?? '', state.sessionStartTime ?? ''].join('\u0000');
 }
 
 // ─── Actions (called by toolExecutor) ───
@@ -235,19 +252,100 @@ export function incrementComputerUseStep(action?: string) {
   if (current?.status === 'active') {
     const newStep = current.stepCount + 1;
     updateActive({ stepCount: newStep, currentAction: action ?? null });
-    // Push status to overlay window for display
-    emitStatusToOverlay(newStep, action ?? null, current.targetApp);
   }
 }
 
-/** Emit current step/action to the overlay window for display. */
-function emitStatusToOverlay(step: number, action: string | null, targetApp: string | null) {
-  // Resolve the localized step label here (frontend has the UI locale) and push
-  // it to the overlay HTML, which is a dumb view outside the React i18n tree.
-  const stepLabel = format(getI18n().computerUse.overlayStep, { step });
-  import('@tauri-apps/api/event').then(({ emit }) => {
-    emit('computer-use-status', { step, action, stepLabel, targetApp }).catch(() => {});
+/**
+ * Push the display-only state to the on-screen chrome (overlay border pill
+ * and the status strip), both dumb views outside the React i18n tree: labels
+ * are resolved here with the UI locale. Carries no prompt, AX label, typed
+ * text or screenshot.
+ */
+function emitStatusToOverlay(state: CUState) {
+  const t = getI18n().computerUse;
+  const phaseLabel = {
+    checking: t.phaseChecking,
+    'awaiting-approval': t.phaseAwaitingApproval,
+    observing: t.phaseObserving,
+    acting: t.phaseActing,
+    verifying: t.phaseVerifying,
+    blocked: t.phaseBlocked,
+  }[state.phase];
+  const stepLabel = state.stepCount > 0
+    ? format(t.overlayStepOf, { step: state.stepCount, max: MAX_CU_STEPS })
+    : '';
+  const payload = {
+    step: state.stepCount,
+    maxSteps: MAX_CU_STEPS,
+    action: state.currentAction,
+    stepLabel,
+    targetApp: state.targetApp,
+    phase: state.phase,
+    phaseLabel,
+    sessionStartTime: state.sessionStartTime,
+    mode: state.phase === 'awaiting-approval' ? 'approval' : 'running',
+  };
+  void Promise.resolve()
+    .then(() => emit('computer-use-status', payload))
+    .catch(() => {});
+}
+
+// ─── Takeover pause: 【继续】 / 【结束】 on the strip (L5 W3) ───
+// The run that was paused has ended by the time the user clicks, so these
+// listeners live outside the session's abort listener and clean themselves up.
+
+let takeoverPausedConversationId: string | null = null;
+let resumeUnlisten: (() => void) | null = null;
+let dismissUnlisten: (() => void) | null = null;
+let takeoverTimer: ReturnType<typeof setTimeout> | null = null;
+
+function cleanupTakeoverListeners() {
+  resumeUnlisten?.();
+  dismissUnlisten?.();
+  resumeUnlisten = null;
+  dismissUnlisten = null;
+  if (takeoverTimer) {
+    clearTimeout(takeoverTimer);
+    takeoverTimer = null;
+  }
+  takeoverPausedConversationId = null;
+}
+
+function dismissTakeoverChrome() {
+  import('@tauri-apps/api/core').then(({ invoke }) => {
+    invoke('computer_use_chrome_dismiss').catch(() => {});
   }).catch(() => {});
+}
+
+/**
+ * Called by the computer tool when the Host reported a user takeover
+ * (`stopped_reason: user-input-detected`). Remembers which conversation to
+ * resume and arms the strip's 【继续】/【结束】 for one minute.
+ */
+export function notePausedByTakeover(conversationId: string) {
+  cleanupTakeoverListeners();
+  takeoverPausedConversationId = conversationId;
+  takeoverTimer = setTimeout(cleanupTakeoverListeners, 60_000);
+  void (async () => {
+    resumeUnlisten = await listen('computer-use-resume', () => {
+      const convId = takeoverPausedConversationId;
+      cleanupTakeoverListeners();
+      dismissTakeoverChrome();
+      if (!convId) return;
+      import('./agentLoopRunner').then(({ runAgentLoopDispatched }) => {
+        void runAgentLoopDispatched(convId, getI18n().computerUse.resumePrompt, { requireNewRun: true });
+      }).catch(() => {});
+    });
+    dismissUnlisten = await listen('computer-use-dismiss', () => {
+      cleanupTakeoverListeners();
+      dismissTakeoverChrome();
+    });
+  })().catch(() => {});
+}
+
+/** Test-only: which conversation a strip 【继续】 would resume. */
+export function getTakeoverPausedConversationId(): string | null {
+  return takeoverPausedConversationId;
 }
 
 /** Update the latest screenshot for live preview. */
@@ -406,7 +504,6 @@ async function setupAbortListener() {
 
   // 1. Listen for stop button click event from overlay window
   try {
-    const { listen } = await import('@tauri-apps/api/event');
     const unlisten = await listen<{ source?: string; type?: string }>(
       'computer-use-abort',
       (event) => {

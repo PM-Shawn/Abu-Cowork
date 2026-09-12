@@ -3799,6 +3799,16 @@ export interface TranslationDict {
     stopControl: string;
     /** Overlay watchdog caption when the Host stops sending heartbeats. */
     unresponsive: string;
+    /** Strip step label, interpolates {step} and {max}, e.g. "Step {step}/{max}". */
+    overlayStepOf: string;
+    /** Strip caption after the user took over the mouse/keyboard. */
+    pausedByTakeover: string;
+    /** Strip 【继续】 button. */
+    resume: string;
+    /** Strip 【结束】 button (replaces Stop while paused). */
+    end: string;
+    /** The user turn sent when 【继续】 is clicked. */
+    resumePrompt: string;
     phaseChecking: string;
     phaseAwaitingApproval: string;
     phaseObserving: string;

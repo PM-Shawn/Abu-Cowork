@@ -216,10 +216,19 @@ function destroyTray() {
 /** @type {import('electron').BrowserWindow | null} */
 let overlayWindow = null;
 /** @type {import('electron').BrowserWindow | null} */
-let stopBtnWindow = null;
+let stripWindow = null;
 
-const STOP_BTN_WIDTH = 160;
-const STOP_BTN_HEIGHT = 40;
+// Bottom-centre status strip (L5 W3): replaces the top stop button. One
+// row: brand · target app · phase/action · step · clock · [Stop]. Draggable;
+// its offset from the default spot is remembered for this app session.
+const STRIP_WIDTH = 600;
+const STRIP_HEIGHT = 46;
+const STRIP_BOTTOM_MARGIN = 16;
+const PAUSED_DISMISS_MS = 60_000;
+let stripOffset = null;
+/** 'running' | 'paused' — paused keeps the strip (with 【继续】) after the run ended. */
+let stripMode = 'running';
+let pausedDismissTimer = null;
 
 const GUI_PRELOAD = path.join(__dirname, 'guiTauriGlobalPreload.cjs');
 
@@ -325,30 +334,53 @@ function showOverlay(unresponsiveLabel) {
   showWhenReady(overlayWindow);
 }
 
-function showStopButton(stopLabel) {
-  if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
-    stopBtnWindow.show();
+/** Where the strip sits on `displayBounds`: bottom centre plus the user's drag offset, kept on-screen. */
+function stripBounds(displayBounds, offset) {
+  const dx = Number(offset?.dx) || 0;
+  const dy = Number(offset?.dy) || 0;
+  const x = Math.round(displayBounds.x + (displayBounds.width - STRIP_WIDTH) / 2 + dx);
+  const y = Math.round(displayBounds.y + displayBounds.height - STRIP_HEIGHT - STRIP_BOTTOM_MARGIN + dy);
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), Math.max(min, max));
+  return {
+    x: clamp(x, displayBounds.x, displayBounds.x + displayBounds.width - STRIP_WIDTH),
+    y: clamp(y, displayBounds.y, displayBounds.y + displayBounds.height - STRIP_HEIGHT),
+    width: STRIP_WIDTH,
+    height: STRIP_HEIGHT,
+  };
+}
+
+function showStrip(labels) {
+  if (stripWindow && !stripWindow.isDestroyed()) {
+    stripWindow.show();
     return;
   }
   const display = screen.getPrimaryDisplay();
-  const x = Math.round(display.bounds.x + (display.bounds.width - STOP_BTN_WIDTH) / 2);
-  const y = display.bounds.y + 8;
-  stopBtnWindow = new BrowserWindow(
+  const { x, y } = stripBounds(display.bounds, stripOffset);
+  stripWindow = new BrowserWindow(
     baseFloatingWindowOptions({
       x,
       y,
-      width: STOP_BTN_WIDTH,
-      height: STOP_BTN_HEIGHT,
-      focusable: true, // must be clickable, unlike the overlay
+      width: STRIP_WIDTH,
+      height: STRIP_HEIGHT,
+      // Receives clicks but never takes focus: a Stop or 【继续】 click must
+      // not pull the foreground away from the target window.
+      focusable: false,
       alwaysOnTop: true,
     })
   );
+  // Remember where the user dragged it, relative to the default spot.
+  stripWindow.on('moved', () => {
+    if (!stripWindow || stripWindow.isDestroyed() || !chromeDisplayBounds) return;
+    const home = stripBounds(chromeDisplayBounds, null);
+    const now = stripWindow.getBounds();
+    stripOffset = { dx: now.x - home.x, dy: now.y - home.y };
+  });
   // Higher level than the overlay so it's always visible/clickable above it
   // (Rust: NSStatusWindowLevel+2 vs overlay's +1) — Electron's relativeLevel
   // 3rd arg stacks atop the named level.
-  stopBtnWindow.setAlwaysOnTop(true, 'screen-saver', 1);
-  stopBtnWindow.setContentProtection?.(true);
-  applyAllSpaces(stopBtnWindow);
+  stripWindow.setAlwaysOnTop(true, 'screen-saver', 1);
+  stripWindow.setContentProtection?.(true);
+  applyAllSpaces(stripWindow);
   // stop-button.html reads `window.__CU_I18N__.stopControl` from its own
   // trailing (synchronous, non-deferred) inline <script> block — which runs
   // DURING parsing, before `did-finish-load`/`dom-ready` ever fire, so there
@@ -357,18 +389,71 @@ function showStopButton(stopLabel) {
   // guiTauriGlobalPreload.cjs (which runs before ANY page script, same
   // timing guarantee as Tauri's `initialization_script`) and exposed as
   // `window.__CU_I18N__` via contextBridge before the page's own script runs.
-  const page = resolveHtml('stop-button.html');
-  registerPrivilegedWindow(stopBtnWindow, page, { label: 'stop-button' });
-  void stopBtnWindow.loadFile(page, { query: { stopLabel: stopLabel ?? '' } });
-  showWhenReady(stopBtnWindow);
+  const page = resolveHtml('overlay-strip.html');
+  registerPrivilegedWindow(stripWindow, page, { label: 'overlay-strip' });
+  void stripWindow.loadFile(page, {
+    query: {
+      stopLabel: labels?.stopLabel ?? '',
+      unresponsiveLabel: labels?.unresponsiveLabel ?? '',
+      pausedLabel: labels?.pausedLabel ?? '',
+      resumeLabel: labels?.resumeLabel ?? '',
+      endLabel: labels?.endLabel ?? '',
+    },
+  });
+  showWhenReady(stripWindow);
 }
 
 /** `show_screen_border {stopLabel}` — overlay.rs:21. */
 function showScreenBorder(args) {
+  clearPausedDismiss();
+  stripMode = 'running';
   showOverlay(String(args?.unresponsiveLabel ?? ''));
-  showStopButton(String(args?.stopLabel ?? ''));
+  showStrip({
+    stopLabel: String(args?.stopLabel ?? ''),
+    unresponsiveLabel: String(args?.unresponsiveLabel ?? ''),
+    pausedLabel: String(args?.pausedLabel ?? ''),
+    resumeLabel: String(args?.resumeLabel ?? ''),
+    endLabel: String(args?.endLabel ?? ''),
+  });
   startChromeHeartbeat();
   return null;
+}
+
+function clearPausedDismiss() {
+  if (pausedDismissTimer) {
+    clearTimeout(pausedDismissTimer);
+    pausedDismissTimer = null;
+  }
+}
+
+/**
+ * `computer_use_chrome_paused` — the user took over mid-action (L5 §2.2).
+ * The border goes away (Abu is not acting), the strip stays in its paused
+ * form with 【继续】/【结束】 and outlives the run that is now ending; it
+ * dismisses itself after a minute. The heartbeat keeps running so the
+ * watchdog still covers it.
+ */
+function pauseChrome() {
+  if (!stripWindow || stripWindow.isDestroyed()) return null;
+  stripMode = 'paused';
+  setCursorPushActive(false);
+  if (overlayWindow && !overlayWindow.isDestroyed()) {
+    overlayWindow.hide();
+    overlayWindow.destroy();
+  }
+  overlayWindow = null;
+  emitToChrome('computer-use-status', { mode: 'paused' });
+  clearPausedDismiss();
+  pausedDismissTimer = setTimeout(() => dismissChrome(), PAUSED_DISMISS_MS);
+  pausedDismissTimer.unref?.();
+  return null;
+}
+
+/** `computer_use_chrome_dismiss` — 【继续】/【结束】 clicked or the pause expired. */
+function dismissChrome() {
+  stripMode = 'running';
+  clearPausedDismiss();
+  return hideScreenBorder();
 }
 
 function emitToChrome(event, payload) {
@@ -493,13 +578,8 @@ function moveChromeToDisplay(display) {
   if (overlayWindow && !overlayWindow.isDestroyed()) {
     overlayWindow.setBounds(display.bounds, false);
   }
-  if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
-    stopBtnWindow.setBounds({
-      x: Math.round(display.bounds.x + (display.bounds.width - STOP_BTN_WIDTH) / 2),
-      y: display.bounds.y + 8,
-      width: STOP_BTN_WIDTH,
-      height: STOP_BTN_HEIGHT,
-    }, false);
+  if (stripWindow && !stripWindow.isDestroyed()) {
+    stripWindow.setBounds(stripBounds(display.bounds, stripOffset), false);
   }
 }
 
@@ -541,6 +621,17 @@ function updateComputerUseOverlayBounds(capture) {
 
 /** `hide_screen_border` — overlay.rs:29 (Rust hide()s then destroy()s both; recreated fresh next `show_screen_border`, matching Rust's not-cached-across-hide semantics). */
 function hideScreenBorder() {
+  if (stripMode === 'paused') {
+    // The run is ending because the user took over; the paused strip stays
+    // until 【继续】/【结束】 or its timeout (dismissChrome), heartbeat included.
+    setCursorPushActive(false);
+    if (overlayWindow && !overlayWindow.isDestroyed()) {
+      overlayWindow.hide();
+      overlayWindow.destroy();
+    }
+    overlayWindow = null;
+    return null;
+  }
   stopChromeHeartbeat();
   setCursorPushActive(false);
   // Rust: hide() then destroy() (not a plain close(), which dispatches the
@@ -551,11 +642,11 @@ function hideScreenBorder() {
     overlayWindow.destroy();
   }
   overlayWindow = null;
-  if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
-    stopBtnWindow.hide();
-    stopBtnWindow.destroy();
+  if (stripWindow && !stripWindow.isDestroyed()) {
+    stripWindow.hide();
+    stripWindow.destroy();
   }
-  stopBtnWindow = null;
+  stripWindow = null;
   return null;
 }
 
@@ -570,8 +661,8 @@ function parseMediaSourceWindowId(win) {
 /** `get_overlay_window_id` — overlay.rs:43 (Rust prefers the stop-button window since it's higher z-order, so excluding it also excludes the overlay below it — same preference order here). */
 function getOverlayWindowId() {
   const win =
-    stopBtnWindow && !stopBtnWindow.isDestroyed()
-      ? stopBtnWindow
+    stripWindow && !stripWindow.isDestroyed()
+      ? stripWindow
       : overlayWindow && !overlayWindow.isDestroyed()
         ? overlayWindow
         : null;
@@ -579,6 +670,8 @@ function getOverlayWindowId() {
 }
 
 function destroyOverlayWindows() {
+  stripMode = 'running';
+  clearPausedDismiss();
   stopChromeHeartbeat();
   if (cursorTimer) {
     clearInterval(cursorTimer);
@@ -586,8 +679,8 @@ function destroyOverlayWindows() {
   }
   if (overlayWindow && !overlayWindow.isDestroyed()) overlayWindow.destroy();
   overlayWindow = null;
-  if (stopBtnWindow && !stopBtnWindow.isDestroyed()) stopBtnWindow.destroy();
-  stopBtnWindow = null;
+  if (stripWindow && !stripWindow.isDestroyed()) stripWindow.destroy();
+  stripWindow = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -823,6 +916,8 @@ const GUI_CMDS = new Set([
   'update_tray_notice_count',
   'show_screen_border',
   'hide_screen_border',
+  'computer_use_chrome_paused',
+  'computer_use_chrome_dismiss',
   'get_overlay_window_id',
   'get_active_window',
   'get_abu_window_id',
@@ -851,6 +946,10 @@ function guiDispatch(app, cmd, args) {
       return showScreenBorder(a);
     case 'hide_screen_border':
       return hideScreenBorder();
+    case 'computer_use_chrome_paused':
+      return pauseChrome();
+    case 'computer_use_chrome_dismiss':
+      return dismissChrome();
     case 'get_overlay_window_id':
       return getOverlayWindowId();
     case 'get_active_window':
@@ -928,7 +1027,10 @@ module.exports = {
     initialPetPosition,
     describeChromeEvent,
     chromePointFromDip,
+    stripBounds,
+    STRIP_WIDTH,
+    STRIP_HEIGHT,
     stopChromeHeartbeat,
-    chromeState: () => ({ heartbeatRunning: Boolean(heartbeatTimer), heartbeatSeq, cursorRunning: Boolean(cursorTimer) }),
+    chromeState: () => ({ heartbeatRunning: Boolean(heartbeatTimer), heartbeatSeq, cursorRunning: Boolean(cursorTimer), stripMode }),
   },
 };

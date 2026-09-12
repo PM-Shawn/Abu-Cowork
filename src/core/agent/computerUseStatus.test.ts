@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core';
 // NOT globally mocked — setupAbortListener() already wraps that dynamic
 // import in try/catch, so it degrades harmlessly in tests.
 
+import { emit, listen } from '@tauri-apps/api/event';
 import {
   setComputerUseActive,
   incrementComputerUseStep,
@@ -17,6 +18,11 @@ import {
   beginComputerUseConsentPause,
   getCUStatusSnapshot,
   subscribeCUStatus,
+  setComputerUsePhase,
+  setComputerUseContext,
+  updateLatestScreenshot,
+  notePausedByTakeover,
+  getTakeoverPausedConversationId,
 } from './computerUseStatus';
 
 describe('computerUseStatus — per-conversation session table', () => {
@@ -227,5 +233,63 @@ describe('computerUseStatus — per-conversation session table', () => {
       expect(listener).toHaveBeenCalled();
       unsubscribe();
     });
+  });
+});
+
+// ── L5 W3: what the on-screen strip is told ──
+describe('computerUseStatus — chrome status push', () => {
+  const flush = async () => {
+    // emitStatusToOverlay resolves the event module lazily; let it settle.
+    for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  const statusPayloads = () => vi.mocked(emit).mock.calls
+    .filter(([event]) => event === 'computer-use-status')
+    .map(([, payload]) => payload as Record<string, unknown>);
+
+  beforeEach(() => {
+    setComputerUseActive(false);
+    vi.mocked(emit).mockClear();
+    vi.mocked(invoke).mockClear();
+  });
+
+  it('pushes step, phase, app and labels — never a screenshot — and only when something shown changed', async () => {
+    setComputerUseActive(true, 'conv-strip');
+    setComputerUseContext({ targetApp: 'Notepad' });
+    setComputerUsePhase('acting');
+    incrementComputerUseStep('click');
+    await flush();
+    const latest = statusPayloads().at(-1);
+    expect(latest).toMatchObject({
+      step: 1,
+      maxSteps: 30,
+      action: 'click',
+      targetApp: 'Notepad',
+      phase: 'acting',
+      mode: 'running',
+    });
+    expect(String(latest?.stepLabel)).toMatch(/1\/30/);
+    expect(typeof latest?.phaseLabel).toBe('string');
+    expect(latest).not.toHaveProperty('latestScreenshot');
+
+    const before = statusPayloads().length;
+    updateLatestScreenshot('iVBORw0KGgo=');
+    await flush();
+    expect(statusPayloads().length).toBe(before);
+
+    setComputerUsePhase('awaiting-approval');
+    await flush();
+    expect(statusPayloads().at(-1)).toMatchObject({ phase: 'awaiting-approval', mode: 'approval' });
+  });
+
+  it('remembers the conversation to resume after a takeover and clears it on dismiss', async () => {
+    notePausedByTakeover('conv-paused');
+    await flush();
+    expect(getTakeoverPausedConversationId()).toBe('conv-paused');
+    const dismissCall = vi.mocked(listen).mock.calls.find(([event]) => event === 'computer-use-dismiss');
+    expect(dismissCall).toBeDefined();
+    (dismissCall?.[1] as (event: unknown) => void)({ payload: { source: 'computer-use-strip' } });
+    await flush();
+    expect(getTakeoverPausedConversationId()).toBeNull();
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith('computer_use_chrome_dismiss');
   });
 });

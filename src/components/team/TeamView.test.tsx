@@ -24,6 +24,7 @@ vi.mock('@/stores/settingsStore', () => ({
 
 const chatState = {
   setPendingInput: vi.fn(),
+  setPendingAgent: vi.fn(),
   startNewConversation: vi.fn(),
   switchConversation: vi.fn(),
   createConversation: vi.fn(() => 'c-new'),
@@ -35,6 +36,8 @@ vi.mock('@/stores/chatStore', () => ({
 
 const loadMessages = vi.fn();
 vi.mock('@/core/session/conversationStorage', () => ({ loadMessages: (id: string) => loadMessages(id) }));
+const dispatch = vi.fn();
+vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: (...args: unknown[]) => dispatch(...args) }));
 
 const discoveryState = { agents: [] as Array<{ name: string }>, refresh: vi.fn() };
 vi.mock('@/stores/discoveryStore', () => ({
@@ -369,6 +372,7 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
     fireEvent.click(screen.getByTestId('team-detail-start-chat'));
     expect(chatState.createConversation).toHaveBeenCalledWith(null, { teamId: 't1' });
+    expect(chatState.setPendingAgent).toHaveBeenCalledWith(null);
     // Nothing prefilled: the user says what they want in their own words.
     expect(chatState.setPendingInput).not.toHaveBeenCalled();
   });
@@ -390,6 +394,19 @@ describe('TeamView', () => {
     const menu = screen.getByTestId('team-create-menu');
     expect(menu.textContent).toContain('使用阿布创建');
     expect(menu.textContent).toContain('手动创建');
+  });
+
+  it.each([
+    ['teams', 'team-create-trigger', '/create-agent 帮我组建一个团队，我的需求是：'],
+    ['members', 'member-create-trigger', '/create-agent 帮我创建一个队员，我的需求是：'],
+  ] as const)('explicitly selects the creation skill from the %s entry', (tab, trigger, prompt) => {
+    settingsState.activeTeamTab = tab;
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId(trigger));
+    fireEvent.click(screen.getByText('使用阿布创建'));
+    expect(chatState.startNewConversation).toHaveBeenCalledOnce();
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('team dialog: create button stays disabled until name + leader are set', async () => {
@@ -417,6 +434,7 @@ describe('TeamView', () => {
     const team = useTeamStore.getState().teams[0];
     expect(team.name).toBe('数据小队');
     expect(team.leaderRoleId).toBe('role-new');
+    expect(team.avatar).toBe('icon:users/blue');
     expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
@@ -517,5 +535,51 @@ describe('TeamView', () => {
     expect(screen.queryByTestId('team-edit-invalid-role-a')).toBeNull();
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-gone-lead']));
+  });
+
+  it('shows the description on the card and only populated display sections in detail', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1, description: '看数据的小队', intro: '我们负责取数和出图' }] });
+    render(<TeamView />);
+    expect(screen.getByTestId('team-row-数据小队')).toHaveTextContent('看数据的小队');
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    // The card summary and the detail subtitle both carry the description.
+    expect(screen.getAllByText('看数据的小队', { exact: true })).toHaveLength(2);
+    expect(screen.getByText('我们负责取数和出图')).toBeTruthy();
+    expect(screen.getByText('开场白')).toBeTruthy();
+    expect(screen.queryByText('擅长')).toBeNull();
+    expect(screen.queryByText('推荐提问')).toBeNull();
+  });
+
+  it('prefills a fresh team conversation from a suggested question without sending', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1, expertise: ['取数', '出图'], samplePrompts: ['帮我看上季度销量'] }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.queryByText('开场白')).toBeNull();
+    expect(screen.getByText('擅长')).toBeTruthy();
+    expect(screen.getByText('取数')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '帮我看上季度销量' }));
+    expect(chatState.createConversation).toHaveBeenCalledWith(null, { teamId: 't1' });
+    expect(chatState.setPendingInput).toHaveBeenCalledWith('帮我看上季度销量');
+    expect(settingsState.closeTeam).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('team-detail-start-chat')).toBeNull();
+  });
+
+  it('edits and clears optional display fields using the shared form controls', async () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1, description: '旧介绍', intro: '旧开场白', expertise: ['旧擅长'], samplePrompts: ['旧问题'] }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByLabelText('开场白（可选）')).toHaveValue('旧开场白');
+    fireEvent.change(screen.getByLabelText('介绍（可选）'), { target: { value: '新介绍' } });
+    fireEvent.change(screen.getByLabelText('开场白（可选）'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('擅长（可选）'), { target: { value: ' 取数\n\n出图 ' } });
+    fireEvent.change(screen.getByLabelText('推荐提问（可选）'), { target: { value: ' 问题一\n问题二 ' } });
+    fireEvent.click(screen.getByTestId('team-save'));
+    await waitFor(() => expect(useTeamStore.getState().teams[0]).toMatchObject({ description: '新介绍', intro: undefined, expertise: ['取数', '出图'], samplePrompts: ['问题一', '问题二'] }));
   });
 });

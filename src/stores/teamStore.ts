@@ -37,8 +37,16 @@ export interface Team {
    *  Default (false) = plan is visible-not-blocking and execution auto-starts —
    *  the human gates are risky-op approvals, stuck states, and review. */
   requirePlanApproval?: boolean;
-  /** Optional emoji avatar set by the user; absent = the default group mark. */
+  /** Optional emoji or built-in icon reference; absent = the default group mark. */
   avatar?: string;
+  /** Card subtitle; absent = leader and member count. */
+  description?: string;
+  /** Self-introduction shown in the detail and chat welcome. */
+  intro?: string;
+  /** Display-only areas of expertise, matching agent metadata. */
+  expertise?: string[];
+  /** Suggested questions prefill a new conversation without sending. */
+  samplePrompts?: string[];
   /** The split the leader used last time (reference input for the next run, never a skip). */
   lastPlan?: TeamLastPlan;
   createdAt: number;
@@ -49,8 +57,8 @@ interface TeamState {
 }
 
 interface TeamActions {
-  createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean; avatar?: string }) => Team;
-  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar' | 'lastPlan'>>) => void;
+  createTeam: (input: { name: string; leaderRoleId: string; memberRoleIds: string[]; leaderNote?: string; requirePlanApproval?: boolean; avatar?: string; description?: string; intro?: string; expertise?: string[]; samplePrompts?: string[] }) => Team;
+  updateTeam: (id: string, patch: Partial<Pick<Team, 'name' | 'leaderRoleId' | 'memberRoleIds' | 'leaderNote' | 'requirePlanApproval' | 'avatar' | 'lastPlan' | 'description' | 'intro' | 'expertise' | 'samplePrompts'>>) => void;
   deleteTeam: (id: string) => void;
 
 }
@@ -76,6 +84,7 @@ function genId(prefix: string): string {
  *   the user archived them, they never asked for them to be erased, and
  *   silently deleting their data on an upgrade is not ours to do. They can
  *   delete them explicitly now.
+ * v7 → v8: additive optional display fields; existing data stays unchanged.
  */
 export function migrateTeamState(persisted: unknown): { teams: Team[] } {
   const state = (persisted ?? {}) as { teams?: Array<Team & { archivedAt?: number }>; tasks?: unknown; pipelines?: unknown; focusTaskId?: unknown };
@@ -107,6 +116,10 @@ export const useTeamStore = create<TeamStore>()(
           leaderNote: input.leaderNote?.trim() || undefined,
           requirePlanApproval: input.requirePlanApproval || undefined,
           avatar: input.avatar?.trim() || undefined,
+          description: input.description || undefined,
+          intro: input.intro || undefined,
+          expertise: input.expertise?.length ? input.expertise : undefined,
+          samplePrompts: input.samplePrompts?.length ? input.samplePrompts : undefined,
           createdAt: Date.now(),
         };
         // Newest first — freshly created things surface at the top (user feedback).
@@ -129,7 +142,7 @@ export const useTeamStore = create<TeamStore>()(
     }),
     {
       name: 'abu-team',
-      version: 7,
+      version: 8,
       migrate: migrateTeamState,
       partialize: (s) => ({ teams: s.teams }),
     },

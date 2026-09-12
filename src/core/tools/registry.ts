@@ -65,6 +65,7 @@ import {
 import { deriveRunInteractionMode } from '../agent/runInteractionMode';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
 import { saveAgentWouldReplace } from './helpers/abuItemPaths';
+import { saveTeamWouldReplace } from '../team/teamLookup';
 import {
   analyzeCommandBoundary,
   resolveFullNoWorkspaceCommandWriteTargets,
@@ -2420,7 +2421,9 @@ export async function checkToolApproval(
       input,
       // A call carrying `overwrite: true` may replace an expert created while the
       // approval waits (e.g. over IM), so it is labelled as a replace too.
-      name === TOOL_NAMES.SAVE_AGENT ? { saveAgentReplaces: input.overwrite === true || await saveAgentWouldReplace(input.name) } : {},
+      name === TOOL_NAMES.SAVE_AGENT ? { saveAgentReplaces: input.overwrite === true || await saveAgentWouldReplace(input.name) }
+        : name === TOOL_NAMES.SAVE_TEAM ? { saveTeamReplaces: saveTeamWouldReplace(input.name) }
+        : {},
     );
     if (selfExtension) {
       const selfExtensionCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(

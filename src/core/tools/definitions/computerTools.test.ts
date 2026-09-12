@@ -1604,6 +1604,211 @@ describe('computerTool — accessibility permission branch', () => {
     expect(keyCount).toBe(2);
   });
 
+  it('hands the turn back with boundary copy when the helper refuses at a platform boundary', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-boundary' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-boundary-token',
+          target: {
+            window_ref: 'wr-windows-boundary',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-boundary-ax-${snapshotCount}`,
+          state_id: `windows-boundary-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        return Promise.reject(new Error('target has higher Windows integrity; input is blocked by UIPI'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'higher-integrity',
+            retryable: false,
+            command: 'keyboard_press',
+            before_state_id: `windows-boundary-state-${snapshotCount}`,
+            attempt_count: 1,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-windows-boundary-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    expect(stateId).toBe('windows-boundary-state-1');
+    const press = computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-windows-boundary',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-windows-boundary-press' },
+    );
+
+    // Non-retryable and a known boundary: no observation is taken on the
+    // model's behalf, no recovery is spent, and the copy tells the user what
+    // to do about an elevated window.
+    const result = await press;
+    expect(String(result)).toMatch(/administrator|管理员/);
+    expect(String(result)).toContain('blocked by UIPI');
+    expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-platform-boundary' });
+    expect(snapshotCount).toBe(1);
+  });
+
+  it('returns a non-retryable refusal that is the model\'s to fix without spending recovery', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-model-error' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-model-error-token',
+          target: {
+            window_ref: 'wr-windows-model-error',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-model-error-ax-${snapshotCount}`,
+          state_id: `windows-model-error-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        return Promise.reject(new Error('target keyboard layout cannot resolve requested key'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'key-unavailable',
+            retryable: false,
+            command: 'keyboard_press',
+            before_state_id: `windows-model-error-state-${snapshotCount}`,
+            attempt_count: 1,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-windows-model-error-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    expect(stateId).toBe('windows-model-error-state-1');
+    const press = computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-windows-model-error',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-windows-model-error-press' },
+    );
+
+    // Not a boundary: the error goes back to the model as-is (it should use
+    // `type`), with no re-observation and no hand-off.
+    await expect(press).rejects.toThrow(/cannot resolve requested key/);
+    expect(snapshotCount).toBe(1);
+    expect(reportMetadata).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requiresUserRecovery: expect.anything() }),
+    );
+  });
+
   it('ignores a not-executed receipt written against a different state_id', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);

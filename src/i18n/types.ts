@@ -4725,6 +4725,12 @@ export interface TranslationDict {
       actionNotExecutedHandoff: string;
       actionNotExecutedStopped: string;
       actionNotExecutedReobserveFailed: string;
+      /** Platform boundaries the user must clear; the helper marked the refusal non-retryable. {msg} */
+      boundarySecureDesktop: string;
+      boundaryHigherIntegrity: string;
+      boundaryInputLease: string;
+      boundaryDpiUnaware: string;
+      boundaryInputBlocked: string;
       /** Invalid state/effect protocol input. {reason} */
       errStateProtocol: string;
       /** Observation state header. {stateId} */

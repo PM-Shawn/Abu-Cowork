@@ -247,6 +247,26 @@ function explicitTargetApp(input: Record<string, unknown>): string | null {
   return target?.trim() || null;
 }
 
+/**
+ * Copy for a refusal the helper marked non-retryable because a platform
+ * boundary is in the way — the user has to clear it; no observation will.
+ * Codes outside this table are the model's to fix (a key it cannot type,
+ * text too long, an app it named wrong) and go back to it as the error.
+ */
+function platformBoundaryCopy(
+  code: string,
+  t: ReturnType<typeof getI18n>['toolResult']['computer'],
+): string | null {
+  switch (code) {
+    case 'secure-desktop': return t.boundarySecureDesktop;
+    case 'higher-integrity': return t.boundaryHigherIntegrity;
+    case 'input-lease': return t.boundaryInputLease;
+    case 'dpi-unaware': return t.boundaryDpiUnaware;
+    case 'send-input-failed': return t.boundaryInputBlocked;
+    default: return null;
+  }
+}
+
 function targetUnavailableError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /\bhas no visible window\b/i.test(message)
@@ -2212,6 +2232,25 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         receipt: R | null | undefined,
       ): R | null => (receipt && receipt.before_state_id === offeredStateId ? receipt : null);
       const notExecuted = attributed(status?.not_executed_receipt);
+      if (notExecuted && notExecuted.retryable === false) {
+        // The helper says re-observing would not change the answer. Either a
+        // platform boundary the user has to clear — hand the turn back with
+        // copy that says what to do — or a request the model has to change,
+        // which goes back to it as the error at no recovery cost.
+        const boundary = platformBoundaryCopy(notExecuted.helper_code, t);
+        traceComputerUse('action_not_executed', context, {
+          stage: action,
+          reason: notExecuted.helper_code,
+          outcome: boundary ? 'boundary-handoff' : 'model-error',
+        });
+        if (!boundary) throw error;
+        computerObservationContexts.clear(runKey);
+        await closeNativeAxSession(computerUseController.clearObservation(runKey));
+        actionCompleted = true;
+        setComputerUsePhase('blocked');
+        context?.reportMetadata?.({ requiresUserRecovery: 'computer-platform-boundary' });
+        return format(boundary, { msg: error instanceof Error ? error.message : String(error) });
+      }
       if (notExecuted) {
         // The Host attests nothing reached the target, so a fresh observation
         // is safe. The budget bounds it: one per refusal, a few per run — a

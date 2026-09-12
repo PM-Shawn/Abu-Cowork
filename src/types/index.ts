@@ -105,6 +105,7 @@ export interface ToolExecutionMetadata {
   requiresUserRecovery?:
     | 'computer-target-unavailable'
     | 'computer-manual-handoff'
+    | 'computer-platform-boundary'
     | 'computer-verification-mismatch'
     | 'computer-outcome-unknown-new-turn';
   subagentStopReason?: SubagentStopReason;

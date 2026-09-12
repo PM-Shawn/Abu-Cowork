@@ -3163,6 +3163,11 @@ export interface TranslationDict {
     maxRounds: string;
     webhookUrl: string;
     webhookUrlHint: string;
+    /** LAN callback opt-in (default off) — see settingsStore imChannel. */
+    allowLanWebhook: string;
+    allowLanWebhookHint: string;
+    allowLanWebhookRestart: string;
+    heartbeatRequiresLanWebhook: string;
     statusConnected: string;
     statusDisconnected: string;
     statusError: string;

@@ -375,7 +375,6 @@ src/
 └── utils/            # Utility functions
 
 builtin-skills/       # 29 built-in skills (one directory each)
-builtin-agents/       # Built-in agent definitions (placeholder)
 abu-browser-bridge/   # Browser bridge MCP Server
 abu-chrome-extension/ # Chrome extension (used by the Abu-Chrome-Bridge skill)
 electron/             # Electron main process, preload bridge, native hosts

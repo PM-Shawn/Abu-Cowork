@@ -28,7 +28,7 @@ function isPlainSegment(segment: string): boolean {
  * structural — every root the agent registry and skill loader scan has this
  * shape (~/.abu/<folder>, a project's .abu/<folder> or .agents/skills, the
  * per-project skills under ~/.abu/projects, ~/.agents/skills), while the
- * bundled builtin-* and enterprise roots, a manifest sitting directly in a
+ * bundled builtin-skills and enterprise roots, a manifest sitting directly in a
  * root, and `__builtin__` do not. Returns the normalized manifest path, the
  * item folder and its parent (the folder a rename stays in).
  */

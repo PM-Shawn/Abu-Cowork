@@ -1,7 +1,7 @@
 import { isPluginAgentAllowed } from '../plugin/activationPolicy';
 import { parse as parseYaml } from 'yaml';
 import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
-import { homeDir, resolveResource } from '@tauri-apps/api/path';
+import { homeDir } from '@tauri-apps/api/path';
 import type { SubagentDefinition, SubagentMetadata } from '../../types';
 import { joinPath } from '../../utils/pathUtils';
 import { normalizeDeclaredSkills } from './prompts/preloadedSkills';
@@ -130,19 +130,12 @@ export class AgentRegistry {
 
     const home = await homeDir();
 
-    // Bundled resources: resolveResource points to the app bundle's resource dir
-    let builtinDir: string | null = null;
-    try {
-      builtinDir = await resolveResource('builtin-agents');
-    } catch {
-      // resolveResource not available (e.g. browser dev mode)
-    }
-
-    // No project-level root: a relative path resolves against the main
-    // process cwd, which is the launch directory, not the opened workspace.
+    // The only scanned root. Built-in experts are registered in memory above
+    // (`__builtin__`), not shipped as files, and there is no project-level
+    // root: a relative path resolves against the main process cwd, which is
+    // the launch directory, not the opened workspace.
     const dirs = [
       joinPath(home, '.abu/agents'),  // user-level
-      ...(builtinDir ? [builtinDir] : []),  // bundled builtin-agents
     ];
 
     for (const dir of dirs) {

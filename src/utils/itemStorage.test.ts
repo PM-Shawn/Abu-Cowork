@@ -295,7 +295,7 @@ describe('saveItemToAbuDir', () => {
       ['a manifest directly in the root (a rename would move the root)', `${HOME}/.abu/agents/AGENT.md`],
       ['the other item kind\'s folder', `${HOME}/.abu/skills/reviewer/AGENT.md`],
       ['a file that is not the manifest', `${HOME}/.abu/agents/reviewer/memory.md`],
-      ['the bundled builtin-agents folder', '/Applications/Abu.app/Contents/Resources/builtin-agents/reviewer/AGENT.md'],
+      ['a container whose name merely ends with the folder name', '/Applications/Abu.app/Contents/Resources/builtin-agents/reviewer/AGENT.md'],
       ['the builtin marker', '__builtin__'],
       ['a relative path', 'agents/reviewer/AGENT.md'],
       ['a Windows `.` segment', 'C:\\Users\\tester\\.abu\\agents\\.\\AGENT.md'],

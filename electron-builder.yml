@@ -109,8 +109,6 @@ extraResources:
     to: builtin-skills
   - from: builtin-plugin-market
     to: builtin-plugin-market
-  - from: builtin-agents
-    to: builtin-agents
   - from: electron/native-helper/target/release
     to: native-helper
     filter:

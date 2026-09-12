@@ -117,7 +117,7 @@ describe('AgentEditor — a new or renamed agent cannot take another agent\'s na
     const upper: SubagentDefinition = { ...reviewer, name: 'Reviewer', filePath: '/Users/tester/.abu/agents/Reviewer/AGENT.md' };
     vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([{ name: 'Reviewer', description: '' }, known[1]]);
     render(<AgentEditor agent={upper} onClose={vi.fn()} onSave={vi.fn(async () => undefined)} />);
-    // The default name mode lower-cases what is typed.
+    // Agent names keep their case, so this is a real rename to lower case.
     fireEvent.change(nameInput(), { target: { value: 'reviewer' } });
 
     expect(takenHint()).toBeNull();

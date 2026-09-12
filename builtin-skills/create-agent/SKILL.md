@@ -30,7 +30,7 @@ tools:
   - read_file
   - write_file
 disallowed-tools:
-  - execute_command
+  - run_command
 memory: session
 background: false
 ---
@@ -80,7 +80,7 @@ background: false
   - 记忆：session
 
 - **开发型**：专注代码编写
-  - 工具：read_file, write_file, execute_command
+  - 工具：read_file, write_file, run_command
   - 记忆：project
 
 - **写作型**：专注内容创作

@@ -767,13 +767,13 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       // agent would run with no tool boundary at all. Content the registry
       // cannot read is left to `agentMdWithIdentity` below, which refuses it
       // with the detailed frontmatter message.
-      const declaredTools = isSkill ? null : parseAgentFile(content, '');
-      if (declaredTools) {
-        const { invalidField } = resolveSubagentToolNames([], declaredTools);
+      const declaredAgent = isSkill ? null : parseAgentFile(content, '');
+      if (declaredAgent) {
+        const { invalidField } = resolveSubagentToolNames([], declaredAgent);
         if (invalidField) {
           return format(t.errInvalidAgentTools, { field: invalidField === 'tools' ? 'tools' : 'disallowed-tools' });
         }
-        const unknownTools = unknownAgentToolNames(declaredTools);
+        const unknownTools = unknownAgentToolNames(declaredAgent);
         if (unknownTools.length > 0) {
           return format(t.errUnknownAgentTool, { names: unknownTools.join(', ') });
         }

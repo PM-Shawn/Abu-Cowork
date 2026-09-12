@@ -9,7 +9,7 @@ import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { parseAvatarValue } from '@/core/team/avatarPresets';
 import { resolveSubagentToolNames } from '../../agent/subagentToolRoster';
-import { matchesToolName } from '../../skill/toolFilter';
+import { matchesToolName, toolPatternName } from '../../skill/toolFilter';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -532,15 +532,20 @@ function agentMdWithIdentity(
  * cannot be enumerated up front, and an MCP `server__tool` name belongs to a
  * connector that may simply be disconnected while the expert is saved —
  * refusing either would make saving depend on what happens to be running.
+ *
+ * Both exemptions read the tool-NAME half only (`toolPatternName`): an entry
+ * such as `writ_file(/src/**)` or `run_command(a__b)` carries the `*` / `__`
+ * in its input constraint, which says nothing about whether the tool exists.
  */
 function unknownAgentToolNames(agent: SubagentDefinition): string[] {
   const builtinNames: string[] = Object.values(TOOL_NAMES);
   const declared = [...(agent.tools ?? []), ...(agent.disallowedTools ?? [])];
-  return [...new Set(declared.filter((entry) =>
-    !entry.includes('*')
-    && !entry.includes('__')
-    && !builtinNames.some((name) => matchesToolName(name, entry)),
-  ))];
+  return [...new Set(declared.filter((entry) => {
+    const declaredName = toolPatternName(entry);
+    return !declaredName.includes('*')
+      && !declaredName.includes('__')
+      && !builtinNames.some((name) => matchesToolName(name, entry));
+  }))];
 }
 
 /**

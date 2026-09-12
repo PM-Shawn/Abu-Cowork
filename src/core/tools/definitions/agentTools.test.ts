@@ -684,27 +684,37 @@ describe('save_agent multi-file support', () => {
       expect(writeTextFile).not.toHaveBeenCalled();
     });
 
-    it('refuses a tool name nothing answers to, writing nothing', async () => {
+    // The `*` / `__` exemptions below read the tool-NAME half of an entry only:
+    // a wildcard or a `__` sitting in an input constraint says nothing about
+    // whether the tool it constrains exists.
+    it.each([
+      'web_serach',
+      'writ_file(/src/**)',
+      'writ_file(a__b)',
+    ])('refuses the tool name %s, which nothing answers to, writing nothing', async (entry) => {
       const result = await saveAgentTool.execute({
         name: 'my-agent',
-        content: '---\nname: my-agent\ntools: [web_serach]\n---\nHelp with a task.',
+        content: `---\nname: my-agent\ntools: ["${entry}"]\n---\nHelp with a task.`,
       });
-      expect(result).toBe(format(getI18n().toolResult.agent.errUnknownAgentTool, { names: 'web_serach' }));
+      expect(result).toBe(format(getI18n().toolResult.agent.errUnknownAgentTool, { names: entry }));
       expect(writeTextFile).not.toHaveBeenCalled();
     });
 
     // A wildcard covers names that cannot be enumerated, and a `server__tool`
     // name belongs to a connector that may be offline right now — neither may
-    // make saving an expert depend on what happens to be running.
-    it('accepts wildcards and connector tool names it cannot enumerate', async () => {
+    // make saving an expert depend on what happens to be running. An input
+    // constraint on a real built-in is not a claim about a different tool, so
+    // `run_command(a__b)` and `read_file(/tmp/**)` are saved as written.
+    it('accepts wildcards, connector tool names and constrained built-ins', async () => {
+      const tools = '[read_file, "read_file(/tmp/**)", "run_command(a__b)", "abu-browser__*", "some-mcp__tool", "some-mcp__tool(x)"]';
       const result = await saveAgentTool.execute({
         name: 'my-agent',
-        content: '---\nname: my-agent\ntools: [read_file, "abu-browser__*", "some-mcp__tool"]\n---\nHelp with a task.',
+        content: `---\nname: my-agent\ntools: ${tools}\n---\nHelp with a task.`,
       });
       expect(result).not.toMatch(/^Error:/);
       expect(writeTextFile).toHaveBeenCalledWith(
         '/Users/testuser/.abu/agents/my-agent/AGENT.md',
-        expect.stringContaining('tools: [read_file, "abu-browser__*", "some-mcp__tool"]'),
+        expect.stringContaining(`tools: ${tools}`),
         { createNew: true },
       );
     });

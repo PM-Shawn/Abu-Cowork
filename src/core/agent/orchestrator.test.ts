@@ -98,6 +98,16 @@ beforeEach(() => {
   browserMocks.isConnected.mockImplementation((name: string) => name === 'abu-browser');
 });
 
+describe('routeInput expert entry', () => {
+  it('routes a real @专家 mention to delegation rather than an agent root route', () => {
+    const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file'], filePath: '/agents/expert/AGENT.md' };
+    vi.mocked(agentRegistry.getAgent).mockReturnValueOnce(expert);
+    expect(routeInput('@专家 检查文档')).toEqual({
+      type: 'delegate', name: '专家', cleanInput: '检查文档', delegateAgent: expert,
+    });
+  });
+});
+
 describe('buildSystemPrompt - security features', () => {
   const basePrompt = '你叫阿布，测试用基础 prompt。';
   const generalRoute = routeInput('你好');

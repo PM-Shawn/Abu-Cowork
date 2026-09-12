@@ -48,9 +48,12 @@ export interface TeamRouteContext {
  */
 export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext | null): RouteResult {
   if (!team || route.type !== 'general') return route;
-  // The leader runs as the root agent: it needs the root roster (delegate_to_agent,
-  // run_agent_batch, report_plan, …), so a member-style `tools` whitelist written
-  // for the old board flow must not shrink it. `disallowedTools` still applies.
+  // The leader's own business restrictions survive the rewrite: a `tools`
+  // whitelist on the leader card is the user's boundary, not a member-style
+  // leftover, so it is kept and `disallowedTools` still applies. The root
+  // roster it needs to orchestrate (report_plan, delegate_to_agent,
+  // run_agent_batch) is added back as protocol exceptions by
+  // `agentToolPolicyForRoute`, which grants them only to a trusted team route.
   // `maxTurns` gets a FLOOR rather than the same treatment: a member-sized card
   // value (e.g. 30, the budget for ONE hand-off) must not cap a leader that
   // plans, dispatches, reviews every result and reports — so a positive card
@@ -61,7 +64,7 @@ export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext 
   // user's explicit opt-in to UNLIMITED turns (resolveMaxTurns treats <= 0 as
   // Infinity); the floor must not clamp that down to 120, so it passes through
   // unchanged.
-  const { tools: _memberTools, maxTurns: cardMaxTurns, ...leaderAsRoot } = team.leader;
+  const { maxTurns: cardMaxTurns, ...leaderAsRoot } = team.leader;
   let definition = leaderAsRoot as typeof leaderAsRoot & { maxTurns?: number };
   if (cardMaxTurns !== undefined) {
     definition = { ...leaderAsRoot, maxTurns: cardMaxTurns > 0 ? Math.max(cardMaxTurns, TEAM_LEADER_MAX_TURNS) : cardMaxTurns };

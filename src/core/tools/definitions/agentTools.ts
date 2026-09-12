@@ -8,6 +8,8 @@ import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } fr
 import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { parseAvatarValue } from '@/core/team/avatarPresets';
+import { resolveSubagentToolNames } from '../../agent/subagentToolRoster';
+import { matchesToolName, toolPatternName } from '../../skill/toolFilter';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -522,6 +524,31 @@ function agentMdWithIdentity(
 }
 
 /**
+ * Entries of a role card's `tools:` / `disallowed-tools:` that name a tool
+ * nothing answers to — a typo like `web_serach` used to be saved as written
+ * and then silently narrowed the expert to nothing at dispatch time.
+ *
+ * Only plain built-in names are checked. A `*` pattern covers names that
+ * cannot be enumerated up front, and an MCP `server__tool` name belongs to a
+ * connector that may simply be disconnected while the expert is saved —
+ * refusing either would make saving depend on what happens to be running.
+ *
+ * Both exemptions read the tool-NAME half only (`toolPatternName`): an entry
+ * such as `writ_file(/src/**)` or `run_command(a__b)` carries the `*` / `__`
+ * in its input constraint, which says nothing about whether the tool exists.
+ */
+function unknownAgentToolNames(agent: SubagentDefinition): string[] {
+  const builtinNames: string[] = Object.values(TOOL_NAMES);
+  const declared = [...(agent.tools ?? []), ...(agent.disallowedTools ?? [])];
+  return [...new Set(declared.filter((entry) => {
+    const declaredName = toolPatternName(entry);
+    return !declaredName.includes('*')
+      && !declaredName.includes('__')
+      && !builtinNames.some((name) => matchesToolName(name, entry));
+  }))];
+}
+
+/**
  * Skill sources a user skill must never take the name of: the loader scans
  * `~/.abu/skills` before them, so a user SKILL.md under that name would hide
  * the builtin / plugin / enterprise skill everywhere it is referenced.
@@ -737,6 +764,24 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       // A Windows device name (`nul`, `con`, …) is not a folder that can be created.
       if (!nameRe.test(name) || WINDOWS_DEVICE_NAME_RE.test(name)) {
         return format(t.errInvalidName, { label, name });
+      }
+
+      // Content-only refusal, before any path is resolved or any file touched:
+      // a `tools:` / `disallowed-tools:` the roster resolver cannot parse would
+      // otherwise be written and then silently ignored at dispatch time, so the
+      // agent would run with no tool boundary at all. Content the registry
+      // cannot read is left to `agentMdWithIdentity` below, which refuses it
+      // with the detailed frontmatter message.
+      const declaredAgent = isSkill ? null : parseAgentFile(content, '');
+      if (declaredAgent) {
+        const { invalidField } = resolveSubagentToolNames([], declaredAgent);
+        if (invalidField) {
+          return format(t.errInvalidAgentTools, { field: invalidField === 'tools' ? 'tools' : 'disallowed-tools' });
+        }
+        const unknownTools = unknownAgentToolNames(declaredAgent);
+        if (unknownTools.length > 0) {
+          return format(t.errUnknownAgentTool, { names: unknownTools.join(', ') });
+        }
       }
 
       const supporting = checkSupportingFiles(input.files, fileName, t);

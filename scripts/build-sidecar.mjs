@@ -43,7 +43,7 @@
 import { build } from 'esbuild';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -80,7 +80,7 @@ const packageJson = JSON.parse(readFileSync(path.resolve(root, 'package.json'), 
  * rather than hardcoding an extension here (keeps this map source-of-truth
  * agnostic to whether the real files are `.ts` or `.tsx`).
  */
-const SHIM_TARGETS = [
+export const SHIM_TARGETS = [
   { real: path.resolve(srcDir, 'core/logging/logger.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/logger.ts') },
   // Capture native-command ownership at registration time so out-of-band
   // AbortSignal callbacks can re-enter the correct ALS context. The renderer
@@ -246,12 +246,14 @@ const SHIM_TARGETS = [
  *     though its only consumer, `getSystemInfoData()`, is never called
  *     locally), see `pluginOsRun.ts`.
  */
-const TAURI_CORE_SHIM = path.resolve(__dirname, '../sidecar/src/shims/tauriCoreInvokeRun.ts');
-const TAURI_PLUGIN_FS_SHIM = path.resolve(__dirname, '../sidecar/src/shims/pluginFsRun.ts');
-const TAURI_API_PATH_SHIM = path.resolve(__dirname, '../sidecar/src/shims/tauriPathRun.ts');
-const TAURI_PLUGIN_OS_SHIM = path.resolve(__dirname, '../sidecar/src/shims/pluginOsRun.ts');
-for (const shimPath of [TAURI_CORE_SHIM, TAURI_PLUGIN_FS_SHIM, TAURI_API_PATH_SHIM, TAURI_PLUGIN_OS_SHIM]) {
-  if (!existsSync(shimPath)) throw new Error(`[build-sidecar] missing shim file: ${shimPath}`);
+export const BARE_SPECIFIER_SHIMS = [
+  { specifier: '@tauri-apps/api/core', shim: path.resolve(__dirname, '../sidecar/src/shims/tauriCoreInvokeRun.ts') },
+  { specifier: '@tauri-apps/plugin-fs', shim: path.resolve(__dirname, '../sidecar/src/shims/pluginFsRun.ts') },
+  { specifier: '@tauri-apps/api/path', shim: path.resolve(__dirname, '../sidecar/src/shims/tauriPathRun.ts') },
+  { specifier: '@tauri-apps/plugin-os', shim: path.resolve(__dirname, '../sidecar/src/shims/pluginOsRun.ts') },
+];
+for (const { shim } of BARE_SPECIFIER_SHIMS) {
+  if (!existsSync(shim)) throw new Error(`[build-sidecar] missing shim file: ${shim}`);
 }
 
 for (const { real, shim } of SHIM_TARGETS) {
@@ -299,18 +301,10 @@ const shimPlugin = {
     // evaluation order for esbuild onResolve within one plugin) and BEFORE
     // bundleGraphGuardPlugin's blanket `@tauri-apps/*` rejection (plugin
     // order: shimPlugin runs first) — see TAURI_CORE_SHIM's doc.
-    pluginBuild.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => {
-      return { path: TAURI_CORE_SHIM };
-    });
-    pluginBuild.onResolve({ filter: /^@tauri-apps\/plugin-fs$/ }, () => {
-      return { path: TAURI_PLUGIN_FS_SHIM };
-    });
-    pluginBuild.onResolve({ filter: /^@tauri-apps\/api\/path$/ }, () => {
-      return { path: TAURI_API_PATH_SHIM };
-    });
-    pluginBuild.onResolve({ filter: /^@tauri-apps\/plugin-os$/ }, () => {
-      return { path: TAURI_PLUGIN_OS_SHIM };
-    });
+    for (const { specifier, shim } of BARE_SPECIFIER_SHIMS) {
+      const filter = new RegExp(`^${specifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+      pluginBuild.onResolve({ filter }, () => ({ path: shim }));
+    }
 
     pluginBuild.onResolve({ filter: /.*/ }, async (args) => {
       // Recursion guard: this handler calls build.resolve() below to find out
@@ -443,7 +437,12 @@ async function main() {
   console.log('[build-sidecar] sidecar/index.mjs built');
 }
 
-main().catch((err) => {
-  console.error('[build-sidecar] build failed:', err);
-  process.exit(1);
-});
+// Only build when run as a script. `shimSurfaceCoverage.test.ts` imports this
+// module for SHIM_TARGETS/BARE_SPECIFIER_SHIMS; without this gate that import
+// would kick off a real esbuild run as a side effect.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error('[build-sidecar] build failed:', err);
+    process.exit(1);
+  });
+}

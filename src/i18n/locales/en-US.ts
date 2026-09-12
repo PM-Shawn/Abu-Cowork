@@ -1813,7 +1813,6 @@ const enUS: TranslationDict = {
     exampleSkills: 'Built-in',
     globalSkills: 'Installed',
     projectSkills: 'Project',
-    projectSkillsBadge: 'Enable manually',
     categoryMine: 'Mine',
     categoryAgentEvolvedBadge: 'Self-evolved',
     categoryAgentEvolved: 'Abu evolved',

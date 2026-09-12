@@ -1814,7 +1814,6 @@ const zhCN: TranslationDict = {
     exampleSkills: '内置',
     globalSkills: '全局安装',
     projectSkills: '当前项目',
-    projectSkillsBadge: '需手动启用',
     categoryMine: '我的',
     categoryAgentEvolved: '阿布沉淀',
     categoryAgentEvolvedBadge: '自进化',

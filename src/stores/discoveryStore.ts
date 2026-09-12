@@ -4,7 +4,6 @@ import type { SkillMetadata, SubagentMetadata } from '../types';
 import { skillLoader } from '../core/skill/loader';
 import { agentRegistry } from '../core/agent/registry';
 import { readInstalled, readInstalledResult, type InstalledPlugin } from '../core/plugin/installedStore';
-import { useSettingsStore } from './settingsStore';
 import { useWorkspaceStore } from './workspaceStore';
 
 /**
@@ -127,14 +126,12 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
         }) : readInstalledPluginsSafely(),
       ]);
 
-      // Auto-disable project-level skills on first discovery (opt-in model).
-      // Users must explicitly enable them in the Skills panel.
-      const projectSkillNames = skills
-        .filter((s) => s.source === 'project' || s.source === 'project-standard')
-        .map((s) => s.name);
-      if (projectSkillNames.length > 0) {
-        useSettingsStore.getState().autoDisableProjectSkills(projectSkillNames);
-      }
+      // Discovery never writes `disabledSkills`: it holds only the user's own
+      // switches, and this runs on every boot, workspace switch and skills
+      // folder change. Project skills are on by default like every other
+      // source (2026-09-12 ruling) — the former auto-disable here undid each
+      // opt-in on the next refresh and, the list being keyed by name, switched
+      // off the user's same-named skill in every workspace.
 
       set({ skills, agents: applyPluginAgentSources(agents, installedPlugins), isLoading: false });
     } catch (err) {

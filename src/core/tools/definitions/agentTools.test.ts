@@ -1016,6 +1016,44 @@ describe('save_agent / save_skill name guard', () => {
       expectNothingWritten();
     });
 
+    // Abu writes the avatar itself (the editor's picker only produces preset
+    // references). A value that is neither a preset reference nor one emoji
+    // would render as raw text everywhere an avatar is shown.
+    it.each(['icon:code/blue/extra', 'icon:code', 'icon:nope/blue', 'icon:code/neon', 'code/blue', '🤖🤖', 'AB'])(
+      'refuses the avatar %j — neither a preset icon reference nor a single emoji — writing nothing',
+      async (avatar) => {
+        const result = await saveAgentTool.execute({
+          name: 'avatar-check',
+          content: `---\nname: avatar-check\ndescription: Reviews code\navatar: ${avatar}\n---\n\nYou review code.`,
+        });
+
+        expect(result).toBe(t().errInvalidAvatar);
+        expectNothingWritten();
+      },
+    );
+
+    // YAML reads `avatar: 123` as a number; it would render as raw text too.
+    it('refuses an avatar the frontmatter did not type as a string', async () => {
+      const result = await saveAgentTool.execute({
+        name: 'avatar-check',
+        content: '---\nname: avatar-check\ndescription: Reviews code\navatar: 123\n---\n\nYou review code.',
+      });
+
+      expect(result).toBe(t().errInvalidAvatar);
+      expectNothingWritten();
+    });
+
+    it.each(['icon:code/blue', 'icon:chart-bar/coral', '🤖', '👩‍💻', '🇨🇳'])('accepts the avatar %j', async (avatar) => {
+      const result = await saveAgentTool.execute({
+        name: 'avatar-ok',
+        content: `---\nname: avatar-ok\ndescription: Reviews code\navatar: ${avatar}\n---\n\nYou review code.`,
+      });
+
+      expect(result).not.toBe(t().errInvalidAvatar);
+      const written = vi.mocked(writeTextFile).mock.calls.find(([path]) => path === `${AGENTS_DIR}/avatar-ok/AGENT.md`);
+      expect(String(written?.[1])).toContain(`avatar: ${avatar}`);
+    });
+
     it('refuses content whose frontmatter name differs from the name parameter', async () => {
       const result = await saveAgentTool.execute({
         name: 'reviewer',

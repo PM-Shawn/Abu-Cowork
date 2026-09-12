@@ -7,6 +7,7 @@ import { createParentStepResolver } from '../../agent/delegateParentStep';
 import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } from '../../../types';
 import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
+import { parseAvatarValue } from '@/core/team/avatarPresets';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -510,14 +511,14 @@ function agentMdWithIdentity(
   filePath: string,
   existingRaw: string | null,
   content: string,
-): { md: string; name: string } | null {
+): { md: string; name: string; avatar: string | undefined } | null {
   const existing = existingRaw === null ? null : readAgentIdentity(existingRaw);
   const now = Date.now();
   const md = withAgentIdentity(content, existing, now);
   const wanted = wantedAgentIdentity(existing, now);
   const readBack = parseAgentFile(md, filePath);
   if (!readBack || readBack.roleId !== wanted.roleId || readBack.createdAt !== wanted.createdAt) return null;
-  return { md, name: readBack.name };
+  return { md, name: readBack.name, avatar: readBack.avatar };
 }
 
 /**
@@ -638,6 +639,21 @@ function isPlainPathSegment(segment: string): boolean {
 }
 
 /**
+ * New writes only: a preset icon reference, or exactly one visible emoji.
+ * Avatars already stored (an emoji a user typed by hand years ago, say) are
+ * never rewritten here — this only refuses what a model asks to write now,
+ * because anything else renders as raw text wherever the avatar is shown.
+ */
+export function isValidNewAvatar(value: string): boolean {
+  if (!value) return true;
+  const parsed = parseAvatarValue(value);
+  if (parsed.kind === 'icon') return true;
+  if (parsed.kind !== 'emoji' || value.length > 64) return false;
+  return [...new Intl.Segmenter('en', { granularity: 'grapheme' }).segment(value)].length === 1
+    && /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[#*0-9]️?⃣)/u.test(value);
+}
+
+/**
  * The `files` to write, or why the whole call must be refused.
  *
  * Every entry is checked before anything touches disk: a refusal found
@@ -735,6 +751,7 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
 
       let mainContent = content;
       let manifestName: string | undefined;
+      let manifestAvatar: string | undefined;
       if (isSkill) {
         manifestName = parseSkillFile(content, filePath)?.name;
       } else {
@@ -742,11 +759,18 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
         if (agent === null) return format(t.errAgentFrontmatterInvalid, { name });
         mainContent = agent.md;
         manifestName = agent.name;
+        manifestAvatar = agent.avatar;
       }
       // The registry keys an item by its frontmatter name, not its folder: a
       // mismatch would file it under a name this call never checked.
       if (manifestName !== name) {
         return format(t.errManifestNameMismatch, { label, name, found: manifestName ?? '', fileName });
+      }
+      // Still nothing written: a refusal here leaves no half-saved agent.
+      // String(): YAML types `avatar: 123` as a number, which would reach the
+      // renderer as raw text just like any other unsupported value.
+      if (!isSkill && manifestAvatar !== undefined && !isValidNewAvatar(String(manifestAvatar).trim())) {
+        return t.errInvalidAvatar;
       }
 
       await ensureParentDir(filePath);

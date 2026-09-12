@@ -3335,6 +3335,7 @@ const zhCN: TranslationDict = {
       labelSkill: '技能',
       labelAgent: '代理',
       errInvalidName: 'Error: {label}名称不合法。仅允许小写字母、数字和连字符，且不能以连字符开头或结尾。收到: "{name}"',
+      errInvalidAvatar: 'Error: 未保存任何文件：头像只能是内置图标引用（icon:<图标>/<颜色>）或一个 emoji。可用图标：chart-bar、code、flask、pen、shield、users、search、database、palette、compass、wrench、book、megaphone、scale、sparkles、cpu、globe、camera、calculator、bot；可用颜色：blue、purple、teal、coral、amber、pink。',
       errUnsafeFilePath: 'Error: 未保存任何文件：文件路径不安全："{p}"。请使用由普通名字组成的相对路径：不能是绝对路径，不能有 "."、".." 或空的路径段，名字不能以 "." 或空格结尾，不能含 : < > " | ? * 或控制字符，也不能是 Windows 设备名（CON、PRN、AUX、NUL、COM1–9、LPT1–9）。',
       errFileIsManifest: 'Error: 未保存任何文件：files 里的「{p}」就是 {fileName} 本身。{fileName} 的内容请放在 content 里，files 只用于附属文件。',
       errInvalidFileEntry: 'Error: 未保存任何文件：files[{index}] 必须是包含非空字符串 path 和字符串 content 的对象。',

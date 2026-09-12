@@ -122,11 +122,9 @@ class TriggerEngine {
       // endpoint accepts inbound messages: widening it because a plugin is
       // present would let an install decide, on the user's behalf, that every
       // machine on the network may talk to Abu. Both must be true.
-      const { getRegisteredPluginManifests } = await import('../im/pluginRegistry');
-      const hasHeartbeatPlugin = getRegisteredPluginManifests()
-        .some((m) => m.capabilities.connectionType === 'heartbeat');
+      const { hasHeartbeatPlugin } = await import('../im/pluginRegistry');
       const bindAddr = resolveTriggerBindAddress(
-        hasHeartbeatPlugin,
+        hasHeartbeatPlugin(),
         useSettingsStore.getState().imChannel?.allowLanWebhook,
       );
       const port = await invoke<number>('start_trigger_server', { port: DEFAULT_PORT, bindAddr });

@@ -89,6 +89,19 @@ export function getRegisteredPluginManifests(): IMPluginManifest[] {
 }
 
 /**
+ * Is a plugin that keeps a heartbeat installed?
+ *
+ * One predicate for both readers: the trigger server asks it when deciding
+ * whether the user's LAN opt-in has anything to open for, and the IM settings
+ * row asks it before telling the user a plugin is waiting on that switch. Two
+ * copies of this test could disagree, and the one the user reads would be the
+ * wrong one.
+ */
+export function hasHeartbeatPlugin(): boolean {
+  return getRegisteredPluginManifests().some((m) => m.capabilities.connectionType === 'heartbeat');
+}
+
+/**
  * Check whether a platform is provided by a plugin (vs built-in).
  */
 export function isPluginPlatform(platform: string): boolean {

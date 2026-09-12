@@ -65,6 +65,7 @@ vi.mock('../im/triggerContextCache', () => ({
 // Mock im pluginRegistry
 vi.mock('../im/pluginRegistry', () => ({
   getRegisteredPluginManifests: vi.fn().mockReturnValue([]),
+  hasHeartbeatPlugin: vi.fn().mockReturnValue(false),
 }));
 
 // Import after mocks

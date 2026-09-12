@@ -29,9 +29,14 @@ function resolvePlatform(): Platform {
 
 const current: Platform = resolvePlatform();
 
-/** No-op — resolved synchronously above; kept for call-site compatibility (the real module's callers `await initPlatform()` once at startup). */
-export async function initPlatform(): Promise<void> {
-  return Promise.resolve();
+/**
+ * Resolved synchronously above, so there is nothing to await — but the real
+ * module RETURNS the platform it resolved, and this returned `void`, so a
+ * caller writing `const p = await initPlatform()` type-checked against the
+ * real module and got `undefined`. Returns the resolved platform instead.
+ */
+export async function initPlatform(): Promise<Platform> {
+  return Promise.resolve(current);
 }
 
 export function getPlatform(): Platform {

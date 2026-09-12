@@ -4,6 +4,7 @@
 //! be added to the frozen Tauri compatibility path.
 
 mod app_catalog;
+mod clipboard;
 mod dpi;
 mod input;
 mod interaction;

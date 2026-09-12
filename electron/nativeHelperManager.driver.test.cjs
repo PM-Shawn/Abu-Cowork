@@ -36,6 +36,7 @@ const WINDOWS_DECLARATION = {
     foreground_required: true,
     background_element_actions: false,
     unicode_text: true,
+    clipboard_paste: true,
     chords: true,
     ime_aware: false,
     physical_input_monitoring: true,
@@ -60,6 +61,7 @@ test('an undeclared helper gets the legacy table for its platform', () => {
     assert.equal(caps.id, id, platform);
     assert.equal(caps.input.foreground_required, true, platform);
     assert.equal(caps.input.unicode_text, false, platform);
+    assert.equal(caps.input.clipboard_paste, false, platform);
     assert.equal(caps.elements.identity, 'session-index', platform);
     assert.equal(caps.elements.empty_value, 'unknown', platform);
     assert.deepEqual(caps.elements.actions, [], platform);

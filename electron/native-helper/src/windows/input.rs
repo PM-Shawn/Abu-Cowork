@@ -25,7 +25,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
     MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, MOUSE_EVENT_FLAGS,
     VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1, VK_HOME,
-    VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_SPACE,
+    VK_LEFT, VK_LWIN, VK_MENU, VK_NEXT, VK_PRIOR, VK_RETURN, VK_RIGHT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_V,
     VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -622,6 +622,7 @@ pub fn mouse_drag_impl(
 
 pub fn keyboard_type_impl(
     text: String,
+    method: String,
     app_id: String,
     process_id: u32,
     window_id: String,
@@ -638,6 +639,16 @@ pub fn keyboard_type_impl(
             "text contains control characters; use key for named keys",
         ));
     }
+    match method.as_str() {
+        "unicode" | "" => {}
+        "paste" => return paste_via_clipboard(&text, &app_id, process_id, &window_id, expected_input_epoch),
+        other => {
+            return Err(HelperError::not_executed(
+                "invalid-params",
+                format!("unsupported type method '{other}'; use unicode or paste"),
+            ))
+        }
+    }
     let mut inputs = Vec::with_capacity(unit_count * 2);
     for unit in text.encode_utf16() {
         inputs.push(keyboard_input(VIRTUAL_KEY(0), unit, KEYEVENTF_UNICODE));
@@ -652,6 +663,72 @@ pub fn keyboard_type_impl(
         send(chunk)?;
     }
     Ok(format!("typed {} UTF-16 units", inputs.len() / 2))
+}
+
+/// The Ctrl+V chord, sent through the same guarded path as any other chord.
+fn paste_events() -> [KeyboardEvent; 4] {
+    [
+        KeyboardEvent::down(VK_CONTROL),
+        KeyboardEvent::down(VK_V),
+        KeyboardEvent::up(VK_V),
+        KeyboardEvent::up(VK_CONTROL),
+    ]
+}
+
+/// `type` fallback for targets that ignore injected keystrokes (contract
+/// §2.6): write the text to the clipboard, read it back, press Ctrl+V, restore
+/// what was there. Refuses when the clipboard holds anything but plain text —
+/// an image, files or rich text cannot be put back exactly, and the user's
+/// clipboard is not ours to lose.
+fn paste_via_clipboard(
+    text: &str,
+    app_id: &str,
+    process_id: u32,
+    window_id: &str,
+    expected_input_epoch: u64,
+) -> Result<String, HelperError> {
+    assert_no_physical_modifier(|vk| unsafe { GetAsyncKeyState(vk as i32) < 0 })?;
+    let previous = {
+        let clipboard = super::clipboard::Clipboard::open()?;
+        let formats = clipboard.formats();
+        if !super::clipboard::is_plain_text_clipboard(&formats) {
+            return Err(HelperError::not_executed(
+                "clipboard-busy",
+                "clipboard holds non-text content that could not be restored; type with the unicode method instead",
+            ));
+        }
+        let previous = clipboard.read_unicode_text();
+        clipboard.set_unicode_text(text)?;
+        if clipboard.read_unicode_text().as_deref() != Some(text) {
+            let _ = match &previous {
+                Some(value) => clipboard.set_unicode_text(value),
+                None => clipboard.empty(),
+            };
+            return Err(HelperError::not_executed(
+                "clipboard-write-failed",
+                "clipboard did not read back the text that was written",
+            ));
+        }
+        previous
+    };
+    // Everything up to here touched only the clipboard. The chord below is
+    // the dispatch; its own partial-send classification stands.
+    assert_target(app_id, process_id, window_id, expected_input_epoch)?;
+    let sent = send_keyboard_sequence(&paste_events());
+    // Let the target read the clipboard before it changes back.
+    thread::sleep(Duration::from_millis(150));
+    let restored = super::clipboard::Clipboard::open()
+        .and_then(|clipboard| match &previous {
+            Some(value) => clipboard.set_unicode_text(value),
+            None => clipboard.empty(),
+        })
+        .is_ok();
+    sent?;
+    Ok(format!(
+        "pasted {} UTF-16 units via clipboard{}",
+        text.encode_utf16().count(),
+        if restored { "" } else { " (previous clipboard content could not be restored)" }
+    ))
 }
 
 fn named_key(key: &str) -> Option<VIRTUAL_KEY> {
@@ -824,10 +901,10 @@ pub fn keyboard_press_impl(
 #[cfg(test)]
 mod tests {
     use crate::error::HelperError;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_LWIN, VK_MENU};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_LWIN, VK_MENU, VK_V};
     use super::{
         absolute_coordinate, assert_no_physical_modifier, character_layout_error,
-        contains_blocked_control, modifier_virtual_keys,
+        contains_blocked_control, modifier_virtual_keys, paste_events,
         coordinate_within, integrity_allows, mapped_source_extent, resolve_character_key,
         send_keyboard_sequence_with, unicode_key_events, KeyboardEvent,
     };
@@ -1012,6 +1089,16 @@ mod tests {
         assert!(integrity_allows(0x2000, 0x1000));
         assert!(integrity_allows(0x2000, 0x2000));
         assert!(!integrity_allows(0x2000, 0x3000));
+    }
+
+    #[test]
+    fn paste_chord_is_ctrl_v_released_in_reverse_order() {
+        let events = paste_events();
+        assert_eq!(events.len(), 4);
+        assert!(!events[0].key_up && events[0].vk == VK_CONTROL.0);
+        assert!(!events[1].key_up && events[1].vk == VK_V.0);
+        assert!(events[2].key_up && events[2].vk == VK_V.0);
+        assert!(events[3].key_up && events[3].vk == VK_CONTROL.0);
     }
 
     #[test]

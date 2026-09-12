@@ -39,7 +39,7 @@ describe('driver capability contract', () => {
     // The declared value is the self-check result, never a literal promise.
     expect(rust).toContain('"dpi_awareness": windows_backend::dpi_awareness()');
     expect(rust).toContain('windows_backend::initialize_dpi_awareness()');
-    for (const key of ['foreground_required', 'background_element_actions', 'unicode_text', 'chords', 'ime_aware',
+    for (const key of ['foreground_required', 'background_element_actions', 'unicode_text', 'clipboard_paste', 'chords', 'ime_aware',
       'physical_input_monitoring', 'occluded_window', 'excludes_own_window', 'dpi_awareness', 'can_activate_window']) {
       expect(rust, key).toContain(`"${key}"`);
     }
@@ -48,7 +48,7 @@ describe('driver capability contract', () => {
   it('Host normalization and renderer parsing agree on every field of a declaration', () => {
     const declaration = {
       id: 'windows-uia',
-      input: { foreground_required: true, background_element_actions: false, unicode_text: true, chords: true, ime_aware: false, physical_input_monitoring: true },
+      input: { foreground_required: true, background_element_actions: false, unicode_text: true, clipboard_paste: true, chords: true, ime_aware: false, physical_input_monitoring: true },
       capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true, dpi_awareness: 'per-monitor-v2' },
       elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke', 'SetValue'] },
       boundaries: ['secure-desktop', 'higher-integrity'],
@@ -103,6 +103,7 @@ describe('driver capability contract', () => {
       expect(caps.elements.identity).toBe('runtime-id'); // §2.5
       expect(caps.elements.empty_value).toBe('string'); // §2.7
       expect(caps.input.unicode_text).toBe(true); // §2.6
+      expect(caps.input.clipboard_paste).toBe(true); // §2.6 paste fallback
       expect(caps.input.foreground_required).toBe(true);
       expect(caps.boundaries).toEqual(['secure-desktop', 'higher-integrity']);
       expect(caps.capture.dpi_awareness).toBe('per-monitor-v2'); // §2.8 startup self-check

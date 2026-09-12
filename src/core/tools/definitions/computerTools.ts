@@ -684,10 +684,20 @@ export async function closeAxSession(
  * Windows uses native Unicode SendInput for all text. macOS keeps the existing
  * clipboard fallback for CJK and restores the prior clipboard value.
  */
+type TypeMethod = 'unicode' | 'paste';
+const typeMethod = (input: Record<string, unknown>): TypeMethod => (input.method === 'paste' ? 'paste' : 'unicode');
+
 async function typeViaKeyboard(
   text: string,
   invocation: ComputerUseInvocation,
+  method: TypeMethod = 'unicode',
 ): Promise<string> {
+  if (method === 'paste' && isWindows()) {
+    // The helper owns the round-trip (write → read back → Ctrl+V → restore)
+    // so the chord runs under the same lease and epoch checks as any input.
+    await invokeComputerUse<string>(invocation, 'keyboard_type', { text, method: 'paste' });
+    return `Typed ${text.length} chars via clipboard paste`;
+  }
   const hasNonAscii = /[^ -~\t\n\r]/.test(text);
   if (hasNonAscii && !isWindows()) {
     let savedClipboard: string | null = null;
@@ -1116,7 +1126,7 @@ immediately before that one action, even in Full Autonomy.
 
 ✅ Recommended operations (AX path — no mouse movement, no focus stealing)
 • click           Click. element_id=N (AXPress, preferred) or x, y (pixel click). Optional button (left/right/middle/double).
-• type            Type text. element_id=N (AXSetValue, preferred) + text, or text alone (keyboard input).
+• type            Type text. element_id=N (AXSetValue, preferred) + text, or text alone (keyboard input). Optional method=paste (clipboard + Ctrl+V) only after a previous type verified as no change: some apps ignore injected keystrokes. Refused when the clipboard holds non-text content.
 • perform_action  Execute a secondary AX action, e.g. context menu (AXShowMenu), select (AXPick), increment/decrement (AXIncrement/AXDecrement). Parameters: element_id, action_name.
 • scroll          Scroll. element_id=N (scroll at element position) or x, y. direction (up/down/left/right), amount (default 3).
 
@@ -1190,6 +1200,11 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       height: { type: 'number', description: 'Crop height (screenshot only)' },
       // Text input (type / ax_type)
       text: { type: 'string', description: 'Text to type or set on the element' },
+      method: {
+        type: 'string',
+        enum: ['unicode', 'paste'],
+        description: 'How keyboard text is delivered. unicode (default) injects keystrokes; paste puts the text on the clipboard and presses Ctrl+V, restoring the previous clipboard text. Use paste only when a previous type verified as no change.',
+      },
       // Key
       key: { type: 'string', description: 'Key name (Return, Tab, Escape, Space, ArrowUp, ArrowDown, Home, End, PageUp, PageDown, Delete, Backspace, F1-F12) or one character for a chord such as ctrl+c. A plain character without modifiers is typed as text.' },
       modifiers: {
@@ -1973,11 +1988,11 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               if (electronHost) {
                 throw e;
               }
-              await typeViaKeyboard(text, invocation);
+              await typeViaKeyboard(text, invocation, typeMethod(input));
               actionResult = format(t.typeAxFallback, { msg });
             }
           } else {
-            actionResult = await typeViaKeyboard(text, invocation);
+            actionResult = await typeViaKeyboard(text, invocation, typeMethod(input));
           }
           break;
         }
@@ -2061,7 +2076,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             if (electronHost) {
               throw e;
             }
-            await typeViaKeyboard(text, invocation);
+            await typeViaKeyboard(text, invocation, typeMethod(input));
             actionResult = format(t.axTypeFallback, { msg });
           }
           break;

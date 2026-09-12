@@ -1606,6 +1606,88 @@ describe('computerTool — accessibility permission branch', () => {
     expect(keyCount).toBe(2);
   });
 
+  it('sends type with method=paste to the Windows helper as a clipboard paste', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-paste' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    const typed: Array<Record<string, unknown>> = [];
+    vi.mocked(invoke).mockImplementation((cmd: string, args?: unknown) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-paste-token',
+          target: {
+            window_ref: 'wr-notepad-paste',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-paste-ax-${snapshotCount}`,
+          state_id: `windows-paste-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_type') {
+        typed.push((args ?? {}) as Record<string, unknown>);
+        return Promise.resolve('pasted 5 UTF-16 units via clipboard');
+      }
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata: vi.fn(),
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-paste-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    const result = await computerTool.execute(
+      {
+        action: 'type',
+        text: 'hello',
+        method: 'paste',
+        window_ref: 'wr-notepad-paste',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-paste-type' },
+    );
+    // The helper owns the clipboard round-trip; the renderer only names the
+    // method. Typed text never appears in the tool's own summary.
+    expect(typed).toHaveLength(1);
+    expect(typed[0]).toMatchObject({ text: 'hello', method: 'paste' });
+    expect(String(result)).toMatch(/clipboard paste/);
+    expect(String(result)).not.toMatch(/Error:/);
+  });
+
   it('hands the turn back as a pause when the user takes over mid-action', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);

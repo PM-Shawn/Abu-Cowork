@@ -148,6 +148,7 @@ fn driver_capabilities() -> Value {
                 "unicode_text": true,
                 "chords": true,
                 "ime_aware": false,
+                "clipboard_paste": true,
                 "physical_input_monitoring": windows_backend::input_monitoring_ready(),
             },
             "capture": {
@@ -180,6 +181,7 @@ fn driver_capabilities() -> Value {
                 "unicode_text": true,
                 "chords": true,
                 "ime_aware": false,
+                "clipboard_paste": false,
                 "physical_input_monitoring": false,
             },
             "capture": {
@@ -207,6 +209,7 @@ fn driver_capabilities() -> Value {
                 "unicode_text": false,
                 "chords": false,
                 "ime_aware": false,
+                "clipboard_paste": false,
                 "physical_input_monitoring": false,
             },
             "capture": { "display": "unknown", "occluded_window": false, "excludes_own_window": false },
@@ -774,6 +777,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
                 } else {
                     windows_backend::keyboard_type_impl(
                         text,
+                        String::new(),
                         expected_app_id,
                         expected_process_id,
                         expected_window_id,
@@ -1066,10 +1070,12 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
 
         "keyboard_type" => {
             let text = require_str(params, "text")?;
+            let method = opt_str(params, "method").unwrap_or_default();
             #[cfg(target_os = "windows")]
             {
                 let msg = windows_backend::keyboard_type_impl(
                     text,
+                    method,
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
                         .map_err(|_| HelperError::not_executed("invalid-params", "expected process id is invalid"))?,
@@ -1080,6 +1086,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
             }
             #[cfg(not(target_os = "windows"))]
             {
+                let _ = method;
                 let msg = cu::keyboard_type_guarded_impl(text, || assert_expected_target(params))?;
                 Ok(json!(msg))
             }

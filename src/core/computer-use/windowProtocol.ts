@@ -71,6 +71,8 @@ export interface ComputerDriverCapabilities {
     foreground_required: boolean;
     background_element_actions: boolean;
     unicode_text: boolean;
+    /** `type` can fall back to clipboard + Ctrl+V for targets that ignore injected keystrokes. */
+    clipboard_paste: boolean;
     chords: boolean;
     ime_aware: boolean;
     physical_input_monitoring: boolean;
@@ -121,6 +123,7 @@ export function parseDriverCapabilities(value: unknown): ComputerDriverCapabilit
       foreground_required: input.foreground_required !== false,
       background_element_actions: input.background_element_actions === true,
       unicode_text: input.unicode_text === true,
+      clipboard_paste: input.clipboard_paste === true,
       chords: input.chords === true,
       ime_aware: input.ime_aware === true,
       physical_input_monitoring: input.physical_input_monitoring === true,

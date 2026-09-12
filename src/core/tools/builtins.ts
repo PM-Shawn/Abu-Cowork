@@ -12,6 +12,7 @@ import { runCommandTool } from './definitions/commandTools';
 // save_skill was deprecated in favor of skill_manage (Module E self-evolution).
 // save_agent is kept — no equivalent agent_manage yet.
 import { useSkillTool, delegateToAgentTool, readSkillFileTool, saveAgentTool, requestWorkspaceTool } from './definitions/agentTools';
+import { saveTeamTool } from './definitions/teamTools';
 export {
   clearAllSkillHooks,
   clearSkillHooksByConversation,
@@ -90,6 +91,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(manageScheduledTaskTool);
   toolRegistry.register(manageTriggerTool);
   toolRegistry.register(saveAgentTool);
+  toolRegistry.register(saveTeamTool);
   toolRegistry.register(logTaskCompletionTool);
   toolRegistry.register(manageMCPServerTool);
   toolRegistry.register(manageFileWatchTool);

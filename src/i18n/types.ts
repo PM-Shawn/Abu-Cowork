@@ -1865,6 +1865,16 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
+    fieldDescription: string;
+    fieldDescriptionPlaceholder: string;
+    fieldIntro: string;
+    fieldExpertise: string;
+    fieldSamplePrompts: string;
+    fieldLinesHint: string;
+    fieldSamplePromptsHint: string;
+    detailIntro: string;
+    detailExpertise: string;
+    detailSamplePrompts: string;
     fieldMembers: string;
     fieldMembersHint: string;
     noMembersYet: string;
@@ -3373,6 +3383,10 @@ export interface TranslationDict {
     selfExtensionSaveAgentNew: string;
     /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
     selfExtensionSaveAgentReplace: string;
+    /** save_team summary label: this call creates a team that does not exist yet. */
+    selfExtensionSaveTeamNew: string;
+    /** save_team summary label: this call overwrites a team of the same name. */
+    selfExtensionSaveTeamReplace: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;
@@ -3832,6 +3846,14 @@ export interface TranslationDict {
   // LLM, so they go through i18n (resolved at execution time by the current
   // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
   toolResult: {
+    team: {
+      invalidInput: string;
+      unavailableAgents: string;
+      saved: string;
+      approvalOn: string;
+      approvalOff: string;
+      saveFailed: string;
+    };
     // Shared value fragments reused across tools.
     valueNone: string;
     valueNever: string;

@@ -877,6 +877,20 @@ describe('settingsStore labs flags', () => {
       expect(getMigrate()({ theme: 'light' }, 51).imChannel).toEqual({ allowLanWebhook: false });
     });
 
+    /**
+     * The action behind that opt-in. It is the only way the flag ever turns
+     * true, so it has to write exactly the boolean it was handed — an object
+     * replaced wholesale here would drop any sibling field a later version
+     * adds beside it.
+     */
+    it('setIMAllowLanWebhook writes the opt-in without disturbing the rest of imChannel', () => {
+      useSettingsStore.setState({ imChannel: { allowLanWebhook: false } });
+      useSettingsStore.getState().setIMAllowLanWebhook(true);
+      expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(true);
+      useSettingsStore.getState().setIMAllowLanWebhook(false);
+      expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(false);
+    });
+
     it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
       const migrated = getMigrate()({ theme: 'light' }, 45);
       expect(migrated.allowUnattendedBrowser).toBe(false);

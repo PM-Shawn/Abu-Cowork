@@ -99,7 +99,7 @@ describe('computeCapabilitySnapshot', () => {
         github: {
           config: { name: 'github', enabled: true },
           status: 'connected',
-          tools: [{ name: 'github__search_issues' }],
+          tools: [{ name: 'search_issues' }],
         },
       },
       isLoading: false,
@@ -120,7 +120,7 @@ describe('computeCapabilitySnapshot', () => {
         slack: {
           config: { name: 'slack', enabled: false },
           status: 'disconnected',
-          tools: [{ name: 'slack__post_message' }],
+          tools: [{ name: 'post_message' }],
         },
       },
       isLoading: false,
@@ -134,6 +134,27 @@ describe('computeCapabilitySnapshot', () => {
     ]);
   });
 
+  it('keeps same-named tools distinct and probes policy and live definitions by their callable names', () => {
+    register(makeTool('search', true));
+    useMCPStore.setState({ servers: {
+      alpha: { config: { name: 'alpha', enabled: true }, status: 'connected', tools: [{ name: 'search' }] },
+      beta: { config: { name: 'beta', enabled: true }, status: 'connected', tools: [{ name: 'search' }] },
+    } });
+    mocks.getServerTools.mockImplementation((server: string) => [makeTool(`${server}__search`, true)]);
+    mocks.checkTool.mockImplementation((_policy: unknown, name: string) =>
+      name === 'beta__search' ? { decision: 'deny', reason: 'restricted' } : { decision: 'allow' },
+    );
+
+    const entries = computeCapabilitySnapshot().entries;
+    expect(entries.find((entry) => entry.name === 'search')?.source).toEqual({ kind: 'builtin' });
+    expect(entries.find((entry) => entry.name === 'alpha__search')).toMatchObject({
+      source: { kind: 'mcp', server: 'alpha' }, unavailableReasons: [], concurrencySafety: 'safe',
+    });
+    expect(entries.find((entry) => entry.name === 'beta__search')?.unavailableReasons).toEqual([
+      { kind: 'policy-denied', reason: 'restricted' },
+    ]);
+  });
+
   it('reports an errored MCP server tool with its connection status and a SANITIZED error category (never the raw error)', () => {
     useMCPStore.setState({
       servers: {
@@ -141,7 +162,7 @@ describe('computeCapabilitySnapshot', () => {
           config: { name: 'notion', enabled: true },
           status: 'error',
           error: 'ECONNREFUSED',
-          tools: [{ name: 'notion__query' }],
+          tools: [{ name: 'query' }],
         },
       },
       isLoading: false,
@@ -162,7 +183,7 @@ describe('computeCapabilitySnapshot', () => {
           config: { name: 'leaky', enabled: true },
           status: 'error',
           error: 'fetch failed: https://mcp.example.com/sse?token=sk-super-secret-abc123 (config at /Users/shawn/.abu/mcp/leaky.json)',
-          tools: [{ name: 'leaky__do_thing' }],
+          tools: [{ name: 'do_thing' }],
         },
       },
       isLoading: false,
@@ -188,7 +209,7 @@ describe('computeCapabilitySnapshot', () => {
         playwright: {
           config: { name: 'playwright', enabled: true },
           status: 'connected',
-          tools: [{ name: 'playwright__browser_click' }],
+          tools: [{ name: 'browser_click' }],
         },
       },
       isLoading: false,
@@ -209,7 +230,7 @@ describe('computeCapabilitySnapshot', () => {
         playwright: {
           config: { name: 'playwright', enabled: true },
           status: 'connected',
-          tools: [{ name: 'playwright__browser_click' }],
+          tools: [{ name: 'browser_click' }],
         },
       },
       isLoading: false,
@@ -222,7 +243,7 @@ describe('computeCapabilitySnapshot', () => {
   });
 
   it('gives builtin tools priority over an MCP tool of the same name', () => {
-    register(makeTool('shared_name', true));
+    register(makeTool('someserver__shared_name', true));
     useMCPStore.setState({
       servers: {
         someserver: {
@@ -235,7 +256,7 @@ describe('computeCapabilitySnapshot', () => {
     });
 
     const snapshot = computeCapabilitySnapshot();
-    const matches = snapshot.entries.filter((e) => e.name === 'shared_name');
+    const matches = snapshot.entries.filter((e) => e.name === 'someserver__shared_name');
 
     expect(matches).toHaveLength(1);
     expect(matches[0].source).toEqual({ kind: 'builtin' });

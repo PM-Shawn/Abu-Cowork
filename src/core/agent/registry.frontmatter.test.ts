@@ -208,3 +208,50 @@ describe('parseAgentFile — CRLF frontmatter', () => {
     expect(parseAgentFile(raw, '/a/AGENT.md')?.systemPrompt).toBe('Intro\r\n---\r\nMore');
   });
 });
+
+describe('parseAgentFile / serializeAgentMd — role tool inheritance', () => {
+  function agentFile(declaration: string): string {
+    return `---\nname: specialist\ndescription: Help with the task\n${declaration}\n---\n\nComplete the requested work.\n`;
+  }
+
+  it.each([
+    ['omitted constraints', ''],
+    ['empty role lists', 'tools: []\ndisallowed-tools: []'],
+  ])('round-trips %s without writing a tool boundary', (_label, declaration) => {
+    const parsed = parseAgentFile(agentFile(declaration), '/a/AGENT.md');
+    expect(parsed).not.toBeNull();
+
+    const serialized = serializeAgentMd(parsed!, parsed!.systemPrompt);
+    expect(serialized).not.toMatch(/^(?:tools|disallowed-tools):/m);
+    const reloaded = parseAgentFile(serialized, '/a/AGENT.md');
+    expect(reloaded).not.toBeNull();
+    expect(reloaded?.tools).toBeUndefined();
+    expect(reloaded?.disallowedTools).toBeUndefined();
+    expect(reloaded?.systemPrompt).toBe(parsed?.systemPrompt);
+  });
+
+  it.each([
+    {
+      label: 'an explicit allowlist and denylist',
+      declaration: 'tools: [read_file, "abu-browser__*", "run_command(npm run *)"]\ndisallowed-tools: ["abu-browser__click"]',
+      tools: ['read_file', 'abu-browser__*', 'run_command(npm run *)'],
+      disallowedTools: ['abu-browser__click'],
+    },
+    {
+      label: 'an explicit denylist with inherited tools',
+      declaration: 'disallowed-tools: [run_command]',
+      tools: undefined,
+      disallowedTools: ['run_command'],
+    },
+  ])('preserves $label through an editor save', ({ declaration, tools, disallowedTools }) => {
+    const parsed = parseAgentFile(agentFile(declaration), '/a/AGENT.md');
+    expect(parsed).toMatchObject({ tools, disallowedTools });
+
+    const serialized = serializeAgentMd({ ...parsed!, description: 'Updated description' }, parsed!.systemPrompt);
+    expect(parseAgentFile(serialized, '/a/AGENT.md')).toMatchObject({
+      description: 'Updated description',
+      tools,
+      disallowedTools,
+    });
+  });
+});

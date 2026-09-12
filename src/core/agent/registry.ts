@@ -5,6 +5,7 @@ import { homeDir, resolveResource } from '@tauri-apps/api/path';
 import type { SubagentDefinition, SubagentMetadata } from '../../types';
 import { joinPath } from '../../utils/pathUtils';
 import { normalizeDeclaredSkills } from './prompts/preloadedSkills';
+import { isSafeSkillDirName } from '../skill/skillDirName';
 
 const BROWSER_AGENT_TOOL_PATTERNS = ['abu-browser__*', 'abu-browser-bridge__*'];
 
@@ -73,7 +74,15 @@ export function parseAgentFile(raw: string, filePath: string): SubagentDefinitio
     const meta = parseYaml(match[1]) as Record<string, unknown>;
     const systemPrompt = match[2].trim();
 
-    if (!meta.name || typeof meta.name !== 'string') return null;
+    if (typeof meta.name !== 'string') return null;
+    // The name is the agent's folder under ~/.abu/agents/, and a scanned file
+    // need not be the user's own: that directory is filled by dropping whole
+    // folders into it, whoever wrote them. `joinPath` does not collapse `..`,
+    // so anything but one plain segment is refused here.
+    if (!isSafeSkillDirName(meta.name)) {
+      console.warn(`[AgentRegistry] skipping ${filePath}: name ${JSON.stringify(meta.name)} is not a single path segment`);
+      return null;
+    }
 
     return {
       name: meta.name as string,

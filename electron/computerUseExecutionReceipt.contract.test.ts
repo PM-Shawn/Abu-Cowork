@@ -29,8 +29,15 @@ const { normalizeHelperError, HELPER_EXECUTIONS: managerExecutions } = require_(
   normalizeHelperError: (raw: unknown) => Error & { helper: { code: string; execution: string; retryable: boolean } };
   HELPER_EXECUTIONS: Set<string>;
 };
-const { classifyHelperFailure, HELPER_EXECUTIONS: gateExecutions } = require_('./computerUseGate.cjs') as {
+const {
+  classifyHelperFailure,
+  hostRefusal,
+  HOST_REFUSAL_CODES,
+  HELPER_EXECUTIONS: gateExecutions,
+} = require_('./computerUseGate.cjs') as {
   classifyHelperFailure: (kind: 'stateful' | 'observation', error: unknown) => { code: string; execution: ExecutionOutcome; retryable: boolean };
+  hostRefusal: (code: string, message: string) => Error;
+  HOST_REFUSAL_CODES: readonly string[];
   HELPER_EXECUTIONS: Set<string>;
 };
 
@@ -115,6 +122,19 @@ describe('execution-receipt contract', () => {
       budget.recordVerifiedProgress(key);
     }
     expect(decideFor(budget, key, refusal)).toBe('handoff');
+  });
+
+  it('Host refusals raised before dispatch use the helper vocabulary and buy exactly one observation', () => {
+    expect(HOST_REFUSAL_CODES.length).toBeGreaterThan(0);
+    for (const code of HOST_REFUSAL_CODES) {
+      const failure = classifyHelperFailure('stateful', hostRefusal(code, 'refused before dispatch'));
+      expect(failure, code).toEqual({ code, execution: 'not-executed', retryable: true });
+      const budget = createRecoveryBudget();
+      const key = runBudgetKey({ conversationId: 'c', loopId: `host-${code}` });
+      expect(budget.decide(key, failure.execution, false), code).toBe('observe-once');
+    }
+    // The set is closed: a policy refusal cannot borrow the shape by accident.
+    expect(() => hostRefusal('approval-denied', 'no')).toThrow(/unknown Host refusal code/);
   });
 
   it('never lets an observation failure look like a side effect, and never lets a stateful legacy failure look safe', () => {

@@ -2203,7 +2203,15 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         // A broken status channel after native dispatch is itself uncertain.
         // Keep the conservative no-replay result below.
       }
-      const notExecuted = status?.not_executed_receipt ?? null;
+      // A receipt is evidence about one attempt. The Host keeps the last one
+      // per run, and a refusal raised before any attempt began is written
+      // against the state_id the renderer offered — so match on that before
+      // believing either receipt, or a stale verdict becomes this action's.
+      const offeredStateId = preparedState.stateId;
+      const attributed = <R extends { before_state_id: string | null }>(
+        receipt: R | null | undefined,
+      ): R | null => (receipt && receipt.before_state_id === offeredStateId ? receipt : null);
+      const notExecuted = attributed(status?.not_executed_receipt);
       if (notExecuted) {
         // The Host attests nothing reached the target, so a fresh observation
         // is safe. The budget bounds it: one per refusal, a few per run — a
@@ -2224,7 +2232,32 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         });
         const msg = error instanceof Error ? error.message : String(error);
         if (decision === 'observe-once') {
-          return format(t.actionNotExecuted, { msg, code: notExecuted.helper_code });
+          const notice = format(t.actionNotExecuted, { msg, code: notExecuted.helper_code });
+          // Observe on the model's behalf. The receipt already proves the
+          // action did not run, so the only useful next input is the state to
+          // choose from — one round-trip saved, and no way to "retry first,
+          // observe later". A failed observation falls back to asking for one.
+          let fresh: ToolResult;
+          try {
+            const targetApp = explicitTargetApp(input);
+            fresh = await computerTool.execute(
+              {
+                action: 'get_app_state',
+                consequence: 'none',
+                ...(typeof input.window_ref === 'string' ? { window_ref: input.window_ref } : {}),
+                ...(targetApp ? { app: targetApp } : {}),
+              },
+              { ...context, toolCallId: `${context?.toolCallId ?? 'computer'}-reobserve` },
+            );
+          } catch (observeError) {
+            const detail = observeError instanceof Error ? observeError.message : String(observeError);
+            return `${notice}\n\n${format(t.actionNotExecutedReobserveFailed, { msg: detail })}`;
+          }
+          if (typeof fresh === 'string') return `${notice}\n\n${fresh}`;
+          const [head, ...rest] = fresh;
+          return head?.type === 'text'
+            ? [{ ...head, text: `${notice}\n\n${head.text}` }, ...rest]
+            : [{ type: 'text', text: notice }, ...fresh];
         }
         if (decision === 'handoff') {
           context?.reportMetadata?.({
@@ -2234,7 +2267,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         }
         return format(t.actionNotExecutedStopped, { msg });
       }
-      const hostDeclaredUnknown = status?.outcome_unknown_receipt?.status === 'outcome-unknown';
+      const hostDeclaredUnknown = attributed(status?.outcome_unknown_receipt)?.status === 'outcome-unknown';
       if (!hostDeclaredUnknown && status !== null) throw error;
 
       const completion = computerUseController.completeAction(

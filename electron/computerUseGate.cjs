@@ -323,6 +323,42 @@ function classifyHelperFailure(kind, error) {
   });
 }
 
+// Host-side refusals raised before anything is dispatched (contract §2.9).
+// They are shaped like helper errors so the same verdict path applies: the
+// action provably did not run, and a fresh observation is the right recovery.
+// Policy refusals — denied approval, stopped run, scope, blocked chord — are
+// deliberately not in this set: re-observing does not change their answer.
+const HOST_REFUSAL_CODES = Object.freeze([
+  'state-required',
+  'state-expired',
+  'state-stale',
+  'state-consumed',
+  'target-changed',
+  'ui-changed',
+  'origin-changed',
+]);
+
+function hostRefusal(code, message) {
+  if (!HOST_REFUSAL_CODES.includes(code)) {
+    throw new Error(`unknown Host refusal code: ${code}`);
+  }
+  return Object.assign(new Error(message), {
+    helper: Object.freeze({ code, execution: 'not-executed', retryable: true }),
+  });
+}
+
+// Re-raises a plain Host assertion as a not-executed refusal. Used only at
+// preflight call sites, where the caller knows nothing has been dispatched;
+// the assertion itself stays neutral because it also runs after dispatch.
+function refusedUnless(code, check) {
+  try {
+    check();
+  } catch (error) {
+    if (error?.helper) throw error;
+    throw hostRefusal(code, error instanceof Error ? error.message : String(error));
+  }
+}
+
 function assertSafeKeyboardCommand(platform, cmd, args) {
   if (cmd !== 'keyboard_press') return;
   const aliases = new Map([
@@ -700,6 +736,43 @@ function createComputerUseGate(options) {
       command: attempt.command,
       attemptCount: attempt.attemptCount,
       consequential: attempt.consequential,
+      outcome: 'not-executed',
+      outcomeUnknown: false,
+      reason: 'observe-required',
+    });
+    return ledger.notExecutedReceipt;
+  }
+
+  // A refusal raised before dispatch — by a Host preflight check, or by the
+  // helper answering a preflight observation. There is no pending attempt to
+  // release; the receipt is attributed to the state_id the renderer offered,
+  // which is what the renderer matches it against (contract §2.9). A pending
+  // attempt (previous action still unverified) keeps its own verdict.
+  function refuseTaskAttempt(sender, session, cmd, error, consequential) {
+    const helper = error?.helper;
+    if (!helper || helper.execution !== 'not-executed' || typeof helper.code !== 'string') return null;
+    let ledger;
+    try {
+      ledger = getTaskAttemptLedger(sender, session.taskKey);
+    } catch {
+      return null;
+    }
+    if (ledger.pendingAttempt) return null;
+    ledger.notExecutedReceipt = Object.freeze({
+      status: 'not-executed',
+      execution: 'not-executed',
+      helper_code: helper.code,
+      retryable: helper.retryable === true,
+      command: cmd,
+      before_state_id: typeof session.expectedStateId === 'string' ? session.expectedStateId : null,
+      attempt_count: ledger.attemptCount,
+      consequential,
+      decision: 'observe-required',
+    });
+    noteComputerUseTrajectory(ledger.key, 'action-outcome', {
+      command: cmd,
+      attemptCount: ledger.attemptCount,
+      consequential,
       outcome: 'not-executed',
       outcomeUnknown: false,
       reason: 'observe-required',
@@ -1554,7 +1627,7 @@ function createComputerUseGate(options) {
     const observed = axSessions.get(state.axSessionId);
     if (!observed) {
       computerStates.delete(session.taskKey);
-      throw new Error('Computer Use accessibility state expired; observe again');
+      throw hostRefusal('state-expired', 'Computer Use accessibility state expired; observe again');
     }
     let snapshot = null;
     try {
@@ -1575,7 +1648,7 @@ function createComputerUseGate(options) {
                 ? 'window-graph' : null;
       if (changedBoundary) {
         computerStates.delete(session.taskKey);
-        throw new Error(`Computer Use interface changed after observation (${changedBoundary}); observe again`);
+        throw hostRefusal('ui-changed', `Computer Use interface changed after observation (${changedBoundary}); observe again`);
       }
     } finally {
       if (typeof snapshot?.session_id === 'string') {
@@ -1851,25 +1924,25 @@ function createComputerUseGate(options) {
   function assertComputerState(sender, key, target, expectedStateId, consume) {
     const state = computerStates.get(key);
     if (!state || state.sender !== sender) {
-      throw new Error('Computer Use requires a fresh state_id from get_app_state');
+      throw hostRefusal('state-required', 'Computer Use requires a fresh state_id from get_app_state');
     }
     if (state.expiresAt <= now()) {
       computerStates.delete(key);
-      throw new Error('Computer Use state_id is expired');
+      throw hostRefusal('state-expired', 'Computer Use state_id is expired');
     }
     if (state.helperGeneration !== getNativeHelperGeneration()) {
       computerStates.delete(key);
-      throw new Error('Computer Use requires a fresh state_id after native helper restart');
+      throw hostRefusal('state-expired', 'Computer Use requires a fresh state_id after native helper restart');
     }
     if (typeof expectedStateId !== 'string' || expectedStateId !== state.stateId) {
-      throw new Error('Computer Use state_id is not the latest observation');
+      throw hostRefusal('state-stale', 'Computer Use state_id is not the latest observation');
     }
-    assertSameTarget({ target: state.target }, target);
+    refusedUnless('target-changed', () => assertSameTarget({ target: state.target }, target));
     if (state.actionInFlight) {
       throw new Error('Another Computer Use action is already in flight');
     }
     if (state.consumed) {
-      throw new Error('Computer Use state_id was already consumed');
+      throw hostRefusal('state-consumed', 'Computer Use state_id was already consumed');
     }
     if (consume) {
       state.consumed = true;
@@ -1922,17 +1995,17 @@ function createComputerUseGate(options) {
     ) {
       const axSession = axSessions.get(args?.sessionId);
       if (!axSession || axSession.sender !== session.sender) {
-        throw new Error('Accessibility session is invalid or expired');
+        throw hostRefusal('state-expired', 'Accessibility session is invalid or expired');
       }
       if (axSession.helperGeneration !== getNativeHelperGeneration()) {
         axSessions.delete(args.sessionId);
-        throw new Error('Accessibility session expired after native helper restart');
+        throw hostRefusal('state-expired', 'Accessibility session expired after native helper restart');
       }
       if (axSession.bundleId !== session.target.bundle_id) {
-        throw new Error('Accessibility session belongs to a different app');
+        throw hostRefusal('state-stale', 'Accessibility session belongs to a different app');
       }
       if (axSession.taskKey !== session.taskKey) {
-        throw new Error('Accessibility session belongs to a different task');
+        throw hostRefusal('state-stale', 'Accessibility session belongs to a different task');
       }
       return;
     }
@@ -1944,7 +2017,7 @@ function createComputerUseGate(options) {
       && typeof active.window_id === 'string'
       && session.target.window_id.toLowerCase() !== active.window_id.toLowerCase()
     ) {
-      assertSameAppProcess(session, active);
+      refusedUnless('target-changed', () => assertSameAppProcess(session, active));
       const match = await nativeDispatch('frontmost_matches_target', {
         expectedAppId: session.target.bundle_id,
         expectedProcessId: session.target.process_id,
@@ -1952,7 +2025,7 @@ function createComputerUseGate(options) {
       });
       if (match?.matches === true) return;
       if (match && typeof match === 'object') {
-        throw new Error(
+        throw hostRefusal('target-changed',
           `Computer Use target window changed for "${session.target.app_name}" `
           + `(expected ${session.target.window_id} ${JSON.stringify(match.expected_bounds)}, `
           + `got ${active.window_id} ${JSON.stringify(match.actual_bounds)}, `
@@ -1960,7 +2033,7 @@ function createComputerUseGate(options) {
         );
       }
     }
-    assertSameTarget(session, active);
+    refusedUnless('target-changed', () => assertSameTarget(session, active));
   }
 
   async function assertBrowserOriginCurrent(session) {
@@ -1978,7 +2051,7 @@ function createComputerUseGate(options) {
       });
       const currentOrigin = resolveBrowserOriginFromSnapshot(snapshot);
       if (currentOrigin !== session.browserOrigin) {
-        throw new Error(
+        throw hostRefusal('origin-changed',
           'Browser Computer Use origin changed after observation; get a fresh app state and approve the new site',
         );
       }
@@ -2274,101 +2347,110 @@ function createComputerUseGate(options) {
       assertObservationAllowed(sender, session.taskKey);
     }
     await assertOsPermissions(session.scope, cmd);
-    await assertCommandTarget(session, cmd, args);
-    if (COMPUTER_USE_CONTROL_COMMANDS.has(cmd) && cmd !== 'activate_app') {
-      await assertBrowserOriginCurrent(session);
-    }
-    assertSafeKeyboardCommand(platform, cmd, args);
     const axSession = typeof args?.sessionId === 'string'
       ? axSessions.get(args.sessionId)
       : null;
-    if (axSession && ['ax_press', 'ax_set_value', 'ax_replace_text', 'ax_perform_action'].includes(cmd)) {
-      observability.noteComputerUseCache?.(
-        'uia-element',
-        true,
-        axSession.accessibilityRevision,
-      );
-    }
     const statefulCommand = COMPUTER_USE_CONTROL_COMMANDS.has(cmd)
       && cmd !== 'activate_app';
     let preActionState = null;
-    if (statefulCommand) {
-      preActionState = assertComputerState(
-        sender,
-        session.taskKey,
-        session.target,
-        session.expectedStateId,
-        false
-      );
-      assertTaskAttemptAllowed(sender, session.taskKey);
-    }
-    const consequence = resolveConsequence(session, cmd, args, axSession);
+    let consequence = null;
     let consumedState = null;
     let attemptLedger = null;
-    if (consequence) {
-      if (session.consequenceAttempted) {
-        throw new Error('Computer Use consequential action authorization was already used');
+    try {
+      await assertCommandTarget(session, cmd, args);
+      if (COMPUTER_USE_CONTROL_COMMANDS.has(cmd) && cmd !== 'activate_app') {
+        await assertBrowserOriginCurrent(session);
       }
-      // Reserve the task while native approval is visible. Otherwise a second
-      // session could mutate the same window while the user is reviewing the
-      // exact consequence, invalidating what they approved.
-      attemptLedger = beginUnverifiedTaskAttempt(sender, session, cmd, true);
-      try {
-        const approved = await withApprovalPaused(
-          session.authorization,
-          'action',
-          () => requestActionApproval({
-            sender,
-            target: session.target,
-            action: session.actionIntent.action,
-            consequence,
-            permissionMode: session.permissionMode,
-            conversationId: session.conversationId,
-            loopId: session.loopId,
-            toolCallId: session.toolCallId,
-          }),
+      assertSafeKeyboardCommand(platform, cmd, args);
+      if (axSession && ['ax_press', 'ax_set_value', 'ax_replace_text', 'ax_perform_action'].includes(cmd)) {
+        observability.noteComputerUseCache?.(
+          'uia-element',
+          true,
+          axSession.accessibilityRevision,
         );
-        if (!approved) {
-          throw new Error(`Computer Use consequential action was not approved for "${session.target.app_name}"`);
+      }
+      if (statefulCommand) {
+        preActionState = assertComputerState(
+          sender,
+          session.taskKey,
+          session.target,
+          session.expectedStateId,
+          false
+        );
+        assertTaskAttemptAllowed(sender, session.taskKey);
+      }
+      consequence = resolveConsequence(session, cmd, args, axSession);
+      if (consequence) {
+        if (session.consequenceAttempted) {
+          throw new Error('Computer Use consequential action authorization was already used');
         }
-        assertTaskAuthorizationLive(session.authorization);
-        await assertOsPermissions(session.scope, cmd);
-        await restoreWindowsFocusForAction(session, preActionState);
-        await assertCommandTarget(session, cmd, args);
-      } catch (error) {
-        // No native side effect was attempted, so a rejected, cancelled, or
-        // stale approval releases the Windows task reservation for a safe retry.
+        // Reserve the task while native approval is visible. Otherwise a second
+        // session could mutate the same window while the user is reviewing the
+        // exact consequence, invalidating what they approved.
+        attemptLedger = beginUnverifiedTaskAttempt(sender, session, cmd, true);
+        try {
+          const approved = await withApprovalPaused(
+            session.authorization,
+            'action',
+            () => requestActionApproval({
+              sender,
+              target: session.target,
+              action: session.actionIntent.action,
+              consequence,
+              permissionMode: session.permissionMode,
+              conversationId: session.conversationId,
+              loopId: session.loopId,
+              toolCallId: session.toolCallId,
+            }),
+          );
+          if (!approved) {
+            throw new Error(`Computer Use consequential action was not approved for "${session.target.app_name}"`);
+          }
+          assertTaskAuthorizationLive(session.authorization);
+          await assertOsPermissions(session.scope, cmd);
+          await restoreWindowsFocusForAction(session, preActionState);
+          await assertCommandTarget(session, cmd, args);
+        } catch (error) {
+          // No native side effect was attempted, so a rejected, cancelled, or
+          // stale approval releases the Windows task reservation for a safe retry.
+          completeUnverifiedTaskAttempt(attemptLedger);
+          throw error;
+        }
+        // Mark before dispatch. If native input reports an ambiguous failure, a
+        // renderer fallback must not repeat a potentially completed side effect.
+        session.consequenceAttempted = true;
         completeUnverifiedTaskAttempt(attemptLedger);
-        throw error;
+        attemptLedger = null;
       }
-      // Mark before dispatch. If native input reports an ambiguous failure, a
-      // renderer fallback must not repeat a potentially completed side effect.
-      session.consequenceAttempted = true;
-      completeUnverifiedTaskAttempt(attemptLedger);
-      attemptLedger = null;
-    }
-    if (statefulCommand) {
-      if (!consequence) {
-        await restoreWindowsFocusForAction(session, preActionState);
-        await assertCommandTarget(session, cmd, args);
+      if (statefulCommand) {
+        if (!consequence) {
+          await restoreWindowsFocusForAction(session, preActionState);
+          await assertCommandTarget(session, cmd, args);
+        }
+        await revalidateWindowsUiState(session, preActionState);
       }
-      await revalidateWindowsUiState(session, preActionState);
-    }
-    if (statefulCommand) {
-      consumedState = assertComputerState(
-        sender,
-        session.taskKey,
-        session.target,
-        session.expectedStateId,
-        true
-      );
-      attemptLedger = beginTaskAttempt(
-        sender,
-        session,
-        cmd,
-        consumedState,
-        Boolean(consequence),
-      );
+      if (statefulCommand) {
+        consumedState = assertComputerState(
+          sender,
+          session.taskKey,
+          session.target,
+          session.expectedStateId,
+          true
+        );
+        attemptLedger = beginTaskAttempt(
+          sender,
+          session,
+          cmd,
+          consumedState,
+          Boolean(consequence),
+        );
+      }
+    } catch (error) {
+      // Refused before dispatch: nothing reached the app. Record it against
+      // the state the renderer offered so the renderer can re-observe, and
+      // leave the run unblocked — there is no attempt to verify.
+      if (statefulCommand) refuseTaskAttempt(sender, session, cmd, error, Boolean(consequence));
+      throw error;
     }
     const nativeArgs = stripToken(args);
     delete nativeArgs.expectedStateId;
@@ -2598,6 +2680,8 @@ function createComputerUseGate(options) {
 module.exports = {
   createComputerUseGate,
   classifyHelperFailure,
+  hostRefusal,
+  HOST_REFUSAL_CODES,
   classifyInputRejection,
   HELPER_EXECUTIONS,
   resolveBrowserOriginFromSnapshot,

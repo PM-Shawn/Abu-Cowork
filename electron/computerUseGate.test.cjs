@@ -5,6 +5,8 @@ const { test } = require('node:test');
 const {
   createComputerUseGate,
   classifyHelperFailure,
+  hostRefusal,
+  HOST_REFUSAL_CODES,
   classifyInputRejection,
   COMPUTER_USE_GATE_MISS,
   TASK_GRANT_TTL_MS,
@@ -3687,4 +3689,145 @@ test('an authorized session carries the driver declaration the Host was given', 
     actionIntent: { action: 'move', category: 'none', summary: '' },
   });
   assert.equal(plainSession.driver, null);
+});
+
+test('a Host preflight refusal is a not-executed receipt attributed to the state the renderer offered', async () => {
+  const h = harness();
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  // Between observation and action the user switched to another Notes process.
+  h.setIdentity({ app_name: 'Notes', bundle_id: 'com.apple.Notes', process_id: 101 });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /target process changed/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_move'), false);
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.deepEqual(status.not_executed_receipt, {
+    status: 'not-executed',
+    execution: 'not-executed',
+    helper_code: 'target-changed',
+    retryable: true,
+    command: 'mouse_move',
+    before_state_id: snapshot.state_id,
+    attempt_count: 0,
+    consequential: false,
+    decision: 'observe-required',
+  });
+
+  // Back on the observed process: a fresh observation and the same action go
+  // through, and the next attempt clears the old receipt.
+  h.setIdentity({ app_name: 'Notes', bundle_id: 'com.apple.Notes', process_id: 100 });
+  const next = await observeState(h, { toolCallId: 'tool-observe-2' });
+  const retry = await begin(h, {
+    toolCallId: 'tool-2',
+    expectedStateId: next.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  assert.deepEqual(
+    await h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 1,
+      y: 1,
+      [COMPUTER_USE_TOKEN_ARG]: retry.token,
+    }),
+    { ok: true },
+  );
+  const after = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(after.not_executed_receipt, null);
+});
+
+test('a Windows UI change caught by preflight revalidation is a not-executed receipt', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'notepad', bundle_id: 'notepad.exe', process_id: 500 });
+  const snapshot = await observeState(h, { targetApp: 'notepad', permissionMode: 'autonomous' });
+  const session = await begin(h, {
+    targetApp: 'notepad',
+    permissionMode: 'autonomous',
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  // Physical input arrived after the observation: the epoch moved on.
+  h.setAxSnapshotExtra({ input_epoch: 2 });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_move', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /interface changed after observation \(input-epoch\)/,
+  );
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_move'), false);
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.equal(status.not_executed_receipt.helper_code, 'ui-changed');
+  assert.equal(status.not_executed_receipt.before_state_id, snapshot.state_id);
+  assert.equal(status.not_executed_receipt.command, 'mouse_move');
+});
+
+test('a denied consequential approval is not a not-executed receipt', async () => {
+  const h = harness({ requestActionApproval: async () => false });
+  const session = await begin(h, {
+    actionIntent: {
+      action: 'click',
+      category: 'delete',
+      summary: 'Delete the disposable test note',
+    },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+      x: 20,
+      y: 30,
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /was not approved/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  // The user's answer is final; re-observing would not change it, so the
+  // renderer must not spend a recovery on it.
+  assert.equal(status.not_executed_receipt, null);
+  assert.equal(status.outcome_unknown_receipt, null);
+});
+
+test('hostRefusal speaks the helper vocabulary and rejects unknown codes', () => {
+  const error = hostRefusal('target-changed', 'moved');
+  assert.equal(error.message, 'moved');
+  assert.deepEqual(classifyHelperFailure('stateful', error), {
+    code: 'target-changed', execution: 'not-executed', retryable: true,
+  });
+  assert.throws(() => hostRefusal('approval-denied', 'no'), /unknown Host refusal code/);
+  for (const code of HOST_REFUSAL_CODES) {
+    assert.equal(classifyHelperFailure('stateful', hostRefusal(code, code)).execution, 'not-executed', code);
+  }
 });

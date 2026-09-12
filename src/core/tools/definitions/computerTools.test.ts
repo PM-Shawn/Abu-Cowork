@@ -1591,6 +1591,10 @@ describe('computerTool — accessibility permission branch', () => {
       expect.objectContaining({ requiresUserRecovery: expect.anything() }),
     );
     expect(keyCount).toBe(1);
+    // The tool re-observed on the model's behalf: the fresh state is part of
+    // the same result, so the model's next call can already be an action.
+    expect(String(first)).toContain('windows-refused-state-2');
+    expect(snapshotCount).toBe(2);
 
     // Same refusal again with no verified progress in between: the per-event
     // budget is spent, so the run hands off to the user instead of looping.
@@ -1598,6 +1602,108 @@ describe('computerTool — accessibility permission branch', () => {
     expect(String(second)).toMatch(/recovery budget|自动恢复次数/i);
     expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-target-unavailable' });
     expect(keyCount).toBe(2);
+  });
+
+  it('ignores a not-executed receipt written against a different state_id', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-stale-receipt' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-stale-token',
+          target: {
+            window_ref: 'wr-notepad-stale',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-stale-ax-${snapshotCount}`,
+          state_id: `windows-stale-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        return Promise.reject(new Error('Computer Use run is stopped (stop-no-progress)'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        // A leftover receipt from an earlier action in the same run.
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: {
+            status: 'not-executed',
+            execution: 'not-executed',
+            helper_code: 'target-changed',
+            retryable: true,
+            command: 'keyboard_press',
+            before_state_id: 'windows-stale-state-0',
+            attempt_count: 1,
+            consequential: false,
+            decision: 'observe-required',
+          },
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-stale-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    expect(stateId).toBe('windows-stale-state-1');
+
+    // The receipt is not this action's verdict, so the error stands as-is:
+    // no recovery spent, no observation taken on the model's behalf.
+    await expect(computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-stale',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-stale-press' },
+    )).rejects.toThrow(/run is stopped/);
+    expect(snapshotCount).toBe(1);
+    expect(reportMetadata).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requiresUserRecovery: expect.anything() }),
+    );
   });
 
   it('shows the model one line of the driver declaration in every observation', async () => {

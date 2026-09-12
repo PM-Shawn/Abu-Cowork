@@ -4724,6 +4724,7 @@ export interface TranslationDict {
       actionNotExecuted: string;
       actionNotExecutedHandoff: string;
       actionNotExecutedStopped: string;
+      actionNotExecutedReobserveFailed: string;
       /** Invalid state/effect protocol input. {reason} */
       errStateProtocol: string;
       /** Observation state header. {stateId} */

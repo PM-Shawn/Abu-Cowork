@@ -169,6 +169,23 @@ pub(super) fn runtime_id_for_validation(element: &IUIAutomationElement) -> Vec<i
     result
 }
 
+/// Opaque wire identity for an element: a 64-bit FNV-1a of its UIA RuntimeId.
+/// Stable for the element's lifetime within its process — exactly what UIA
+/// promises for the runtime id — and never parsed upstream, only compared.
+pub(super) fn element_ref(runtime_id: &[i32]) -> Option<String> {
+    if runtime_id.is_empty() {
+        return None;
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for value in runtime_id {
+        for byte in value.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    Some(format!("e:{hash:016x}"))
+}
+
 fn focused_element_for_restore(
     automation: &IUIAutomation,
     process_id: u32,
@@ -450,8 +467,10 @@ fn collect_element(
     let class_name = unsafe { cached.CachedClassName() }
         .ok()
         .and_then(|value| clean_text(value.to_string(), 512));
+    let runtime_id = runtime_id_for_validation(native);
     state.public_elements.push(UiElement {
         id,
+        element_ref: element_ref(&runtime_id),
         role,
         label,
         value: element_value,
@@ -475,7 +494,7 @@ fn collect_element(
         id,
         CachedElement {
             native: native.clone(),
-            runtime_id: runtime_id_for_validation(native),
+            runtime_id,
             process_id: state.process_id,
             bounds,
         },
@@ -663,4 +682,21 @@ pub fn build_snapshot(
         modal: state.modal_detected,
         modal_window_id: state.modal_window_id,
     })
+}
+
+#[cfg(test)]
+mod element_ref_tests {
+    use super::element_ref;
+
+    #[test]
+    fn element_ref_is_opaque_deterministic_and_order_sensitive() {
+        assert_eq!(element_ref(&[]), None);
+        let a = element_ref(&[42, 7, -1]).unwrap();
+        assert_eq!(a, element_ref(&[42, 7, -1]).unwrap());
+        assert_ne!(a, element_ref(&[7, 42, -1]).unwrap());
+        assert_ne!(a, element_ref(&[42, 7]).unwrap());
+        assert!(a.starts_with("e:"));
+        assert_eq!(a.len(), 18);
+        assert!(a[2..].chars().all(|c| c.is_ascii_hexdigit()));
+    }
 }

@@ -281,6 +281,10 @@ function resolveConsequence(session, cmd, args, axSession) {
   return inferAmbiguousConsequence(session, cmd, args, axSession);
 }
 
+// Opaque element identity minted by the helper (uia/snapshot.rs element_ref).
+// Only its shape is checked; nothing here or above ever interprets it.
+const ELEMENT_REF = /^e:[0-9a-f]{16}$/;
+
 function sanitizeAxElements(result) {
   const elements = new Map();
   if (!Array.isArray(result?.elements)) return elements;
@@ -288,6 +292,7 @@ function sanitizeAxElements(result) {
     if (!Number.isInteger(raw?.id)) continue;
     elements.set(raw.id, {
       id: raw.id,
+      ref: typeof raw.ref === 'string' && ELEMENT_REF.test(raw.ref) ? raw.ref : null,
       role: typeof raw.role === 'string' ? raw.role.slice(0, 80) : '',
       label: typeof raw.label === 'string' ? raw.label.slice(0, 240) : '',
     });

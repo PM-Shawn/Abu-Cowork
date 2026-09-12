@@ -256,6 +256,82 @@ describe('computerUseController', () => {
     });
   });
 
+  // With a platform-attested ref the index no longer matters and role/label
+  // corroboration is not needed: the ref is the identity. Without one the
+  // corroboration tests above still describe the rule.
+  it('follows the platform element ref across re-indexing and relabelling', () => {
+    const { controller } = makeController();
+    const before = controller.recordObservation(runA, observation({
+      elements: [
+        element({ id: 1, ref: 'e:00000000000000aa', value: '' }),
+        element({ id: 2, ref: 'e:00000000000000bb', role: 'AXButton', label: 'Save', value: null, actions: ['AXPress'] }),
+      ],
+    }));
+    controller.prepareAction(runA, { expectedStateId: before.stateId, consequence: 'none' });
+
+    const result = controller.completeAction(
+      runA,
+      before,
+      observation({
+        axSessionId: 'ax-session-2',
+        elements: [
+          element({ id: 5, ref: 'e:00000000000000bb', role: 'AXButton', label: 'Save', value: null, actions: ['AXPress'] }),
+          element({ id: 9, ref: 'e:00000000000000aa', label: 'Full name', value: 'Shawn' }),
+        ],
+      }),
+      { type: 'element-value', elementId: 1, equals: 'Shawn' },
+    );
+
+    expect(result.verification).toMatchObject({ expectation: 'satisfied', status: 'verified-change' });
+    // Diff is computed on refs and reported in ids: the field changed, the
+    // button merely moved.
+    expect(result.state?.axDiff).toEqual({ added: [], removed: [], changed: [9] });
+  });
+
+  it('does not let a reused index impersonate an element with a different ref', () => {
+    const { controller } = makeController();
+    const before = controller.recordObservation(runA, observation({
+      elements: [element({ id: 1, ref: 'e:00000000000000aa', value: '' })],
+    }));
+    controller.prepareAction(runA, { expectedStateId: before.stateId, consequence: 'none' });
+
+    const result = controller.completeAction(
+      runA,
+      before,
+      observation({
+        axSessionId: 'ax-session-2',
+        elements: [element({ id: 1, ref: 'e:00000000000000cc', value: 'Shawn' })],
+      }),
+      { type: 'element-value', elementId: 1, equals: 'Shawn' },
+    );
+
+    expect(result.verification.expectation).toBe('unverifiable');
+    expect(result.state?.axDiff).toEqual({ added: [1], removed: [1], changed: [] });
+  });
+
+  it('decides element-disappears by ref even when an identical sibling keeps the index', () => {
+    const { controller } = makeController();
+    const twoOkButtons = [
+      element({ id: 1, ref: 'e:00000000000000a1', role: 'AXButton', label: 'OK', value: null, actions: ['AXPress'] }),
+      element({ id: 2, ref: 'e:00000000000000a2', role: 'AXButton', label: 'OK', value: null, actions: ['AXPress'] }),
+    ];
+    const survivor = [
+      element({ id: 1, ref: 'e:00000000000000a2', role: 'AXButton', label: 'OK', value: null, actions: ['AXPress'] }),
+    ];
+    for (const [elementId, expectation] of [[1, 'satisfied'], [2, 'not-satisfied']] as const) {
+      const before = controller.recordObservation(runA, observation({ elements: twoOkButtons }));
+      controller.prepareAction(runA, { expectedStateId: before.stateId, consequence: 'none' });
+      const result = controller.completeAction(
+        runA,
+        before,
+        observation({ axSessionId: `ax-session-${elementId}`, elements: survivor }),
+        { type: 'element-disappears', elementId },
+      );
+      expect(result.verification.expectation, `element ${elementId}`).toBe(expectation);
+      controller.invalidate(runA);
+    }
+  });
+
   it('does not treat the target bundle as frontmost-app evidence', () => {
     const { controller } = makeController();
     const before = controller.recordObservation(runA, observation());

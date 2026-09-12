@@ -24,6 +24,11 @@ pub struct ScrollState {
 #[derive(Clone, Debug, Serialize)]
 pub struct UiElement {
     pub id: u32,
+    /// Opaque, session-stable identity derived from the UIA RuntimeId; None
+    /// when the platform cannot attest one. Upper tiers compare it and never
+    /// parse or display it — the model keeps addressing elements by `id`.
+    #[serde(rename = "ref")]
+    pub element_ref: Option<String>,
     pub role: String,
     pub label: Option<String>,
     pub value: Option<String>,

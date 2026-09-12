@@ -23,6 +23,12 @@ export interface ComputerTargetIdentity {
 
 export interface ComputerAxElement {
   id: number;
+  /**
+   * Platform-attested identity, stable for the element's lifetime within the
+   * session and opaque to this tier; null/absent when the platform cannot
+   * attest one (then `id` is only a per-snapshot index).
+   */
+  ref?: string | null;
   role: string;
   label: string | null;
   value: string | null;
@@ -195,18 +201,28 @@ export function hashComputerElements(
   ]));
 }
 
+/** The platform ref when there is one, else the snapshot index. */
+function identityKey(element: ComputerAxElement): string {
+  return element.ref ?? `#${element.id}`;
+}
+
 function diffElements(
   previous: ComputerAxElement[],
   next: ComputerAxElement[],
 ): ComputerAxDiff | null {
   if (previous.length === 0) return null;
-  const before = new Map(previous.map((element) => [element.id, elementFingerprint(element)]));
-  const after = new Map(next.map((element) => [element.id, elementFingerprint(element)]));
-  const added = [...after.keys()].filter((id) => !before.has(id));
-  const removed = [...before.keys()].filter((id) => !after.has(id));
+  // Identity comes from the platform ref where the helper could attest one;
+  // without refs this is exactly the old index comparison. The output stays
+  // in ids, the vocabulary the model uses.
+  const entry = (element: ComputerAxElement) =>
+    [identityKey(element), { id: element.id, fingerprint: elementFingerprint(element) }] as const;
+  const before = new Map(previous.map(entry));
+  const after = new Map(next.map(entry));
+  const added = [...after.entries()].filter(([key]) => !before.has(key)).map(([, item]) => item.id);
+  const removed = [...before.entries()].filter(([key]) => !after.has(key)).map(([, item]) => item.id);
   const changed = [...after.entries()]
-    .filter(([id, fingerprint]) => before.has(id) && before.get(id) !== fingerprint)
-    .map(([id]) => id);
+    .filter(([key, item]) => before.has(key) && before.get(key)?.fingerprint !== item.fingerprint)
+    .map(([, item]) => item.id);
   return { added, removed, changed };
 }
 
@@ -226,10 +242,13 @@ function hasMeaningfulElementMatcher(matcher: { role?: string; label?: string })
  * Re-finds an element across two snapshots, or `null` if it cannot be shown to
  * be the same element.
  *
- * An element `id` is a per-snapshot index, NOT a durable identity: a redraw can
- * hand the same number to a different control. Treating the index alone as
- * identity reports a neighbouring element's value as the one we asked about, so
- * require role and label to survive the action as corroboration.
+ * When the platform attested an identity (`ref`) it is the answer: the same
+ * control wherever it now sits in the tree and whatever its label says now,
+ * and absent means gone. Without one, an element `id` is a per-snapshot
+ * index, NOT a durable identity: a redraw can hand the same number to a
+ * different control, and treating the index alone as identity reports a
+ * neighbouring element's value as the one we asked about — so role and label
+ * must survive the action as corroboration.
  */
 function stableElement(
   before: ComputerState,
@@ -237,8 +256,12 @@ function stableElement(
   elementId: number,
 ): ComputerAxElement | null {
   const previous = before.elements.find((element) => element.id === elementId);
+  if (!previous) return null;
+  if (previous.ref) {
+    return after.elements.find((element) => element.ref === previous.ref) ?? null;
+  }
   const current = after.elements.find((element) => element.id === elementId);
-  if (!previous || !current) return null;
+  if (!current) return null;
   if (previous.role !== current.role || previous.label !== current.label) return null;
   return current;
 }
@@ -293,6 +316,10 @@ function evaluateExpectation(
       // modal would be reported as "did not disappear". Count the kind instead.
       const previous = before.elements.find((element) => element.id === expectedEffect.elementId);
       if (!previous) return null;
+      if (previous.ref) {
+        // Attested identity: gone is gone, present is present, siblings or not.
+        return !after.elements.some((element) => element.ref === previous.ref);
+      }
       const sameKind = (element: ComputerAxElement) => element.role === previous.role
         && element.label === previous.label;
       if (after.elements.filter(sameKind).length < before.elements.filter(sameKind).length) {

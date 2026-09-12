@@ -93,6 +93,13 @@ describe('sidecar plugin-fs shim', () => {
         await missing(path);
       });
 
+      it('with create: false, adds to an existing file without truncating it', async () => {
+        const path = join(dir, 'today.log');
+        await nodeWriteFile(path, 'line 1\n');
+        await writeTextFile(path, 'line 2\n', { append: true, create: false });
+        expect(await read(path)).toBe('line 1\nline 2\n');
+      });
+
       it('with createNew, refuses an existing file and leaves it untouched', async () => {
         const path = join(dir, 'today.log');
         await nodeWriteFile(path, 'line 1\n');

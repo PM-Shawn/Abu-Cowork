@@ -369,6 +369,10 @@ export interface UpstreamErrorDetails {
 
 export interface Message {
   id: string;
+  /** Local configured welcome, distinct from generated assistant output. */
+  introduction?: import('./expertContact').ExpertIdentity;
+  /** First human contact receipt, used only for local onboarding recovery. */
+  expertContactKey?: string;
   role: 'user' | 'assistant' | 'system';
   // Support both simple string and multimodal content array
   content: string | MessageContent[];
@@ -978,7 +982,7 @@ export interface SubagentMetadata {
   displayNames?: Partial<Record<AgentLocale, string>>;
   /** Per-locale description overrides (falls back to `description`). */
   descriptions?: Partial<Record<AgentLocale, string>>;
-  /** Self-introduction paragraph shown on the chat welcome screen when this
+  /** First-contact greeting shown in the conversation when this
    *  agent is the pending one. Default locale. */
   intro?: string;
   /** Per-locale intro overrides (falls back to `intro`). */

@@ -25,7 +25,7 @@ export const saveTeamTool: ToolDefinition = {
       leader: { type: 'string', description: 'Exact agent name of the team leader.' },
       members: { type: 'array', items: { type: 'string' }, description: 'Exact agent names; the leader is included automatically.' },
       description: { type: 'string', description: 'One sentence describing the team.' },
-      intro: { type: 'string', description: 'Self-introduction shown in the team detail and chat welcome.' },
+      intro: { type: 'string', description: 'Brief first-contact greeting that invites the user to describe their goal. Not a description or a task prompt.' },
       expertise: { type: 'array', items: { type: 'string' }, description: 'Display-only areas of expertise, usually three.' },
       samplePrompts: { type: 'array', items: { type: 'string' }, description: 'Suggested questions, usually three; clicking only prefills a new chat.' },
       avatar: { type: 'string', description: 'Optional valid built-in icon reference, e.g. icon:chart-bar/blue, or one emoji. Empty clears the avatar.' },

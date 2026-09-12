@@ -10,6 +10,13 @@ import {
   type HistoryEntry,
 } from './history';
 import * as atomicFs from '../../utils/atomicFs';
+import { getI18n } from '../../i18n';
+
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
 
 // Real Tauri fs is mocked globally; we emulate an in-memory file
 // system here so read-modify-write flows (like appendHistoryEntry
@@ -198,6 +205,44 @@ describe('history · revertTurn', () => {
     expect(result.ok).toBe(true);
     expect(result.restored).toBe(1);
     expect(inMemoryFs.get(`${SKILL_DIR}/SKILL.md`)).toBe('old content');
+  });
+
+  it("will not restore a SKILL.md that brings back a name the organization's policy blocks", async () => {
+    // The skill was renamed away from a blocked name; undoing that rename is a
+    // write under the blocked name.
+    const backupPath = `${SKILL_DIR}/.SKILL.md.backup.1700000000`;
+    inMemoryFs.set(backupPath, '---\nname: blocked-skill\ndescription: x\n---\n# body');
+    inMemoryFs.set(`${SKILL_DIR}/SKILL.md`, '---\nname: renamed\ndescription: x\n---\n# body');
+    await seed({
+      turnId: 'turn-rename',
+      op: 'patch',
+      files: [{ relPath: 'SKILL.md', snapshotPath: backupPath, action: 'modified' }],
+    });
+
+    const result = await revertTurn(SKILL_DIR, 'turn-rename');
+
+    expect(result).toMatchObject({
+      ok: false,
+      restored: 0,
+      failed: [{ relPath: 'SKILL.md', reason: getI18n().toolbox.skillNamePolicyHint }],
+    });
+    expect(mockRestoreFromBackup).not.toHaveBeenCalled();
+    expect(inMemoryFs.get(`${SKILL_DIR}/SKILL.md`)).toContain('name: renamed');
+  });
+
+  it('still restores a SKILL.md whose name the policy allows', async () => {
+    const backupPath = `${SKILL_DIR}/.SKILL.md.backup.1700000000`;
+    inMemoryFs.set(backupPath, '---\nname: earlier-name\ndescription: x\n---\n# body');
+    await seed({
+      turnId: 'turn-ok',
+      op: 'patch',
+      files: [{ relPath: 'SKILL.md', snapshotPath: backupPath, action: 'modified' }],
+    });
+
+    const result = await revertTurn(SKILL_DIR, 'turn-ok');
+
+    expect(result.restored).toBe(1);
+    expect(mockRestoreFromBackup).toHaveBeenCalled();
   });
 
   it("removes a 'created' file (revert of create = delete)", async () => {

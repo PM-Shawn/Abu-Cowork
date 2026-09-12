@@ -4,6 +4,7 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 import { unpackSkill, validateArchive, ConflictError } from '@/core/skill/packager';
 import { installSkillFromFolder, type InstallResult } from '@/core/skill/installer';
+import { SkillPolicyDeniedError } from '@/core/skill/skillPolicy';
 import { useFileDragDrop } from '@/hooks/useFileDragDrop';
 import { useToastStore } from '@/stores/toastStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -108,10 +109,17 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
   const installErrorMessage = (
     result: Extract<InstallResult, { ok: false }>,
     folderPath: string,
-  ): string =>
-    result.code === 'SYMLINK_ROOT'
-      ? format(t.toolbox.importSymlinkRootRefused, { path: folderPath })
-      : result.message;
+  ): string => {
+    if (result.code === 'SYMLINK_ROOT') return format(t.toolbox.importSymlinkRootRefused, { path: folderPath });
+    if (result.code === 'POLICY_DENIED') return format(t.toolbox.importPolicyDenied, { name: result.skillName });
+    return result.message;
+  };
+
+  /** A thrown import failure in the user's language where we have one (see installErrorMessage). */
+  const thrownErrorMessage = (err: unknown): string => {
+    if (err instanceof SkillPolicyDeniedError) return format(t.toolbox.importPolicyDenied, { name: err.skillName });
+    return err instanceof Error ? err.message : String(err);
+  };
 
   /**
    * Install a skill from a local folder (copies into ~/.abu/skills/).
@@ -170,7 +178,7 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
       useToastStore.getState().addToast({
         type: 'error',
         title: t.toolbox.importFailed,
-        message: err instanceof Error ? err.message : String(err),
+        message: thrownErrorMessage(err),
       });
       // Do NOT close on error — keep modal open so user can retry.
     } finally {
@@ -241,7 +249,7 @@ export default function SkillUploadModal({ onClose, onInstalled }: SkillUploadMo
       addToast({
         type: 'error',
         title: t.toolbox.importFailed,
-        message: err instanceof Error ? err.message : String(err),
+        message: thrownErrorMessage(err),
       });
       // Keep modal open on error so user can try again.
     } finally {

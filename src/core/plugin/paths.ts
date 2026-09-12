@@ -63,11 +63,12 @@ export function normalizePluginComponentPath(value: string): string {
 function assertSafeSegment(field: string, value: string): string {
   if (typeof value !== 'string') throw new PluginPathError(field, String(value));
   if (value.trim() !== value || value.length === 0) throw new PluginPathError(field, value);
-  // Separators, plus every control character. A control char is never a
-  // legitimate part of a package name, and one embedded in a displayed name
-  // can hide what a path really is from whoever is approving the install.
+  // Separators, plus every control character (C0, DEL and C1). A control char
+  // is never a legitimate part of a package name, and one embedded in a
+  // displayed name can hide what a path really is from whoever is approving
+  // the install.
   // eslint-disable-next-line no-control-regex
-  if (/[/\\\u0000-\u001f\u007f]/.test(value)) throw new PluginPathError(field, value);
+  if (/[/\\\u0000-\u001f\u007f-\u009f]/.test(value)) throw new PluginPathError(field, value);
   if (/^\.+$/.test(value)) throw new PluginPathError(field, value);
   return value;
 }

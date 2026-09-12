@@ -15,7 +15,9 @@ vi.mock('../../utils/pathUtils', () => ({
   ensureParentDir: vi.fn(),
 }));
 
+import { posix } from 'node:path';
 import { readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
+import { ensureParentDir } from '../../utils/pathUtils';
 import {
   loadAgentMemory,
   saveAgentMemory,
@@ -130,6 +132,48 @@ describe('clearAgentMemory', () => {
       ''
     );
   });
+});
+
+/**
+ * The agent name is the folder under `~/.abu/agents/`. `joinPath` does not
+ * collapse `..` (the mock above joins the same way) and the host resolves it,
+ * so a name that is not one plain segment would read or write outside that
+ * folder. Such a name never reaches the file system.
+ */
+describe('agent memory — the name is one path segment', () => {
+  const mockEnsureParentDir = vi.mocked(ensureParentDir);
+
+  it.each(['../../evil', '..', '.', '', ' ', 'a/b', '/etc', '..\\..\\evil', 'evil\u0000name', 'evil\u0085name'])(
+    'refuses %j without touching the file system',
+    async (name) => {
+      mockReadTextFile.mockResolvedValue('existing');
+      await expect(saveAgentMemory(name, 'x')).rejects.toThrow();
+      await expect(appendAgentMemory(name, 'x')).rejects.toThrow();
+      await expect(clearAgentMemory(name)).rejects.toThrow();
+      expect(await loadAgentMemory(name)).toBe('');
+      expect(mockReadTextFile).not.toHaveBeenCalled();
+      expect(mockWriteTextFile).not.toHaveBeenCalled();
+      expect(mockEnsureParentDir).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['abu', 'HR 招聘官', '产品经理', 'code-reviewer', 'skill.v2'])(
+    'writes %j only to ~/.abu/agents/<name>/memory.md',
+    async (name) => {
+      mockReadTextFile.mockResolvedValue('existing');
+      mockWriteTextFile.mockResolvedValue(undefined);
+      await saveAgentMemory(name, 'x');
+      await appendAgentMemory(name, 'y');
+      await clearAgentMemory(name);
+      const expected = `/mock/home/.abu/agents/${name}/memory.md`;
+      const written = [
+        ...mockWriteTextFile.mock.calls.map((call) => String(call[0])),
+        ...mockEnsureParentDir.mock.calls.map((call) => call[0]),
+      ];
+      expect(written).toHaveLength(6);
+      for (const path of written) expect(posix.resolve(path)).toBe(expected);
+    },
+  );
 });
 
 describe('loadProjectMemory', () => {

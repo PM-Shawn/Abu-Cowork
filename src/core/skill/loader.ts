@@ -8,6 +8,7 @@ import { sanitizePath } from '../memdir/paths';
 import { pluginSkillLocations } from '../plugin/skillRoots';
 import { scanPluginPackage } from '../plugin/fsOps';
 import { isEnterpriseModuleActive } from '../enterprise/entitlement';
+import { isSafeSkillDirName } from './skillDirName';
 import { isSkillNameAllowed } from './skillNamePolicy';
 
 /**
@@ -51,7 +52,14 @@ export function parseSkillFile(raw: string, filePath: string): Skill | null {
     const meta = parseYaml(match[1]) as Record<string, unknown>;
     const content = match[2].trim();
 
-    if (!meta.name || typeof meta.name !== 'string') return null;
+    if (typeof meta.name !== 'string') return null;
+    // The name is the skill's folder under ~/.abu/skills/, and this file may
+    // be a cloned repository's content: `joinPath` does not collapse `..`, so
+    // anything but one plain segment is refused here.
+    if (!isSafeSkillDirName(meta.name)) {
+      console.warn(`[SkillLoader] skipping ${filePath}: name ${JSON.stringify(meta.name)} is not a single path segment`);
+      return null;
+    }
 
     // Parse hooks from frontmatter
     const hooks = parseSkillHooks(meta.hooks as Record<string, unknown> | undefined);

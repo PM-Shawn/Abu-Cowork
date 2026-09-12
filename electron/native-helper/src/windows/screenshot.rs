@@ -1,9 +1,9 @@
 use crate::error::HelperError;
 use std::collections::{HashMap, VecDeque};
 use std::io::Cursor;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -26,7 +26,12 @@ static WGC_SESSIONS: OnceLock<Mutex<HashMap<String, WgcMonitorSession>>> = OnceL
 
 struct WgcMonitorSession {
     _recorder: VideoRecorder,
-    frames: Receiver<xcap::Frame>,
+    /// Newest frame the session has produced; written by the pump thread on
+    /// every FrameArrived and never drained, so a static screen keeps its
+    /// last change available.
+    latest: Arc<Mutex<Option<xcap::Frame>>>,
+    /// Set by the pump thread when xcap's channel disconnects (session lost).
+    disconnected: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -72,63 +77,84 @@ fn wgc_sessions() -> &'static Mutex<HashMap<String, WgcMonitorSession>> {
     WGC_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The newest frame of a monitor, from a session that is kept running.
+///
+/// xcap hands frames over a rendezvous channel: its FrameArrived handler
+/// blocks in `send` until someone receives, and once the pool's two buffers
+/// are held by blocked handlers WGC produces nothing more. Draining that
+/// channel only at capture time therefore returned the first change after the
+/// *previous* capture, never the screen as it is now (measured 2026-09-12: a
+/// full-width bar shown for 1.2 s did not appear in the frame at all). A pump
+/// thread per session receives continuously and keeps only the newest frame,
+/// so the pool never stalls and a static screen's last change is what a
+/// capture returns.
 fn capture_next_monitor_frame(
     monitor: &Monitor,
     monitor_id: &str,
     input_epoch: u64,
 ) -> Result<RgbaImage, HelperError> {
-    let mut sessions = wgc_sessions()
-        .lock()
-        .map_err(|_| HelperError::preflight("WGC session cache is unavailable"))?;
-    if !sessions.contains_key(monitor_id) {
-        let (recorder, frames) = monitor
-            .video_recorder()
-            .map_err(|error| HelperError::preflight(format!("WGC monitor session creation failed: {error}")))?;
-        recorder
-            .start()
-            .map_err(|error| HelperError::preflight(format!("WGC monitor session start failed: {error}")))?;
-        sessions.insert(
-            monitor_id.to_string(),
-            WgcMonitorSession {
-                _recorder: recorder,
-                frames,
-            },
-        );
-    }
-    let session = sessions
-        .get_mut(monitor_id)
-        .ok_or_else(|| HelperError::preflight("WGC monitor session disappeared"))?;
-    let mut newest = None;
-    loop {
-        match session.frames.try_recv() {
-            Ok(frame) => newest = Some(frame),
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => {
-                sessions.remove(monitor_id);
-                return Err(HelperError::observe_again("capture-failed", "WGC monitor session disconnected; observe again"));
-            }
+    let (latest, disconnected) = {
+        let mut sessions = wgc_sessions()
+            .lock()
+            .map_err(|_| HelperError::preflight("WGC session cache is unavailable"))?;
+        if sessions
+            .get(monitor_id)
+            .is_some_and(|session| session.disconnected.load(Ordering::Acquire))
+        {
+            sessions.remove(monitor_id);
         }
-    }
+        if !sessions.contains_key(monitor_id) {
+            let (recorder, frames) = monitor
+                .video_recorder()
+                .map_err(|error| HelperError::preflight(format!("WGC monitor session creation failed: {error}")))?;
+            recorder
+                .start()
+                .map_err(|error| HelperError::preflight(format!("WGC monitor session start failed: {error}")))?;
+            let latest = Arc::new(Mutex::new(None));
+            let disconnected = Arc::new(AtomicBool::new(false));
+            let sink = Arc::clone(&latest);
+            let gone = Arc::clone(&disconnected);
+            thread::Builder::new()
+                .name(format!("wgc-pump-{monitor_id}"))
+                .spawn(move || {
+                    while let Ok(frame) = frames.recv() {
+                        if let Ok(mut slot) = sink.lock() {
+                            *slot = Some(frame);
+                        }
+                    }
+                    gone.store(true, Ordering::Release);
+                })
+                .map_err(|error| HelperError::preflight(format!("WGC frame pump failed: {error}")))?;
+            sessions.insert(
+                monitor_id.to_string(),
+                WgcMonitorSession {
+                    _recorder: recorder,
+                    latest,
+                    disconnected,
+                },
+            );
+        }
+        let session = sessions
+            .get(monitor_id)
+            .ok_or_else(|| HelperError::preflight("WGC monitor session disappeared"))?;
+        (Arc::clone(&session.latest), Arc::clone(&session.disconnected))
+    };
     let started = Instant::now();
-    let frame = if let Some(frame) = newest {
-        frame
-    } else {
-        loop {
-            if input_epoch != super::interaction::input_epoch() {
-                return Err(HelperError::observe_again("physical-input", "physical user input occurred during capture; observe again"));
-            }
-            match session.frames.recv_timeout(Duration::from_millis(10)) {
-                Ok(frame) => break frame,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                    if started.elapsed() < Duration::from_secs(3) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    return Err(HelperError::observe_again("capture-failed", "WGC monitor frame wait timed out"));
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(HelperError::observe_again("capture-failed", "WGC monitor session disconnected; observe again"));
-                }
-            }
+    let frame = loop {
+        if input_epoch != super::interaction::input_epoch() {
+            return Err(HelperError::observe_again("physical-input", "physical user input occurred during capture; observe again"));
         }
+        if disconnected.load(Ordering::Acquire) {
+            return Err(HelperError::observe_again("capture-failed", "WGC monitor session disconnected; observe again"));
+        }
+        let newest = latest.lock().ok().and_then(|slot| slot.clone());
+        if let Some(frame) = newest {
+            break frame;
+        }
+        if started.elapsed() >= Duration::from_secs(3) {
+            return Err(HelperError::observe_again("capture-failed", "WGC monitor frame wait timed out"));
+        }
+        thread::sleep(Duration::from_millis(10));
     };
     RgbaImage::from_raw(frame.width, frame.height, frame.raw)
         .ok_or_else(|| HelperError::preflight("WGC monitor frame buffer is invalid"))

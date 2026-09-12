@@ -61,6 +61,7 @@
     "verify:windows-computer-use:browser": "node electron/spike/windowsBrowserOriginVerify.cjs",
     "verify:windows-computer-use:browser:chrome": "node electron/spike/windowsBrowserOriginVerify.cjs --chrome",
     "verify:windows-computer-use:office": "node electron/spike/windowsOfficeComputerUseVerify.cjs",
+    "verify:windows-computer-use:overlay": "electron electron/spike/windowsOverlayCaptureVerify.cjs",
     "verify:windows-computer-use:office:e2e": "playwright test -c playwright.electron.config.ts tests/e2e/windows-office-computer-use.spec.ts",
     "verify:windows-computer-use:desktop:e2e": "playwright test -c playwright.desktop-eval.config.ts --grep-invert @live",
     "verify:windows-computer-use:desktop:live": "node scripts/computer-use-live-eval.cjs && playwright test -c playwright.desktop-eval.config.ts --grep @live",

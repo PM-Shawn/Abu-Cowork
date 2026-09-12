@@ -31,11 +31,26 @@ import {
 } from '../core/skill/drafts';
 import { skillLoader } from '../core/skill/loader';
 import { SkillPolicyDeniedError } from '../core/skill/skillPolicy';
+import { isSkillNameAllowed } from '../core/skill/skillNamePolicy';
 import { getI18n, format } from '../i18n';
 import type { NoticeCardAction } from '../types';
 import { useChatStore } from './chatStore';
 import { useWorkspaceStore } from './workspaceStore';
 import { useDiscoveryStore } from './discoveryStore';
+import { useEnterpriseStore } from './enterpriseStore';
+
+/**
+ * Every draft the last listing found, hidden ones included. Drafts are read
+ * straight from disk (`listDrafts`), not through the skill loader, so the
+ * organization's skill blacklist is applied here: a draft under a blocked name
+ * is not shown, and the list is read again when the policy changes which of
+ * these are hidden. Accepting such a draft is refused anyway (drafts.ts).
+ */
+let listedDraftNames: string[] = [];
+let lastHiddenDrafts = '';
+function hiddenDraftSignature(): string {
+  return listedDraftNames.filter((name) => !isSkillNameAllowed(name)).sort().join('\n');
+}
 
 /**
  * Settle every notice card across loaded conversations whose skill
@@ -151,7 +166,10 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
     }
     set({ isLoading: true });
     try {
-      const drafts = await listDrafts(wp);
+      const listed = await listDrafts(wp);
+      listedDraftNames = listed.map((draft) => draft.skillName);
+      lastHiddenDrafts = hiddenDraftSignature();
+      const drafts = listed.filter((draft) => isSkillNameAllowed(draft.skillName));
       set({ drafts, isLoading: false, lastRefreshedAt: Date.now(), lastError: null });
     } catch (err) {
       set({
@@ -286,3 +304,12 @@ export function stopDraftsSweeper(): void {
     sweepHandle = null;
   }
 }
+
+// ── Re-list when the organization's skill blacklist changes ─────────────
+// Same signal discoveryStore reloads on; see `listedDraftNames` above.
+useEnterpriseStore.subscribe(() => {
+  const next = hiddenDraftSignature();
+  if (next === lastHiddenDrafts) return;
+  lastHiddenDrafts = next;
+  void useSkillDraftsStore.getState().refresh();
+});

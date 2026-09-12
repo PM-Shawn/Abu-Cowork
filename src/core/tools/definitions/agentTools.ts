@@ -87,6 +87,11 @@ export const useSkillTool: ToolDefinition = {
 
     const skill = skillLoader.getSkill(skillName);
     if (!skill) {
+      // Not "not found": the model may have seen the SKILL.md on disk, and a
+      // plain miss invites it to hunt the skill down some other way.
+      if (skillLoader.isBlockedByPolicy(skillName)) {
+        return format(getI18n().toolResult.agent.skillBlockedByPolicy, { skillName });
+      }
       const available = skillLoader.getAvailableSkills().map(s => s.name).join(', ');
       return `Error: Skill "${skillName}" not found. Available skills: ${available}`;
     }

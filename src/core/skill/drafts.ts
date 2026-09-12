@@ -264,6 +264,10 @@ export async function readDraft(
  * Enumerate all drafts for `workspacePath`. Skips the `.trash/` subdir.
  * Entries without a sidecar are surfaced with legacy defaults so the UI
  * can still offer accept / reject on them.
+ *
+ * Every draft on disk, including ones under a name the organization's skill
+ * blacklist blocks. Anything that shows drafts to someone must drop those;
+ * skillDraftsStore does.
  */
 export async function listDrafts(workspacePath: string): Promise<DraftRecord[]> {
   const draftsRoot = await getDraftsRoot(workspacePath);

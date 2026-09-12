@@ -70,6 +70,44 @@ function writeAll(fd, content) {
   }
 }
 
+/**
+ * Opens a file for a plugin:fs write the way tauri-plugin-fs 2.5.1 does
+ * (`commands.rs` `write_file_inner` builds a Rust `std::fs::OpenOptions` whose
+ * `create` defaults to TRUE and whose `truncate` is `!append`):
+ *   - `createNew` → `'wx'`/`'ax'` (`O_CREAT|O_EXCL`), and it wins over
+ *     `create`: the create itself is the existence check, so an existing file
+ *     fails with EEXIST atomically — never a probe, then a write.
+ *   - `create: false` → `O_WRONLY` with NO `O_CREAT`: a missing file fails with
+ *     ENOENT and is not created, so a file deleted since the caller last read
+ *     it is refused rather than recreated (`src/core/team/roleIdentity.ts`'s
+ *     `ensureRoleId` and `src/utils/itemStorage.ts` rely on exactly that).
+ *     Node has no flag string for "write but never create", and the two
+ *     obvious stand-ins are both wrong: `O_TRUNC` without `O_CREAT` is
+ *     rejected on Windows with EINVAL instead of opening the existing file
+ *     (CI's `test-windows` caught that on the first cut of the sibling sidecar
+ *     shim), and `'r+'` is `O_RDWR`, which fails with EACCES on a file whose
+ *     owner left it write-only — one the plugin's `O_WRONLY` opens fine. So
+ *     the truncation happens after the open instead (see the caller).
+ *   - otherwise → `'w'`/`'a'` (`O_CREAT`, truncating only when not appending).
+ * Appends always carry `O_APPEND` (`'a'`, `'ax'`, or the flag itself), so the
+ * kernel positions every write at the end, as the plugin does — never a
+ * seek-then-write that a concurrent appender could interleave with.
+ * `mode` is passed only on the paths that can CREATE the file, which is the
+ * only thing it applies to, and never on Windows: the plugin's own
+ * `opts.mode(mode)` sits inside a `#[cfg(unix)]` block (`lib.rs`'s
+ * `From<OpenOptions> for std::fs::OpenOptions`), while Node would turn a mode
+ * without the owner write bit into a read-only file there.
+ */
+function openForPluginWrite(resolved, options) {
+  const append = !!options.append;
+  const mode = process.platform === 'win32' ? undefined : options.mode;
+  if (options.createNew) return fs.openSync(resolved, append ? 'ax' : 'wx', mode);
+  if (options.create === false) {
+    return fs.openSync(resolved, fs.constants.O_WRONLY | (append ? fs.constants.O_APPEND : 0));
+  }
+  return fs.openSync(resolved, append ? 'a' : 'w', mode);
+}
+
 function openExclusiveSibling(parent, prefix) {
   const flags =
     fs.constants.O_WRONLY |
@@ -512,29 +550,34 @@ function fsDispatch(app, cmd, payload) {
       const options = JSON.parse(h.options || '{}');
       const resolved = resolveScoped(app, p, options.baseDir);
       const buf = Buffer.from(body);
-      // Honor Tauri's create/createNew: create:false rejects a missing file
-      // (used as an existence guard); createNew rejects an existing file.
-      // createNew is the plugin's `create_new` (O_EXCL): the create itself is
-      // the check, so a file that appears after any probe is never
-      // overwritten — callers rely on it to refuse someone else's item.
-      if (options.createNew) {
-        try {
-          fs.writeFileSync(resolved, buf, { flag: options.append ? 'ax' : 'wx' });
-        } catch (err) {
-          if (err && err.code === 'EEXIST') {
-            throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
-          }
-          throw err;
+      // The open decides create/createNew — see openForPluginWrite — so there
+      // is no check-then-write window for either: a file that appears after a
+      // probe is never overwritten, and one deleted after a probe is never
+      // recreated.
+      let fd;
+      try {
+        fd = openForPluginWrite(resolved, options);
+      } catch (err) {
+        // Keep the messages callers already see; the open, not a probe, is what
+        // produced the errno.
+        if (options.createNew && err && err.code === 'EEXIST') {
+          throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
         }
-        return null;
+        if (options.create === false && err && err.code === 'ENOENT') {
+          throw new Error(`fs: file does not exist and create is false: ${resolved}`);
+        }
+        throw err;
       }
-      if (options.create === false && !fs.existsSync(resolved)) {
-        throw new Error(`fs: file does not exist and create is false: ${resolved}`);
-      }
-      if (options.append) {
-        fs.appendFileSync(resolved, buf);
-      } else {
-        fs.writeFileSync(resolved, buf);
+      try {
+        // The plugin's `truncate = !append`. Every other path got it from its
+        // open flags; create:false could not carry `O_TRUNC` (see above), and
+        // an append needs no truncation at all, so this is the only leftover.
+        if (options.create === false && !options.createNew && !options.append) {
+          fs.ftruncateSync(fd, 0);
+        }
+        writeAll(fd, buf);
+      } finally {
+        fs.closeSync(fd);
       }
       return null;
     }

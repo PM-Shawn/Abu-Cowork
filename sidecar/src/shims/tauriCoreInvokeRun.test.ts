@@ -62,4 +62,31 @@ describe('tauriCoreInvokeRun', () => {
       .toThrow(/restricted to cleanup commands/);
     expect(sendRequestMock).not.toHaveBeenCalled();
   });
+
+  // The real invoke takes (cmd, args?: InvokeArgs, options?: InvokeOptions).
+  // The shim took two parameters and a narrower args type, so a third argument
+  // vanished and a binary payload would have been JSON-stringified into a
+  // numeric-keyed object on the native.invoke wire. Both checks run before the
+  // run-context check, so a bad call fails the same way inside or outside a run.
+  describe('argument surface', () => {
+    it('rejects InvokeOptions, which the native.invoke wire cannot carry', async () => {
+      await expect(
+        agentRunContext.run({ runId: 'main-run' } as never, () =>
+          invoke('noop', {}, { headers: { 'x-a': '1' } }),
+        ),
+      ).rejects.toThrow(/InvokeOptions/);
+      expect(sendRequestMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a byte array', new Uint8Array([1, 2, 3])],
+      ['a number array', [1, 2, 3]],
+      ['an ArrayBuffer', new ArrayBuffer(3)],
+    ])('rejects %s as args rather than mangling it on the wire', async (_name, args) => {
+      await expect(
+        agentRunContext.run({ runId: 'main-run' } as never, () => invoke('noop', args as never)),
+      ).rejects.toThrow(/plain record/);
+      expect(sendRequestMock).not.toHaveBeenCalled();
+    });
+  });
 });

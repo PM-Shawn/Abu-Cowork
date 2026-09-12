@@ -88,6 +88,7 @@ import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
 import { getI18n, format } from '../../i18n';
 import { clearSkillHooksByLoop } from '../tools/builtins';
+import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
 import { executeToolBatch } from './toolExecutor';
 import { startConversationTrace, endConversationTrace, startGeneration } from '../observability/langfuse';
 import { calculateTurnCost } from '../llm/costTracker';
@@ -318,11 +319,21 @@ export function resolveTools(
   let inputValidators = new Map<string, (input: Record<string, unknown>) => boolean>();
   let deferredTools: ToolDefinition[] = [];
 
+  const agentToolPolicy = agentToolPolicyForRoute(route);
+  if (agentToolPolicy) {
+    const allowedNames = new Set(resolveAgentToolNames(tools.map(tool => tool.name), agentToolPolicy).toolNames);
+    tools = tools.filter(tool => allowedNames.has(tool.name));
+  }
+  // Explicit role patterns must see the full runtime catalog, including MCP
+  // schemas that would otherwise be deferred before the role could match them.
+  const hasExplicitRoleTools = Array.isArray(agentToolPolicy?.tools) && agentToolPolicy.tools.length > 0;
+
   // Conditional tool loading: filter to core + prefetched tools
   // Non-core tools become "deferred" — name + description only in system prompt
   if (
     prefetchContext
     && !route.skill?.allowedTools
+    && !hasExplicitRoleTools
     && (!allowedTools?.length || allowedToolsAreExactSnapshot)
   ) {
     const additionalToolNames = prefetchTools(prefetchContext);
@@ -353,19 +364,6 @@ export function resolveTools(
     deferredTools = deferredTools.filter(t =>
       !blockedPatterns.some(pattern => matchesToolName(t.name, pattern)),
     );
-  }
-  if (route.type === 'agent' && route.definition) {
-    const def = route.definition;
-    if (def.tools && def.tools.length > 0) {
-      const allowed = new Set(def.tools);
-      tools = tools.filter(t => allowed.has(t.name));
-      deferredTools = [];  // Agents with explicit tool lists don't use deferred
-    }
-    if (def.disallowedTools && def.disallowedTools.length > 0) {
-      const blocked = new Set(def.disallowedTools);
-      tools = tools.filter(t => !blocked.has(t.name));
-      deferredTools = deferredTools.filter(t => !blocked.has(t.name));
-    }
   }
   // Per-run whitelist (for example a custom trigger). This is mirrored by
   // toolExecutor's fail-closed check so the restriction is both model-visible
@@ -2643,6 +2641,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           eventRouter,
           executionId: execution.id,
           inputValidators,
+          agentToolPolicy: agentToolPolicyForRoute(route),
           blockedTools: effectiveBlockedTools,
           allowedTools: options?.allowedTools,
           imContext: options?.imContext,

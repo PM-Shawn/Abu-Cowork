@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { exists, readDir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
 import { ensureParentDir } from '../../../utils/pathUtils';
-import { agentRegistry, parseAgentFile } from '../../agent/registry';
+import { agentRegistry, parseAgentFile, serializeAgentMd } from '../../agent/registry';
 import { skillLoader } from '../../skill/loader';
 import { saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool } from './agentTools';
 import { format, getI18n, getLanguageSetting, setLanguage } from '@/i18n';
@@ -25,6 +25,7 @@ vi.mock('../../agent/registry', async () => {
   const actual = await vi.importActual<typeof import('../../agent/registry')>('../../agent/registry');
   return {
     parseAgentFile: actual.parseAgentFile,
+    serializeAgentMd: actual.serializeAgentMd,
     getBuiltinAgentNames: actual.getBuiltinAgentNames,
     agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]), getAvailableAgents: vi.fn().mockReturnValue([]) },
   };
@@ -654,6 +655,118 @@ describe('save_agent multi-file support', () => {
   });
 
   describe('save_agent', () => {
+    it.each([
+      'tools: read_file, write_file',
+      'tools: null',
+      'tools:\n  - read_file\n  - 42',
+      'tools:\n  - " "',
+      'tools: { allow: read_file }',
+      'disallowed-tools: run_command',
+      'disallowed-tools: null',
+      'disallowed-tools:\n  - false',
+      'disallowed-tools: [" "]',
+    ])('rejects unusable tool metadata before writing or refreshing: %s', async (declaration) => {
+      const { useDiscoveryStore } = await import('../../../stores/discoveryStore');
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: `---\nname: my-agent\n${declaration}\n---\nHelp with a task.`,
+        files: [{ path: 'notes.md', content: 'must not be written' }],
+      });
+      expect(result).toMatch(/^Error:/);
+      expect(result).toContain(declaration.startsWith('tools:') ? 'tools' : 'disallowed-tools');
+      expect(writeTextFile).not.toHaveBeenCalled();
+      expect(useDiscoveryStore.getState().refresh).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unparseable agent before touching files', async () => {
+      const result = await saveAgentTool.execute({ name: 'my-agent', content: '# Missing frontmatter' });
+      expect(result).toMatch(/^Error:/);
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+
+    // The `*` / `__` exemptions below read the tool-NAME half of an entry only:
+    // a wildcard or a `__` sitting in an input constraint says nothing about
+    // whether the tool it constrains exists.
+    it.each([
+      'web_serach',
+      'writ_file(/src/**)',
+      'writ_file(a__b)',
+    ])('refuses the tool name %s, which nothing answers to, writing nothing', async (entry) => {
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: `---\nname: my-agent\ntools: ["${entry}"]\n---\nHelp with a task.`,
+      });
+      expect(result).toBe(format(getI18n().toolResult.agent.errUnknownAgentTool, { names: entry }));
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+
+    // A wildcard covers names that cannot be enumerated, and a `server__tool`
+    // name belongs to a connector that may be offline right now — neither may
+    // make saving an expert depend on what happens to be running. An input
+    // constraint on a real built-in is not a claim about a different tool, so
+    // `run_command(a__b)` and `read_file(/tmp/**)` are saved as written.
+    it('accepts wildcards, connector tool names and constrained built-ins', async () => {
+      const tools = '[read_file, "read_file(/tmp/**)", "run_command(a__b)", "abu-browser__*", "some-mcp__tool", "some-mcp__tool(x)"]';
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: `---\nname: my-agent\ntools: ${tools}\n---\nHelp with a task.`,
+      });
+      expect(result).not.toMatch(/^Error:/);
+      expect(writeTextFile).toHaveBeenCalledWith(
+        '/Users/testuser/.abu/agents/my-agent/AGENT.md',
+        expect.stringContaining(`tools: ${tools}`),
+        { createNew: true },
+      );
+    });
+
+    it.each([
+      ['omitted constraints', ''],
+      ['empty role lists', 'tools: []\ndisallowed-tools: []\n'],
+    ])('saves and re-saves %s as inherited tools', async (_label, declaration) => {
+      const filePath = '/Users/testuser/.abu/agents/my-agent/AGENT.md';
+      const content = `---\nname: my-agent\n${declaration}---\nHelp with a task.`;
+      expect(await saveAgentTool.execute({ name: 'my-agent', content })).not.toMatch(/^Error:/);
+      const firstSaved = String(vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]);
+      // save_agent owns the identity stamp; nothing else about the file changes.
+      expect(firstSaved.replace(/^created: \d+\n/m, '')).toBe(content);
+
+      const parsed = parseAgentFile(firstSaved, filePath);
+      expect(parsed).not.toBeNull();
+      const serialized = serializeAgentMd(parsed!, parsed!.systemPrompt);
+      expect(await saveAgentTool.execute({ name: 'my-agent', content: serialized })).not.toMatch(/^Error:/);
+
+      const persisted = String(vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]);
+      expect(persisted).not.toMatch(/^(?:tools|disallowed-tools):/m);
+      const reloaded = parseAgentFile(persisted, filePath);
+      expect(reloaded).not.toBeNull();
+      expect(reloaded?.tools).toBeUndefined();
+      expect(reloaded?.disallowedTools).toBeUndefined();
+    });
+
+    it('preserves valid tool restrictions and optional display fields through an editor re-save', async () => {
+      const filePath = '/Users/testuser/.abu/agents/my-agent/AGENT.md';
+      const content = '---\nname: my-agent\nintro: Hello\nexpertise: [Planning]\nsample-prompts: [Plan a task]\navatar: icon:code/blue\ntools: [read_file, "abu-browser__*", "run_command(npm run *)"]\ndisallowed-tools: ["abu-browser__click"]\n---\nHelp with a task.';
+      const result = await saveAgentTool.execute({ name: 'my-agent', content });
+      expect(result).not.toMatch(/^Error:/);
+      const written = vi.mocked(writeTextFile).mock.calls.at(-1)?.[1];
+      // save_agent stamps `created:` as the last frontmatter line (it owns the
+      // agent's identity); every other line the model wrote survives verbatim.
+      expect(String(written).replace(/^created: \d+\n/m, '')).toBe(content);
+
+      const parsed = parseAgentFile(String(written), filePath)!;
+      const serialized = serializeAgentMd(parsed, parsed.systemPrompt);
+      expect(await saveAgentTool.execute({ name: 'my-agent', content: serialized })).not.toMatch(/^Error:/);
+      const persisted = String(vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]);
+      expect(parseAgentFile(persisted, filePath)).toMatchObject({
+        tools: ['read_file', 'abu-browser__*', 'run_command(npm run *)'],
+        disallowedTools: ['abu-browser__click'],
+        intro: 'Hello',
+        expertise: ['Planning'],
+        samplePrompts: ['Plan a task'],
+        avatar: 'icon:code/blue',
+      });
+    });
+
     it('should save AGENT.md + supporting files', async () => {
       const result = await saveAgentTool.execute({
         name: 'my-agent',

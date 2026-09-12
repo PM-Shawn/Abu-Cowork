@@ -876,6 +876,8 @@ export type DecideBrowserOperationSiteVerdict = SiteVerdict | 'high-risk';
  * The order below is the gate's own precedence order, most-specific first.
  */
 export type BrowserDenialReasonCode =
+  /** The user disabled the browser MCP service, even if its connection remains. */
+  | 'server-disabled'
   /** The unattended master switch is off — the whole capability is unavailable. */
   | 'master-switch-off'
   /** The user blocked this site (persistent 'denied' verdict). */

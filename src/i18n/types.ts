@@ -3458,6 +3458,7 @@ export interface TranslationDict {
     /** The filesystem reported neither an mtime nor an inode for the file, so
      *  nothing could be frozen that identifies it later (review F1). */
     browserUploadUnidentifiable: string;
+    browserServerDisabled: string;
     browserEnterprisePolicyDenied: string;
     /** Unattended run on a site that carries no standing "allowed" verdict —
      *  the cross-origin fail-closed baseline. */
@@ -4111,6 +4112,10 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
+      /** Error: invalid fixed tool declaration. {field} */
+      errInvalidAgentTools: string;
+      /** Error: the role card names tools that do not exist. {names} */
+      errUnknownAgentTool: string;
       /** Error: nothing written — the avatar is neither a built-in icon reference nor a single emoji. */
       errInvalidAvatar: string;
       /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */

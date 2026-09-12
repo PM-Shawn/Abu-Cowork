@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import {
@@ -105,7 +105,7 @@ describe('SubagentTab', () => {
     expect(screen.queryByText('The full subagent process is only retained during this app run.')).toBeNull();
   });
 
-  it('uses the persisted child steps when a stale live dispatch still has zero steps', async () => {
+  it('keeps the child steps already shown when the next live update has zero steps', async () => {
     const { useChatStore } = await import('@/stores/chatStore');
     const { useTaskExecutionStore } = await import('@/stores/taskExecutionStore');
     const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
@@ -124,12 +124,28 @@ describe('SubagentTab', () => {
       }],
     } as never);
     const exec = useTaskExecutionStore.getState().createExecutionWithId(convId, 'loop-live-race', 'exec-live-race');
+    // First update: the live dispatch still carries the member's child step.
     useTaskExecutionStore.getState().addStep(exec.id, {
       id: 'delegate-live', executionId: exec.id, toolCallId: 'delegate-live-race', type: 'delegate', label: 'delegate', status: 'completed',
-      toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [], detailBlocks: [], source: 'agent', toolInput: {},
+      toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [{
+        id: 'child-live', toolCallId: 'child-call', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file',
+        detailBlocks: [], source: 'agent', executionId: exec.id, toolInput: {},
+      }], detailBlocks: [], source: 'agent', toolInput: {},
     });
 
     render(<SubagentTab identity={{ conversationId: convId, assistantMessageId: 'assistant-live-race', batchToolCallId: 'delegate-live-race' }} taskIndex={0} title="writer" />);
+
+    expect(screen.getByText('1 tool calls')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');
+
+    // Second update: the completed execution is re-published with its child
+    // steps already dropped, while the assistant message still holds them.
+    act(() => {
+      useTaskExecutionStore.setState((state) => {
+        const liveStep = state.executions[exec.id]?.steps.find((step) => step.id === 'delegate-live');
+        if (liveStep) liveStep.childSteps = [];
+      });
+    });
 
     expect(screen.getByText('1 tool calls')).toBeInTheDocument();
     expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');

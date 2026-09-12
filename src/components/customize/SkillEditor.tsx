@@ -105,14 +105,15 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
       // named after the skill, so an unchanged name could still point at another
       // skill's folder. saveItemToAbuDir writes this skill's own file in place,
       // wherever it lives (a project skill stays in its project), and on a
-      // rename moves its folder to the name within the same parent (a move
-      // onto an occupied folder fails instead of overwriting).
+      // rename — and only a rename — moves its folder to the name within the
+      // same parent (a move onto an occupied folder fails instead of
+      // overwriting).
       const oldPath = skill?.filePath;
       // A letter-case-only rename moves this skill's own folder: on the
       // case-insensitive file systems the manifest already "at" the target is
       // its own, so the must-be-new probe would wrongly refuse it.
       const mustBeNew = !skill || (nameChanged && trimmed.toLowerCase() !== skill.name.toLowerCase());
-      await saveItemToAbuDir('skills', 'SKILL.md', trimmed, md, oldPath, { mustBeNew });
+      await saveItemToAbuDir('skills', 'SKILL.md', trimmed, md, oldPath, { mustBeNew, renaming: !!skill && nameChanged });
       await onSave();
       return true;
     } catch (err) {

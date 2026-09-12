@@ -21,6 +21,7 @@ import {
   closeAbuElectron,
   createElectronDataRoot,
   dismissFirstRunOverlays,
+  firstShowRecordFor,
   launchAbuElectron,
   removeElectronDataRoot,
 } from './electronHelpers';
@@ -38,31 +39,6 @@ interface Rect {
 async function waitForApp(page: Page): Promise<void> {
   await page.waitForLoadState('domcontentloaded');
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
-/**
- * Record the bounds every window has at the moment it is first shown, so the
- * relaunch can assert the pet APPEARS at its saved spot instead of flashing at
- * the default corner and then jumping.
- */
-async function recordFirstShowBounds(app: ElectronApplication): Promise<void> {
-  await app.evaluate(({ app: electronApp }) => {
-    const store = globalThis as typeof globalThis & { __abuFirstShow?: Record<string, unknown> };
-    store.__abuFirstShow = {};
-    electronApp.on('browser-window-created', (_event, win) => {
-      win.once('show', () => {
-        store.__abuFirstShow![win.webContents.getURL()] = win.getBounds();
-      });
-    });
-  });
-}
-
-async function petFirstShowBounds(app: ElectronApplication): Promise<Rect | null> {
-  return app.evaluate(() => {
-    const shown = (globalThis as typeof globalThis & { __abuFirstShow?: Record<string, Rect> }).__abuFirstShow ?? {};
-    const key = Object.keys(shown).find((url) => url.endsWith('/pet.html'));
-    return key ? shown[key] : null;
-  });
 }
 
 async function petBounds(app: ElectronApplication): Promise<Rect | null> {
@@ -136,9 +112,13 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
       await closeAbuElectron(launched.app);
     }
 
-    launched = await launchAbuElectron(dataRoot);
+    // `recordWindowShows` injects the first-show recorder into the main process
+    // ahead of electron/main.cjs, so it is watching before the app can create a
+    // single window. Installing that hook from here instead — after
+    // electron.launch() resolves — races the app's own startup, which is what
+    // made this journey report a missing pet window on ~40% of CI runs.
+    launched = await launchAbuElectron(dataRoot, { recordWindowShows: true });
     try {
-      await recordFirstShowBounds(launched.app);
       const main = await launched.app.firstWindow();
       await waitForApp(main);
       await expect.poll(() => petBounds(launched.app), { timeout: 20_000 }).not.toBeNull();
@@ -148,11 +128,15 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
           return b ? Math.max(Math.abs(b.x - target.x), Math.abs(b.y - target.y)) : Infinity;
         }, { timeout: 10_000 })
         .toBeLessThanOrEqual(1);
-      // …and it was already there when it first became visible.
-      const firstShow = await petFirstShowBounds(launched.app);
-      expect(firstShow, 'the pet window was shown during this launch').not.toBeNull();
-      expect(Math.abs(firstShow!.x - target.x)).toBeLessThanOrEqual(1);
-      expect(Math.abs(firstShow!.y - target.y)).toBeLessThanOrEqual(1);
+      // …and it was already there when it first became visible: the host creates
+      // the pet window AT the saved spot (guiHost.cjs initialPetPosition), so a
+      // regression that let the renderer move it after first paint would show up
+      // here as the default bottom-right corner.
+      const firstShow = await firstShowRecordFor(launched.app, '/pet.html');
+      expect(firstShow, 'the recorder saw the pet window being created').not.toBeNull();
+      expect(firstShow!.shownBounds, 'the pet window was shown during this launch').not.toBeNull();
+      expect(Math.abs(firstShow!.shownBounds!.x - target.x)).toBeLessThanOrEqual(1);
+      expect(Math.abs(firstShow!.shownBounds!.y - target.y)).toBeLessThanOrEqual(1);
     } finally {
       await closeAbuElectron(launched.app);
     }

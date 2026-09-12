@@ -2292,7 +2292,6 @@ export interface TranslationDict {
     exampleSkills: string;
     globalSkills: string;
     projectSkills: string;
-    projectSkillsBadge: string;
     // UX categories (Task #25 rework) — what users see in Toolbox.
     categoryMine: string;              // "我的"
     categoryAgentEvolved: string;      // "阿布沉淀"
@@ -4213,6 +4212,8 @@ export interface TranslationDict {
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
+      /** {name} — the organization's policy blocks this skill name; no skill was written under it. */
+      policyDenied: string;
       /**
        * Error: create wrote nothing — the name belongs to a built-in, plugin
        * (disabled included) or enterprise skill, to another skill or folder
@@ -4227,8 +4228,6 @@ export interface TranslationDict {
        * asked for. {name}
        */
       errSkillExists: string;
-      /** {name} — the organization's policy blocks this skill name; no skill was written under it. */
-      policyDenied: string;
     };
     // manage_mcp_server
     system: {

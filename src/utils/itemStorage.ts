@@ -64,12 +64,16 @@ function itemExistsError(folder: string, name: string): Error {
  * shared ~/.agents/skills — into the very file the registry read
  * (`oldFilePath`). It is never copied into ~/.abu: a copy there overwrote the
  * user's own same-named item and was then shadowed by the project item, so
- * the edit never took. A rename writes the manifest in place first and then
- * MOVES the item's folder to `name` within the same parent folder — so
- * whatever else it holds (a skill's scripts/ and references/, an agent's
- * memory.md) goes with it; if the move fails the old text is put back. A
- * letter-case-only rename moves too, so the folder's case really changes on
- * the case-insensitive macOS/Windows file systems. `oldFilePath` must be
+ * the edit never took. Only a RENAME (`renaming`) touches the folder: it
+ * writes the manifest in place first and then MOVES the item's folder to
+ * `name` within the same parent folder — so whatever else it holds (a skill's
+ * scripts/ and references/, an agent's memory.md) goes with it; if the move
+ * fails the old text is put back. A letter-case-only rename moves too, so the
+ * folder's case really changes on the case-insensitive macOS/Windows file
+ * systems. An ordinary save never moves anything, even when the folder is not
+ * named after the item — the item's folder is the user's (in a project it is
+ * repository content, and a move shows up in their git), so only the rename
+ * they asked for may rename it. `oldFilePath` must be
  * spelled like an item (see {@link itemLocation}) and its manifest must be a
  * plain file right now — not a link, not gone — or nothing is touched.
  *
@@ -77,6 +81,10 @@ function itemExistsError(folder: string, name: string): Error {
  *
  * `name` must be one plain folder name; anything else throws an error whose
  * `code` is {@link ITEM_NAME_INVALID_CODE} before the disk is touched.
+ *
+ * `renaming`: the user changed the name in the editor (a letter-case-only
+ * change included). Not `name !== the folder's name`: an item whose folder was
+ * never named after it would then be moved by any save.
  *
  * `mustBeNew`: the caller is creating or renaming, so an item already at the
  * target is somebody else's — refuse (throw an error whose `code` is
@@ -92,7 +100,7 @@ export async function saveItemToAbuDir(
   name: string,
   mdContent: string,
   oldFilePath?: string,
-  options: { mustBeNew?: boolean } = {},
+  options: { mustBeNew?: boolean; renaming?: boolean } = {},
 ): Promise<void> {
   if (!isPlainSegment(name)) {
     throw Object.assign(new Error(`invalid ${folder} name: ${JSON.stringify(name)}`), { code: ITEM_NAME_INVALID_CODE });
@@ -122,9 +130,7 @@ export async function saveItemToAbuDir(
   if (!info.isFile || info.isSymlink) throw new Error(`${folder} manifest is not a plain file: ${manifest}`);
 
   // Exact compare: a folder differing only in letter case is still moved.
-  // So is a folder not named after its item even when the name is unchanged
-  // — the folder is brought to the item's name, never onto an occupied one.
-  if (getBaseName(itemDir) === name) {
+  if (!options.renaming || getBaseName(itemDir) === name) {
     // create: false — refuse rather than recreate a manifest that is gone.
     await writeTextFile(manifest, mdContent, { create: false });
     return;

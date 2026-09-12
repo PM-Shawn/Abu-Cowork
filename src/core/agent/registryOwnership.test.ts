@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { readTextFile, readDir, exists, lstat } from '@tauri-apps/plugin-fs';
 import { homeDir, resolve } from '@tauri-apps/api/path';
 import { AgentRegistry } from './registry';
+import { normalizeSeparators } from '../../utils/pathUtils';
 
 const mockReadTextFile = vi.mocked(readTextFile);
 const mockReadDir = vi.mocked(readDir);
@@ -135,7 +136,8 @@ describe('AgentRegistry.discoverAgents over a real tree', () => {
     await registry.discoverAgents();
 
     expect(registry.hasLocal('cwd-only')).toBe(false);
-    expect(registry.getAgent('helper')?.filePath).toBe(join(userAgents, 'helper', 'AGENT.md'));
+    // The registry joins with `/`; node's `join` uses `\` on Windows.
+    expect(registry.getAgent('helper')?.filePath).toBe(normalizeSeparators(join(userAgents, 'helper', 'AGENT.md')));
     expect(mockResolve).not.toHaveBeenCalled();
   });
 

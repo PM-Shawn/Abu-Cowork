@@ -523,8 +523,8 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
   if (nameErr) return { success: false, error: nameErr };
   // Before either branch below: a draft under a blocked name is still a skill
   // under that name, one click away from being accepted.
-  const refused = policyRefusal(name);
-  if (refused) return refused;
+  const policyRefused = policyRefusal(name);
+  if (policyRefused) return policyRefused;
 
   if (!content) {
     return { success: false, error: 'create requires content (the SKILL.md body)' };

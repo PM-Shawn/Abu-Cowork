@@ -79,6 +79,24 @@ unregistered. Local installation metadata is retained so a valid renewal can
 restore the capability without reinstalling it. Personal Skill/MCP behavior is
 not affected.
 
+### What the organization MCP blacklist covers
+
+The console's MCP blacklist names servers by their organization-catalog
+registry id, and the console only accepts ids from that catalog. It therefore
+applies to organization MCP servers: the private installer refuses a
+blacklisted one, the private loader disconnects an installed one on the next
+policy refresh while keeping its install record (so lifting the rule reconnects
+it), and the organization tab marks it as disabled. Personal MCP servers — the
+built-in catalog and custom URL/stdio servers — have no registry id and are
+outside this list. That is why the public MCP add paths do not call `checkMcp`:
+a name match there would almost never fire and could block an unrelated server
+that happens to share an id. Restricting personal MCP would be a separate
+policy, not a wider reading of this one.
+
+The blacklist is a client-side policy control, not an access boundary: whoever
+holds a server's credential can reach its endpoint. Cutting access for real has
+to happen on the console and MCP side.
+
 ## What's in / out of OSS
 
 | Feature | OSS | Enterprise |

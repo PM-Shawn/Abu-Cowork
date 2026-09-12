@@ -521,7 +521,6 @@ interface SettingsActions {
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
-  autoDisableProjectSkills: (skillNames: string[]) => void;
   toggleAgentEnabled: (agentName: string) => void;
   setSandboxEnabled: (enabled: boolean) => void;
   setNetworkIsolationEnabled: (enabled: boolean) => void;
@@ -1424,11 +1423,6 @@ export const useSettingsStore = create<SettingsStore>()(
           ? s.disabledSkills.filter((n) => n !== skillName)
           : [...s.disabledSkills, skillName],
       })),
-      autoDisableProjectSkills: (skillNames) => set((s) => {
-        const newNames = skillNames.filter((n) => !s.disabledSkills.includes(n));
-        if (newNames.length === 0) return s;
-        return { disabledSkills: [...s.disabledSkills, ...newNames] };
-      }),
       toggleAgentEnabled: (agentName) => set((s) => ({
         disabledAgents: s.disabledAgents.includes(agentName)
           ? s.disabledAgents.filter((n) => n !== agentName)

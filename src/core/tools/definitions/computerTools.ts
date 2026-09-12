@@ -2223,6 +2223,19 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         // A broken status channel after native dispatch is itself uncertain.
         // Keep the conservative no-replay result below.
       }
+      if (status?.stopped === true && status.stopped_reason === 'user-input-detected') {
+        // The user took the mouse or keyboard while this action was in
+        // flight. The Host has already revoked the task, so nothing more can
+        // reach the app; hand the turn back as a pause the user can resume
+        // from — scene untouched, nothing undone — not as a stop or an error.
+        computerObservationContexts.clear(runKey);
+        await closeNativeAxSession(computerUseController.clearObservation(runKey));
+        actionCompleted = true;
+        setComputerUsePhase('blocked');
+        traceComputerUse('user_takeover', context, { stage: action, reason: 'user-input-detected' });
+        context?.reportMetadata?.({ requiresUserRecovery: 'computer-user-takeover' });
+        return t.userTakeoverPaused;
+      }
       // A receipt is evidence about one attempt. The Host keeps the last one
       // per run, and a refusal raised before any attempt began is written
       // against the state_id the renderer offered — so match on that before

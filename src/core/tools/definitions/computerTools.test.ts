@@ -1604,6 +1604,96 @@ describe('computerTool — accessibility permission branch', () => {
     expect(keyCount).toBe(2);
   });
 
+  it('hands the turn back as a pause when the user takes over mid-action', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-windows-takeover' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-takeover-token',
+          target: {
+            window_ref: 'wr-notepad-takeover',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `windows-takeover-ax-${snapshotCount}`,
+          state_id: `windows-takeover-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_press') {
+        // The Host revoked the task and stopped the helper mid-dispatch.
+        return Promise.reject(new Error('native helper exited during dispatch'));
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: false,
+          stopped: true,
+          stopped_reason: 'user-input-detected',
+          outcome_unknown_receipt: null,
+          not_executed_receipt: null,
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const reportMetadata = vi.fn();
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+      reportMetadata,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      { ...context, toolCallId: 'tool-takeover-observe' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    const result = await computerTool.execute(
+      {
+        action: 'key',
+        key: 'ArrowRight',
+        window_ref: 'wr-notepad-takeover',
+        expected_state_id: stateId,
+        consequence: 'none',
+      },
+      { ...context, toolCallId: 'tool-takeover-press' },
+    );
+    // A pause, not a stop and not an error the model should work around:
+    // resumable copy, the turn handed back, nothing re-observed on its own.
+    expect(String(result)).toMatch(/Paused|已暂停/);
+    expect(String(result)).toMatch(/continue|继续/);
+    expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-user-takeover' });
+    expect(snapshotCount).toBe(1);
+  });
+
   it('hands the turn back with boundary copy when the helper refuses at a platform boundary', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);

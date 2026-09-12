@@ -48,20 +48,33 @@ impl Default for InputLease {
 }
 
 impl InputLease {
-    fn classify_physical_input(&mut self, foreground_pid: Option<u32>) -> PhysicalInputDecision {
-        match self.phase {
-            LeasePhase::Idle => PhysicalInputDecision::Ignore,
-            LeasePhase::Observing => {
-                self.dirty = true;
+    /// `interrupted` is the user's explicit stop (ESC). Ordinary input only
+    /// counts as a takeover while Abu is actually sending input (`Running`);
+    /// between actions it merely dirties the observation. ESC stops in every
+    /// phase except when the consent dialog itself has the keyboard — there it
+    /// is the dialog's own cancel.
+    fn classify_physical_input(
+        &mut self,
+        foreground_pid: Option<u32>,
+        interrupted: bool,
+    ) -> PhysicalInputDecision {
+        let dirty_or_stop = |lease: &mut Self| {
+            lease.dirty = true;
+            if interrupted {
+                PhysicalInputDecision::Publish
+            } else {
                 PhysicalInputDecision::RecordOnly
             }
+        };
+        match self.phase {
+            LeasePhase::Idle => PhysicalInputDecision::Ignore,
+            LeasePhase::Observing => dirty_or_stop(self),
             LeasePhase::Running => PhysicalInputDecision::Publish,
             LeasePhase::PausedForConsent => {
                 if foreground_pid.is_some() && foreground_pid == self.consent_owner_process_id {
                     PhysicalInputDecision::Ignore
                 } else {
-                    self.dirty = true;
-                    PhysicalInputDecision::RecordOnly
+                    dirty_or_stop(self)
                 }
             }
         }
@@ -242,15 +255,15 @@ enum PhysicalInputDecision {
     Publish,
 }
 
-fn classify_physical_input(foreground_pid: Option<u32>) -> PhysicalInputDecision {
+fn classify_physical_input(foreground_pid: Option<u32>, interrupted: bool) -> PhysicalInputDecision {
     let Ok(mut lease) = input_lease().lock() else {
         return PhysicalInputDecision::Publish;
     };
-    lease.classify_physical_input(foreground_pid)
+    lease.classify_physical_input(foreground_pid, interrupted)
 }
 
 fn note_physical_input(interrupted: bool) {
-    let decision = classify_physical_input(foreground_process_id());
+    let decision = classify_physical_input(foreground_process_id(), interrupted);
     if matches!(decision, PhysicalInputDecision::Ignore) {
         return;
     }
@@ -393,12 +406,12 @@ mod tests {
             dirty: false,
         };
         assert_eq!(
-            lease.classify_physical_input(Some(42)),
+            lease.classify_physical_input(Some(42), false),
             PhysicalInputDecision::Ignore,
         );
         assert!(!lease.dirty);
         assert_eq!(
-            lease.classify_physical_input(Some(99)),
+            lease.classify_physical_input(Some(99), false),
             PhysicalInputDecision::RecordOnly,
         );
         assert!(lease.dirty);
@@ -408,17 +421,17 @@ mod tests {
     fn only_running_lease_publishes_takeover() {
         let mut lease = InputLease::default();
         assert_eq!(
-            lease.classify_physical_input(Some(99)),
+            lease.classify_physical_input(Some(99), false),
             PhysicalInputDecision::Ignore,
         );
         lease.phase = LeasePhase::Observing;
         assert_eq!(
-            lease.classify_physical_input(Some(99)),
+            lease.classify_physical_input(Some(99), false),
             PhysicalInputDecision::RecordOnly,
         );
         lease.phase = LeasePhase::Running;
         assert_eq!(
-            lease.classify_physical_input(Some(99)),
+            lease.classify_physical_input(Some(99), false),
             PhysicalInputDecision::Publish,
         );
     }
@@ -433,14 +446,44 @@ mod tests {
             dirty: false,
         };
         assert_eq!(
-            lease.classify_physical_input(Some(99)),
+            lease.classify_physical_input(Some(99), false),
             PhysicalInputDecision::RecordOnly,
         );
         assert!(lease.dirty);
         lease.dirty = false;
         lease.phase = LeasePhase::Running;
         assert_eq!(
-            lease.classify_physical_input(Some(99)),
+            lease.classify_physical_input(Some(99), false),
+            PhysicalInputDecision::Publish,
+        );
+    }
+
+    #[test]
+    fn escape_stops_in_every_phase_except_inside_the_consent_dialog() {
+        let mut lease = InputLease::default();
+        assert_eq!(
+            lease.classify_physical_input(Some(99), true),
+            PhysicalInputDecision::Ignore,
+        );
+        lease.phase = LeasePhase::Observing;
+        assert_eq!(
+            lease.classify_physical_input(Some(99), true),
+            PhysicalInputDecision::Publish,
+        );
+        assert!(lease.dirty);
+        lease.phase = LeasePhase::Running;
+        assert_eq!(
+            lease.classify_physical_input(Some(99), true),
+            PhysicalInputDecision::Publish,
+        );
+        lease.phase = LeasePhase::PausedForConsent;
+        lease.consent_owner_process_id = Some(42);
+        assert_eq!(
+            lease.classify_physical_input(Some(42), true),
+            PhysicalInputDecision::Ignore,
+        );
+        assert_eq!(
+            lease.classify_physical_input(Some(99), true),
             PhysicalInputDecision::Publish,
         );
     }

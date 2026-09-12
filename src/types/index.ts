@@ -106,6 +106,7 @@ export interface ToolExecutionMetadata {
     | 'computer-target-unavailable'
     | 'computer-manual-handoff'
     | 'computer-platform-boundary'
+    | 'computer-user-takeover'
     | 'computer-verification-mismatch'
     | 'computer-outcome-unknown-new-turn';
   subagentStopReason?: SubagentStopReason;

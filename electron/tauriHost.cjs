@@ -1041,7 +1041,14 @@ function registerTauriHost(app, options = {}) {
   unsubscribeNativeHelperEvents = subscribeNativeHelperEvents((event) => {
     const interruption = computerUseGate?.handleNativeHelperEvent(event);
     if (!interruption) return;
-    emitEvent('computer-use-abort', interruption);
+    // Ordinary mouse/keyboard input while Abu is sending input is a pause,
+    // not a stop: the Gate has already revoked the task, so the in-flight
+    // computer tool call fails and the renderer turns the Gate's stop reason
+    // into a hand-off the user can resume from (computerTools.ts). Only ESC
+    // and a vanished target abort the whole run.
+    if (interruption.type !== 'user-input-detected') {
+      emitEvent('computer-use-abort', interruption);
+    }
     emitEvent('computer-use-interrupted', interruption);
   });
 

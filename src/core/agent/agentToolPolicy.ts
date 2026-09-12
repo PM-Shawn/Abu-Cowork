@@ -1,3 +1,5 @@
+import type { RouteResult } from './orchestrator';
+import { TOOL_NAMES } from '../tools/toolNames';
 import { matchesToolName, matchesToolPattern } from '@/core/skill/toolFilter';
 
 export interface AgentToolPolicy {
@@ -5,6 +7,18 @@ export interface AgentToolPolicy {
   disallowedTools?: unknown;
   /** Trusted harness names that bypass only the role allowlist. */
   protocolTools: readonly string[];
+}
+
+/** Only a trusted root team route receives orchestration protocol exceptions. */
+export function agentToolPolicyForRoute(route: RouteResult): AgentToolPolicy | undefined {
+  if (route.type !== 'agent' || !route.definition) return undefined;
+  return {
+    tools: route.definition.tools,
+    disallowedTools: route.definition.disallowedTools,
+    protocolTools: route.team
+      ? [TOOL_NAMES.REPORT_PLAN, TOOL_NAMES.DELEGATE_TO_AGENT, TOOL_NAMES.RUN_AGENT_BATCH]
+      : [],
+  };
 }
 
 export interface AgentToolResolution {

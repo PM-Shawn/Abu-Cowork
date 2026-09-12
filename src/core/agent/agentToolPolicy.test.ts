@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { checkAgentToolCall, resolveAgentToolNames, type AgentToolPolicy } from '@/core/agent/agentToolPolicy';
+import { agentToolPolicyForRoute, checkAgentToolCall, resolveAgentToolNames, type AgentToolPolicy } from '@/core/agent/agentToolPolicy';
 
 const BUSINESS_TOOLS = ['read_file', 'write_file', 'notes__read', 'notes__write', 'run_command'];
 
 describe('agentToolPolicy', () => {
+  it('derives protocol exceptions only for actual agent definitions on trusted team root routes', () => {
+    const definition = { name: 'expert', tools: ['read_file'], disallowedTools: ['run_agent_batch'] } as never;
+    const route = { type: 'agent' as const, name: 'expert', cleanInput: 'task', definition };
+    expect(agentToolPolicyForRoute(route)).toEqual({ tools: ['read_file'], disallowedTools: ['run_agent_batch'], protocolTools: [] });
+    expect(agentToolPolicyForRoute({ ...route, team: {} as never })?.protocolTools).toEqual(['report_plan', 'delegate_to_agent', 'run_agent_batch']);
+    for (const type of ['general', 'skill', 'delegate'] as const) {
+      expect(agentToolPolicyForRoute({ ...route, type, team: {} as never })).toBeUndefined();
+    }
+    expect(agentToolPolicyForRoute({ ...route, definition: undefined })).toBeUndefined();
+  });
+
   it.each([
     ['omitted allowlist', {}, BUSINESS_TOOLS],
     ['empty allowlist', { tools: [] }, BUSINESS_TOOLS],

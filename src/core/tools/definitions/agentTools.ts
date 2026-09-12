@@ -4,6 +4,8 @@ import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
+import { getExecutionPort } from '../../agent/ports/executionPort';
+import { snapshotExecutionSteps } from '../../agent/executionSnapshot';
 import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } from '../../../types';
 import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
@@ -217,6 +219,20 @@ function buildPresetAgent(type: string, _task: string): SubagentDefinition {
   };
 }
 
+/**
+ * Trailing-edge window for persisting a delegated member's step snapshot.
+ * Each persist rewrites the whole assistant message to disk
+ * (`setExecutionStepsSnapshot`), so a burst of child tool events has to
+ * collapse into one write — otherwise a long delegation costs O(n^2) I/O.
+ */
+export const DELEGATE_SNAPSHOT_COALESCE_MS = 250;
+/** Poll interval, and attempt budget, for the delayed-parent-step drain
+ *  below (~500 ms in total). See `createParentStepResolver`.
+ *  Exported with the window above so the tests advance the clock by the real
+ *  budget rather than a number that can drift away from it. */
+export const DELEGATE_DRAIN_POLL_MS = 5;
+export const DELEGATE_DRAIN_MAX_ATTEMPTS = 100;
+
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
   description: 'Delegate a task to a single agent (synchronously waits for the result). Can specify agent_name (user-defined agent) or type (built-in role: research/writer/executor). When parallel processing of multiple independent sub-tasks is needed, use run_agent_batch instead (more reliable).',
@@ -303,17 +319,60 @@ export const delegateToAgentTool: ToolDefinition = {
 
     // 5. Build onProgress callback for subagent visualization
     let onProgress: ((event: SubagentProgressEvent) => void) | undefined;
+    let drainProgress: (() => Promise<void>) | undefined;
+    let finalizeProgress: (() => void) | undefined;
 
     if (loopCtx?.eventRouter && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function') {
       // Parent step resolved lazily, by this call's tool_use id — see
       // delegateParentStep.ts (eager lookup lost the member process when the
       // leader loop ran in the sidecar).
-      const resolveParentStepId = createParentStepResolver(loopCtx, toolExecContext?.toolCallId);
+      const resolveParentStepId = createParentStepResolver(
+        loopCtx,
+        toolExecContext?.toolCallId,
+        toolExecContext?.executionStepId,
+      );
       const childIdMap = new Map<string, string>(); // subagent toolCallId -> childStepId
+      const pendingProgress: SubagentProgressEvent[] = [];
+      let retryTimer: ReturnType<typeof setTimeout> | undefined;
+      let retryCount = 0;
+      let snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+      let snapshotDirty = false;
 
-      onProgress = (event) => {
-        const parentStepId = resolveParentStepId();
-        if (!parentStepId) return;
+      // The live panel reads the in-memory execution, so child steps are
+      // applied the moment they arrive; only the persist is coalesced.
+      const persistSnapshot = (): void => {
+        if (!snapshotDirty) return;
+        const execution = getExecutionPort().getExecutionByLoopId(loopCtx.loopId);
+        if (!execution) return; // stays dirty — a later flush can still write it
+        snapshotDirty = false;
+        useChatStore.getState().setExecutionStepsSnapshot(
+          loopCtx.conversationId,
+          loopCtx.loopId,
+          snapshotExecutionSteps(execution.steps),
+        );
+      };
+
+      const flushSnapshot = (): void => {
+        if (snapshotTimer !== undefined) {
+          clearTimeout(snapshotTimer);
+          snapshotTimer = undefined;
+        }
+        persistSnapshot();
+      };
+
+      const scheduleSnapshot = (): void => {
+        snapshotDirty = true;
+        // One timer per window, deliberately NOT reset by later events: a
+        // steady stream of child events must still reach disk on time rather
+        // than starve behind an ever-postponed debounce.
+        if (snapshotTimer !== undefined) return;
+        snapshotTimer = setTimeout(() => {
+          snapshotTimer = undefined;
+          persistSnapshot();
+        }, DELEGATE_SNAPSHOT_COALESCE_MS);
+      };
+
+      const applyProgress = (event: SubagentProgressEvent, parentStepId: string): void => {
         if (event.type === 'tool-start') {
           const childStepId = loopCtx.eventRouter.addChildStepToDelegate(
             loopCtx.loopId,
@@ -322,6 +381,7 @@ export const delegateToAgentTool: ToolDefinition = {
           );
           if (childStepId) {
             childIdMap.set(event.id, childStepId);
+            scheduleSnapshot();
           }
         } else if (event.type === 'tool-end') {
           const childStepId = childIdMap.get(event.id);
@@ -333,10 +393,73 @@ export const delegateToAgentTool: ToolDefinition = {
               childStepId,
               event.result,
               event.error,
-              event.resultContent
+              event.resultContent,
             );
+            scheduleSnapshot();
           }
         }
+      };
+
+      const cancelRetry = (): void => {
+        if (retryTimer === undefined) return;
+        clearTimeout(retryTimer);
+        retryTimer = undefined;
+      };
+
+      const flushPending = (): void => {
+        cancelRetry();
+        const parentStepId = resolveParentStepId();
+        if (!parentStepId) {
+          if (pendingProgress.length > 0 && retryCount < DELEGATE_DRAIN_MAX_ATTEMPTS) {
+            retryCount += 1;
+            retryTimer = setTimeout(flushPending, DELEGATE_DRAIN_POLL_MS);
+          }
+          return;
+        }
+        for (const pending of pendingProgress.splice(0)) applyProgress(pending, parentStepId);
+        retryCount = 0;
+      };
+
+      // Last word on this delegation's progress: stop polling, give up on
+      // whatever is still queued, and write the final snapshot. Runs on both
+      // exits (drained result and the catch path) so no timer outlives the
+      // call and the member's last child step still reaches disk.
+      const settleProgress = (): void => {
+        cancelRetry();
+        if (pendingProgress.length > 0) {
+          console.debug(`[delegate_to_agent] dropped ${pendingProgress.length} member progress event(s): the parent step never became visible`);
+          pendingProgress.length = 0;
+        }
+        flushSnapshot();
+      };
+      finalizeProgress = settleProgress;
+
+      // A sidecar delegate can finish its member run before the shell has
+      // applied the parent's addStep frame. Keep the delegate result behind a
+      // short bounded drain so the caller never observes "completed" while
+      // the member's child steps are still waiting in this queue.
+      drainProgress = async (): Promise<void> => {
+        for (let attempt = 0; attempt < DELEGATE_DRAIN_MAX_ATTEMPTS && pendingProgress.length > 0; attempt += 1) {
+          flushPending();
+          if (pendingProgress.length === 0) break;
+          await new Promise<void>((resolve) => setTimeout(resolve, DELEGATE_DRAIN_POLL_MS));
+        }
+        flushPending();
+        settleProgress();
+      };
+
+      onProgress = (event) => {
+        const parentStepId = resolveParentStepId();
+        if (!parentStepId) {
+          pendingProgress.push(event);
+          if (retryTimer === undefined) {
+            retryCount = 0;
+            retryTimer = setTimeout(flushPending, 0);
+          }
+          return;
+        }
+        flushPending();
+        applyProgress(event, parentStepId);
       };
     }
 
@@ -387,6 +510,7 @@ export const delegateToAgentTool: ToolDefinition = {
         ...getSubagentRunInheritance(loopCtx, toolExecContext?.authorizationScopeId, toolExecContext?.workspacePath),
         onProgress,
       });
+      await drainProgress?.();
 
       // Clear this agent from tracking and cleanup
       subagentCleanup();
@@ -429,6 +553,9 @@ export const delegateToAgentTool: ToolDefinition = {
       return text;
     } catch (err) {
       subagentCleanup();
+      // The run never reached drainProgress — settle the member's progress
+      // here so the coalesced snapshot is written and no timer is left armed.
+      finalizeProgress?.();
       if (boundsLoopId && agentName && !outcomeRecorded) recordDispatchOutcome(boundsLoopId, agentName, false);
       if (ownerConversationId) {
         useChatStore.getState().removeActiveAgent(ownerConversationId, effectiveAgentName);

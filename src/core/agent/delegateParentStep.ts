@@ -16,10 +16,18 @@ import { getExecutionPort } from './ports/executionPort';
 export function createParentStepResolver(
   loopCtx: Pick<LoopContext, 'loopId' | 'toolCallToStepId' | 'eventRouter'>,
   toolCallId: string | undefined,
+  executionStepId?: string,
 ): () => string | undefined {
   let cached: string | undefined;
   return () => {
     if (cached) return cached;
+    if (executionStepId) {
+      const execution = getExecutionPort().getExecutionByLoopId(loopCtx.loopId);
+      if (execution?.steps.some((step) => step.id === executionStepId)) {
+        cached = executionStepId;
+        return cached;
+      }
+    }
     if (toolCallId) {
       cached = loopCtx.toolCallToStepId.get(toolCallId)
         ?? getExecutionPort().getExecutionByLoopId(loopCtx.loopId)?.steps.find((step) => step.toolCallId === toolCallId)?.id;

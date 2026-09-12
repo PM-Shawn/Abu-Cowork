@@ -39,6 +39,7 @@ import { checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
+import { getExecutionPort } from './ports/executionPort';
 import { firstImageContent } from '../tools/toolResultContent';
 import { snapshotResultImage } from '../session/outputSnapshots';
 
@@ -295,6 +296,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const invokeTool = () => toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
         ...toolContext,
         toolCallId: tc.id,
+        executionStepId: params.toolCallToStepId.get(tc.id)
+          ?? getExecutionPort().getExecutionByLoopId(loopId)?.steps.find((step) => step.toolCallId === tc.id)?.id,
         assistantMessageId: assistantMsgId,
         abortSignal: abortController.signal,
         reportMetadata: checkpointMetadata,

@@ -134,6 +134,87 @@ fn supported_commands() -> Vec<&'static str> {
     commands
 }
 
+/// L3 driver capability declaration (contract §2.8). Only facts backed by
+/// tests or real-desktop evidence are claimed; anything unmeasured is declared
+/// as "not promised" so the upper tiers never plan around it.
+fn driver_capabilities() -> Value {
+    #[cfg(target_os = "windows")]
+    {
+        json!({
+            "id": "windows-uia",
+            "input": {
+                "foreground_required": true,
+                "background_element_actions": false,
+                "unicode_text": true,
+                "chords": true,
+                "ime_aware": false,
+                "physical_input_monitoring": windows_backend::input_monitoring_ready(),
+            },
+            "capture": {
+                "display": "wgc-monitor",
+                "occluded_window": false,
+                "excludes_own_window": true,
+            },
+            "elements": {
+                "identity": "runtime-id",
+                "empty_value": "string",
+                "actions": [
+                    "Invoke", "SetValue", "Focus", "Toggle", "Select", "Expand", "Collapse",
+                    "ScrollIntoView", "Scroll",
+                ],
+            },
+            "boundaries": ["secure-desktop", "higher-integrity"],
+            "activation": { "can_activate_window": true },
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // TODO(mac): values inferred from the current AX/enigo implementation;
+        // the Mac session confirms each against a real machine (contract §2.8).
+        json!({
+            "id": "macos-ax",
+            "input": {
+                "foreground_required": true,
+                "background_element_actions": true,
+                "unicode_text": true,
+                "chords": true,
+                "ime_aware": false,
+                "physical_input_monitoring": false,
+            },
+            "capture": {
+                "display": "xcap",
+                "occluded_window": false,
+                "excludes_own_window": true,
+            },
+            "elements": {
+                "identity": "session-index",
+                "empty_value": "unknown",
+                "actions": ["AXPress", "AXSetValue", "AXShowMenu", "AXPick", "AXIncrement", "AXDecrement"],
+            },
+            "boundaries": [],
+            "activation": { "can_activate_window": true },
+        })
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        json!({
+            "id": "unavailable",
+            "input": {
+                "foreground_required": true,
+                "background_element_actions": false,
+                "unicode_text": false,
+                "chords": false,
+                "ime_aware": false,
+                "physical_input_monitoring": false,
+            },
+            "capture": { "display": "unknown", "occluded_window": false, "excludes_own_window": false },
+            "elements": { "identity": "none", "empty_value": "unknown", "actions": [] },
+            "boundaries": [],
+            "activation": { "can_activate_window": false },
+        })
+    }
+}
+
 fn helper_identity() -> Value {
     #[cfg(target_os = "windows")]
     let input_monitoring = windows_backend::input_monitoring_ready();
@@ -164,6 +245,7 @@ fn helper_identity() -> Value {
             } else {
                 "unavailable"
             },
+            "driver": driver_capabilities(),
         },
     })
 }

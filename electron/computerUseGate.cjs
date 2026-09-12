@@ -418,6 +418,7 @@ function createComputerUseGate(options) {
     nativeDispatch,
     getActiveWindow,
     getNativeHelperGeneration = () => 0,
+    getDriverCapabilities = () => null,
     killNativeHelper = () => {},
     requestAppApproval = async () => false,
     requestTaskApproval = async () => false,
@@ -2187,6 +2188,9 @@ function createComputerUseGate(options) {
           target: authorizedTarget,
           classification,
           expires_at: expiresAt,
+          // L3 declaration of the running driver (contract §2.8); null when
+          // no helper has completed its handshake yet.
+          driver: getDriverCapabilities() ?? null,
         };
       } catch (error) {
         if (

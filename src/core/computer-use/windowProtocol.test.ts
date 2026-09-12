@@ -48,6 +48,35 @@ describe('Windows Computer Use window protocol', () => {
     })).toThrow(/window_ref/);
   });
 
+  it('carries the driver declaration when the Host provides one and tolerates its absence', () => {
+    const base = {
+      status: 'authorized',
+      token: 'session-token',
+      target: { window_ref: 'wr-opaque', app_name: 'Word', bundle_id: 'winword.exe', process_id: 42, relation: 'root' },
+      classification: 'ordinary',
+      expires_at: 1234,
+    };
+    const declared = {
+      id: 'windows-uia',
+      declared: true,
+      input: {
+        foreground_required: true,
+        background_element_actions: false,
+        unicode_text: true,
+        chords: true,
+        ime_aware: false,
+        physical_input_monitoring: true,
+      },
+      capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true },
+      elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke'] },
+      boundaries: ['secure-desktop'],
+      activation: { can_activate_window: true },
+    };
+    expect(parseComputerUseSessionResponse({ ...base, driver: declared })).toMatchObject({ driver: declared });
+    expect(parseComputerUseSessionResponse(base)).toMatchObject({ driver: null });
+    expect(parseComputerUseSessionResponse({ ...base, driver: 'windows-uia' })).toMatchObject({ driver: null });
+  });
+
   it('preserves a structured target error for model recovery', () => {
     expect(parseComputerUseSessionResponse({
       status: 'target-error',

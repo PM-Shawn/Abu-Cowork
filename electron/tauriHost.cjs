@@ -106,6 +106,7 @@ const {
   NATIVE_HELPER_MISS,
   killNativeHelper,
   getNativeHelperGeneration,
+  getNativeHelperDriverCapabilities,
   subscribeNativeHelperEvents,
 } = require('./nativeHelperManager.cjs');
 const {
@@ -916,6 +917,7 @@ function registerTauriHost(app, options = {}) {
       return await result;
     },
     getNativeHelperGeneration,
+    getDriverCapabilities: getNativeHelperDriverCapabilities,
     killNativeHelper,
     requestTaskApproval: async ({ target, mode }) => {
       if (shouldAutoDeclineCuApprovals(app)) return false;

@@ -333,6 +333,7 @@ let nextId = 1;
 const pending = new Map();
 let stdoutBuf = '';
 let helperHandshake = null;
+let lastDriverCapabilities = null;
 const helperEventListeners = new Set();
 const requestScheduler = createSerialExecutor();
 // Monotonically changes whenever the helper process identity changes. Host-side
@@ -477,6 +478,7 @@ function ensureChild() {
     rejectAllPending(new Error(`native-helper exited (${reason}); it will respawn on the next call`));
     child = null;
     helperHandshake = null;
+    lastDriverCapabilities = null;
     helperGeneration += 1;
     helperSupervisor.failed(helperGeneration, reason);
   };
@@ -634,11 +636,107 @@ function validateHelperHello(value) {
   return value;
 }
 
+const DRIVER_IDENTITIES = new Set(['runtime-id', 'session-index', 'none']);
+const DRIVER_EMPTY_VALUES = new Set(['string', 'null', 'unknown']);
+
+function helloPlatformToNode(platform) {
+  if (platform === 'windows') return 'win32';
+  if (platform === 'macos') return 'darwin';
+  return platform;
+}
+
+/**
+ * What the Host assumes about a helper that predates the L3 declaration:
+ * nothing is promised beyond what every driver has always had to do.
+ */
+function legacyDriverCapabilities(platform = process.platform) {
+  return deepFreeze({
+    id: platform === 'win32' ? 'windows-uia' : platform === 'darwin' ? 'macos-ax' : 'unavailable',
+    declared: false,
+    input: {
+      foreground_required: true,
+      background_element_actions: false,
+      unicode_text: false,
+      chords: true,
+      ime_aware: false,
+      physical_input_monitoring: false,
+    },
+    capture: { display: 'unknown', occluded_window: false, excludes_own_window: false },
+    elements: { identity: 'session-index', empty_value: 'unknown', actions: [] },
+    boundaries: [],
+    activation: { can_activate_window: true },
+  });
+}
+
+function deepFreeze(value) {
+  if (value && typeof value === 'object') {
+    for (const key of Object.keys(value)) deepFreeze(value[key]);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+const flag = (value) => value === true;
+const stringList = (value) => (Array.isArray(value)
+  ? value.filter((item) => typeof item === 'string' && item.length <= 64).slice(0, 64)
+  : []);
+
+/**
+ * L3 driver capability declaration (contract §2.8), read from the hello. A
+ * missing or malformed declaration yields the legacy table; a present one is
+ * taken field by field with the conservative value for anything unparseable —
+ * a driver can only ever under-promise by omission, never over-promise.
+ */
+function normalizeDriverCapabilities(hello, platform = null) {
+  const nodePlatform = platform ?? helloPlatformToNode(hello?.platform) ?? process.platform;
+  const raw = hello?.capabilities?.driver;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.id !== 'string' || !raw.id.trim()) {
+    return legacyDriverCapabilities(nodePlatform);
+  }
+  const input = raw.input && typeof raw.input === 'object' ? raw.input : {};
+  const capture = raw.capture && typeof raw.capture === 'object' ? raw.capture : {};
+  const elements = raw.elements && typeof raw.elements === 'object' ? raw.elements : {};
+  const activation = raw.activation && typeof raw.activation === 'object' ? raw.activation : {};
+  return deepFreeze({
+    id: raw.id.trim().slice(0, 64),
+    declared: true,
+    input: {
+      // Foreground is required unless the driver explicitly says otherwise.
+      foreground_required: input.foreground_required !== false,
+      background_element_actions: flag(input.background_element_actions),
+      unicode_text: flag(input.unicode_text),
+      chords: flag(input.chords),
+      ime_aware: flag(input.ime_aware),
+      physical_input_monitoring: flag(input.physical_input_monitoring),
+    },
+    capture: {
+      display: typeof capture.display === 'string' && capture.display ? capture.display.slice(0, 64) : 'unknown',
+      occluded_window: flag(capture.occluded_window),
+      excludes_own_window: flag(capture.excludes_own_window),
+    },
+    elements: {
+      identity: DRIVER_IDENTITIES.has(elements.identity) ? elements.identity : 'session-index',
+      empty_value: DRIVER_EMPTY_VALUES.has(elements.empty_value) ? elements.empty_value : 'unknown',
+      actions: stringList(elements.actions),
+    },
+    boundaries: stringList(raw.boundaries),
+    activation: {
+      can_activate_window: activation.can_activate_window !== false,
+    },
+  });
+}
+
+/** Declaration of the running helper; null until the handshake completes. */
+function getNativeHelperDriverCapabilities() {
+  return lastDriverCapabilities;
+}
+
 async function ensureHelperCompatibility() {
   if (!helperHandshake) {
     helperHandshake = callHelper('hello', {})
       .then((value) => {
         const hello = validateHelperHello(value);
+        lastDriverCapabilities = normalizeDriverCapabilities(hello);
         helperSupervisor.ready(helperGeneration);
         runtimeState.noteNativeHelperReady(helperGeneration, hello);
         return hello;
@@ -692,6 +790,7 @@ function killNativeHelper(reason = 'stopped') {
     runtimeState.noteNativeHelperStopped(helperGeneration, reason);
     child = null;
     helperHandshake = null;
+    lastDriverCapabilities = null;
     helperGeneration += 1;
     rejectAllPending(new Error(
       `native-helper was stopped (${reason}); a fresh Computer Use observation is required`
@@ -737,6 +836,9 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 module.exports = {
   nativeHelperDispatch,
   normalizeHelperError,
+  normalizeDriverCapabilities,
+  legacyDriverCapabilities,
+  getNativeHelperDriverCapabilities,
   HELPER_EXECUTIONS,
   NATIVE_HELPER_MISS,
   killNativeHelper,

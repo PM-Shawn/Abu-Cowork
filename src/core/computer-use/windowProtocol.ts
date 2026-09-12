@@ -58,6 +58,74 @@ export interface ComputerAuthorizedWindowTarget {
   title?: string;
 }
 
+/**
+ * L3 driver capability declaration (contract §2.8): what the running driver
+ * promises, as declared by the helper and normalized by the Host. `declared`
+ * is false when the helper predates the declaration and the Host filled in
+ * the conservative legacy table.
+ */
+export interface ComputerDriverCapabilities {
+  id: string;
+  declared: boolean;
+  input: {
+    foreground_required: boolean;
+    background_element_actions: boolean;
+    unicode_text: boolean;
+    chords: boolean;
+    ime_aware: boolean;
+    physical_input_monitoring: boolean;
+  };
+  capture: { display: string; occluded_window: boolean; excludes_own_window: boolean };
+  elements: {
+    identity: 'runtime-id' | 'session-index' | 'none';
+    empty_value: 'string' | 'null' | 'unknown';
+    actions: string[];
+  };
+  boundaries: string[];
+  activation: { can_activate_window: boolean };
+}
+
+const DRIVER_IDENTITIES = new Set(['runtime-id', 'session-index', 'none']);
+const DRIVER_EMPTY_VALUES = new Set(['string', 'null', 'unknown']);
+
+/** Tolerant: a missing or malformed declaration is simply absent (null). */
+export function parseDriverCapabilities(value: unknown): ComputerDriverCapabilities | null {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id) return null;
+  const input = isRecord(value.input) ? value.input : {};
+  const capture = isRecord(value.capture) ? value.capture : {};
+  const elements = isRecord(value.elements) ? value.elements : {};
+  const activation = isRecord(value.activation) ? value.activation : {};
+  const strings = (list: unknown): string[] => (Array.isArray(list)
+    ? list.filter((item): item is string => typeof item === 'string')
+    : []);
+  const identity = typeof elements.identity === 'string' && DRIVER_IDENTITIES.has(elements.identity)
+    ? elements.identity as ComputerDriverCapabilities['elements']['identity']
+    : 'session-index';
+  const emptyValue = typeof elements.empty_value === 'string' && DRIVER_EMPTY_VALUES.has(elements.empty_value)
+    ? elements.empty_value as ComputerDriverCapabilities['elements']['empty_value']
+    : 'unknown';
+  return {
+    id: value.id,
+    declared: value.declared === true,
+    input: {
+      foreground_required: input.foreground_required !== false,
+      background_element_actions: input.background_element_actions === true,
+      unicode_text: input.unicode_text === true,
+      chords: input.chords === true,
+      ime_aware: input.ime_aware === true,
+      physical_input_monitoring: input.physical_input_monitoring === true,
+    },
+    capture: {
+      display: typeof capture.display === 'string' && capture.display ? capture.display : 'unknown',
+      occluded_window: capture.occluded_window === true,
+      excludes_own_window: capture.excludes_own_window === true,
+    },
+    elements: { identity, empty_value: emptyValue, actions: strings(elements.actions) },
+    boundaries: strings(value.boundaries),
+    activation: { can_activate_window: activation.can_activate_window !== false },
+  };
+}
+
 export type ComputerUseSessionResponse =
   | {
       status: 'authorized';
@@ -65,6 +133,7 @@ export type ComputerUseSessionResponse =
       target: ComputerAuthorizedWindowTarget;
       classification: 'ordinary' | 'approval-required';
       expires_at: number;
+      driver?: ComputerDriverCapabilities | null;
     }
   | { status: 'target-error'; error: ComputerProtocolError };
 
@@ -192,6 +261,7 @@ export function parseComputerUseSessionResponse(value: unknown): ComputerUseSess
     },
     classification: value.classification,
     expires_at: value.expires_at,
+    driver: parseDriverCapabilities(value.driver),
   };
 }
 

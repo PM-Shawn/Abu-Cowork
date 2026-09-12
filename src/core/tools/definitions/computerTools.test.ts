@@ -1600,6 +1600,80 @@ describe('computerTool — accessibility permission branch', () => {
     expect(keyCount).toBe(2);
   });
 
+  it('shows the model one line of the driver declaration in every observation', async () => {
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'windows-driver-token',
+          target: {
+            window_ref: 'wr-notepad-driver',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+          driver: {
+            id: 'windows-uia',
+            declared: true,
+            input: {
+              foreground_required: true,
+              background_element_actions: false,
+              unicode_text: true,
+              chords: true,
+              ime_aware: false,
+              physical_input_monitoring: true,
+            },
+            capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true },
+            elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke'] },
+            boundaries: ['secure-desktop'],
+            activation: { can_activate_window: true },
+          },
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'windows-driver-ax-1',
+          state_id: 'windows-driver-state-1',
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-windows-driver',
+        interactionMode: 'foreground' as const,
+        supportsVision: false,
+        toolCallId: 'tool-windows-driver',
+      },
+    );
+    expect(String(observed)).toContain(
+      'driver: windows-uia; input=foreground-only; element-identity=stable; ime=unknown; occluded-capture=no',
+    );
+  });
+
   it('stops before native input when the task aborts during UI settling', async () => {
     setElectronHost(true);
     const abortController = new AbortController();

@@ -13,6 +13,7 @@ import {
   ComputerProtocolFailure,
   listComputerUseWindows,
   parseComputerUseSessionResponse,
+  type ComputerDriverCapabilities,
   type ComputerProtocolError,
   type ComputerUseSessionResponse,
   type ComputerWindowTarget,
@@ -546,12 +547,32 @@ function screenshotIdForState(
   return context.screenshotId;
 }
 
+/**
+ * One line of the L3 declaration, phrased for the model: only the facts that
+ * change what it should do next (LLM-facing, so English like the rest of the
+ * structured observation block).
+ */
+function formatDriverLine(driver: ComputerDriverCapabilities): string {
+  const input = driver.input.foreground_required
+    ? `foreground-only${driver.input.background_element_actions ? '+background-element-actions' : ''}`
+    : 'background-ok';
+  const identity = driver.elements.identity === 'runtime-id' ? 'stable' : 'per-snapshot';
+  return [
+    `driver: ${driver.id}`,
+    `input=${input}`,
+    `element-identity=${identity}`,
+    `ime=${driver.input.ime_aware ? 'detected' : 'unknown'}`,
+    `occluded-capture=${driver.capture.occluded_window ? 'yes' : 'no'}`,
+  ].join('; ');
+}
+
 function formatComputerWindowState(input: {
   label: 'state' | 'next_state';
   target: ComputerTargetIdentity;
   stateId: string;
   screenshotId: string | null;
   snapshot: AxSnapshotResult;
+  driver?: ComputerDriverCapabilities | null;
 }): string {
   const graph = formatWindowGraph(
     input.snapshot.window_graph,
@@ -563,6 +584,7 @@ function formatComputerWindowState(input: {
     `app: ${input.target.appName}`,
     `state_id: ${input.stateId}`,
     input.screenshotId ? `screenshot_id: ${input.screenshotId}` : '',
+    input.driver ? formatDriverLine(input.driver) : '',
     formatAxElements(input.snapshot.elements),
     graph,
   ].filter(Boolean).join('\n');
@@ -1721,6 +1743,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             ].filter(Boolean).join('');
             axPart = state
               ? `${formatComputerWindowState({
+                  driver: hostSession?.driver ?? null,
                   label: 'state',
                   target: state.target,
                   stateId: state.stateId,
@@ -1767,6 +1790,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             );
             if (observedState && observedSnapshot) {
               axPart = `${formatComputerWindowState({
+                driver: hostSession?.driver ?? null,
                 label: 'state',
                 target: observedState.target,
                 stateId: observedState.stateId,
@@ -2134,6 +2158,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         );
         if (nextState && nextSnapshot) {
           resultText = `${resultText}\n\n${formatComputerWindowState({
+            driver: hostSession?.driver ?? null,
             label: 'next_state',
             target: nextState.target,
             stateId: nextState.stateId,
@@ -2149,6 +2174,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
 
       if (nextState && nextSnapshot) {
         resultText = `${resultText}\n\n${formatComputerWindowState({
+          driver: hostSession?.driver ?? null,
           label: 'next_state',
           target: nextState.target,
           stateId: nextState.stateId,

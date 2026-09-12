@@ -3654,3 +3654,37 @@ test('classifyInputRejection reads the helper code before any message', () => {
   })), 'secure-desktop');
   assert.equal(classifyInputRejection(new Error('physical user input occurred')), 'physical-input');
 });
+
+test('an authorized session carries the driver declaration the Host was given', async () => {
+  const declared = {
+  id: 'windows-uia',
+  declared: true,
+  input: {
+    foreground_required: true,
+    background_element_actions: false,
+    unicode_text: true,
+    chords: true,
+    ime_aware: false,
+    physical_input_monitoring: true,
+  },
+  capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true },
+  elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke'] },
+  boundaries: ['secure-desktop'],
+  activation: { can_activate_window: true },
+};
+  const h = harness({ getDriverCapabilities: () => declared });
+  const snapshot = await observeState(h);
+  const session = await begin(h, {
+    expectedStateId: snapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  assert.deepEqual(session.driver, declared);
+
+  const plain = harness();
+  const plainSnapshot = await observeState(plain);
+  const plainSession = await begin(plain, {
+    expectedStateId: plainSnapshot.state_id,
+    actionIntent: { action: 'move', category: 'none', summary: '' },
+  });
+  assert.equal(plainSession.driver, null);
+});

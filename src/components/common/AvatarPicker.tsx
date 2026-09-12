@@ -18,16 +18,16 @@ export default function AvatarPicker({ value, onChange, children }: {
   const selectionLabel = parsed.kind === 'icon'
     ? format(t.avatarPicker.optionLabel, { icon: t.avatarPicker.icons[parsed.icon], tint: t.avatarPicker.tints[parsed.tint] })
     : parsed.kind === 'emoji' ? parsed.emoji : undefined;
-  const [pendingTint, setPendingTint] = useState('blue');
+  const [pendingTint, setPendingTint] = useState(AVATAR_TINTS[0]);
   const tint = parsed.kind === 'icon' ? parsed.tint : pendingTint;
   const selectTint = (color: string) => {
     setPendingTint(color);
     if (parsed.kind === 'icon') onChange(buildAvatarValue(parsed.icon, color));
   };
   return (
-    <Popover onOpenChange={(open) => { if (open) setPendingTint('blue'); }}>
+    <Popover onOpenChange={(open) => { if (open) setPendingTint(AVATAR_TINTS[0]); }}>
       <PopoverTrigger asChild>
-        <Button type="button" variant="outline" size="icon-lg" className="shrink-0 rounded-xl border-[var(--abu-border-subtle)] dark:border-[var(--abu-border-subtle)] p-1 shadow-none hover:border-[var(--abu-border-hover)]" aria-label={selectionLabel ? format(t.avatarPicker.chooseAvatarWithSelection, { avatar: selectionLabel }) : t.avatarPicker.chooseAvatar} title={t.avatarPicker.chooseAvatar} data-testid="avatar-picker-trigger">
+        <Button type="button" variant="subtle" size="icon-lg" className="shrink-0 rounded-xl p-1" aria-label={selectionLabel ? format(t.avatarPicker.chooseAvatarWithSelection, { avatar: selectionLabel }) : t.avatarPicker.chooseAvatar} title={t.avatarPicker.chooseAvatar} data-testid="avatar-picker-trigger">
           {children ?? <AgentAvatar agent={{ name: 'avatar', avatar: value }} size="lg" />}
         </Button>
       </PopoverTrigger>
@@ -78,7 +78,7 @@ export default function AvatarPicker({ value, onChange, children }: {
             })}
           </div>
         </div>
-        <Button type="button" variant="ghost" size="sm" className="w-full" aria-pressed={parsed.kind === 'default'} onClick={() => { setPendingTint('blue'); onChange(''); }}>
+        <Button type="button" variant="ghost" size="sm" className="w-full" aria-pressed={parsed.kind === 'default'} onClick={() => { setPendingTint(AVATAR_TINTS[0]); onChange(''); }}>
           {t.avatarPicker.defaultAvatar}
         </Button>
       </PopoverContent>

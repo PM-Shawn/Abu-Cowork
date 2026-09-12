@@ -2292,7 +2292,6 @@ export interface TranslationDict {
     exampleSkills: string;
     globalSkills: string;
     projectSkills: string;
-    projectSkillsBadge: string;
     // UX categories (Task #25 rework) — what users see in Toolbox.
     categoryMine: string;              // "我的"
     categoryAgentEvolved: string;      // "阿布沉淀"

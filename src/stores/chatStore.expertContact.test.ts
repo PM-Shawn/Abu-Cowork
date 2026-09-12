@@ -161,3 +161,25 @@ describe('first contact persistence', () => {
     expect(store.useChatStore.getState().pendingExpertContact).toBeNull();
   });
 });
+
+describe('chat store migration to first-contact receipts', () => {
+  function migrateFrom(state: unknown, version: number): Record<string, unknown> {
+    const migrate = (store.useChatStore as unknown as {
+      persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+    }).persist.getOptions().migrate;
+    return migrate(state, version);
+  }
+
+  it('installs an empty receipt map for histories saved before receipts existed', () => {
+    // dev shipped v12 (the turn-cap notice) without receipts, so every store
+    // older than v13 — not older than v12 — needs the field installed.
+    const migrated = migrateFrom({ conversationIndex: { c1: { id: 'c1', title: 'Kept', updatedAt: 1 } } }, 12);
+    expect(migrated.expertContactReceipts).toEqual({});
+    expect(migrated.conversationIndex).toEqual({ c1: { id: 'c1', title: 'Kept', updatedAt: 1 } });
+  });
+
+  it('keeps receipts that a current store already holds', () => {
+    const receipts = { 'team:t1': { conversationId: 'c1', confirmed: true } };
+    expect(migrateFrom({ conversationIndex: {}, expertContactReceipts: receipts }, 13).expertContactReceipts).toEqual(receipts);
+  });
+});

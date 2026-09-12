@@ -849,6 +849,48 @@ describe('settingsStore labs flags', () => {
       });
     });
 
+    /**
+     * V52. An install that already carries a heartbeat plugin was binding
+     * 0.0.0.0 without ever being asked; the upgrade must CLOSE that listener,
+     * not grandfather it — so the default is false for every existing store.
+     */
+    it('defaults the LAN webhook opt-in to false, including for a store that predates the field', () => {
+      expect(getMigrate()({ theme: 'light' }, 45).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: {} }, 49).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: { allowLanWebhook: 'yes' } }, 49).imChannel).toEqual({ allowLanWebhook: false });
+      expect(getMigrate()({ imChannel: null }, 49).imChannel).toEqual({ allowLanWebhook: false });
+    });
+
+    it('keeps an explicit LAN webhook opt-in and any sibling field beside it', () => {
+      const migrated = getMigrate()({ imChannel: { allowLanWebhook: true, other: 1 } }, 49);
+      expect(migrated.imChannel).toEqual({ allowLanWebhook: true, other: 1 });
+    });
+
+    /**
+     * The gap this port has to close: the field was authored against v50, but
+     * dev shipped v51 first, so it lands at v52. A store written by the
+     * released v51 build has never seen `imChannel` and must still have the
+     * listener closed on upgrade — a migration left at `version < 51` would
+     * skip it and leave 0.0.0.0 bound.
+     */
+    it('closes the LAN listener for a store persisted by the released v51 build', () => {
+      expect(getMigrate()({ theme: 'light' }, 51).imChannel).toEqual({ allowLanWebhook: false });
+    });
+
+    /**
+     * The action behind that opt-in. It is the only way the flag ever turns
+     * true, so it has to write exactly the boolean it was handed — an object
+     * replaced wholesale here would drop any sibling field a later version
+     * adds beside it.
+     */
+    it('setIMAllowLanWebhook writes the opt-in without disturbing the rest of imChannel', () => {
+      useSettingsStore.setState({ imChannel: { allowLanWebhook: false } });
+      useSettingsStore.getState().setIMAllowLanWebhook(true);
+      expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(true);
+      useSettingsStore.getState().setIMAllowLanWebhook(false);
+      expect(useSettingsStore.getState().imChannel.allowLanWebhook).toBe(false);
+    });
+
     it('defaults the unattended master switch to false — fail-safe, no silent grant', () => {
       const migrated = getMigrate()({ theme: 'light' }, 45);
       expect(migrated.allowUnattendedBrowser).toBe(false);

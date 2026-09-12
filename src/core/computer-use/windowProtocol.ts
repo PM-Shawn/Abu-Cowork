@@ -75,7 +75,13 @@ export interface ComputerDriverCapabilities {
     ime_aware: boolean;
     physical_input_monitoring: boolean;
   };
-  capture: { display: string; occluded_window: boolean; excludes_own_window: boolean };
+  capture: {
+    display: string;
+    occluded_window: boolean;
+    excludes_own_window: boolean;
+    /** Whether physical-pixel coordinates can be trusted on mixed-DPI desktops (§2.8). */
+    dpi_awareness: 'per-monitor-v2' | 'per-monitor' | 'system' | 'unaware' | 'unknown';
+  };
   elements: {
     identity: 'runtime-id' | 'session-index' | 'none';
     empty_value: 'string' | 'null' | 'unknown';
@@ -87,6 +93,7 @@ export interface ComputerDriverCapabilities {
 
 const DRIVER_IDENTITIES = new Set(['runtime-id', 'session-index', 'none']);
 const DRIVER_EMPTY_VALUES = new Set(['string', 'null', 'unknown']);
+const DRIVER_DPI_AWARENESS = new Set(['per-monitor-v2', 'per-monitor', 'system', 'unaware', 'unknown']);
 
 /** Tolerant: a missing or malformed declaration is simply absent (null). */
 export function parseDriverCapabilities(value: unknown): ComputerDriverCapabilities | null {
@@ -104,6 +111,9 @@ export function parseDriverCapabilities(value: unknown): ComputerDriverCapabilit
   const emptyValue = typeof elements.empty_value === 'string' && DRIVER_EMPTY_VALUES.has(elements.empty_value)
     ? elements.empty_value as ComputerDriverCapabilities['elements']['empty_value']
     : 'unknown';
+  const dpiAwareness = typeof capture.dpi_awareness === 'string' && DRIVER_DPI_AWARENESS.has(capture.dpi_awareness)
+    ? capture.dpi_awareness as ComputerDriverCapabilities['capture']['dpi_awareness']
+    : 'unknown';
   return {
     id: value.id,
     declared: value.declared === true,
@@ -119,6 +129,7 @@ export function parseDriverCapabilities(value: unknown): ComputerDriverCapabilit
       display: typeof capture.display === 'string' && capture.display ? capture.display : 'unknown',
       occluded_window: capture.occluded_window === true,
       excludes_own_window: capture.excludes_own_window === true,
+      dpi_awareness: dpiAwareness,
     },
     elements: { identity, empty_value: emptyValue, actions: strings(elements.actions) },
     boundaries: strings(value.boundaries),

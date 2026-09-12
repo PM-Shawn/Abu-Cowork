@@ -45,6 +45,8 @@ pub struct CachedScreenshot {
     pub returned_height: u32,
     pub scale_factor: f64,
     pub input_epoch: u64,
+    /// Monitor layout at capture time (dpi::display_signature).
+    pub display_signature: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -145,15 +147,23 @@ fn prune_cache(entries: &mut VecDeque<CachedScreenshot>) {
 }
 
 pub fn get_screenshot_ref(screenshot_id: &str) -> Result<CachedScreenshot, HelperError> {
+    let current_display = super::dpi::display_signature()?;
     let mut entries = cache()
         .lock()
         .map_err(|_| HelperError::preflight("screenshot cache is unavailable"))?;
     prune_cache(&mut entries);
-    entries
+    let entry = entries
         .iter()
         .find(|entry| entry.screenshot_id == screenshot_id)
         .cloned()
-        .ok_or_else(|| HelperError::observe_again("screenshot-stale", "screenshot_id is unknown or expired; observe again"))
+        .ok_or_else(|| HelperError::observe_again("screenshot-stale", "screenshot_id is unknown or expired; observe again"))?;
+    if entry.display_signature != current_display {
+        return Err(HelperError::observe_again(
+            "screenshot-stale",
+            "display configuration changed after the screenshot; observe again",
+        ));
+    }
+    Ok(entry)
 }
 
 fn target_window(
@@ -342,6 +352,7 @@ pub fn capture_screen_state_impl(
     let screenshot_id = format!("shot-{}-{}", std::process::id(), snapshot_revision,);
     let origin_x = monitor_x.saturating_add(crop_x as i32);
     let origin_y = monitor_y.saturating_add(crop_y as i32);
+    let display_signature = super::dpi::display_signature()?;
     let cached = CachedScreenshot {
         screenshot_id: screenshot_id.clone(),
         created_at: Instant::now(),
@@ -357,6 +368,7 @@ pub fn capture_screen_state_impl(
         returned_height,
         scale_factor,
         input_epoch,
+        display_signature,
     };
     let mut entries = cache()
         .lock()

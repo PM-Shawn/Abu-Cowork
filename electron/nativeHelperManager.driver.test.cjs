@@ -40,7 +40,7 @@ const WINDOWS_DECLARATION = {
     ime_aware: false,
     physical_input_monitoring: true,
   },
-  capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true },
+  capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true, dpi_awareness: 'per-monitor-v2' },
   elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke', 'SetValue'] },
   boundaries: ['secure-desktop', 'higher-integrity'],
   activation: { can_activate_window: true },
@@ -63,6 +63,7 @@ test('an undeclared helper gets the legacy table for its platform', () => {
     assert.equal(caps.elements.identity, 'session-index', platform);
     assert.equal(caps.elements.empty_value, 'unknown', platform);
     assert.deepEqual(caps.elements.actions, [], platform);
+    assert.equal(caps.capture.dpi_awareness, 'unknown', platform);
   }
   assert.deepEqual(normalizeDriverCapabilities(hello(undefined, 'windows')), legacyDriverCapabilities('win32'));
 });
@@ -71,7 +72,7 @@ test('a driver can only under-promise: unparseable fields fall to the conservati
   const caps = normalizeDriverCapabilities(hello({
     id: '  custom  ',
     input: { foreground_required: 'no', unicode_text: 'true', chords: 1 },
-    capture: { display: 42, occluded_window: 'yes' },
+    capture: { display: 42, occluded_window: 'yes', dpi_awareness: 'best-effort' },
     elements: { identity: 'made-up', empty_value: 'maybe', actions: ['Invoke', 7, null] },
     boundaries: 'secure-desktop',
     activation: { can_activate_window: 'sure' },
@@ -83,6 +84,7 @@ test('a driver can only under-promise: unparseable fields fall to the conservati
   assert.equal(caps.input.chords, false);
   assert.equal(caps.capture.display, 'unknown');
   assert.equal(caps.capture.occluded_window, false);
+  assert.equal(caps.capture.dpi_awareness, 'unknown');
   assert.equal(caps.elements.identity, 'session-index');
   assert.equal(caps.elements.empty_value, 'unknown');
   assert.deepEqual(caps.elements.actions, ['Invoke']);

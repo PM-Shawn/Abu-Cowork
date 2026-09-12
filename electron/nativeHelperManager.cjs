@@ -638,6 +638,8 @@ function validateHelperHello(value) {
 
 const DRIVER_IDENTITIES = new Set(['runtime-id', 'session-index', 'none']);
 const DRIVER_EMPTY_VALUES = new Set(['string', 'null', 'unknown']);
+// Contract §2.8: what the helper process actually got, not what it asked for.
+const DRIVER_DPI_AWARENESS = new Set(['per-monitor-v2', 'per-monitor', 'system', 'unaware', 'unknown']);
 
 function helloPlatformToNode(platform) {
   if (platform === 'windows') return 'win32';
@@ -661,7 +663,7 @@ function legacyDriverCapabilities(platform = process.platform) {
       ime_aware: false,
       physical_input_monitoring: false,
     },
-    capture: { display: 'unknown', occluded_window: false, excludes_own_window: false },
+    capture: { display: 'unknown', occluded_window: false, excludes_own_window: false, dpi_awareness: 'unknown' },
     elements: { identity: 'session-index', empty_value: 'unknown', actions: [] },
     boundaries: [],
     activation: { can_activate_window: true },
@@ -713,6 +715,7 @@ function normalizeDriverCapabilities(hello, platform = null) {
       display: typeof capture.display === 'string' && capture.display ? capture.display.slice(0, 64) : 'unknown',
       occluded_window: flag(capture.occluded_window),
       excludes_own_window: flag(capture.excludes_own_window),
+      dpi_awareness: DRIVER_DPI_AWARENESS.has(capture.dpi_awareness) ? capture.dpi_awareness : 'unknown',
     },
     elements: {
       identity: DRIVER_IDENTITIES.has(elements.identity) ? elements.identity : 'session-index',

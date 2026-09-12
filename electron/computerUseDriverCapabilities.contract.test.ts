@@ -36,8 +36,11 @@ describe('driver capability contract', () => {
     expect(rust).toContain('"id": "windows-uia"');
     expect(rust).toContain('"identity": "runtime-id"');
     expect(rust).toContain('"empty_value": "string"');
+    // The declared value is the self-check result, never a literal promise.
+    expect(rust).toContain('"dpi_awareness": windows_backend::dpi_awareness()');
+    expect(rust).toContain('windows_backend::initialize_dpi_awareness()');
     for (const key of ['foreground_required', 'background_element_actions', 'unicode_text', 'chords', 'ime_aware',
-      'physical_input_monitoring', 'occluded_window', 'excludes_own_window', 'can_activate_window']) {
+      'physical_input_monitoring', 'occluded_window', 'excludes_own_window', 'dpi_awareness', 'can_activate_window']) {
       expect(rust, key).toContain(`"${key}"`);
     }
   });
@@ -46,7 +49,7 @@ describe('driver capability contract', () => {
     const declaration = {
       id: 'windows-uia',
       input: { foreground_required: true, background_element_actions: false, unicode_text: true, chords: true, ime_aware: false, physical_input_monitoring: true },
-      capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true },
+      capture: { display: 'wgc-monitor', occluded_window: false, excludes_own_window: true, dpi_awareness: 'per-monitor-v2' },
       elements: { identity: 'runtime-id', empty_value: 'string', actions: ['Invoke', 'SetValue'] },
       boundaries: ['secure-desktop', 'higher-integrity'],
       activation: { can_activate_window: true },
@@ -71,6 +74,9 @@ describe('driver capability contract', () => {
     expect(EMPTY_VALUES).toContain(host.elements.empty_value);
     expect(parseDriverCapabilities({ id: 'x', elements: { identity: 'weird', empty_value: 'weird' } })?.elements)
       .toEqual({ identity: 'session-index', empty_value: 'unknown', actions: [] });
+    const dpi = helloWith({ id: 'x', capture: { dpi_awareness: 'v3' } });
+    expect(normalizeDriverCapabilities(dpi).capture.dpi_awareness).toBe('unknown');
+    expect(parseDriverCapabilities({ id: 'x', capture: { dpi_awareness: 'v3' } })?.capture.dpi_awareness).toBe('unknown');
   });
 
   it.runIf(process.platform === 'win32' && existsSync(helperExe))(
@@ -99,6 +105,7 @@ describe('driver capability contract', () => {
       expect(caps.input.unicode_text).toBe(true); // §2.6
       expect(caps.input.foreground_required).toBe(true);
       expect(caps.boundaries).toEqual(['secure-desktop', 'higher-integrity']);
+      expect(caps.capture.dpi_awareness).toBe('per-monitor-v2'); // §2.8 startup self-check
     },
   );
 });

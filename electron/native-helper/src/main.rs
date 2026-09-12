@@ -154,6 +154,7 @@ fn driver_capabilities() -> Value {
                 "display": "wgc-monitor",
                 "occluded_window": false,
                 "excludes_own_window": true,
+                "dpi_awareness": windows_backend::dpi_awareness(),
             },
             "elements": {
                 "identity": "runtime-id",
@@ -185,6 +186,7 @@ fn driver_capabilities() -> Value {
                 "display": "xcap",
                 "occluded_window": false,
                 "excludes_own_window": true,
+                "dpi_awareness": "unknown",
             },
             "elements": {
                 "identity": "session-index",
@@ -1113,14 +1115,10 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
 }
 
 fn main() {
+    // DPI awareness must be settled before any window or monitor call. The
+    // outcome is declared in hello (contract §2.8) and gates coordinate input.
     #[cfg(target_os = "windows")]
-    {
-        let _ = unsafe {
-            windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
-                windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
-            )
-        };
-    }
+    let _ = windows_backend::initialize_dpi_awareness();
     #[cfg(target_os = "windows")]
     let _ = windows_backend::initialize_input_monitoring();
     let _ = started_at_ms();

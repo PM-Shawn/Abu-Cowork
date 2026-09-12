@@ -4,6 +4,7 @@
 //! be added to the frozen Tauri compatibility path.
 
 mod app_catalog;
+mod dpi;
 mod input;
 mod interaction;
 mod screenshot;
@@ -17,6 +18,7 @@ pub use uia::{
 };
 
 pub use app_catalog::{launch_app_impl, list_apps_impl};
+pub use dpi::{dpi_awareness, initialize_dpi_awareness};
 pub use input::{
     keyboard_press_impl, keyboard_type_impl, mouse_click_impl, mouse_drag_impl, mouse_move_impl,
     mouse_scroll_impl,

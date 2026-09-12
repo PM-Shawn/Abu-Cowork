@@ -222,6 +222,15 @@ fn assert_point(
         expected_window_id,
         expected_input_epoch,
     )?;
+    if !super::dpi::per_monitor_v2() {
+        return Err(HelperError::not_executed(
+            "dpi-unaware",
+            format!(
+                "helper DPI awareness is '{}', not per-monitor-v2; coordinate input is disabled",
+                super::dpi::dpi_awareness()
+            ),
+        ));
+    }
     let screenshot = get_screenshot_ref(screenshot_id)?;
     if screenshot.input_epoch != expected_input_epoch {
         return Err(HelperError::observe_again("screenshot-stale", "screenshot was captured before the latest observation; observe again"));

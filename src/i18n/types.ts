@@ -3809,6 +3809,47 @@ export interface TranslationDict {
     end: string;
     /** The user turn sent when 【继续】 is clicked. */
     resumePrompt: string;
+    /** Run report card (proposal §4.2 "分步汇报 + 截图回看"). */
+    report: {
+      title: string;
+      /** Interpolates {apps}. */
+      titleWithApps: string;
+      /** Interpolates {steps} and {verified}. */
+      summary: string;
+      /** Interpolates {count}. */
+      consequentialCount: string;
+      /** Interpolates {category}. */
+      consequenceApproved: string;
+      consequenceNotApproved: string;
+      screenshotAlt: string;
+      outcomeVerifiedChange: string;
+      outcomeNoChange: string;
+      outcomeAmbiguous: string;
+      outcomeDone: string;
+      outcomeObserved: string;
+      outcomeNotExecuted: string;
+      outcomeHandoff: string;
+      outcomeBoundary: string;
+      outcomePaused: string;
+      outcomeStopped: string;
+      outcomeMismatch: string;
+      outcomeUnknown: string;
+      outcomeError: string;
+      /** Interpolates {id}. */
+      targetElement: string;
+      actionClick: string;
+      actionType: string;
+      actionKey: string;
+      actionScroll: string;
+      actionDrag: string;
+      actionMove: string;
+      actionPerform: string;
+      actionActivate: string;
+      actionObserve: string;
+      actionScreenshot: string;
+      actionListWindows: string;
+      actionWait: string;
+    };
     phaseChecking: string;
     phaseAwaitingApproval: string;
     phaseObserving: string;

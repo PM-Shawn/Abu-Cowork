@@ -8,6 +8,7 @@ import type { WorkflowStep } from '@/utils/workflowExtractor';
 import MessageBubble from './MessageBubble';
 import SkillProposalCard from './SkillProposalCard';
 import SandboxRecoveryCard from './SandboxRecoveryCard';
+import ComputerUseRunReportCard from './ComputerUseRunReportCard';
 import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
@@ -1295,6 +1296,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 />
               );
             })}
+
+            {/* Computer Use run report: one card per message group, fed by the
+                computer tool's per-step metadata (ComputerStepReport). */}
+            {allToolCalls.some((tc) => tc.computerStep) && (
+              <ComputerUseRunReportCard
+                key="cu-run-report"
+                steps={allToolCalls.filter((tc) => tc.computerStep)}
+                conversationId={activeConv?.id}
+              />
+            )}
 
             {activeConv?.id && allToolCalls.filter((tc) => tc.sandboxRecovery).map((tc) => {
               const owningMsg = assistantMsgs.find((m) => m.toolCalls?.some((x) => x.id === tc.id));

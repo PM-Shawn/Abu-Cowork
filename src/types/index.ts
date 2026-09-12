@@ -98,8 +98,44 @@ export type SandboxRecoveryAction =
  * through ToolExecutor/ChatDelta separately from stdout so imported messages
  * and command output cannot manufacture privileged UI.
  */
+/** How one computer tool call ended, as the run report card shows it. */
+export type ComputerStepOutcome =
+  | 'verified-change'   // Host verified the expected UI change
+  | 'no-change'         // dispatched, nothing changed
+  | 'ambiguous'         // dispatched, change could not be attributed
+  | 'done'              // completed without a verification step (activate, wait)
+  | 'observed'          // an observation, not an action
+  | 'not-executed'      // refused before reaching the app; re-observed
+  | 'handoff'           // turn handed back to the user
+  | 'boundary'          // platform boundary (secure desktop, elevated window…)
+  | 'paused'            // the user took over the mouse/keyboard
+  | 'stopped'           // the run was stopped
+  | 'mismatch'          // the expected effect was not what happened
+  | 'outcome-unknown'   // dispatched, result unknown; replay blocked
+  | 'error';
+
+/**
+ * Per-step evidence for the Computer Use run report. Deliberately carries no
+ * typed text, labels or screenshots — ids, counts and outcomes only; the tool
+ * call's own input/resultContent hold the rest.
+ */
+export interface ComputerStepReport {
+  action: string;
+  targetApp: string | null;
+  /** The declared consequence category ('none' when harmless). */
+  consequence: string;
+  /** The model's one-line summary the user saw in the native approval dialog. */
+  consequenceDetail?: string;
+  outcome: ComputerStepOutcome;
+  /** Short machine code (helper/boundary code), never user content. */
+  detail?: string;
+  durationMs?: number;
+}
+
 export interface ToolExecutionMetadata {
   sandboxRecovery?: SandboxRecoveryPayload;
+  /** Trusted computer tool: how this step ended, for the run report card. */
+  computerStep?: ComputerStepReport;
   /** Trusted tool says the current agent turn must stop until the user fixes
    * an external precondition (for example, opening an explicitly named app). */
   requiresUserRecovery?:
@@ -266,6 +302,8 @@ export interface ToolCall {
   sandboxRecovery?: SandboxRecoveryPayload;
   /** Persisted user choice for the recovery card. */
   sandboxRecoveryAction?: SandboxRecoveryAction;
+  /** Computer Use step evidence (see ComputerStepReport); drives the run report card. */
+  computerStep?: ComputerStepReport;
   /**
    * User's answers to an ask_user_question tool call. Set once the user
    * submits — drives settled read-only rendering. undefined = still

@@ -198,6 +198,7 @@ export function createConversationRunMirror(
           if (resultContent) tc.resultContent = resultContent;
           if (isError) tc.isError = true;
           if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
+          if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
           if (tc.name === 'run_command' && metadata?.sandboxRecovery) {
             tc.sandboxRecovery = metadata.sandboxRecovery;
             tc.isError = true;
@@ -233,6 +234,7 @@ export function createConversationRunMirror(
         const msg = conversation.messages.find((m) => m.id === messageId);
         const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
         if (!tc) break;
+        if (metadata.computerStep) tc.computerStep = metadata.computerStep;
         if (
           metadata.subagentStopReason
           && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')

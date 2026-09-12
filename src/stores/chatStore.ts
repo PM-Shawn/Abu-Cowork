@@ -1412,6 +1412,7 @@ export const useChatStore = create<ChatStore>()(
               if (isError) tc.isError = true;
               if (hideScreenshot != null) tc.hideScreenshot = hideScreenshot;
               tc.isExecuting = false;
+              if (metadata?.computerStep) tc.computerStep = metadata.computerStep;
               if (
                 metadata?.subagentStopReason
                 && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')
@@ -1476,6 +1477,7 @@ export const useChatStore = create<ChatStore>()(
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           const tc = msg?.toolCalls?.find((t) => t.id === toolCallId);
           if (!tc) return;
+          if (metadata.computerStep) tc.computerStep = metadata.computerStep;
           if (
             metadata.subagentStopReason
             && !(tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed' && metadata.subagentStopReason === 'completed')

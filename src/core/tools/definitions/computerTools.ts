@@ -20,7 +20,14 @@ import {
 } from '@/core/computer-use/windowProtocol';
 import { computerObservationContexts } from '@/core/computer-use/observationContext';
 import { recoveryBudget, runBudgetKey } from '@/core/computer-use/recoveryBudget';
-import type { ToolDefinition, ToolResult, ToolResultContent } from '../../../types';
+import type {
+  ComputerStepOutcome,
+  ComputerStepReport,
+  ToolDefinition,
+  ToolExecutionMetadata,
+  ToolResult,
+  ToolResultContent,
+} from '../../../types';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { useChatStore } from '../../../stores/chatStore';
@@ -35,6 +42,7 @@ import {
   setComputerUsePhase,
   beginComputerUseConsentPause,
   notePausedByTakeover,
+  getCUStatusSnapshot,
 } from '../../agent/computerUseStatus';
 import { checkSensitiveApp, checkBlockedKeyCombo } from '../computerUseSafety';
 import { requestCapabilitySetup } from '../../capabilityPlugins/setupBridge';
@@ -2093,6 +2101,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             observation,
             expectedEffect,
           );
+          noteComputerStep(context, { outcome: completion.verification.status });
           if (completion.verification.status === 'verified-change') {
             recoveryBudget.recordVerifiedProgress(runBudgetKey(runKey));
           }
@@ -2234,6 +2243,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         actionCompleted = true;
         setComputerUsePhase('blocked');
         traceComputerUse('user_takeover', context, { stage: action, reason: 'user-input-detected' });
+        noteComputerStep(context, { outcome: 'paused' });
         // Keep the on-screen strip up in its paused form with 【继续】; the
         // run ends when this result returns, and the strip outlives it.
         notePausedByTakeover(runKey.conversationId);
@@ -2256,6 +2266,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         // copy that says what to do — or a request the model has to change,
         // which goes back to it as the error at no recovery cost.
         const boundary = platformBoundaryCopy(notExecuted.helper_code, t);
+        noteComputerStep(context, { outcome: boundary ? 'boundary' : 'error', detail: notExecuted.helper_code });
         traceComputerUse('action_not_executed', context, {
           stage: action,
           reason: notExecuted.helper_code,
@@ -2286,6 +2297,10 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           stage: action,
           reason: notExecuted.helper_code,
           outcome: decision,
+        });
+        noteComputerStep(context, {
+          outcome: decision === 'observe-once' ? 'not-executed' : decision === 'handoff' ? 'handoff' : 'stopped',
+          detail: notExecuted.helper_code,
         });
         const msg = error instanceof Error ? error.message : String(error);
         if (decision === 'observe-once') {
@@ -2385,4 +2400,97 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
   },
   isConcurrencySafe: false,
   execution: { presentation: 'computer-use' },
+};
+
+// ─── Step report for the chat's run card (proposal §4.2 "分步汇报 + 截图回看") ───
+//
+// Every computer tool call ends by reporting one ComputerStepReport through
+// the trusted metadata channel. Most outcomes the wrapper can derive on its own
+// (an observation, a plain success, a thrown error, or the recovery reason the
+// tool already reported); the four it cannot — the Host's verification
+// verdict, a not-executed decision, a boundary code, a takeover — are noted by
+// the tool body via noteComputerStep. The wrapper sits outside the tool
+// literal so the body keeps its shape; the auto-re-observe call inside a
+// refusal is skipped (its toolCallId carries the -reobserve suffix and has no
+// tool call of its own in the transcript).
+const OBSERVATION_ACTIONS = new Set([
+  'get_app_state', 'get_ui', 'get_window_state', 'screenshot', 'get_screen_state', 'list_windows', 'wait',
+]);
+const RECOVERY_OUTCOMES: Record<NonNullable<ToolExecutionMetadata['requiresUserRecovery']>, ComputerStepOutcome> = {
+  'computer-target-unavailable': 'handoff',
+  'computer-manual-handoff': 'handoff',
+  'computer-platform-boundary': 'boundary',
+  'computer-user-takeover': 'paused',
+  'computer-verification-mismatch': 'mismatch',
+  'computer-outcome-unknown-new-turn': 'outcome-unknown',
+};
+const stepNotes = new Map<string, Partial<ComputerStepReport>>();
+
+function noteComputerStep(
+  context: Parameters<ToolDefinition['execute']>[1],
+  note: Partial<ComputerStepReport>,
+): void {
+  const id = context?.toolCallId;
+  if (!id) return;
+  stepNotes.set(id, { ...stepNotes.get(id), ...note });
+}
+
+function resultText(result: ToolResult | undefined): string {
+  if (typeof result === 'string') return result;
+  if (!Array.isArray(result)) return '';
+  const text = result.find((part): part is Extract<ToolResultContent, { type: 'text' }> => part.type === 'text');
+  return text?.text ?? '';
+}
+
+const executeComputerActionUnreported = computerTool.execute;
+computerTool.execute = async (input, context) => {
+  const toolCallId = context?.toolCallId;
+  const report = context?.reportMetadata;
+  if (!toolCallId || !report || toolCallId.endsWith('-reobserve')) {
+    return executeComputerActionUnreported(input, context);
+  }
+  const startedAt = Date.now();
+  let recovery: ToolExecutionMetadata['requiresUserRecovery'];
+  const observed = {
+    ...context,
+    reportMetadata: (metadata: ToolExecutionMetadata) => {
+      if (metadata.requiresUserRecovery) recovery = metadata.requiresUserRecovery;
+      report(metadata);
+    },
+  };
+  let result: ToolResult | undefined;
+  let failure: unknown;
+  try {
+    result = await executeComputerActionUnreported(input, observed);
+    return result;
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    const note = stepNotes.get(toolCallId) ?? {};
+    stepNotes.delete(toolCallId);
+    const action = String(input.action ?? '');
+    const errored = failure !== undefined || /^Error:/.test(resultText(result).trimStart());
+    const outcome: ComputerStepOutcome = note.outcome
+      ?? (recovery ? RECOVERY_OUTCOMES[recovery]
+        : errored ? 'error'
+          : OBSERVATION_ACTIONS.has(action) ? 'observed'
+            : 'done');
+    const detail = note.detail
+      ?? (failure instanceof Error && /not approved/i.test(failure.message) ? 'approval-denied' : undefined);
+    const consequenceDetail = typeof input.consequence_detail === 'string' && input.consequence_detail.trim()
+      ? input.consequence_detail.trim().slice(0, 200)
+      : undefined;
+    report({
+      computerStep: {
+        action,
+        targetApp: getCUStatusSnapshot().targetApp ?? null,
+        consequence: typeof input.consequence === 'string' && input.consequence ? input.consequence : 'none',
+        ...(consequenceDetail ? { consequenceDetail } : {}),
+        outcome,
+        ...(detail ? { detail } : {}),
+        durationMs: Date.now() - startedAt,
+      },
+    });
+  }
 };

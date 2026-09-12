@@ -903,7 +903,9 @@ describe('computerTool — accessibility permission branch', () => {
     expect(beginRequests).toHaveLength(2);
     expect(beginRequests[0]).toMatchObject({ targetApp: 'Word' });
     expect(beginRequests[1]).toMatchObject({ targetApp: 'Word' });
-    expect(context.reportMetadata).toHaveBeenCalledTimes(2);
+    // Two recovery reports; the step reports (computerStep) ride the same
+    // channel and are counted separately.
+    expect(vi.mocked(context.reportMetadata).mock.calls.filter(([m]) => m.requiresUserRecovery)).toHaveLength(2);
     expect(context.reportMetadata).toHaveBeenCalledWith({
       requiresUserRecovery: 'computer-target-unavailable',
     });
@@ -1692,6 +1694,14 @@ describe('computerTool — accessibility permission branch', () => {
     expect(String(result)).toMatch(/continue|继续/);
     expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-user-takeover' });
     expect(snapshotCount).toBe(1);
+    // The run report card learns how the step ended through the same channel.
+    expect(reportMetadata).toHaveBeenCalledWith(expect.objectContaining({
+      computerStep: expect.objectContaining({ action: 'key', consequence: 'none', outcome: 'paused' }),
+    }));
+    const observeStep = vi.mocked(reportMetadata).mock.calls
+      .map(([m]) => m.computerStep)
+      .find((s) => s?.action === 'get_app_state');
+    expect(observeStep).toMatchObject({ outcome: 'observed' });
   });
 
   it('hands the turn back with boundary copy when the helper refuses at a platform boundary', async () => {
@@ -1795,6 +1805,9 @@ describe('computerTool — accessibility permission branch', () => {
     expect(String(result)).toContain('blocked by UIPI');
     expect(reportMetadata).toHaveBeenCalledWith({ requiresUserRecovery: 'computer-platform-boundary' });
     expect(snapshotCount).toBe(1);
+    expect(reportMetadata).toHaveBeenCalledWith(expect.objectContaining({
+      computerStep: expect.objectContaining({ action: 'key', outcome: 'boundary', detail: 'higher-integrity' }),
+    }));
   });
 
   it('returns a non-retryable refusal that is the model\'s to fix without spending recovery', async () => {

@@ -64,10 +64,26 @@ test.describe('team management surface', () => {
       await page.getByTestId('team-leader-select').click();
       await page.getByTestId('search-select-query').fill('产品');
       await page.getByTestId('search-select-option-产品经理').click();
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await page.getByTestId('avatar-picker-trigger').click();
+      await expect(page.getByTestId('avatar-picker')).toBeVisible();
+      await expect(page.getByTestId('avatar-picker').getByTestId(/^avatar-icon-/)).toHaveCount(20);
+      await expect(page.getByTestId('avatar-picker').getByTestId(/^avatar-tint-/)).toHaveCount(6);
+      await page.getByTestId('avatar-tint-purple').click();
+      await page.getByTestId('avatar-icon-users').click();
+      await page.screenshot({ path: test.info().outputPath('team-avatar-picker.png') });
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await expect(page.getByTestId('team-name-input')).toHaveValue(TEAM_NAME);
+      await expect(page.getByTestId('avatar-picker-trigger')).toBeFocused();
+      await page.getByTestId('avatar-picker-trigger').click();
+      await page.getByTestId('team-name-input').click();
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
       await expect(save).toBeEnabled();
       await save.click();
 
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
+      await expect(page.getByTestId(`team-row-${TEAM_NAME}`).getByTestId('team-avatar')).toHaveAttribute('data-avatar-kind', 'icon');
 
       // ---- Restart persistence -------------------------------------------
       await closeAbuElectron(launched.app);
@@ -77,6 +93,7 @@ test.describe('team management surface', () => {
       await openTeamSurface(page);
       await page.getByTestId('top-tab-nav').getByRole('button', { name: '团队' }).click();
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toBeVisible();
+      await expect(page.getByTestId(`team-row-${TEAM_NAME}`).getByTestId('team-avatar')).toHaveAttribute('data-avatar-kind', 'icon');
 
       // ---- Detail (not the edit form) → delete ----------------------------
       // A row opens the read-only detail; 编辑 and 删除 live behind "…",
@@ -84,6 +101,15 @@ test.describe('team management surface', () => {
       await page.getByTestId(`team-row-${TEAM_NAME}`).click();
       await expect(page.getByTestId('team-detail-start-chat')).toBeVisible();
       await expect(page.getByTestId('team-name-input')).toHaveCount(0);
+      await page.getByTestId('team-detail-menu').click();
+      await page.getByTestId('team-detail-edit').click();
+      await page.getByTestId('avatar-picker-trigger').click();
+      await expect(page.getByTestId('avatar-icon-users')).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('avatar-tint-purple')).toHaveAttribute('aria-pressed', 'true');
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await page.getByRole('button', { name: '取消', exact: true }).click();
+      await page.getByTestId(`team-row-${TEAM_NAME}`).click();
       await page.getByTestId('team-detail-menu').click();
       await page.getByTestId('team-detail-delete').click();
       // The "…" menu closes on click, so the ConfirmDialog's is the only 删除 left.
@@ -93,6 +119,46 @@ test.describe('team management surface', () => {
 
       await closeAbuElectron(launched.app);
     } finally {
+      removeElectronDataRoot(dataRoot);
+    }
+  });
+
+  test('the member editor offers the same picker, keeps it inside a small window and falls back to the default', async () => {
+    const dataRoot = createElectronDataRoot();
+    const launched = await launchAbuElectron(dataRoot);
+    try {
+      const page = await launched.app.firstWindow();
+      await waitForApp(page);
+      await dismissFirstRunOverlays(page);
+      await openTeamSurface(page);
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '队员', exact: true }).click();
+      await page.getByTestId('member-create-trigger').click();
+      await page.getByText('手动创建', { exact: true }).click();
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await page.getByTestId('avatar-picker-trigger').click();
+      await page.getByTestId('avatar-tint-purple').click();
+      await page.getByTestId('avatar-icon-code').click();
+      await expect(page.getByTestId('avatar-icon-code')).toHaveAttribute('aria-pressed', 'true');
+      await page.screenshot({ path: test.info().outputPath('agent-avatar-picker.png') });
+      // A short window must not push the picker off-screen: it scrolls instead.
+      await launched.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(900, 420));
+      const picker = page.getByTestId('avatar-picker');
+      await expect.poll(async () => {
+        const box = await picker.boundingBox();
+        const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+        return !!box && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width && box.y + box.height <= viewport.height;
+      }).toBe(true);
+      await expect.poll(() => picker.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+      await page.screenshot({ path: test.info().outputPath('agent-avatar-picker-small-window.png') });
+      await page.getByRole('button', { name: '使用默认头像', exact: true }).scrollIntoViewIfNeeded();
+      await expect(page.getByRole('button', { name: '使用默认头像', exact: true })).toBeInViewport();
+      await page.getByRole('button', { name: '使用默认头像', exact: true }).click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('avatar-picker')).toHaveCount(0);
+      await expect(page.getByPlaceholder('my-agent')).toBeVisible();
+      await expect(page.getByTestId('avatar-picker-trigger').getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'default');
+    } finally {
+      await closeAbuElectron(launched.app);
       removeElectronDataRoot(dataRoot);
     }
   });

@@ -41,19 +41,18 @@
  * because it throws a `PluginPathError` naming a plugin field while an
  * installer needs a boolean; but a plugin name and a skill name must not get
  * different answers, so the rules are deliberately identical, plus the display
- * rule below and the C1 controls. Both are denylists rather than a charset
- * allowlist: names legitimately carry `@`, `.`, spaces and unicode
- * (`中文技能`), and an allowlist narrow enough to be safe would refuse real
- * packages.
+ * rule below. Both are denylists rather than a charset allowlist: names
+ * legitimately carry `@`, `.`, spaces and unicode (`中文技能`), and an
+ * allowlist narrow enough to be safe would refuse real packages.
  *
  *   - **separators and NUL** — the escape itself, plus the byte that truncates
  *     a path at the OS boundary. Backslash counts on every platform: on Windows
  *     `assertAllowed` returns before any scope check at all.
  *   - **control characters** — never part of a real name, and one embedded in a
  *     name hides what the path is from whoever reads the install toast, the
- *     confirm dialog or the tool result. C1 (U+0080–U+009F) included, as
- *     `isPlainSegment` (src/utils/itemStorage.ts) refuses it for the editor's
- *     save of the same folder.
+ *     confirm dialog or the tool result. C0, DEL and C1 (U+0080–U+009F), the
+ *     same range `isPlainSegment` (src/utils/itemStorage.ts) refuses for the
+ *     editor's save of the same folder.
  *   - **only dots** — `.`, `..` and `...` are directory references, not names.
  *   - **leading or trailing whitespace** — `" "` alone is a directory nobody can
  *     type, name in the UI, or pass back to `skill_manage` (whose NAME_REGEX

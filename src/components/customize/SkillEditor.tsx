@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Play, ChevronDown, ChevronRight, Folder, File } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { serializeSkillMd, skillLoader } from '@/core/skill/loader';
+import { skillPolicyDenial } from '@/core/skill/skillPolicy';
 import { navigateToChatWithInput } from '@/utils/navigation';
 import { useItemName, isItemNameTaken } from '@/hooks/useItemName';
 import { saveItemToAbuDir, ITEM_EXISTS_CODE, ITEM_NAME_INVALID_CODE } from '@/utils/itemStorage';
@@ -46,6 +47,12 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
   // hand-edited frontmatter `name:` reaches the save as it is.
   const [invalidName, setInvalidName] = useState<string | null>(null);
   const nameRefusedAsInvalid = invalidName === name.trim();
+  // The organization's policy blocks the name — renamed-to or kept: no save may
+  // leave a skill answering to it. Asked on every render, so the hint follows
+  // the name as it is typed; the name refused at save time stays flagged too.
+  const [policyRefusedName, setPolicyRefusedName] = useState<string | null>(null);
+  const namePolicyDenied = nameValid
+    && (policyRefusedName === name.trim() || skillPolicyDenial(name.trim()) !== null);
   // Any other save failure: shown under the Save button, cleared on retry.
   const [saveFailed, setSaveFailed] = useState(false);
   const [description, setDescription] = useState(skill?.description ?? '');
@@ -96,6 +103,10 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
       setRefusedName(trimmed);
       return false;
     }
+    if (skillPolicyDenial(trimmed)) {
+      setPolicyRefusedName(trimmed);
+      return false;
+    }
     setSaving(true);
     setSaveFailed(false);
     try {
@@ -139,7 +150,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
     navigateToChatWithInput(`/${name.trim()} `);
   };
 
-  const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid;
+  const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid && !namePolicyDenied;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -189,7 +200,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
               placeholder="my-skill"
               className={cn(
                 'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                name.trim() && (!nameValid || nameConflict || nameRefusedAsInvalid) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
+                name.trim() && (!nameValid || nameConflict || nameRefusedAsInvalid || namePolicyDenied) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
               )}
             />
             {name.trim() && (!nameValid || nameRefusedAsInvalid) && (
@@ -197,6 +208,9 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
             )}
             {nameConflict && (
               <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.skillNameTakenHint}</p>
+            )}
+            {namePolicyDenied && (
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.skillNamePolicyHint}</p>
             )}
           </div>
 

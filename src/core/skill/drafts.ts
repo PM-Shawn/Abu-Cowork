@@ -33,6 +33,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { sanitizePath } from '../memdir/paths';
 import { atomicWrite } from '../../utils/atomicFs';
+import { assertSkillNameAllowed } from './skillPolicy';
 import type { ProactivityLevel } from '../agent/prompts/skillsGuidance';
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -303,6 +304,10 @@ export async function acceptDraft(
   skillName: string,
   workspacePath: string,
 ): Promise<{ targetDir: string }> {
+  // A draft may predate the organization's policy, or have been proposed on a
+  // machine that had none — accepting it is what makes the skill live.
+  assertSkillNameAllowed(skillName);
+
   const draftsRoot = await getDraftsRoot(workspacePath);
   const sourceDir = joinPath(draftsRoot, skillName);
   const skillsRoot = await getProjectSkillsDir(workspacePath);

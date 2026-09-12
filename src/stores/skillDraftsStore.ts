@@ -30,6 +30,8 @@ import {
   emptyExpiredTrash,
 } from '../core/skill/drafts';
 import { skillLoader } from '../core/skill/loader';
+import { SkillPolicyDeniedError } from '../core/skill/skillPolicy';
+import { getI18n, format } from '../i18n';
 import type { NoticeCardAction } from '../types';
 import { useChatStore } from './chatStore';
 import { useWorkspaceStore } from './workspaceStore';
@@ -180,7 +182,10 @@ export const useSkillDraftsStore = create<SkillDraftsStore>()((set, get) => ({
       settleCardsForSkill(name, 'accepted');
       return { ok: true };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      // Shown as-is in the accept toast (chat card and drafts panel).
+      const msg = err instanceof SkillPolicyDeniedError
+        ? format(getI18n().toolbox.draftsAcceptPolicyDenied, { name: err.skillName })
+        : err instanceof Error ? err.message : String(err);
       set({ lastError: msg });
       return { ok: false, error: msg };
     }

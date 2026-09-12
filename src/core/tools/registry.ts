@@ -16,7 +16,9 @@ import {
   isInScopedAuthorizedWorkspace,
   type AuthorizationScopeId,
 } from './pathSafety';
-import { getI18n } from '../../i18n';
+import { getI18n, format } from '../../i18n';
+import { useMCPStore } from '@/stores/mcpStore';
+import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidate, type InventoryReason } from './toolInventory';
 import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
@@ -114,9 +116,7 @@ const LABS_GATED_TOOLS: Record<string, string> = {
   [TOOL_NAMES.CREATE_TODO]: LABS_TODOS_INBOX,
 };
 
-/** Exported so capabilitySnapshot.ts (see `getAllTools` doc above) can report
- *  the real gate decision instead of re-deriving it from a second copy of
- *  `LABS_GATED_TOOLS`. */
+/** Shared by inventory and execution; never duplicate the experiment gate map. */
 export function isToolGatedOff(name: string): boolean {
   const experimentId = LABS_GATED_TOOLS[name];
   return experimentId !== undefined && !isLabsFlagOn(experimentId);
@@ -124,7 +124,7 @@ export function isToolGatedOff(name: string): boolean {
 
 /** The Labs experiment id gating `name`, or undefined if `name` isn't
  *  Labs-gated at all. Single source of truth alongside `isToolGatedOff` —
- *  used by capabilitySnapshot.ts to explain *why* a tool is gated off. */
+ *  used by the shared inventory to explain why a tool is gated off. */
 export function getToolLabsGateId(name: string): string | undefined {
   return LABS_GATED_TOOLS[name];
 }
@@ -253,8 +253,7 @@ export const toolRegistry = new ToolRegistry();
  * When either Abu browser runtime is connected, these are filtered out to avoid
  * the LLM accidentally launching a separate Chromium instance.
  *
- * Exported so capabilitySnapshot.ts can report the real "filtered as duplicate"
- * reason instead of re-typing this list.
+ * The shared inventory uses this list for both schema and diagnostic views.
  */
 export const PLAYWRIGHT_BROWSER_TOOLS = new Set([
   'playwright__browser_tabs',
@@ -276,40 +275,95 @@ export const PLAYWRIGHT_BROWSER_TOOLS = new Set([
   'playwright__browser_file_upload',
 ]);
 
-/**
- * Get all available tools: builtin tools + MCP tools
- * Deduplicates by tool name — builtin tools take priority over MCP tools
- * Filters out conflicting playwright browser tools when an Abu browser is connected
- */
-export function getAllTools(): ToolDefinition[] {
-  const builtinTools = toolRegistry.getAll();
-  const mcpTools = mcpManager.listTools();
-  const toolMap = new Map<string, ToolDefinition>();
+/** Explicitly disabled configuration wins even while its old connection remains. */
+function isMcpServerDisabled(serverName: string): boolean {
+  return useMCPStore.getState().servers[serverName]?.config.enabled === false;
+}
 
-  const hasAbuBrowser =
-    mcpManager.isConnected('abu-browser') ||
-    mcpManager.isConnected('abu-browser-bridge');
+function disabledMcpToolReason(name: string): string | undefined {
+  // A builtin with a namespaced name is still a builtin, not that MCP server.
+  if (toolRegistry.has(name) && !isToolGatedOff(name)) return undefined;
+  const parsed = parseNamespacedToolName(name);
+  if (!parsed || !isMcpServerDisabled(parsed.serverName)) return undefined;
+  return `Error: ${format(getI18n().toolResult.capabilitySnapshot.reasonMcpDisabled, { server: parsed.serverName })}`;
+}
 
-  // Computer use tools are always registered — the tool itself handles
-  // auto-enabling and permission checks when first called.
+function browserRunMode(toolContext?: ToolExecutionContext): 'attended' | 'unattended' {
+  const conversation = toolContext?.conversationId
+    ? useChatStore.getState().conversations[toolContext.conversationId] : undefined;
+  const runPermissionCeiling = getRunPermissionCeilingFromContext(toolContext);
+  const derivedMode = deriveRunInteractionMode({
+    ...(toolContext?.authorizationScopeId !== undefined
+      ? { authorizationScopeId: toolContext.authorizationScopeId } : {}),
+    ...(runPermissionCeiling !== null ? { runPermissionCeiling } : {}),
+    ...(conversation?.triggerId !== undefined ? { triggerId: conversation.triggerId } : {}),
+    ...(conversation?.scheduledTaskId !== undefined ? { scheduledTaskId: conversation.scheduledTaskId } : {}),
+    ...(toolContext?.initiatedBy !== undefined ? { initiatedBy: toolContext.initiatedBy } : {}),
+  });
+  return toolContext?.interactionMode === 'background' || derivedMode === 'background' ? 'unattended' : 'attended';
+}
 
-  // Builtin tools first (higher priority). Labs-gated tools whose experiment
-  // is off are withheld from the advertised schema (see LABS_GATED_TOOLS).
-  for (const tool of builtinTools) {
-    if (isToolGatedOff(tool.name)) continue;
-    toolMap.set(tool.name, tool);
-  }
-  // MCP tools — only add if no name conflict
-  for (const tool of mcpTools) {
-    if (!toolMap.has(tool.name)) {
-      // Skip Playwright browser tools when an Abu-owned browser path is active.
-      if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(tool.name)) {
-        continue;
+/** Disabled services must leave a refusal trace without contacting their browser. */
+function recordDisabledBrowserDenial(name: string, input: Record<string, unknown>, context?: ToolExecutionContext): void {
+  const opClass = classifyBrowserTool(name, input);
+  if (opClass === null) return;
+  safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+    { kind: 'gate_denied', tool: name, opClass, reason: 'server-disabled', runMode: browserRunMode(context) },
+    buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', context?.conversationId, Date.now(), context?.loopId),
+  ));
+}
+
+/** Shared host inventory: live schemas plus known unavailable capabilities. */
+export function getToolInventory(): InventoryCandidate[] {
+  const candidates: InventoryCandidate[] = toolRegistry.getAll().map((tool) => {
+    const experimentId = getToolLabsGateId(tool.name);
+    return {
+      name: tool.name, source: { kind: 'builtin' }, definition: tool,
+      unavailableReasons: experimentId !== undefined && isToolGatedOff(tool.name)
+        ? [{ kind: 'labs-gated', experimentId }] : [],
+    };
+  });
+  const configured = useMCPStore.getState().servers;
+  const connected = new Set(mcpManager.getConnectedServers());
+  const hasAbuBrowser = ['abu-browser', 'abu-browser-bridge'].some(
+    name => connected.has(name) && !isMcpServerDisabled(name),
+  );
+  const serverNames = new Set([...connected, ...Object.keys(configured)]);
+  for (const server of serverNames) {
+    const entry = configured[server];
+    // getServerTools applies enterprise visibility and excludes app-only tools.
+    const live = new Map((connected.has(server) ? mcpManager.getServerTools(server) : []).map(tool => [tool.name, tool]));
+    // Connected runtimes own their current model-visible names. Cached names
+    // may have been removed or hidden by visibility policy; do not relabel
+    // those as a disconnected server or expose them through diagnostics.
+    const knownOfflineNames = !connected.has(server) || entry?.config.enabled === false
+      ? (entry?.tools ?? []).map(tool => `${server}__${tool.name}`) : [];
+    const names = new Set([...live.keys(), ...knownOfflineNames]);
+    for (const name of names) {
+      const definition = live.get(name);
+      const unavailableReasons: InventoryReason[] = [];
+      if (entry?.config.enabled === false) {
+        unavailableReasons.push({ kind: 'mcp-disabled', server });
+      } else if (!definition) {
+        unavailableReasons.push({
+          kind: 'mcp-not-connected', server,
+          status: entry && entry.status !== 'connected' ? entry.status : 'disconnected',
+          error: summarizeMcpConnectionError(entry?.error),
+        });
+      } else if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(name)) {
+        unavailableReasons.push({ kind: 'duplicate-browser-tool', server });
       }
-      toolMap.set(tool.name, tool);
+      candidates.push({ name, source: { kind: 'mcp', server }, definition, unavailableReasons });
     }
   }
-  return Array.from(toolMap.values());
+  return mergeToolInventory(candidates);
+}
+
+/** Model-visible schemas never include disconnected or gated capabilities. */
+export function getAllTools(): ToolDefinition[] {
+  return getToolInventory().flatMap(entry =>
+    entry.definition && entry.unavailableReasons.length === 0 ? [entry.definition] : [],
+  );
 }
 
 /**
@@ -1157,6 +1211,11 @@ export async function checkToolApproval(
   let teamFileScope: string | undefined;
   try {
   const t = getI18n();
+  const disabledReason = disabledMcpToolReason(name);
+  if (disabledReason) {
+    recordDisabledBrowserDenial(name, input, toolContext);
+    return { decision: 'deny', reason: disabledReason };
+  }
   const conversation = toolContext?.conversationId
     ? useChatStore.getState().conversations[toolContext.conversationId]
     : undefined;
@@ -1504,21 +1563,7 @@ export async function checkToolApproval(
       // marker; the scheduler's own tick in that same conversation is not.
       // The derivation applies it with the scope/ceiling markers still
       // winning, so a stamped initiator can never strip a fenced run's mode.
-      const derivedMode = deriveRunInteractionMode({
-        ...(toolContext?.authorizationScopeId !== undefined
-          ? { authorizationScopeId: toolContext.authorizationScopeId }
-          : {}),
-        ...(runPermissionCeiling !== null ? { runPermissionCeiling } : {}),
-        ...(conversation?.triggerId !== undefined ? { triggerId: conversation.triggerId } : {}),
-        ...(conversation?.scheduledTaskId !== undefined
-          ? { scheduledTaskId: conversation.scheduledTaskId }
-          : {}),
-        ...(toolContext?.initiatedBy !== undefined ? { initiatedBy: toolContext.initiatedBy } : {}),
-      });
-      const runMode: 'attended' | 'unattended' =
-        toolContext?.interactionMode === 'background' || derivedMode === 'background'
-          ? 'unattended'
-          : 'attended';
+      const runMode = browserRunMode(toolContext);
 
       /**
        * The run's consecutive-denial guard (browserDenialTracker.ts) measures
@@ -2755,6 +2800,12 @@ export async function executeAnyTool(
   const parsedName = parseNamespacedToolName(name);
   if (parsedName !== null) {
     const { serverName, toolName } = parsedName;
+    // Recheck after an approval await: the user may have disabled the server.
+    const disabledReason = disabledMcpToolReason(name);
+    if (disabledReason) {
+      recordDisabledBrowserDenial(name, executionInput, toolContext);
+      return disabledReason;
+    }
     if (mcpManager.isConnected(serverName)) {
       const isBrowserTool = classifyBrowserTool(name) !== null;
       const startedAt = Date.now();

@@ -84,6 +84,22 @@
  * path under the sidecar's cwd instead. No reachable caller passes one
  * (every call site passes an absolute, already-joined path).
  *
+ * The SAME rule applies to the READ side (`exists`/`readTextFile`/`readFile`/
+ * `readDir`/`stat`/`lstat`), which took only `path` until the shim surface
+ * guard (`shimSurfaceTypes.ts`) caught it. Ignoring `baseDir` on a read is
+ * WORSE than on a write: a `baseDir` caller passes a RELATIVE path, so the
+ * read does not merely lose its scoping — it resolves against the sidecar's
+ * cwd and returns a DIFFERENT file's contents, silently. `ReadFileOptions`
+ * additionally carries `encoding`, rejected for the same reason. Each read
+ * export therefore accepts an options object and rejects every key in it.
+ *
+ * `path` is `string | URL` on every export, matching the real plugin:
+ * `node:fs`'s `PathLike` already accepts a `file:` URL, so this is honored
+ * outright rather than narrowed. `writeFile`'s `ReadableStream<Uint8Array>`
+ * data variant is accepted by the type and THROWS — no reachable caller
+ * passes one, and silently stringifying it would write `[object
+ * ReadableStream]` to disk.
+ *
  * ── Write options ─────────────────────────────────────────────────────────
  * `writeTextFile`/`writeFile` open the file exactly as tauri-plugin-fs 2.5.1
  * does (`commands.rs` `write_file_inner` → Rust `std::fs::OpenOptions`, with
@@ -107,7 +123,7 @@
  * matching plugin-fs's own behavior of rejecting with a real `Error`.
  */
 import * as fs from 'node:fs/promises';
-import { constants, type Dirent } from 'node:fs';
+import { constants, type Dirent, type Stats } from 'node:fs';
 
 /** Mirrors plugin-fs's `WriteFileOptions`; `baseDir` is typed only to be rejected. */
 export interface FsWriteFileOptions {
@@ -116,6 +132,16 @@ export interface FsWriteFileOptions {
   createNew?: boolean;
   mode?: number;
   baseDir?: unknown;
+}
+
+/** plugin-fs's `ReadDirOptions`/`StatOptions`/`ExistsOptions`; `baseDir` is typed only to be rejected. */
+export interface FsReadOptions {
+  baseDir?: unknown;
+}
+
+/** plugin-fs's `ReadFileOptions` — `encoding` joins `baseDir` as reject-only. */
+export interface FsReadFileOptions extends FsReadOptions {
+  encoding?: unknown;
 }
 
 /**
@@ -140,8 +166,11 @@ function writeFlags(options: FsWriteFileOptions | undefined): number {
   return access | create | (append ? 0 : constants.O_TRUNC);
 }
 
-async function writeWithOptions(fn: string, path: string, data: string | Uint8Array, options?: FsWriteFileOptions): Promise<void> {
+async function writeWithOptions(fn: string, path: string | URL, data: string | Uint8Array | ReadableStream<Uint8Array>, options?: FsWriteFileOptions): Promise<void> {
   rejectUnsupportedOptions(fn, options, ['append', 'create', 'createNew', 'mode']);
+  if (data instanceof ReadableStream) {
+    throw new Error(`pluginFsRun.${fn}: ReadableStream data is not supported in the sidecar`);
+  }
   const mode = process.platform === 'win32' ? undefined : options?.mode;
   await fs.writeFile(path, data, { flag: writeFlags(options), mode });
 }
@@ -153,7 +182,8 @@ export interface FsDirEntry {
   isSymlink: boolean;
 }
 
-export async function readDir(path: string): Promise<FsDirEntry[]> {
+export async function readDir(path: string | URL, options?: FsReadOptions): Promise<FsDirEntry[]> {
+  rejectUnsupportedOptions('readDir', options, []);
   const entries = await fs.readdir(path, { withFileTypes: true });
   return entries.map((entry: Dirent) => ({
     name: entry.name,
@@ -186,20 +216,51 @@ export interface FsFileInfo {
   atime: Date | null;
   birthtime: Date | null;
   readonly: boolean;
+  /** Windows-only in the real plugin; `node:fs` has no equivalent, so always null. */
+  fileAttributes: number | null;
+  dev: number | null;
+  ino: number | null;
+  mode: number | null;
+  nlink: number | null;
+  uid: number | null;
+  gid: number | null;
+  rdev: number | null;
+  blksize: number | null;
+  blocks: number | null;
 }
 
-export async function stat(path: string): Promise<FsFileInfo> {
-  const s = await fs.stat(path);
+/**
+ * Single producer of `FsFileInfo`. Carries the WHOLE real `FileInfo` surface,
+ * not the 8 fields this shim's own callers happen to read: TypeScript checks
+ * callers against the real plugin's type, so a field this shim omitted (e.g.
+ * `mode`) compiled everywhere and was `undefined` at runtime.
+ */
+function toFileInfo(s: Stats, isSymlink: boolean): FsFileInfo {
   return {
     isFile: s.isFile(),
     isDirectory: s.isDirectory(),
-    isSymlink: false,
+    isSymlink,
     size: s.size,
     mtime: msecOrNull(s.mtimeMs),
     atime: msecOrNull(s.atimeMs),
     birthtime: msecOrNull(s.birthtimeMs),
     readonly: (s.mode & 0o200) === 0,
+    fileAttributes: null,
+    dev: s.dev,
+    ino: s.ino,
+    mode: s.mode,
+    nlink: s.nlink,
+    uid: s.uid,
+    gid: s.gid,
+    rdev: s.rdev,
+    blksize: s.blksize,
+    blocks: s.blocks,
   };
+}
+
+export async function stat(path: string | URL, options?: FsReadOptions): Promise<FsFileInfo> {
+  rejectUnsupportedOptions('stat', options, []);
+  return toFileInfo(await fs.stat(path), false);
 }
 
 /**
@@ -209,25 +270,18 @@ export async function stat(path: string): Promise<FsFileInfo> {
  * `false`, `Dirent`-style) rather than resolving through to its target —
  * the opposite of this file's own `stat()` above.
  */
-export async function lstat(path: string): Promise<FsFileInfo> {
+export async function lstat(path: string | URL, options?: FsReadOptions): Promise<FsFileInfo> {
+  rejectUnsupportedOptions('lstat', options, []);
   const s = await fs.lstat(path);
-  return {
-    isFile: s.isFile(),
-    isDirectory: s.isDirectory(),
-    isSymlink: s.isSymbolicLink(),
-    size: s.size,
-    mtime: msecOrNull(s.mtimeMs),
-    atime: msecOrNull(s.atimeMs),
-    birthtime: msecOrNull(s.birthtimeMs),
-    readonly: (s.mode & 0o200) === 0,
-  };
+  return toFileInfo(s, s.isSymbolicLink());
 }
 
 function isEnoent(err: unknown): boolean {
   return err instanceof Error && (err as NodeJS.ErrnoException).code === 'ENOENT';
 }
 
-export async function exists(path: string): Promise<boolean> {
+export async function exists(path: string | URL, options?: FsReadOptions): Promise<boolean> {
+  rejectUnsupportedOptions('exists', options, []);
   try {
     await fs.access(path);
     return true;
@@ -237,38 +291,45 @@ export async function exists(path: string): Promise<boolean> {
   }
 }
 
-export async function mkdir(path: string, options?: { recursive?: boolean; mode?: number; baseDir?: unknown }): Promise<void> {
+export async function mkdir(path: string | URL, options?: { recursive?: boolean; mode?: number; baseDir?: unknown }): Promise<void> {
   rejectUnsupportedOptions('mkdir', options, ['recursive', 'mode']);
   await fs.mkdir(path, { recursive: options?.recursive ?? false, mode: options?.mode });
 }
 
-export async function remove(path: string, options?: { recursive?: boolean; baseDir?: unknown }): Promise<void> {
+export async function remove(path: string | URL, options?: { recursive?: boolean; baseDir?: unknown }): Promise<void> {
   rejectUnsupportedOptions('remove', options, ['recursive']);
   await fs.rm(path, { recursive: options?.recursive ?? false, force: false });
 }
 
-export async function readTextFile(path: string): Promise<string> {
+export async function readTextFile(path: string | URL, options?: FsReadFileOptions): Promise<string> {
+  rejectUnsupportedOptions('readTextFile', options, []);
   return fs.readFile(path, 'utf-8');
 }
 
-export async function writeTextFile(path: string, data: string, options?: FsWriteFileOptions): Promise<void> {
+export async function writeTextFile(path: string | URL, data: string, options?: FsWriteFileOptions): Promise<void> {
   await writeWithOptions('writeTextFile', path, data, options);
 }
 
-export async function readFile(path: string): Promise<Uint8Array> {
-  return fs.readFile(path);
+export async function readFile(path: string | URL, options?: FsReadFileOptions): Promise<Uint8Array<ArrayBuffer>> {
+  rejectUnsupportedOptions('readFile', options, []);
+  const buffer = await fs.readFile(path);
+  // The real plugin returns `Uint8Array<ArrayBuffer>`; node's `Buffer` is
+  // `Uint8Array<ArrayBufferLike>`, which is NOT assignable to it. Rebuild the
+  // view over the same bytes (no copy) so the declared return matches instead
+  // of leaving the variance for a caller to trip over.
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength) as Uint8Array<ArrayBuffer>;
 }
 
-export async function writeFile(path: string, data: Uint8Array, options?: FsWriteFileOptions): Promise<void> {
+export async function writeFile(path: string | URL, data: Uint8Array | ReadableStream<Uint8Array>, options?: FsWriteFileOptions): Promise<void> {
   await writeWithOptions('writeFile', path, data, options);
 }
 
-export async function copyFile(from: string, to: string, options?: { fromPathBaseDir?: unknown; toPathBaseDir?: unknown }): Promise<void> {
+export async function copyFile(from: string | URL, to: string | URL, options?: { fromPathBaseDir?: unknown; toPathBaseDir?: unknown }): Promise<void> {
   rejectUnsupportedOptions('copyFile', options, []);
   await fs.copyFile(from, to);
 }
 
-export async function rename(from: string, to: string, options?: { oldPathBaseDir?: unknown; newPathBaseDir?: unknown }): Promise<void> {
+export async function rename(from: string | URL, to: string | URL, options?: { oldPathBaseDir?: unknown; newPathBaseDir?: unknown }): Promise<void> {
   rejectUnsupportedOptions('rename', options, []);
   await fs.rename(from, to);
 }

@@ -17,7 +17,6 @@ vi.mock('@/stores/settingsStore', () => ({ useSettingsStore: { getState: () => (
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useTeamStore } from '@/stores/teamStore';
 import { saveTeamTool } from './teamTools';
-import { buildScheduledRunPermissionCeiling, buildIMRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 
 const input = { name: 'Data team', leader: 'Analyst', members: ['Fetcher'] };
 
@@ -137,12 +136,12 @@ describe('save_team', () => {
     expect(useTeamStore.getState().teams).toEqual([]);
   });
 
-  it('respects readonly and scheduled run ceilings without writing identities', async () => {
-    for (const runPermissionCeiling of [buildIMRunPermissionCeiling('read_tools'), buildScheduledRunPermissionCeiling(['save_team'])]) {
-      const out = await saveTeamTool.execute(input, { runPermissionCeiling });
-      expect(String(out)).toContain('Error:');
-      expect(useTeamStore.getState().teams).toEqual([]);
-      expect(writeTextFile).not.toHaveBeenCalled();
-    }
-  });
+  // The run-permission ceiling and the user confirmation are the registry's
+  // self-extension gate, not the tool's — one gate, one place. That behaviour
+  // moved to registry.permissionMode.test.ts ("save_team": asks and names the
+  // create/replace, denies on decline, fails closed with no confirmation
+  // channel, denied under an unattended ceiling without asking), and the
+  // classification itself to selfExtensionPolicy.test.ts. What stays the
+  // tool's own job is pinned above: input shape, avatar, the whole roster
+  // before any write, and the re-read before an overwrite.
 });

@@ -5,7 +5,6 @@ import { isValidNewAvatar } from '@/core/tools/definitions/agentTools';
 import { useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { decideStateChangingToolUnderRunPermissionCeiling, getRunPermissionCeilingFromContext } from '@/core/permissions/runPermissionCeiling';
 import { getI18n, format } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 
@@ -35,13 +34,11 @@ export const saveTeamTool: ToolDefinition = {
     },
     required: ['name', 'leader', 'members'],
   },
-  execute: async (input, context) => {
+  // `context` is unused: the run-permission ceiling and the user confirmation
+  // are the registry's self-extension gate (`classifySelfExtension` +
+  // `checkToolApproval`), so a team write is gated in exactly one place.
+  execute: async (input) => {
     const t = getI18n().toolResult.team;
-    // No extra confirmation for user-directed creation, but an unattended
-    // run still cannot extend its durable capabilities beyond its ceiling.
-    const ceiling = decideStateChangingToolUnderRunPermissionCeiling(getRunPermissionCeilingFromContext(context), 'self-extension');
-    if (ceiling.decision === 'deny') return ceiling.reason ?? `Error: ${getI18n().commandConfirm.selfExtensionDenied}`;
-
     const name = typeof input.name === 'string' ? input.name.trim() : '';
     const leaderName = typeof input.leader === 'string' ? input.leader.trim() : '';
     if (!name || !leaderName || !isStringList(input.members)

@@ -3378,6 +3378,10 @@ export interface TranslationDict {
     selfExtensionSaveAgentNew: string;
     /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
     selfExtensionSaveAgentReplace: string;
+    /** save_team summary label: this call creates a team that does not exist yet. */
+    selfExtensionSaveTeamNew: string;
+    /** save_team summary label: this call overwrites a team of the same name. */
+    selfExtensionSaveTeamReplace: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;

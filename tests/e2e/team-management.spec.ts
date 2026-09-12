@@ -125,8 +125,9 @@ test.describe('team management surface', () => {
       // The description is both the card summary and the detail subtitle.
       await expect(page.getByText(DESCRIPTION, { exact: true })).toHaveCount(2);
       await expect(page.getByText(DESCRIPTION, { exact: true }).last()).toBeVisible();
-      await expect(page.getByText(INTRO, { exact: true })).toBeVisible();
-      for (const label of ['开场白', '擅长', '推荐提问', '需求分析']) {
+      // The greeting is first-contact only: the detail no longer repeats it.
+      await expect(page.getByText(INTRO, { exact: true })).toHaveCount(0);
+      for (const label of ['擅长', '推荐提问', '需求分析']) {
         await expect(page.getByText(label, { exact: true })).toBeVisible();
       }
       await page.screenshot({ path: test.info().outputPath('team-detail.png') });
@@ -135,18 +136,17 @@ test.describe('team management surface', () => {
       await page.getByRole('button', { name: QUESTION, exact: true }).click();
       const welcome = page.getByTestId('team-welcome');
       await expect(welcome.getByRole('heading', { name: TEAM_NAME })).toBeVisible();
-      await expect(welcome.getByText(INTRO, { exact: true })).toBeVisible();
+      await expect(page.getByText(INTRO, { exact: true })).toHaveCount(0);
       await expect(welcome.getByText('产品经理', { exact: true })).toBeVisible();
       await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue(QUESTION);
-      // The pin is durable, the question is only a draft: exactly one
-      // conversation carries the team and it holds no message.
+      // The question is only a draft, and no history entry exists yet.
       const conversations = await page.evaluate(() => {
         const stored = JSON.parse(localStorage.getItem('abu-chat') ?? '{}');
         return Object.values(stored.state.conversationIndex ?? {}) as Array<{ teamId?: string; messageCount: number }>;
       });
-      const pinned = conversations.filter((conversation) => conversation.teamId);
-      expect(pinned).toHaveLength(1);
-      expect(pinned[0].messageCount).toBe(0);
+      // Opening a team no longer creates an empty conversation; the pin and
+      // the question live in the composer draft until the user sends.
+      expect(conversations.filter((conversation) => conversation.teamId)).toHaveLength(0);
       await page.screenshot({ path: test.info().outputPath('team-welcome.png') });
 
       await openTeamSurface(page);

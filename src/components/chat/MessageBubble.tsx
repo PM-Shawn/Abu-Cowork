@@ -21,6 +21,9 @@ import { computeRewindImpact } from '@/utils/rewindImpact';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import abuAvatar from '@/assets/abu-avatar.png';
+import AgentAvatar from '@/components/common/AgentAvatar';
+import TeamAvatar from '@/components/team/TeamAvatar';
+import { isIntroductionMessage } from '@/core/team/expertContact';
 
 // Regex to match [Attachment: `path`] patterns in user messages
 const ATTACHMENT_PATTERN = /\[Attachment:\s*`([^`]+)`\]/g;
@@ -606,6 +609,24 @@ export default function MessageBubble({
       await proceed();
     }
   };
+
+  // Configured welcomes use the existing message layout without run actions.
+  if (isIntroductionMessage(message)) {
+    const identity = message.introduction!;
+    return (
+      <div className="flex gap-3 w-full overflow-hidden group" data-testid="expert-introduction" data-message-id={message.id}>
+        <div className="shrink-0 mt-0.5">
+          {identity.kind === 'team'
+            ? <TeamAvatar avatar={identity.avatar} size="md" round />
+            : <AgentAvatar agent={{ name: identity.agentName ?? identity.name, avatar: identity.avatar }} size="md" round />}
+        </div>
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <div className="text-minor text-[var(--abu-text-muted)] mb-2">{identity.name}</div>
+          <div className="text-[var(--abu-text-primary)] break-words select-text"><MarkdownRenderer content={textContent} /></div>
+        </div>
+      </div>
+    );
+  }
 
   // Actions only mode - just render the action buttons
   if (actionsOnly && !isUser) {

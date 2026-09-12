@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useExtensionsSearchQuery, useSettingsStore } from '@/stores/settingsStore';
-import { useChatStore } from '@/stores/chatStore';
+import { prepareExpertEntry } from '@/core/team/expertEntry';
+import { expertIdentity } from '@/core/team/expertContact';
 import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
@@ -69,9 +70,6 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
   // passes it instead, rather than writing into another view's state.
   const storeSearchQuery = useExtensionsSearchQuery();
   const extensionsSearchQuery = searchQuery ?? storeSearchQuery;
-  const startNewConversation = useChatStore((s) => s.startNewConversation);
-  const setPendingInput = useChatStore((s) => s.setPendingInput);
-  const setPendingAgent = useChatStore((s) => s.setPendingAgent);
   const { t, locale } = useI18n();
 
   const [installedAgents, setInstalledAgents] = useState<SubagentDefinition[]>([]);
@@ -253,10 +251,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
    *  the agent persona. Optional promptText pre-fills the textarea for the
    *  one-click "Try asking" flow. */
   const startChatWithAgent = (agent: SubagentDefinition, promptText?: string) => {
-    const input = promptText ? `@${agent.name} ${promptText}` : `@${agent.name} `;
-    startNewConversation();
-    setPendingInput(input);
-    setPendingAgent(agent.name);
+    prepareExpertEntry({ identity: expertIdentity(agent, locale), introduction: localizedIntro(agent, locale) }, promptText);
     closeExtensions();
   };
 
@@ -419,16 +414,6 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                 </div>
               );
             })()}
-
-            {/* Intro — agent self-introduction shown when there's an intro paragraph */}
-            {localizedIntro(selected, locale) && (
-              <div>
-                <span className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.agentIntro}</span>
-                <p className="text-body text-[var(--abu-text-primary)] leading-relaxed mt-1.5">
-                  {localizedIntro(selected, locale)}
-                </p>
-              </div>
-            )}
 
             {/* Expertise — bullet list of what the agent is good at */}
             {(() => {

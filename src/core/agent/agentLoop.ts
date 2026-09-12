@@ -54,6 +54,7 @@ import {
   distributeWithConservation,
 } from '../context/usageBreakdown';
 import { identifyRounds, RECENT_ROUNDS_TO_KEEP } from '../context/contextUtils';
+import { isIntroductionMessage, introductionContext } from '../team/expertContact';
 import { withRetry } from './retry';
 import { extractParentConversationSummary } from './subagentLoop';
 import { runSubagent } from './subagentRunner';
@@ -1293,7 +1294,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
     // Extract parent conversation context for the subagent
     const existingMessages = getConversationReader().getConversation(conversationId)?.messages ?? [];
-    const parentConversationSummary = extractParentConversationSummary(existingMessages);
+    const parentConversationSummary = extractParentConversationSummary(existingMessages.filter((m) => !isIntroductionMessage(m)));
+    const introduction = existingMessages.find((m) => isIntroductionMessage(m) && m.introduction?.agentName === delegateAgent.name);
 
     // Create per-subagent AbortController (linked to parent)
     const { signal: subagentSignal, cleanup: subagentCleanup } = createSubagentController(
@@ -1316,6 +1318,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const result = await runSubagent(buildDirectDelegateSubagentOptions({
         agent: delegateAgent,
         task: taskText,
+        context: introduction ? introductionContext(introduction) : undefined,
         // Resolved shell-side with the rest of the entry orchestration (see
         // entryOrchestration.ts) — this loop may itself be running in the
         // sidecar, where the skill loader has no index to resolve from.

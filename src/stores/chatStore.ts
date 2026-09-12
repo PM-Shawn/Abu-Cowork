@@ -37,6 +37,8 @@ export function keepExistingChildSteps(
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
+import type { ExpertContact, ExpertContactReceipt } from '@/types/expertContact';
+import { introductionMessage, isIntroductionMessage } from '@/core/team/expertContact';
 import { getI18n } from '../i18n';
 import { TOOL_NAMES } from '../core/tools/toolNames';
 import {
@@ -624,6 +626,9 @@ interface ChatState {
   // message is added. Ephemeral, not persisted. Stores the agent's registry
   // key (i.e. the same name used for @mention).
   pendingAgentName: string | null;
+  pendingExpertContact: ExpertContact | null;
+  stagedExpertContacts: Record<string, ExpertContact>;
+  expertContactReceipts: Record<string, ExpertContactReceipt>;
   // Pending search jump: set when a full-text search hit is picked. ChatView
   // scrolls to and briefly highlights the first message in `convId` whose text
   // contains `query`. Ephemeral one-shot, consumed by ChatView then cleared.
@@ -808,6 +813,10 @@ interface ChatActions {
   addPendingAttachment: (request: PendingAttachmentRequest) => void;
   clearPendingAttachments: (draftKey?: string) => void;
   setPendingAgent: (agentName: string | null) => void;
+  setPendingExpertContact: (contact: ExpertContact | null) => void;
+  stageExpertContact: (convId: string, contact: ExpertContact) => void;
+  recoverExpertContacts: () => Promise<void>;
+  clearStagedExpertContact: (convId: string) => void;
   setConversationStatus: (convId: string, status: ConversationStatus) => void;
   clearCompletedStatus: (convId: string) => void;
 
@@ -862,6 +871,9 @@ export const useChatStore = create<ChatStore>()(
       pendingInput: null,
       pendingInputAppend: null,
       pendingAgentName: null,
+      pendingExpertContact: null,
+      stagedExpertContacts: {},
+      expertContactReceipts: {},
       pendingSearchJump: null,
       pendingReferences: [],
       pendingAttachmentRequests: [],
@@ -936,6 +948,7 @@ export const useChatStore = create<ChatStore>()(
           state.activeConversationId = null;
           state.pendingAgentName = null;
           state.pendingTeamId = undefined;
+          state.pendingExpertContact = null;
         });
         // Top-level "新建任务" is semantically "step out of the current
         // project context" — clear the global workspace so the welcome
@@ -960,6 +973,8 @@ export const useChatStore = create<ChatStore>()(
 
         set((state) => {
           state.activeConversationId = id;
+          state.pendingExpertContact = null;
+          state.pendingAgentName = null;
         });
 
         // Unload old conversations AFTER activeConversationId is set,
@@ -1059,6 +1074,7 @@ export const useChatStore = create<ChatStore>()(
       setPendingTeamId: (teamId) => {
         set((state) => {
           state.pendingTeamId = teamId;
+          if (state.pendingExpertContact?.identity.key !== `team:${teamId}`) state.pendingExpertContact = null;
         });
       },
 
@@ -1178,6 +1194,7 @@ export const useChatStore = create<ChatStore>()(
         const nextAgentStates = removeConversationAgentState(get().agentStates, id);
         set((state) => {
           delete state.conversations[id];
+          delete state.stagedExpertContacts[id];
           delete state.conversationIndex[id];
           state.agentStates = nextAgentStates;
           if (state.activeConversationId === id) {
@@ -1257,13 +1274,34 @@ export const useChatStore = create<ChatStore>()(
 
       addMessage: (convId, message) => {
         let newTitle: string | undefined;
+        let welcome: Message | undefined;
+        let persistedMessage = message;
         set((state) => {
           // Clear expert intro banner once the conversation has any real
           // content — welcome screen is gone, banner has nothing to render on.
-          if (state.pendingAgentName) state.pendingAgentName = null;
+          if (state.activeConversationId === convId) {
+            state.pendingAgentName = null;
+            state.pendingExpertContact = null;
+          }
           const conv = state.conversations[convId];
           if (conv) {
-            conv.messages.push(message);
+            const earlierWelcome = conv.messages.find(isIntroductionMessage);
+            const contact = state.stagedExpertContacts[convId]
+              ?? (earlierWelcome?.introduction ? { identity: earlierWelcome.introduction, introduction: String(earlierWelcome.content) } : undefined);
+            if (contact && message.role === 'user' && !message.isSystem
+              && !conv.messages.some((m) => m.role === 'user' && !m.isSystem)) {
+              const key = contact.identity.key;
+              // Entry decides whether to show a greeting. Once shown, preserve
+              // its context even if another conversation confirms contact meanwhile.
+              welcome = earlierWelcome ? current(earlierWelcome) : introductionMessage(contact, convId, message.timestamp);
+              if (welcome && !earlierWelcome) conv.messages.push(welcome);
+              persistedMessage = { ...message, expertContactKey: key };
+              if (!state.expertContactReceipts[key]?.confirmed) {
+                state.expertContactReceipts[key] = { conversationId: convId, confirmed: false };
+              }
+              delete state.stagedExpertContacts[convId];
+            }
+            conv.messages.push(persistedMessage);
             conv.updatedAt = Date.now();
             // Auto-title from first user message
             if (conv.title === getDefaultConvTitle() && message.role === 'user') {
@@ -1301,10 +1339,19 @@ export const useChatStore = create<ChatStore>()(
             appendMessage: diskAppend,
             updateIndexEntry,
           }) => {
-            await diskAppend(convId, message);
+            if (welcome) await diskAppend(convId, welcome);
+            await diskAppend(convId, persistedMessage);
             // Always persist updated index (messageCount, updatedAt, and title if changed)
             const meta = get().conversationIndex[convId];
             if (meta) await updateIndexEntry(meta);
+            const key = persistedMessage.expertContactKey;
+            if (key) set((state) => {
+              // Durable user data is authoritative even if startup recovery
+              // removed an earlier, still-unconfirmed receipt while we wrote.
+              if (!state.expertContactReceipts[key]?.confirmed) {
+                state.expertContactReceipts[key] = { conversationId: convId, confirmed: true };
+              }
+            });
           }),
         );
         // N7 — the user closing an agent's browser tab makes the host refuse to
@@ -1710,9 +1757,24 @@ export const useChatStore = create<ChatStore>()(
         const messageToPersist = updatedMessage;
         trackConversationPersistence(
           convId,
-          () => import('../core/session/conversationStorage').then(({ replaceMessageByIdStrict }) =>
-            replaceMessageByIdStrict(convId, messageToPersist),
-          ),
+          () => import('../core/session/conversationStorage').then(async ({ replaceMessageByIdStrict, appendMessage }) => {
+            const key = messageToPersist.expertContactKey;
+            if (key) {
+              // Retry can follow an interrupted first append. Idempotent ledger
+              // writes repair both rows before accepting the run-state revision.
+              const welcome = get().conversations[convId]?.messages.find(isIntroductionMessage);
+              if (welcome) await appendMessage(convId, welcome);
+              await appendMessage(convId, messageToPersist);
+            }
+            await replaceMessageByIdStrict(convId, messageToPersist);
+            if (key) set((state) => {
+              // Durable user data is authoritative even if startup recovery
+              // removed an earlier, still-unconfirmed receipt while we wrote.
+              if (!state.expertContactReceipts[key]?.confirmed) {
+                state.expertContactReceipts[key] = { conversationId: convId, confirmed: true };
+              }
+            });
+          }),
         );
       },
 
@@ -2329,7 +2391,42 @@ export const useChatStore = create<ChatStore>()(
       setPendingAgent: (agentName) => {
         set((state) => {
           state.pendingAgentName = agentName;
+          if (state.pendingExpertContact?.identity.agentName !== agentName) state.pendingExpertContact = null;
         });
+      },
+
+      setPendingExpertContact: (contact) => {
+        set((state) => { state.pendingExpertContact = contact; });
+      },
+
+      stageExpertContact: (convId, contact) => {
+        set((state) => {
+          const conv = state.conversations[convId];
+          if (!conv || conv.readOnly || conv.imChannelId || conv.scheduledTaskId || conv.triggerId
+            || conv.messages.some((m) => m.role === 'user' && !m.isSystem)) return;
+          if (contact.identity.kind === 'team' && contact.identity.key !== `team:${conv.teamId}`) return;
+          state.stagedExpertContacts[convId] = contact;
+        });
+      },
+
+      clearStagedExpertContact: (convId) => { set((state) => { delete state.stagedExpertContacts[convId]; }); },
+
+      recoverExpertContacts: async () => {
+        const pending = Object.entries(get().expertContactReceipts).filter(([, receipt]) => !receipt.confirmed);
+        if (!pending.length) return;
+        const { loadMessages } = await import('../core/session/conversationStorage');
+        for (const [key, receipt] of pending) {
+          try {
+            const messages = await loadMessages(receipt.conversationId, { strictRead: true });
+            const confirmed = messages.some((m) => m.role === 'user' && !m.isSystem && m.expertContactKey === key);
+            set((state) => {
+              const currentReceipt = state.expertContactReceipts[key];
+              if (currentReceipt?.conversationId !== receipt.conversationId || currentReceipt.confirmed) return;
+              if (confirmed) currentReceipt.confirmed = true;
+              else delete state.expertContactReceipts[key];
+            });
+          } catch { /* Keep the receipt for recovery after a transient read failure. */ }
+        }
       },
 
       setConversationStatus: (convId, status) => {
@@ -2686,6 +2783,7 @@ export const useChatStore = create<ChatStore>()(
             // Don't unload conversations with running status
             if (state.conversations[id]?.status === 'running') continue;
             delete state.conversations[id];
+            delete state.stagedExpertContacts[id];
             // Drop the conversation's live agent state together with its
             // record. Every writer (`setAgentStatus`/`setRetryInfo`) refuses
             // to touch a conversation that is no longer loaded, so an entry
@@ -2701,7 +2799,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 12,
+      version: 13,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2738,6 +2836,8 @@ export const useChatStore = create<ChatStore>()(
         // payload. Messages live in JSONL, not in the persisted
         // `conversationIndex`, so there is nothing to transform.
         if (version < 12) { /* no transform needed */ }
+        // v12 → v13: per-identity contact receipts; old histories remain untouched.
+        if (version < 13) state.expertContactReceipts = {};
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage
@@ -2771,11 +2871,13 @@ export const useChatStore = create<ChatStore>()(
       partialize: (state) => ({
         // Only persist lightweight index to localStorage (~100KB max)
         conversationIndex: state.conversationIndex,
+        expertContactReceipts: state.expertContactReceipts,
         // conversations NOT persisted — loaded from JSONL on demand
         // activeConversationId NOT persisted — app always starts on welcome screen
       }),
       onRehydrateStorage: () => (state) => {
         if (!state) return;
+        void state.recoverExpertContacts().catch(() => undefined);
 
         // v3 → v4 async migration: write old conversations to JSONL files
         const stateAny = state as unknown as Record<string, unknown>;

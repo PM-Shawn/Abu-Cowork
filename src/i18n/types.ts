@@ -4090,6 +4090,8 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
+      /** Error: invalid fixed tool declaration. {field} */
+      errInvalidAgentTools: string;
       /** Error: nothing written — the avatar is neither a built-in icon reference nor a single emoji. */
       errInvalidAvatar: string;
       /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */

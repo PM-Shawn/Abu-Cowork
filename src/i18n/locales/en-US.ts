@@ -3320,6 +3320,7 @@ const enUS: TranslationDict = {
       labelSkill: 'skill',
       labelAgent: 'agent',
       errInvalidName: 'Error: {label} name is invalid. Only lowercase letters, digits, and hyphens are allowed; the name must not start or end with a hyphen. Received: "{name}"',
+      errInvalidAgentTools: 'Error: Expert not saved. AGENT.md {field} must be a YAML list of strings, not a comma-separated scalar, object, or list containing blank/non-string entries. Correct the format and retry without removing the user\'s existing tool restrictions.',
       errInvalidAvatar: 'Error: nothing was saved: the avatar must be a built-in icon reference (icon:<icon>/<tint>) or a single emoji. Icons: chart-bar, code, flask, pen, shield, users, search, database, palette, compass, wrench, book, megaphone, scale, sparkles, cpu, globe, camera, calculator, bot. Tints: blue, purple, teal, coral, amber, pink.',
       errUnsafeFilePath: 'Error: nothing was saved: unsafe file path "{p}". Use a relative path made of plain names: no absolute path, no "." or ".." or empty segment, no name ending in "." or a space, none of : < > " | ? * or control characters, and no Windows device name (CON, PRN, AUX, NUL, COM1–9, LPT1–9).',
       errFileIsManifest: 'Error: nothing was saved: the files entry "{p}" is {fileName} itself. Put the {fileName} text in content, and use files only for supporting files.',

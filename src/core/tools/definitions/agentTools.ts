@@ -8,6 +8,7 @@ import type { ToolDefinition, Conversation, SubagentDefinition, SkillSource } fr
 import { skillLoader, parseSkillFile } from '../../skill/loader';
 import { agentRegistry, parseAgentFile, getBuiltinAgentNames } from '../../agent/registry';
 import { parseAvatarValue } from '@/core/team/avatarPresets';
+import { resolveSubagentToolNames } from '../../agent/subagentToolRoster';
 import { getCurrentLoopContext, getLoopContext, requestWorkspace } from '../../agent/permissionBridge';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
@@ -737,6 +738,20 @@ export function createSaveItemTool(kind: 'skill' | 'agent'): ToolDefinition {
       // A Windows device name (`nul`, `con`, …) is not a folder that can be created.
       if (!nameRe.test(name) || WINDOWS_DEVICE_NAME_RE.test(name)) {
         return format(t.errInvalidName, { label, name });
+      }
+
+      // Content-only refusal, before any path is resolved or any file touched:
+      // a `tools:` / `disallowed-tools:` the roster resolver cannot parse would
+      // otherwise be written and then silently ignored at dispatch time, so the
+      // agent would run with no tool boundary at all. Content the registry
+      // cannot read is left to `agentMdWithIdentity` below, which refuses it
+      // with the detailed frontmatter message.
+      const declaredTools = isSkill ? null : parseAgentFile(content, '');
+      if (declaredTools) {
+        const { invalidField } = resolveSubagentToolNames([], declaredTools);
+        if (invalidField) {
+          return format(t.errInvalidAgentTools, { field: invalidField === 'tools' ? 'tools' : 'disallowed-tools' });
+        }
       }
 
       const supporting = checkSupportingFiles(input.files, fileName, t);

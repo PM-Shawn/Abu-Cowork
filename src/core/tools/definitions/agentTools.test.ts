@@ -654,6 +654,42 @@ describe('save_agent multi-file support', () => {
   });
 
   describe('save_agent', () => {
+    it.each([
+      'tools: read_file, write_file',
+      'tools: null',
+      'tools:\n  - read_file\n  - 42',
+      'tools:\n  - " "',
+      'disallowed-tools: run_command',
+      'disallowed-tools:\n  - false',
+    ])('rejects unusable tool metadata before writing or refreshing: %s', async (declaration) => {
+      const { useDiscoveryStore } = await import('../../../stores/discoveryStore');
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: `---\nname: my-agent\n${declaration}\n---\nHelp with a task.`,
+        files: [{ path: 'notes.md', content: 'must not be written' }],
+      });
+      expect(result).toMatch(/^Error:/);
+      expect(result).toContain(declaration.startsWith('tools:') ? 'tools' : 'disallowed-tools');
+      expect(writeTextFile).not.toHaveBeenCalled();
+      expect(useDiscoveryStore.getState().refresh).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unparseable agent before touching files', async () => {
+      const result = await saveAgentTool.execute({ name: 'my-agent', content: '# Missing frontmatter' });
+      expect(result).toMatch(/^Error:/);
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+
+    it('preserves valid tool restrictions and optional display fields exactly', async () => {
+      const content = '---\nname: my-agent\nintro: Hello\nexpertise: [Planning]\nsample-prompts: [Plan a task]\navatar: icon:code/blue\ntools: [read_file]\ndisallowed-tools: [run_command]\n---\nHelp with a task.';
+      const result = await saveAgentTool.execute({ name: 'my-agent', content });
+      expect(result).not.toMatch(/^Error:/);
+      const written = vi.mocked(writeTextFile).mock.calls.find(([path]) => path === '/Users/testuser/.abu/agents/my-agent/AGENT.md');
+      // save_agent stamps `created:` as the last frontmatter line (it owns the
+      // agent's identity); every other line the model wrote survives verbatim.
+      expect(String(written?.[1]).replace(/^created: \d+\n/m, '')).toBe(content);
+    });
+
     it('should save AGENT.md + supporting files', async () => {
       const result = await saveAgentTool.execute({
         name: 'my-agent',

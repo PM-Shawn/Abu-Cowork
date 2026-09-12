@@ -28,11 +28,15 @@
  *     `fsHost.ts`'s cross-process `FsStatResult` — we're already in-process
  *     with `node:fs`, so there's no JSON boundary to cross); `isSymlink` is
  *     hardcoded `false` (same reasoning as `fsHost.ts`: a followed `stat()`
- *     result can never itself be a symlink); `readonly` is the same
- *     best-effort POSIX owner-write-bit approximation `fsHost.ts` uses
- *     (`(mode & 0o200) === 0`) — none of this shim's callers read that
- *     field anyway (verified: `grep -n "\.readonly" src/core/session/
- *     outputSnapshots.ts src/core/skill/loader.ts` → no hits).
+ *     result can never itself be a symlink); `readonly` is `(mode & 0o222)
+ *     === 0` — ANY write bit, matching Rust's
+ *     `std::fs::Permissions::readonly()`, which is what the real plugin
+ *     returns, and matching `electron/fsHost.cjs`, the other shim of this
+ *     same contract. It was an owner-only mask (`& 0o200`) until the shim
+ *     surface guard's review found the two shims disagreeing on a file only
+ *     the group or others can write; no caller reads the field today
+ *     (`grep -rn "\.readonly" src sidecar electron` → comments only), so
+ *     this was a latent contract divergence, not a user-visible bug.
  *   - `exists` → `fs.access(path)`, `false` on `ENOENT`, rethrow any other
  *     error (matches plugin-fs's `exists()` — only "not found" is a `false`
  *     result, everything else is a real error).
@@ -270,7 +274,7 @@ function toFileInfo(s: Stats, isSymlink: boolean): FsFileInfo {
     mtime: msecOrNull(s.mtimeMs),
     atime: msecOrNull(s.atimeMs),
     birthtime: msecOrNull(s.birthtimeMs),
-    readonly: (s.mode & 0o200) === 0,
+    readonly: (s.mode & 0o222) === 0,
     fileAttributes: null,
     dev: s.dev,
     ino: s.ino,

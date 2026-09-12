@@ -107,7 +107,7 @@
  * matching plugin-fs's own behavior of rejecting with a real `Error`.
  */
 import * as fs from 'node:fs/promises';
-import { constants, type Dirent } from 'node:fs';
+import type { Dirent } from 'node:fs';
 
 /** Mirrors plugin-fs's `WriteFileOptions`; `baseDir` is typed only to be rejected. */
 export interface FsWriteFileOptions {
@@ -131,19 +131,44 @@ function rejectUnsupportedOptions(fn: string, options: object | undefined, suppo
   }
 }
 
-/** Rust `OpenOptions` → `open(2)` flags, for the plugin's write options. */
-function writeFlags(options: FsWriteFileOptions | undefined): number {
-  const append = options?.append ?? false;
-  const access = constants.O_WRONLY | (append ? constants.O_APPEND : 0);
-  if (options?.createNew) return access | constants.O_CREAT | constants.O_EXCL;
-  const create = (options?.create ?? true) ? constants.O_CREAT : 0;
-  return access | create | (append ? 0 : constants.O_TRUNC);
+/**
+ * `create: false` (the file must already exist) has no Node flag string, and
+ * the open(2) flags for it are NOT portable: Windows rejects `O_TRUNC`
+ * without `O_CREAT` with `EINVAL` instead of opening the existing file
+ * (caught by CI's `test-windows` on the first cut of this shim). `'r+'` opens
+ * without ever creating — `ENOENT` when the file is missing, exactly like the
+ * plugin — and truncating or seeking to the end reproduces the plugin's
+ * `truncate = !append`.
+ */
+async function writeToExistingFile(path: string, data: string | Uint8Array, append: boolean): Promise<void> {
+  const bytes = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
+  const handle = await fs.open(path, 'r+');
+  try {
+    const position = append ? (await handle.stat()).size : 0;
+    if (!append) await handle.truncate(0);
+    await handle.write(bytes, 0, bytes.byteLength, position);
+  } finally {
+    await handle.close();
+  }
 }
 
 async function writeWithOptions(fn: string, path: string, data: string | Uint8Array, options?: FsWriteFileOptions): Promise<void> {
   rejectUnsupportedOptions(fn, options, ['append', 'create', 'createNew', 'mode']);
+  const append = options?.append ?? false;
+  // Only a file this call CREATES takes `mode`, so the create:false path below
+  // never needs it. Windows is carved out because the plugin ignores mode there.
   const mode = process.platform === 'win32' ? undefined : options?.mode;
-  await fs.writeFile(path, data, { flag: writeFlags(options), mode });
+  if (options?.createNew) {
+    // 'wx'/'ax' are O_CREAT|O_EXCL: the create itself is the existence check,
+    // and createNew wins over create, as in the plugin's Rust OpenOptions.
+    await fs.writeFile(path, data, { flag: append ? 'ax' : 'wx', mode });
+    return;
+  }
+  if (options?.create === false) {
+    await writeToExistingFile(path, data, append);
+    return;
+  }
+  await fs.writeFile(path, data, { flag: append ? 'a' : 'w', mode });
 }
 
 export interface FsDirEntry {

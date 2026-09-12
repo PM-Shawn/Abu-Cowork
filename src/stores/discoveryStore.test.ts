@@ -33,7 +33,9 @@ vi.mock('../core/plugin/installedStore', () => ({
 
 import { agentRegistry } from '../core/agent/registry';
 import { readInstalled } from '../core/plugin/installedStore';
+import { skillLoader } from '../core/skill/loader';
 import { useDiscoveryStore, applyPluginAgentSources } from './discoveryStore';
+import { useSettingsStore } from './settingsStore';
 
 function agent(name: string, extra: Partial<SubagentMetadata> = {}): SubagentMetadata {
   return { name, description: `${name} does things`, ...extra };
@@ -159,6 +161,26 @@ describe('discoveryStore.refresh', () => {
     expect(agents.map((a) => a.name)).toEqual(['reviewer']);
     expect(agents[0].source).toBeUndefined();
     expect(isLoading).toBe(false);
+  });
+
+  it('never writes the skill switches, whatever the skills were discovered from', async () => {
+    // `disabledSkills` holds only the user's own decisions. A refresh runs on
+    // every boot, workspace switch and skills-folder change; when it used to
+    // switch project skills off, it undid each opt-in on the next refresh and,
+    // the list being keyed by name, switched off the user's own same-named
+    // skill in every other workspace too.
+    vi.mocked(agentRegistry.discoverAgents).mockResolvedValue([]);
+    vi.mocked(readInstalled).mockResolvedValue([]);
+    vi.mocked(skillLoader.discoverSkills).mockResolvedValueOnce([
+      { name: 'from-project', description: 'd', source: 'project' },
+      { name: 'from-project-standard', description: 'd', source: 'project-standard' },
+      { name: 'mine', description: 'd', source: 'user' },
+    ]);
+    useSettingsStore.setState({ disabledSkills: ['turned-off-by-user'] });
+
+    await useDiscoveryStore.getState().refresh('/workspace');
+
+    expect(useSettingsStore.getState().disabledSkills).toEqual(['turned-off-by-user']);
   });
 });
 

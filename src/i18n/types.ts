@@ -2100,6 +2100,8 @@ export interface TranslationDict {
     nameFormatHint: string;
     agentNameTakenHint: string;
     skillNameTakenHint: string;
+    /** The organization's policy blocks this skill name. */
+    skillNamePolicyHint: string;
     itemSaveFailed: string;
     aiAssistedCreate: string;
     installFailed: string;
@@ -2240,6 +2242,10 @@ export interface TranslationDict {
     importSymlinkRootRefused: string;
     /** {name} — the .askill's frontmatter name is not one directory segment. */
     importUnsafeName: string;
+    /** {name} — the organization's policy blocks the imported skill's name. */
+    importPolicyDenied: string;
+    /** The package has more than one SKILL.md at its root. */
+    importAmbiguousManifest: string;
     /** {n}, {names} — entries packSkill will not put in an exported archive. */
     exportSymlinkRefused: string;
     manualAdd: string;
@@ -2286,7 +2292,6 @@ export interface TranslationDict {
     exampleSkills: string;
     globalSkills: string;
     projectSkills: string;
-    projectSkillsBadge: string;
     // UX categories (Task #25 rework) — what users see in Toolbox.
     categoryMine: string;              // "我的"
     categoryAgentEvolved: string;      // "阿布沉淀"
@@ -2420,6 +2425,8 @@ export interface TranslationDict {
     draftsConfirmAcceptAll: string;    // e.g. "确认采纳全部 {count} 个草稿？"
     draftsConfirmRejectAll: string;
     draftsAcceptError: string;
+    /** {name} — the organization's policy blocks the draft's skill name. */
+    draftsAcceptPolicyDenied: string;
     draftsRejectError: string;
     draftsTriggerReason: string;
     draftsCreatedAgo: string;          // "{when} 前"
@@ -4203,6 +4210,8 @@ export interface TranslationDict {
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
+      /** {name} — the organization's policy blocks this skill name; no skill was written under it. */
+      policyDenied: string;
       /**
        * Error: create wrote nothing — the name belongs to a built-in, plugin
        * (disabled included) or enterprise skill, to another skill or folder

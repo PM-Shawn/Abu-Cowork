@@ -15,7 +15,9 @@
  * load, nor shadow the user's own same-named expert.
  *
  * Project skill fixture: `<isolated HOME>/i4-workspace/.abu/skills`, made the
- * current workspace by starting a task in a seeded sidebar project.
+ * current workspace by starting a task in a seeded sidebar project. Its folder
+ * is not named after the skill, so the journey also pins that an ordinary save
+ * leaves the folder alone and only a rename moves it.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -34,6 +36,8 @@ const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const AGENT = 'e2e-project-expert';
 const SKILL = 'e2e-project-skill';
 const RENAMED_SKILL = 'e2e-project-skill-v2';
+/** The skill's folder is deliberately NOT named after it: an ordinary save must leave it alone. */
+const SKILL_FOLDER = 'e2e-skill-folder';
 const PROJECT_NAME = 'E2E项目';
 
 const agentMd = (tag: string) => `---\nname: ${AGENT}\ndescription: ${tag} copy\n---\n\n${tag}-PROMPT\n`;
@@ -60,8 +64,8 @@ test.describe('editing an item outside ~/.abu', () => {
     const projectAgent = path.join(projectAgentDir, 'AGENT.md');
     const userSkill = path.join(home, '.abu', 'skills', SKILL, 'SKILL.md');
     const projectSkillsRoot = path.join(workspace, '.abu', 'skills');
-    const projectSkill = path.join(projectSkillsRoot, SKILL, 'SKILL.md');
-    const projectScript = path.join(projectSkillsRoot, SKILL, 'scripts', 'run.sh');
+    const projectSkill = path.join(projectSkillsRoot, SKILL_FOLDER, 'SKILL.md');
+    const projectScript = path.join(projectSkillsRoot, SKILL_FOLDER, 'scripts', 'run.sh');
     write(userAgent, agentMd('USER'));
     write(projectAgent, agentMd('PROJECT'));
     write(userSkill, skillMd('USER'));
@@ -111,8 +115,12 @@ test.describe('editing an item outside ~/.abu', () => {
       await expect(detail).toContainText('EDITED-BODY');
       expect(read(projectSkill)).toContain('EDITED-BODY');
       expect(read(userSkill)).toBe(skillMd('USER'));
+      // An ordinary save never renames the folder — in a project that folder is
+      // the user's repository content, and a move would show up in their git.
+      expect(fs.existsSync(path.join(projectSkillsRoot, SKILL_FOLDER))).toBe(true);
+      expect(fs.existsSync(path.join(projectSkillsRoot, SKILL))).toBe(false);
 
-      // ---- 3. Renaming it moves its folder inside the project -----------------
+      // ---- 3. Renaming it — and only that — moves its folder in the project ---
       await detail.getByTestId('skill-detail-menu').click();
       await detail.getByText('编辑', { exact: true }).click();
       await page.getByPlaceholder('my-skill').fill(RENAMED_SKILL);
@@ -120,7 +128,7 @@ test.describe('editing an item outside ~/.abu', () => {
       await expect(page.getByRole('button', { name: new RegExp(`^${RENAMED_SKILL} `) })).toContainText('项目');
       expect(read(path.join(projectSkillsRoot, RENAMED_SKILL, 'SKILL.md'))).toContain(`name: ${RENAMED_SKILL}`);
       expect(read(path.join(projectSkillsRoot, RENAMED_SKILL, 'scripts', 'run.sh'))).toBe('echo project\n');
-      expect(fs.existsSync(path.join(projectSkillsRoot, SKILL))).toBe(false);
+      expect(fs.existsSync(path.join(projectSkillsRoot, SKILL_FOLDER))).toBe(false);
       expect(fs.existsSync(path.join(home, '.abu', 'skills', RENAMED_SKILL))).toBe(false);
       expect(read(userSkill)).toBe(skillMd('USER'));
     } finally {

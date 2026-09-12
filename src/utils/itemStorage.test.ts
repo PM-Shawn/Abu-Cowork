@@ -5,8 +5,11 @@
  * - An EXISTING item is saved where it lives — ~/.abu, a project, the shared
  *   ~/.agents folder — never copied into ~/.abu (the copy overwrote the
  *   user's same-named item and was shadowed by the project item: finding I4).
- *   A rename writes the manifest in place, then MOVES the item's folder
- *   within its own parent, putting the old text back if the move fails.
+ *   Only a rename touches the folder: it writes the manifest in place, then
+ *   MOVES the item's folder within its own parent, putting the old text back
+ *   if the move fails. An ordinary save never moves anything, even when the
+ *   folder is not named after the item (in a project that folder is the
+ *   user's repository content).
  * - It never deletes anything, and it only touches a path spelled like an
  *   item: `<…>/<agents|skills>/<plain item>/<manifest>`, whose folder and
  *   manifest are a plain folder and a plain file right now — no links.
@@ -138,6 +141,22 @@ describe('saveItemToAbuDir', () => {
       expect(exists).not.toHaveBeenCalled();
     });
 
+    it('never moves a folder that is not named after its item — only a rename does', async () => {
+      // The folder is the user's (in a project, repository content): a plain
+      // save must not show up in their git as a folder rename.
+      await saveItemToAbuDir('skills', 'SKILL.md', 'render', 'md', `${PROJECT}/.abu/skills/my-folder/SKILL.md`);
+
+      expect(writeTextFile).toHaveBeenCalledWith(`${PROJECT}/.abu/skills/my-folder/SKILL.md`, 'md', { create: false });
+      expect(exists).not.toHaveBeenCalled();
+      expectNoMoveNoRemove();
+    });
+
+    it('renaming an item whose folder is named differently moves that folder to the new name', async () => {
+      await saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${PROJECT}/.abu/skills/my-folder/SKILL.md`, { mustBeNew: true, renaming: true });
+
+      expect(rename).toHaveBeenCalledWith(`${PROJECT}/.abu/skills/my-folder`, `${PROJECT}/.abu/skills/render-v2`);
+    });
+
     it('keeps a lower-case manifest name', async () => {
       await saveItemToAbuDir('agents', 'AGENT.md', 'reviewer', 'md', `${PROJECT}/.abu/agents/reviewer/agent.md`);
 
@@ -153,7 +172,7 @@ describe('saveItemToAbuDir', () => {
 
   describe('rename = write in place, then move the folder within its own parent', () => {
     it('in ~/.abu: never removes, never creates a folder', async () => {
-      await saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${HOME}/.abu/skills/render/SKILL.md`, { mustBeNew: true });
+      await saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${HOME}/.abu/skills/render/SKILL.md`, { mustBeNew: true, renaming: true });
 
       expect(writeTextFile).toHaveBeenCalledWith(`${HOME}/.abu/skills/render/SKILL.md`, 'md', { create: false });
       expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/skills/render`, `${HOME}/.abu/skills/render-v2`);
@@ -164,7 +183,7 @@ describe('saveItemToAbuDir', () => {
     });
 
     it('in a project: the folder stays in the project and nothing lands in ~/.abu', async () => {
-      await saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${PROJECT}/.abu/skills/render/SKILL.md`, { mustBeNew: true });
+      await saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${PROJECT}/.abu/skills/render/SKILL.md`, { mustBeNew: true, renaming: true });
 
       expect(exists).toHaveBeenCalledWith(`${PROJECT}/.abu/skills/render-v2/SKILL.md`);
       expect(writtenPaths()).toEqual([`${PROJECT}/.abu/skills/render/SKILL.md`]);
@@ -174,7 +193,7 @@ describe('saveItemToAbuDir', () => {
     });
 
     it('moves an agent folder (and so its memory.md) with Windows separators', async () => {
-      await saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', 'C:\\Users\\tester\\.abu\\agents\\reviewer\\AGENT.md');
+      await saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', 'C:\\Users\\tester\\.abu\\agents\\reviewer\\AGENT.md', { renaming: true });
 
       expect(writeTextFile).toHaveBeenCalledWith('C:/Users/tester/.abu/agents/reviewer/AGENT.md', 'md', { create: false });
       expect(rename).toHaveBeenCalledWith('C:/Users/tester/.abu/agents/reviewer', 'C:/Users/tester/.abu/agents/writer');
@@ -182,7 +201,7 @@ describe('saveItemToAbuDir', () => {
     });
 
     it('moves on a letter-case-only rename, so the folder\'s case really changes', async () => {
-      await saveItemToAbuDir('agents', 'AGENT.md', 'reviewer', 'md', `${HOME}/.abu/agents/Reviewer/AGENT.md`);
+      await saveItemToAbuDir('agents', 'AGENT.md', 'reviewer', 'md', `${HOME}/.abu/agents/Reviewer/AGENT.md`, { renaming: true });
 
       expect(rename).toHaveBeenCalledWith(`${HOME}/.abu/agents/Reviewer`, `${HOME}/.abu/agents/reviewer`);
       expect(remove).not.toHaveBeenCalled();
@@ -192,7 +211,7 @@ describe('saveItemToAbuDir', () => {
       onDisk(`${PROJECT}/.abu/agents/writer/AGENT.md`);
 
       await expect(
-        saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', `${PROJECT}/.abu/agents/reviewer/AGENT.md`, { mustBeNew: true }),
+        saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', `${PROJECT}/.abu/agents/reviewer/AGENT.md`, { mustBeNew: true, renaming: true }),
       ).rejects.toMatchObject({ code: ITEM_EXISTS_CODE });
       expectUntouched();
     });
@@ -201,7 +220,7 @@ describe('saveItemToAbuDir', () => {
       vi.mocked(rename).mockRejectedValueOnce(new Error('ENOTEMPTY'));
 
       await expect(
-        saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', `${HOME}/.abu/agents/reviewer/AGENT.md`, { mustBeNew: true }),
+        saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', `${HOME}/.abu/agents/reviewer/AGENT.md`, { mustBeNew: true, renaming: true }),
       ).rejects.toThrow('ENOTEMPTY');
       expect(vi.mocked(writeTextFile).mock.calls).toEqual([
         [`${HOME}/.abu/agents/reviewer/AGENT.md`, 'md', { create: false }],
@@ -215,13 +234,13 @@ describe('saveItemToAbuDir', () => {
       vi.mocked(writeTextFile).mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('EACCES'));
 
       await expect(
-        saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', `${HOME}/.abu/agents/reviewer/AGENT.md`),
+        saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', `${HOME}/.abu/agents/reviewer/AGENT.md`, { renaming: true }),
       ).rejects.toThrow('ENOTEMPTY');
     });
 
     it('a retry after a failed move is not refused as a name collision', async () => {
       vi.mocked(rename).mockRejectedValueOnce(new Error('EBUSY'));
-      const save = () => saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${HOME}/.abu/skills/render/SKILL.md`, { mustBeNew: true });
+      const save = () => saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${HOME}/.abu/skills/render/SKILL.md`, { mustBeNew: true, renaming: true });
 
       await expect(save()).rejects.toThrow('EBUSY');
       await expect(save()).resolves.toBeUndefined();
@@ -232,7 +251,7 @@ describe('saveItemToAbuDir', () => {
       vi.mocked(writeTextFile).mockRejectedValueOnce(new Error('EROFS'));
 
       await expect(
-        saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${PROJECT}/.abu/skills/render/SKILL.md`),
+        saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${PROJECT}/.abu/skills/render/SKILL.md`, { renaming: true }),
       ).rejects.toThrow('EROFS');
       expectNoMoveNoRemove();
     });
@@ -258,7 +277,7 @@ describe('saveItemToAbuDir', () => {
         saveItemToAbuDir('skills', 'SKILL.md', 'render', 'md', `${PROJECT}/.abu/skills/render/SKILL.md`),
       ).rejects.toThrow();
       await expect(
-        saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${PROJECT}/.abu/skills/render/SKILL.md`),
+        saveItemToAbuDir('skills', 'SKILL.md', 'render-v2', 'md', `${PROJECT}/.abu/skills/render/SKILL.md`, { renaming: true }),
       ).rejects.toThrow();
       expectUntouched();
     });
@@ -285,7 +304,7 @@ describe('saveItemToAbuDir', () => {
     it.each(notAnItem)('%s: refused, nothing written or moved', async (_label, oldFilePath) => {
       vi.mocked(exists).mockResolvedValue(true);
 
-      await expect(saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', oldFilePath)).rejects.toThrow();
+      await expect(saveItemToAbuDir('agents', 'AGENT.md', 'writer', 'md', oldFilePath, { renaming: true })).rejects.toThrow();
       await expect(saveItemToAbuDir('agents', 'AGENT.md', 'reviewer', 'md', oldFilePath)).rejects.toThrow();
       expect(lstat).not.toHaveBeenCalled();
       expectUntouched();

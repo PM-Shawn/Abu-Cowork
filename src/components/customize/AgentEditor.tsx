@@ -39,8 +39,11 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const [saving, setSaving] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
 
-  // Name validation via shared hook
+  // Name validation via shared hook. `mode: 'agent'` keeps unicode and letter
+  // case, the rule `save_agent` and the built-in experts use — without it the
+  // editor falls back to the skill slug rule and cannot spell 数据分析师.
   const { name, setName, nameValid, nameTaken, nameChanged } = useItemName(agent?.name ?? null, {
+    mode: 'agent',
     takenNames: agentNamesInUse(),
   });
   // The name the disk refused at save time (a file appeared after the registry

@@ -343,6 +343,78 @@ async function openTab(host, ownerId) {
   return { tabId, contents: contentsRegistry.get(tabId) };
 }
 
+/**
+ * Virtual time, for the one claim below that is about HOW LONG a call takes.
+ *
+ * A real `Date.now()` there measures the machine, not the code: on a box whose
+ * load average sat around 400 (several worktrees running `verify` at once), a
+ * 300 ms budget took 484 ms of wall clock to spend and the assertion failed on
+ * a change that never touched downloads. `browserHost` already routes every
+ * deadline through one seam (`__testing.setClock`), so the budget can be spent
+ * in virtual milliseconds that no other process can stretch, which is also what
+ * TESTING.md's determinism rule asks for.
+ *
+ * `drain` walks the timer queue — flush the microtask/await backlog, fire the
+ * earliest pending timer, repeat — so the figure it reports is the sum of the
+ * delays the CODE asked for.
+ */
+function virtualTimeline(start = 2_000_000) {
+  const timers = [];
+  let seq = 0;
+  const state = { t: start };
+  const clock = {
+    now: () => state.t,
+    sleep: (ms) => new Promise((resolve) => { clock.setTimeout(resolve, ms); }),
+    setTimeout(fn, ms) {
+      const handle = (seq += 1);
+      timers.push({ handle, at: state.t + Math.max(0, Number(ms) || 0), fn });
+      return handle;
+    },
+    clearTimeout(handle) {
+      const at = timers.findIndex((timer) => timer.handle === handle);
+      if (at >= 0) timers.splice(at, 1);
+    },
+  };
+
+  /** Jump to the earliest pending deadline and fire everything due at it. */
+  function fireNext() {
+    if (timers.length === 0) return false;
+    state.t = Math.max(state.t, Math.min(...timers.map((timer) => timer.at)));
+    for (const timer of timers.filter((t) => t.at <= state.t)) {
+      clock.clearTimeout(timer.handle);
+      timer.fn();
+    }
+    return true;
+  }
+
+  return {
+    clock,
+    /**
+     * Run `promise` to settlement on virtual time and report what it cost.
+     * Fails loudly rather than hanging if it never settles.
+     */
+    async drain(promise) {
+      let outcome = null;
+      promise.then(
+        (value) => { outcome = { value }; },
+        (error) => { outcome = { error }; },
+      );
+      let idle = 0;
+      for (let guard = 0; guard < 5000 && idle <= 50; guard += 1) {
+        // One macrotask hop per pass lets the awaits already in flight — and
+        // the continuations the previous pass's timer queued — run to a stop.
+        await new Promise((resolve) => { setImmediate(resolve); });
+        if (outcome) break;
+        if (fireNext()) idle = 0;
+        else idle += 1;
+      }
+      if (!outcome) throw new Error('the download call never settled on virtual time');
+      if (outcome.error) throw outcome.error;
+      return { result: outcome.value, spent: state.t - start };
+    },
+  };
+}
+
 function noOsDialogs() {
   assert.deepEqual(
     osDialogCalls,
@@ -620,28 +692,38 @@ test('hands a slow download back as an id to poll instead of blocking past its b
  */
 test('spends one budget on the whole call, not one on each half', async () => {
   const { host, deliver, restore } = loadHost();
+  const timeline = virtualTimeline();
   try {
     const { tabId, contents } = await openTab(host, OWNER_A);
+    // The clock goes in AFTER the tab exists: only the call under measurement
+    // is driven by hand, so nothing else in the setup can sit on a timer this
+    // test is not advancing.
+    host.__testing.setClock(timeline.clock);
     let started = null;
     // The shape that separates the two designs: the click takes MOST of the
     // budget to produce anything, and then the file never finishes. With one
-    // deadline the whole call costs ~300 ms; with a budget per phase it costs
+    // deadline the whole call costs 300 ms; with a budget per phase it costs
     // 200 + 300, which is what walked past the bridge's own timeout.
     contents.onClick = () => {
-      setTimeout(() => { started = deliver(new FakeDownloadItem(), contents); }, 200);
+      timeline.clock.setTimeout(() => {
+        started = deliver(new FakeDownloadItem(), contents);
+      }, 200);
     };
 
-    const began = Date.now();
-    const result = await host.performBrowserAutomation('download', {
+    const { result, spent } = await timeline.drain(host.performBrowserAutomation('download', {
       ownerId: OWNER_A, tabId, action: 'click', locator: { css: 'a#export' }, timeoutMs: 300,
-    });
-    const spent = Date.now() - began;
+    }));
 
     assert.equal(result.started, true);
     assert.equal(result.complete, false);
-    assert.ok(spent < 420, `the call spent ${spent}ms of a 300ms budget`);
+    // Virtual milliseconds — the delays the code asked for, not how busy the
+    // machine was. One deadline spends 300; a budget per phase spends 200 + 300.
+    assert.ok(spent <= 300, `the call spent ${spent}ms of a 300ms budget`);
     if (started) started.finish();
-  } finally { restore(); }
+  } finally {
+    host.__testing.setClock(null);
+    restore();
+  }
 });
 
 /**

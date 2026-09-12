@@ -29,7 +29,7 @@ describe('AuthorSection', () => {
 
     expect(screen.getByRole('heading', { name: '关于作者' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Shawn' })).toBeInTheDocument();
-    expect(screen.getByText(/爱折腾、理性、去噪、深度实践/)).toBeInTheDocument();
+    expect(screen.getByText(/爱折腾、理性、去噪、极客精神、深度实践/)).toBeInTheDocument();
     expect(screen.getByText(/月消耗 Token 300 亿/)).toBeInTheDocument();
     expect(screen.getByRole('img', { name: '关注公众号' })).toBeInTheDocument();
     expect(screen.getByRole('img', { name: '请作者喝杯咖啡' })).toBeInTheDocument();

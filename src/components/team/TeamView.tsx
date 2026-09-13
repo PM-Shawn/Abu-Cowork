@@ -10,6 +10,7 @@ import { teamIdentity } from '@/core/team/expertContact';
 import { useToastStore } from '@/stores/toastStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
+import { isBuiltinTeam } from '@/core/team/builtinTeams';
 import { useI18n, format } from '@/i18n';
 import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X, Check } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
@@ -366,6 +367,8 @@ export default function TeamView() {
   const activeTeamTab: TeamTab = persistedTeamTab === 'teams' ? 'teams' : 'members';
   const { t } = useI18n();
   const teams = useTeamStore((s) => s.teams);
+  const disabledAgents = useSettingsStore((s) => s.disabledAgents);
+  const disabledSet = useMemo(() => new Set(disabledAgents ?? []), [disabledAgents]);
   // Roles resolve through the agent registry, which is not a React-reactive
   // source; subscribe to discovery so the card grid re-renders when the roster
   // changes (same reason useConversationTeam subscribes — useTeamDispatches.ts).
@@ -485,40 +488,46 @@ export default function TeamView() {
         // Single identity source: this IS the toolbox agents surface.
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} />;
       case 'teams': {
-        if (activeTeams.length === 0) {
-          return (
-            <div className="h-full flex flex-col">
-              <div className="flex-1 min-h-0">
-                <EmptyState
-                  icon={UsersRound}
-                  title={t.team.teamsEmpty}
-                  hint={t.team.teamsEmptyHint}
-                  action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
-                />
-              </div>
-            </div>
-          );
-        }
+        const userTeams = activeTeams.filter((team) => !isBuiltinTeam(team));
+        const marketTeams = activeTeams.filter(isBuiltinTeam);
+        // Same grid + card the 队员 tab uses (ToolGrid/ToolCard), not a
+        // hand-rolled row: a team and a member are peers in this surface.
+        const card = (team: Team) => (
+          <ToolCard
+            key={team.id}
+            item={{
+              id: team.id,
+              testId: `team-row-${team.name}`,
+              name: team.name,
+              description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
+              avatar: <TeamAvatar avatar={team.avatar} />,
+            }}
+            onClick={() => setDetailTeam(team)}
+          />
+        );
         return (
-          // Same grid + card the 队员 tab uses (ToolGrid/ToolCard), not a
-          // hand-rolled row: a team and a member are peers in this surface, so
-          // they must look and behave alike.
           <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6 h-full">
-            <ToolGrid>
-              {activeTeams.map((team) => (
-                <ToolCard
-                    key={team.id}
-                    item={{
-                      id: team.id,
-                      testId: `team-row-${team.name}`,
-                      name: team.name,
-                      description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
-                      avatar: <TeamAvatar avatar={team.avatar} />,
-                    }}
-                    onClick={() => setDetailTeam(team)}
+            <div className="max-w-5xl mx-auto space-y-6">
+              <div>
+                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.team.groupMine}</div>
+                {userTeams.length === 0 ? (
+                  <EmptyState
+                    icon={UsersRound}
+                    title={t.team.teamsEmpty}
+                    hint={t.team.teamsEmptyHint}
+                    action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
                   />
-              ))}
-            </ToolGrid>
+                ) : (
+                  <ToolGrid>{userTeams.map(card)}</ToolGrid>
+                )}
+              </div>
+              {marketTeams.length > 0 && (
+                <div>
+                  <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.team.groupMarket}</div>
+                  <ToolGrid>{marketTeams.map(card)}</ToolGrid>
+                </div>
+              )}
+            </div>
           </div>
         );
       }
@@ -540,47 +549,56 @@ export default function TeamView() {
         avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="lg" /> : undefined}
         title={detailTeam?.name}
         subtitle={detailTeam?.description?.trim()}
-        headerActions={detailTeam ? (
-          <>
-            <button
-              onClick={() => startChatWithTeam(detailTeam)}
-              className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-minor font-medium text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)] border border-[var(--abu-clay-40)] hover:border-[var(--abu-clay)] transition-colors"
-              data-testid="team-detail-start-chat"
-            >
-              <MessageCircle className="h-3.5 w-3.5" />
-              <span>{t.team.detailStartChat}</span>
-            </button>
-            <div className="relative">
+        headerActions={detailTeam ? (() => {
+          const readOnly = isBuiltinTeam(detailTeam);
+          const leaderAgent = resolveRoleId(detailTeam.leaderRoleId);
+          const leaderDisabled = !!leaderAgent && disabledSet.has(leaderAgent.name);
+          return (
+            <>
               <button
-                onClick={(e) => { e.stopPropagation(); setDetailMenuOpen((v) => !v); }}
-                className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                data-testid="team-detail-menu"
+                onClick={() => startChatWithTeam(detailTeam)}
+                disabled={leaderDisabled}
+                title={leaderDisabled ? t.team.leaderDisabledHint : undefined}
+                className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-minor font-medium text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)] border border-[var(--abu-clay-40)] hover:border-[var(--abu-clay)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[var(--abu-clay-bg)] disabled:hover:border-[var(--abu-clay-40)]"
+                data-testid="team-detail-start-chat"
               >
-                <MoreHorizontal className="h-4 w-4" />
+                <MessageCircle className="h-3.5 w-3.5" />
+                <span>{t.team.detailStartChat}</span>
               </button>
-              {detailMenuOpen && (
-                <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
+              {!readOnly && (
+                <div className="relative">
                   <button
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-                    onClick={() => { setTeamDialog({ open: true, team: detailTeam }); setDetailMenuOpen(false); setDetailTeam(null); }}
-                    data-testid="team-detail-edit"
+                    onClick={(e) => { e.stopPropagation(); setDetailMenuOpen((v) => !v); }}
+                    className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                    data-testid="team-detail-menu"
                   >
-                    <Pencil className="h-3 w-3" />
-                    {t.team.detailEdit}
+                    <MoreHorizontal className="h-4 w-4" />
                   </button>
-                  <button
-                    className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
-                    onClick={() => { setConfirmDeleteTeam(detailTeam); setDetailMenuOpen(false); }}
-                    data-testid="team-detail-delete"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                    {t.team.deleteTeamAction}
-                  </button>
+                  {detailMenuOpen && (
+                    <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
+                        onClick={() => { setTeamDialog({ open: true, team: detailTeam }); setDetailMenuOpen(false); setDetailTeam(null); }}
+                        data-testid="team-detail-edit"
+                      >
+                        <Pencil className="h-3 w-3" />
+                        {t.team.detailEdit}
+                      </button>
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
+                        onClick={() => { setConfirmDeleteTeam(detailTeam); setDetailMenuOpen(false); }}
+                        data-testid="team-detail-delete"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        {t.team.deleteTeamAction}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
-          </>
-        ) : undefined}
+            </>
+          );
+        })() : undefined}
       >
         {detailTeam && (() => {
           const memberIds = detailTeam.memberRoleIds.filter((id) => id !== detailTeam.leaderRoleId);
@@ -599,20 +617,32 @@ export default function TeamView() {
           // "what can this team actually do" without opening every member.
           const skills = [...new Set([leader, ...members.map((m) => m.agent)]
             .flatMap((a) => a?.skills ?? []))].sort();
-          const row = (agent: SubagentDefinition | undefined, fallback: string, onPick?: () => void) => (
-            <button
-              type="button"
-              disabled={!agent}
-              onClick={onPick}
-              className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--abu-bg-muted)] disabled:cursor-default disabled:hover:bg-transparent"
-            >
-              {agent ? <AgentAvatar agent={agent} size="sm" /> : <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />}
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-body text-[var(--abu-text-primary)]">{agent?.name ?? fallback}</span>
-                {agent?.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{agent.description}</span>}
-              </span>
-            </button>
-          );
+          const row = (agent: SubagentDefinition | undefined, fallback: string, onPick?: () => void) => {
+            const disabled = !!agent && disabledSet.has(agent.name);
+            return (
+              <button
+                type="button"
+                disabled={!agent}
+                onClick={onPick}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-[var(--abu-bg-muted)] disabled:cursor-default disabled:hover:bg-transparent"
+              >
+                {agent ? <AgentAvatar agent={agent} size="sm" /> : <Bot className="h-4 w-4 text-[var(--abu-text-tertiary)]" />}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-body text-[var(--abu-text-primary)]">{agent?.name ?? fallback}</span>
+                  {agent?.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{agent.description}</span>}
+                </span>
+                {disabled && (
+                  <span
+                    className="shrink-0 px-1.5 py-0.5 rounded text-caption font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]"
+                    title={t.team.memberDisabledHint}
+                    data-testid="team-member-disabled"
+                  >
+                    {t.team.memberDisabled}
+                  </span>
+                )}
+              </button>
+            );
+          };
           return (
             <div className="space-y-5">
               <div>

@@ -117,8 +117,8 @@ describe('teamStore', () => {
       const stale: Team = { ...BUILTIN_TEAMS[0], name: '旧名字', memberRoleIds: [] };
       const mine: Team = { id: 'team-mine', name: '我的小队', leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1 };
       const merged = mergeTeamState({ teams: [mine, stale] }, useTeamStore.getState());
-      expect(merged.teams.filter((t) => !isBuiltinTeam(t))).toEqual([mine]);
-      expect(merged.teams.filter(isBuiltinTeam)).toEqual([...BUILTIN_TEAMS]);
+      // Order matters too: the user's teams first, then today's roster.
+      expect(merged.teams).toEqual([mine, ...BUILTIN_TEAMS]);
       expect(merged.teams.some((t) => t.name === '旧名字')).toBe(false);
     });
 

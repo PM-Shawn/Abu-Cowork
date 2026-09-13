@@ -87,9 +87,9 @@ describe('SkillLoader.getShadowedSkills', () => {
   it('does not accumulate across rescans', async () => {
     const loader = new SkillLoader();
     await loader.discoverSkills();
-    const first = loader.getShadowedSkills().length;
+    expect(loader.getShadowedSkills()).toHaveLength(1);
     await loader.discoverSkills();
-    expect(loader.getShadowedSkills()).toHaveLength(first);
+    expect(loader.getShadowedSkills()).toHaveLength(1);
   });
 
   it('drops a shadowed skill whose name the organization blacklists', async () => {

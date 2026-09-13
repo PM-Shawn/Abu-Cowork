@@ -19,8 +19,10 @@ import { writeFile } from '@tauri-apps/plugin-fs';
 import { packSkill } from '@/core/skill/packager';
 import { useToastStore } from '@/stores/toastStore';
 import { getParentDir } from '@/utils/pathUtils';
-import type { Skill, SkillSource, SkillUXCategory } from '@/types';
+import type { Skill } from '@/types';
 import { sourceToUXCategory } from '@/core/skill/uxCategory';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import SkillDetailPanel from '@/components/toolbox/skills/SkillDetailPanel';
@@ -53,11 +55,6 @@ const SOURCE_BADGE_TONE: Record<'neutral' | 'clay' | 'blue' | 'slate', string> =
   slate: 'bg-slate-100 dark:bg-[var(--abu-bg-muted)] text-slate-600 dark:text-[var(--abu-text-secondary)]',
 };
 
-/** Optional authored-only filtering for embedded callers; the released page shows every source. */
-const MINE_SOURCES: ReadonlySet<SkillSource> = new Set<SkillSource>([
-  'user', 'workspace-auto', 'draft', 'project', 'project-standard', 'standard',
-]);
-
 interface SkillsSectionProps {
   manualCreateTrigger?: number;
   /** Unified upload dialog (folder / .askill / .zip) — opened from ToolboxModal's
@@ -65,11 +62,12 @@ interface SkillsSectionProps {
    *  showAddForm, with an internal fallback so the component still works standalone. */
   showUploadModal?: boolean;
   onUploadModalChange?: (open: boolean) => void;
-  /** Optional authored-only view. Omit to retain the released grouped page. */
-  sourceFilter?: 'mine';
+  /** Which shelf this render is showing — the sub-nav's current pick.
+   *  Defaults to 市场, the shelf a fresh install has something on. */
+  source?: ExtensionSource;
 }
 
-export default function SkillsSection({ manualCreateTrigger, showUploadModal: externalShowUploadModal, onUploadModalChange, sourceFilter }: SkillsSectionProps) {
+export default function SkillsSection({ manualCreateTrigger, showUploadModal: externalShowUploadModal, onUploadModalChange, source = 'market' }: SkillsSectionProps) {
   const { skills, refresh } = useDiscoveryStore();
   // We subscribe to drafts count here (not SkillDraftsPanel itself) so
   // the 阿布沉淀 category's visibility condition accounts for pending
@@ -81,6 +79,9 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   const extensionsSearchQuery = useExtensionsSearchQuery('skills');
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
+  // A skill the user just wrote or imported is on the other shelf: land them
+  // where it actually is, or the create reads as a create that did nothing.
+  const setSource = useExtensionSourceStore((s) => s.setSource);
   const { t } = useI18n();
 
   const installedSkills = useMemo(() => skills.flatMap((meta) => {
@@ -118,12 +119,14 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // Scope by source first, search second — the two answer different questions,
   // and the empty state needs them apart: nothing of the user's own at all
   // ("还没有你创建的技能") reads differently from "your skills, none matching".
+  // `sourceToUXCategory` is the single authority on which shelf a skill sits
+  // on (an un-tagged legacy skill counts as the user's own; an unknown source
+  // is hidden rather than misfiled), so the two shelves read it rather than
+  // keeping a second list of sources that can drift from it.
   const scopedSkills = useMemo(() => {
-    if (sourceFilter !== 'mine') return installedSkills;
-    // An un-tagged legacy skill counts as the user's own, matching
-    // sourceToUXCategory()'s treatment of `undefined`.
-    return installedSkills.filter((s) => s.source === undefined || MINE_SOURCES.has(s.source));
-  }, [installedSkills, sourceFilter]);
+    const bucket = source === 'mine' ? 'mine' : 'builtin';
+    return installedSkills.filter((s) => sourceToUXCategory(s.source) === bucket);
+  }, [installedSkills, source]);
 
   // Filter by search
   const searchLower = extensionsSearchQuery.toLowerCase();
@@ -137,25 +140,23 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     });
   }, [scopedSkills, searchLower]);
 
-  // Group skills by source for display
-  // Group skills by UX category — 4 top-level buckets that match the
-  // user's mental model (mine / agent-evolved / third-party / builtin)
-  // rather than the raw on-disk source enum. See uxCategory.ts for
-  // the mapping; unknown sources are dropped with a console.warn so
-  // they don't silently land in "mine" (pre-refactor bug where
-  // workspace-auto skills looked like user-created ones).
-  const skillGroups = useMemo(() => {
-    const groups: Record<SkillUXCategory, Skill[]> = {
-      mine: [],
-      'agent-evolved': [],
-      builtin: [],
-    };
-    for (const s of filteredSkills) {
-      const cat = sourceToUXCategory(s.source);
-      if (cat) groups[cat].push(s);
-    }
-    return groups;
-  }, [filteredSkills]);
+  // Built-ins a same-name user skill covered: still listed under 市场, marked,
+  // so the user knows which copy is live instead of thinking one vanished.
+  const shadowedBuiltin = useMemo(() => {
+    // A 「我的」 render has no 市场 group to belong to: scoping here keeps
+    // shadowed built-ins from resurrecting that group on their own.
+    if (source === 'mine') return [];
+    const q = searchLower;
+    return skillLoader.getShadowedSkills().filter((s) => {
+      if (s.source !== 'builtin') return false;
+      // The hint says the live copy is under 「我的」. When the winner is a
+      // plugin skill it sits on this same shelf, so the card would mislead —
+      // the plugin card already represents that name here.
+      const winner = installedSkills.find((w) => w.name === s.name);
+      if (winner && sourceToUXCategory(winner.source) === 'builtin') return false;
+      return !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
+    });
+  }, [skills, installedSkills, searchLower, source]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
 
@@ -229,16 +230,43 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     );
   };
 
+  const renderShadowedCard = (skill: Skill) => (
+    <ToolCard
+      key={`shadowed:${skill.name}`}
+      item={{
+        id: `shadowed:${skill.name}`,
+        name: skill.name,
+        description: skill.description,
+        avatar: <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" />,
+        badge: (
+          <span className="shrink-0 px-1.5 py-0.5 rounded text-caption font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]" title={t.toolbox.skillShadowedHint}>
+            {t.toolbox.skillShadowedBadge}
+          </span>
+        ),
+        toggle: (
+          <span title={t.toolbox.skillShadowedHint}>
+            <Toggle checked={false} disabled onChange={() => {}} size="sm" tone="green" />
+          </span>
+        ),
+        testId: `skill-shadowed-${skill.name}`,
+      }}
+    />
+  );
+
   // If editor is open, show editor full-width
   if (editorSkill !== null) {
     return (
       <SkillEditor
         skill={editorSkill === 'new' ? null : editorSkill}
         onClose={() => setEditorSkill(null)}
-        onSave={async () => { await refresh(); setEditorSkill(null); }}
+        onSave={async () => { await refresh(); setEditorSkill(null); setSource('skills', 'mine'); }}
       />
     );
   }
+
+  // Drafts belong to 「我的」 (Abu wrote them for this user); 「市场」 never shows
+  // them, so only 「我的」 lets a pending draft hold off the empty state.
+  const draftsVisible = source === 'mine' && draftsCount > 0;
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
@@ -252,12 +280,11 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
         {/* Drafts are not skills on disk yet, so they are absent from
-            filteredSkills — but 阿布沉淀 is rendered from the grid branch below.
+            filteredSkills — they come from the drafts store, under 「我的」 only.
             Falling into the empty state while drafts are pending would hide
-            them behind 「还没有你创建的技能」, and 「市场」 never shows drafts
-            (`draft` ∈ MINE_SOURCES), so nothing else would surface them. */}
-        {filteredSkills.length === 0 && draftsCount === 0 ? (
-          sourceFilter === 'mine' && scopedSkills.length === 0 ? (
+            them behind 「还没有你创建的技能」, and nothing else would surface them. */}
+        {filteredSkills.length === 0 && shadowedBuiltin.length === 0 && !draftsVisible ? (
+          source === 'mine' && scopedSkills.length === 0 ? (
             <div className="py-16 text-center">
               <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.skillsMineEmptyTitle}</p>
             </div>
@@ -266,25 +293,23 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
           )
         ) : (
           <div className="max-w-5xl mx-auto space-y-6">
-            {/* Category · Mine — user's own or team-shipped skills.
-                Groups user/standard/project/project-standard into one
-                bucket matching the user's mental model ("I or my
-                team put this on disk"), instead of splitting by the
-                implementation-level SkillSource enum. */}
-            {skillGroups.mine.length > 0 && (
-              <div>
-                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryMine}</div>
-                <ToolGrid>{skillGroups.mine.map((skill) => renderSkillCard(skill))}</ToolGrid>
-              </div>
+            {/* One shelf at a time — which one is the sub-nav's job to say, so
+                the group heading that used to name it here is gone.
+                「我的」: what this user (or Abu on their behalf) put on disk.
+                「市场」: bundled + plugin-contributed skills, plus the built-in
+                a same-name skill of theirs covers. */}
+            {(filteredSkills.length > 0 || shadowedBuiltin.length > 0) && (
+              <ToolGrid>
+                {filteredSkills.map((skill) => renderSkillCard(skill))}
+                {shadowedBuiltin.map((skill) => renderShadowedCard(skill))}
+              </ToolGrid>
             )}
 
-            {/* Category · Agent-evolved — pending drafts awaiting
-                user review. workspace-auto skills (accepted) now
-                live in "mine" with a per-card "自进化" badge.
-                Section only appears when there are active drafts.
-                SkillDraftsPanel is its own list UI (not a card grid) —
-                kept as-is rather than reshaped into ToolCards. */}
-            {draftsCount > 0 && (
+            {/* 阿布沉淀 — pending drafts awaiting user review. workspace-auto
+                skills (accepted) sit in the grid above with a per-card
+                "自进化" badge. SkillDraftsPanel is its own list UI (not a card
+                grid) — kept as-is rather than reshaped into ToolCards. */}
+            {draftsVisible && (
               <div>
                 <div className="mb-3 pl-3 flex items-center gap-1.5 text-body font-medium text-[var(--abu-text-muted)]">
                   <span>{t.toolbox.categoryAgentEvolved}</span>
@@ -292,14 +317,6 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
                   <span className="text-caption text-[var(--abu-text-placeholder)]">{draftsCount}</span>
                 </div>
                 <SkillDraftsPanel />
-              </div>
-            )}
-
-            {/* Category · Built-in — bundled with Abu. Read-only. */}
-            {skillGroups.builtin.length > 0 && (
-              <div>
-                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryBuiltin}</div>
-                <ToolGrid>{skillGroups.builtin.map((skill) => renderSkillCard(skill))}</ToolGrid>
               </div>
             )}
           </div>
@@ -370,7 +387,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
         ) : undefined}
         footer={selected ? <div className="flex items-center justify-between gap-3">
           {isUserOwnedSkill(selected) ? (
-            <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.uninstall}</Button>
+            <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.deleteItem}</Button>
           ) : !pluginAllowed(selected) ? (
             <span className="text-caption text-[var(--abu-text-muted)]">{t.toolbox.skillPluginDisabled}</span>
           ) : <span />}
@@ -390,7 +407,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
       {showUploadModal && (
         <SkillUploadModal
           onClose={() => setShowUploadModal(false)}
-          onInstalled={(name) => setSelectedSkill(name)}
+          onInstalled={(name) => { setSource('skills', 'mine'); setSelectedSkill(name); }}
         />
       )}
 

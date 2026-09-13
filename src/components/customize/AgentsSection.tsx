@@ -26,12 +26,14 @@ import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useTeamStore } from '@/stores/teamStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 function isSystemAgent(agent: SubagentDefinition): boolean {
-  // System / builtin agents ship with the app (registered in registry.ts) —
-  // they live under "Examples" and can't be edited or deleted. Everything
-  // discovered from user / project directories is a user agent.
-  return agent.filePath === '__builtin__';
+  // 市场 = shipped with the app OR brought in by a plugin; both are read-only
+  // here. 「我的」 is what this user wrote — a plugin's expert is someone else's
+  // work, and removing it is uninstalling the plugin, not deleting a file.
+  return isBuiltinAgentPath(agent.filePath) || isPluginOwnedAgent(agent);
 }
 
 
@@ -58,9 +60,12 @@ interface AgentsSectionProps {
   manualCreateTrigger?: number;
   /** Overrides the Extensions store query when a host view owns the search box. */
   searchQuery?: string;
+  /** Which shelf this render is showing — the sub-nav's current pick.
+   *  Defaults to 市场, the shelf a fresh install has something on. */
+  source?: ExtensionSource;
 }
 
-export default function AgentsSection({ manualCreateTrigger, searchQuery }: AgentsSectionProps) {
+export default function AgentsSection({ manualCreateTrigger, searchQuery, source = 'market' }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
   const installedPlugins = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
@@ -70,6 +75,9 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
   // passes it instead, rather than writing into another view's state.
   const storeSearchQuery = useExtensionsSearchQuery();
   const extensionsSearchQuery = searchQuery ?? storeSearchQuery;
+  // An expert the user just saved is on the other shelf: land them where it
+  // actually is, or the save reads as a save that did nothing.
+  const setSource = useExtensionSourceStore((s) => s.setSource);
   const { t, locale } = useI18n();
 
   const [installedAgents, setInstalledAgents] = useState<SubagentDefinition[]>([]);
@@ -146,10 +154,20 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
 
   const disabledSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
+  // Selectable agents, before search. Excludes the 'abu' default agent — it's
+  // the fallback, not a selectable agent.
+  const visibleAgents = useMemo(
+    () => installedAgents.filter((a) => a.name !== 'abu' && !a.managed),
+    [installedAgents],
+  );
+  // Nothing of the user's own at all ("还没有你创建的专家") reads differently
+  // from "your experts, none matching" — so the empty state asks the
+  // UNFILTERED 我的 bucket, the way SkillsSection does.
+  const mineTotal = useMemo(() => visibleAgents.filter((a) => !isSystemAgent(a)).length, [visibleAgents]);
+
   // Filter by search across both visible names (zh + en) + description.
-  // Excludes the 'abu' default agent — it's the fallback, not a selectable agent.
   const filteredAgents = useMemo(() => {
-    const visible = installedAgents.filter((a) => a.name !== 'abu' && !a.managed);
+    const visible = visibleAgents;
     if (!extensionsSearchQuery) return visible;
     const q = extensionsSearchQuery.toLowerCase();
     return visible.filter((a) => {
@@ -163,10 +181,10 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       ];
       return haystack.some((s) => s && s.toLowerCase().includes(q));
     });
-  }, [installedAgents, extensionsSearchQuery]);
+  }, [visibleAgents, extensionsSearchQuery]);
 
-  // Split into user-defined vs builtin/system agents. Builtins go under the
-  // "Examples" section, user agents under "My agents".
+  // Split into the two shelves: 「我的」 is what the user wrote, 「市场」 what
+  // shipped with Abu or arrived with a plugin.
   const userAgents = filteredAgents
     .filter((a) => !isSystemAgent(a))
     // Newest first (user feedback 2026-08-31); agents predating the created
@@ -261,7 +279,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       <AgentEditor
         agent={editorAgent === 'new' ? null : editorAgent}
         onClose={() => setEditorAgent(null)}
-        onSave={async () => { await refresh(); setEditorAgent(null); }}
+        onSave={async () => { await refresh(); setEditorAgent(null); setSource('members', 'mine'); }}
       />
     );
   }
@@ -271,24 +289,27 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {filteredAgents.length === 0 ? (
+        {/* One shelf at a time — which one is the sub-nav's job to say, so the
+            group heading that used to name it here is gone. */}
+        {source === 'mine' ? (
+          userAgents.length === 0 ? (
+            mineTotal === 0 ? (
+              <div className="py-16 text-center">
+                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.agentsMineEmpty}</p>
+              </div>
+            ) : (
+              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>
+            )
+          ) : (
+            <div className="max-w-5xl mx-auto">
+              <ToolGrid>{userAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
+            </div>
+          )
+        ) : systemAgents.length === 0 ? (
           <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>
         ) : (
-          <div className="max-w-5xl mx-auto space-y-6">
-            {/* My agents (user-created) */}
-            {userAgents.length > 0 && (
-              <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.myAgents}</div>
-                <ToolGrid>{userAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
-              </div>
-            )}
-            {/* System agents (builtin/marketplace) */}
-            {systemAgents.length > 0 && (
-              <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.exampleAgents}</div>
-                <ToolGrid>{systemAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
-              </div>
-            )}
+          <div className="max-w-5xl mx-auto">
+            <ToolGrid>{systemAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
           </div>
         )}
       </div>
@@ -321,7 +342,11 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
               onChange={() => toggleAgentEnabled(selected.name)}
               tone="green"
             />
-            {/* "..." menu — only for user agents (edit / delete). */}
+            {/* "..." menu — edit / delete, for the user's own experts only.
+                市场 experts (the app's own builtins and the ones a plugin brings)
+                have nothing to offer here: there is no file of the user's to edit,
+                and removing a plugin's expert is uninstalling that plugin. Showing
+                the menu greyed out only invited clicks, so it is withheld. */}
             {!isSystemAgent(selected) && (
               <div className="relative">
                 <button
@@ -333,18 +358,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                 {menuAgent === selected.name && (
                   <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                      disabled={!!selectedPluginSource}
-                      title={selectedPluginSource ? t.toolbox.agentFromPluginEditDisabled : undefined}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
                       onClick={() => { setEditorAgent(selected); setMenuAgent(null); setSelectedAgent(null); }}
                     >
                       <Pencil className="h-3 w-3" />
                       {t.toolbox.agentEdit}
                     </button>
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                      disabled={!!selectedPluginSource}
-                      title={selectedPluginSource ? t.toolbox.agentFromPluginDeleteDisabled : undefined}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                       onClick={() => {
                         const using = teamsReferencing(selected);
                         if (using.teams.length > 0) setConfirmDeleteAgent({ agent: selected, ...using });
@@ -353,7 +374,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
                       }}
                     >
                       <Trash2 className="h-3 w-3" />
-                      {t.toolbox.uninstall}
+                      {t.toolbox.deleteItem}
                     </button>
                   </div>
                 )}
@@ -369,7 +390,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
               <div className="text-minor text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
               <div className="text-body font-medium text-[var(--abu-text-primary)]" data-testid="agent-added-by">
                 {selectedPluginSource
-                  ? format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
+                  ? format(t.toolbox.agentFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
                   : isSystemAgent(selected) ? t.toolbox.sourceBuiltin : t.toolbox.sourceUser}
               </div>
             </div>

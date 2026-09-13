@@ -16,8 +16,9 @@ vi.mock('@/stores/settingsStore', () => ({ useSettingsStore: { getState: () => (
 // Identity writes go through the globally mocked plugin-fs (roleIdentity.ts).
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useTeamStore } from '@/stores/teamStore';
+import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
 import { saveTeamTool } from './teamTools';
-import { getI18n } from '@/i18n';
+import { getI18n, format } from '@/i18n';
 
 const input = { name: 'Data team', leader: 'Analyst', members: ['Fetcher'] };
 
@@ -140,6 +141,32 @@ describe('save_team', () => {
     const out = await saveTeamTool.execute(input, {});
     expect(String(out)).toContain('Fetcher');
     expect(useTeamStore.getState().teams).toEqual([]);
+  });
+
+  // A built-in team is read-only, and `updateTeam` would silently drop the
+  // patch — so the tool has to refuse out loud rather than report a roster
+  // nobody wrote. Refused BEFORE the roster loop, so no AGENT.md role id is
+  // written on the way to a rejection.
+  it('refuses a built-in team name, before it ever resolves the roster', async () => {
+    const builtin = BUILTIN_TEAMS[0];
+    useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+    const before = useTeamStore.getState().teams;
+    // An unknown member would normally be the FIRST thing rejected; the
+    // built-in refusal is the one that has to come out.
+    const out = await saveTeamTool.execute({ name: builtin.name, leader: 'Analyst', members: ['Nobody at all'], description: 'Must not save' }, {});
+
+    expect(String(out)).toBe(format(getI18n().toolResult.team.builtinTeamReadOnly, { name: builtin.name }));
+    expect(String(out)).not.toContain('Nobody at all');
+    expect(useTeamStore.getState().teams).toEqual(before);
+    expect(useTeamStore.getState().teams.find((team) => team.name === builtin.name)).toMatchObject({ description: builtin.description });
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+
+  it('still creates a user team whose name merely resembles a built-in one', async () => {
+    useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+    const out = await saveTeamTool.execute({ ...input, name: `${BUILTIN_TEAMS[0].name} 2` }, {});
+    expect(String(out)).not.toContain('Error:');
+    expect(useTeamStore.getState().teams.find((team) => team.name === `${BUILTIN_TEAMS[0].name} 2`)).toBeDefined();
   });
 
   it.each([{ name: ' ' }, { leader: ' ' }, { members: 'Fetcher' }, { members: [42] }, { intro: 42 }, { expertise: ['Queries', 42] }, { requirePlanApproval: 'false' }])('rejects malformed input without changing data: %j', async (invalid) => {

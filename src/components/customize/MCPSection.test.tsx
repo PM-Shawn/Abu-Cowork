@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /**
- * 「我的」 for the Connectors tab. `sourceFilter="mine"` narrows the list to the
+ * 「我的」 for the Connectors tab. `source="mine"` narrows the list to the
  * servers the user configured by hand: a plugin's server belongs to the package
  * that brought it, and presenting it here as the user's own would invite a
  * removal this list cannot honour. Everything that came from outside — the
@@ -21,9 +21,11 @@ import type { MCPServerEntry } from '@/stores/mcpStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import { buildConnectorCatalog } from '@/components/toolbox/connectors/connectorPrefill';
+import { getMCPTemplatesForHost } from '@/data/marketplace/mcp';
 import MCPSection from './MCPSection';
 
 const tb = () => getI18n().toolbox;
@@ -48,9 +50,10 @@ beforeEach(() => {
   useMCPStore.setState({ servers: {}, isLoading: false });
   usePluginStore.setState({ installed: [] });
   useSettingsStore.setState({ extensionsSearchQueries: { plugins: '', skills: '', mcp: '' } });
+  useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
 });
 
-describe('MCPSection · sourceFilter="mine"', () => {
+describe('MCPSection · source="mine"', () => {
   it('keeps the servers the user configured and drops the plugin-owned ones', () => {
     useMCPStore.setState({
       servers: {
@@ -60,14 +63,14 @@ describe('MCPSection · sourceFilter="mine"', () => {
     });
     usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });
 
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     expect(screen.getByText('hand-rolled')).toBeTruthy();
     expect(screen.queryByText('weather-mcp')).toBeNull();
   });
 
   it('keeps a catalog-named server the user configured themselves', () => {
     useMCPStore.setState({ servers: { github: serverEntry('github') } });
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     expect(screen.getByText('github')).toBeTruthy();
   });
 
@@ -80,7 +83,7 @@ describe('MCPSection · sourceFilter="mine"', () => {
     useMCPStore.setState({
       servers: { github: serverEntry('github'), 'hand-rolled': serverEntry('hand-rolled') },
     });
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     expect(screen.getByText('github')).toBeTruthy();
     expect(screen.getByText('hand-rolled')).toBeTruthy();
     expect(screen.queryByText(tb().exampleServers)).toBeNull();
@@ -97,7 +100,7 @@ describe('MCPSection · sourceFilter="mine"', () => {
     vi.stubEnv('ABU_ELECTRON_COMMAND_HOST', '1');
     try {
       useMCPStore.setState({ servers: { 'abu-browser-bridge': serverEntry('abu-browser-bridge') } });
-      render(<MCPSection sourceFilter="mine" />);
+      render(<MCPSection source="mine" />);
       expect(screen.getByText('abu-browser-bridge')).toBeTruthy();
     } finally {
       vi.unstubAllEnvs();
@@ -109,7 +112,7 @@ describe('MCPSection · sourceFilter="mine"', () => {
       servers: { github: serverEntry('github'), 'hand-rolled': serverEntry('hand-rolled') },
     });
     useSettingsStore.setState({ extensionsSearchQueries: { plugins: '', skills: '', mcp: 'hand' } });
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     expect(screen.getByText('hand-rolled')).toBeTruthy();
     expect(screen.queryByText('github')).toBeNull();
   });
@@ -118,32 +121,28 @@ describe('MCPSection · sourceFilter="mine"', () => {
     useMCPStore.setState({ servers: { 'weather-mcp': serverEntry('weather-mcp') } });
     usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });
 
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     expect(screen.getByText(tb().connectorsMineEmptyTitle)).toBeTruthy();
   });
 
   it('drops the un-installed catalog cards — 「市场」 owns those now', () => {
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     expect(screen.getByText(tb().connectorsMineEmptyTitle)).toBeTruthy();
     expect(screen.queryByText(tb().exampleServers)).toBeNull();
   });
 
   /**
-   * Every catalog name is now a template name, so a server installed from
-   * 「市场」 is filed under 「市场」 in the unfiltered view. It used to leak into
-   * 「我的」 whenever the registry knew a name the hand-kept template array did
-   * not — `sequential-thinking` was one such name, and a user who installed it
-   * from 「市场」 found it filed as their own hand-rolled server.
+   * Every catalog name is a template name, so a server installed from 「市场」
+   * still has its catalog card there (marked installed) — the shelf a thing was
+   * taken from keeps showing it. `sequential-thinking` is one such name.
    */
-  it('files a catalog-installed server under 市场, never under 我的', () => {
+  it('keeps a catalog-installed server on the 市场 shelf', () => {
     useMCPStore.setState({ servers: { 'sequential-thinking': serverEntry('sequential-thinking') } });
     render(<MCPSection />);
-    expect(screen.queryByText(tb().myServers)).toBeNull();
-    expect(screen.getByText(tb().exampleServers)).toBeTruthy();
     expect(screen.getByText('sequential-thinking')).toBeTruthy();
   });
 
-  it('still shows every source when no filter is given', () => {
+  it('shows each source on its own shelf', () => {
     useMCPStore.setState({
       servers: {
         'hand-rolled': serverEntry('hand-rolled'),
@@ -152,9 +151,14 @@ describe('MCPSection · sourceFilter="mine"', () => {
     });
     usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });
 
-    render(<MCPSection />);
+    const { rerender } = render(<MCPSection source="mine" />);
     expect(screen.getByText('hand-rolled')).toBeTruthy();
+    expect(screen.queryByText('weather-mcp')).toBeNull();
+    rerender(<MCPSection source="market" />);
+    expect(screen.getByText('github')).toBeTruthy();
+    // A plugin's server is 市场's too — the plugin shipped it, not the user.
     expect(screen.getByText('weather-mcp')).toBeTruthy();
+    expect(screen.queryByText('hand-rolled')).toBeNull();
   });
 });
 
@@ -168,7 +172,7 @@ describe('MCPSection · prefill', () => {
   };
 
   it('fills the add-server form from the catalog entry, secrets left blank', async () => {
-    render(<MCPSection sourceFilter="mine" showAddForm prefill={entry} />);
+    render(<MCPSection source="mine" showAddForm prefill={entry} />);
 
     await waitFor(() => {
       expect(screen.getByDisplayValue('github')).toBeTruthy();
@@ -179,7 +183,7 @@ describe('MCPSection · prefill', () => {
 
   it('adds nothing on its own — the user still has to save', () => {
     const addServer = vi.spyOn(useMCPStore.getState(), 'addServer');
-    render(<MCPSection sourceFilter="mine" showAddForm prefill={entry} />);
+    render(<MCPSection source="mine" showAddForm prefill={entry} />);
     expect(addServer).not.toHaveBeenCalled();
     expect(useMCPStore.getState().servers.github).toBeUndefined();
   });
@@ -198,13 +202,13 @@ describe('MCPSection · prefill', () => {
       transport: 'http',
       url: 'https://mcp.example.com/sse',
     };
-    render(<MCPSection sourceFilter="mine" showAddForm prefill={http} />);
+    render(<MCPSection source="mine" showAddForm prefill={http} />);
     await waitFor(() => expect(screen.getByDisplayValue('https://mcp.example.com/sse')).toBeTruthy());
     expect(screen.getByDisplayValue('remote-mcp')).toBeTruthy();
   });
 
   it('leaves the form alone while it is closed', () => {
-    render(<MCPSection sourceFilter="mine" showAddForm={false} prefill={entry} />);
+    render(<MCPSection source="mine" showAddForm={false} prefill={entry} />);
     expect(screen.queryByDisplayValue('github')).toBeNull();
   });
 });
@@ -212,7 +216,7 @@ describe('MCPSection · prefill', () => {
 describe('MCPSection · focusServer', () => {
   it('opens the detail for the named server so 「市场」的 管理 lands somewhere', async () => {
     useMCPStore.setState({ servers: { 'hand-rolled': serverEntry('hand-rolled') } });
-    render(<MCPSection sourceFilter="mine" focusServer="hand-rolled" />);
+    render(<MCPSection source="mine" focusServer="hand-rolled" />);
     await waitFor(() => expect(screen.getByRole('heading', { name: /hand-rolled/ })).toBeTruthy());
   });
 
@@ -220,7 +224,7 @@ describe('MCPSection · focusServer', () => {
     setLanguage('zh-CN');
     try {
       useMCPStore.setState({ servers: { broken: { ...serverEntry('broken'), status: 'error' } } });
-      render(<MCPSection sourceFilter="mine" focusServer="broken" />);
+      render(<MCPSection source="mine" focusServer="broken" />);
       await waitFor(() => expect(screen.getAllByText('连接出错').length).toBeGreaterThan(0));
       expect(screen.queryByText('Error')).toBeNull();
     } finally {
@@ -229,7 +233,7 @@ describe('MCPSection · focusServer', () => {
   });
 
   it('ignores a server that is not configured', () => {
-    render(<MCPSection sourceFilter="mine" focusServer="never-existed" />);
+    render(<MCPSection source="mine" focusServer="never-existed" />);
     expect(screen.queryByRole('heading')).toBeNull();
   });
 });
@@ -257,7 +261,7 @@ describe('MCPSection · prefill does not hijack the form', () => {
       <>
         <button data-testid="host-open" onClick={() => setOpen(true)}>open</button>
         <MCPSection
-          sourceFilter="mine"
+          source="mine"
           showAddForm={open}
           onAddFormChange={setOpen}
           prefill={entry}
@@ -332,7 +336,7 @@ describe('MCPSection · prefill from a template', () => {
           name: 'slack', command: 'npx', args: ['-y', 'slack-mcp'], env: {}, transport: 'stdio',
         })}>slack</button>
         <MCPSection
-          sourceFilter="mine"
+          source="mine"
           showAddForm={open}
           onAddFormChange={(o) => { setOpen(o); if (!o) setOffer(null); }}
           prefill={offer}
@@ -443,7 +447,7 @@ describe('MCPSection · template install requires its fields', () => {
     const [open, setOpen] = useState(true);
     return (
       <MCPSection
-        sourceFilter="mine"
+        source="mine"
         showAddForm={open}
         onAddFormChange={setOpen}
         prefill={initial}
@@ -521,8 +525,11 @@ describe('released connector grouping', () => {
     vi.stubEnv('ABU_ELECTRON_COMMAND_HOST', '1');
     try {
       useMCPStore.setState({ servers: { 'abu-browser-bridge': serverEntry('abu-browser-bridge') } });
-      render(<MCPSection />);
+      // The host drops this one from the template list, so 「市场」 never shows
+      // it; it is a configured server, so 「我的」 does. Neither shelf loses it.
+      const { rerender } = render(<MCPSection source="mine" />);
       expect(screen.getByText('abu-browser-bridge')).toBeVisible();
+      rerender(<MCPSection source="market" />);
       expect(screen.getByText('github')).toBeVisible();
     } finally { vi.unstubAllEnvs(); }
   });
@@ -544,7 +551,7 @@ describe('MCP card connection switch', () => {
     const action = status === 'connected' ? 'disconnectServer' : 'connectServer';
     const operation = vi.spyOn(useMCPStore.getState(), action).mockResolvedValue(undefined);
     useMCPStore.setState({ servers: { local: { ...serverEntry('local'), status } } });
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     const toggle = screen.getByRole('switch');
     expect(toggle).toHaveAttribute('aria-checked', String(status === 'connected'));
     fireEvent.click(toggle);
@@ -555,7 +562,7 @@ describe('MCP card connection switch', () => {
 
   it.each(['connecting', 'reconnecting'] as const)('disables the switch while %s', status => {
     useMCPStore.setState({ servers: { local: { ...serverEntry('local'), status } } });
-    render(<MCPSection sourceFilter="mine" />);
+    render(<MCPSection source="mine" />);
     expect(screen.getByRole('switch')).toBeDisabled();
   });
 });
@@ -573,4 +580,32 @@ it('shows logs as a separate detail view and returns to the connector', async ()
   expect(screen.queryByTestId('mcp-logs-view')).toBeNull();
   expect(screen.queryByText('Command')).toBeNull();
   expect(screen.getByRole('button', { name: tb().testConnection })).toBeVisible();
+});
+
+/**
+ * Installing from 「市场」 configures a connector of the user's own, so the
+ * shelf follows it to 「我的」 — otherwise 「安装」 appears to do nothing: the
+ * new server is on the shelf the user is not looking at.
+ */
+describe('MCPSection · installing from 市场 lands on 我的', () => {
+  it('switches the connectors shelf to 我的 after a template install', async () => {
+    // A template with nothing to fill in — the install button is disabled
+    // until every configurable slot and secret has a value.
+    const template = getMCPTemplatesForHost().find(
+      (t) => !t.configurableArgs?.length && !t.requiredEnvVars?.length,
+    )!;
+    expect(template).toBeDefined();
+    const addServer = vi.spyOn(useMCPStore.getState(), 'addServer').mockImplementation(() => {});
+    const connectServer = vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
+
+    render(<MCPSection source="market" />);
+    fireEvent.click(screen.getByText(template.name));
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(tb().install) }));
+
+    await waitFor(() => expect(useExtensionSourceStore.getState().sources.mcp).toBe('mine'));
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({ name: template.name }));
+    expect(connectServer).toHaveBeenCalledWith(template.name);
+    // Only the connectors tab moves.
+    expect(useExtensionSourceStore.getState().sources.skills).toBe('market');
+  });
 });

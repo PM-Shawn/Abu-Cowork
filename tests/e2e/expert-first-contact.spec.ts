@@ -26,6 +26,9 @@ async function openIdentity(page: Page, team: boolean) {
   if (await page.getByRole('button', { name: '显示侧栏', exact: true }).isVisible()) await page.getByRole('button', { name: '显示侧栏', exact: true }).click();
   await page.getByTestId('sidebar-team').click();
   await page.getByTestId('top-tab-nav').getByRole('button', { name: team ? '专家团' : '专家', exact: true }).click();
+  // The seeded team is the user's own, so it is on the 我的 shelf; 产品经理 is
+  // built in and stays on 市场, which is where the sub-nav opens.
+  if (team) await page.getByTestId('team-source-mine').click();
   if (team) await page.getByTestId('team-row-E2E专家团').click();
   else await page.getByText('产品经理', { exact: true }).first().click();
   if (team) await page.getByTestId('team-detail-start-chat').click();

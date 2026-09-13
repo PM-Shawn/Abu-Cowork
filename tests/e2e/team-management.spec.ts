@@ -60,6 +60,9 @@ test.describe('team management surface', () => {
 
       // ---- Create a team with a builtin leader ----------------------------
       await nav.getByRole('button', { name: '专家团' }).click();
+      // 市场｜我的 opens on 市场, where the built-in teams live; the empty-state
+      // 新建专家团 CTA only exists on an empty 我的 shelf.
+      await page.getByTestId('team-source-mine').click();
       await page.getByText('新建专家团').first().click();
       await expect(page.getByTestId('team-name-input')).toBeVisible();
       await page.getByTestId('team-name-input').fill(TEAM_NAME);
@@ -158,6 +161,13 @@ test.describe('team management surface', () => {
       await page.getByRole('button', { name: '删除', exact: true }).last().click();
       await expect(page.getByTestId(`team-row-${TEAM_NAME}`)).toHaveCount(0);
       await expect(page.getByText('还没有专家团')).toBeVisible();
+
+      // ---- 市场 still has the shipped teams, and they are read-only --------
+      await page.getByTestId('team-source-market').click();
+      await page.getByTestId('team-row-软件研发专家团').click();
+      await expect(page.getByTestId('team-detail-start-chat')).toBeVisible();
+      await expect(page.getByTestId('team-detail-menu')).toHaveCount(0);
+      await page.keyboard.press('Escape');
 
       await closeAbuElectron(launched.app);
     } finally {

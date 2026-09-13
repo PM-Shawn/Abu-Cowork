@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
+
 /**
  * Team domain store (R1: management surface only — PRD docs/abu-team-prd-v2.md).
  *
@@ -95,10 +97,32 @@ export function migrateTeamState(persisted: unknown): { teams: Team[] } {
   };
 }
 
+/**
+ * What persist writes. Built-ins never touch disk: an older blob and a newer
+ * shipped roster would otherwise disagree with the app forever.
+ *
+ * Exported for the same reason {@link migrateTeamState} is — `useTeamStore.persist`
+ * is not exposed under the test runtime, and reaching into zustand's middleware
+ * options from a test couples the test to zustand's internals.
+ */
+export function partializeTeamState(state: { teams: Team[] }): { teams: Team[] } {
+  return { teams: state.teams.filter((t) => !isBuiltinTeam(t)) };
+}
+
+/**
+ * What persist hands back on hydration: the user's own teams from disk, plus
+ * TODAY's shipped roster — never a built-in copy an older version wrote.
+ */
+export function mergeTeamState(persisted: unknown, current: TeamStore): TeamStore {
+  const stored = (persisted ?? {}) as Partial<{ teams: Team[] }>;
+  const userTeams = (stored.teams ?? []).filter((t) => !isBuiltinTeam(t));
+  return { ...current, teams: [...userTeams, ...BUILTIN_TEAMS] };
+}
+
 export const useTeamStore = create<TeamStore>()(
   persist(
     (set, get) => ({
-      teams: [],
+      teams: [...BUILTIN_TEAMS],
 
       createTeam: (input) => {
         const name = input.name.trim();
@@ -131,6 +155,10 @@ export const useTeamStore = create<TeamStore>()(
         set((s) => ({
           teams: s.teams.map((t) => {
             if (t.id !== id) return t;
+            if (isBuiltinTeam(t)) {
+              // Read-only in the UI; the run may still record its last split.
+              return patch.lastPlan ? { ...t, lastPlan: patch.lastPlan } : t;
+            }
             const next = { ...t, ...patch };
             // The leader is always a member.
             next.memberRoleIds = Array.from(new Set([next.leaderRoleId, ...next.memberRoleIds]));
@@ -138,13 +166,16 @@ export const useTeamStore = create<TeamStore>()(
           }),
         })),
 
-      deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id) })),
+      deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id || isBuiltinTeam(t)) })),
     }),
     {
       name: 'abu-team',
       version: 8,
       migrate: migrateTeamState,
-      partialize: (s) => ({ teams: s.teams }),
+      // Built-ins never touch disk: strip on write, re-attach on read, so an
+      // older persisted blob and a newer roster always agree with the app.
+      partialize: partializeTeamState,
+      merge: mergeTeamState,
     },
   ),
 );

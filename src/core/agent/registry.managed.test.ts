@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { statSync } from 'node:fs'
+import { join } from 'node:path'
 import { AgentRegistry, getBuiltinAgentNames } from './registry'
 import { resolveSubagentToolNames } from '@/core/agent/subagentToolRoster'
 import { agentToolPolicyForRoute, resolveAgentToolNames } from '@/core/agent/agentToolPolicy'
@@ -66,6 +68,11 @@ describe('builtin Agent tool boundaries', () => {
     '数据分析师',
     '公众号编辑',
     'HR 招聘官',
+    '办公文档专家',
+    '行业调研专家',
+    '网页设计师',
+    '测试工程师',
+    '行政助理',
   ])('%s inherits runtime business tools without a job-specific boundary', (name) => {
     const agent = registry.getAgent(name)
     expect(agent).toBeDefined()
@@ -82,7 +89,7 @@ describe('builtin Agent tool boundaries', () => {
       .map(item => registry.getAgent(item.name)!)
       .filter(agent => agent.name !== 'abu')
 
-    expect(experts).toHaveLength(5)
+    expect(experts).toHaveLength(10)
     for (const agent of experts) {
       expect({ name: agent.name, tools: agent.tools, disallowedTools: agent.disallowedTools })
         .toEqual({ name: agent.name, tools: undefined, disallowedTools: undefined })
@@ -98,6 +105,30 @@ describe('builtin Agent tool boundaries', () => {
   })
 })
 
+describe('builtin expert skill preloads', () => {
+  // A `skills:` entry is PRELOADED into the expert's system prompt at every
+  // turn, not looked up on demand — so a SKILL.md that grows into a manual
+  // silently taxes every conversation that expert takes part in. 5 KB is the
+  // ceiling the shipped set was written against.
+  it('built-in experts only preload SKILL.md files of 5 KB or less', () => {
+    const registry = new AgentRegistry()
+    ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+    const limit = 5 * 1024
+    let preloads = 0
+    for (const meta of registry.getAvailableAgents()) {
+      const agent = registry.getAgent(meta.name)!
+      for (const skill of agent.skills ?? []) {
+        const size = statSync(join(process.cwd(), 'builtin-skills', skill, 'SKILL.md')).size
+        expect(size, `${meta.name} preloads ${skill}`).toBeLessThanOrEqual(limit)
+        preloads += 1
+      }
+    }
+    // Guards the guard: a rename that empties every `skills:` array would make
+    // the loop above pass without reading a single file.
+    expect(preloads).toBeGreaterThan(0)
+  })
+})
+
 describe('builtin expert avatars', () => {
   // Ruling 2026-09-13: every preset expert carries an icon of its own instead
   // of the uniform robot mark. Pinning the parse — not the literal strings —
@@ -110,7 +141,7 @@ describe('builtin expert avatars', () => {
       .map(item => registry.getAgent(item.name)!)
       .filter(agent => agent.name !== 'abu')
 
-    expect(experts).toHaveLength(5)
+    expect(experts).toHaveLength(10)
     expect(experts.map(agent => [agent.name, parseAvatarValue(agent.avatar).kind])).toEqual(
       experts.map(agent => [agent.name, 'icon']),
     )

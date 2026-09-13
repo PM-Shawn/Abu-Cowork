@@ -73,11 +73,9 @@ async function enablePet(page: Page): Promise<void> {
 test('the desktop pet reopens where it was left, without a jump', async () => {
   const dataRoot = createElectronDataRoot();
   try {
-    // Both launches inject tests/e2e/mainProcessRecorder.cjs ahead of
-    // electron/main.cjs: the first so the move below can be sequenced after the
-    // pet renderer's `listen()`, the second so the pet's first reveal is on
-    // record. Installing either hook from here after electron.launch() resolves
-    // races the app's own startup (the original ~40% CI flake).
+    // Both launches need the recorder: the first to sequence the move below
+    // after the pet renderer's `listen()`, the second to have the pet's first
+    // reveal on record (see mainProcessRecorder.cjs for why it is `-r` injected).
     let launched = await launchAbuElectron(dataRoot, { recordMainProcess: true });
     let target: { x: number; y: number };
     let expectedPhysical: { x: number; y: number };
@@ -88,13 +86,14 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
       await enablePet(main);
       await expect.poll(() => petBounds(launched.app), { timeout: 20_000 }).not.toBeNull();
       // The pet persists its position from getCurrentWindow().onMoved, and
-      // `tauri://move` is delivered only to subscriptions that already exist.
-      // The window is revealed on ready-to-show or a 1.5 s timeout (guiHost.cjs
-      // showWhenReady), which under CI load can precede the renderer's
-      // `listen()` round-trip by seconds — a move issued in that gap is dropped
-      // and nothing is ever persisted. Sequence the move after the subscription.
+      // `tauri://move` reaches only subscriptions that already exist — a move
+      // issued before the pet renderer's `listen()` lands is dropped and nothing
+      // is ever persisted (see windowListenerRegistered). Sequence it after.
       await expect
-        .poll(() => windowListenerRegistered(launched.app, '/pet.html', 'tauri://move'), { timeout: 20_000 })
+        .poll(() => windowListenerRegistered(launched.app, '/pet.html', 'tauri://move'), {
+          timeout: 20_000,
+          message: 'the pet renderer subscribed to tauri://move',
+        })
         .toBe(true);
 
       // A spot well inside the primary work area, away from the snap edges, so
@@ -140,12 +139,10 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
         .toBeLessThanOrEqual(1);
       // …and it was already there when it was first revealed: the host creates
       // the pet window AT the saved spot (guiHost.cjs initialPetPosition), so a
-      // regression that let the renderer move it after first paint would show up
-      // here as the default bottom-right corner. The record is captured at the
-      // host's show() call, so it is complete as soon as isVisible() is true —
-      // Electron's macOS `show` EVENT is emitted later, from the NSWindow
-      // occlusion-state delegate, which is what left this record empty on ~1
-      // in 3 CI runs (see mainProcessRecorderCore.cjs).
+      // regression that created it at the default corner and left the renderer
+      // to restore the saved spot after first paint would show up here as that
+      // corner. The record is complete as soon as isVisible() is true (see
+      // mainProcessRecorderCore.cjs for why it is captured at the show() call).
       const firstShow = await firstShowRecordFor(launched.app, '/pet.html');
       expect(firstShow, 'the recorder saw the pet window being created').not.toBeNull();
       expect(firstShow!.shownBounds, 'the pet window was shown during this launch').not.toBeNull();

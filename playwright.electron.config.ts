@@ -12,6 +12,11 @@ import { defineConfig } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './tests/e2e',
+  // Only Playwright specs. The directory also holds `-r` instrumentation and
+  // its node:test unit test (mainProcessRecorderCore.test.cjs), which
+  // Playwright's default testMatch (`**/*.@(spec|test).*`) would otherwise
+  // load — and thereby execute — during collection.
+  testMatch: '**/*.spec.ts',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: 0,

@@ -243,7 +243,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         id: agent.name,
         name: displayName(agent, locale),
         description: localizedDescription(agent, locale),
-        avatar: <AgentAvatar agent={agent} />,
+        avatar: <AgentAvatar agent={agent} size="xl" />,
         badge: offAutoDispatch || toolSummary.invalidField ? (
           // Chips wrap rather than clip: the badge box is the slot that yields
           // width (ToolCard row 1), and a clipped 「工具配置无效」 would hide the one
@@ -337,7 +337,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         // otherwise one press dismisses both it and the detail behind it.
         disableEscape={!!confirmDeleteAgent}
         maxWidth="max-w-2xl"
-        avatar={selected ? <AgentAvatar agent={selected} /> : undefined}
+        avatar={selected ? <AgentAvatar agent={selected} size="2xl" /> : undefined}
         title={selected ? displayName(selected, locale) : undefined}
         // Primary action in the sticky footer, solid, exactly where the plugin
         // and connector details put theirs — the header keeps only the 「…」

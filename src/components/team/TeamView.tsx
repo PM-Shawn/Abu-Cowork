@@ -516,7 +516,7 @@ export default function TeamView() {
               testId: `team-row-${team.name}`,
               name: team.name,
               description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
-              avatar: <TeamAvatar avatar={team.avatar} />,
+              avatar: <TeamAvatar avatar={team.avatar} size="xl" />,
             }}
             onClick={() => setDetailTeam(team)}
           />
@@ -575,7 +575,7 @@ export default function TeamView() {
         open={!!detailTeam}
         onClose={() => { setDetailTeam(null); setDetailMenuOpen(false); }}
         maxWidth="max-w-2xl"
-        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="lg" /> : undefined}
+        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="2xl" /> : undefined}
         title={detailTeam?.name}
         subtitle={detailTeam?.description?.trim()}
         // Primary action in the sticky footer, solid — the same place and

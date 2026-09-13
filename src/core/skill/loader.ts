@@ -401,9 +401,15 @@ export class SkillLoader {
    * Skills the last scan found but did not use because an earlier directory
    * already claimed the name. The 市场 grid shows a built-in one as "covered
    * by a same-name skill" instead of letting it vanish.
+   *
+   * Filtered by the same `isUsable` predicate every other read path uses, so a
+   * name the organization blacklists is excluded here too: the losing copy must
+   * not put a blocked name and description back on screen after the winning one
+   * was filtered out. (Disabled-plugin and inactive-enterprise skills are
+   * likewise excluded, for parity — not listable anywhere else either.)
    */
   getShadowedSkills(): ReadonlyArray<Skill> {
-    return this.shadowed;
+    return this.shadowed.filter((skill) => this.isUsable(skill));
   }
 
   /**

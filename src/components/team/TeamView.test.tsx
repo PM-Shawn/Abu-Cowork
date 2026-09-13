@@ -213,18 +213,18 @@ describe('TeamView', () => {
     expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
   });
 
-  it('renders the two tabs 队员·团队 (the task board is gone)', () => {
+  it('renders the two tabs 专家·专家团 (the task board is gone)', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>
-      ['收件箱', '任务', '队员', '团队'].includes(label ?? ''));
-    expect(tabs).toEqual(['队员', '团队']);
+      ['收件箱', '任务', '专家', '专家团'].includes(label ?? ''));
+    expect(tabs).toEqual(['专家', '专家团']);
   });
 
   it('teams tab empty state offers creating a team', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
-    expect(screen.getByText('还没有团队')).toBeTruthy();
-    expect(screen.getAllByText('新建团队').length).toBeGreaterThan(0);
+    expect(screen.getByText('还没有专家团')).toBeTruthy();
+    expect(screen.getAllByText('新建专家团').length).toBeGreaterThan(0);
   });
 
   it('teams tab: a row opens the detail, not the edit form — and shows leader, members and the merged skills', () => {
@@ -384,7 +384,7 @@ describe('TeamView', () => {
     expect(chatState.setPendingInput).toHaveBeenCalledWith('');
   });
 
-  it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 队员 detail', () => {
+  it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 专家 detail', () => {
     settingsState.activeTeamTab = 'teams';
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
     render(<TeamView />);
@@ -394,7 +394,7 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-name-input')).toBeTruthy();
   });
 
-  it('teams tab: creating offers 使用阿布创建 alongside 手动创建 (parity with 队员)', () => {
+  it('teams tab: creating offers 使用阿布创建 alongside 手动创建 (parity with 专家)', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
     fireEvent.click(screen.getByTestId('team-create-trigger'));
@@ -404,8 +404,8 @@ describe('TeamView', () => {
   });
 
   it.each([
-    ['teams', 'team-create-trigger', '/create-agent 帮我组建一个团队，我的需求是：'],
-    ['members', 'member-create-trigger', '/create-agent 帮我创建一个队员，我的需求是：'],
+    ['teams', 'team-create-trigger', '/create-agent 帮我组建一个专家团，我的需求是：'],
+    ['members', 'member-create-trigger', '/create-agent 帮我创建一个专家，我的需求是：'],
   ] as const)('explicitly selects the creation skill from the %s entry', (tab, trigger, prompt) => {
     settingsState.activeTeamTab = tab;
     render(<TeamView />);
@@ -421,7 +421,7 @@ describe('TeamView', () => {
     discoveryState.agents = [{ name: 'writer' }];
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
-    fireEvent.click(screen.getAllByText('新建团队')[0]);
+    fireEvent.click(screen.getAllByText('新建专家团')[0]);
     const save = screen.getByTestId('team-save') as HTMLButtonElement;
     expect(save.disabled).toBe(true);
 
@@ -445,11 +445,11 @@ describe('TeamView', () => {
     expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
-  it('team dialog with zero agents offers 新建队员 instead of a dead end', () => {
+  it('team dialog with zero agents offers 新建专家 instead of a dead end', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
-    fireEvent.click(screen.getAllByText('新建团队')[0]);
-    expect(screen.getByText('新建队员')).toBeTruthy();
+    fireEvent.click(screen.getAllByText('新建专家团')[0]);
+    expect(screen.getByText('新建专家')).toBeTruthy();
   });
 
   it('members tab renders the shared AgentsSection (single identity source)', () => {
@@ -467,27 +467,27 @@ describe('TeamView', () => {
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('1');
     expect(editorOpens).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText('团队'));
+    fireEvent.click(screen.getByText('专家团'));
     rerender(<TeamView />);
-    fireEvent.click(screen.getByText('队员'));
+    fireEvent.click(screen.getByText('专家'));
     rerender(<TeamView />);
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
     expect(editorOpens).toHaveBeenCalledTimes(1);
   });
 
-  it('team dialog: 新建队员 switches to 队员 and opens the blank editor exactly once', () => {
+  it('team dialog: 新建专家 switches to 专家 and opens the blank editor exactly once', () => {
     // The tab switch and the trigger bump land in one commit: the section mounts
     // with the bumped value and opens the editor before the tab-change reset runs.
     settingsState.activeTeamTab = 'teams';
     const { rerender } = render(<TeamView />);
-    fireEvent.click(screen.getAllByText('新建团队')[0]);
-    fireEvent.click(screen.getByText('新建队员'));
+    fireEvent.click(screen.getAllByText('新建专家团')[0]);
+    fireEvent.click(screen.getByText('新建专家'));
     expect(screen.getByTestId('agents-section')).toBeTruthy();
     expect(editorOpens).toHaveBeenCalledTimes(1);
-    // …and the reset means a later return to 队员 does not open it again.
-    fireEvent.click(screen.getByText('团队'));
+    // …and the reset means a later return to 专家 does not open it again.
+    fireEvent.click(screen.getByText('专家团'));
     rerender(<TeamView />);
-    fireEvent.click(screen.getByText('队员'));
+    fireEvent.click(screen.getByText('专家'));
     rerender(<TeamView />);
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
     expect(editorOpens).toHaveBeenCalledTimes(1);
@@ -536,7 +536,7 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
     fireEvent.click(screen.getByTestId('team-detail-menu'));
     fireEvent.click(screen.getByTestId('team-detail-edit'));
-    expect(screen.getByText('新建队员')).toBeTruthy();
+    expect(screen.getByText('新建专家')).toBeTruthy();
     expect(screen.getByTestId('team-edit-invalid-role-a').textContent).toContain('已失效成员 1');
     fireEvent.click(screen.getByTestId('team-edit-invalid-remove-role-a'));
     expect(screen.queryByTestId('team-edit-invalid-role-a')).toBeNull();

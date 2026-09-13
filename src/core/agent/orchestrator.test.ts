@@ -660,8 +660,8 @@ describe('routeInput', () => {
     const skill = { name: 'create-agent', description: 'Create an agent or team', content: 'Ask for the roster and display fields.', allowedTools: ['save_agent', 'save_team'], disableAutoInvoke: true, filePath: '/builtin-skills/create-agent/SKILL.md', skillDir: '/builtin-skills/create-agent' };
     vi.mocked(skillLoader.getSkill).mockReturnValueOnce(skill);
     try {
-      const route = routeInput('/create-agent 帮我组建一个团队，我的需求是：');
-      expect(route).toMatchObject({ type: 'skill', name: 'create-agent', skill, skillContent: skill.content, args: '帮我组建一个团队，我的需求是：' });
+      const route = routeInput('/create-agent 帮我组建一个专家团，我的需求是：');
+      expect(route).toMatchObject({ type: 'skill', name: 'create-agent', skill, skillContent: skill.content, args: '帮我组建一个专家团，我的需求是：' });
       expect(skillLoader.getSkill).toHaveBeenCalledWith('create-agent');
     } finally {
       vi.mocked(useSettingsStore.getState).mockReturnValue(settings);

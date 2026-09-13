@@ -89,7 +89,7 @@ test.describe('editing an item outside ~/.abu', () => {
 
       // ---- 1. An expert under the launch cwd is not loaded ---------------------
       await page.getByTestId('sidebar-team').click();
-      await page.getByTestId('top-tab-nav').getByRole('button', { name: '队员' }).click();
+      await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家', exact: true }).click();
       await page.getByText(AGENT, { exact: true }).first().click();
       await expect(page.getByText('USER-PROMPT')).toBeVisible();
       await expect(page.getByText('PROJECT-PROMPT')).toHaveCount(0);

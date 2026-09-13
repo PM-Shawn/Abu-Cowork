@@ -3,7 +3,7 @@
  * design docs/abu-team-in-conversation-design-2026-09.md §2.1):
  *
  *   `@` → pick the team → a 👥 chip appears next to `+` and stays while typing
- *   → the `+` menu offers 添加文件 / 队员·团队 / 技能 → 队员·团队 reopens the
+ *   → the `+` menu offers 添加文件 / 专家·专家团 / 技能 → 专家·专家团 reopens the
  *   grouped picker → clicking the chip clears it.
  *
  * Deterministic: no model run — nothing is sent. Pinning on send is covered by
@@ -67,19 +67,19 @@ test.describe('composer team chip journey', () => {
       await expect(textbox).toHaveValue('');
       await expect(page.getByRole('listbox')).toHaveCount(0);
 
-      // Sticky while typing — and the text stays plain (no `@团队` prefix).
+      // Sticky while typing — and the text stays plain (no `@专家团` prefix).
       await textbox.type('出一版周报');
       await expect(chip).toBeVisible();
       await expect(textbox).toHaveValue('出一版周报');
 
-      // `+` is a menu: 添加文件 / 队员·团队 / 技能.
+      // `+` is a menu: 添加文件 / 专家·专家团 / 技能.
       await page.getByTestId('composer-plus').click();
       const menu = page.getByRole('menu');
       await expect(menu).toBeVisible();
       await expect(menu.getByRole('menuitem')).toHaveCount(3);
       await expect(page.getByTestId('composer-menu-add-file')).toBeVisible();
       await expect(page.getByTestId('composer-menu-skill')).toBeVisible();
-      // 队员·团队 drops an `@` at the caret and the grouped picker opens.
+      // 专家·专家团 drops an `@` at the caret and the grouped picker opens.
       await page.getByTestId('composer-menu-team').click();
       await expect(page.getByRole('listbox')).toBeVisible();
       await expect(page.getByRole('option', { name: /zz数据小队/ })).toBeVisible();

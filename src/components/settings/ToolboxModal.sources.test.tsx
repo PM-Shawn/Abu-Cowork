@@ -30,7 +30,7 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       toolbox: {
-        skills: '技能', agents: '代理', mcp: 'MCP', plugins: '插件',
+        skills: '技能', agents: '专家', mcp: 'MCP', plugins: '插件',
         connectors: '连接器', pluginsEmptyState: '还没有安装任何插件',
         sourceMarket: '市场', sourceMine: '我的',
         searchPlaceholder: '搜索...', importEntry: '导入',
@@ -148,7 +148,7 @@ describe('Extensions retains the released capability pages', () => {
     expect(screen.getByTestId('plugins-tab-update-badge')).toHaveTextContent('9+');
     expect(tab('技能')).toBeVisible();
     expect(tab('连接器')).toBeVisible();
-    expect(screen.queryByRole('button', { name: '代理' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '专家' })).toBeNull();
     expect(screen.getByTestId('create-control')).toBeVisible();
   });
 });

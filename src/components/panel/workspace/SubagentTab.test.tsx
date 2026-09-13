@@ -109,7 +109,7 @@ describe('SubagentTab', () => {
     // The stored label survives replay (toolInput is stripped from snapshots, so recomputing would degrade it).
     expect(steps).toHaveTextContent('Write report.md');
     expect(steps).not.toHaveTextContent('Read file');
-    expect(screen.queryByText('The full subagent process is only retained during this app run.')).toBeNull();
+    expect(screen.queryByText('The full subagent trace is only retained during this app run.')).toBeNull();
   });
 
   it('keeps the child steps already shown when the next live update has zero steps', () => {
@@ -236,6 +236,6 @@ describe('SubagentTab', () => {
     render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
     expect(screen.getByText('Worker A')).toBeInTheDocument();
-    expect(screen.getByText('The full subagent process is only retained during this app run.')).toBeInTheDocument();
+    expect(screen.getByText('The full subagent trace is only retained during this app run.')).toBeInTheDocument();
   });
 });

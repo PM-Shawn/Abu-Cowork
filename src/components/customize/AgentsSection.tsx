@@ -245,7 +245,10 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         description: localizedDescription(agent, locale),
         avatar: <AgentAvatar agent={agent} />,
         badge: offAutoDispatch || toolSummary.invalidField ? (
-          <span className="flex items-center gap-1.5">
+          // Chips wrap rather than clip: the badge box is the slot that yields
+          // width (ToolCard row 1), and a clipped 「工具配置无效」 would hide the one
+          // chip the user has to act on.
+          <span className="flex items-center gap-1.5 flex-wrap justify-end">
             {offAutoDispatch && (
               <span
                 className="rounded-full bg-[var(--abu-bg-muted)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"

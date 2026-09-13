@@ -180,6 +180,19 @@ describe('AgentsSection — the switch is an auto-dispatch setting, not an on/of
     expect(screen.getByTestId('agent-auto-dispatch-off')).toHaveTextContent('不自动派单');
   });
 
+  it('lets the two chips wrap — a narrow column costs a line, not the error chip', () => {
+    // 「不自动派单」 and 「工具配置无效」 can land on the same card. The badge is
+    // the slot ToolCard squeezes first (`min-w-0 shrink overflow-hidden`), and
+    // text chips do not shrink — without flex-wrap the second one, the error
+    // the user has to go fix, is what gets cut off.
+    useSettingsStore.setState({ disabledAgents: ['坏工具'] });
+    renderShelf('mine', [badToolsMeta]);
+    expect(screen.getByText('工具配置无效')).toBeInTheDocument();
+    const badge = screen.getByTestId('agent-auto-dispatch-off').parentElement!;
+    expect(badge).toContainElement(screen.getByText('工具配置无效'));
+    expect(badge.className).toContain('flex-wrap');
+  });
+
   it('detail offers 开始对话 and the auto-dispatch setting even when the expert is off the pool', () => {
     useSettingsStore.setState({ disabledAgents: ['reviewer'] });
     renderShelf('market', [pluginMeta]);

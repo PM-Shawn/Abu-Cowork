@@ -136,15 +136,15 @@ describe('routeInput — agent delegation', () => {
   });
 
   it('@agent still delegates when the agent is off the auto-dispatch pool', () => {
-    mockSettingsGetState.mockReturnValueOnce({
-      disabledSkills: [],
-      disabledAgents: ['coder'],
-    });
     mockGetAgent.mockReturnValueOnce(fakeAgent);
 
     const result = routeInput('@coder 写个函数');
     expect(result.type).toBe('delegate');
     expect(result.name).toBe('coder');
+    // The real invariant: naming an expert yourself consults no setting at
+    // all. Seeding a disabled list here would only have proved the seed was
+    // ignored — routing never reads it, so there is nothing for it to ignore.
+    expect(mockSettingsGetState).not.toHaveBeenCalled();
   });
 
   it('@agent with no task text uses fallback cleanInput', () => {

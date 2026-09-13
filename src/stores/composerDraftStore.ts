@@ -32,8 +32,9 @@ export interface ComposerSuggestion {
   description: string;
   trigger?: string;
   /** Expert avatar carried into the chip (`icon:<icon>/<tint>` or a legacy
-   *  emoji). Optional and additive — older drafts simply render the default
-   *  mark, so no persist migration is needed. */
+   *  emoji). Session-only, like the rest of the selection: `partialize` keeps
+   *  just the draft text, so nothing here is written to disk and no persist
+   *  migration is involved. */
   avatar?: string;
 }
 

@@ -464,8 +464,10 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
               )}
             >
               <span className={cn(
-                'w-5 text-center font-mono text-minor shrink-0',
-                suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
+                'w-5 text-center shrink-0',
+                // Type classes belong to the 「/」 mark only — the agent branch
+                // renders an avatar, which no text style reaches.
+                suggestionType !== 'agent' && 'font-mono text-minor text-[var(--abu-text-tertiary)]'
               )}>
                 {suggestionType === 'agent'
                   ? (item.team

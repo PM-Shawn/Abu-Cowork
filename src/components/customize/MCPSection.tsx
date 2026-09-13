@@ -300,6 +300,20 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     return items;
   }, [availableTemplates, servers, searchLower]);
 
+  // 「市场」 = 内置 / 官方 / 插件提供 (ruling 2026-09-13): a plugin's server is
+  // someone else's package — read-only here, removed by uninstalling the
+  // plugin — the same rule plugin skills and plugin experts follow. It is
+  // exactly the set 「我的」 drops, minus any name the catalog above already
+  // carded, so a plugin-owned template is not shown twice. Search matches the
+  // name, as it does under 「我的」.
+  const pluginServers = useMemo(() => {
+    const carded = new Set(exampleItems.map((item) => item.kind === 'installed' ? item.entry.config.name : item.template.name));
+    return mcpServers.filter((s) =>
+      !!serverOwners[s.config.name]
+      && !carded.has(s.config.name)
+      && (!searchLower || s.config.name.toLowerCase().includes(searchLower)));
+  }, [mcpServers, serverOwners, exampleItems, searchLower]);
+
   // The detail is a modal now, so it stays closed until the user clicks a card
   // — no auto-select on load. Still guard against a dangling selection: if the
   // currently-selected server disappears (removed elsewhere), fall back to its
@@ -698,15 +712,17 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
               <ToolGrid>{mineServers.map((entry) => renderServerCard(entry))}</ToolGrid>
             </div>
           )
-        ) : exampleItems.length === 0 ? (
+        ) : exampleItems.length === 0 && pluginServers.length === 0 ? (
           <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
         ) : (
-          /* 「市场」 — the curated catalog, installed entries first. Which shelf
-             this is is the sub-nav's job to say, so the group heading that used
-             to name it here is gone. */
+          /* 「市场」 — the curated catalog (installed entries first), then the
+             servers plugins brought in. One grid: which shelf this is is the
+             sub-nav's job to say, so the group heading that used to name it
+             here is gone. */
           <div className="max-w-5xl mx-auto">
             <ToolGrid>
               {exampleItems.map((item) => item.kind === 'installed' ? renderServerCard(item.entry) : renderTemplateCard(item.template))}
+              {pluginServers.map((entry) => renderServerCard(entry))}
             </ToolGrid>
           </div>
         )}

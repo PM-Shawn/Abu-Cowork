@@ -150,8 +150,11 @@ describe('MCPSection · source="mine"', () => {
 
     const { rerender } = render(<MCPSection source="mine" />);
     expect(screen.getByText('hand-rolled')).toBeTruthy();
+    expect(screen.queryByText('weather-mcp')).toBeNull();
     rerender(<MCPSection source="market" />);
     expect(screen.getByText('github')).toBeTruthy();
+    // A plugin's server is 市场's too — the plugin shipped it, not the user.
+    expect(screen.getByText('weather-mcp')).toBeTruthy();
     expect(screen.queryByText('hand-rolled')).toBeNull();
   });
 });
@@ -531,9 +534,8 @@ describe('released connector grouping', () => {
   it('does not offer independent removal of a plugin-owned connector', () => {
     useMCPStore.setState({ servers: { 'weather-mcp': serverEntry('weather-mcp') } });
     usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });
-    // A plugin's server is on neither shelf's card grid (「我的」 excludes it,
-    // 「市场」 lists templates) — reach its detail the way a deep link does.
-    render(<MCPSection focusServer="weather-mcp" />);
+    render(<MCPSection />);
+    fireEvent.click(screen.getByText('weather-mcp'));
     expect(screen.getByTitle(tb().mcpFromPlugin.replace('{name}', 'weather'))).toBeDisabled();
     fireEvent.click(screen.getByTestId('mcp-detail-menu'));
     fireEvent.click(screen.getByRole('menuitem', { name: tb().skillEdit }));

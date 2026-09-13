@@ -4095,8 +4095,6 @@ export interface TranslationDict {
       // delegate_to_agent
       /** Error: agent not found. {agentName}, {available}, {presetList} */
       errAgentNotFound: string;
-      /** Error: agent disabled. {agentName} */
-      errAgentDisabled: string;
       errNotTeamMember: string;
       /** Team run hit its hand-off cap (teamRunBounds). */
       errDispatchCapReached: string;
@@ -4182,8 +4180,6 @@ export interface TranslationDict {
       errTaskEmpty: string;
       /** Error: agent not found in batch task. {i}, {agentName}, {available}, {presetList} */
       errBatchAgentNotFound: string;
-      /** Error: agent disabled in batch task. {i}, {agentName} */
-      errBatchAgentDisabled: string;
       errBatchNotTeamMember: string;
       errBatchDispatchCapReached: string;
       errBatchMemberBlocked: string;

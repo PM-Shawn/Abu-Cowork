@@ -49,7 +49,7 @@ async function openTeamSurface(page: Page): Promise<void> {
 }
 
 async function switchTab(page: Page, label: '专家' | '专家团'): Promise<void> {
-  await page.getByTestId('top-tab-nav').getByRole('button', { name: label }).click();
+  await page.getByTestId('top-tab-nav').getByRole('button', { name: label, exact: true }).click();
 }
 
 /** The 专家 detail's "…" menu has no testid; it is the only ellipsis button once the detail is open. */

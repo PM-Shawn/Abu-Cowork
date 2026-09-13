@@ -93,6 +93,9 @@ test.describe('team member identity integrity', () => {
 
       // ---- 1b. A team that lists it -------------------------------------------
       await switchTab(page, '专家团');
+      // 市场｜我的 opens on 市场 (the built-in teams); the 新建专家团 CTA is the
+      // empty state of 我的.
+      await page.getByTestId('team-source-mine').click();
       await page.getByText('新建专家团').first().click();
       await page.getByTestId('team-name-input').fill(TEAM_NAME);
       await page.getByTestId('team-leader-select').click();

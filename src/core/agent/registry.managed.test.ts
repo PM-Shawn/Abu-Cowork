@@ -73,6 +73,8 @@ describe('builtin Agent tool boundaries', () => {
     '网页设计师',
     '测试工程师',
     '行政助理',
+    '财务助理',
+    '合同审阅专家',
   ])('%s inherits runtime business tools without a job-specific boundary', (name) => {
     const agent = registry.getAgent(name)
     expect(agent).toBeDefined()
@@ -89,7 +91,7 @@ describe('builtin Agent tool boundaries', () => {
       .map(item => registry.getAgent(item.name)!)
       .filter(agent => agent.name !== 'abu')
 
-    expect(experts).toHaveLength(10)
+    expect(experts).toHaveLength(12)
     for (const agent of experts) {
       expect({ name: agent.name, tools: agent.tools, disallowedTools: agent.disallowedTools })
         .toEqual({ name: agent.name, tools: undefined, disallowedTools: undefined })
@@ -141,7 +143,7 @@ describe('builtin expert avatars', () => {
       .map(item => registry.getAgent(item.name)!)
       .filter(agent => agent.name !== 'abu')
 
-    expect(experts).toHaveLength(10)
+    expect(experts).toHaveLength(12)
     expect(experts.map(agent => [agent.name, parseAvatarValue(agent.avatar).kind])).toEqual(
       experts.map(agent => [agent.name, 'icon']),
     )

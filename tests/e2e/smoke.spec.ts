@@ -31,7 +31,7 @@ const SCREENSHOT_PATH = path.join(REPO_ROOT, 'test-results', 'e2e-welcome.png');
 
 const WELCOME_TITLE = '交给阿布就行啦';
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
-const NEW_TASK_BUTTON = '新建任务';
+const NEW_TASK_BUTTON = '新任务';
 const QUICK_START_TITLE = '快速入门';
 
 /**

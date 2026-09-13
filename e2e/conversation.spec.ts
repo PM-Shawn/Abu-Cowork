@@ -103,7 +103,7 @@ test.describe('Conversation', () => {
     await page.getByRole('button', { name: '显示侧栏' }).click();
 
     // Click "新建任务" — clears activeConversationId, returns to welcome state
-    await page.getByRole('button', { name: '新建任务' }).first().click();
+    await page.getByRole('button', { name: '新任务', exact: true }).first().click();
 
     // Welcome title reappears: real state change (conversation messages gone from view)
     await expect(page.getByText('交给阿布就行啦 ✨')).toBeVisible({ timeout: 5000 });

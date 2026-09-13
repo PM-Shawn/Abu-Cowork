@@ -3,6 +3,9 @@ import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
 import { mergeTeamState, migrateTeamState, partializeTeamState, useTeamStore } from './teamStore';
 import type { Team } from './teamStore';
 
+// Looked up by id, not by position: the shelf order is product copy, not a contract.
+const SOFTWARE_RD_TEAM = BUILTIN_TEAMS.find((team) => team.id === 'builtin-team:software-rd')!;
+
 function reset() {
   useTeamStore.setState({ teams: []});
 }
@@ -114,7 +117,7 @@ describe('teamStore', () => {
       // missing one this version added). Hydration must hand back TODAY's
       // roster plus the user's own teams — otherwise a renamed or retired
       // built-in would live on in everyone's data directory.
-      const stale: Team = { ...BUILTIN_TEAMS[0], name: '旧名字', memberRoleIds: [] };
+      const stale: Team = { ...SOFTWARE_RD_TEAM, name: '旧名字', memberRoleIds: [] };
       const mine: Team = { id: 'team-mine', name: '我的小队', leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1 };
       const merged = mergeTeamState({ teams: [mine, stale] }, useTeamStore.getState());
       // Order matters too: the user's teams first, then today's roster.
@@ -124,7 +127,7 @@ describe('teamStore', () => {
 
     it('cannot be deleted or edited except for lastPlan', () => {
       useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
-      const target = BUILTIN_TEAMS[0];
+      const target = SOFTWARE_RD_TEAM;
       useTeamStore.getState().deleteTeam(target.id);
       expect(useTeamStore.getState().teams.find((t) => t.id === target.id)).toBeDefined();
       useTeamStore.getState().updateTeam(target.id, { name: '改名', lastPlan: { request: 'r', steps: ['s'], savedAt: 1 } });
@@ -135,7 +138,7 @@ describe('teamStore', () => {
 
     it('rejects a user team named like a built-in one', () => {
       useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
-      expect(() => useTeamStore.getState().createTeam({ name: BUILTIN_TEAMS[0].name, leaderRoleId: 'role-a', memberRoleIds: [] })).toThrow('duplicate team name');
+      expect(() => useTeamStore.getState().createTeam({ name: SOFTWARE_RD_TEAM.name, leaderRoleId: 'role-a', memberRoleIds: [] })).toThrow('duplicate team name');
     });
   });
 });

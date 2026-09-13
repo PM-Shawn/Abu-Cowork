@@ -135,6 +135,9 @@ vi.mock('@/components/customize/AgentsSection', async () => {
 
 import TeamView from './TeamView';
 
+// Looked up by id, not by position: the shelf order is product copy, not a contract.
+const SOFTWARE_RD_TEAM = BUILTIN_TEAMS.find((team) => team.id === 'builtin-team:software-rd')!;
+
 type SeedExtra = { roleId?: string; skills?: string[]; source?: { kind: 'plugin'; plugin: string } };
 function seedAgent(name: string, extra?: string | SeedExtra) {
   const { roleId, skills, source } = typeof extra === 'string' ? ({ roleId: extra } as SeedExtra) : (extra ?? {});
@@ -646,19 +649,19 @@ describe('TeamView', () => {
       // Both shelves are reachable, but only one is rendered at a time.
       expect(screen.getByTestId('team-source-market')).toHaveAttribute('aria-selected', 'true');
       expect(screen.getByTestId('team-source-mine')).toHaveTextContent('我的');
-      expect(screen.getByTestId(`team-row-${BUILTIN_TEAMS[0].name}`)).toBeInTheDocument();
+      expect(screen.getByTestId(`team-row-${SOFTWARE_RD_TEAM.name}`)).toBeInTheDocument();
       expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
 
       fireEvent.click(screen.getByTestId('team-source-mine'));
 
       expect(screen.getByTestId('team-row-数据小队')).toBeInTheDocument();
-      expect(screen.queryByTestId(`team-row-${BUILTIN_TEAMS[0].name}`)).toBeNull();
+      expect(screen.queryByTestId(`team-row-${SOFTWARE_RD_TEAM.name}`)).toBeNull();
     });
 
     it('a built-in team detail has no edit / delete menu', () => {
       useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
       render(<TeamView />);
-      fireEvent.click(screen.getByTestId(`team-row-${BUILTIN_TEAMS[0].name}`));
+      fireEvent.click(screen.getByTestId(`team-row-${SOFTWARE_RD_TEAM.name}`));
       // Read-only: starting work is still the primary action, but there is no
       // 「…」 behind which 编辑 / 删除 could sit.
       expect(screen.getByTestId('team-detail-start-chat')).toBeInTheDocument();

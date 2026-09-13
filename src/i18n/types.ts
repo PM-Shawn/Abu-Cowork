@@ -2188,7 +2188,6 @@ export interface TranslationDict {
     disconnect: string;
     add: string;
     install: string;
-    uninstall: string;
     /** Danger action on items the user owns (their own experts / skills): they are deleted, not uninstalled. */
     deleteItem: string;
     installed: string;
@@ -2197,14 +2196,13 @@ export interface TranslationDict {
     setupWithAbu: string;
     aiAssistedMCPSetup: string;
     // Source labels
+    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.43: built-ins are the OSS market shelf. */
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;
     sourceUnknown: string;
     // Generic "Description" label used in the agent/skill/MCP detail views
     detailDescription: string;
-    builtinSkills: string;
-    builtinAgents: string;
     noSkillsFound: string;
     noAgentsFound: string;
     systemSkills: string;
@@ -2322,7 +2320,6 @@ export interface TranslationDict {
     categoryAgentEvolvedBadge: string; // small badge e.g. "自进化"
     categoryAgentEvolvedEmpty: string; // placeholder when no drafts + no workspace-auto skills
     categoryBuiltin: string;           // "市场" (ships-with-Abu / catalog, vs "我的")
-    skillSourceBuiltin: string;
     skillSourceUser: string;
     skillSourcePlugin: string;
     skillPluginDisabled: string;

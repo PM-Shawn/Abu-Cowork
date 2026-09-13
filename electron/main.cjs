@@ -45,7 +45,7 @@ const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs')
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
-const { resolveWindowShowPolicy, revealWindow } = require('./windowShowPolicy.cjs');
+const { configureWindowShowPolicy, revealWindow } = require('./windowShowPolicy.cjs');
 const {
   WINDOW_DRAG_REGION_CSS,
   attachEditContextMenu,
@@ -89,8 +89,10 @@ const allowE2EAppDataRedirect =
   !app.isPackaged || process.env[PACKAGED_E2E_ENV] === '1';
 // E2E launches may also ask for windows to be revealed without activating the
 // app (ABU_E2E_QUIET_WINDOW=1), so a full suite run does not steal focus on a
-// developer machine. Same gate as the app-data redirect above.
-const windowShowPolicy = resolveWindowShowPolicy({
+// developer machine. Same gate as the app-data redirect above. Configured
+// (not just resolved) so guiHost.cjs's pet / overlay / stop-button windows
+// reveal through the same policy via `revealWindow(win)`.
+const windowShowPolicy = configureWindowShowPolicy({
   env: process.env,
   allowE2E: allowE2EAppDataRedirect,
   platform: process.platform,

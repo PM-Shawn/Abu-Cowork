@@ -162,12 +162,29 @@ describe('MCPSection · source="mine"', () => {
     expect(screen.queryByTestId('mcp-status-github')).toBeNull();
   });
 
-  it('reads the connection back on the card, not just on / off', () => {
+  // The card and the detail read the same state off the same function, so a
+  // server can never be 「连接出错」 in one place and 「未连接」 in the other.
+  it.each([
+    ['connected' as const, undefined, () => tb().connected],
+    ['connecting' as const, undefined, () => tb().connecting],
+    ['disconnected' as const, undefined, () => tb().disconnected],
+    ['error' as const, undefined, () => tb().connectionError],
+    // An error with no message still reads as an error: the label follows
+    // `status`, not the presence of `error` text.
+    ['error' as const, '', () => tb().connectionError],
+    ['disconnected' as const, 'stale message', () => tb().disconnected],
+  ])('reads %s back on the card, not just on / off', (status, error, label) => {
     useMCPStore.setState({ servers: {
-      'sequential-thinking': { ...serverEntry('sequential-thinking'), status: 'connected' },
+      'sequential-thinking': { ...serverEntry('sequential-thinking'), status, error },
     } });
     render(<MCPSection />);
-    expect(screen.getByTestId('mcp-status-sequential-thinking').textContent).toBe(tb().connected);
+    expect(screen.getByTestId('mcp-status-sequential-thinking').textContent).toBe(label());
+  });
+
+  it('shows the same dot on 我的', () => {
+    useMCPStore.setState({ servers: { 'hand-rolled': { ...serverEntry('hand-rolled'), status: 'connected' } } });
+    render(<MCPSection source="mine" />);
+    expect(screen.getByTestId('mcp-status-hand-rolled').textContent).toBe(tb().connected);
   });
 
   it('puts the added connectors first on 市场', () => {

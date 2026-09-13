@@ -657,20 +657,24 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setShowLogs(false);
   }, [selectedKey]);
 
-  /** The catalog shelf mixes servers the user has and ones they have not. A
-   *  card with no dot has not been added — the dot is what 「市场」 lacked, and
-   *  it doubles as the health readout everywhere else the card is used. */
+  /** The catalog shelf mixes servers the user has added with ones they have
+   *  not. A card with no dot has not been added — that dot is what 「市场」
+   *  lacked, and it doubles as the health readout on 「我的」.
+   *
+   *  Dot only, no visible text: ToolCard's badge box is the slot that yields
+   *  width (`ToolCard.tsx:95`), and at four columns a label like
+   *  「Connection error」 squeezes the name to its 40px floor — the same trap
+   *  the expert cards' tool-count badge was removed for. The label still rides
+   *  along as the tooltip and for screen readers.
+   *
+   *  The state itself comes from `serverStatusMeta`, the same function the
+   *  detail header uses, so the card and the detail can never disagree. */
   const statusDot = (entry: MCPServerEntry) => {
-    const [label, color] =
-      entry.status === 'connected' ? [t.toolbox.connected, 'bg-[var(--abu-success-solid)]'] :
-      entry.status === 'connecting' ? [t.toolbox.connecting, 'bg-[var(--abu-warning)]'] :
-      entry.status === 'reconnecting' ? [t.toolbox.reconnecting, 'bg-[var(--abu-warning)]'] :
-      entry.error ? [t.toolbox.connectionError, 'bg-[var(--abu-danger)]'] :
-      [t.toolbox.disconnected, 'bg-[var(--abu-text-placeholder)]'];
+    const { statusLabel, statusDotColor } = serverStatusMeta(entry, connectingServer, null, t);
     return (
-      <span className="flex items-center gap-1 text-caption text-[var(--abu-text-tertiary)]" title={entry.error || label} data-testid={`mcp-status-${entry.config.name}`}>
-        <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', color)} />
-        {label}
+      <span className="flex items-center" title={entry.error || statusLabel} data-testid={`mcp-status-${entry.config.name}`}>
+        <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', statusDotColor)} />
+        <span className="sr-only">{statusLabel}</span>
       </span>
     );
   };
@@ -981,7 +985,14 @@ function serverStatusMeta(
     : isConnected ? 'text-[var(--abu-success)]'
     : status === 'error' ? 'text-[var(--abu-danger)]'
     : 'text-[var(--abu-text-muted)]';
-  return { isConnected, isConnecting, isTesting, statusLabel, statusColor };
+  // Same five states as a filled dot, for the card badge. Kept here rather than
+  // derived from `statusColor` so the two can never drift apart.
+  const statusDotColor = isReconnecting ? 'bg-[var(--abu-warning)]'
+    : isConnecting ? 'bg-[var(--abu-warning)]'
+    : isConnected ? 'bg-[var(--abu-success-solid)]'
+    : status === 'error' ? 'bg-[var(--abu-danger)]'
+    : 'bg-[var(--abu-text-placeholder)]';
+  return { isConnected, isConnecting, isTesting, statusLabel, statusColor, statusDotColor };
 }
 
 /** Connection control and secondary actions share the extension detail header. */

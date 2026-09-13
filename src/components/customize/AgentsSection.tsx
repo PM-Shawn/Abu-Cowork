@@ -154,10 +154,20 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
 
   const disabledSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
+  // Selectable agents, before search. Excludes the 'abu' default agent — it's
+  // the fallback, not a selectable agent.
+  const visibleAgents = useMemo(
+    () => installedAgents.filter((a) => a.name !== 'abu' && !a.managed),
+    [installedAgents],
+  );
+  // Nothing of the user's own at all ("还没有你创建的专家") reads differently
+  // from "your experts, none matching" — so the empty state asks the
+  // UNFILTERED 我的 bucket, the way SkillsSection does.
+  const mineTotal = useMemo(() => visibleAgents.filter((a) => !isSystemAgent(a)).length, [visibleAgents]);
+
   // Filter by search across both visible names (zh + en) + description.
-  // Excludes the 'abu' default agent — it's the fallback, not a selectable agent.
   const filteredAgents = useMemo(() => {
-    const visible = installedAgents.filter((a) => a.name !== 'abu' && !a.managed);
+    const visible = visibleAgents;
     if (!extensionsSearchQuery) return visible;
     const q = extensionsSearchQuery.toLowerCase();
     return visible.filter((a) => {
@@ -171,7 +181,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
       ];
       return haystack.some((s) => s && s.toLowerCase().includes(q));
     });
-  }, [installedAgents, extensionsSearchQuery]);
+  }, [visibleAgents, extensionsSearchQuery]);
 
   // Split into the two shelves: 「我的」 is what the user wrote, 「市场」 what
   // shipped with Abu or arrived with a plugin.
@@ -283,9 +293,13 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
             group heading that used to name it here is gone. */}
         {source === 'mine' ? (
           userAgents.length === 0 ? (
-            <div className="py-16 text-center">
-              <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.agentsMineEmpty}</p>
-            </div>
+            mineTotal === 0 ? (
+              <div className="py-16 text-center">
+                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.agentsMineEmpty}</p>
+              </div>
+            ) : (
+              <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>
+            )
           ) : (
             <div className="max-w-5xl mx-auto">
               <ToolGrid>{userAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>

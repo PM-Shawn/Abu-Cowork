@@ -10,6 +10,7 @@ import AuthoredPluginList from './AuthoredPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
 import type { ExtensionSource } from '../extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 interface PluginsTabProps {
   /** Shared toolbox header search box. */
@@ -35,6 +36,7 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
   const recoveryError = usePluginStore(s => s.recoveryError);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
   const ensureBuiltinMarketplace = usePluginStore((s) => s.ensureBuiltinMarketplace);
+  const setSource = useExtensionSourceStore((s) => s.setSource);
 
   useEffect(() => {
     let cancelled = false;
@@ -103,7 +105,14 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
           </section>)}
 
       {home !== null && (
-        <AddMarketplaceDialog onAdded={name => setRequestedMarket({ name })} open={addOpen} home={home} onClose={() => setAddOpen(false)} />
+        // The new market is browsed on the 市场 shelf, and `requestedMarket` is
+        // consumed by MarketplaceBrowser — which 「我的」 does not mount. Adding
+        // one from 「我的」 without this switch closes the dialog onto an
+        // unchanged authored list: a silent no-op.
+        <AddMarketplaceDialog
+          onAdded={name => { setSource('plugins', 'market'); setRequestedMarket({ name }); }}
+          open={addOpen} home={home} onClose={() => setAddOpen(false)}
+        />
       )}
     </div>
   );

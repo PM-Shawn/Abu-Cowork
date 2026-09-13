@@ -571,6 +571,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         };
       }
       addServer(config);
+      // Installing from the catalog configures a server of the user's own —
+      // the same jump the two hand-add paths make, so 「添加」 always lands
+      // where the new connector actually is.
+      setSource('mcp', 'mine');
       setSelected({ kind: 'server', name: config.name });
       try { await connectServer(config.name); } catch (err) { console.error('Failed to connect MCP server:', err); }
     } finally {

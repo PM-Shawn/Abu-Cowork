@@ -31,6 +31,10 @@ export interface ComposerSuggestion {
   name: string;
   description: string;
   trigger?: string;
+  /** Expert avatar carried into the chip (`icon:<icon>/<tint>` or a legacy
+   *  emoji). Optional and additive — older drafts simply render the default
+   *  mark, so no persist migration is needed. */
+  avatar?: string;
 }
 
 export interface ComposerFileAttachment {

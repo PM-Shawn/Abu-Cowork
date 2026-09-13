@@ -56,6 +56,37 @@ describe('teamStore', () => {
       expect(updated.leaderRoleId).toBe('role-c');
       expect(updated.memberRoleIds).toContain('role-c');
     });
+
+    it('refuses a rename onto a name another team already has', () => {
+      const first = useTeamStore.getState().createTeam({ name: '数据小队', leaderRoleId: 'role-a', memberRoleIds: [] });
+      const second = useTeamStore.getState().createTeam({ name: '增长小队', leaderRoleId: 'role-b', memberRoleIds: [] });
+      expect(() => useTeamStore.getState().updateTeam(second.id, { name: '数据小队' })).toThrow('duplicate team name');
+      // The refusal is total: no half-applied patch behind the thrown error.
+      const after = useTeamStore.getState().teams.find((t) => t.id === second.id)!;
+      expect(after.name).toBe('增长小队');
+      expect(useTeamStore.getState().teams.find((t) => t.id === first.id)!.name).toBe('数据小队');
+    });
+
+    it('refuses a rename onto a built-in team name', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      const mine = useTeamStore.getState().createTeam({ name: '我的小队', leaderRoleId: 'role-a', memberRoleIds: [] });
+      // User teams are listed before built-ins, so a collision here would also
+      // slip past `save_team`'s built-in read-only guard, which looks up by name.
+      expect(() => useTeamStore.getState().updateTeam(mine.id, { name: SOFTWARE_RD_TEAM.name })).toThrow('duplicate team name');
+    });
+
+    it('lets a team keep its own name while other fields change', () => {
+      const team = useTeamStore.getState().createTeam({ name: '数据小队', leaderRoleId: 'role-a', memberRoleIds: [] });
+      useTeamStore.getState().updateTeam(team.id, { name: '数据小队', leaderNote: '先对齐口径' });
+      expect(useTeamStore.getState().teams[0].leaderNote).toBe('先对齐口径');
+    });
+
+    it('leaves patches that carry no name alone', () => {
+      useTeamStore.getState().createTeam({ name: '数据小队', leaderRoleId: 'role-a', memberRoleIds: [] });
+      const second = useTeamStore.getState().createTeam({ name: '增长小队', leaderRoleId: 'role-b', memberRoleIds: [] });
+      useTeamStore.getState().updateTeam(second.id, { lastPlan: { request: 'r', steps: ['s'], savedAt: 1 } });
+      expect(useTeamStore.getState().teams.find((t) => t.id === second.id)!.lastPlan?.steps).toEqual(['s']);
+    });
   });
 
   describe('deleteTeam', () => {

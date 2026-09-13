@@ -151,7 +151,18 @@ export const useTeamStore = create<TeamStore>()(
         return team;
       },
 
-      updateTeam: (id, patch) =>
+      updateTeam: (id, patch) => {
+        // Same rule `createTeam` enforces, applied to the rename it forgot.
+        // Teams are addressed BY NAME by `save_team` (`teamTools.ts`), so two
+        // teams sharing one name means the second is unreachable to the tool —
+        // and because the store lists user teams before built-ins, a user team
+        // renamed onto a built-in's name also slips past the built-in
+        // read-only guard. Excludes the team being renamed, so re-saving a
+        // dialog without touching the name stays a no-op.
+        const wanted = patch.name?.trim();
+        if (wanted && get().teams.some((t) => t.id !== id && t.name === wanted)) {
+          throw new Error('duplicate team name');
+        }
         set((s) => ({
           teams: s.teams.map((t) => {
             if (t.id !== id) return t;
@@ -164,7 +175,8 @@ export const useTeamStore = create<TeamStore>()(
             next.memberRoleIds = Array.from(new Set([next.leaderRoleId, ...next.memberRoleIds]));
             return next;
           }),
-        })),
+        }));
+      },
 
       deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id || isBuiltinTeam(t)) })),
     }),

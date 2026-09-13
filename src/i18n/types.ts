@@ -1865,6 +1865,7 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
+    nameTakenHint: string;
     fieldDescription: string;
     fieldDescriptionPlaceholder: string;
     fieldIntro: string;

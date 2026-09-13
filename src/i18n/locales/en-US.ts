@@ -1433,6 +1433,7 @@ const enUS: TranslationDict = {
     teamSaveFailed: 'Failed to save expert team',
     fieldName: 'Name',
     fieldNamePlaceholder: 'e.g. Data Squad',
+    nameTakenHint: 'An expert team with this name already exists. Try a different name.',
     fieldDescription: 'Description (optional)',
     fieldDescriptionPlaceholder: 'One sentence about what this expert team can help with',
     fieldIntro: 'Greeting (optional)',

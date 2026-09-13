@@ -18,6 +18,7 @@ import SourceSubNav from '@/components/toolbox/SourceSubNav';
 import { sourceTabId } from '@/components/toolbox/extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 import DialogShell from './DialogShell';
+import { cn } from '@/lib/utils';
 import TeamAvatar from './TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import AvatarPicker from '@/components/common/AvatarPicker';
@@ -130,6 +131,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const refresh = useDiscoveryStore((s) => s.refresh);
   const createTeam = useTeamStore((s) => s.createTeam);
   const updateTeam = useTeamStore((s) => s.updateTeam);
+  const allTeams = useTeamStore((s) => s.teams);
   const agents = useMemberPool();
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
 
@@ -193,8 +195,12 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
 
   // A leader whose agent is currently hidden keeps its roleId; the team stays editable.
   const leaderKept = !leaderName && !!team?.leaderRoleId;
+  // Exact match, not case-insensitive: this mirrors the store's own rule
+  // (`createTeam` / `updateTeam`), and a dialog that refused more than the
+  // store does would block names the user can save from anywhere else.
+  const nameTaken = allTeams.some((other) => other.id !== team?.id && other.name === name.trim());
   const handleSave = async () => {
-    if (!name.trim() || (!leaderName && !leaderKept) || saving) return;
+    if (!name.trim() || nameTaken || (!leaderName && !leaderKept) || saving) return;
     setSaving(true);
     try {
       // Resolve stable roleIds, writing them into AGENT.md on first use.
@@ -246,8 +252,11 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
             <AvatarPicker value={avatar} onChange={setAvatar}>
               <TeamAvatar avatar={avatar} size="lg" />
             </AvatarPicker>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className="flex-1" data-testid="team-name-input" />
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder={t.team.fieldNamePlaceholder} className={cn('flex-1', nameTaken && 'border-[var(--abu-danger)]')} data-testid="team-name-input" />
           </div>
+          {nameTaken && (
+            <p className="mt-1 text-caption text-[var(--abu-danger)]" data-testid="team-name-taken">{t.team.nameTakenHint}</p>
+          )}
         </div>
 
         {agents.length === 0 ? (
@@ -354,7 +363,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         <div className="flex items-center gap-2 pt-1">
           <div className="flex-1" />
           <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
-          <Button onClick={handleSave} disabled={!name.trim() || (!leaderName && !leaderKept) || saving} data-testid="team-save">
+          <Button onClick={handleSave} disabled={!name.trim() || nameTaken || (!leaderName && !leaderKept) || saving} data-testid="team-save">
             {team ? t.common.save : t.team.createTeamAction}
           </Button>
         </div>

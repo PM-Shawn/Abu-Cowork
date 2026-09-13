@@ -12,14 +12,23 @@ const release = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'
 const vitestConfig = readFileSync(path.join(repoRoot, 'vitest.config.ts'), 'utf8');
 const packageScripts = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')).scripts;
 
-function requiredCheckStep(name) {
-  const check = ci.split('\n  check:')[1]?.split(/\n  [a-z][\w-]*:/)[0];
-  assert.ok(check, 'required check job must exist');
-  assert.doesNotMatch(check, /continue-on-error:\s*true/);
-  const start = check.indexOf(`- name: ${name}\n`);
-  assert.ok(start >= 0, `${name} must run in check, not an advisory job`);
-  const next = check.indexOf('\n      - name:', start + 1);
-  const step = check.slice(start, next < 0 ? undefined : next);
+function jobBlock(source, name) {
+  const start = source.indexOf(`\n  ${name}:`);
+  assert.ok(start > -1, `${name} job missing`);
+  const next = source.slice(start + 1).search(/\n  [a-z][\w-]*:/);
+  return next === -1 ? source.slice(start) : source.slice(start, start + 1 + next);
+}
+
+// Steps that used to live in the monolithic `check` job now sit in one of the
+// parallel jobs it was split into. They must still be blocking, and still be
+// skipped when the install step failed.
+function requiredCheckStep(name, jobName = 'test') {
+  const job = jobBlock(ci, jobName);
+  assert.doesNotMatch(job, /continue-on-error:\s*true/);
+  const start = job.indexOf(`- name: ${name}\n`);
+  assert.ok(start >= 0, `${name} must run in the ${jobName} job, not an advisory job`);
+  const next = job.indexOf('\n      - name:', start + 1);
+  const step = job.slice(start, next < 0 ? undefined : next);
   assert.ok(step.includes("!cancelled() && steps.install.outcome == 'success'"));
   assert.doesNotMatch(step, /^\s*continue-on-error:|\|\|\s*true/m);
   return step;
@@ -34,7 +43,7 @@ test('browser host UI tests block check and local verify, including popup regres
 });
 
 test('browser artifact gate builds runtimes and verifies the tracked copy before stamping it', () => {
-  const step = requiredCheckStep('Verify Chrome extension bundle is in sync with source');
+  const step = requiredCheckStep('Verify Chrome extension bundle is in sync with source', 'build');
   const build = step.indexOf('npm run build:electron-browser-runtime');
   const compare = step.indexOf('if ! diff -r');
   const stamp = step.indexOf("recordSourceDigest('src-tauri/browser-extension/content.js')");
@@ -125,10 +134,11 @@ test('CI checks changed-line coverage against the pull request base with full hi
     /pull_request:\n\s+branches: \[main, dev\]\n(?:\s+#[^\n]*\n)*\s+types: \[opened, synchronize, reopened, edited, labeled, unlabeled\]/,
     'body and label edits must re-evaluate gate exemptions',
   );
-  const checkoutStart = ci.indexOf('- uses: actions/checkout@v7');
+  const testJob = jobBlock(ci, 'test');
+  const checkoutStart = testJob.indexOf('- uses: actions/checkout@v7');
   assert.ok(checkoutStart > -1, 'checkout step missing');
-  const checkoutEnd = ci.indexOf('\n      - name:', checkoutStart);
-  const checkout = ci.slice(checkoutStart, checkoutEnd);
+  const checkoutEnd = testJob.indexOf('\n      - name:', checkoutStart);
+  const checkout = testJob.slice(checkoutStart, checkoutEnd);
   assert.match(checkout, /with:\n\s+fetch-depth: 0/);
 
   const coverageStart = ci.indexOf('- name: Test with coverage');
@@ -159,21 +169,85 @@ test('CI uploads coverage and test-results artifacts even when tests fail', () =
   }
 });
 
-test('only the check job gets pull-requests write; advisory jobs are contents-read only', () => {
+test('only the test job gets pull-requests write; every other job is contents-read only', () => {
   assert.doesNotMatch(ci, /^permissions:/m, 'permissions must be job-scoped, not workflow-level');
-  const jobBlock = (name) => {
-    const start = ci.indexOf(`\n  ${name}:`);
-    assert.ok(start > -1, `${name} job missing`);
-    const next = ci.slice(start + 1).search(/\n  [a-z][\w-]*:/);
-    return next === -1 ? ci.slice(start) : ci.slice(start, start + 1 + next);
-  };
-  for (const job of ['test-windows', 'audit']) {
-    const block = jobBlock(job);
+  for (const job of ['test-windows', 'audit', 'leak-guard', 'lint', 'typecheck', 'build', 'check']) {
+    const block = jobBlock(ci, job);
     assert.ok(!block.includes('pull-requests: write'), `${job} must not get pull-requests: write`);
     assert.ok(!block.includes('checks: write'), `${job} must not get checks: write`);
     assert.match(block, /permissions:\n\s+contents: read/);
   }
-  assert.match(jobBlock('check'), /permissions:\n\s+contents: read\n\s+pull-requests: write\n\s+checks: write/);
+  // The coverage comment and the junit check run are the only token writes.
+  assert.match(
+    jobBlock(ci, 'test'),
+    /permissions:\n\s+contents: read\n\s+pull-requests: write\n\s+checks: write/,
+  );
+});
+
+test('the check facade fails loud when any parallel gate job did not succeed', () => {
+  const workflow = YAML.parse(ci);
+  const facade = workflow.jobs?.check;
+  assert.ok(facade, 'check facade missing');
+  assert.equal(facade.name ?? 'check', 'check', 'required check context must stay check');
+  assert.equal(facade['continue-on-error'], undefined, 'check must remain blocking');
+  assert.ok(Array.isArray(facade.needs), 'check must depend on the parallel jobs');
+  assert.deepEqual(
+    [...facade.needs].sort(),
+    ['build', 'leak-guard', 'lint', 'test', 'typecheck'],
+    'the check facade must depend on every parallel gate job',
+  );
+  // Without `if: always()` the facade is SKIPPED when an upstream job fails,
+  // and a skipped required check can read as success — a silent bypass.
+  assert.equal(facade.if, 'always()', 'check facade must use `if: always()`');
+  const steps = JSON.stringify(facade.steps);
+  for (const dep of ['leak-guard', 'lint', 'typecheck', 'test', 'build']) {
+    assert.ok(steps.includes(`needs['${dep}'].result`), `facade must inspect ${dep}.result`);
+  }
+  assert.match(steps, /exit 1/, 'facade must fail when an upstream job did not succeed');
+});
+
+test('only the test job fetches full history, for changed-line coverage', () => {
+  assert.match(
+    jobBlock(ci, 'test'),
+    /uses: actions\/checkout@v7\n\s+with:\n\s+fetch-depth: 0/,
+    'the test job needs full history to diff against the pull request base',
+  );
+  const workflow = YAML.parse(ci);
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    if (name === 'test') continue;
+    for (const step of job.steps ?? []) {
+      if (step.uses?.startsWith('actions/checkout@')) {
+        assert.equal(step.with?.['fetch-depth'], undefined, `${name} must keep a shallow checkout`);
+      }
+    }
+  }
+});
+
+test('parallel gates preserve their commands, full installs, and blocking outcomes', () => {
+  const workflow = YAML.parse(ci);
+  for (const name of ['leak-guard', 'lint', 'typecheck', 'test', 'build']) {
+    const job = workflow.jobs[name];
+    assert.ok(job, `${name} job missing`);
+    assert.equal(job.needs, undefined, `${name} must run independently`);
+    assert.equal(job['continue-on-error'], undefined, `${name} must remain blocking`);
+    if (name === 'leak-guard') {
+      assert.equal(job.steps.find((step) => step.name === 'Enterprise leak guard (open-core)')?.run,
+        'bash scripts/enterprise-leak-guard.sh');
+      continue;
+    }
+    assert.equal(job.steps.find((step) => step.id === 'install')?.run.trim(),
+      'npm ci\n(cd abu-browser-bridge && npm ci)\n(cd abu-chrome-extension && npm ci)');
+  }
+  for (const [job, step, command] of [
+    ['lint', 'Lint', 'npm run lint'],
+    ['typecheck', 'Type check', 'npm run typecheck'],
+    ['test', 'Test with coverage', 'npm run test:coverage'],
+    ['test', 'Test-infra scripts (node:test)', 'npm run test:infra'],
+    ['test', 'TESTING.md inventory is up to date', 'npm run test:inventory:check'],
+    ['build', 'Build frontend', 'npm run build'],
+  ]) {
+    assert.ok(requiredCheckStep(step, job).includes(`run: ${command}\n`));
+  }
 });
 
 test('CI comments coverage on pull requests and renders the junit report', () => {
@@ -209,10 +283,7 @@ test('CI checks that TESTING.md test inventory is up to date', () => {
 test('token-writing report steps are skipped when GITHUB_TOKEN is read-only (dependabot / fork PRs)', () => {
   const guard = "github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)";
   for (const step of ['Test report (junit → check)', 'Coverage comment on PR']) {
-    const start = ci.indexOf(`- name: ${step}`);
-    assert.ok(start > -1, `${step} step missing`);
-    const next = ci.indexOf('\n      - name:', start + 1);
-    const block = ci.slice(start, next === -1 ? undefined : next);
+    const block = requiredCheckStep(step, 'test');
     assert.ok(block.includes(guard), `${step} must be guarded with: ${guard}`);
   }
 });

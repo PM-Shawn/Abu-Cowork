@@ -222,6 +222,31 @@ describe('TeamView', () => {
     expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
   });
 
+  it('team dialog: renaming onto another team\u2019s name is refused before it can be saved', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('\u5206\u6790\u5e08', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '\u5206\u6790\u5e08' }];
+    useTeamStore.setState({ teams: [
+      { id: 't1', name: '\u6570\u636e\u5c0f\u961f', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 },
+      { id: 't2', name: '\u589e\u957f\u5c0f\u961f', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-\u589e\u957f\u5c0f\u961f'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    // Its own name is fine — re-saving a dialog untouched must not be blocked.
+    expect(screen.queryByTestId('team-name-taken')).toBeNull();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '\u6570\u636e\u5c0f\u961f' } });
+    expect(screen.getByTestId('team-name-taken')).toBeTruthy();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '\u589e\u957f\u5c0f\u961f 2' } });
+    expect(screen.queryByTestId('team-name-taken')).toBeNull();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('renders the two tabs 专家·专家团 (the task board is gone)', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>

@@ -131,16 +131,27 @@ export function mergeTeamState(persisted: unknown, current: TeamStore): TeamStor
  * The shipped name wins — it is the one the changelog, the docs and other
  * teams refer to — and the user's team keeps all of its content under a
  * numbered name, the way WorkBuddy suffixes a colliding team rather than
- * dropping it. Renaming happens once: the next hydration finds no collision.
+ * dropping it. Renaming settles on the next write: this pass is a fixed point,
+ * so a re-hydration before that write reaches the same names again.
+ *
+ * `taken` is seeded with EVERY name in play, not just the built-ins, so a
+ * rename can never land on a name somebody else already holds: a user who has
+ * both 「X」 and 「X 2」 and then meets a shipped 「X」 gets 「X 3」 for the
+ * collider and keeps 「X 2」 where it was. Renaming the innocent one would be
+ * worse than the collision — `@X 2` and `save_team` resolve by name, so it
+ * would silently start addressing a different team.
  */
 function dedupeNames(teams: Team[]): Team[] {
-  const taken = new Set(BUILTIN_TEAMS.map((team) => team.name));
+  const builtinNames = BUILTIN_TEAMS.map((team) => team.name);
+  const taken = new Set([...builtinNames, ...teams.map((team) => team.name)]);
+  const claimed = new Set(builtinNames);
   return teams.map((team) => {
-    if (!taken.has(team.name)) { taken.add(team.name); return team; }
+    if (!claimed.has(team.name)) { claimed.add(team.name); return team; }
     let suffix = 2;
     while (taken.has(`${team.name} ${suffix}`)) suffix += 1;
     const name = `${team.name} ${suffix}`;
     taken.add(name);
+    claimed.add(name);
     return { ...team, name };
   });
 }
@@ -186,6 +197,7 @@ export const useTeamStore = create<TeamStore>()(
         // read-only guard. Excludes the team being renamed, so re-saving a
         // dialog without touching the name stays a no-op.
         const wanted = patch.name?.trim();
+        if (patch.name !== undefined && !wanted) throw new Error('team name required');
         if (wanted && get().teams.some((t) => t.id !== id && t.name === wanted)) {
           throw new Error('duplicate team name');
         }

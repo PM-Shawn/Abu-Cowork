@@ -26,6 +26,13 @@ describe('sourceToUXCategory', () => {
     expect(sourceToUXCategory('builtin')).toBe('builtin');
   });
 
+  it('files a plugin-contributed skill in the 市场 bucket, not 我的', () => {
+    // Someone else shipped it, and removing it is uninstalling its plugin —
+    // the same read-only treatment every other 市场 card gets. Filing it under
+    // 我的 would offer a delete this list cannot honour.
+    expect(sourceToUXCategory('plugin')).toBe('builtin');
+  });
+
   it('treats undefined source as legacy "mine" (no source field yet)', () => {
     // Some older persisted skills may predate the source field.
     expect(sourceToUXCategory(undefined)).toBe('mine');

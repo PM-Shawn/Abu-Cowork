@@ -21,9 +21,11 @@ import type { MCPServerEntry } from '@/stores/mcpStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import type { ConnectorPrefill } from '@/components/toolbox/connectors/connectorPrefill';
 import { buildConnectorCatalog } from '@/components/toolbox/connectors/connectorPrefill';
+import { getMCPTemplatesForHost } from '@/data/marketplace/mcp';
 import MCPSection from './MCPSection';
 
 const tb = () => getI18n().toolbox;
@@ -48,6 +50,7 @@ beforeEach(() => {
   useMCPStore.setState({ servers: {}, isLoading: false });
   usePluginStore.setState({ installed: [] });
   useSettingsStore.setState({ extensionsSearchQueries: { plugins: '', skills: '', mcp: '' } });
+  useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
 });
 
 describe('MCPSection · source="mine"', () => {
@@ -577,4 +580,32 @@ it('shows logs as a separate detail view and returns to the connector', async ()
   expect(screen.queryByTestId('mcp-logs-view')).toBeNull();
   expect(screen.queryByText('Command')).toBeNull();
   expect(screen.getByRole('button', { name: tb().testConnection })).toBeVisible();
+});
+
+/**
+ * Installing from 「市场」 configures a connector of the user's own, so the
+ * shelf follows it to 「我的」 — otherwise 「安装」 appears to do nothing: the
+ * new server is on the shelf the user is not looking at.
+ */
+describe('MCPSection · installing from 市场 lands on 我的', () => {
+  it('switches the connectors shelf to 我的 after a template install', async () => {
+    // A template with nothing to fill in — the install button is disabled
+    // until every configurable slot and secret has a value.
+    const template = getMCPTemplatesForHost().find(
+      (t) => !t.configurableArgs?.length && !t.requiredEnvVars?.length,
+    )!;
+    expect(template).toBeDefined();
+    const addServer = vi.spyOn(useMCPStore.getState(), 'addServer').mockImplementation(() => {});
+    const connectServer = vi.spyOn(useMCPStore.getState(), 'connectServer').mockResolvedValue(undefined);
+
+    render(<MCPSection source="market" />);
+    fireEvent.click(screen.getByText(template.name));
+    fireEvent.click(await screen.findByRole('button', { name: new RegExp(tb().install) }));
+
+    await waitFor(() => expect(useExtensionSourceStore.getState().sources.mcp).toBe('mine'));
+    expect(addServer).toHaveBeenCalledWith(expect.objectContaining({ name: template.name }));
+    expect(connectServer).toHaveBeenCalledWith(template.name);
+    // Only the connectors tab moves.
+    expect(useExtensionSourceStore.getState().sources.skills).toBe('market');
+  });
 });

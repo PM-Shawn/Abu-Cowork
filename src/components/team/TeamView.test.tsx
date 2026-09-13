@@ -3,6 +3,7 @@ import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
+import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
 import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 // TeamView reads/writes the real teamStore (zustand works fine in tests);
@@ -150,6 +151,7 @@ describe('TeamView', () => {
     // are about the 「我的」 shelf; 市场 (the default) holds the built-in teams.
     useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine', teams: 'mine' } });
     settingsState.activeTeamTab = 'members';
+    settingsState.disabledAgents = [];
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
     chatState.conversationIndex = {};
@@ -595,5 +597,80 @@ describe('TeamView', () => {
     fireEvent.change(screen.getByLabelText('推荐提问（可选）'), { target: { value: ' 问题一\n问题二 ' } });
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0]).toMatchObject({ description: '新介绍', intro: undefined, expertise: ['取数', '出图'], samplePrompts: ['问题一', '问题二'] }));
+  });
+  describe('built-in teams · 市场 | 我的', () => {
+    const userTeam = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 };
+
+    beforeEach(() => {
+      settingsState.activeTeamTab = 'teams';
+      // 市场 is where a fresh install lands, and it is the shelf the shipped
+      // teams live on — the suite's other tests opt into 我的 instead.
+      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    });
+
+    it('lists built-in teams under 市场 and the user\u2019s own under 我的', () => {
+      useTeamStore.setState({ teams: [userTeam, ...BUILTIN_TEAMS] });
+      render(<TeamView />);
+      // Both shelves are reachable, but only one is rendered at a time.
+      expect(screen.getByTestId('team-source-market')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('team-source-mine')).toHaveTextContent('我的');
+      expect(screen.getByTestId(`team-row-${BUILTIN_TEAMS[0].name}`)).toBeInTheDocument();
+      expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('team-source-mine'));
+
+      expect(screen.getByTestId('team-row-数据小队')).toBeInTheDocument();
+      expect(screen.queryByTestId(`team-row-${BUILTIN_TEAMS[0].name}`)).toBeNull();
+    });
+
+    it('a built-in team detail has no edit / delete menu', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      render(<TeamView />);
+      fireEvent.click(screen.getByTestId(`team-row-${BUILTIN_TEAMS[0].name}`));
+      // Read-only: starting work is still the primary action, but there is no
+      // 「…」 behind which 编辑 / 删除 could sit.
+      expect(screen.getByTestId('team-detail-start-chat')).toBeInTheDocument();
+      expect(screen.queryByTestId('team-detail-menu')).toBeNull();
+    });
+
+    it('shows 还没有专家团 inside 我的 when only built-ins exist', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      render(<TeamView />);
+      // The shipped teams are NOT an answer to "have you made a team yet".
+      expect(screen.queryByText('还没有专家团')).toBeNull();
+      fireEvent.click(screen.getByTestId('team-source-mine'));
+      expect(screen.getByText('还没有专家团')).toBeInTheDocument();
+      expect(screen.getAllByText('新建专家团').length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('disabled members in the team detail', () => {
+    const team = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-b'], createdAt: 1 };
+
+    beforeEach(() => {
+      settingsState.activeTeamTab = 'teams';
+      seedAgent('L', { roleId: 'r-lead' });
+      seedAgent('B', { roleId: 'r-b' });
+      discoveryState.agents = [{ name: 'L' }, { name: 'B' }];
+      useTeamStore.setState({ teams: [team] });
+    });
+
+    it('marks a member disabled under 专家 while the team still starts', () => {
+      settingsState.disabledAgents = ['B'];
+      render(<TeamView />);
+      fireEvent.click(screen.getByTestId('team-row-数据小队'));
+      expect(screen.getByTestId('team-member-disabled')).toHaveTextContent('已停用');
+      expect(screen.getByTestId('team-detail-start-chat')).not.toBeDisabled();
+      expect(screen.queryByTestId('team-leader-disabled-hint')).toBeNull();
+    });
+
+    it('refuses to start the team when its LEADER is disabled, and says why', () => {
+      // A disabled button on its own left people hunting for the reason.
+      settingsState.disabledAgents = ['L'];
+      render(<TeamView />);
+      fireEvent.click(screen.getByTestId('team-row-数据小队'));
+      expect(screen.getByTestId('team-detail-start-chat')).toBeDisabled();
+      expect(screen.getByTestId('team-leader-disabled-hint')).toHaveTextContent('队长已停用，先去「专家」里启用');
+    });
   });
 });

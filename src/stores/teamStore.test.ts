@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { migrateTeamState, useTeamStore } from './teamStore';
+import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
+import { mergeTeamState, migrateTeamState, partializeTeamState, useTeamStore } from './teamStore';
+import type { Team } from './teamStore';
 
 function reset() {
   useTeamStore.setState({ teams: []});
@@ -97,6 +99,43 @@ describe('teamStore', () => {
       const out = migrateTeamState({ teams: [team] });
       expect(out.teams).toEqual([team]);
       expect(out.teams[0].description).toBeUndefined();
+    });
+  });
+  describe('built-in teams', () => {
+    it('are present after a reset to the initial state and never written to disk', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      const persisted = partializeTeamState(useTeamStore.getState());
+      expect(persisted.teams).toHaveLength(0);
+      expect(useTeamStore.getState().teams.filter(isBuiltinTeam)).toHaveLength(BUILTIN_TEAMS.length);
+    });
+
+    it('come back from the shipped roster on hydration, not from the persisted blob', () => {
+      // A blob written by an older version carries a built-in copy (and may be
+      // missing one this version added). Hydration must hand back TODAY's
+      // roster plus the user's own teams — otherwise a renamed or retired
+      // built-in would live on in everyone's data directory.
+      const stale: Team = { ...BUILTIN_TEAMS[0], name: '旧名字', memberRoleIds: [] };
+      const mine: Team = { id: 'team-mine', name: '我的小队', leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1 };
+      const merged = mergeTeamState({ teams: [mine, stale] }, useTeamStore.getState());
+      expect(merged.teams.filter((t) => !isBuiltinTeam(t))).toEqual([mine]);
+      expect(merged.teams.filter(isBuiltinTeam)).toEqual([...BUILTIN_TEAMS]);
+      expect(merged.teams.some((t) => t.name === '旧名字')).toBe(false);
+    });
+
+    it('cannot be deleted or edited except for lastPlan', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      const target = BUILTIN_TEAMS[0];
+      useTeamStore.getState().deleteTeam(target.id);
+      expect(useTeamStore.getState().teams.find((t) => t.id === target.id)).toBeDefined();
+      useTeamStore.getState().updateTeam(target.id, { name: '改名', lastPlan: { request: 'r', steps: ['s'], savedAt: 1 } });
+      const after = useTeamStore.getState().teams.find((t) => t.id === target.id)!;
+      expect(after.name).toBe(target.name);
+      expect(after.lastPlan?.steps).toEqual(['s']);
+    });
+
+    it('rejects a user team named like a built-in one', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      expect(() => useTeamStore.getState().createTeam({ name: BUILTIN_TEAMS[0].name, leaderRoleId: 'role-a', memberRoleIds: [] })).toThrow('duplicate team name');
     });
   });
 });

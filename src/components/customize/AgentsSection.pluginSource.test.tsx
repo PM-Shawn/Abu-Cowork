@@ -71,9 +71,14 @@ function openDetail(meta: SubagentMetadata) {
   useDiscoveryStore.setState({ agents: [meta], skills: [], isLoading: false });
   render(<AgentsSection source={meta.source?.kind === 'plugin' ? 'market' : 'mine'} />);
   fireEvent.click(screen.getByText('reviewer'));
-  // The edit / delete entries live behind the header's "..." menu.
+  // The edit / delete entries live behind the header's "..." menu. A 市场
+  // expert has none at all, so there is nothing to open; the user's own MUST
+  // have one — clicking it only "if it happens to be there" would let a
+  // vanished menu pass as a pass, and every assertion below it go untested.
+  if (meta.source?.kind === 'plugin') return;
   const button = menuButton();
-  if (button) fireEvent.click(button);
+  expect(button).toBeDefined();
+  fireEvent.click(button!);
 }
 
 beforeEach(() => {

@@ -27,10 +27,11 @@ export interface AvatarAgentLike {
   filePath?: string;
 }
 
-/** Kept under its original name and signature so callers stay untouched; it now
- *  normalizes rather than filters. @see AvatarAgentLike */
+/** The avatar value to render for an agent: trimmed, or null when it has none.
+ *  Normalizes — it does not filter. The source of the agent is deliberately not
+ *  an input. @see AvatarAgentLike */
 // eslint-disable-next-line react-refresh/only-export-components
-export function userAgentAvatar(agent: Pick<AvatarAgentLike, 'avatar' | 'filePath'> | null | undefined): string | null {
+export function agentAvatarValue(agent: Pick<AvatarAgentLike, 'avatar' | 'filePath'> | null | undefined): string | null {
   return agent?.avatar?.trim() || null;
 }
 
@@ -50,7 +51,7 @@ export default function AgentAvatar({ agent, size = 'md', round = false, classNa
   if (agent.name === 'abu') {
     return <img src={abuAvatar} alt="Abu" className={cn(BOX[size], shape, 'object-cover shrink-0', className)} />;
   }
-  const parsed = parseAvatarValue(userAgentAvatar(agent) ?? undefined);
+  const parsed = parseAvatarValue(agentAvatarValue(agent) ?? undefined);
   const AvatarIcon = parsed.kind === 'icon' ? AVATAR_ICON_MAP[parsed.icon] : Bot;
   const tint = parsed.kind === 'icon' ? AVATAR_TINT_MAP[parsed.tint] : undefined;
   return (

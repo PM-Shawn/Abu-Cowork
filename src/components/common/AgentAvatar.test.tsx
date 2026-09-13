@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
-import AgentAvatar, { userAgentAvatar } from './AgentAvatar';
+import AgentAvatar, { agentAvatarValue } from './AgentAvatar';
 
 describe('AgentAvatar', () => {
   afterEach(cleanup);
@@ -11,7 +11,7 @@ describe('AgentAvatar', () => {
   // icon references, so an avatar renders wherever it came from. One rule for
   // every source; only an expert without an avatar gets the robot mark.
   it("renders a builtin preset's icon reference", () => {
-    expect(userAgentAvatar({ avatar: 'icon:code/blue', filePath: '__builtin__' })).toBe('icon:code/blue');
+    expect(agentAvatarValue({ avatar: 'icon:code/blue', filePath: '__builtin__' })).toBe('icon:code/blue');
     render(<AgentAvatar agent={{ name: '高级开发工程师', avatar: 'icon:code/blue', filePath: '__builtin__' }} />);
     expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'icon');
     expect(screen.getByTestId('agent-avatar').querySelector('svg')).not.toBeNull();
@@ -19,7 +19,7 @@ describe('AgentAvatar', () => {
   });
 
   it('still shows the default mark for a builtin expert with no avatar', () => {
-    expect(userAgentAvatar({ filePath: '__builtin__' })).toBeNull();
+    expect(agentAvatarValue({ filePath: '__builtin__' })).toBeNull();
     render(<AgentAvatar agent={{ name: '产品经理', filePath: '__builtin__' }} />);
     expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'default');
   });
@@ -31,7 +31,7 @@ describe('AgentAvatar', () => {
   });
 
   it("shows the user's own emoji for their agents, default when unset", () => {
-    expect(userAgentAvatar({ avatar: '🔢', filePath: '/Users/me/.abu/agents/a.md' })).toBe('🔢');
+    expect(agentAvatarValue({ avatar: '🔢', filePath: '/Users/me/.abu/agents/a.md' })).toBe('🔢');
     render(<AgentAvatar agent={{ name: 'zz取数员', avatar: '🔢', filePath: '/Users/me/.abu/agents/a.md' }} />);
     expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'emoji');
     expect(screen.getByTestId('agent-avatar')).toHaveTextContent('🔢');

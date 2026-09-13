@@ -293,14 +293,17 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: MCPTemplate };
   const offeredTemplateIds = useMemo(() => new Set(availableTemplates.map((tmpl) => tmpl.id)), [availableTemplates]);
   const exampleItems = useMemo(() => {
-    const items: ExampleItem[] = [];
+    const added: ExampleItem[] = [];
+    const rest: ExampleItem[] = [];
     for (const tmpl of getMCPTemplates()) {
       if (searchLower && !tmpl.name.toLowerCase().includes(searchLower) && !tmpl.description.toLowerCase().includes(searchLower)) continue;
       const entry = servers[tmpl.name];
-      if (entry) items.push({ kind: 'installed', entry });
-      else if (offeredTemplateIds.has(tmpl.id)) items.push({ kind: 'template', template: tmpl });
+      if (entry) added.push({ kind: 'installed', entry });
+      else if (offeredTemplateIds.has(tmpl.id)) rest.push({ kind: 'template', template: tmpl });
     }
-    return items;
+    // Added first, catalog order kept inside each group: ordering is half the
+    // signal that tells the two kinds of card apart, the status dot the other.
+    return [...added, ...rest];
   }, [offeredTemplateIds, servers, searchLower]);
 
   // 「市场」 = 内置 / 官方 / 插件提供 (ruling 2026-09-13): a plugin's server is
@@ -654,6 +657,24 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setShowLogs(false);
   }, [selectedKey]);
 
+  /** The catalog shelf mixes servers the user has and ones they have not. A
+   *  card with no dot has not been added — the dot is what 「市场」 lacked, and
+   *  it doubles as the health readout everywhere else the card is used. */
+  const statusDot = (entry: MCPServerEntry) => {
+    const [label, color] =
+      entry.status === 'connected' ? [t.toolbox.connected, 'bg-[var(--abu-success-solid)]'] :
+      entry.status === 'connecting' ? [t.toolbox.connecting, 'bg-[var(--abu-warning)]'] :
+      entry.status === 'reconnecting' ? [t.toolbox.reconnecting, 'bg-[var(--abu-warning)]'] :
+      entry.error ? [t.toolbox.connectionError, 'bg-[var(--abu-danger)]'] :
+      [t.toolbox.disconnected, 'bg-[var(--abu-text-placeholder)]'];
+    return (
+      <span className="flex items-center gap-1 text-caption text-[var(--abu-text-tertiary)]" title={entry.error || label} data-testid={`mcp-status-${entry.config.name}`}>
+        <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', color)} />
+        {label}
+      </span>
+    );
+  };
+
   const renderServerCard = (entry: MCPServerEntry) => {
     const c = entry.config;
     const isHttp = !!(c.url || c.transport === 'http');
@@ -667,9 +688,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         key={c.name}
         item={{
           id: c.name,
+          testId: `mcp-card-${c.name}`,
           name: c.name,
           description,
           avatar: <Server className="h-6 w-6 text-[var(--abu-text-muted)]" />,
+          badge: statusDot(entry),
           toggle: (
             <span title={entry.error || (entry.status === 'connected' ? t.toolbox.disconnect : t.toolbox.connect)} onClick={event => event.stopPropagation()}>
               <Toggle
@@ -692,6 +715,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       key={tmpl.id}
       item={{
         id: tmpl.id,
+        testId: `mcp-card-${tmpl.name}`,
         name: pickLocale(locale, tmpl.name, tmpl.nameEn),
         description: pickLocale(locale, tmpl.description, tmpl.descriptionEn),
         avatar: <Server className="h-6 w-6 text-[var(--abu-text-placeholder)]" />,

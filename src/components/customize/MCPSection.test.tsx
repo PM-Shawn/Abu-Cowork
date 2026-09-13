@@ -149,13 +149,35 @@ describe('MCPSection · source="mine"', () => {
 
   /**
    * Every catalog name is a template name, so a server installed from 「市场」
-   * still has its catalog card there (marked installed) — the shelf a thing was
-   * taken from keeps showing it. `sequential-thinking` is one such name.
+   * still has its catalog card there — the shelf a thing was taken from keeps
+   * showing it. `sequential-thinking` is one such name.
    */
-  it('keeps a catalog-installed server on the 市场 shelf', () => {
+  it('keeps a catalog-installed server on the 市场 shelf, and says which cards are added', () => {
     useMCPStore.setState({ servers: { 'sequential-thinking': serverEntry('sequential-thinking') } });
     render(<MCPSection />);
     expect(screen.getByText('sequential-thinking')).toBeTruthy();
+    // The dot is the whole difference between the two kinds of card here: an
+    // added server has one, a catalog entry the user has not added has none.
+    expect(screen.getByTestId('mcp-status-sequential-thinking')).toBeTruthy();
+    expect(screen.queryByTestId('mcp-status-github')).toBeNull();
+  });
+
+  it('reads the connection back on the card, not just on / off', () => {
+    useMCPStore.setState({ servers: {
+      'sequential-thinking': { ...serverEntry('sequential-thinking'), status: 'connected' },
+    } });
+    render(<MCPSection />);
+    expect(screen.getByTestId('mcp-status-sequential-thinking').textContent).toBe(tb().connected);
+  });
+
+  it('puts the added connectors first on 市场', () => {
+    // `github` sits before `sequential-thinking` in the catalog, so a shelf
+    // that kept catalog order would list it first.
+    useMCPStore.setState({ servers: { 'sequential-thinking': serverEntry('sequential-thinking') } });
+    render(<MCPSection />);
+    const order = screen.getAllByTestId(/^mcp-card-/).map((el) => el.getAttribute('data-testid'));
+    expect(order[0]).toBe('mcp-card-sequential-thinking');
+    expect(order.indexOf('mcp-card-github')).toBeGreaterThan(0);
   });
 
   it('shows each source on its own shelf', () => {

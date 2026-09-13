@@ -69,6 +69,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **Project skills are on by default.** A skill found in a project folder used to start switched off until you turned it on; it now starts on like every other skill, and you can switch it off in Extensions → Skills, where it stays off.
 - **The IM webhook listener stays on this computer unless you say otherwise.** Installing a connector plugin that keeps a heartbeat used to make the local webhook port reachable from your whole network. It now binds to this machine only; a new Settings switch, off by default, opens it to the LAN when you need that. A webhook for a platform with no enabled channel is dropped before Abu's message handling ever sees it, and plugin message ids now feed the replay guard.
 - **Wording: 'members' are now 'experts', 'teams' are now 'expert teams'.** Only the labels changed — features and data are the same.
+- **Built-in experts now use every tool you have.** The five built-in experts (Senior Engineer, Product Manager, Data Analyst, WeChat Editor, HR Recruiter) used to carry a fixed tool list written when they were created, so they could not use your connectors, skills, file search or image tools. They now inherit the tools available at run time, the same rule as an expert you create yourself. Separately, an expert working as a delegated member can no longer create or edit experts, teams, skills, plugins, scheduled tasks, triggers or connector servers — those stay with Abu and a team leader.
 
 ## v0.42.0 · 2026-08-27
 

@@ -607,7 +607,7 @@ const enUS: TranslationDict = {
     taskFallback: 'Task {n}',
     statusUnknown: 'Unknown',
     openTaskLabel: 'Open {label} ({status})',
-    foldBatchAggregate: '{total} agents: {summary}',
+    foldBatchAggregate: '{total} experts: {summary}',
     batchStatusSucceededCount: '{n} succeeded',
     batchStatusFailedCount: '{n} failed',
     batchStatusStoppedCount: '{n} stopped',
@@ -2834,8 +2834,8 @@ const enUS: TranslationDict = {
     browserAction: 'Browser action',
     browserReason: 'This acts inside your logged-in browser (it may submit forms, click buttons, or run scripts). Once allowed, later browser actions in this conversation will not ask again.',
     browserDenied: 'Browser actions need confirmation, but no confirmation channel is available',
-    selfExtensionReason: 'This adds or rewrites long-lived expert or automation state (expert / expert team / MCP server / persona / scheduled run) that shapes later conversations or unattended runs.',
-    selfExtensionDenied: 'Changing long-lived expert or automation state needs confirmation, but no confirmation channel is available',
+    selfExtensionReason: 'This adds or rewrites long-lived role or automation state (expert / expert team / MCP server / persona / scheduled run) that shapes later conversations or unattended runs.',
+    selfExtensionDenied: 'Changing long-lived role or automation state needs confirmation, but no confirmation channel is available',
     selfExtensionSaveAgentNew: 'new expert',
     selfExtensionSaveAgentReplace: 'replaces your existing expert',
     selfExtensionSaveTeamNew: 'new expert team',
@@ -2894,7 +2894,7 @@ const enUS: TranslationDict = {
     pluginToolReason: 'This tool comes from a plugin you installed and is third-party code. Allowing it also covers this plugin\'s later tool calls in this conversation.',
     pluginToolDenied: 'Calling a plugin tool needs confirmation, but there is no confirmation channel available',
     selfExtensionTitle: 'Confirm new capability',
-    selfExtensionDescription: 'Abu wants to add or rewrite long-lived expert or automation state:',
+    selfExtensionDescription: 'Abu wants to add or rewrite long-lived role or automation state:',
   },
 
   toolErrors: {

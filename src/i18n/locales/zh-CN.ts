@@ -608,7 +608,7 @@ const zhCN: TranslationDict = {
     taskFallback: '任务 {n}',
     statusUnknown: '未知',
     openTaskLabel: '打开 {label}（{status}）',
-    foldBatchAggregate: '{total} 个 Agent：{summary}',
+    foldBatchAggregate: '{total} 位专家：{summary}',
     batchStatusSucceededCount: '{n} 成功',
     batchStatusFailedCount: '{n} 失败',
     batchStatusStoppedCount: '{n} 停止',
@@ -1748,7 +1748,7 @@ const zhCN: TranslationDict = {
     noCustomSkills: '暂无自定义 Skills',
     // Customize Panel
     customize: '自定义',
-    customizeFooter: 'Skills、Agents、MCP 统一管理',
+    customizeFooter: '技能、专家、MCP 统一管理',
     models: '模型',
     // ModelsSection
     currentConfig: '当前配置',
@@ -2836,8 +2836,8 @@ const zhCN: TranslationDict = {
     browserAction: '浏览器操作',
     browserReason: '将在你已登录的浏览器里执行操作（可能提交表单、点击按钮或运行脚本）。允许后，本次对话内的后续浏览器操作不再询问。',
     browserDenied: '浏览器操作需要确认，但当前没有可用的确认入口',
-    selfExtensionReason: '将新增或改写长期的专家或自动化状态（专家 / 专家团 / MCP 服务 / 人格设定 / 定时运行），它会影响后续对话或无人值守运行。',
-    selfExtensionDenied: '修改长期专家或自动化状态需要确认，但当前没有可用的确认入口',
+    selfExtensionReason: '将新增或改写长期的角色或自动化状态（专家 / 专家团 / MCP 服务 / 人格设定 / 定时运行），它会影响后续对话或无人值守运行。',
+    selfExtensionDenied: '修改长期角色或自动化状态需要确认，但当前没有可用的确认入口',
     selfExtensionSaveAgentNew: '新建专家',
     selfExtensionSaveAgentReplace: '覆盖已有专家',
     selfExtensionSaveTeamNew: '新建专家团',
@@ -2896,7 +2896,7 @@ const zhCN: TranslationDict = {
     pluginToolReason: '这个工具来自你安装的插件，由第三方代码提供。允许后，本次对话内该插件的后续工具调用不再询问。',
     pluginToolDenied: '调用插件工具需要确认，但当前没有可用的确认入口',
     selfExtensionTitle: '新增能力确认',
-    selfExtensionDescription: '阿布要新增或改写长期的专家或自动化状态：',
+    selfExtensionDescription: '阿布要新增或改写长期的角色或自动化状态：',
   },
 
   toolErrors: {

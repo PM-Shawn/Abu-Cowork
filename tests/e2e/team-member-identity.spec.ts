@@ -138,7 +138,8 @@ test.describe('team member identity integrity', () => {
       await switchTab(page, '专家');
       await openAgentDetail(page);
       await detailMenuButton(page).click();
-      await page.getByText('卸载', { exact: true }).click();
+      // 自己建的专家是「删除」；「卸载」只留给插件带来的。
+      await page.getByText('删除', { exact: true }).click();
       await expect(page.getByText(`删除「${AGENT_NAME}」？`)).toBeVisible();
       await expect(page.getByText(TEAM_NAME)).toBeVisible();
       await page.getByRole('button', { name: '仍然删除' }).click();

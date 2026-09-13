@@ -145,7 +145,7 @@ describe('SkillsSection · source="mine"', () => {
     fireEvent.click(screen.getByTestId('skill-detail-menu'));
     expect(screen.getByText(tb().exportSkill)).toBeVisible();
     expect(screen.getByText(tb().historyMenuLabel)).toBeVisible();
-    expect(screen.queryByText(tb().uninstall)).toBeNull();
+    expect(screen.queryByText(tb().deleteItem)).toBeNull();
   });
 
 });
@@ -218,12 +218,12 @@ describe('SkillsSection · system skill protection', () => {
     await openMenu('docx');
     expect(screen.getByText(tb().exportSkill)).toBeVisible();
     expect(screen.queryByText(tb().skillEdit)).toBeNull();
-    expect(screen.queryByText(tb().uninstall)).toBeNull();
+    expect(screen.queryByText(tb().deleteItem)).toBeNull();
   });
 
   it('still offers them for an ordinary user skill', async () => {
     await openMenu('my-notes');
     expect(screen.getByText(tb().skillEdit)).toBeVisible();
-    expect(screen.getByText(tb().uninstall)).toBeVisible();
+    expect(screen.getByText(tb().deleteItem)).toBeVisible();
   });
 });

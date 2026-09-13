@@ -342,10 +342,12 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
               onChange={() => toggleAgentEnabled(selected.name)}
               tone="green"
             />
-            {/* "..." menu — edit / delete, withheld from the app's own builtins
-                (no file to edit). A plugin expert's entries are disabled with a
-                reason rather than hidden; Task A7.2 revisits that. */}
-            {!isBuiltinAgentPath(selected.filePath) && (
+            {/* "..." menu — edit / delete, for the user's own experts only.
+                市场 experts (the app's own builtins and the ones a plugin brings)
+                have nothing to offer here: there is no file of the user's to edit,
+                and removing a plugin's expert is uninstalling that plugin. Showing
+                the menu greyed out only invited clicks, so it is withheld. */}
+            {!isSystemAgent(selected) && (
               <div className="relative">
                 <button
                   onClick={(e) => { e.stopPropagation(); setMenuAgent(menuAgent === selected.name ? null : selected.name); }}
@@ -356,18 +358,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
                 {menuAgent === selected.name && (
                   <div className="absolute right-0 top-8 z-10 bg-[var(--abu-bg-base)] border border-[var(--abu-border)] rounded-lg shadow-lg py-1 min-w-[140px]">
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                      disabled={!!selectedPluginSource}
-                      title={selectedPluginSource ? t.toolbox.agentFromPluginEditDisabled : undefined}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
                       onClick={() => { setEditorAgent(selected); setMenuAgent(null); setSelectedAgent(null); }}
                     >
                       <Pencil className="h-3 w-3" />
                       {t.toolbox.agentEdit}
                     </button>
                     <button
-                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
-                      disabled={!!selectedPluginSource}
-                      title={selectedPluginSource ? t.toolbox.agentFromPluginDeleteDisabled : undefined}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-minor text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] transition-colors"
                       onClick={() => {
                         const using = teamsReferencing(selected);
                         if (using.teams.length > 0) setConfirmDeleteAgent({ agent: selected, ...using });
@@ -376,7 +374,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
                       }}
                     >
                       <Trash2 className="h-3 w-3" />
-                      {t.toolbox.uninstall}
+                      {t.toolbox.deleteItem}
                     </button>
                   </div>
                 )}
@@ -392,7 +390,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
               <div className="text-minor text-[var(--abu-text-muted)] mb-0.5">{t.toolbox.skillAddedBy}</div>
               <div className="text-body font-medium text-[var(--abu-text-primary)]" data-testid="agent-added-by">
                 {selectedPluginSource
-                  ? format(t.toolbox.agentFromPlugin, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
+                  ? format(t.toolbox.agentFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
                   : isSystemAgent(selected) ? t.toolbox.sourceBuiltin : t.toolbox.sourceUser}
               </div>
             </div>

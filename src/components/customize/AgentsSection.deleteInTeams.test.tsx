@@ -70,7 +70,7 @@ describe('AgentsSection — deleting an agent that teams reference', () => {
       { id: 't2', name: '内容小队', leaderRoleId: 'r-other', memberRoleIds: ['r-other', 'r-rev'], createdAt: 2 },
     ] });
     openMenu();
-    fireEvent.click(screen.getByText(tb().uninstall));
+    fireEvent.click(screen.getByText(tb().deleteItem));
     expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
     expect(screen.getByText(format(tb().agentDeleteInTeamsTitle, { name: 'reviewer' }))).toBeTruthy();
     expect(screen.getByText(format(tb().agentDeleteInTeamsMessage, { count: '2', teams: '网页开发专家团、内容小队' }))).toBeTruthy();
@@ -83,7 +83,7 @@ describe('AgentsSection — deleting an agent that teams reference', () => {
       { id: 't1', name: '网页开发专家团', leaderRoleId: 'r-rev', memberRoleIds: ['r-rev', 'r-mem'], createdAt: 1 },
     ] });
     openMenu();
-    fireEvent.click(screen.getByText(tb().uninstall));
+    fireEvent.click(screen.getByText(tb().deleteItem));
     expect(screen.getByText(format(tb().agentDeleteLeaderInTeamsMessage, { count: '1', teams: '网页开发专家团' }))).toBeTruthy();
     expect(screen.queryByText(format(tb().agentDeleteInTeamsMessage, { count: '1', teams: '网页开发专家团' }))).toBeNull();
   });
@@ -91,7 +91,7 @@ describe('AgentsSection — deleting an agent that teams reference', () => {
   it('cancelling keeps the agent', () => {
     useTeamStore.setState({ teams: [{ id: 't1', name: '网页开发专家团', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-rev'], createdAt: 1 }] });
     openMenu();
-    fireEvent.click(screen.getByText(tb().uninstall));
+    fireEvent.click(screen.getByText(tb().deleteItem));
     fireEvent.click(screen.getByText(getI18n().common.cancel));
     expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
     expect(screen.queryByText(format(tb().agentDeleteInTeamsTitle, { name: 'reviewer' }))).toBeNull();
@@ -99,7 +99,7 @@ describe('AgentsSection — deleting an agent that teams reference', () => {
 
   it('deletes without a dialog when no team references the agent (unchanged behaviour)', async () => {
     openMenu();
-    fireEvent.click(screen.getByText(tb().uninstall));
+    fireEvent.click(screen.getByText(tb().deleteItem));
     await waitFor(() => expect(vi.mocked(fsRemove)).toHaveBeenCalledTimes(1));
     expect(screen.queryByText(format(tb().agentDeleteInTeamsTitle, { name: 'reviewer' }))).toBeNull();
   });

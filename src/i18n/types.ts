@@ -2189,6 +2189,8 @@ export interface TranslationDict {
     add: string;
     install: string;
     uninstall: string;
+    /** Danger action on items the user owns (their own experts / skills): they are deleted, not uninstalled. */
+    deleteItem: string;
     installed: string;
     installAndConnect: string;
     popularMCPServices: string;
@@ -2376,10 +2378,8 @@ export interface TranslationDict {
     agentBackground: string;
     agentSystemPrompt: string;
     agentEdit: string;
-    /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
-    agentFromPlugin: string;
-    agentFromPluginEditDisabled: string;
-    agentFromPluginDeleteDisabled: string;
+    /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
+    agentFromPluginRemoveHint: string;
     /** Deleting an agent that one or more teams reference. */
     agentDeleteInTeamsTitle: string;
     agentDeleteInTeamsMessage: string;

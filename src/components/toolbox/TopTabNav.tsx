@@ -57,7 +57,9 @@ export default function TopTabNav<T extends string>({
               className={cn(
                 'flex items-center gap-2 px-3 py-1.5 rounded-lg text-body font-medium transition-colors shrink-0',
                 isActive
-                  ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
+                  // Clay tint (same pill as 「开始对话」) so the active tab does not
+                  // read identically to whatever tab the pointer happens to hover.
+                  ? 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]'
                   : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]'
               )}
             >

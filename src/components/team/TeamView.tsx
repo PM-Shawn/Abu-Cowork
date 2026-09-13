@@ -587,6 +587,13 @@ export default function TeamView() {
           const leaderDisabled = !!leaderAgent && disabledSet.has(leaderAgent.name);
           return (
             <>
+              {/* The disabled button alone left people hunting for a reason —
+                  a tooltip only shows up if you happen to hover it. */}
+              {leaderDisabled && (
+                <span className="text-caption text-[var(--abu-text-tertiary)]" data-testid="team-leader-disabled-hint">
+                  {t.team.leaderDisabledHint}
+                </span>
+              )}
               <button
                 onClick={() => startChatWithTeam(detailTeam)}
                 disabled={leaderDisabled}

@@ -381,7 +381,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
         ) : undefined}
         footer={selected ? <div className="flex items-center justify-between gap-3">
           {isUserOwnedSkill(selected) ? (
-            <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.uninstall}</Button>
+            <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.deleteItem}</Button>
           ) : !pluginAllowed(selected) ? (
             <span className="text-caption text-[var(--abu-text-muted)]">{t.toolbox.skillPluginDisabled}</span>
           ) : <span />}

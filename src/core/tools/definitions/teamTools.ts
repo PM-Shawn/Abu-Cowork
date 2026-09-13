@@ -53,6 +53,12 @@ export const saveTeamTool: ToolDefinition = {
     // guessing. Same text save_agent returns for the same rejection.
     if (typeof input.avatar === 'string' && !isValidNewAvatar(input.avatar.trim())) return getI18n().toolResult.agent.errInvalidAvatar;
 
+    // Built-ins are read-only, and the store's updateTeam would silently drop
+    // this patch — refuse out loud instead of reporting a roster nobody wrote.
+    // Checked before the roster loop so a refusal writes no AGENT.md role ids.
+    const targeted = useTeamStore.getState().teams.find((team) => team.name === name);
+    if (targeted && isBuiltinTeam(targeted)) return format(t.builtinTeamReadOnly, { name: targeted.name });
+
     const names = [...new Set([leaderName, ...input.members.map((member) => member.trim())])];
     const available = new Set(agentRegistry.getAvailableAgents().map((agent) => agent.name));
     const disabled = new Set(useSettingsStore.getState().disabledAgents);
@@ -93,9 +99,6 @@ export const saveTeamTool: ToolDefinition = {
       // Re-read after identity writes: another caller may have saved this name.
       const store = useTeamStore.getState();
       const existing = store.teams.find((team) => team.name === name);
-      // Built-ins are read-only, and the store's updateTeam would silently drop
-      // this patch — refuse out loud instead of reporting a roster nobody wrote.
-      if (existing && isBuiltinTeam(existing)) return format(t.builtinTeamReadOnly, { name: existing.name });
       const id = existing ? existing.id : store.createTeam(fields).id;
       if (existing) store.updateTeam(id, fields);
       const saved = useTeamStore.getState().teams.find((team) => team.id === id)!;

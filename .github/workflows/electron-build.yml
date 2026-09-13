@@ -63,6 +63,13 @@ on:
       - 'vite.config.ts'
       - 'tsconfig*.json'
 
+# Cancel a superseded run when the same pull request is pushed again. Keyed on
+# github.sha off pull requests so successive dev pushes never queue behind each
+# other; see ci.yml for the full reasoning.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

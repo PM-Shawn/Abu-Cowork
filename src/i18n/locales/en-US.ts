@@ -1474,8 +1474,6 @@ const enUS: TranslationDict = {
     editInvalidMembers: 'These members are no longer available. They stay on the team unless you remove them:',
     teamsEmpty: 'No expert teams yet',
     teamsEmptyHint: 'An expert team is a leader plus a few experts. @ the expert team in a conversation; you only talk to the leader.',
-    groupMine: 'Mine',
-    groupMarket: 'Marketplace',
     memberDisabled: 'Disabled',
     memberDisabledHint: 'Disabled under Experts; skipped when the leader delegates',
     leaderDisabledHint: 'The leader is disabled — enable it under Experts first',
@@ -3193,7 +3191,7 @@ const enUS: TranslationDict = {
     team: {
       invalidInput: 'Error: Provide an expert team name, leader name and member list, and check the format of the display fields.',
       unavailableAgents: 'Error: These experts do not exist or are unavailable: {names}. Check their names; the expert team has not been saved.',
-      builtinTeamReadOnly: 'Error: "{name}" is a built-in expert team and cannot be modified; pick another name to create one.',
+      builtinTeamReadOnly: 'Error: "{name}" is a Marketplace expert team and cannot be modified; pick another name to create one.',
       saved: 'Expert team "{name}" saved. Leader: {leader}, {count} members. Plan approval: {approval}.',
       approvalOn: 'on',
       approvalOff: 'off',

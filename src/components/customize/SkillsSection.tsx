@@ -147,10 +147,16 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     // shadowed built-ins from resurrecting that group on their own.
     if (source === 'mine') return [];
     const q = searchLower;
-    return skillLoader.getShadowedSkills().filter((s) =>
-      s.source === 'builtin' && (!q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)),
-    );
-  }, [skills, searchLower, source]); // eslint-disable-line react-hooks/exhaustive-deps
+    return skillLoader.getShadowedSkills().filter((s) => {
+      if (s.source !== 'builtin') return false;
+      // The hint says the live copy is under 「我的」. When the winner is a
+      // plugin skill it sits on this same shelf, so the card would mislead —
+      // the plugin card already represents that name here.
+      const winner = installedSkills.find((w) => w.name === s.name);
+      if (winner && sourceToUXCategory(winner.source) === 'builtin') return false;
+      return !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
+    });
+  }, [skills, installedSkills, searchLower, source]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
 

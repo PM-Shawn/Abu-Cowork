@@ -1475,8 +1475,6 @@ const zhCN: TranslationDict = {
     editInvalidMembers: '以下成员已失效。保存时会保留，除非你移除：',
     teamsEmpty: '还没有专家团',
     teamsEmptyHint: '专家团 = 一个队长带几名专家。在对话里 @专家团 派活，你只和队长沟通。',
-    groupMine: '我的',
-    groupMarket: '市场',
     memberDisabled: '已停用',
     memberDisabledHint: '在「专家」里被停用了，派活时会跳过',
     leaderDisabledHint: '队长已停用，先去「专家」里启用',
@@ -3195,7 +3193,7 @@ const zhCN: TranslationDict = {
     team: {
       invalidInput: 'Error: 请提供专家团名、队长名和成员名单，并检查展示内容的格式。',
       unavailableAgents: 'Error: 这些专家不存在或目前不可用：{names}。请检查名字，专家团尚未保存。',
-      builtinTeamReadOnly: 'Error: 「{name}」是内置专家团，不能修改；换一个名字新建。',
+      builtinTeamReadOnly: 'Error: 「{name}」是市场里的专家团，不能修改；换一个名字新建。',
       saved: '专家团「{name}」已保存。队长：{leader}，{count} 名成员。分工先经我确认：{approval}。',
       approvalOn: '开启',
       approvalOff: '关闭',

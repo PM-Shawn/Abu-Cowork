@@ -227,3 +227,21 @@ describe('SkillsSection · system skill protection', () => {
     expect(screen.getByText(tb().deleteItem)).toBeVisible();
   });
 });
+
+describe('SkillsSection · shadowed built-ins on 市场', () => {
+  it('keeps a built-in covered by a user skill, marked, but not one covered by a plugin skill on the same shelf', () => {
+    // docx: the winner is the user's copy (lives under 我的) → the 市场 card
+    // stays, marked 已被覆盖. weather-report: the winner is a plugin skill,
+    // which is already a card on this very shelf → no second, misleading card.
+    vi.spyOn(skillLoader, 'getShadowedSkills').mockReturnValue([
+      full(meta('docx', 'builtin')),
+      full(meta('weather-report', 'builtin')),
+    ]);
+    render(<SkillsSection source="market" />);
+    const covered = screen.getByTestId('skill-shadowed-docx');
+    expect(within(covered).getByText(tb().skillShadowedBadge)).toBeInTheDocument();
+    expect(screen.queryByTestId('skill-shadowed-weather-report')).toBeNull();
+    // The plugin's own card is the one that represents weather-report here.
+    expect(screen.getByText('weather-report')).toBeInTheDocument();
+  });
+});

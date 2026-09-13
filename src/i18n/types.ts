@@ -1911,8 +1911,6 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    groupMine: string;
-    groupMarket: string;
     memberDisabled: string;
     memberDisabledHint: string;
     leaderDisabledHint: string;

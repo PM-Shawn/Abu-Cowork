@@ -7,10 +7,27 @@ import AgentAvatar, { userAgentAvatar } from './AgentAvatar';
 describe('AgentAvatar', () => {
   afterEach(cleanup);
 
-  it('shows the default mark for builtin/marketplace presets even when they ship an emoji', () => {
-    expect(userAgentAvatar({ avatar: '📊', filePath: '__builtin__' })).toBeNull();
-    render(<AgentAvatar agent={{ name: '数据分析师', avatar: '📊', filePath: '__builtin__' }} />);
+  // Ruling 2026-09-13: the built-in and marketplace presets carry their own
+  // icon references, so an avatar renders wherever it came from. One rule for
+  // every source; only an expert without an avatar gets the robot mark.
+  it("renders a builtin preset's icon reference", () => {
+    expect(userAgentAvatar({ avatar: 'icon:code/blue', filePath: '__builtin__' })).toBe('icon:code/blue');
+    render(<AgentAvatar agent={{ name: '高级开发工程师', avatar: 'icon:code/blue', filePath: '__builtin__' }} />);
+    expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'icon');
+    expect(screen.getByTestId('agent-avatar').querySelector('svg')).not.toBeNull();
+    expect(screen.getByTestId('agent-avatar').textContent).not.toContain('icon:');
+  });
+
+  it('still shows the default mark for a builtin expert with no avatar', () => {
+    expect(userAgentAvatar({ filePath: '__builtin__' })).toBeNull();
+    render(<AgentAvatar agent={{ name: '产品经理', filePath: '__builtin__' }} />);
     expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'default');
+  });
+
+  it('no longer suppresses an emoji just because the agent is builtin', () => {
+    render(<AgentAvatar agent={{ name: '数据分析师', avatar: '📊', filePath: '__builtin__' }} />);
+    expect(screen.getByTestId('agent-avatar')).toHaveAttribute('data-avatar-kind', 'emoji');
+    expect(screen.getByTestId('agent-avatar')).toHaveTextContent('📊');
   });
 
   it("shows the user's own emoji for their agents, default when unset", () => {

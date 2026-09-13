@@ -13,7 +13,9 @@ describe('expert first contact', () => {
     expect(expertIdentity({ ...agent, name: 'renamed' }, 'en-US').key).toBe('agent:role:r1');
     expect(expertIdentity({ ...agent, roleId: undefined }, 'en-US').key).toBe('agent:file:/agents/analyst/AGENT.md');
     expect(expertIdentity({ ...agent, filePath: '__builtin__' }, 'en-US')).toMatchObject({ key: 'agent:builtin:analyst' });
-    expect(expertIdentity({ ...agent, filePath: '__builtin__' }, 'en-US').avatar).toBeUndefined();
+    // Ruling 2026-09-13: the preset experts have icons of their own, so the
+    // greeting identity carries a built-in expert's avatar too.
+    expect(expertIdentity({ ...agent, filePath: '__builtin__' }, 'en-US').avatar).toBe('icon:code/blue');
     expect(expertIdentity({ ...agent, source: { kind: 'plugin', plugin: 'p1' } }, 'en-US').key).not.toBe(expertIdentity({ ...agent, source: { kind: 'plugin', plugin: 'p2' } }, 'en-US').key);
   });
 

@@ -16,7 +16,11 @@ export function expertIdentity(agent: SubagentDefinition, locale: 'zh-CN' | 'en-
     kind: 'agent',
     name: agent.displayNames?.[locale] ?? agent.name,
     agentName: agent.name,
-    ...(!builtin && typeof agent.avatar === 'string' ? { avatar: agent.avatar } : {}),
+    // Every expert's own avatar travels with the identity, built-in ones
+    // included: the presets carry `icon:<icon>/<tint>` references of their own
+    // (user ruling 2026-09-13), so the greeting bubble must not fall back to
+    // the generic mark while the expert's card shows its icon.
+    ...(typeof agent.avatar === 'string' ? { avatar: agent.avatar } : {}),
   };
 }
 

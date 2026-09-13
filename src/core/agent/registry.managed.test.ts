@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentRegistry, getBuiltinAgentNames } from './registry'
 import { resolveSubagentToolNames } from '@/core/agent/subagentToolRoster'
 import { agentToolPolicyForRoute, resolveAgentToolNames } from '@/core/agent/agentToolPolicy'
+import { parseAvatarValue } from '@/core/team/avatarPresets'
 import type { SubagentDefinition } from '@/types'
 
 function definition(ready = true): SubagentDefinition {
@@ -94,6 +95,33 @@ describe('builtin Agent tool boundaries', () => {
         type: 'agent', name: agent.name, definition: agent, cleanInput: '',
       })!)).toEqual({ toolNames: runtimeTools })
     }
+  })
+})
+
+describe('builtin expert avatars', () => {
+  // Ruling 2026-09-13: every preset expert carries an icon of its own instead
+  // of the uniform robot mark. Pinning the parse — not the literal strings —
+  // catches a raw emoji or a typo'd icon/tint sneaking back in, since either
+  // degrades to `default` at render time without failing anything else.
+  it('gives every built-in expert but the root agent an icon reference', () => {
+    const registry = new AgentRegistry()
+    ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+    const experts = registry.getAvailableAgents()
+      .map(item => registry.getAgent(item.name)!)
+      .filter(agent => agent.name !== 'abu')
+
+    expect(experts).toHaveLength(5)
+    expect(experts.map(agent => [agent.name, parseAvatarValue(agent.avatar).kind])).toEqual(
+      experts.map(agent => [agent.name, 'icon']),
+    )
+  })
+
+  // The root agent renders its own mascot image, keyed off the name, so its
+  // avatar field is deliberately not an icon reference.
+  it('leaves the root agent alone', () => {
+    const registry = new AgentRegistry()
+    ;(registry as unknown as { registerBuiltins: () => void }).registerBuiltins()
+    expect(parseAvatarValue(registry.getAgent('abu')?.avatar).kind).toBe('emoji')
   })
 })
 

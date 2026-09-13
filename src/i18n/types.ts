@@ -1872,7 +1872,6 @@ export interface TranslationDict {
     fieldSamplePrompts: string;
     fieldLinesHint: string;
     fieldSamplePromptsHint: string;
-    detailIntro: string;
     detailExpertise: string;
     detailSamplePrompts: string;
     fieldMembers: string;

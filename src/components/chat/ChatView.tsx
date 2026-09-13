@@ -1440,7 +1440,7 @@ export default function ChatView({
             {/* Scenario Guide */}
             {pendingAgent || welcomeTeam ? (
               !!expertPrompts?.length && guideVisible && <div className="flex flex-wrap gap-2 mt-4" data-testid="expert-prompts">
-                {expertPrompts.map((prompt, index) => <Button key={index} variant="outline" className="h-auto whitespace-normal text-left border-[var(--abu-border-subtle)] dark:border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] dark:bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)] shadow-none hover:bg-[var(--abu-bg-hover)] hover:border-[var(--abu-border-hover)]" onClick={() => handleSelectPrompt(prompt)}>{prompt}</Button>)}
+                {expertPrompts.map((prompt, index) => <Button key={index} variant="subtle" className="h-auto whitespace-normal text-left" onClick={() => handleSelectPrompt(prompt)}>{prompt}</Button>)}
               </div>
             ) : <ScenarioGuide
               onSelectPrompt={handleSelectPrompt}

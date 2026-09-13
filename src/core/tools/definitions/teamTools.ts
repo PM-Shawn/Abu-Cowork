@@ -47,7 +47,10 @@ export const saveTeamTool: ToolDefinition = {
       || (input.requirePlanApproval !== undefined && typeof input.requirePlanApproval !== 'boolean')) {
       return t.invalidInput;
     }
-    if (typeof input.avatar === 'string' && !isValidNewAvatar(input.avatar.trim())) return t.invalidInput;
+    // Name the field that failed, with the accepted icon and tint names — the
+    // generic message above covers six fields at once and leaves the model
+    // guessing. Same text save_agent returns for the same rejection.
+    if (typeof input.avatar === 'string' && !isValidNewAvatar(input.avatar.trim())) return getI18n().toolResult.agent.errInvalidAvatar;
 
     const names = [...new Set([leaderName, ...input.members.map((member) => member.trim())])];
     const available = new Set(agentRegistry.getAvailableAgents().map((agent) => agent.name));

@@ -1440,7 +1440,6 @@ const enUS: TranslationDict = {
     fieldSamplePrompts: 'Suggested questions (optional)',
     fieldLinesHint: 'One per line',
     fieldSamplePromptsHint: 'One per line; clicking only prefills a new conversation without sending',
-    detailIntro: 'Introduction',
     detailExpertise: 'Expertise',
     detailSamplePrompts: 'Try asking',
     fieldMembers: 'Members',

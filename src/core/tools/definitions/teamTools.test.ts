@@ -17,6 +17,7 @@ vi.mock('@/stores/settingsStore', () => ({ useSettingsStore: { getState: () => (
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { useTeamStore } from '@/stores/teamStore';
 import { saveTeamTool } from './teamTools';
+import { getI18n } from '@/i18n';
 
 const input = { name: 'Data team', leader: 'Analyst', members: ['Fetcher'] };
 
@@ -77,6 +78,17 @@ describe('save_team', () => {
     delete agents.Fetcher.roleId;
     const out = await saveTeamTool.execute({ ...input, avatar }, {});
     expect(String(out)).toContain('Error:');
+    expect(useTeamStore.getState().teams).toEqual([]);
+    expect(writeTextFile).not.toHaveBeenCalled();
+  });
+
+  // The generic "check the format of the display fields" message left the model
+  // guessing which field was wrong; save_agent already answers that with the
+  // accepted icon and tint names, so save_team says the same thing.
+  it('names the avatar, and lists the presets, when the avatar is what failed', async () => {
+    const out = await saveTeamTool.execute({ ...input, avatar: 'icon:unknown/blue' }, {});
+    expect(String(out)).toBe(getI18n().toolResult.agent.errInvalidAvatar);
+    expect(String(out)).not.toBe(getI18n().toolResult.team.invalidInput);
     expect(useTeamStore.getState().teams).toEqual([]);
     expect(writeTextFile).not.toHaveBeenCalled();
   });

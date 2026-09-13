@@ -116,7 +116,33 @@ export function partializeTeamState(state: { teams: Team[] }): { teams: Team[] }
 export function mergeTeamState(persisted: unknown, current: TeamStore): TeamStore {
   const stored = (persisted ?? {}) as Partial<{ teams: Team[] }>;
   const userTeams = (stored.teams ?? []).filter((t) => !isBuiltinTeam(t));
-  return { ...current, teams: [...userTeams, ...BUILTIN_TEAMS] };
+  return { ...current, teams: [...dedupeNames(userTeams), ...BUILTIN_TEAMS] };
+}
+
+/**
+ * The third door onto a duplicate name, and the only one the user does not
+ * open themselves: the shipped roster grows between versions (v0.43 added
+ * 财务对账专家团 and 招聘专家团), so a team the user named first can collide
+ * with a built-in that did not exist when they created it. Left alone, the two
+ * render identically, `save_team` can only ever reach one of them, and the
+ * user's own team becomes permanently unsavable because every edit trips the
+ * duplicate guard.
+ *
+ * The shipped name wins — it is the one the changelog, the docs and other
+ * teams refer to — and the user's team keeps all of its content under a
+ * numbered name, the way WorkBuddy suffixes a colliding team rather than
+ * dropping it. Renaming happens once: the next hydration finds no collision.
+ */
+function dedupeNames(teams: Team[]): Team[] {
+  const taken = new Set(BUILTIN_TEAMS.map((team) => team.name));
+  return teams.map((team) => {
+    if (!taken.has(team.name)) { taken.add(team.name); return team; }
+    let suffix = 2;
+    while (taken.has(`${team.name} ${suffix}`)) suffix += 1;
+    const name = `${team.name} ${suffix}`;
+    taken.add(name);
+    return { ...team, name };
+  });
 }
 
 export const useTeamStore = create<TeamStore>()(
@@ -170,7 +196,9 @@ export const useTeamStore = create<TeamStore>()(
               // Read-only in the UI; the run may still record its last split.
               return patch.lastPlan ? { ...t, lastPlan: patch.lastPlan } : t;
             }
-            const next = { ...t, ...patch };
+            // Store what the guard checked: an untrimmed write would slip a
+            // trailing space past the next `createTeam` comparison.
+            const next = { ...t, ...patch, ...(wanted ? { name: wanted } : {}) };
             // The leader is always a member.
             next.memberRoleIds = Array.from(new Set([next.leaderRoleId, ...next.memberRoleIds]));
             return next;

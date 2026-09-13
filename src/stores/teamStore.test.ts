@@ -81,6 +81,12 @@ describe('teamStore', () => {
       expect(useTeamStore.getState().teams[0].leaderNote).toBe('先对齐口径');
     });
 
+    it('stores the trimmed name the guard checked', () => {
+      const team = useTeamStore.getState().createTeam({ name: '数据小队', leaderRoleId: 'role-a', memberRoleIds: [] });
+      useTeamStore.getState().updateTeam(team.id, { name: '增长小队 ' });
+      expect(useTeamStore.getState().teams[0].name).toBe('增长小队');
+    });
+
     it('leaves patches that carry no name alone', () => {
       useTeamStore.getState().createTeam({ name: '数据小队', leaderRoleId: 'role-a', memberRoleIds: [] });
       const second = useTeamStore.getState().createTeam({ name: '增长小队', leaderRoleId: 'role-b', memberRoleIds: [] });
@@ -102,6 +108,32 @@ describe('teamStore', () => {
      * list instead of vanishing: they asked to archive it, never to erase it,
      * and an upgrade must not delete their data on its own.
      */
+    it('renames a user team that a newly shipped built-in collided with', () => {
+      // The roster grows between versions: a team the user named first can
+      // collide with a built-in that did not exist when they created it.
+      const mine: Team = { id: 'mine', name: SOFTWARE_RD_TEAM.name, leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1, description: '我写的' };
+      const merged = mergeTeamState({ teams: [mine] }, useTeamStore.getState());
+      const kept = merged.teams.find((t) => t.id === 'mine')!;
+      expect(kept.name).toBe(`${SOFTWARE_RD_TEAM.name} 2`);
+      // Renamed, not dropped: everything the user wrote survives.
+      expect(kept.description).toBe('我写的');
+      expect(merged.teams.filter((t) => t.name === SOFTWARE_RD_TEAM.name)).toHaveLength(1);
+    });
+
+    it('leaves a user team alone once it no longer collides', () => {
+      const renamed: Team = { id: 'mine', name: `${SOFTWARE_RD_TEAM.name} 2`, leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1 };
+      const merged = mergeTeamState({ teams: [renamed] }, useTeamStore.getState());
+      expect(merged.teams.find((t) => t.id === 'mine')!.name).toBe(`${SOFTWARE_RD_TEAM.name} 2`);
+    });
+
+    it('separates two persisted user teams that already share a name', () => {
+      const a: Team = { id: 'a', name: '数据小队', leaderRoleId: 'role-a', memberRoleIds: ['role-a'], createdAt: 1 };
+      const b: Team = { id: 'b', name: '数据小队', leaderRoleId: 'role-b', memberRoleIds: ['role-b'], createdAt: 2 };
+      const merged = mergeTeamState({ teams: [a, b] }, useTeamStore.getState());
+      expect(merged.teams.find((t) => t.id === 'a')!.name).toBe('数据小队');
+      expect(merged.teams.find((t) => t.id === 'b')!.name).toBe('数据小队 2');
+    });
+
     it('migration keeps previously archived teams, minus the field', () => {
       const out = migrateTeamState({ teams: [{ id: '1', name: 'old', leaderRoleId: 'r', memberRoleIds: [], createdAt: 1, archivedAt: 99 }] }) as unknown as { teams: Array<Record<string, unknown>> };
       expect(out.teams).toHaveLength(1);

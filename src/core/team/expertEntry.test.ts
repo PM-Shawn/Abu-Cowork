@@ -38,4 +38,19 @@ describe('expert detail entry', () => {
     expect(readComposerDraft(key).selectedAgent).toBeNull();
     expect(useChatStore.getState().pendingTeamId).toBe('t1');
   });
+  // The composer chip draws the expert's avatar, so the entry path has to hand
+  // it the identity's avatar — otherwise the greeting bubble shows the real
+  // icon while the chip below it falls back to the default mark.
+  it('carries the expert avatar into the composer chip draft, and leaves team entries without one', () => {
+    prepareExpertEntry({ ...contact, identity: { ...contact.identity, avatar: 'icon:code/blue' } });
+    expect(readComposerDraft(key).selectedAgent).toMatchObject({ name: 'analyst', avatar: 'icon:code/blue' });
+
+    // An expert with no avatar of its own leaves the field unset (default mark).
+    prepareExpertEntry(contact);
+    expect(readComposerDraft(key).selectedAgent?.avatar).toBeUndefined();
+
+    // A team entry pins the team instead of selecting an agent — no chip avatar.
+    prepareExpertEntry({ identity: { key: 'team:t2', kind: 'team', name: 'Team', avatar: '\u{1F465}' }, introduction: 'Hello' });
+    expect(readComposerDraft(key).selectedAgent).toBeNull();
+  });
 });

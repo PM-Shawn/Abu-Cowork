@@ -13,8 +13,11 @@ export function prepareExpertEntry(contact: ExpertContact, prompt?: string): voi
     || draft.references.length > 0 || chat.pendingReferences.length > 0
     || chat.pendingAttachmentRequests.some((request) => request.draftKey === key);
   const agent = contact.identity.agentName;
+  // The chip renders the expert's avatar, so it has to travel with the draft —
+  // otherwise the greeting bubble above shows the real icon while the chip
+  // below falls back to the default mark.
   writeComposerDraft(key, { ...draft, text: task, selectedSkill: null,
-    selectedAgent: agent ? { name: agent, description: '' } : null });
+    selectedAgent: agent ? { name: agent, description: '', avatar: contact.identity.avatar } : null });
   // Route setters invalidate any old greeting. Install the new snapshot last.
   chat.startNewConversation();
   chat.setPendingTeamId(contact.identity.kind === 'team' ? contact.identity.key.slice('team:'.length) : undefined);

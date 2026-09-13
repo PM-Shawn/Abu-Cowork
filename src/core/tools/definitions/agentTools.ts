@@ -21,7 +21,6 @@ import { createSubagentController } from '../../agent/subagentAbort';
 import { takeDispatchInstructionReport } from '../../agent/dispatchInstructionReport';
 import { useChatStore } from '../../../stores/chatStore';
 import { useSettingsStore } from '../../../stores/settingsStore';
-import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useDiscoveryStore } from '../../../stores/discoveryStore';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { ITEM_NAME_RE, AGENT_NAME_RE, isItemNameTaken } from '../../../utils/validation';
@@ -288,13 +287,6 @@ export const delegateToAgentTool: ToolDefinition = {
         const presetList = Object.keys(PRESET_AGENTS).join(', ');
         const t = getI18n().toolResult.agent;
         return format(t.errAgentNotFound, { agentName, available: available || getI18n().toolResult.valueNone, presetList });
-      }
-
-      // Check if disabled
-      const { disabledAgents } = getSettingsReader().getSnapshot();
-      if (disabledAgents.includes(agentName)) {
-        const t = getI18n().toolResult.agent;
-        return format(t.errAgentDisabled, { agentName });
       }
     } else {
       return getI18n().toolResult.agent.errMustSpecifyAgent;

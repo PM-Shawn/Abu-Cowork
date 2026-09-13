@@ -214,16 +214,15 @@ export function routeInput(input: string): RouteResult {
         }
       }
       if (agent && agent.name !== 'abu') {
-        // Check if disabled
-        const disabledAgents = getSettingsReader().getSnapshot().disabledAgents ?? [];
-        if (!disabledAgents.includes(agent.name)) {
-          return {
-            type: 'delegate',
-            name: agent.name,
-            delegateAgent: agent,
-            cleanInput: taskText || `@${agent.name}`,
-          };
-        }
+        // `disabledAgents` only keeps an expert out of Abu's automatic
+        // delegation pool — an explicit `@name` is the user asking for it by
+        // hand, so it always routes.
+        return {
+          type: 'delegate',
+          name: agent.name,
+          delegateAgent: agent,
+          cleanInput: taskText || `@${agent.name}`,
+        };
       }
     }
   }

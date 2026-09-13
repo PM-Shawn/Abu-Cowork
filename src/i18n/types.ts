@@ -1911,9 +1911,6 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    memberDisabled: string;
-    memberDisabledHint: string;
-    leaderDisabledHint: string;
     /** Follow-up chips under a finished team turn. */
     followUpRedoStep: string;
     followUpMemberRevise: string;
@@ -2406,8 +2403,9 @@ export interface TranslationDict {
     agentExpertisePlaceholder: string;
     agentSamplePromptsPlaceholder: string;
     agentTagsPlaceholder: string;
-    agentEnabled: string;
-    agentDisabled: string;
+    agentAutoDispatch: string;
+    agentAutoDispatchHint: string;
+    agentAutoDispatchOff: string;
     agentCategoryAll: string;
     agentCategoryResearch: string;
     agentCategoryDevelopment: string;
@@ -4094,8 +4092,6 @@ export interface TranslationDict {
       // delegate_to_agent
       /** Error: agent not found. {agentName}, {available}, {presetList} */
       errAgentNotFound: string;
-      /** Error: agent disabled. {agentName} */
-      errAgentDisabled: string;
       errNotTeamMember: string;
       /** Team run hit its hand-off cap (teamRunBounds). */
       errDispatchCapReached: string;
@@ -4181,8 +4177,6 @@ export interface TranslationDict {
       errTaskEmpty: string;
       /** Error: agent not found in batch task. {i}, {agentName}, {available}, {presetList} */
       errBatchAgentNotFound: string;
-      /** Error: agent disabled in batch task. {i}, {agentName} */
-      errBatchAgentDisabled: string;
       errBatchNotTeamMember: string;
       errBatchDispatchCapReached: string;
       errBatchMemberBlocked: string;

@@ -136,11 +136,13 @@ describe('save_team', () => {
     expect(useTeamStore.getState().teams).toEqual([]);
   });
 
-  it('rejects disabled members like the manual picker', async () => {
+  // 停用 only removes an expert from Abu's automatic delegation pool — a team
+  // names its members by hand, so save_team must still accept them.
+  it('accepts members off the auto-dispatch pool', async () => {
     disabled.push('Fetcher');
-    const out = await saveTeamTool.execute(input, {});
-    expect(String(out)).toContain('Fetcher');
-    expect(useTeamStore.getState().teams).toEqual([]);
+    await saveTeamTool.execute(input, {});
+    expect(useTeamStore.getState().teams).toHaveLength(1);
+    expect(useTeamStore.getState().teams[0].memberRoleIds).toContain('role-fetch');
   });
 
   // A built-in team is read-only, and `updateTeam` would silently drop the

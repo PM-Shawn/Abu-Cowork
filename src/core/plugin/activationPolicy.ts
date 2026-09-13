@@ -18,7 +18,6 @@ interface ChildPreferences {
   skills?: Array<{ name: string; skillDir: string }>;
   agents?: Array<{ name: string; filePath: string }>;
   disabledSkills: string[];
-  disabledAgents: string[];
   servers: Record<string, { config: { enabled?: boolean } }>;
 }
 const normalized = (path: string) => normalizeSeparators(path).replace(/\/$/, '');
@@ -34,7 +33,7 @@ export function reconcilePluginActivation(
     const agentFiles = plugin.contributed.agents.flatMap(name => ['AGENT.md', 'agent.md'].map(file => joinPath(home, '.abu/agents', name, file)));
     const enabled = old?.enabled ?? (
       (prefs.skills ?? []).some(skill => ownsSkill({ root, skillDirs, legacySkills: plugin.skillPaths === undefined }, normalized(skill.skillDir)) && !prefs.disabledSkills.includes(skill.name)) ||
-      (prefs.agents ?? []).some(agent => agentFiles.includes(normalized(agent.filePath)) && !prefs.disabledAgents.includes(agent.name)) ||
+      (prefs.agents ?? []).some(agent => agentFiles.includes(normalized(agent.filePath))) ||
       plugin.contributed.mcpServers.some(name => prefs.servers[name]?.config.enabled === true)
     );
     const activation = { enabled, root, skillDirs, legacySkills: plugin.skillPaths === undefined, agentFiles, mcpServers: [...plugin.contributed.mcpServers] };

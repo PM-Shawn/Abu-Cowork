@@ -45,6 +45,31 @@ describe('AgentAvatar', () => {
     expect(screen.getByAltText('Abu')).toBeInTheDocument();
   });
 
+  // Ruling 2026-09-14: on the expert card and the detail header the avatar
+  // fills the grey slot (40px / 56px) instead of sitting in it as a smaller
+  // tinted box. The slots themselves stay — skills and plugins still use them.
+  it('fills the 40px card slot at size="xl"', () => {
+    render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} size="xl" />);
+    const box = screen.getByTestId('agent-avatar');
+    expect(box.className).toContain('h-10 w-10');
+    expect(box.querySelector('svg')?.getAttribute('class')).toContain('h-5 w-5');
+  });
+
+  it('fills the 56px detail slot at size="2xl", matching its radius', () => {
+    render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} size="2xl" />);
+    const box = screen.getByTestId('agent-avatar');
+    expect(box.className).toContain('h-14 w-14');
+    expect(box.querySelector('svg')?.getAttribute('class')).toContain('h-6 w-6');
+    // The detail slot is rounded-2xl and has no overflow-hidden: a rounded-lg
+    // avatar would leave grey corners showing through.
+    expect(box.className).toContain('rounded-2xl');
+  });
+
+  it('stays a circle at size="2xl" when round', () => {
+    render(<AgentAvatar agent={{ name: 'coder', avatar: 'icon:code/blue' }} size="2xl" round />);
+    expect(screen.getByTestId('agent-avatar').className).toContain('rounded-full');
+  });
+
   it.each([
     ['icon:code/purple', 'icon'],
     ['icon:code/missing', 'default'],

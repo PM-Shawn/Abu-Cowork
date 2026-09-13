@@ -32,6 +32,8 @@ import { useBatchProgressStore } from '../../../stores/batchProgressStore';
 import { useChatStore } from '../../../stores/chatStore';
 import { makeBatchKey, type BatchIdentity } from '../../../types';
 import { clearLoopContext, setLoopContext } from '../../agent/permissionBridge';
+import { agentRegistry } from '../../agent/registry';
+import { useSettingsStore } from '../../../stores/settingsStore';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
 const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
@@ -233,6 +235,36 @@ describe('runAgentBatchTool progress wiring', () => {
       expect(findMissingExpectedFilesMock).toHaveBeenCalledTimes(2);
     } finally {
       clearLoopContext('loop-files');
+    }
+  });
+
+  // `disabledAgents` means only "not in the automatic-delegation pool". A batch
+  // task that names such an expert explicitly asked for it, so it is dispatched
+  // like any other — the tool must not refuse it.
+  it('dispatches a batch task naming an expert that is off the auto-dispatch pool', async () => {
+    const previousDisabledAgents = useSettingsStore.getState().disabledAgents;
+    useSettingsStore.setState({ disabledAgents: ['reviewer'] });
+    vi.spyOn(agentRegistry, 'getAgent').mockReturnValue({
+      name: 'reviewer',
+      description: 'test',
+      systemPrompt: 'test',
+    } as never);
+    vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(subagentResult('done', 'completed'));
+    installTrustedLoop('conv-off-pool', 'loop-off-pool');
+    try {
+      const report = await runAgentBatchTool.execute(
+        { tasks: [{ agent_name: 'reviewer', task: 'review this' }] },
+        { conversationId: 'conv-off-pool', loopId: 'loop-off-pool', toolCallId: 'batch-off-pool' },
+      );
+      expect(String(report)).not.toContain('已被停用');
+      expect(String(report)).not.toContain('is disabled');
+      expect(subagentRunner.runSubagent).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(subagentRunner.runSubagent).mock.calls[0][0]).toEqual(
+        expect.objectContaining({ agent: expect.objectContaining({ name: 'reviewer' }) }),
+      );
+    } finally {
+      useSettingsStore.setState({ disabledAgents: previousDisabledAgents });
+      clearLoopContext('loop-off-pool');
     }
   });
 

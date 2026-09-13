@@ -7,7 +7,7 @@
  * (a plugin's file comes back on the next refresh).
  */
 
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -144,10 +144,10 @@ describe('AgentsSection — the 我的 empty state tells the truth', () => {
 });
 
 /**
- * The card is avatar + name + description + switch. The tool count and the
- * source line moved to the detail view so a six-character name survives four
- * columns; the only badge left is the warning for a tools field Abu could not
- * read, since that is an error the user has to go fix, not information.
+ * The card is avatar + name + description. The tool count and the source line
+ * moved to the detail view so a six-character name survives four columns; what
+ * is left is the warning for a tools field Abu could not read, since that is an
+ * error the user has to go fix, not information.
  */
 describe('AgentsSection — what the card row carries', () => {
   it('shows no tool count on a card', () => {
@@ -162,5 +162,74 @@ describe('AgentsSection — what the card row carries', () => {
     expect(screen.getByText('工具配置无效')).toBeInTheDocument();
     // …and only on that card.
     expect(screen.getAllByText('工具配置无效')).toHaveLength(1);
+  });
+
+  it('keeps a visible grey plate under an expert that picked no icon', () => {
+    // The avatar fills the 40px slot now, so it — not the slot — paints what
+    // the user sees. Its own default is `--abu-bg-muted` (#f5f3ee), all but
+    // invisible on a card whose ground is `--abu-bg-subtle` (#f8f8f4), leaving
+    // the robot mark floating. The card asks for the slot's own
+    // `--abu-bg-active` (#f0eee6) back, which is the plate that was there
+    // before the avatar grew.
+    renderShelf('market', [builtinMeta]);
+    const avatar = document.querySelector('[data-testid="agent-avatar"]')!;
+    expect(avatar.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
+  it('keeps that plate under the default avatar in the opened detail too', () => {
+    // Same defect, the other slot: the detail header's plate is 56px, and a
+    // `2xl` avatar covers it exactly, so the header needs the same ask as the
+    // card. The card's own avatar stays in the DOM behind the modal, so pick
+    // the 56px (`h-14`) one.
+    renderShelf('market', [builtinMeta]);
+    fireEvent.click(screen.getByText('产品经理'));
+    const avatar = [...document.querySelectorAll('[data-testid="agent-avatar"]')]
+      .find((el) => el.className.includes('h-14'));
+    expect(avatar).toBeDefined();
+    expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+});
+
+/**
+ * The switch on an expert never meant "this expert is off" — it only says
+ * whether Abu may hand it work on its own. Shown as an on/off switch on the
+ * card it read as a kill switch, so the card only reports the state and the
+ * detail owns the setting.
+ */
+describe('AgentsSection — the switch is an auto-dispatch setting, not an on/off', () => {
+  it('renders no toggle on expert cards; shows a 不自动派单 tag only when the expert is off the pool', () => {
+    useSettingsStore.setState({ disabledAgents: ['reviewer'] });
+    renderShelf('market', [pluginMeta, builtinMeta]);
+    expect(screen.queryAllByRole('switch')).toHaveLength(0);
+    expect(screen.getAllByTestId('agent-auto-dispatch-off')).toHaveLength(1);
+    expect(screen.getByTestId('agent-auto-dispatch-off')).toHaveTextContent('不自动派单');
+  });
+
+  it('lets the two chips wrap — a narrow column costs a line, not the error chip', () => {
+    // 「不自动派单」 and 「工具配置无效」 can land on the same card. The badge is
+    // the slot ToolCard squeezes first (`min-w-0 shrink overflow-hidden`), and
+    // text chips do not shrink — without flex-wrap the second one, the error
+    // the user has to go fix, is what gets cut off.
+    useSettingsStore.setState({ disabledAgents: ['坏工具'] });
+    renderShelf('mine', [badToolsMeta]);
+    expect(screen.getByText('工具配置无效')).toBeInTheDocument();
+    const badge = screen.getByTestId('agent-auto-dispatch-off').parentElement!;
+    expect(badge).toContainElement(screen.getByText('工具配置无效'));
+    expect(badge.className).toContain('flex-wrap');
+  });
+
+  it('detail offers 开始对话 and the auto-dispatch setting even when the expert is off the pool', () => {
+    useSettingsStore.setState({ disabledAgents: ['reviewer'] });
+    renderShelf('market', [pluginMeta]);
+    fireEvent.click(screen.getByText('reviewer'));
+    // 开始对话 is the detail's footer button; being off the pool is not being
+    // off, so it is neither hidden nor disabled.
+    expect(screen.getByTestId('agent-detail-start-chat')).toBeEnabled();
+    const toggle = within(screen.getByTestId('agent-auto-dispatch-setting')).getByRole('switch');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(toggle);
+    expect(useSettingsStore.getState().disabledAgents).toEqual([]);
   });
 });

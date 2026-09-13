@@ -60,29 +60,28 @@ function EmptyState({ icon: Icon, title, hint, action }: {
 }
 
 /**
- * Selectable member pool: every enabled agent — user-defined AND enabled
- * marketplace/builtin roles (user feedback 2026-08-31: office users组队 most
- * often start from 市场 roles). Disabled agents stay out.
+ * Selectable member pool: every agent — user-defined AND marketplace/builtin
+ * roles (user feedback 2026-08-31: office users组队 most often start from 市场
+ * roles). 停用 only keeps an expert out of Abu's automatic delegation, so it
+ * says nothing about who may be picked into a team.
  */
 function useMemberPool(): SubagentDefinition[] {
   const { agents } = useDiscoveryStore();
-  const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   // getAgent hides every file-backed agent until plugin records are ready,
   // which at launch lands after discovery — so readiness is a dependency too.
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
   // Computed during render (not in an effect) so a readiness flip reaches the
   // edit dialog's re-seed in the same commit, with the pool it was waiting for.
   return useMemo(() => {
-    const disabled = new Set(disabledAgents ?? []);
     const list: SubagentDefinition[] = [];
     for (const meta of agents) {
       const a = agentRegistry.getAgent(meta.name);
       if (!a) continue;
-      if (a.name === 'abu' || a.managed || disabled.has(a.name)) continue;
+      if (a.name === 'abu' || a.managed) continue;
       list.push(a);
     }
     return list;
-  }, [agents, disabledAgents, pluginRecordsReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [agents, pluginRecordsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
 function roleLabel(agents: SubagentDefinition[], roleId: string, fallback: string): string {
@@ -146,8 +145,8 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
   const [samplePromptsStr, setSamplePromptsStr] = useState('');
   const [saving, setSaving] = useState(false);
   // Members not offered by the picker fall into two very different buckets:
-  // - hidden: the agent exists but is disabled / managed — still a real member,
-  //   kept and written back untouched;
+  // - hidden: the agent exists but is managed — still a real member, kept and
+  //   written back untouched;
   // - invalid: no live agent answers to the roleId at all (deleted, or edited
   //   before role-id survived edits). Shown below the picker with a remove
   //   action; kept on save unless the user removes it — never dropped silently.
@@ -381,8 +380,6 @@ export default function TeamView() {
   const sources = useExtensionSourceStore((s) => s.sources);
   const setSource = useExtensionSourceStore((s) => s.setSource);
   const teams = useTeamStore((s) => s.teams);
-  const disabledAgents = useSettingsStore((s) => s.disabledAgents);
-  const disabledSet = useMemo(() => new Set(disabledAgents ?? []), [disabledAgents]);
   // Roles resolve through the agent registry, which is not a React-reactive
   // source; subscribe to discovery so the card grid re-renders when the roster
   // changes (same reason useConversationTeam subscribes — useTeamDispatches.ts).
@@ -519,7 +516,7 @@ export default function TeamView() {
               testId: `team-row-${team.name}`,
               name: team.name,
               description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
-              avatar: <TeamAvatar avatar={team.avatar} />,
+              avatar: <TeamAvatar avatar={team.avatar} size="xl" className="bg-[var(--abu-bg-active)]" />,
             }}
             onClick={() => setDetailTeam(team)}
           />
@@ -578,38 +575,25 @@ export default function TeamView() {
         open={!!detailTeam}
         onClose={() => { setDetailTeam(null); setDetailMenuOpen(false); }}
         maxWidth="max-w-2xl"
-        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="lg" /> : undefined}
+        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="2xl" className="bg-[var(--abu-bg-active)]" /> : undefined}
         title={detailTeam?.name}
         subtitle={detailTeam?.description?.trim()}
         // Primary action in the sticky footer, solid — the same place and
         // weight as on the plugin and connector details. The header keeps
         // only the 「…」 menu.
-        footer={detailTeam ? (() => {
-          const leaderAgent = resolveRoleId(detailTeam.leaderRoleId);
-          const leaderDisabled = !!leaderAgent && disabledSet.has(leaderAgent.name);
-          return (
-            <div className="flex items-center justify-end gap-3">
-              {/* The disabled button alone left people hunting for a reason —
-                  a tooltip only shows up if you happen to hover it. */}
-              {leaderDisabled && (
-                <span className="text-caption text-[var(--abu-text-tertiary)]" data-testid="team-leader-disabled-hint">
-                  {t.team.leaderDisabledHint}
-                </span>
-              )}
-              <Button
-                size="sm"
-                className="rounded-xl"
-                onClick={() => startChatWithTeam(detailTeam)}
-                disabled={leaderDisabled}
-                title={leaderDisabled ? t.team.leaderDisabledHint : undefined}
-                data-testid="team-detail-start-chat"
-              >
-                <MessageCircle className="h-3.5 w-3.5" />
-                {t.team.detailStartChat}
-              </Button>
-            </div>
-          );
-        })() : undefined}
+        footer={detailTeam ? (
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              size="sm"
+              className="rounded-xl"
+              onClick={() => startChatWithTeam(detailTeam)}
+              data-testid="team-detail-start-chat"
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              {t.team.detailStartChat}
+            </Button>
+          </div>
+        ) : undefined}
         headerActions={detailTeam ? (() => {
           const readOnly = isBuiltinTeam(detailTeam);
           return (
@@ -667,7 +651,6 @@ export default function TeamView() {
           const skills = [...new Set([leader, ...members.map((m) => m.agent)]
             .flatMap((a) => a?.skills ?? []))].sort();
           const row = (agent: SubagentDefinition | undefined, fallback: string, onPick?: () => void) => {
-            const disabled = !!agent && disabledSet.has(agent.name);
             return (
               <button
                 type="button"
@@ -680,15 +663,6 @@ export default function TeamView() {
                   <span className="block truncate text-body text-[var(--abu-text-primary)]">{agent?.name ?? fallback}</span>
                   {agent?.description && <span className="block truncate text-caption text-[var(--abu-text-tertiary)]">{agent.description}</span>}
                 </span>
-                {disabled && (
-                  <span
-                    className="shrink-0 px-1.5 py-0.5 rounded text-caption font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]"
-                    title={t.team.memberDisabledHint}
-                    data-testid="team-member-disabled"
-                  >
-                    {t.team.memberDisabled}
-                  </span>
-                )}
               </button>
             );
           };

@@ -261,6 +261,38 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-row-数据小队').textContent).toContain('1 名成员');
   });
 
+  it('teams tab: a team that picked no icon keeps a visible grey plate on its card', () => {
+    // Same reason as the expert card: the avatar fills the 40px slot, so its
+    // own `--abu-bg-muted` would sit invisibly on the card's `--abu-bg-subtle`
+    // ground. The card asks for the slot's `--abu-bg-active` plate back.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
+    render(<TeamView />);
+    const avatar = screen.getByTestId('team-row-数据小队').querySelector('[data-testid="team-avatar"]')!;
+    expect(avatar.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
+  it('teams tab: the opened detail keeps that grey plate too', () => {
+    // The detail header's plate is the 56px slot, and a `2xl` avatar covers it
+    // exactly — the same defect as on the card. The card's avatar stays in the
+    // DOM behind the modal, so pick the 56px (`h-14`) one.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.getByTestId('team-detail-start-chat')).toBeTruthy();
+    const avatar = [...document.querySelectorAll('[data-testid="team-avatar"]')]
+      .find((el) => el.className.includes('h-14'));
+    expect(avatar).toBeDefined();
+    expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
   it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {
     localeRef.current = 'en-US';
     settingsState.activeTeamTab = 'teams';
@@ -644,7 +676,7 @@ describe('TeamView', () => {
     });
   });
 
-  describe('disabled members in the team detail', () => {
+  describe('members off the auto-dispatch pool in the team detail', () => {
     const team = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-b'], createdAt: 1 };
 
     beforeEach(() => {
@@ -655,22 +687,15 @@ describe('TeamView', () => {
       useTeamStore.setState({ teams: [team] });
     });
 
-    it('marks a member disabled under 专家 while the team still starts', () => {
-      settingsState.disabledAgents = ['B'];
+    // 停用 is about Abu's automatic delegation only: the team detail shows no
+    // marker for it, and a leader off the pool still starts the team.
+    it('shows no disabled marker and starts the team even when a member is off the auto-dispatch pool', () => {
+      settingsState.disabledAgents = ['B', 'L'];
       render(<TeamView />);
       fireEvent.click(screen.getByTestId('team-row-数据小队'));
-      expect(screen.getByTestId('team-member-disabled')).toHaveTextContent('已停用');
-      expect(screen.getByTestId('team-detail-start-chat')).not.toBeDisabled();
+      expect(screen.queryByTestId('team-member-disabled')).toBeNull();
       expect(screen.queryByTestId('team-leader-disabled-hint')).toBeNull();
-    });
-
-    it('refuses to start the team when its LEADER is disabled, and says why', () => {
-      // A disabled button on its own left people hunting for the reason.
-      settingsState.disabledAgents = ['L'];
-      render(<TeamView />);
-      fireEvent.click(screen.getByTestId('team-row-数据小队'));
-      expect(screen.getByTestId('team-detail-start-chat')).toBeDisabled();
-      expect(screen.getByTestId('team-leader-disabled-hint')).toHaveTextContent('队长已停用，先去「专家」里启用');
+      expect(screen.getByTestId('team-detail-start-chat')).not.toBeDisabled();
     });
   });
 });

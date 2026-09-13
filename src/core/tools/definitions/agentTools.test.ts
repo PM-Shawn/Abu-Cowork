@@ -95,8 +95,9 @@ vi.mock('../../../utils/validation', async () => ({
 vi.mock('../helpers/toolHelpers', () => ({
   getSystemInfoData: vi.fn().mockResolvedValue({ home: '/Users/testuser' }),
 }));
+const disabledAgentsMock = vi.hoisted(() => ({ value: [] as string[] }));
 vi.mock('../../agent/ports/settingsReader', () => ({
-  getSettingsReader: () => ({ getSnapshot: () => ({ disabledAgents: [], disabledSkills: [] }) }),
+  getSettingsReader: () => ({ getSnapshot: () => ({ disabledAgents: disabledAgentsMock.value, disabledSkills: [] }) }),
 }));
 
 const findMissingExpectedFilesMock = vi.fn(async (_files: readonly string[], _ws: string | null | undefined): Promise<string[]> => []);
@@ -108,6 +109,7 @@ vi.mock('../../team/expectedFiles', async () => {
 describe('delegateToAgentTool', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    disabledAgentsMock.value = [];
     const { getCurrentLoopContext, getLoopContext } = await import('../../agent/permissionBridge');
     vi.mocked(getLoopContext).mockImplementation(() => getCurrentLoopContext());
     materializeDelegatedUserTurnMock.mockResolvedValue(Object.freeze({
@@ -291,6 +293,38 @@ describe('delegateToAgentTool', () => {
 
     expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledWith(
       expect.objectContaining({ reportBrowserDenial, reportBrowserAllow }),
+    );
+  });
+
+  // `disabledAgents` means only "not in the automatic-delegation pool". A model
+  // that names such an expert explicitly asked for it, so the delegation runs
+  // like any other — the tool must not refuse it.
+  it('runs an expert that is off the auto-dispatch pool when the model names it', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    disabledAgentsMock.value = ['reviewer'];
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({
+      name: 'reviewer',
+      description: 'test',
+      systemPrompt: 'test',
+    } as never);
+    vi.mocked(createSubagentController).mockReturnValue({
+      signal: new AbortController().signal,
+      cleanup: vi.fn(),
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: 'done', stopReason: 'completed' } as never);
+
+    const result = await delegateToAgentTool.execute(
+      { agent_name: 'reviewer', task: 'review this' },
+      { conversationId: 'conv-1', loopId: 'loop-1' } as never,
+    );
+
+    expect(String(result)).not.toContain('已被停用');
+    expect(String(result)).not.toContain('is disabled');
+    expect(vi.mocked(runSubagentLoop)).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: expect.objectContaining({ name: 'reviewer' }) }),
     );
   });
 

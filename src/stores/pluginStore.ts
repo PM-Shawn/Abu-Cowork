@@ -342,7 +342,6 @@ export const usePluginStore = create<PluginStore>()(
             return agent ? [agent] : [];
           }),
           disabledSkills: settings.disabledSkills,
-          disabledAgents: settings.disabledAgents,
           servers: useMCPStore.getState().servers,
         });
         for (const key of updatingActivation.keys()) {

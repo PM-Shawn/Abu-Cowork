@@ -1,4 +1,4 @@
-export const BUILTIN_AGENT_NAMES = Object.freeze(['abu', '高级开发工程师', '产品经理', '数据分析师', '公众号编辑', 'HR 招聘官', '办公文档专家', '行业调研专家', '网页设计师', '测试工程师', '行政助理']);
+export const BUILTIN_AGENT_NAMES = Object.freeze(['abu', '高级开发工程师', '产品经理', '数据分析师', '公众号编辑', 'HR 招聘官', '办公文档专家', '行业调研专家', '网页设计师', '测试工程师', '行政助理', '财务助理', '合同审阅专家']);
 // Shared pure format used by Electron approval/materialization and renderer.
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 const AGENT_SOURCE_PLUGIN_PREFIX = 'plugin:';

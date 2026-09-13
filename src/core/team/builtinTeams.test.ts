@@ -33,8 +33,8 @@ describe('builtinTeams', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it('ships four teams with copy filled in', () => {
-    expect(BUILTIN_TEAMS).toHaveLength(4);
+  it('ships six teams with copy filled in', () => {
+    expect(BUILTIN_TEAMS).toHaveLength(6);
     for (const team of BUILTIN_TEAMS) {
       expect(team.description).toBeTruthy();
       expect(team.intro).toBeTruthy();

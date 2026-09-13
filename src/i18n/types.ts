@@ -3849,6 +3849,7 @@ export interface TranslationDict {
     team: {
       invalidInput: string;
       unavailableAgents: string;
+      builtinTeamReadOnly: string;
       saved: string;
       approvalOn: string;
       approvalOff: string;

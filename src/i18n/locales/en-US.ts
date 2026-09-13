@@ -3190,6 +3190,7 @@ const enUS: TranslationDict = {
     team: {
       invalidInput: 'Error: Provide an expert team name, leader name and member list, and check the format of the display fields.',
       unavailableAgents: 'Error: These experts do not exist or are unavailable: {names}. Check their names; the expert team has not been saved.',
+      builtinTeamReadOnly: 'Error: "{name}" is a built-in expert team and cannot be modified; pick another name to create one.',
       saved: 'Expert team "{name}" saved. Leader: {leader}, {count} members. Plan approval: {approval}.',
       approvalOn: 'on',
       approvalOff: 'off',

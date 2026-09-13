@@ -19,7 +19,7 @@ import { _electron as electron, type ElectronApplication, type Page } from 'play
  */
 export const REPO_ROOT = process.cwd();
 export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
-const WINDOW_SHOW_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'windowShowRecorder.cjs');
+const MAIN_PROCESS_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'mainProcessRecorder.cjs');
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
@@ -39,19 +39,20 @@ export interface LaunchedApp extends ElectronDataRoot {
 
 export interface LaunchOptions {
   /**
-   * Inject tests/e2e/windowShowRecorder.cjs into the main process ahead of
+   * Inject tests/e2e/mainProcessRecorder.cjs into the main process ahead of
    * electron/main.cjs, so `firstShowRecordFor()` can report where a window was
-   * the moment it first became visible. Opt-in: it is only needed by the specs
-   * that assert on a window's very first frame.
+   * the moment it was first revealed and `windowListenerRegistered()` can read
+   * the host's live event subscriptions. Opt-in: only the specs that assert on
+   * a window's first frame or must sequence a main-process action after a
+   * renderer's `listen()` need it.
    */
-  recordWindowShows?: boolean;
+  recordMainProcess?: boolean;
 }
 
-/** One window's first reveal, as tests/e2e/windowShowRecorder.cjs saw it. */
+/** One window's first reveal, as tests/e2e/mainProcessRecorderCore.cjs saw it. */
 export interface WindowShowRecord {
   id: number;
   shownBounds: { x: number; y: number; width: number; height: number } | null;
-  shownUrl: string | null;
 }
 
 /**
@@ -145,7 +146,7 @@ export async function launchAbuElectron(
       // `-r` modules are required BEFORE the entry point, so a recorder
       // installed here sees every window the app ever creates. Playwright's own
       // loader is unshifted ahead of these args the same way.
-      ...(options.recordWindowShows ? ['-r', WINDOW_SHOW_RECORDER] : []),
+      ...(options.recordMainProcess ? ['-r', MAIN_PROCESS_RECORDER] : []),
       MAIN_ENTRY,
       `--user-data-dir=${dataRoot.userDataDir}`,
       '--lang=zh-CN',
@@ -167,11 +168,14 @@ export async function launchAbuElectron(
  * `urlSuffix` (e.g. '/pet.html'), or null when no such window is open.
  *
  * The live window is matched by URL — settled by the time a spec asserts — and
- * the record is then looked up by `BrowserWindow.id`, so nothing depends on
- * what `webContents.getURL()` happened to return back when the window was first
- * shown. Requires `launchAbuElectron(root, { recordWindowShows: true })`;
- * without it the recorder is absent and this throws rather than reporting a
- * missing window as if it were a product regression.
+ * the record is looked up by `BrowserWindow.id`. The record is complete as
+ * soon as the app has called `show()` / `showInactive()` on the window
+ * (mainProcessRecorderCore.cjs captures at the call, not at Electron's
+ * asynchronous macOS `show` event), so a spec may read it the moment
+ * `isVisible()` reports true. Requires
+ * `launchAbuElectron(root, { recordMainProcess: true })`; without it the
+ * recorder is absent and this throws rather than reporting a missing window as
+ * if it were a product regression.
  */
 export async function firstShowRecordFor(
   app: ElectronApplication,
@@ -183,13 +187,48 @@ export async function firstShowRecordFor(
     }).__abuWindowShowRecords;
     if (!records) {
       throw new Error(
-        'windowShowRecorder.cjs was not injected — launch with { recordWindowShows: true }',
+        'mainProcessRecorder.cjs was not injected — launch with { recordMainProcess: true }',
       );
     }
     const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith(suffix));
     if (!win) return null;
     return records.find((record) => record.id === win.id) ?? null;
   }, urlSuffix);
+}
+
+/**
+ * Whether the renderer of the currently-open window whose URL ends with
+ * `urlSuffix` currently holds a `listen(event)` subscription in the Tauri
+ * bridge. Reads electron/tauriHost.cjs's live registry — the same map its
+ * `deliver()` consults, pruned on `unlisten` and on renderer reload — so a
+ * true answer means a main-process emit of `event` reaches this renderer now.
+ *
+ * Main-process window events (`tauri://move`, …) are delivered only to
+ * subscriptions that already exist, so a spec that triggers one right after
+ * the window appears must poll this first: the renderer's `listen()` is an
+ * IPC round-trip issued from a React effect, and under load it can trail the
+ * window's reveal by seconds (electron/guiHost.cjs `showWhenReady` reveals on
+ * a 1.5 s timeout even if the renderer has not painted). Returns false while
+ * no such window is open. Requires `launchAbuElectron(root, { recordMainProcess: true })`.
+ */
+export async function windowListenerRegistered(
+  app: ElectronApplication,
+  urlSuffix: string,
+  event: string,
+): Promise<boolean> {
+  return app.evaluate(({ BrowserWindow }, { suffix, name }) => {
+    const tauriHostForE2E = (globalThis as typeof globalThis & {
+      __abuTauriHostForE2E?: () => { __test: { subscribedEvents: (sender: unknown) => string[] } };
+    }).__abuTauriHostForE2E;
+    if (!tauriHostForE2E) {
+      throw new Error(
+        'mainProcessRecorder.cjs was not injected — launch with { recordMainProcess: true }',
+      );
+    }
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith(suffix));
+    if (!win) return false;
+    return tauriHostForE2E().__test.subscribedEvents(win.webContents).includes(name);
+  }, { suffix: urlSuffix, name: event });
 }
 
 async function reloadAndWaitForApp(page: Page): Promise<void> {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkDispatchToolBoundary, resolveSubagentToolNames } from './subagentToolRoster';
 import { buildScheduledRunPermissionCeiling, decideToolUnderRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
+import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
 
 const KNOWN_TOOLS = [
   'read_file',
@@ -53,6 +54,53 @@ describe('resolveSubagentToolNames', () => {
     expect(resolveSubagentToolNames(['read_file', 'report_plan'], { tools: ['read_file'] })).toEqual({
       toolNames: ['read_file'],
     });
+  });
+});
+
+// System-configuration tools a member may never hold, however its card, the
+// dispatch call or the model asks. Listed one by one rather than imported from
+// the module under test, so dropping a name from the block list fails here.
+const SYSTEM_CONFIG_TOOLS = [
+  'manage_scheduled_task',
+  'manage_trigger',
+  'manage_file_watch',
+  'manage_mcp_server',
+  'save_agent',
+  'save_team',
+  'skill_manage',
+  'plugin_prepare',
+];
+
+describe('system-configuration tools never reach a member', () => {
+  it.each(SYSTEM_CONFIG_TOOLS)('keeps %s out of a member roster however the member asks for it', (toolName) => {
+    const inventory = ['read_file', toolName];
+    // Inherited roster, an explicit card allowlist, a wildcard card, and a
+    // dispatch-time allowedTools naming it: none of them let it through.
+    expect(resolveSubagentToolNames(inventory, {})).toEqual({ toolNames: ['read_file'] });
+    expect(resolveSubagentToolNames(inventory, { tools: [toolName] })).toEqual({ toolNames: [] });
+    expect(resolveSubagentToolNames(inventory, { tools: ['*'] })).toEqual({ toolNames: ['read_file'] });
+    expect(resolveSubagentToolNames(inventory, {}, [toolName])).toEqual({ toolNames: [] });
+  });
+
+  // The block list is a member rule, not a product rule: the root agent and a
+  // team leader reach their roster through agentToolPolicy, which this list
+  // must not touch — a leader that cannot call save_agent/save_team could not
+  // do the job the create-agent skill asks of it.
+  it.each([
+    ['root agent', false],
+    ['team leader', true],
+  ])('leaves the %s holding every system-configuration tool', (_label, asTeam) => {
+    const inventory = ['read_file', ...SYSTEM_CONFIG_TOOLS];
+    const policy = agentToolPolicyForRoute({
+      type: 'agent',
+      name: 'abu',
+      definition: { name: 'abu', description: 'root', systemPrompt: '', filePath: '__builtin__' },
+      cleanInput: '',
+      ...(asTeam
+        ? { team: { teamId: 't', teamName: 'T', leader: { name: 'abu', description: 'root', systemPrompt: '', filePath: '__builtin__' }, members: [] } }
+        : {}),
+    })!;
+    expect(resolveAgentToolNames(inventory, policy)).toEqual({ toolNames: inventory });
   });
 });
 

@@ -96,10 +96,12 @@ describe('applyTeamLeaderRoute', () => {
     expect(leader.tools).toEqual(['read_file']);
   });
 
-  // A builtin expert's `tools` is Abu's curated roster for that ROLE (registry.ts),
-  // not a boundary the user drew. It omits the tools the leader planning
-  // instruction tells a root agent to use (ask_user_question, list_directory),
-  // so keeping it would have toolExecutor refuse the leader mid-plan.
+  // Built-in experts no longer carry a `tools` roster (registry.ts writes none),
+  // so this drives the guard with a hand-built definition rather than a real
+  // one. The guard exists because such a roster is a per-ROLE list, not a
+  // boundary the user drew: it omits the tools the leader planning instruction
+  // tells a root agent to use (ask_user_question, list_directory), so keeping
+  // it would have toolExecutor refuse the leader mid-plan.
   it('drops the card tools of a builtin leader so it keeps the full root roster', () => {
     const leader = def('产品经理', { filePath: '__builtin__', tools: ['read_file', 'write_file', 'web_search'] });
     const r = applyTeamLeaderRoute(general, { ...team, leader });
@@ -113,11 +115,11 @@ describe('applyTeamLeaderRoute', () => {
     expect(leader.tools).toEqual(['read_file', 'write_file', 'web_search']);
   });
 
-  // The production shape: every builtin expert in registry.ts carries a card
-  // maxTurns (50/30/40/30/30), so the floor branch runs too. Pinned together
-  // because rebuilding the definition from `leaderAsRoot` there — the spread
-  // this branch used before — would silently resurrect the curated `tools`
-  // while all the maxTurns-less cases above stayed green.
+  // Every builtin expert in registry.ts still carries a card maxTurns
+  // (50/30/40/30/30), so the floor branch runs alongside the tools guard.
+  // Pinned together because rebuilding the definition from `leaderAsRoot`
+  // there — the spread this branch used before — would silently resurrect a
+  // `tools` list while all the maxTurns-less cases above stayed green.
   it('sheds the curated tools of a builtin leader that also carries a card maxTurns', () => {
     const r = applyTeamLeaderRoute(general, {
       ...team,

@@ -55,17 +55,19 @@ export function applyTeamLeaderRoute(route: RouteResult, team: TeamRouteContext 
   // orchestrate (report_plan, delegate_to_agent, run_agent_batch) is added back
   // as protocol exceptions by `agentToolPolicyForRoute`, which grants them only
   // to a trusted team route.
-  // A BUILTIN leader is the exception: its `tools` is Abu's own curated roster
-  // for that role (`core/agent/registry.ts`, e.g. 产品经理 = read_file /
-  // write_file / web_search / abu-browser__*), written for a member doing one
-  // hand-off. It omits tools the leader's planning instruction
-  // (`core/agent/orchestrator.ts`, PLANNING_INSTRUCTION) tells a root agent to
-  // use — ask_user_question, list_directory — so keeping it makes the leader
-  // refuse itself ("outside this agent's fixed tool boundary") the moment it
-  // follows its own prompt. Nobody chose that list as a leader boundary, so it
-  // is dropped and a builtin leader runs with the full root roster, exactly as
-  // it did before the whitelist started being kept. An explicit
-  // `disallowedTools` is untouched either way.
+  // The BUILTIN branch below is now a belt-and-braces guard rather than a live
+  // rewrite. Built-in experts used to carry a curated per-role `tools` list,
+  // written for a member doing one hand-off; it omitted tools the leader's own
+  // planning instruction (`core/agent/orchestrator.ts`, PLANNING_INSTRUCTION)
+  // tells a root agent to use — ask_user_question, list_directory — so keeping
+  // it made the leader refuse itself ("outside this agent's fixed tool
+  // boundary") the moment it followed its own prompt. Those lists are gone:
+  // `core/agent/registry.ts` writes no `tools` into any built-in expert, and
+  // `registry.managed.test.ts` pins that for every built-in the registry
+  // returns, so today the branch strips nothing. It stays as the guard that
+  // keeps a future built-in's role roster from silently becoming a leader
+  // boundary nobody chose. An explicit `disallowedTools` is untouched either
+  // way.
   // `maxTurns` gets a FLOOR rather than the same treatment: a member-sized card
   // value (e.g. 30, the budget for ONE hand-off) must not cap a leader that
   // plans, dispatches, reviews every result and reports — so a positive card

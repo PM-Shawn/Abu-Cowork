@@ -25,7 +25,7 @@ async function openIdentity(page: Page, team: boolean) {
   await expect(page.getByRole('textbox').first()).toBeVisible({ timeout: 45_000 });
   if (await page.getByRole('button', { name: '显示侧栏', exact: true }).isVisible()) await page.getByRole('button', { name: '显示侧栏', exact: true }).click();
   await page.getByTestId('sidebar-team').click();
-  await page.getByTestId('top-tab-nav').getByRole('button', { name: team ? '团队' : '队员', exact: true }).click();
+  await page.getByTestId('top-tab-nav').getByRole('button', { name: team ? '专家团' : '专家', exact: true }).click();
   if (team) await page.getByTestId('team-row-E2E专家团').click();
   else await page.getByText('产品经理', { exact: true }).first().click();
   if (team) await page.getByTestId('team-detail-start-chat').click();

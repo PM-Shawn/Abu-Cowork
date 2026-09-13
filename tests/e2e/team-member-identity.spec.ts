@@ -7,7 +7,7 @@
  * Journey (the brief's 场景 A/B/D/E, in the shell):
  * 1. create two user experts (the newer one is listed first) + a team that
  *    lists the older → card reads 1 名成员;
- * 2. back on 队员 no blank editor reappears; the detail's source reads 用户;
+ * 2. back on 专家 no blank editor reappears; the detail's source reads 用户;
  *    EDIT the expert (avatar only) → the team still resolves it (identity kept);
  * 3. DELETE the expert → the delete asks first and names the team;
  * 4. the team card reads 0 名成员; the detail shows one 已失效成员 1 row with
@@ -48,11 +48,11 @@ async function openTeamSurface(page: Page): Promise<void> {
   await page.getByTestId('sidebar-team').click();
 }
 
-async function switchTab(page: Page, label: '队员' | '团队'): Promise<void> {
+async function switchTab(page: Page, label: '专家' | '专家团'): Promise<void> {
   await page.getByTestId('top-tab-nav').getByRole('button', { name: label }).click();
 }
 
-/** The 队员 detail's "…" menu has no testid; it is the only ellipsis button once the detail is open. */
+/** The 专家 detail's "…" menu has no testid; it is the only ellipsis button once the detail is open. */
 function detailMenuButton(page: Page) {
   return page.locator('button:has(svg[class*="ellipsis"]), button:has(svg[class*="more-horizontal"])').last();
 }
@@ -82,7 +82,7 @@ test.describe('team member identity integrity', () => {
       await openTeamSurface(page);
 
       // ---- 1. A user expert (file-backed, so it has a real role-id) ------------
-      await switchTab(page, '队员');
+      await switchTab(page, '专家');
       await createAgent(page, AGENT_NAME);
       await createAgent(page, NEWER_AGENT_NAME);
       // Newest first: the editor stamps a creation time on new experts.
@@ -92,8 +92,8 @@ test.describe('team member identity integrity', () => {
       expect(newerListedFirst).toBe(true);
 
       // ---- 1b. A team that lists it -------------------------------------------
-      await switchTab(page, '团队');
-      await page.getByText('新建团队').first().click();
+      await switchTab(page, '专家团');
+      await page.getByText('新建专家团').first().click();
       await page.getByTestId('team-name-input').fill(TEAM_NAME);
       await page.getByTestId('team-leader-select').click();
       await page.getByTestId('search-select-query').fill('产品');
@@ -110,9 +110,9 @@ test.describe('team member identity integrity', () => {
       await expect(row).toContainText('1 名成员');
 
       // ---- 2. Editing the expert must not change who it is (brief 场景 A) -----
-      await switchTab(page, '队员');
-      // Coming back to 队员 after a manual create must not reopen a blank editor.
-      await expect(page.getByText('代理编辑器', { exact: true })).toHaveCount(0);
+      await switchTab(page, '专家');
+      // Coming back to 专家 after a manual create must not reopen a blank editor.
+      await expect(page.getByText('专家编辑器', { exact: true })).toHaveCount(0);
       await openAgentDetail(page);
       await expect(page.getByTestId('agent-added-by')).toHaveText('用户');
       await detailMenuButton(page).click();
@@ -127,7 +127,7 @@ test.describe('team member identity integrity', () => {
       await expect(page.getByTestId('avatar-picker-trigger').getByTestId('agent-avatar'))
         .toHaveAttribute('data-avatar-kind', 'icon');
       await page.getByRole('button', { name: '保存', exact: true }).click();
-      await switchTab(page, '团队');
+      await switchTab(page, '专家团');
       await expect(row).toContainText('1 名成员');
       await row.click();
       await expect(page.getByText('成员（1）')).toBeVisible();
@@ -135,7 +135,7 @@ test.describe('team member identity integrity', () => {
       await page.keyboard.press('Escape');
 
       // ---- 3. Deleting the expert asks first and names the team (场景 B) ------
-      await switchTab(page, '队员');
+      await switchTab(page, '专家');
       await openAgentDetail(page);
       await detailMenuButton(page).click();
       await page.getByText('卸载', { exact: true }).click();
@@ -145,7 +145,7 @@ test.describe('team member identity integrity', () => {
       await expect(page.getByText(AGENT_NAME, { exact: true })).toHaveCount(0);
 
       // ---- 4. The team shows the gap instead of hiding it (场景 D/E) ----------
-      await switchTab(page, '团队');
+      await switchTab(page, '专家团');
       await expect(row).toContainText('0 名成员');
       await row.click();
       await expect(page.getByText('成员（0）')).toBeVisible();
@@ -170,7 +170,7 @@ test.describe('team member identity integrity', () => {
 
       // ---- 6. 移除 clears the ghost ------------------------------------------
       await openTeamSurface(page);
-      await switchTab(page, '团队');
+      await switchTab(page, '专家团');
       await row.click();
       await page.getByRole('button', { name: '移除' }).click();
       await expect(page.locator('[data-testid^="team-member-invalid-"]')).toHaveCount(0);

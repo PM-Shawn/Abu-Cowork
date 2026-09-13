@@ -157,6 +157,15 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     return groups;
   }, [filteredSkills]);
 
+  // Built-ins a same-name user skill covered: still listed under 市场, marked,
+  // so the user knows which copy is live instead of thinking one vanished.
+  const shadowedBuiltin = useMemo(() => {
+    const q = searchLower;
+    return skillLoader.getShadowedSkills().filter((s) =>
+      s.source === 'builtin' && (!q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)),
+    );
+  }, [skills, searchLower]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
 
   // Delete a user-installed skill. With the detail now a modal (not a
@@ -229,6 +238,29 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     );
   };
 
+  const renderShadowedCard = (skill: Skill) => (
+    <ToolCard
+      key={`shadowed:${skill.name}`}
+      item={{
+        id: `shadowed:${skill.name}`,
+        name: skill.name,
+        description: skill.description,
+        avatar: <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" />,
+        badge: (
+          <span className="shrink-0 px-1.5 py-0.5 rounded text-caption font-medium bg-[var(--abu-bg-muted)] text-[var(--abu-text-tertiary)]" title={t.toolbox.skillShadowedHint}>
+            {t.toolbox.skillShadowedBadge}
+          </span>
+        ),
+        toggle: (
+          <span title={t.toolbox.skillShadowedHint}>
+            <Toggle checked={false} disabled onChange={() => {}} size="sm" tone="green" />
+          </span>
+        ),
+        testId: `skill-shadowed-${skill.name}`,
+      }}
+    />
+  );
+
   // If editor is open, show editor full-width
   if (editorSkill !== null) {
     return (
@@ -296,10 +328,13 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             )}
 
             {/* Category · Built-in — bundled with Abu. Read-only. */}
-            {skillGroups.builtin.length > 0 && (
+            {(skillGroups.builtin.length > 0 || shadowedBuiltin.length > 0) && (
               <div>
                 <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.categoryBuiltin}</div>
-                <ToolGrid>{skillGroups.builtin.map((skill) => renderSkillCard(skill))}</ToolGrid>
+                <ToolGrid>
+                  {skillGroups.builtin.map((skill) => renderSkillCard(skill))}
+                  {shadowedBuiltin.map((skill) => renderShadowedCard(skill))}
+                </ToolGrid>
               </div>
             )}
           </div>

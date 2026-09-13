@@ -142,6 +142,8 @@ export class SkillLoader {
    * same name. See {@link getNameClaims}.
    */
   private nameClaims: Array<{ name: string; source: SkillSource }> = [];
+  /** Skills the first-win rule dropped, with the source they came from. */
+  private shadowed: Skill[] = [];
   /** Last workspace this loader was discovered against (null = global-only). */
   private currentWorkspace: string | null = null;
 
@@ -168,6 +170,7 @@ export class SkillLoader {
   async discoverSkills(workspacePath?: string | null): Promise<SkillMetadata[]> {
     this.skills.clear();
     this.nameClaims = [];
+    this.shadowed = [];
     this.currentWorkspace = workspacePath ?? null;
 
     const home = await homeDir();
@@ -286,6 +289,7 @@ export class SkillLoader {
         if (skill) {
           this.nameClaims.push({ name: skill.name, source: 'plugin' });
           if (!this.skills.has(skill.name)) this.skills.set(skill.name, { ...skill, source: 'plugin' });
+          else this.shadowed.push({ ...skill, source: 'plugin' });
           break;
         }
       }
@@ -321,11 +325,10 @@ export class SkillLoader {
             const skill = parseSkillFile(raw, skillPath);
             if (skill) {
               this.nameClaims.push({ name: skill.name, source });
+              skill.source = source;
               // Earlier directories take priority — don't overwrite
-              if (!this.skills.has(skill.name)) {
-                skill.source = source;
-                this.skills.set(skill.name, skill);
-              }
+              if (!this.skills.has(skill.name)) this.skills.set(skill.name, skill);
+              else this.shadowed.push(skill);
               break; // Found a skill file, skip trying the other filename
             }
           } catch {
@@ -392,6 +395,15 @@ export class SkillLoader {
    */
   getNameClaims(): ReadonlyArray<{ name: string; source: SkillSource }> {
     return this.nameClaims;
+  }
+
+  /**
+   * Skills the last scan found but did not use because an earlier directory
+   * already claimed the name. The 市场 grid shows a built-in one as "covered
+   * by a same-name skill" instead of letting it vanish.
+   */
+  getShadowedSkills(): ReadonlyArray<Skill> {
+    return this.shadowed;
   }
 
   /**

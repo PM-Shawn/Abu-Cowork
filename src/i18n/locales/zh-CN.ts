@@ -1857,6 +1857,8 @@ const zhCN: TranslationDict = {
     skillSourceStandard: '全局安装',
     skillSourceProject: '项目',
     skillSourceWorkspaceAuto: '自进化',
+    skillShadowedBadge: '被同名技能覆盖',
+    skillShadowedHint: '「我的」里有同名技能，正在用那一份',
     skillsMarketHintTitle: '技能通过插件获取',
     skillsMarketHintBody: '安装一个插件，它带来的技能会出现在这里；自己写的技能在「我的」',
     skillsMarketGoPlugins: '去插件市场',

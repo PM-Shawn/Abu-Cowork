@@ -7,10 +7,11 @@ import { TOOL_NAMES } from './toolNames';
 import { getI18n } from '../../i18n';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
+import { useTeamStore } from '../../stores/teamStore';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginToolPolicy';
-import { buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
+import { buildScheduledRunPermissionCeiling, buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { checkToolApproval } from './registry';
 import {
   createAuthorizationScope,
@@ -635,6 +636,65 @@ describe('self-extension approval gate', () => {
 
     expect(decision.decision).toBe('deny');
     expect(confirm).not.toHaveBeenCalled();
+  });
+
+  // save_team overwrites a team by name and writes `leaderNote`, free text the
+  // leader is handed on every later run of that team. It goes through the same
+  // registry gate as save_agent — the tool itself must not be the only check.
+  describe('save_team', () => {
+    beforeEach(() => { useTeamStore.setState({ teams: [] }); });
+
+    it.each([
+      [[], 'selfExtensionSaveTeamNew'],
+      [[{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }], 'selfExtensionSaveTeamReplace'],
+    ] as const)('asks before saving a team, and says whether it replaces one (existing: %j)', async (teams, label) => {
+      useTeamStore.setState({ teams: [...teams] });
+      const asked: string[] = [];
+      const decision = await checkToolApproval(
+        'save_team', { name: ' 数据小队 ', leader: '分析师', members: [] },
+        { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(asked).toEqual([`save_team (${getI18n().commandConfirm[label]}): 数据小队`]);
+    });
+
+    it('denies when the user declines, so nothing is written', async () => {
+      const decision = await checkToolApproval(
+        'save_team', { name: '数据小队', leader: '分析师', members: [] },
+        { conversationId: 'conv-1' } as never, (async () => false) as never,
+      );
+      expect(decision.decision).toBe('deny');
+    });
+
+    it('fails closed with no confirmation channel, in every permission mode', async () => {
+      for (const mode of ['standard', 'smart', 'autonomous'] as const) {
+        useSettingsStore.setState({ permissionMode: mode });
+        const decision = await checkToolApproval(
+          'save_team', { name: '数据小队', leader: '分析师', members: [] },
+          { conversationId: 'conv-1' } as never, undefined,
+        );
+        expect(decision.decision).toBe('deny');
+      }
+    });
+
+    // Moved here from teamTools.test.ts: the ceiling refusal is the registry's
+    // job now, and it must land before the tool can write anything.
+    it('is denied under an unattended ceiling, without asking', async () => {
+      const confirm = vi.fn(async () => true);
+      const decision = await checkToolApproval(
+        'save_team', { name: '数据小队', leader: '分析师', members: [] },
+        {
+          conversationId: 'conv-1',
+          interactionMode: 'background',
+          runPermissionCeiling: buildScheduledRunPermissionCeiling(['save_team']),
+        } as never,
+        confirm as never,
+      );
+
+      expect(decision.decision).toBe('deny');
+      expect(confirm).not.toHaveBeenCalled();
+    });
   });
 
   it.each(['manage_trigger', 'manage_scheduled_task', 'manage_file_watch'])(

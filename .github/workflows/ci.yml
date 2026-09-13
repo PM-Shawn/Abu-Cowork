@@ -11,6 +11,12 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Normally ~6 min. `check` is a REQUIRED check on `dev`, so without a cap a
+    # hung step blocks every PR until GitHub's 6-hour default — and it reads as
+    # "still running", not as a failure, so nobody is told. Seen 2026-09-12: a
+    # stalled `npm ci` held this job 60 min while every other job on the same
+    # commit passed. 5x the normal run, so a slow day still goes green.
+    timeout-minutes: 30
     # Least privilege, job-scoped: only this job's coverage comment and junit
     # check need write on PRs/checks; nothing here needs contents write.
     permissions:
@@ -233,6 +239,8 @@ jobs:
   # Not a required status check yet (branch protection only requires `check`).
   audit:
     runs-on: ubuntu-latest
+    # Normally seconds; see `check`.
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:

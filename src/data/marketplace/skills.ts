@@ -176,8 +176,8 @@ export const skillTemplates: MarketplaceItem[] = [
   {
     id: 'create-agent',
     name: 'create-agent',
-    description: 'AI 引导创建自定义代理',
-    descriptionEn: 'AI-guided creation of custom agents',
+    description: 'AI 引导创建自定义专家',
+    descriptionEn: 'AI-guided creation of custom experts',
     author: 'Abu',
     category: '系统',
     isBuiltin: true,

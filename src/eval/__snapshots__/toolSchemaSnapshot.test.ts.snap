@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `45`;
+exports[`Tool count stability > total builtin tool count matches snapshot 1`] = `46`;
 
 exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
 [
@@ -397,6 +397,26 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "requiredParams": [
       "name",
       "content",
+    ],
+  },
+  {
+    "name": "save_team",
+    "paramNames": [
+      "avatar",
+      "description",
+      "expertise",
+      "intro",
+      "leader",
+      "leaderNote",
+      "members",
+      "name",
+      "requirePlanApproval",
+      "samplePrompts",
+    ],
+    "requiredParams": [
+      "name",
+      "leader",
+      "members",
     ],
   },
   {

@@ -1176,7 +1176,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // Name-level roster filtering cannot express input constraints such
           // as run_command(npm run *); enforce those at dispatch time. Shared
           // with the post-hook re-check so both apply the same rules.
-          const boundaryError = checkDispatchToolBoundary(agent.tools, options.allowedTools, tc.name, tc.input);
+          const boundaryError = checkDispatchToolBoundary(agent, options.allowedTools, tc.name, tc.input);
           if (boundaryError) return { id: tc.id, result: boundaryError };
           // Denylist checked at execution too, not just when the tool list
           // was assembled: the model can name a tool that was never offered.
@@ -1234,7 +1234,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
           // input-sensitive allowlist to the value that will actually be
           // executed, otherwise a hook could turn an allowed command into an
           // out-of-bound one after the first check above.
-          const postHookBoundaryError = checkDispatchToolBoundary(agent.tools, options.allowedTools, tc.name, effectiveInput);
+          const postHookBoundaryError = checkDispatchToolBoundary(agent, options.allowedTools, tc.name, effectiveInput);
           if (postHookBoundaryError) return { id: tc.id, result: postHookBoundaryError };
 
           const toolStart = Date.now();

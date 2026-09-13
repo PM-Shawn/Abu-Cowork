@@ -5,7 +5,8 @@
  * Shared by `installer.ts` (local folder), `npmInstaller.ts` (registry),
  * `urlInstaller.ts` (URL / GitHub archive) and, since they turn a stranger's
  * frontmatter into a directory under `~/.abu/` too, the `.askill` unpacker and
- * the agent installer — so the routes cannot drift.
+ * the agent installer — so the routes cannot drift. The AGENT.md and SKILL.md
+ * parsers apply it too, since a scanned folder can be a cloned repository's.
  */
 
 /**
@@ -49,7 +50,9 @@
  *     `assertAllowed` returns before any scope check at all.
  *   - **control characters** — never part of a real name, and one embedded in a
  *     name hides what the path is from whoever reads the install toast, the
- *     confirm dialog or the tool result.
+ *     confirm dialog or the tool result. C0, DEL and C1 (U+0080–U+009F), the
+ *     same range `isPlainSegment` (src/utils/itemStorage.ts) refuses for the
+ *     editor's save of the same folder.
  *   - **only dots** — `.`, `..` and `...` are directory references, not names.
  *   - **leading or trailing whitespace** — `" "` alone is a directory nobody can
  *     type, name in the UI, or pass back to `skill_manage` (whose NAME_REGEX
@@ -78,7 +81,7 @@ export function isSafeSkillDirName(name: string): boolean {
     name.trim() === name &&
     !/[/\\]/.test(name) &&
     // eslint-disable-next-line no-control-regex
-    !/[\u0000-\u001f\u007f]/.test(name) &&
+    !/[\u0000-\u001f\u007f-\u009f]/.test(name) &&
     !/^\.+$/.test(name) &&
     // ZWSP, LRM/RLM, the bidi embeddings and overrides, the isolates, and BOM.
     !/[\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/.test(name)

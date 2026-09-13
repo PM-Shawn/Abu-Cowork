@@ -2800,6 +2800,49 @@ describe('agentLoopRunner', () => {
       );
     });
 
+    it.each(['tool.invoke', 'approval.check'])('enforces the host role for %s despite forged sidecar authority', async (method) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-role', { ...makeSession(), agentToolPolicy: { tools: ['read_file'], protocolTools: ['delegate_to_agent'] } });
+      const handler = handlerFor(onSidecarRequest, method);
+      await expect(handler({ runId: 'run-role', toolName: 'write_file', input: {}, context: {
+        agentToolPolicy: { tools: ['write_file'], protocolTools: ['write_file'] },
+        protocolTools: ['write_file'], agentName: 'writer',
+      } })).rejects.toThrow(/fixed tool boundary/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+      await handler({ runId: 'run-role', toolName: 'read_file', input: { path: '/tmp/x' } });
+      expect(method === 'approval.check' ? checkToolApprovalMock : executeAnyToolMock).toHaveBeenCalledOnce();
+    });
+
+    it.each(['tool.invoke', 'approval.check'])('keeps role deny, malformed metadata and task restrictions authoritative over protocols for %s', async (method) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      for (const [index, policy, options] of [
+        [0, { tools: ['read_file'], disallowedTools: ['delegate_*'], protocolTools: ['delegate_to_agent'] }, {}],
+        [1, { tools: null, protocolTools: ['delegate_to_agent'] }, {}],
+        [2, { disallowedTools: [''], protocolTools: ['delegate_to_agent'] }, {}],
+        [3, { tools: ['read_file'], protocolTools: ['delegate_to_agent'] }, { blockedTools: ['delegate_*'] }],
+        [4, { tools: ['read_file'], protocolTools: ['delegate_to_agent'] }, { allowedTools: ['read_file'] }],
+      ] satisfies Array<[number, import('./agentToolPolicy').AgentToolPolicy, import('./agentLoopRunner').AgentLoopRunOptions]>) {
+        const runId = `run-protocol-${index}`;
+        registerRunSession(runId, { ...makeSession(), options, agentToolPolicy: policy });
+        await expect(handlerFor(onSidecarRequest, method)({ runId, toolName: 'delegate_to_agent', input: {} })).rejects.toThrow();
+      }
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
+    it.each(['tool.invoke', 'approval.check'])('rechecks role command constraints on %s', async (method) => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-role', { ...makeSession(), agentToolPolicy: { tools: ['run_command(npm run *)'], protocolTools: [] } });
+      const handler = handlerFor(onSidecarRequest, method);
+      await expect(handler({ runId: 'run-role', toolName: 'run_command', input: { command: 'rm -rf /tmp/x' } })).rejects.toThrow(/fixed tool boundary/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
     it('refuses a reverse tool call outside the run whitelist before execution', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
@@ -4777,6 +4820,25 @@ describe('agentLoopRunner', () => {
 
       rpc.resolve({ reason: 'completed' });
       await expect(running).resolves.toEqual({ reason: 'completed' });
+    });
+
+    it('captures root role authority from host orchestration before the sidecar can request tools', async () => {
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      const rpc = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(rpc.promise);
+      precomputeOrchestrationMock.mockResolvedValue({
+        route: { type: 'agent', name: 'leader', cleanInput: 'read only', definition: { name: 'leader', tools: ['read_file'] }, team: { teamId: 't', members: [] } },
+        systemPromptSections: [],
+      });
+      const running = runAgentLoopDispatched('conv-1', 'read only');
+      await waitForCall(sidecarRequestMock);
+      const params = sidecarRequestMock.mock.calls[0][1] as { runId: string; options: Record<string, unknown> };
+      expect(getRunSession(params.runId)?.agentToolPolicy).toEqual({ tools: ['read_file'], disallowedTools: undefined, protocolTools: ['report_plan', 'delegate_to_agent', 'run_agent_batch'] });
+      expect(params.options).not.toHaveProperty('agentToolPolicy');
+      await expect(handlerFor(onSidecarRequest, 'approval.check')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);
+      await expect(handlerFor(onSidecarRequest, 'tool.invoke')({ runId: params.runId, toolName: 'write_file', input: {} })).rejects.toThrow(/fixed tool boundary/);
+      rpc.resolve({ reason: 'completed' });
+      await running;
     });
 
     it('serializes the per-run tool whitelist into agent.run options', async () => {

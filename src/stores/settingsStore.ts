@@ -361,6 +361,20 @@ export interface SettingsState {
    * browser access they did not have before this batch shipped.
    */
   allowUnattendedBrowser: boolean;
+  /** IM channel security settings. */
+  imChannel: {
+    /**
+     * Opt-in only. When true, an IM plugin that needs LAN callbacks may ask
+     * the trigger server to listen on 0.0.0.0 instead of loopback. Installing
+     * such a plugin must not widen the listener by itself: the callback
+     * endpoint accepts inbound messages, so exposing it to the network is the
+     * user's decision, not a side effect of a plugin install.
+     *
+     * Takes effect on the next full restart — the trigger server binds once,
+     * at startup.
+     */
+    allowLanWebhook: boolean;
+  };
   /**
    * One monotonic counter per browser authorization field, so a write from a
    * second window keeps whichever side of each field is newer instead of
@@ -521,7 +535,6 @@ interface SettingsActions {
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
-  autoDisableProjectSkills: (skillNames: string[]) => void;
   toggleAgentEnabled: (agentName: string) => void;
   setSandboxEnabled: (enabled: boolean) => void;
   setNetworkIsolationEnabled: (enabled: boolean) => void;
@@ -561,6 +574,7 @@ interface SettingsActions {
     verdict: BrowserOperationPolicy['readOnly'],
   ) => void;
   setAllowUnattendedBrowser: (allow: boolean) => void;
+  setIMAllowLanWebhook: (allow: boolean) => void;
   /** Write the last CONFIRMED value of one browser field back into memory —
    *  after a failed save, or after another window turned out to hold a newer
    *  one. See `installBrowserConfigSaveReporting`. */
@@ -1092,6 +1106,7 @@ export const useSettingsStore = create<SettingsStore>()(
       browserSiteGrantViaEmbed: {} as BrowserSiteGrantScopes,
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
+      imChannel: { allowLanWebhook: false },
       browserConfigRevisions: INITIAL_BROWSER_CONFIG_REVISIONS,
       preventSleep: false,
       allowSkillCommands: true,
@@ -1424,11 +1439,6 @@ export const useSettingsStore = create<SettingsStore>()(
           ? s.disabledSkills.filter((n) => n !== skillName)
           : [...s.disabledSkills, skillName],
       })),
-      autoDisableProjectSkills: (skillNames) => set((s) => {
-        const newNames = skillNames.filter((n) => !s.disabledSkills.includes(n));
-        if (newNames.length === 0) return s;
-        return { disabledSkills: [...s.disabledSkills, ...newNames] };
-      }),
       toggleAgentEnabled: (agentName) => set((s) => ({
         disabledAgents: s.disabledAgents.includes(agentName)
           ? s.disabledAgents.filter((n) => n !== agentName)
@@ -1511,6 +1521,8 @@ export const useSettingsStore = create<SettingsStore>()(
         allowUnattendedBrowser,
         ...beginBrowserFieldWrite('allowUnattendedBrowser', state.browserConfigRevisions),
       })),
+      setIMAllowLanWebhook: (allowLanWebhook) =>
+        set((state) => ({ imChannel: { ...state.imChannel, allowLanWebhook } })),
       /**
        * Put a confirmed value back, without treating it as a new edit: no
        * status, no queue entry, and the revision is the one that value already
@@ -1625,7 +1637,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 51,
+      version: 52,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -1637,6 +1649,21 @@ export const useSettingsStore = create<SettingsStore>()(
       storage: createJSONStorage(() => settingsStateStorage),
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V52: `imChannel.allowLanWebhook` — the LAN callback opt-in. False
+        // for every existing store, which is the whole point: an install that
+        // already carries a heartbeat plugin was binding 0.0.0.0 without ever
+        // being asked, and the upgrade closes that listener rather than
+        // grandfathering it.
+        // ════════════════════════════════════════════════
+        if (version < 52) {
+          const current = state.imChannel;
+          const record = current && typeof current === 'object' && !Array.isArray(current)
+            ? current as Record<string, unknown>
+            : {};
+          state.imChannel = { ...record, allowLanWebhook: record.allowLanWebhook === true };
+        }
 
         // ════════════════════════════════════════════════
         // V50: `browserOperationPolicy.upload` — the fourth operation class
@@ -2583,6 +2610,7 @@ export const useSettingsStore = create<SettingsStore>()(
         browserSiteGrantViaEmbed: state.browserSiteGrantViaEmbed,
         browserOperationPolicy: state.browserOperationPolicy,
         allowUnattendedBrowser: state.allowUnattendedBrowser,
+        imChannel: state.imChannel,
         browserConfigRevisions: state.browserConfigRevisions,
         computerUseEnabled: state.computerUseEnabled,
         preventSleep: state.preventSleep,

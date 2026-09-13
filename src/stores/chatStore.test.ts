@@ -156,6 +156,15 @@ describe('chatStore', () => {
 
   // ── startNewConversation ──
   describe('startNewConversation', () => {
+    it('clears the prior welcome team and agent before starting a fresh task', () => {
+      useChatStore.setState({ pendingTeamId: 'team-old', pendingAgentName: 'old-agent' });
+      useChatStore.getState().startNewConversation();
+      expect(useChatStore.getState().pendingTeamId).toBeUndefined();
+      expect(useChatStore.getState().pendingAgentName).toBeNull();
+      const id = useChatStore.getState().createConversation(null);
+      expect(useChatStore.getState().conversations[id].teamId).toBeUndefined();
+    });
+
     it('sets activeConversationId to null', () => {
       useChatStore.getState().createConversation();
       useChatStore.getState().startNewConversation();

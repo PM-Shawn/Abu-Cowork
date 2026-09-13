@@ -20,6 +20,7 @@ import { _electron as electron, type ElectronApplication, type Page } from 'play
  */
 export const REPO_ROOT = process.cwd();
 export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
+const WINDOW_SHOW_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'windowShowRecorder.cjs');
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
@@ -38,6 +39,23 @@ export interface ElectronDataRoot {
 
 export interface LaunchedApp extends ElectronDataRoot {
   app: ElectronApplication;
+}
+
+export interface LaunchOptions {
+  /**
+   * Inject tests/e2e/windowShowRecorder.cjs into the main process ahead of
+   * electron/main.cjs, so `firstShowRecordFor()` can report where a window was
+   * the moment it first became visible. Opt-in: it is only needed by the specs
+   * that assert on a window's very first frame.
+   */
+  recordWindowShows?: boolean;
+}
+
+/** One window's first reveal, as tests/e2e/windowShowRecorder.cjs saw it. */
+export interface WindowShowRecord {
+  id: number;
+  shownBounds: { x: number; y: number; width: number; height: number } | null;
+  shownUrl: string | null;
 }
 
 /**
@@ -120,11 +138,22 @@ function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
  * for non-packaged builds, so the renderer-facing appData subfolder and any
  * Electron service using app.getPath('appData') remain inside this same root.
  */
-export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Promise<LaunchedApp> {
+export async function launchAbuElectron(
+  dataRoot = createElectronDataRoot(),
+  options: LaunchOptions = {},
+): Promise<LaunchedApp> {
   fs.mkdirSync(dataRoot.userDataDir, { recursive: true });
   fs.mkdirSync(dataRoot.appDataDir, { recursive: true });
   const app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`, '--lang=zh-CN'],
+    args: [
+      // `-r` modules are required BEFORE the entry point, so a recorder
+      // installed here sees every window the app ever creates. Playwright's own
+      // loader is unshifted ahead of these args the same way.
+      ...(options.recordWindowShows ? ['-r', WINDOW_SHOW_RECORDER] : []),
+      MAIN_ENTRY,
+      `--user-data-dir=${dataRoot.userDataDir}`,
+      '--lang=zh-CN',
+    ],
     cwd: REPO_ROOT,
     // buildLaunchEnv isolates the profile and strips proxies; the live-eval
     // credential must never reach a launched shell either.
@@ -137,6 +166,36 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
   // ElectronApplication whose process() throws and a firstWindow() that hangs
   // until timeout.
   return { ...dataRoot, app };
+}
+
+/**
+ * The first-reveal record for the currently-open window whose URL ends with
+ * `urlSuffix` (e.g. '/pet.html'), or null when no such window is open.
+ *
+ * The live window is matched by URL — settled by the time a spec asserts — and
+ * the record is then looked up by `BrowserWindow.id`, so nothing depends on
+ * what `webContents.getURL()` happened to return back when the window was first
+ * shown. Requires `launchAbuElectron(root, { recordWindowShows: true })`;
+ * without it the recorder is absent and this throws rather than reporting a
+ * missing window as if it were a product regression.
+ */
+export async function firstShowRecordFor(
+  app: ElectronApplication,
+  urlSuffix: string,
+): Promise<WindowShowRecord | null> {
+  return app.evaluate(({ BrowserWindow }, suffix) => {
+    const records = (globalThis as typeof globalThis & {
+      __abuWindowShowRecords?: WindowShowRecord[];
+    }).__abuWindowShowRecords;
+    if (!records) {
+      throw new Error(
+        'windowShowRecorder.cjs was not injected — launch with { recordWindowShows: true }',
+      );
+    }
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith(suffix));
+    if (!win) return null;
+    return records.find((record) => record.id === win.id) ?? null;
+  }, urlSuffix);
 }
 
 async function reloadAndWaitForApp(page: Page): Promise<void> {

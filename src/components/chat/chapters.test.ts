@@ -14,6 +14,12 @@ function titles(chapters: Chapter[]): string[] {
 }
 
 describe('deriveChapters', () => {
+  it('does not turn a configured first-contact greeting into a task chapter', () => {
+    const greeting = message('intro', 'assistant', 'Who is this for?', { introduction: { kind: 'agent', key: 'agent:a', name: 'Analyst' } });
+    expect(deriveChapters([[greeting], [message('u', 'user', 'Colleagues')]], FALLBACK)).toEqual([
+      { groupIndex: 1, messageId: 'u', title: 'Colleagues', summary: '' },
+    ]);
+  });
   it('makes one chapter per user turn, titled from the user message', () => {
     const groups = [
       [message('u1', 'user', '帮我盘一下多模态现状'), message('a1', 'assistant', '两批都实施完了')],

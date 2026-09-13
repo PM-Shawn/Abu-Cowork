@@ -638,15 +638,36 @@ function browserTabRow(page: Page, host: string) {
 async function sendComposerMessage(page: Page, mock: OpenAiMock, text: string): Promise<void> {
   const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
   const before = taskRequests(mock).length;
+  const messages = page.locator('[data-message-id]').getByText(text, { exact: true });
+  const messagesBefore = await messages.count();
+  const accepted = async () => taskRequests(mock).length > before
+    || await messages.count() > messagesBefore;
+  const waitForDispatch = async () => {
+    await expect.poll(() => taskRequests(mock).length, { timeout: READY_TIMEOUT }).toBeGreaterThan(before);
+  };
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    await input.fill(text);
-    await input.press('Enter');
+    if (await accepted()) {
+      await waitForDispatch();
+      return;
+    }
+    try {
+      await input.fill(text, { timeout: 1_000 });
+      await input.press('Enter', { timeout: 1_000 });
+    } catch (error) {
+      // Acceptance can change the placeholder during fill/press itself. Only
+      // an actual new message or HTTP request permits waiting instead of failing.
+      if (!await accepted()) throw error;
+      await waitForDispatch();
+      return;
+    }
     const attemptDeadline = Date.now() + 1_000;
-    while (taskRequests(mock).length <= before && Date.now() < attemptDeadline) {
+    while (Date.now() < attemptDeadline) {
+      if (await accepted()) {
+        await waitForDispatch();
+        return;
+      }
       await page.waitForTimeout(50);
     }
-    if (taskRequests(mock).length > before) return;
-    await page.waitForTimeout(250);
   }
   throw new Error(`Composer refused to send "${text}" after repeated retries (still pending)`);
 }

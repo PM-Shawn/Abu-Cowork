@@ -217,7 +217,7 @@ describe('MessageGroup stopped terminal', () => {
     // (the "Worked for" header is a settled-turn summary — see
     // computeWorkProcessFold), so the live batch card and the streaming text
     // are both directly visible, under the non-interactive ticking divider.
-    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /1 experts: 1 running/ })).toBeNull();
     expect(screen.queryByText(/Worked for/)).toBeNull();
     expect(screen.getByText(/Working/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open inspect live state.*Running/ })).toBeInTheDocument();
@@ -280,7 +280,7 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
 
-    const foldButton = screen.getByRole('button', { name: /1 agents: 1 succeeded/ });
+    const foldButton = screen.getByRole('button', { name: /1 experts: 1 succeeded/ });
     if (foldButton.getAttribute('aria-expanded') === 'true') fireEvent.click(foldButton);
     expect(foldButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('Also include the follow-up details.')).toBeInTheDocument();
@@ -330,7 +330,7 @@ describe('MessageGroup stopped terminal', () => {
     render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
     });
     expect(screen.queryByText('Unknown')).toBeNull();
     expect(screen.getByText('Legacy batch finished.')).toBeInTheDocument();
@@ -511,7 +511,7 @@ describe('MessageGroup stopped terminal', () => {
     // The whole work process (intro + batch) folds behind the header, and the
     // successful batch auto-collapses — but authored text must survive the
     // collapsed state: only the batch card itself hides.
-    const foldHeader = screen.getByRole('button', { name: /1 agents: 1 succeeded/ });
+    const foldHeader = screen.getByRole('button', { name: /1 experts: 1 succeeded/ });
     expect(foldHeader).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('Preparing the batch.')).toBeInTheDocument();
     expect(screen.getByText('Batch finished.')).toBeInTheDocument();
@@ -565,13 +565,13 @@ describe('MessageGroup stopped terminal', () => {
     // Running work renders inline — no fold header exists until the run
     // settles (only the non-interactive ticking divider), and the live batch
     // card stays visible, across remounts.
-    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /1 experts: 1 running/ })).toBeNull();
     expect(screen.getByText(/Working/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
 
     view.unmount();
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.queryByRole('button', { name: /1 agents: 1 running/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /1 experts: 1 running/ })).toBeNull();
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
   });
 
@@ -724,14 +724,14 @@ describe('MessageGroup stopped terminal', () => {
 
     const view = render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
     });
-    fireEvent.click(screen.getByRole('button', { name: /1 agents: 1 succeeded/ }));
-    expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: /1 experts: 1 succeeded/ }));
+    expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
 
     view.unmount();
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('keeps failed batch process open with a perceivable failed aggregate', () => {
@@ -783,7 +783,7 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    expect(screen.getByRole('button', { name: /1 agents: 1 failed/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /1 experts: 1 failed/ })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: /Open inspect failure.*Failed/ })).toBeInTheDocument();
   });
 
@@ -839,7 +839,7 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    expect(screen.getByRole('button', { name: new RegExp(`1 agents: 1 ${label}`) })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: new RegExp(`1 experts: 1 ${label}`) })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: new RegExp(`Open inspect ${label}.*${row}`) })).toBeInTheDocument();
   });
 
@@ -898,11 +898,11 @@ describe('MessageGroup stopped terminal', () => {
     useChatStore.setState({ conversations: { [conversation.id]: { ...conversation, status: 'idle' } } });
     view.rerender(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
     taskRow.blur();
     fireEvent.focusOut(taskRow, { relatedTarget: document.body });
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
     });
   });
 });

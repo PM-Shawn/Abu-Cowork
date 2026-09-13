@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
+import { useState, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore, useMemo } from 'react';
 import { Virtuoso, type Components, type VirtuosoHandle } from 'react-virtuoso';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import type { Message, ImageAttachment } from '@/types';
@@ -16,6 +16,9 @@ import type { PermissionDuration } from '@/stores/permissionStore';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useI18n } from '@/i18n';
 import MessageGroup from './MessageGroup';
+import MessageBubble from './MessageBubble';
+import { expertIdentity, teamIdentity, isIntroductionMessage } from '@/core/team/expertContact';
+import type { ExpertContact } from '@/types/expertContact';
 import CompactDivider from './CompactDivider';
 import BrowserRunReportCard from './BrowserRunReportCard';
 import MaxTurnsNoticeCard from './MaxTurnsNoticeCard';
@@ -39,10 +42,13 @@ import ScenarioGuide from './ScenarioGuide';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
 import { useTeamStore } from '@/stores/teamStore';
+import { useDiscoveryStore } from '@/stores/discoveryStore';
+import { effectiveRoleId } from '@/core/team/roleIdentity';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import CommandConfirmDialog from '@/components/common/CommandConfirmDialog';
 import { ChevronDown, Settings, Check } from 'lucide-react';
 import abuAvatar from '@/assets/abu-avatar.png';
+import WelcomeAvatar from '@/components/chat/WelcomeAvatar';
 import IMInfoBar from './IMInfoBar';
 import SourceInfoBar from './SourceInfoBar';
 import ComputerUseStatusBar from './ComputerUseStatusBar';
@@ -51,6 +57,7 @@ import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { windowDragRowProps } from '@/utils/windowDrag';
 import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
@@ -240,10 +247,26 @@ export default function ChatView({
     ? {
         name: pendingAgent.displayNames?.[locale] ?? pendingAgent.name,
         description: pendingAgent.descriptions?.[locale] ?? pendingAgent.description,
-        avatar: pendingAgent.avatar ?? '🤖',
-        intro: pendingAgent.intros?.[locale] ?? pendingAgent.intro,
+        avatar: pendingAgent.avatar,
       }
     : null;
+  const pendingExpertContact = useChatStore((s) => s.pendingExpertContact);
+
+  // The composer already owns the pending team pin. After creation the
+  // conversation owns it instead, so welcome identity follows the same source.
+  const pendingTeamId = useChatStore((s) => s.pendingTeamId);
+  const welcomeTeamId = activeConv ? activeConv.teamId : pendingTeamId;
+  const welcomeTeam = useTeamStore((s) => s.teams.find((team) => team.id === welcomeTeamId));
+  const expertPrompts = pendingAgent
+    ? pendingAgent.samplePromptsI18n?.[locale] ?? pendingAgent.samplePrompts
+    : welcomeTeam?.samplePrompts;
+  const discoveredAgents = useDiscoveryStore((s) => s.agents);
+  const welcomeAgents = useMemo(() => discoveredAgents.map((meta) => agentRegistry.getAgent(meta.name)).filter((agent) => agent !== undefined), [discoveredAgents]);
+  const welcomeRole = (roleId: string) => welcomeAgents.find((agent) => effectiveRoleId(agent) === roleId);
+  const welcomeRoleLabel = (roleId: string) => {
+    const agent = welcomeRole(roleId);
+    return agent?.displayNames?.[locale] ?? agent?.name ?? t.team.unknownMember;
+  };
 
   // Subscribe to command confirmation state using useSyncExternalStore
   const commandConfirmRequest = useSyncExternalStore(
@@ -848,6 +871,36 @@ export default function ChatView({
     }
     const sendText = teamMention ? teamMention.rest : text;
 
+    // Capture the selected identity before any asynchronous identity setup.
+    const pendingBeforeSend = useChatStore.getState();
+    let contact: ExpertContact | undefined;
+    if (!activeConv?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
+      const addressedName = !teamMention ? /^@([^\s]+)/.exec(text)?.[1] : undefined;
+      const addressedAgent = addressedName ? agentRegistry.getAgent(addressedName) : undefined;
+      const team = useTeamStore.getState().teams.find((candidate) => candidate.id === (teamMention?.teamId ?? welcomeTeamId));
+      if (addressedAgent) {
+        let identity = expertIdentity(addressedAgent, locale);
+        const shown = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : undefined;
+        if (!addressedAgent.roleId && !addressedAgent.source && !addressedAgent.managed && !identity.key.startsWith('agent:builtin:')) {
+          try {
+            const { ensureRoleId } = await import('@/core/team/roleIdentity');
+            const { roleId, wrote } = await ensureRoleId(addressedAgent);
+            identity = expertIdentity({ ...addressedAgent, roleId }, locale);
+            if (wrote) await useDiscoveryStore.getState().refresh();
+          } catch { /* Onboarding must not prevent the user's actual task. */ }
+        }
+        contact = { identity: shown ? { ...shown.identity, key: identity.key } : identity, introduction: shown?.introduction };
+      } else if (team) {
+        const identity = teamIdentity(team);
+        contact = pendingExpertContact?.identity.key === identity.key ? pendingExpertContact : { identity };
+      }
+      const latest = useChatStore.getState();
+      if (latest.activeConversationId !== (activeConv?.id ?? null)
+        || latest.pendingAgentName !== pendingBeforeSend.pendingAgentName
+        || latest.pendingTeamId !== pendingBeforeSend.pendingTeamId
+        || latest.pendingExpertContact !== pendingBeforeSend.pendingExpertContact) return false;
+    }
+
     let convId = activeConv?.id;
     const isNewConversation = !convId;
     if (!convId) {
@@ -855,6 +908,7 @@ export default function ChatView({
     } else if (teamMention && activeConv?.teamId !== teamMention.teamId) {
       setConversationTeamId(convId, teamMention.teamId);
     }
+    if (contact) useChatStore.getState().stageExpertContact(convId, contact);
     if (isNewConversation && !useSettingsStore.getState().sidebarCollapsed) {
       useSettingsStore.getState().toggleSidebar();
     }
@@ -883,6 +937,7 @@ export default function ChatView({
       // recovery; handing the same text back to ChatInput would duplicate it.
       if (!(error instanceof AgentLoopDispatchError) || !error.messageTaken) {
         pendingTurnAnchorRef.current = null;
+        useChatStore.getState().clearStagedExpertContact(convId);
         throw error;
       }
       useToastStore.getState().addToast({
@@ -890,6 +945,9 @@ export default function ChatView({
         title: error.message || t.chat.conversationBusy,
       });
       return;
+    }
+    if (!useChatStore.getState().conversations[convId]?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
+      useChatStore.getState().clearStagedExpertContact(convId);
     }
     // A rejected dispatch (conversation busy, attachment mid-run) used to be
     // discarded here: the composer had already cleared, so the text and any
@@ -1295,10 +1353,8 @@ export default function ChatView({
             <div className="text-center mb-8">
               {pendingAgentDisplay ? (
                 <>
-                  {/* Agent avatar (emoji in tinted circle) */}
-                  <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-[var(--abu-bg-active)] flex items-center justify-center text-5xl select-none">
-                    {pendingAgentDisplay.avatar}
-                  </div>
+                  {/* Agent avatar: a built-in icon reference, an emoji, or the default mark */}
+                  <WelcomeAvatar avatar={pendingAgentDisplay.avatar} />
 
                   <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">
                     {pendingAgentDisplay.name}
@@ -1306,12 +1362,32 @@ export default function ChatView({
                   <p className="text-body text-[var(--abu-text-tertiary)] mb-3">
                     {pendingAgentDisplay.description}
                   </p>
-                  {pendingAgentDisplay.intro && (
-                    <p className="text-body text-[var(--abu-text-secondary)] leading-relaxed max-w-lg mx-auto">
-                      {pendingAgentDisplay.intro}
-                    </p>
-                  )}
                 </>
+              ) : welcomeTeam ? (
+                <div data-testid="team-welcome">
+                  <TeamAvatar avatar={welcomeTeam.avatar} size="lg" round className="h-20 w-20 mx-auto mb-4 [&>svg]:h-10 [&>svg]:w-10 [&>span]:text-h-xl" />
+                  <h1 className="text-h-xl font-semibold text-[var(--abu-text-primary)] leading-tight mb-2">{welcomeTeam.name}</h1>
+                  {welcomeTeam.description && <p className="text-body text-[var(--abu-text-tertiary)] mb-3">{welcomeTeam.description}</p>}
+                  <div data-testid="team-welcome-members" className="flex flex-wrap items-center justify-center gap-2 mt-3 text-minor text-[var(--abu-text-secondary)]">
+                    <span>{t.team.detailLeader}</span>
+                    <span className="inline-flex items-center gap-1">
+                      <AgentAvatar agent={welcomeRole(welcomeTeam.leaderRoleId) ?? { name: t.team.unknownMember }} size="sm" />
+                      <span>{welcomeRoleLabel(welcomeTeam.leaderRoleId)}</span>
+                    </span>
+                    <span>·</span>
+                    {welcomeTeam.memberRoleIds.some((id) => id !== welcomeTeam.leaderRoleId) ? (
+                      <>
+                        <span>{t.team.fieldMembers}</span>
+                        {welcomeTeam.memberRoleIds.filter((id) => id !== welcomeTeam.leaderRoleId).map((id) => (
+                          <span key={id} className="inline-flex items-center gap-1">
+                            <AgentAvatar agent={welcomeRole(id) ?? { name: t.team.unknownMember }} size="sm" />
+                            <span>{welcomeRoleLabel(id)}</span>
+                          </span>
+                        ))}
+                      </>
+                    ) : <span>{t.team.detailNoMembers}</span>}
+                  </div>
+                </div>
               ) : (
                 <>
                   {/* Mascot */}
@@ -1362,11 +1438,15 @@ export default function ChatView({
             </div>
 
             {/* Scenario Guide */}
-            <ScenarioGuide
+            {pendingAgent || welcomeTeam ? (
+              !!expertPrompts?.length && guideVisible && <div className="flex flex-wrap gap-2 mt-4" data-testid="expert-prompts">
+                {expertPrompts.map((prompt, index) => <Button key={index} variant="subtle" className="h-auto whitespace-normal text-left" onClick={() => handleSelectPrompt(prompt)}>{prompt}</Button>)}
+              </div>
+            ) : <ScenarioGuide
               onSelectPrompt={handleSelectPrompt}
               onScenarioChange={handleScenarioChange}
               visible={guideVisible}
-            />
+            />}
           </div>
         </div>
       </div>
@@ -1561,6 +1641,10 @@ export default function ChatView({
                 // marker carries no loopId, and `groupMessagesByLoop` starts a
                 // fresh group at every message without one.
                 <MaxTurnsNoticeCard conversationId={activeConv.id} message={group[0]} />
+              ) : group.length === 1 && isIntroductionMessage(group[0]) ? (
+                // The configured first-contact greeting: a plain bubble with
+                // the expert's identity, never a model turn with run actions.
+                <MessageBubble message={group[0]} />
               ) : group.length === 1 && isBrowserRunReportMessage(group[0]) ? (
                 // U7 — the unattended run's report card. Its own group by
                 // construction: the marker carries no loopId, and

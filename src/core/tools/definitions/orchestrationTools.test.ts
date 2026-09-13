@@ -949,7 +949,7 @@ describe('runWithTimeout', () => {
       3000,
     );
     // Pre-attach before advancing timer.
-    const assertion = expect(racePromise).rejects.toThrow('Sub-agent execution timed out (aborted)');
+    const assertion = expect(racePromise).rejects.toThrow('Subagent execution timed out (aborted)');
     await vi.advanceTimersByTimeAsync(3000);
     await assertion;
   });

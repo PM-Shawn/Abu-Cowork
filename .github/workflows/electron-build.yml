@@ -57,7 +57,6 @@ on:
       - 'sidecar/**'
       - 'src/**'
       - 'public/**'
-      - 'builtin-agents/**'
       - 'builtin-skills/**'
       - 'abu-browser-bridge/**'
       - 'abu-chrome-extension/**'
@@ -70,6 +69,8 @@ permissions:
 jobs:
   validate-target-platform:
     runs-on: ubuntu-latest
+    # Normally seconds; see ci.yml's `check`.
+    timeout-minutes: 10
     steps:
       - name: Require a supported target platform
         shell: bash

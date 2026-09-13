@@ -1842,6 +1842,17 @@ export interface TranslationDict {
   };
 
   // Toolbox Modal
+  avatarPicker: {
+    chooseAvatar: string;
+    chooseAvatarWithSelection: string;
+    color: string;
+    icon: string;
+    defaultAvatar: string;
+    optionLabel: string;
+    icons: Record<string, string>;
+    tints: Record<string, string>;
+  };
+
   team: {
     tabMembers: string;
     tabTeams: string;
@@ -1854,9 +1865,15 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
-    fieldAvatar: string;
-    fieldAvatarPlaceholder: string;
-    fieldAvatarHint: string;
+    fieldDescription: string;
+    fieldDescriptionPlaceholder: string;
+    fieldIntro: string;
+    fieldExpertise: string;
+    fieldSamplePrompts: string;
+    fieldLinesHint: string;
+    fieldSamplePromptsHint: string;
+    detailExpertise: string;
+    detailSamplePrompts: string;
     fieldMembers: string;
     fieldMembersHint: string;
     noMembersYet: string;
@@ -2100,6 +2117,8 @@ export interface TranslationDict {
     nameFormatHint: string;
     agentNameTakenHint: string;
     skillNameTakenHint: string;
+    /** The organization's policy blocks this skill name. */
+    skillNamePolicyHint: string;
     itemSaveFailed: string;
     aiAssistedCreate: string;
     installFailed: string;
@@ -2240,6 +2259,10 @@ export interface TranslationDict {
     importSymlinkRootRefused: string;
     /** {name} — the .askill's frontmatter name is not one directory segment. */
     importUnsafeName: string;
+    /** {name} — the organization's policy blocks the imported skill's name. */
+    importPolicyDenied: string;
+    /** The package has more than one SKILL.md at its root. */
+    importAmbiguousManifest: string;
     /** {n}, {names} — entries packSkill will not put in an exported archive. */
     exportSymlinkRefused: string;
     manualAdd: string;
@@ -2286,7 +2309,6 @@ export interface TranslationDict {
     exampleSkills: string;
     globalSkills: string;
     projectSkills: string;
-    projectSkillsBadge: string;
     // UX categories (Task #25 rework) — what users see in Toolbox.
     categoryMine: string;              // "我的"
     categoryAgentEvolved: string;      // "阿布沉淀"
@@ -2343,7 +2365,6 @@ export interface TranslationDict {
     agentMemoryUser: string;
     agentMaxTurns: string;
     agentBackground: string;
-    agentAvatar: string;
     agentSystemPrompt: string;
     agentEdit: string;
     /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
@@ -2420,6 +2441,8 @@ export interface TranslationDict {
     draftsConfirmAcceptAll: string;    // e.g. "确认采纳全部 {count} 个草稿？"
     draftsConfirmRejectAll: string;
     draftsAcceptError: string;
+    /** {name} — the organization's policy blocks the draft's skill name. */
+    draftsAcceptPolicyDenied: string;
     draftsRejectError: string;
     draftsTriggerReason: string;
     draftsCreatedAgo: string;          // "{when} 前"
@@ -3139,6 +3162,11 @@ export interface TranslationDict {
     maxRounds: string;
     webhookUrl: string;
     webhookUrlHint: string;
+    /** LAN callback opt-in (default off) — see settingsStore imChannel. */
+    allowLanWebhook: string;
+    allowLanWebhookHint: string;
+    allowLanWebhookRestart: string;
+    heartbeatRequiresLanWebhook: string;
     statusConnected: string;
     statusDisconnected: string;
     statusError: string;
@@ -3354,6 +3382,10 @@ export interface TranslationDict {
     selfExtensionSaveAgentNew: string;
     /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
     selfExtensionSaveAgentReplace: string;
+    /** save_team summary label: this call creates a team that does not exist yet. */
+    selfExtensionSaveTeamNew: string;
+    /** save_team summary label: this call overwrites a team of the same name. */
+    selfExtensionSaveTeamReplace: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;
@@ -3425,6 +3457,7 @@ export interface TranslationDict {
     /** The filesystem reported neither an mtime nor an inode for the file, so
      *  nothing could be frozen that identifies it later (review F1). */
     browserUploadUnidentifiable: string;
+    browserServerDisabled: string;
     browserEnterprisePolicyDenied: string;
     /** Unattended run on a site that carries no standing "allowed" verdict —
      *  the cross-origin fail-closed baseline. */
@@ -3867,6 +3900,14 @@ export interface TranslationDict {
   // LLM, so they go through i18n (resolved at execution time by the current
   // locale) rather than being hardcoded in either language. See CLAUDE.md §1.
   toolResult: {
+    team: {
+      invalidInput: string;
+      unavailableAgents: string;
+      saved: string;
+      approvalOn: string;
+      approvalOff: string;
+      saveFailed: string;
+    };
     // Shared value fragments reused across tools.
     valueNone: string;
     valueNever: string;
@@ -4087,6 +4128,8 @@ export interface TranslationDict {
       // use_skill
       /** Skill already active in this conversation. {skillName} */
       skillAlreadyActive: string;
+      /** use_skill / skill_view: the organization's skill blacklist names this skill, so it cannot be used. {skillName} */
+      skillBlockedByPolicy: string;
       /** Skill loaded. {name}, {description} */
       skillLoaded: string;
       /** Context line appended after skillLoaded. {context} */
@@ -4122,6 +4165,12 @@ export interface TranslationDict {
       labelAgent: string;
       /** Error: invalid name. {label}, {name} */
       errInvalidName: string;
+      /** Error: invalid fixed tool declaration. {field} */
+      errInvalidAgentTools: string;
+      /** Error: the role card names tools that do not exist. {names} */
+      errUnknownAgentTool: string;
+      /** Error: nothing written — the avatar is neither a built-in icon reference nor a single emoji. */
+      errInvalidAvatar: string;
       /** Error: nothing written — a `files` path has a segment that is not a plain name (see agentTools `isPlainPathSegment`). {p} */
       errUnsafeFilePath: string;
       /**
@@ -4257,6 +4306,8 @@ export interface TranslationDict {
       draftProposed: string;
       /** {name}, {path} */
       skillCreated: string;
+      /** {name} — the organization's policy blocks this skill name; no skill was written under it. */
+      policyDenied: string;
       /**
        * Error: create wrote nothing — the name belongs to a built-in, plugin
        * (disabled included) or enterprise skill, to another skill or folder

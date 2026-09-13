@@ -4,8 +4,8 @@ import type { SkillMetadata, SubagentMetadata } from '../types';
 import { skillLoader } from '../core/skill/loader';
 import { agentRegistry } from '../core/agent/registry';
 import { readInstalled, readInstalledResult, type InstalledPlugin } from '../core/plugin/installedStore';
-import { useSettingsStore } from './settingsStore';
 import { useWorkspaceStore } from './workspaceStore';
+import { useEnterpriseStore } from './enterpriseStore';
 
 /**
  * Resolve every agent's plugin provenance against `installed.json`.
@@ -98,6 +98,29 @@ export type DiscoveryStore = DiscoveryState & DiscoveryActions;
 // just after that install already ran an explicit refresh(), so re-scanning again
 // would be redundant. Module-level (not store state) to avoid extra re-renders.
 let lastRefreshAt = 0;
+
+/**
+ * The scanned skill names the organization's skill blacklist hides, as one
+ * comparable string. The loader filters at lookup time, so a policy change
+ * applies to every live lookup at once; `skills` above is the one cached
+ * projection, and it is refreshed when this set changes.
+ */
+function blockedSkillSignature(): string {
+  const names = new Set(skillLoader.getNameClaims().map((claim) => claim.name));
+  return [...names].filter((name) => skillLoader.isBlockedByPolicy(name)).sort().join('\n');
+}
+let lastBlockedSkills = '';
+/**
+ * The enterprise store changed while a scan was running. The loader resets
+ * its claims when a scan starts, so no signature can be taken mid-scan, and
+ * the scan in flight may have filtered with the policy from before the change.
+ */
+let policyChangedMidScan = false;
+function rescanIfPolicyChangedMidScan(): void {
+  if (!policyChangedMidScan) return;
+  policyChangedMidScan = false;
+  void useDiscoveryStore.getState().refresh();
+}
 export function getLastDiscoveryRefreshAt(): number {
   return lastRefreshAt;
 }
@@ -127,20 +150,21 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
         }) : readInstalledPluginsSafely(),
       ]);
 
-      // Auto-disable project-level skills on first discovery (opt-in model).
-      // Users must explicitly enable them in the Skills panel.
-      const projectSkillNames = skills
-        .filter((s) => s.source === 'project' || s.source === 'project-standard')
-        .map((s) => s.name);
-      if (projectSkillNames.length > 0) {
-        useSettingsStore.getState().autoDisableProjectSkills(projectSkillNames);
-      }
+      // Discovery never writes `disabledSkills`: it holds only the user's own
+      // switches, and this runs on every boot, workspace switch and skills
+      // folder change. Project skills are on by default like every other
+      // source (2026-09-12 ruling) — the former auto-disable here undid each
+      // opt-in on the next refresh and, the list being keyed by name, switched
+      // off the user's same-named skill in every workspace.
 
       set({ skills, agents: applyPluginAgentSources(agents, installedPlugins), isLoading: false });
+      lastBlockedSkills = blockedSkillSignature();
     } catch (err) {
       console.warn('Discovery refresh failed:', err);
       set({ isLoading: false });
       if (options?.strict) throw err;
+    } finally {
+      rescanIfPolicyChangedMidScan();
     }
   },
 }));
@@ -160,4 +184,22 @@ useWorkspaceStore.subscribe((state) => {
     lastWorkspaceForDiscovery = state.currentPath;
     void useDiscoveryStore.getState().refresh();
   }
+});
+
+// ── Re-discover when the organization's skill blacklist changes ─────────
+//
+// The policy arrives with the enterprise heartbeat, so the store changes far
+// more often than the policy does; only a change in which scanned skills are
+// hidden rescans. Registered once per process, like the workspace one above.
+useEnterpriseStore.subscribe(() => {
+  // Look again once the running scan lands, rather than start a second one
+  // on the same loader.
+  if (useDiscoveryStore.getState().isLoading) {
+    policyChangedMidScan = true;
+    return;
+  }
+  const next = blockedSkillSignature();
+  if (next === lastBlockedSkills) return;
+  lastBlockedSkills = next;
+  void useDiscoveryStore.getState().refresh();
 });

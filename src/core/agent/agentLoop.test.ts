@@ -1,4 +1,4 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { beforeAll, afterEach, describe, it, expect, vi } from 'vitest';
 import {
   buildUserMessageContent,
   isInteractiveDesktop,
@@ -16,7 +16,9 @@ import {
   runAgentLoop,
 } from './agentLoop';
 import { trimOldScreenshots } from '../context/contextManager';
-import type { Message, ToolDefinition, ToolResultContent } from '../../types';
+import { resolveSubagentToolNames } from './subagentToolRoster';
+import { applyTeamLeaderRoute } from '../team/leaderRoute';
+import type { Message, ToolDefinition, ToolResultContent, SubagentDefinition, StreamEvent } from '../../types';
 import type { ToolInvoker } from './ports/toolInvoker';
 import {
   getConversationReader,
@@ -164,6 +166,40 @@ describe('resolveTools · per-run restrictions', () => {
     description: name,
     inputSchema: { type: 'object', properties: {} },
     execute: async () => 'ok',
+  });
+
+  const prefetch = { userInput: 'hello', computerUseEnabled: false, activeSkills: [], turnCount: 1 };
+  const roleTools = ['read_file', 'write_file', 'notes__read', 'notes__write', 'tool_search', 'use_skill', 'report_plan', 'delegate_to_agent', 'run_agent_batch'];
+  const roleInvoker: ToolInvoker = { getAllTools: () => roleTools.map(makeTool), executeAnyTool: async () => 'ok', toolResultToString: String };
+  const roleRoute = (extra: Partial<SubagentDefinition> = {}) => applyTeamLeaderRoute(
+    { type: 'general', name: 'abu', cleanInput: 'hello' },
+    { teamId: 't', teamName: 'team', leader: { name: 'leader', description: '', systemPrompt: '', ...extra } as SubagentDefinition, members: [] },
+  );
+
+  it('offers all wildcard-allowed runtime schemas before classifying, plus only trusted team protocols', () => {
+    const resolved = resolveTools(roleInvoker, roleRoute({ tools: ['read_*', 'notes__*'], disallowedTools: ['notes__write', 'run_agent_batch'] }), false, undefined, prefetch);
+    expect(resolved.tools.map(t => t.name)).toEqual(['read_file', 'notes__read', 'report_plan', 'delegate_to_agent']);
+    expect(resolved.deferredTools).toEqual([]);
+    expect(resolved.tools.map(t => t.name).filter(name => !['report_plan', 'delegate_to_agent'].includes(name)))
+      .toEqual(resolveSubagentToolNames(roleTools, { tools: ['read_*', 'notes__*'], disallowedTools: ['notes__write', 'run_agent_batch'] }).toolNames);
+  });
+
+  it.each([undefined, []])('keeps deferred discovery with inherited role tools %j while removing denied core and deferred tools', (tools) => {
+    const resolved = resolveTools(roleInvoker, roleRoute({ tools, disallowedTools: ['write_*', 'notes__*'] }), false, undefined, prefetch);
+    const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
+    expect(names).toContain('tool_search');
+    expect(names).toContain('use_skill');
+    expect(names).not.toContain('write_file');
+    expect(names).not.toContain('notes__read');
+    expect(names).not.toContain('notes__write');
+  });
+
+  it('applies an exact empty run snapshot even to the team protocols', () => {
+    expect(resolveTools(roleInvoker, roleRoute({ tools: ['read_file'] }), false, undefined, prefetch, [], undefined, true)).toMatchObject({ tools: [], deferredTools: [] });
+  });
+
+  it.each([{ tools: 'read_file' }, { disallowedTools: [''] }])('fails closed for damaged root role metadata %j', (metadata) => {
+    expect(resolveTools(roleInvoker, roleRoute(metadata as never), false, undefined, prefetch)).toMatchObject({ tools: [], deferredTools: [] });
   });
 
   it('removes a blocked tool from both active and deferred model-visible lists', () => {
@@ -870,5 +906,95 @@ describe('buildUserMessageContent — snapshot filePath reuse (retry)', () => {
     ]) as { filePath?: string }[];
 
     expect(content[0].filePath).toBe('/outputs/images/snap.png');
+  });
+});
+
+
+describe('runAgentLoop expert execution', () => {
+  beforeAll(async () => {
+    await import('./subagentRunner');
+  });
+
+  it.each([undefined, ['write_file']])('keeps a read-only leader role local while passing task blocks %j to its writing member', async (blockedTools) => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const { runSubagentLoop } = await import('./subagentLoop');
+    const { getLoopContext } = await import('./permissionBridge');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
+    const originalInvoker = getToolInvoker();
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const writer = { name: 'writer', description: 'writes', systemPrompt: 'write', tools: ['write_file'], filePath: '__preset__' };
+    const route = applyTeamLeaderRoute({ type: 'general', name: 'abu', cleanInput: 'write report' }, {
+      teamId: 't', teamName: 'team', leader: { ...writer, name: 'leader', tools: ['read_file'] }, members: [writer],
+    });
+    const emit = (events: StreamEvent[]) => async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      events.forEach(onEvent);
+    };
+    const done: StreamEvent[] = [{ type: 'text', text: 'done' }, { type: 'done', stopReason: 'end_turn' }];
+    const parentChat = vi.fn().mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'leader-write', name: 'write_file', input: { path: '/tmp/leader' } },
+      { type: 'tool_use', id: 'delegate-writer', name: 'delegate_to_agent', input: { agent_name: 'writer', task: 'write report' } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementation(emit(done));
+    const childChat = vi.fn().mockImplementationOnce(emit([
+      { type: 'tool_use', id: 'member-write', name: 'write_file', input: { path: '/tmp/member' } },
+      { type: 'done', stopReason: 'tool_use' },
+    ])).mockImplementation(emit(done));
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter')
+      .mockReturnValueOnce({ chat: parentChat }).mockReturnValue({ chat: childChat });
+    const memberWrite = vi.fn().mockResolvedValue('saved');
+    const tools: ToolDefinition[] = ['read_file', 'write_file', 'delegate_to_agent', 'report_plan', 'run_agent_batch'].map(name => ({ name, description: name, inputSchema: { type: 'object', properties: {} }, execute: async () => 'ok' }));
+    const invoker: ToolInvoker = {
+      getAllTools: () => tools, toolResultToString: String,
+      executeAnyTool: vi.fn(async (name, _input, _confirm, _file, context) => {
+        expect(name).toBe('delegate_to_agent');
+        const parent = getLoopContext(context!.loopId!)!;
+        expect(parent.allowedTools).toBeUndefined();
+        const result = await runSubagentLoop({ agent: writer, task: 'write report', allowedTools: parent.allowedTools, blockedTools: parent.blockedTools,
+          toolInvoker: { getAllTools: () => tools, toolResultToString: String, executeAnyTool: memberWrite },
+        });
+        return result.text;
+      }),
+    };
+    setToolInvoker(invoker);
+    try {
+      const result = await runAgentLoop(conversationId, 'write report', { orchestration: { route, systemPromptSections: [] }, blockedTools });
+      expect(result.reason).toBe('completed');
+      expect(invoker.executeAnyTool).toHaveBeenCalledOnce();
+      expect(memberWrite).toHaveBeenCalledTimes(blockedTools ? 0 : 1);
+      const calls = useChatStore.getState().conversations[conversationId].messages.flatMap(message => message.toolCalls ?? []);
+      expect(calls.find(call => call.id === 'leader-write')).toMatchObject({ isError: true, result: expect.stringContaining('fixed tool boundary') });
+      expect(childChat).toHaveBeenCalled();
+    } finally {
+      selectAdapter.mockRestore();
+      setToolInvoker(originalInvoker);
+      useSettingsStore.setState({ activeModel: settings.activeModel });
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('executes a delegate route through runSubagent with the original expert definition', async () => {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const runner = await import('./subagentRunner');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } });
+    const conversationId = useChatStore.getState().createConversation();
+    const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file'], filePath: '/agents/expert/AGENT.md' };
+    const runSubagent = vi.spyOn(runner, 'runSubagent').mockResolvedValue({ text: 'expert done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+    try {
+      const result = await runAgentLoop(conversationId, '@专家 检查文档', { orchestration: {
+        route: { type: 'delegate', name: '专家', cleanInput: '检查文档', delegateAgent: expert }, systemPromptSections: [],
+      } });
+      expect(result.reason).toBe('completed');
+      expect(runSubagent).toHaveBeenCalledWith(expect.objectContaining({ agent: expert, task: '检查文档' }));
+    } finally {
+      runSubagent.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel });
+    }
   });
 });

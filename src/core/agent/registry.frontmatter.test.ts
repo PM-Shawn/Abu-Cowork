@@ -1,5 +1,72 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { parseAgentFile, serializeAgentMd } from './registry';
+import { agentToolPolicyForRoute, resolveAgentToolNames } from './agentToolPolicy';
+import type { RouteResult } from './orchestrator';
+
+/**
+ * `name:` frontmatter is one plain path segment. `~/.abu/agents` is filled by
+ * dropping whole folders into it, so a scanned AGENT.md need not be one the
+ * user wrote, and an agent's name is its folder under that root, where
+ * `joinPath` does not collapse `..`. A name that is not one segment is refused
+ * at parse time, loudly enough that the author can find the file.
+ */
+describe('parseAgentFile — name: must be one plain path segment', () => {
+  const filePath = '/repo/.abu/agents/x/AGENT.md';
+  function agentFile(nameLine: string): string {
+    return `---\n${nameLine}\ndescription: An agent\n---\n\nYou help.\n`;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    ['', 'empty'],
+    [' ', 'blank'],
+    ['.', 'the current directory'],
+    ['..', 'the parent directory'],
+    ['...', 'only dots'],
+    ['../../evil', 'climbs out of ~/.abu/agents'],
+    ['a/b', 'a nested path'],
+    ['/etc', 'absolute'],
+    ['..\\..\\evil', 'the Windows spelling of the same escape'],
+    ['C:\\x', 'a Windows absolute path'],
+    ['evil\u0000name', 'NUL'],
+    ['evil\u0001name', 'a C0 control character'],
+    ['evil\u0085name', 'NEL, a C1 control character'],
+    ['a\nb', 'an interior newline'],
+    [' evil', 'leading whitespace'],
+    ['evil ', 'trailing whitespace'],
+    ['evil\t', 'a trailing tab'],
+  ])('refuses %j (%s) and warns naming the file', (name) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(parseAgentFile(agentFile(`name: ${JSON.stringify(name)}`), filePath)).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const text = warn.mock.calls[0].join(' ');
+    expect(text).toContain(filePath);
+    expect(text).toContain(JSON.stringify(name));
+  });
+
+  it.each(['产品经理', 'HR 招聘官', '数据分析师', 'code-reviewer', 'QA_bot', 'skill.v2', 'abu'])(
+    'accepts %j without a warning',
+    (name) => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      expect(parseAgentFile(agentFile(`name: ${JSON.stringify(name)}`), filePath)?.name).toBe(name);
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['description: only', 'no name key'],
+    ['name:', 'a null name'],
+    ['name: 42', 'a number'],
+    ['name: [a, b]', 'a list'],
+  ])('returns null without a warning for %j (%s)', (nameLine) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(parseAgentFile(agentFile(nameLine), filePath)).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
 
 /**
  * `skills:` frontmatter shape. YAML has no way to tell an author that a bare
@@ -141,5 +208,63 @@ describe('parseAgentFile — CRLF frontmatter', () => {
   it('keeps a --- rule inside the prompt as prompt', () => {
     const raw = '---\r\nname: reviewer\r\n---\r\nIntro\r\n---\r\nMore';
     expect(parseAgentFile(raw, '/a/AGENT.md')?.systemPrompt).toBe('Intro\r\n---\r\nMore');
+  });
+});
+
+describe('parseAgentFile / serializeAgentMd — role tool inheritance', () => {
+  function agentFile(declaration: string): string {
+    return `---\nname: specialist\ndescription: Help with the task\n${declaration}\n---\n\nComplete the requested work.\n`;
+  }
+
+  // An expert whose file names no tools must start with the tools the user
+  // actually has, not with none: a "researcher" without a `tools:` line could
+  // otherwise neither search nor read a file.
+  it('an ordinary user expert without tools: inherits the runtime tool inventory', async () => {
+    const def = parseAgentFile('---\nname: plain\ndescription: d\n---\nprompt', '/home/u/.abu/agents/plain/AGENT.md');
+    expect(def).not.toBeNull();
+    expect(def?.tools).toBeUndefined();
+    expect(resolveAgentToolNames(['read_file', 'web_search'], agentToolPolicyForRoute({ type: 'agent', definition: def, team: undefined } as RouteResult)!).toolNames)
+      .toEqual(['read_file', 'web_search']);
+  });
+
+  it.each([
+    ['omitted constraints', ''],
+    ['empty role lists', 'tools: []\ndisallowed-tools: []'],
+  ])('round-trips %s without writing a tool boundary', (_label, declaration) => {
+    const parsed = parseAgentFile(agentFile(declaration), '/a/AGENT.md');
+    expect(parsed).not.toBeNull();
+
+    const serialized = serializeAgentMd(parsed!, parsed!.systemPrompt);
+    expect(serialized).not.toMatch(/^(?:tools|disallowed-tools):/m);
+    const reloaded = parseAgentFile(serialized, '/a/AGENT.md');
+    expect(reloaded).not.toBeNull();
+    expect(reloaded?.tools).toBeUndefined();
+    expect(reloaded?.disallowedTools).toBeUndefined();
+    expect(reloaded?.systemPrompt).toBe(parsed?.systemPrompt);
+  });
+
+  it.each([
+    {
+      label: 'an explicit allowlist and denylist',
+      declaration: 'tools: [read_file, "abu-browser__*", "run_command(npm run *)"]\ndisallowed-tools: ["abu-browser__click"]',
+      tools: ['read_file', 'abu-browser__*', 'run_command(npm run *)'],
+      disallowedTools: ['abu-browser__click'],
+    },
+    {
+      label: 'an explicit denylist with inherited tools',
+      declaration: 'disallowed-tools: [run_command]',
+      tools: undefined,
+      disallowedTools: ['run_command'],
+    },
+  ])('preserves $label through an editor save', ({ declaration, tools, disallowedTools }) => {
+    const parsed = parseAgentFile(agentFile(declaration), '/a/AGENT.md');
+    expect(parsed).toMatchObject({ tools, disallowedTools });
+
+    const serialized = serializeAgentMd({ ...parsed!, description: 'Updated description' }, parsed!.systemPrompt);
+    expect(parseAgentFile(serialized, '/a/AGENT.md')).toMatchObject({
+      description: 'Updated description',
+      tools,
+      disallowedTools,
+    });
   });
 });

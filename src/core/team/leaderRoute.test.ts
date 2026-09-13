@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { SubagentDefinition } from '@/types';
+import { agentToolPolicyForRoute, resolveAgentToolNames } from '@/core/agent/agentToolPolicy';
 import type { RouteResult } from '@/core/agent/orchestrator';
 
 import { TEAM_LEADER_MAX_TURNS } from './teamRunBounds';
@@ -24,13 +25,13 @@ describe('applyTeamLeaderRoute', () => {
     members: [def('a'), def('b')],
   };
 
-  it('rewrites a general route into the leader agent route and drops the member-style tools whitelist', () => {
+  it('rewrites a general route into the leader agent route and preserves the leader business tools whitelist', () => {
     const r = applyTeamLeaderRoute(general, team);
     expect(r.type).toBe('agent');
     expect(r.name).toBe('lead');
     expect(r.cleanInput).toBe('出周报');
     expect(r.definition?.systemPrompt).toBe('lead prompt');
-    expect(r.definition?.tools).toBeUndefined();
+    expect(r.definition?.tools).toEqual(['team_propose_plan']);
     expect(r.definition?.disallowedTools).toEqual(['run_command']);
     expect(r.team).toBe(team);
   });
@@ -81,6 +82,71 @@ describe('applyTeamLeaderRoute', () => {
     const explicit: RouteResult = { type: 'agent', name: 'a', cleanInput: 'x', definition: def('a', { maxTurns: 30 }) };
     expect(applyTeamLeaderRoute(explicit, team)).toBe(explicit);
     expect(applyTeamLeaderRoute(general, null)).toBe(general);
+  });
+
+  it('grants a read-only leader the three team protocols while keeping explicit deny authoritative', () => {
+    const runtimeNames = ['read_file', 'write_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch'];
+    const leader = def('lead', { tools: ['read_file'] });
+    const route = applyTeamLeaderRoute(general, { ...team, leader });
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(route)!).toolNames)
+      .toEqual(['read_file', 'report_plan', 'delegate_to_agent', 'run_agent_batch']);
+    route.definition!.disallowedTools = ['delegate_to_agent'];
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(route)!).toolNames)
+      .toEqual(['read_file', 'report_plan', 'run_agent_batch']);
+    expect(leader.tools).toEqual(['read_file']);
+  });
+
+  // A builtin expert's `tools` is Abu's curated roster for that ROLE (registry.ts),
+  // not a boundary the user drew. It omits the tools the leader planning
+  // instruction tells a root agent to use (ask_user_question, list_directory),
+  // so keeping it would have toolExecutor refuse the leader mid-plan.
+  it('drops the card tools of a builtin leader so it keeps the full root roster', () => {
+    const leader = def('产品经理', { filePath: '__builtin__', tools: ['read_file', 'write_file', 'web_search'] });
+    const r = applyTeamLeaderRoute(general, { ...team, leader });
+    expect(r.definition?.tools).toBeUndefined();
+    expect(r.definition && 'tools' in r.definition).toBe(false);
+    // Only the curated roster goes; an explicit deny is still the user's word.
+    expect(applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('产品经理', { filePath: '__builtin__', tools: ['read_file'], disallowedTools: ['run_command'] }),
+    }).definition?.disallowedTools).toEqual(['run_command']);
+    expect(leader.tools).toEqual(['read_file', 'write_file', 'web_search']);
+  });
+
+  // The production shape: every builtin expert in registry.ts carries a card
+  // maxTurns (50/30/40/30/30), so the floor branch runs too. Pinned together
+  // because rebuilding the definition from `leaderAsRoot` there — the spread
+  // this branch used before — would silently resurrect the curated `tools`
+  // while all the maxTurns-less cases above stayed green.
+  it('sheds the curated tools of a builtin leader that also carries a card maxTurns', () => {
+    const r = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('产品经理', { filePath: '__builtin__', tools: ['read_file', 'write_file', 'web_search'], maxTurns: 30 }),
+    });
+    expect(r.definition && 'tools' in r.definition).toBe(false);
+    expect(r.definition?.maxTurns).toBe(TEAM_LEADER_MAX_TURNS);
+  });
+
+  it('keeps the card tools of a user-created leader', () => {
+    const leader = def('lead', { filePath: '/Users/me/.abu/agents/lead/AGENT.md', tools: ['read_file'] });
+    expect(applyTeamLeaderRoute(general, { ...team, leader }).definition?.tools).toEqual(['read_file']);
+  });
+
+  // The regression this guards: a builtin leader following its own planning
+  // instruction was refused with "outside this agent's fixed tool boundary".
+  it('lets a builtin leader call ask_user_question through the policy path', () => {
+    const runtimeNames = ['read_file', 'write_file', 'web_search', 'ask_user_question', 'list_directory', 'report_plan'];
+    const builtin = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('产品经理', { filePath: '__builtin__', tools: ['read_file', 'write_file', 'web_search'] }),
+    });
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(builtin)!).toolNames).toEqual(runtimeNames);
+    const userMade = applyTeamLeaderRoute(general, {
+      ...team,
+      leader: def('lead', { filePath: '/Users/me/.abu/agents/lead/AGENT.md', tools: ['read_file', 'write_file', 'web_search'] }),
+    });
+    expect(resolveAgentToolNames(runtimeNames, agentToolPolicyForRoute(userMade)!).toolNames)
+      .toEqual(['read_file', 'write_file', 'web_search', 'report_plan']);
   });
 
   it('leaves explicit skill / @agent routes and un-pinned conversations alone', () => {

@@ -45,6 +45,7 @@ export function rawCode(value: never): string {
 export function reasonLabel(reason: BrowserDenialReasonCode, t: TranslationDict): string {
   const r = t.browserRunReport.reason;
   switch (reason) {
+    case 'server-disabled': return t.commandConfirm.browserServerDisabled;
     case 'master-switch-off': return r.masterSwitchOff;
     case 'site-denied': return r.siteDenied;
     case 'high-risk-site': return r.highRiskSite;

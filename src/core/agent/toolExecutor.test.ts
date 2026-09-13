@@ -141,6 +141,51 @@ describe('executeToolBatch · hard run restrictions', () => {
     mocks.snapshotResultImage.mockResolvedValue(undefined);
   });
 
+  it('rejects a role-forbidden call before running hooks or approval', async () => {
+    const executeAnyTool = vi.fn();
+    const result = await executeToolBatch({
+      ...makeParams(makeToolCall('write_file'), makeInvoker(executeAnyTool)),
+      agentToolPolicy: { tools: ['read_file'], protocolTools: ['delegate_to_agent'] },
+    });
+    expect(result.observations[0]).toMatchObject({ error: true, result: expect.stringContaining('fixed tool boundary') });
+    expect(mocks.emitHook).not.toHaveBeenCalled();
+    expect(executeAnyTool).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['role only', 'npm run build', ['run_command(npm run *)'], ['run_command(npm * test)']],
+    ['task only', 'npm install test', ['run_command(npm run *)'], ['run_command(npm * test)']],
+  ])('rejects hook input satisfying %s, requiring role AND task constraints', async (_label, command, tools, allowedTools) => {
+    const executeAnyTool = vi.fn();
+    mocks.emitHook.mockResolvedValue({ blocked: false, modifiedInput: { command } });
+    const result = await executeToolBatch({
+      ...makeParams(makeToolCall('run_command', { command: 'npm run test' }), makeInvoker(executeAnyTool), undefined, allowedTools),
+      agentToolPolicy: { tools, protocolTools: [] },
+    });
+    expect(result.observations[0].error).toBe(true);
+    expect(executeAnyTool).not.toHaveBeenCalled();
+  });
+
+  it('retains the independent skill input validator after role validation', async () => {
+    const executeAnyTool = vi.fn();
+    const params = makeParams(makeToolCall('run_command', { command: 'npm run test' }), makeInvoker(executeAnyTool));
+    params.inputValidators.set('run_command', () => false);
+    const result = await executeToolBatch({ ...params, agentToolPolicy: { tools: ['run_command(npm run *)'], protocolTools: [] } });
+    expect(result.observations[0].error).toBe(true);
+    expect(executeAnyTool).not.toHaveBeenCalled();
+  });
+
+  it('allows trusted delegation without exporting the leader role as the member task ceiling', async () => {
+    const executeAnyTool = vi.fn().mockResolvedValue('delegated');
+    await executeToolBatch({
+      ...makeParams(makeToolCall('delegate_to_agent', { agent_name: 'writer' }), makeInvoker(executeAnyTool), ['blocked_task_tool']),
+      agentToolPolicy: { tools: ['read_file'], protocolTools: ['delegate_to_agent'] },
+    });
+    expect(executeAnyTool).toHaveBeenCalledOnce();
+    expect(mocks.setLoopContext).toHaveBeenCalledWith('loop-1', expect.objectContaining({ allowedTools: undefined, blockedTools: ['blocked_task_tool'] }));
+    expect(mocks.setLoopContext.mock.calls[0][1]).not.toHaveProperty('agentToolPolicy');
+  });
+
   it('fails closed before invoking a tool on the per-run denylist', async () => {
     const executeAnyTool = vi.fn();
     const toolCall = makeToolCall('run_command');

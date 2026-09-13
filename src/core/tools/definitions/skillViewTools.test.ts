@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { skillLoader } from '../../skill/loader';
 import { skillViewTool } from './skillViewTools';
+import { format, getI18n } from '../../../i18n';
 import type { Skill } from '../../../types';
 
 const makeSkill = (name: string, extras: Partial<Skill> = {}): Skill => ({
@@ -113,5 +114,29 @@ describe('skillViewTool', () => {
 
   it('is marked as concurrency-safe (read-only)', () => {
     expect(skillViewTool.isConcurrencySafe).toBe(true);
+  });
+});
+
+describe('skillViewTool · organization skill blacklist', () => {
+  it('says a blacklisted skill is blocked and reads nothing from it', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+    vi.spyOn(skillLoader, 'isBlockedByPolicy').mockImplementation((name) => name === 'blocked');
+    const available = vi.spyOn(skillLoader, 'getAvailableSkills');
+    const files = vi.spyOn(skillLoader, 'loadSupportingFile');
+
+    for (const input of [{ name: 'blocked' }, { name: 'blocked', file_path: 'references/api.md' }]) {
+      expect(await skillViewTool.execute(input, {}))
+        .toBe(format(getI18n().toolResult.agent.skillBlockedByPolicy, { skillName: 'blocked' }));
+    }
+    expect(available).not.toHaveBeenCalled();
+    expect(files).not.toHaveBeenCalled();
+  });
+
+  it('still reports an unknown name as not found', async () => {
+    vi.spyOn(skillLoader, 'getSkill').mockReturnValue(undefined);
+    vi.spyOn(skillLoader, 'isBlockedByPolicy').mockReturnValue(false);
+    vi.spyOn(skillLoader, 'getAvailableSkills').mockReturnValue([]);
+
+    expect(await skillViewTool.execute({ name: 'nope' }, {})).toBe('Error: skill "nope" not found.');
   });
 });

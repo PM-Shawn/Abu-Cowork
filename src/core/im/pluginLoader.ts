@@ -16,6 +16,7 @@ import { joinPath } from '../../utils/pathUtils';
 import { registerIMPlugin } from './pluginRegistry';
 import type { IMPluginManifest, IMPluginRegistration, PluginTokenResult } from './pluginRegistry';
 import type { NormalizedIMMessage } from './inboundRouter';
+import { extractPluginInboundMessageId } from './pluginMessageIdentity';
 import { GenericPluginAdapter } from './adapters/genericPlugin';
 import { getTauriFetch } from '../llm/tauriFetch';
 import { startPluginHeartbeat } from './pluginHeartbeat';
@@ -64,6 +65,8 @@ export interface PluginManifestFile {
     isDirect?: string;
     /** If this field is absent in payload, treat as DM (e.g. "channel_id") */
     isDirectAbsent?: string;
+    /** JSON path to the platform's own message id, when it is not a common spelling. */
+    messageId?: string;
     isBotFilter?: string;
   };
   /** Heartbeat config for callback registration */
@@ -213,13 +216,10 @@ function parseManifestInbound(
     isDirect = !extractPath(payload, mapping.isDirectAbsent);
   }
 
-  // Extract message ID for dedup (try common field names)
-  const messageId = String(
-    extractPath(payload, 'message_key') ??
-    extractPath(payload, 'message_id') ??
-    extractPath(payload, 'msg_id') ??
-    ''
-  );
+  // Message id for dedup. `pendingApprovals` keys its 30-minute replay guard
+  // on it and falls back to a 10-second content window without one, so the
+  // spellings this recognizes decide how well a redelivered "同意" is caught.
+  const messageId = extractPluginInboundMessageId(payload, mapping.messageId) ?? '';
 
   // Mention detection: support standard @Name and DChat format @<=#botId=>
   const textStr = String(text);

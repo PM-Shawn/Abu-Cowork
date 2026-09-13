@@ -230,13 +230,13 @@ vi.mock('../../i18n', () => ({
         cancelled: '已取消',
         hookBlocked: '被拦截',
         noContent: '无内容',
-        mcpRequiredUnavailable: 'Error: 无法启动代理“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
-        invalidToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
-        invalidToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
-        invalidEmptyToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
-        invalidDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
-        invalidDisallowedToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
-        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        mcpRequiredUnavailable: 'Error: 无法启动专家“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
+        invalidToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidToolsField: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        invalidDisallowedToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidDisallowedToolsField: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
       },
       errorEmptyBody: '空响应',
     },
@@ -1486,12 +1486,16 @@ describe('subagentRunner', () => {
       ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
       ['agent denylist', { disallowedTools: ['write_file'] }, 'write_file'],
       ['always-blocked orchestration roster', {}, 'run_agent_batch'],
+      ['explicitly allowed nested delegation', { tools: ['delegate_to_agent'] }, 'delegate_to_agent'],
+      ['forged leader protocol tool', { tools: ['read_file'] }, 'report_plan'],
     ])('refuses a reverse tool.invoke outside the frozen %s', async (_label, boundary, toolName) => {
       getSidecarStatus.mockReturnValue('running');
       getAllToolsMock.mockReturnValue([
         { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: async () => 'read' },
         { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: async () => 'write' },
         { name: 'run_agent_batch', description: 'batch', inputSchema: { type: 'object', properties: {} }, execute: async () => 'batch' },
+        { name: 'delegate_to_agent', description: 'delegate', inputSchema: { type: 'object', properties: {} }, execute: async () => 'delegate' },
+        { name: 'report_plan', description: 'plan', inputSchema: { type: 'object', properties: {} }, execute: async () => 'plan' },
       ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
@@ -1505,6 +1509,51 @@ describe('subagentRunner', () => {
       ).rejects.toThrow(/fixed tool boundary/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['role', { tools: ['run_command(npm run *)'] }, undefined],
+      ['task', { tools: [] }, ['run_command(npm run *)']],
+    ])('rechecks %s command inputs on reverse tool.invoke even when the schema was offered', async (_label, boundary, allowedTools) => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: async () => 'run' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent: { ...agent, ...boundary }, task: 'run a command', allowedTools });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.findLast((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'rm -rf /tmp/forbidden' } })).rejects.toThrow();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      await expect(toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'npm run test' } })).resolves.toBe('tool result');
+      expect(executeAnyToolMock).toHaveBeenCalledTimes(1);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['role deny', { disallowedTools: ['read_file'] }],
+      ['invalid allow metadata', { tools: 'read_file' }],
+      ['invalid deny metadata', { disallowedTools: [''] }],
+    ])('fails closed for %s that changed after the host roster was frozen', async (_label, changedMetadata) => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const activeAgent = { ...agent, tools: [] };
+      const runPromise = runSubagent({ agent: activeAgent, task: 'read a file' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.findLast((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      Object.assign(activeAgent, changedMetadata);
+
+      await expect(toolInvokeHandler({ runId, toolName: 'read_file', input: { path: '/tmp/x' } })).rejects.toThrow(/fixed tool boundary/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
       d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });

@@ -2,9 +2,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { exists, readDir, readTextFile, writeTextFile } from '@tauri-apps/plugin-fs';
 import { useChatStore } from '../../../stores/chatStore';
 import { ensureParentDir } from '../../../utils/pathUtils';
-import { agentRegistry, parseAgentFile } from '../../agent/registry';
+import { agentRegistry, parseAgentFile, serializeAgentMd } from '../../agent/registry';
 import { skillLoader } from '../../skill/loader';
-import { saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool } from './agentTools';
+import { createInProcessExecutionPort, setExecutionPort } from '../../agent/ports/executionPort';
+import type { ExecutionStep, ExecutionStepSnapshot, TaskExecution } from '@/types/execution';
+import {
+  saveAgentTool, delegateToAgentTool, useSkillTool, createSaveItemTool,
+  DELEGATE_SNAPSHOT_COALESCE_MS, DELEGATE_DRAIN_POLL_MS, DELEGATE_DRAIN_MAX_ATTEMPTS,
+} from './agentTools';
 import { format, getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 
 const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
@@ -16,7 +21,7 @@ vi.mock('../../skill/loader', async () => {
   const actual = await vi.importActual<typeof import('../../skill/loader')>('../../skill/loader');
   return {
     parseSkillFile: actual.parseSkillFile,
-    skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn() },
+    skillLoader: { getSkill: vi.fn(), getAvailableSkills: vi.fn().mockReturnValue([]), loadSkill: vi.fn(), refreshSkill: vi.fn(), isBlockedByPolicy: vi.fn().mockReturnValue(false) },
   };
 });
 vi.mock('../../agent/registry', async () => {
@@ -25,6 +30,7 @@ vi.mock('../../agent/registry', async () => {
   const actual = await vi.importActual<typeof import('../../agent/registry')>('../../agent/registry');
   return {
     parseAgentFile: actual.parseAgentFile,
+    serializeAgentMd: actual.serializeAgentMd,
     getBuiltinAgentNames: actual.getBuiltinAgentNames,
     agentRegistry: { getAgent: vi.fn(), listAgents: vi.fn().mockReturnValue([]), getAvailableAgents: vi.fn().mockReturnValue([]) },
   };
@@ -66,6 +72,7 @@ vi.mock('../../../stores/chatStore', () => ({
       setAgentStatus: vi.fn(),
       addActiveAgent: vi.fn(),
       removeActiveAgent: vi.fn(),
+      setExecutionStepsSnapshot: vi.fn(),
     }),
   },
 }));
@@ -109,6 +116,73 @@ describe('delegateToAgentTool', () => {
       content: Object.freeze([Object.freeze({ type: 'text', text: 'source turn' })]),
     }));
   });
+
+  afterEach(() => {
+    // Tests below install fake timers and a stub execution port; put both back
+    // even when an assertion throws, so the next test starts clean.
+    vi.useRealTimers();
+    setExecutionPort(createInProcessExecutionPort());
+  });
+
+  /** Finish a delegation that is waiting on faked timers.
+   *
+   *  Plumbing, never an assertion: the tool re-arms its poll from inside
+   *  promise callbacks, so a single `advanceTimersByTime` (or even
+   *  `runAllTimersAsync`) can return while the chain is between turns, with the
+   *  next timer not yet armed — the call would then hang forever. Pumping one
+   *  poll interval at a time keeps that from happening. How many pumps it takes
+   *  depends on the machine, so no test asserts on it; the budget itself is
+   *  pinned by the DELEGATE_DRAIN_* advances the tests make before calling this.
+   *  The cap only turns a hang into a readable failure. */
+  async function finishUnderFakeTimers<T>(promise: Promise<T>): Promise<T> {
+    let settled = false;
+    const tracked = promise.then(
+      (value) => { settled = true; return value; },
+      (err) => { settled = true; throw err; },
+    );
+    tracked.catch(() => undefined); // the caller does the asserting
+    for (let pump = 0; !settled && pump < 1000; pump += 1) {
+      await vi.advanceTimersByTimeAsync(DELEGATE_DRAIN_POLL_MS);
+    }
+    if (!settled) throw new Error('delegation never settled under fake timers');
+    return tracked;
+  }
+
+  /** Swap in a chat-store facade that records the persisted step snapshots.
+   *  Explicit per test: an earlier test in this file replaces `getState`
+   *  wholesale, and `clearAllMocks` does not put a return value back. */
+  function stubChatStore(): ReturnType<typeof vi.fn<(convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void>> {
+    const setExecutionStepsSnapshot = vi.fn<(convId: string, loopId: string, steps: ExecutionStepSnapshot[]) => void>();
+    vi.mocked(useChatStore.getState).mockReturnValue({
+      activeConversationId: 'conv-1',
+      conversations: { 'conv-1': { messages: [] } },
+      getActiveConversation: vi.fn(),
+      setAgentStatus: vi.fn(),
+      addActiveAgent: vi.fn(),
+      removeActiveAgent: vi.fn(),
+      setExecutionStepsSnapshot,
+    } as never);
+    return setExecutionStepsSnapshot;
+  }
+
+  /** A live execution holding one delegate step, as the shell's store would.
+   *  Omit `toolCallId` to model the window where the shell has not yet applied
+   *  the parent's step frame, so the step cannot be found by call id. */
+  function stubExecution(loopId: string, parentStepId: string, toolCallId?: string): {
+    execution: TaskExecution;
+    parentStep: ExecutionStep;
+  } {
+    const parentStep: ExecutionStep = {
+      id: parentStepId, executionId: `exec-${loopId}`, toolCallId, type: 'delegate', label: 'delegate',
+      status: 'completed', toolName: 'delegate_to_agent', toolInput: {}, source: 'agent', detailBlocks: [], childSteps: [],
+    };
+    const execution: TaskExecution = {
+      id: `exec-${loopId}`, conversationId: 'conv-1', loopId, status: 'running', startTime: 0,
+      plannedSteps: [], planParsed: false, steps: [parentStep],
+    };
+    setExecutionPort({ ...createInProcessExecutionPort(), getExecutionByLoopId: () => execution });
+    return { execution, parentStep };
+  }
 
   it('describes the fixed tool boundaries of built-in role presets', () => {
     const type = delegateToAgentTool.inputSchema.properties.type as { description: string };
@@ -371,6 +445,296 @@ describe('delegateToAgentTool', () => {
       false,
       imageContent,
     );
+  });
+
+  it('drains member progress after a delayed parent step becomes visible', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const toolCallToStepId = new Map<string, string>();
+    const addChildStepToDelegate = vi.fn().mockReturnValue('child-step-delayed');
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId,
+      loopId: 'loop-delayed-parent',
+      conversationId: 'conv-1',
+      eventRouter: {
+        getCurrentStepId: () => undefined,
+        addChildStepToDelegate,
+        completeChildStep: vi.fn(),
+      },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_delayed', toolName: 'write_file', toolInput: { path: 'report.md' } });
+      await new Promise<void>((resolve) => setTimeout(() => {
+        toolCallToStepId.set('delegate-delayed', 'parent-step-delayed');
+        resolve();
+      }, 15));
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    const delegation = delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-delayed-parent', toolCallId: 'delegate-delayed' } as never,
+    );
+    await finishUnderFakeTimers(delegation);
+
+    expect(addChildStepToDelegate).toHaveBeenCalledWith(
+      'loop-delayed-parent',
+      'parent-step-delayed',
+      expect.objectContaining({ toolName: 'write_file', toolCallId: expect.stringContaining(':toolu_delayed') }),
+    );
+  });
+
+  // Persisting a snapshot rewrites the whole assistant message to disk, so a
+  // member that calls ten tools must not cost ten writes.
+  it('coalesces a burst of member progress into one persisted snapshot, flushed when the delegation ends', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { parentStep } = stubExecution('loop-burst', 'parent-step-burst', 'delegate-burst');
+    const setExecutionStepsSnapshot = stubChatStore();
+    const addChildStepToDelegate = vi.fn((_loopId: string, _parentId: string, child: { toolName: string; toolCallId: string }) => {
+      parentStep.childSteps?.push({
+        id: `child-${parentStep.childSteps.length}`, executionId: 'exec-loop-burst', toolCallId: child.toolCallId,
+        type: 'tool', label: child.toolName, status: 'completed', toolName: child.toolName,
+        toolInput: {}, source: 'agent', detailBlocks: [],
+      });
+      return `child-${(parentStep.childSteps?.length ?? 1) - 1}`;
+    });
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['delegate-burst', 'parent-step-burst']]),
+      loopId: 'loop-burst',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate, completeChildStep: vi.fn() },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      for (let i = 0; i < 10; i += 1) {
+        options.onProgress?.({ type: 'tool-start', id: `toolu_${i}`, toolName: 'write_file', toolInput: { path: `note-${i}.md` } });
+      }
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    // Nothing here is timer-gated: the parent resolves on the first event, so
+    // awaiting the call is enough — and the clock never reaches the window.
+    await delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write ten notes' },
+      { conversationId: 'conv-1', loopId: 'loop-burst', toolCallId: 'delegate-burst' } as never,
+    );
+
+    // Ten child events, one write — and it happened on the completion flush,
+    // because the 250ms coalescing timer was never allowed to fire.
+    expect(addChildStepToDelegate).toHaveBeenCalledTimes(10);
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1);
+    const [, , snapshot] = setExecutionStepsSnapshot.mock.calls[0];
+    expect(snapshot[0].childSteps).toHaveLength(10);
+    // Nothing is left armed: advancing well past the window adds no write.
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  // The window must not starve: a member that keeps working past it gets its
+  // progress on disk before it finishes, not only at the end.
+  it('writes an in-flight snapshot once the coalescing window elapses', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    stubExecution('loop-slow', 'parent-step-slow', 'delegate-slow');
+    const setExecutionStepsSnapshot = stubChatStore();
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['delegate-slow', 'parent-step-slow']]),
+      loopId: 'loop-slow',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: vi.fn().mockReturnValue('child-slow'), completeChildStep: vi.fn() },
+    } as never);
+    const memberWorkMs = DELEGATE_SNAPSHOT_COALESCE_MS * 2;
+    let memberStarted = (): void => {};
+    const memberHasStarted = new Promise<void>((resolve) => { memberStarted = resolve; });
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_early', toolName: 'write_file', toolInput: {} });
+      const working = new Promise<void>((resolve) => setTimeout(resolve, memberWorkMs));
+      memberStarted();
+      await working;
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_late', toolName: 'read_file', toolInput: {} });
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    const delegation = delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'work for a while' },
+      { conversationId: 'conv-1', loopId: 'loop-slow', toolCallId: 'delegate-slow' } as never,
+    );
+    // Wait for the member to arm its own timer rather than counting turns.
+    await memberHasStarted;
+
+    await vi.advanceTimersByTimeAsync(DELEGATE_SNAPSHOT_COALESCE_MS);
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1); // the window elapsed mid-run
+
+    await vi.advanceTimersByTimeAsync(memberWorkMs - DELEGATE_SNAPSHOT_COALESCE_MS);
+    await delegation;
+
+    // The second event re-armed the window; the completion flush wrote it and
+    // cleared the timer, so the total is exactly two writes.
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('gives up on queued member progress once the drain budget runs out, and says how much it dropped', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // An execution that never grows the parent step: nothing can resolve it.
+    setExecutionPort({
+      ...createInProcessExecutionPort(),
+      getExecutionByLoopId: () => ({
+        id: 'exec-loop-orphan', conversationId: 'conv-1', loopId: 'loop-orphan', status: 'running',
+        startTime: 0, plannedSteps: [], planParsed: false, steps: [],
+      }),
+    });
+    stubChatStore();
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const addChildStepToDelegate = vi.fn().mockReturnValue('child-orphan');
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map<string, string>(),
+      loopId: 'loop-orphan',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate, completeChildStep: vi.fn() },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_a', toolName: 'write_file', toolInput: {} });
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_b', toolName: 'read_file', toolInput: {} });
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    let resolved = false;
+    const delegation = delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-orphan', toolCallId: 'delegate-orphan' } as never,
+    ).then((text) => { resolved = true; return text; });
+    delegation.catch(() => undefined); // asserted below
+
+    // One poll short of the budget the drain cannot have given up yet. This
+    // holds however slowly the surrounding promise chain runs: a late start
+    // only means fewer polls have happened, never more.
+    await vi.advanceTimersByTimeAsync(DELEGATE_DRAIN_POLL_MS * (DELEGATE_DRAIN_MAX_ATTEMPTS - 1));
+    expect(resolved).toBe(false);
+    expect(debugSpy).not.toHaveBeenCalled();
+
+    // Let the last poll land: it must give up rather than keep retrying.
+    await expect(finishUnderFakeTimers(delegation)).resolves.toContain('done');
+
+    expect(addChildStepToDelegate).not.toHaveBeenCalled();
+    expect(debugSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy.mock.calls[0][0]).toContain('dropped 2 member progress event(s)');
+    expect(vi.getTimerCount()).toBe(0);
+    debugSpy.mockRestore();
+  });
+
+  it('flushes queued member progress and returns early when the parent step appears mid-drain', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    // No toolCallId on the parent step: nothing can resolve it until the
+    // shell's step map catches up, mid-drain.
+    stubExecution('loop-mid', 'parent-step-mid');
+    stubChatStore();
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const toolCallToStepId = new Map<string, string>();
+    const addChildStepToDelegate = vi.fn().mockReturnValue('child-mid');
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId,
+      loopId: 'loop-mid',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate, completeChildStep: vi.fn() },
+    } as never);
+    // The member finishes before the shell applies the parent's step frame, so
+    // the event is still queued when the drain starts. The frame lands four
+    // polls in — well inside the budget.
+    const parentAppearsMs = DELEGATE_DRAIN_POLL_MS * 4;
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_mid', toolName: 'write_file', toolInput: {} });
+      setTimeout(() => toolCallToStepId.set('delegate-mid', 'parent-step-mid'), parentAppearsMs);
+      return { text: 'done', stopReason: 'completed' } as never;
+    });
+
+    const delegation = delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-mid', toolCallId: 'delegate-mid' } as never,
+    );
+
+    // Before the frame lands nothing can be attached — a late start only makes
+    // that more true, so this cannot flake the other way.
+    await vi.advanceTimersByTimeAsync(parentAppearsMs - DELEGATE_DRAIN_POLL_MS);
+    expect(addChildStepToDelegate).not.toHaveBeenCalled();
+
+    await expect(finishUnderFakeTimers(delegation)).resolves.toContain('done');
+
+    expect(addChildStepToDelegate).toHaveBeenCalledWith(
+      'loop-mid',
+      'parent-step-mid',
+      expect.objectContaining({ toolName: 'write_file' }),
+    );
+    // Nothing was dropped, so the drain returned early instead of exhausting
+    // its budget — that is the early-return path, without measuring the clock.
+    expect(debugSpy).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    debugSpy.mockRestore();
+  });
+
+  it('still writes the member progress snapshot when the delegated run throws', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    stubExecution('loop-throws', 'parent-step-throws', 'delegate-throws');
+    const setExecutionStepsSnapshot = stubChatStore();
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map([['delegate-throws', 'parent-step-throws']]),
+      loopId: 'loop-throws',
+      conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: vi.fn().mockReturnValue('child-throws'), completeChildStep: vi.fn() },
+    } as never);
+    vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
+      options.onProgress?.({ type: 'tool-start', id: 'toolu_throws', toolName: 'write_file', toolInput: {} });
+      throw new Error('member run aborted');
+    });
+
+    await expect(delegateToAgentTool.execute(
+      { agent_name: 'researcher', task: 'write the report' },
+      { conversationId: 'conv-1', loopId: 'loop-throws', toolCallId: 'delegate-throws' } as never,
+    )).rejects.toThrow('member run aborted');
+
+    // The drain never ran, so the catch path owes the write — and the cleanup.
+    expect(setExecutionStepsSnapshot).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('forgets a completed child id so a duplicate tool-end cannot complete it twice', async () => {
@@ -654,6 +1018,118 @@ describe('save_agent multi-file support', () => {
   });
 
   describe('save_agent', () => {
+    it.each([
+      'tools: read_file, write_file',
+      'tools: null',
+      'tools:\n  - read_file\n  - 42',
+      'tools:\n  - " "',
+      'tools: { allow: read_file }',
+      'disallowed-tools: run_command',
+      'disallowed-tools: null',
+      'disallowed-tools:\n  - false',
+      'disallowed-tools: [" "]',
+    ])('rejects unusable tool metadata before writing or refreshing: %s', async (declaration) => {
+      const { useDiscoveryStore } = await import('../../../stores/discoveryStore');
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: `---\nname: my-agent\n${declaration}\n---\nHelp with a task.`,
+        files: [{ path: 'notes.md', content: 'must not be written' }],
+      });
+      expect(result).toMatch(/^Error:/);
+      expect(result).toContain(declaration.startsWith('tools:') ? 'tools' : 'disallowed-tools');
+      expect(writeTextFile).not.toHaveBeenCalled();
+      expect(useDiscoveryStore.getState().refresh).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unparseable agent before touching files', async () => {
+      const result = await saveAgentTool.execute({ name: 'my-agent', content: '# Missing frontmatter' });
+      expect(result).toMatch(/^Error:/);
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+
+    // The `*` / `__` exemptions below read the tool-NAME half of an entry only:
+    // a wildcard or a `__` sitting in an input constraint says nothing about
+    // whether the tool it constrains exists.
+    it.each([
+      'web_serach',
+      'writ_file(/src/**)',
+      'writ_file(a__b)',
+    ])('refuses the tool name %s, which nothing answers to, writing nothing', async (entry) => {
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: `---\nname: my-agent\ntools: ["${entry}"]\n---\nHelp with a task.`,
+      });
+      expect(result).toBe(format(getI18n().toolResult.agent.errUnknownAgentTool, { names: entry }));
+      expect(writeTextFile).not.toHaveBeenCalled();
+    });
+
+    // A wildcard covers names that cannot be enumerated, and a `server__tool`
+    // name belongs to a connector that may be offline right now — neither may
+    // make saving an expert depend on what happens to be running. An input
+    // constraint on a real built-in is not a claim about a different tool, so
+    // `run_command(a__b)` and `read_file(/tmp/**)` are saved as written.
+    it('accepts wildcards, connector tool names and constrained built-ins', async () => {
+      const tools = '[read_file, "read_file(/tmp/**)", "run_command(a__b)", "abu-browser__*", "some-mcp__tool", "some-mcp__tool(x)"]';
+      const result = await saveAgentTool.execute({
+        name: 'my-agent',
+        content: `---\nname: my-agent\ntools: ${tools}\n---\nHelp with a task.`,
+      });
+      expect(result).not.toMatch(/^Error:/);
+      expect(writeTextFile).toHaveBeenCalledWith(
+        '/Users/testuser/.abu/agents/my-agent/AGENT.md',
+        expect.stringContaining(`tools: ${tools}`),
+        { createNew: true },
+      );
+    });
+
+    it.each([
+      ['omitted constraints', ''],
+      ['empty role lists', 'tools: []\ndisallowed-tools: []\n'],
+    ])('saves and re-saves %s as inherited tools', async (_label, declaration) => {
+      const filePath = '/Users/testuser/.abu/agents/my-agent/AGENT.md';
+      const content = `---\nname: my-agent\n${declaration}---\nHelp with a task.`;
+      expect(await saveAgentTool.execute({ name: 'my-agent', content })).not.toMatch(/^Error:/);
+      const firstSaved = String(vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]);
+      // save_agent owns the identity stamp; nothing else about the file changes.
+      expect(firstSaved.replace(/^created: \d+\n/m, '')).toBe(content);
+
+      const parsed = parseAgentFile(firstSaved, filePath);
+      expect(parsed).not.toBeNull();
+      const serialized = serializeAgentMd(parsed!, parsed!.systemPrompt);
+      expect(await saveAgentTool.execute({ name: 'my-agent', content: serialized })).not.toMatch(/^Error:/);
+
+      const persisted = String(vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]);
+      expect(persisted).not.toMatch(/^(?:tools|disallowed-tools):/m);
+      const reloaded = parseAgentFile(persisted, filePath);
+      expect(reloaded).not.toBeNull();
+      expect(reloaded?.tools).toBeUndefined();
+      expect(reloaded?.disallowedTools).toBeUndefined();
+    });
+
+    it('preserves valid tool restrictions and optional display fields through an editor re-save', async () => {
+      const filePath = '/Users/testuser/.abu/agents/my-agent/AGENT.md';
+      const content = '---\nname: my-agent\nintro: Hello\nexpertise: [Planning]\nsample-prompts: [Plan a task]\navatar: icon:code/blue\ntools: [read_file, "abu-browser__*", "run_command(npm run *)"]\ndisallowed-tools: ["abu-browser__click"]\n---\nHelp with a task.';
+      const result = await saveAgentTool.execute({ name: 'my-agent', content });
+      expect(result).not.toMatch(/^Error:/);
+      const written = vi.mocked(writeTextFile).mock.calls.at(-1)?.[1];
+      // save_agent stamps `created:` as the last frontmatter line (it owns the
+      // agent's identity); every other line the model wrote survives verbatim.
+      expect(String(written).replace(/^created: \d+\n/m, '')).toBe(content);
+
+      const parsed = parseAgentFile(String(written), filePath)!;
+      const serialized = serializeAgentMd(parsed, parsed.systemPrompt);
+      expect(await saveAgentTool.execute({ name: 'my-agent', content: serialized })).not.toMatch(/^Error:/);
+      const persisted = String(vi.mocked(writeTextFile).mock.calls.at(-1)?.[1]);
+      expect(parseAgentFile(persisted, filePath)).toMatchObject({
+        tools: ['read_file', 'abu-browser__*', 'run_command(npm run *)'],
+        disallowedTools: ['abu-browser__click'],
+        intro: 'Hello',
+        expertise: ['Planning'],
+        samplePrompts: ['Plan a task'],
+        avatar: 'icon:code/blue',
+      });
+    });
+
     it('should save AGENT.md + supporting files', async () => {
       const result = await saveAgentTool.execute({
         name: 'my-agent',
@@ -1016,6 +1492,44 @@ describe('save_agent / save_skill name guard', () => {
       expectNothingWritten();
     });
 
+    // Abu writes the avatar itself (the editor's picker only produces preset
+    // references). A value that is neither a preset reference nor one emoji
+    // would render as raw text everywhere an avatar is shown.
+    it.each(['icon:code/blue/extra', 'icon:code', 'icon:nope/blue', 'icon:code/neon', 'code/blue', '🤖🤖', 'AB'])(
+      'refuses the avatar %j — neither a preset icon reference nor a single emoji — writing nothing',
+      async (avatar) => {
+        const result = await saveAgentTool.execute({
+          name: 'avatar-check',
+          content: `---\nname: avatar-check\ndescription: Reviews code\navatar: ${avatar}\n---\n\nYou review code.`,
+        });
+
+        expect(result).toBe(t().errInvalidAvatar);
+        expectNothingWritten();
+      },
+    );
+
+    // YAML reads `avatar: 123` as a number; it would render as raw text too.
+    it('refuses an avatar the frontmatter did not type as a string', async () => {
+      const result = await saveAgentTool.execute({
+        name: 'avatar-check',
+        content: '---\nname: avatar-check\ndescription: Reviews code\navatar: 123\n---\n\nYou review code.',
+      });
+
+      expect(result).toBe(t().errInvalidAvatar);
+      expectNothingWritten();
+    });
+
+    it.each(['icon:code/blue', 'icon:chart-bar/coral', '🤖', '👩‍💻', '🇨🇳'])('accepts the avatar %j', async (avatar) => {
+      const result = await saveAgentTool.execute({
+        name: 'avatar-ok',
+        content: `---\nname: avatar-ok\ndescription: Reviews code\navatar: ${avatar}\n---\n\nYou review code.`,
+      });
+
+      expect(result).not.toBe(t().errInvalidAvatar);
+      const written = vi.mocked(writeTextFile).mock.calls.find(([path]) => path === `${AGENTS_DIR}/avatar-ok/AGENT.md`);
+      expect(String(written?.[1])).toContain(`avatar: ${avatar}`);
+    });
+
     it('refuses content whose frontmatter name differs from the name parameter', async () => {
       const result = await saveAgentTool.execute({
         name: 'reviewer',
@@ -1201,4 +1715,22 @@ it('does not auto-enable a child skill when runtime resolution refuses it', asyn
   const result = await useSkillTool.execute({ skill_name: 'closed-skill' });
   expect(result).toContain('not found');
   expect(toggleSkillEnabled).not.toHaveBeenCalled();
+});
+
+it('tells the model a blacklisted skill is blocked by the organization, without listing the others or enabling it', async () => {
+  const { useSettingsStore } = await import('@/stores/settingsStore');
+  const { skillLoader } = await import('@/core/skill/loader');
+  const { getI18n, format } = await import('@/i18n');
+  const toggleSkillEnabled = vi.fn();
+  vi.mocked(useSettingsStore.getState).mockReturnValue({ disabledSkills: ['blocked'], toggleSkillEnabled } as unknown as ReturnType<typeof useSettingsStore.getState>);
+  vi.mocked(skillLoader.getSkill).mockReturnValue(undefined);
+  vi.mocked(skillLoader.isBlockedByPolicy).mockImplementation((name) => name === 'blocked');
+  vi.mocked(skillLoader.getAvailableSkills).mockClear();
+
+  const result = await useSkillTool.execute({ skill_name: '/blocked' });
+
+  expect(result).toBe(format(getI18n().toolResult.agent.skillBlockedByPolicy, { skillName: 'blocked' }));
+  expect(skillLoader.getAvailableSkills).not.toHaveBeenCalled();
+  expect(toggleSkillEnabled).not.toHaveBeenCalled();
+  vi.mocked(skillLoader.isBlockedByPolicy).mockReturnValue(false);
 });

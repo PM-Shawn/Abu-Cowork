@@ -83,6 +83,7 @@ import { loadAllRules } from './projectRules';
 import { loadMemoryIndex, scanMemoryFiles } from '../memdir/scan';
 import { agentRegistry } from './registry';
 import { skillLoader } from '../skill/loader';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 const mockLoadAllRules = vi.mocked(loadAllRules);
 const mockLoadMemoryIndex = vi.mocked(loadMemoryIndex);
@@ -95,6 +96,16 @@ beforeEach(() => {
   mockScanMemoryFiles.mockResolvedValue([]);
   browserMocks.hasElectronCommandHost.mockReturnValue(true);
   browserMocks.isConnected.mockImplementation((name: string) => name === 'abu-browser');
+});
+
+describe('routeInput expert entry', () => {
+  it('routes a real @专家 mention to delegation rather than an agent root route', () => {
+    const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file'], filePath: '/agents/expert/AGENT.md' };
+    vi.mocked(agentRegistry.getAgent).mockReturnValueOnce(expert);
+    expect(routeInput('@专家 检查文档')).toEqual({
+      type: 'delegate', name: '专家', cleanInput: '检查文档', delegateAgent: expert,
+    });
+  });
 });
 
 describe('buildSystemPrompt - security features', () => {
@@ -643,6 +654,20 @@ describe('Available Agents tool boundaries', () => {
 });
 
 describe('routeInput', () => {
+  it('routes the explicit creation command even when the skill is hidden from suggestions', () => {
+    const settings = useSettingsStore.getState();
+    vi.mocked(useSettingsStore.getState).mockReturnValue({ ...settings, disabledSkills: ['create-agent'] });
+    const skill = { name: 'create-agent', description: 'Create an agent or team', content: 'Ask for the roster and display fields.', allowedTools: ['save_agent', 'save_team'], disableAutoInvoke: true, filePath: '/builtin-skills/create-agent/SKILL.md', skillDir: '/builtin-skills/create-agent' };
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce(skill);
+    try {
+      const route = routeInput('/create-agent 帮我组建一个专家团，我的需求是：');
+      expect(route).toMatchObject({ type: 'skill', name: 'create-agent', skill, skillContent: skill.content, args: '帮我组建一个专家团，我的需求是：' });
+      expect(skillLoader.getSkill).toHaveBeenCalledWith('create-agent');
+    } finally {
+      vi.mocked(useSettingsStore.getState).mockReturnValue(settings);
+    }
+  });
+
   it('returns general route for plain text', () => {
     const result = routeInput('你好');
     expect(result.type).toBe('general');

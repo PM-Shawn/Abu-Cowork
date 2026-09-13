@@ -35,11 +35,13 @@ import type { EventRouter } from './eventRouter';
 import type { IMContext } from './orchestrator';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
+import { checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 import { isMacOS } from '../../utils/platform';
 import { isToolResultError } from './toolResultErrors';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
+import { getExecutionPort } from './ports/executionPort';
 import { firstImageContent } from '../tools/toolResultContent';
 import { snapshotResultImage } from '../session/outputSnapshots';
 
@@ -81,6 +83,8 @@ export interface ToolBatchParams {
   eventRouter: EventRouter;
   executionId: string;
   inputValidators: Map<string, (input: Record<string, unknown>) => boolean>;
+  /** Trusted root role policy; never inherited as a task-global member ceiling. */
+  agentToolPolicy?: AgentToolPolicy;
   /** Per-run execution denylist. This is an enforcement boundary, not only a
    * model-visible tool filter: hallucinated or malformed tool calls fail closed. */
   blockedTools?: string[];
@@ -211,24 +215,22 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   let completedCount = 0;
   const totalCount = collectedToolCalls.length;
 
-  const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
-    if (allowedTools.length > 0 && !allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))) {
-      return {
-        id: tc.id,
-        result: `Error: tool "${tc.name}" is not allowed for this agent run`,
-        resultContent: undefined,
-        error: true,
-        duration: 0,
-      };
+  const checkToolBoundary = (name: string, input: Record<string, unknown>): string | null => {
+    const roleError = params.agentToolPolicy && checkAgentToolCall(params.agentToolPolicy, name, input);
+    if (roleError) return roleError;
+    if (allowedTools.length > 0 && !allowedTools.some((pattern) => matchesToolPattern(name, pattern, input))) {
+      return `Error: tool "${name}" is not allowed for this agent run`;
     }
-    if (blockedTools.some((pattern) => matchesToolName(tc.name, pattern))) {
-      return {
-        id: tc.id,
-        result: `Error: tool "${tc.name}" is blocked for this agent run`,
-        resultContent: undefined,
-        error: true,
-        duration: 0,
-      };
+    if (blockedTools.some((pattern) => matchesToolName(name, pattern))) {
+      return `Error: tool "${name}" is blocked for this agent run`;
+    }
+    return null;
+  };
+
+  const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
+    const boundaryError = checkToolBoundary(tc.name, tc.input);
+    if (boundaryError) {
+      return { id: tc.id, result: boundaryError, resultContent: undefined, error: true, duration: 0 };
     }
 
     // Check if cancelled before executing
@@ -274,6 +276,10 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     }
 
     const effectiveInput = preEvent.modifiedInput ?? tc.input;
+    const effectiveBoundaryError = checkToolBoundary(tc.name, effectiveInput);
+    if (effectiveBoundaryError) {
+      return { id: tc.id, result: effectiveBoundaryError, resultContent: undefined, error: true, duration: 0 };
+    }
 
     // Enforce allowed-tools input constraints (e.g., run_command(npm *))
     const validator = inputValidators.get(tc.name);
@@ -296,6 +302,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const invokeTool = () => toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
         ...toolContext,
         toolCallId: tc.id,
+        executionStepId: params.toolCallToStepId.get(tc.id)
+          ?? getExecutionPort().getExecutionByLoopId(loopId)?.steps.find((step) => step.toolCallId === tc.id)?.id,
         assistantMessageId: assistantMsgId,
         abortSignal: abortController.signal,
         reportMetadata: checkpointMetadata,

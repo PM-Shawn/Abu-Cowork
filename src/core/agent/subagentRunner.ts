@@ -88,7 +88,7 @@ import {
   type SubagentProgressEvent,
   type SubagentStopReason,
 } from './subagentLoop';
-import { resolveSubagentToolRoster } from './subagentToolRoster';
+import { checkDispatchToolBoundary, resolveSubagentToolRoster } from './subagentToolRoster';
 import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
@@ -155,7 +155,7 @@ import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelector
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
-import { matchesToolName, matchesToolPattern } from '../skill/toolFilter';
+import { matchesToolName } from '../skill/toolFilter';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from './subagentWireContract';
 import {
   createSubagentProgressScopeId,
@@ -500,18 +500,13 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
   if (session.options.signal?.aborted) {
     throw new SidecarRequestError(-32000, `Subagent run is stopping: ${runId}`);
   }
-  if (
-    session.options.allowedTools?.length &&
-    !session.options.allowedTools.some((pattern) =>
-      matchesToolPattern(
-        toolName,
-        pattern,
-        (params.input as Record<string, unknown>) ?? {},
-      ),
-    )
-  ) {
-    throw new SidecarRequestError(-32602, `Tool is not allowed for this subagent run: ${toolName}`);
-  }
+  const boundaryError = checkDispatchToolBoundary(
+    session.options.agent,
+    session.options.allowedTools,
+    toolName,
+    (params.input as Record<string, unknown>) ?? {},
+  );
+  if (boundaryError) throw new SidecarRequestError(-32602, boundaryError);
 
   // Denylist checked at the execution boundary too, mirroring both the
   // allowedTools check above and subagentLoop.ts's own execution-time
@@ -532,22 +527,6 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
       `Tool is outside this agent's fixed tool boundary: ${params.toolName}`,
     );
   }
-  if (
-    session.options.agent.tools?.length
-    && !session.options.agent.tools.some((pattern) =>
-      matchesToolPattern(
-        params.toolName as string,
-        pattern,
-        (params.input as Record<string, unknown>) ?? {},
-      ),
-    )
-  ) {
-    throw new SidecarRequestError(
-      -32602,
-      `Tool input is outside this agent's fixed tool boundary: ${params.toolName}`,
-    );
-  }
-
   // The run becomes non-rerunnable only after every inherited/fixed roster
   // and input constraint accepts the request. A rejected request has produced
   // no side effect, so publishing its buffered tool-start would create a ghost

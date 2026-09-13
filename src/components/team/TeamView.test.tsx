@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
@@ -24,17 +25,23 @@ vi.mock('@/stores/settingsStore', () => ({
 
 const chatState = {
   setPendingInput: vi.fn(),
+  setPendingAgent: vi.fn(),
+  setPendingTeamId: vi.fn(),
+  setPendingExpertContact: vi.fn(),
+  expertContactReceipts: {}, pendingReferences: [], pendingAttachmentRequests: [],
   startNewConversation: vi.fn(),
   switchConversation: vi.fn(),
   createConversation: vi.fn(() => 'c-new'),
   conversationIndex: {} as Record<string, { id: string; title: string; updatedAt: number; teamId?: string; workspacePath?: string | null }>,
 };
 vi.mock('@/stores/chatStore', () => ({
-  useChatStore: (selector: (state: Record<string, unknown>) => unknown) => selector(chatState),
+  useChatStore: Object.assign((selector: (state: Record<string, unknown>) => unknown) => selector(chatState), { getState: () => chatState }),
 }));
 
 const loadMessages = vi.fn();
 vi.mock('@/core/session/conversationStorage', () => ({ loadMessages: (id: string) => loadMessages(id) }));
+const dispatch = vi.fn();
+vi.mock('@/core/agent/agentLoopRunner', () => ({ runAgentLoopDispatched: (...args: unknown[]) => dispatch(...args) }));
 
 const discoveryState = { agents: [] as Array<{ name: string }>, refresh: vi.fn() };
 vi.mock('@/stores/discoveryStore', () => ({
@@ -136,6 +143,7 @@ function seedAgent(name: string, extra?: string | SeedExtra) {
 
 describe('TeamView', () => {
   beforeEach(() => {
+    clearAllComposerDrafts();
     useTeamStore.setState({ teams: []});
     settingsState.activeTeamTab = 'members';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
@@ -205,18 +213,18 @@ describe('TeamView', () => {
     expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
   });
 
-  it('renders the two tabs 队员·团队 (the task board is gone)', () => {
+  it('renders the two tabs 专家·专家团 (the task board is gone)', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>
-      ['收件箱', '任务', '队员', '团队'].includes(label ?? ''));
-    expect(tabs).toEqual(['队员', '团队']);
+      ['收件箱', '任务', '专家', '专家团'].includes(label ?? ''));
+    expect(tabs).toEqual(['专家', '专家团']);
   });
 
   it('teams tab empty state offers creating a team', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
-    expect(screen.getByText('还没有团队')).toBeTruthy();
-    expect(screen.getAllByText('新建团队').length).toBeGreaterThan(0);
+    expect(screen.getByText('还没有专家团')).toBeTruthy();
+    expect(screen.getAllByText('新建专家团').length).toBeGreaterThan(0);
   });
 
   it('teams tab: a row opens the detail, not the edit form — and shows leader, members and the merged skills', () => {
@@ -368,12 +376,15 @@ describe('TeamView', () => {
     render(<TeamView />);
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
     fireEvent.click(screen.getByTestId('team-detail-start-chat'));
-    expect(chatState.createConversation).toHaveBeenCalledWith(null, { teamId: 't1' });
+    expect(chatState.createConversation).not.toHaveBeenCalled();
+    expect(chatState.startNewConversation).toHaveBeenCalled();
+    expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
+    expect(chatState.setPendingAgent).toHaveBeenCalledWith(null);
     // Nothing prefilled: the user says what they want in their own words.
-    expect(chatState.setPendingInput).not.toHaveBeenCalled();
+    expect(chatState.setPendingInput).toHaveBeenCalledWith('');
   });
 
-  it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 队员 detail', () => {
+  it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 专家 detail', () => {
     settingsState.activeTeamTab = 'teams';
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 }] });
     render(<TeamView />);
@@ -383,7 +394,7 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-name-input')).toBeTruthy();
   });
 
-  it('teams tab: creating offers 使用阿布创建 alongside 手动创建 (parity with 队员)', () => {
+  it('teams tab: creating offers 使用阿布创建 alongside 手动创建 (parity with 专家)', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
     fireEvent.click(screen.getByTestId('team-create-trigger'));
@@ -392,12 +403,25 @@ describe('TeamView', () => {
     expect(menu.textContent).toContain('手动创建');
   });
 
+  it.each([
+    ['teams', 'team-create-trigger', '/create-agent 帮我组建一个专家团，我的需求是：'],
+    ['members', 'member-create-trigger', '/create-agent 帮我创建一个专家，我的需求是：'],
+  ] as const)('explicitly selects the creation skill from the %s entry', (tab, trigger, prompt) => {
+    settingsState.activeTeamTab = tab;
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId(trigger));
+    fireEvent.click(screen.getByText('使用阿布创建'));
+    expect(chatState.startNewConversation).toHaveBeenCalledOnce();
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it('team dialog: create button stays disabled until name + leader are set', async () => {
     seedAgent('writer');
     discoveryState.agents = [{ name: 'writer' }];
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
-    fireEvent.click(screen.getAllByText('新建团队')[0]);
+    fireEvent.click(screen.getAllByText('新建专家团')[0]);
     const save = screen.getByTestId('team-save') as HTMLButtonElement;
     expect(save.disabled).toBe(true);
 
@@ -409,19 +433,23 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('search-select-option-writer'));
     expect(save.disabled).toBe(false);
 
+    fireEvent.click(screen.getByTestId('avatar-picker-trigger'));
+    fireEvent.click(screen.getByTestId('avatar-icon-users'));
+
     fireEvent.click(save);
     await waitFor(() => expect(useTeamStore.getState().teams).toHaveLength(1));
     const team = useTeamStore.getState().teams[0];
     expect(team.name).toBe('数据小队');
     expect(team.leaderRoleId).toBe('role-new');
+    expect(team.avatar).toBe('icon:users/blue');
     expect(addToast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success' }));
   });
 
-  it('team dialog with zero agents offers 新建队员 instead of a dead end', () => {
+  it('team dialog with zero agents offers 新建专家 instead of a dead end', () => {
     settingsState.activeTeamTab = 'teams';
     render(<TeamView />);
-    fireEvent.click(screen.getAllByText('新建团队')[0]);
-    expect(screen.getByText('新建队员')).toBeTruthy();
+    fireEvent.click(screen.getAllByText('新建专家团')[0]);
+    expect(screen.getByText('新建专家')).toBeTruthy();
   });
 
   it('members tab renders the shared AgentsSection (single identity source)', () => {
@@ -439,27 +467,27 @@ describe('TeamView', () => {
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('1');
     expect(editorOpens).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText('团队'));
+    fireEvent.click(screen.getByText('专家团'));
     rerender(<TeamView />);
-    fireEvent.click(screen.getByText('队员'));
+    fireEvent.click(screen.getByText('专家'));
     rerender(<TeamView />);
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
     expect(editorOpens).toHaveBeenCalledTimes(1);
   });
 
-  it('team dialog: 新建队员 switches to 队员 and opens the blank editor exactly once', () => {
+  it('team dialog: 新建专家 switches to 专家 and opens the blank editor exactly once', () => {
     // The tab switch and the trigger bump land in one commit: the section mounts
     // with the bumped value and opens the editor before the tab-change reset runs.
     settingsState.activeTeamTab = 'teams';
     const { rerender } = render(<TeamView />);
-    fireEvent.click(screen.getAllByText('新建团队')[0]);
-    fireEvent.click(screen.getByText('新建队员'));
+    fireEvent.click(screen.getAllByText('新建专家团')[0]);
+    fireEvent.click(screen.getByText('新建专家'));
     expect(screen.getByTestId('agents-section')).toBeTruthy();
     expect(editorOpens).toHaveBeenCalledTimes(1);
-    // …and the reset means a later return to 队员 does not open it again.
-    fireEvent.click(screen.getByText('团队'));
+    // …and the reset means a later return to 专家 does not open it again.
+    fireEvent.click(screen.getByText('专家团'));
     rerender(<TeamView />);
-    fireEvent.click(screen.getByText('队员'));
+    fireEvent.click(screen.getByText('专家'));
     rerender(<TeamView />);
     expect(screen.getByTestId('agents-section').getAttribute('data-trigger')).toBe('0');
     expect(editorOpens).toHaveBeenCalledTimes(1);
@@ -508,11 +536,60 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId('team-row-数据小队'));
     fireEvent.click(screen.getByTestId('team-detail-menu'));
     fireEvent.click(screen.getByTestId('team-detail-edit'));
-    expect(screen.getByText('新建队员')).toBeTruthy();
+    expect(screen.getByText('新建专家')).toBeTruthy();
     expect(screen.getByTestId('team-edit-invalid-role-a').textContent).toContain('已失效成员 1');
     fireEvent.click(screen.getByTestId('team-edit-invalid-remove-role-a'));
     expect(screen.queryByTestId('team-edit-invalid-role-a')).toBeNull();
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0].memberRoleIds).toEqual(['r-gone-lead']));
+  });
+
+  it('shows the description on the card and only populated display sections in detail', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1, description: '看数据的小队', intro: '我们负责取数和出图' }] });
+    render(<TeamView />);
+    expect(screen.getByTestId('team-row-数据小队')).toHaveTextContent('看数据的小队');
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    // The card summary and the detail subtitle both carry the description.
+    expect(screen.getAllByText('看数据的小队', { exact: true })).toHaveLength(2);
+    // The greeting is first-contact only — the detail no longer repeats it.
+    expect(screen.queryByText('我们负责取数和出图')).toBeNull();
+    expect(screen.queryByText('开场白')).toBeNull();
+    expect(screen.queryByText('擅长')).toBeNull();
+    expect(screen.queryByText('推荐提问')).toBeNull();
+  });
+
+  it('prefills a fresh team conversation from a suggested question without sending', () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1, expertise: ['取数', '出图'], samplePrompts: ['帮我看上季度销量'] }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.queryByText('开场白')).toBeNull();
+    expect(screen.getByText('擅长')).toBeTruthy();
+    expect(screen.getByText('取数')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '帮我看上季度销量' }));
+    expect(chatState.createConversation).not.toHaveBeenCalled();
+    expect(chatState.startNewConversation).toHaveBeenCalled();
+    expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
+    expect(chatState.setPendingInput).toHaveBeenCalledWith('帮我看上季度销量');
+    expect(settingsState.closeTeam).toHaveBeenCalledOnce();
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('team-detail-start-chat')).toBeNull();
+  });
+
+  it('edits and clears optional display fields using the shared form controls', async () => {
+    settingsState.activeTeamTab = 'teams';
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1, description: '旧介绍', intro: '旧开场白', expertise: ['旧擅长'], samplePrompts: ['旧问题'] }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    expect(screen.getByLabelText('开场白（可选）')).toHaveValue('旧开场白');
+    fireEvent.change(screen.getByLabelText('介绍（可选）'), { target: { value: '新介绍' } });
+    fireEvent.change(screen.getByLabelText('开场白（可选）'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('擅长（可选）'), { target: { value: ' 取数\n\n出图 ' } });
+    fireEvent.change(screen.getByLabelText('推荐提问（可选）'), { target: { value: ' 问题一\n问题二 ' } });
+    fireEvent.click(screen.getByTestId('team-save'));
+    await waitFor(() => expect(useTeamStore.getState().teams[0]).toMatchObject({ description: '新介绍', intro: undefined, expertise: ['取数', '出图'], samplePrompts: ['问题一', '问题二'] }));
   });
 });

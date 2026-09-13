@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react';
 import { useI18n } from '@/i18n';
 import { SCENARIO_CATEGORIES, DEFAULT_PROMPT_KEYS } from '@/data/scenarioPrompts';
 import { cn } from '@/lib/utils';
+import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { FolderOpen, BarChart3, PenLine, Globe, Clock } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -86,7 +87,7 @@ export default function ScenarioGuide({ onSelectPrompt, onScenarioChange, visibl
       </div>
 
       {/* Example Prompts Grid */}
-      <div className="grid grid-cols-2 gap-2 scenario-prompts-grid">
+      <div className={PROMPT_GRID_CLASS}>
         {currentPromptKeys.map((key) => {
           const text = prompts[key];
           if (!text) return null;
@@ -94,13 +95,7 @@ export default function ScenarioGuide({ onSelectPrompt, onScenarioChange, visibl
             <button
               key={key}
               onClick={() => handlePromptClick(key)}
-              className={cn(
-                'text-left px-3.5 py-2.5 rounded-xl text-body leading-relaxed transition-all cursor-pointer',
-                'border border-[var(--abu-border-subtle)] bg-[var(--abu-bg-muted)] text-[var(--abu-text-secondary)]',
-                'hover:bg-[var(--abu-bg-hover)] hover:border-[var(--abu-border-hover)]',
-                'active:scale-[0.98]',
-                'scenario-prompt-item'
-              )}
+              className={PROMPT_ITEM_CLASS}
             >
               "{text}"
             </button>

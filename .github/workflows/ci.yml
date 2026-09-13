@@ -8,6 +8,15 @@ on:
     # Re-evaluate body/label-based gate exemptions when their inputs change.
     types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
+# Cancel a superseded run when the same pull request is pushed again. Keyed on
+# github.sha off pull requests (not github.ref): a ref-keyed group would make
+# successive dev pushes queue behind each other, because cancel-in-progress is
+# deliberately false there — a post-merge run is the signal that dev is healthy
+# and must never be cancelled by the next merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
     runs-on: ubuntu-latest

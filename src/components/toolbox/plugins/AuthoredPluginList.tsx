@@ -101,7 +101,7 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
   ];
   const hasUpdate = (author: PluginAuthor) => Boolean(author.prepared && recordFor(author) && author.prepared.checksum !== recordFor(author)?.checksum);
   const selectedRecord = selected ? recordFor(selected) : undefined;
-  return <section className="px-8 pb-6" data-testid="plugin-mine-group"><div className="mx-auto max-w-5xl">
+  return <section className="px-8 pt-3 pb-6" data-testid="plugin-mine-group"><div className="mx-auto max-w-5xl">
     {error && <p role="alert" className="mb-3 text-minor text-[var(--abu-danger)]">{error}</p>}
     {visible.length === 0 ? <div className="rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]">{authors.length ? tb.pluginsNoMatches : tb.pluginsMineEmptyTitle}</div> : <ToolGrid>
       {visible.map(author => {

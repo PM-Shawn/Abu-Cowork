@@ -48,11 +48,15 @@ const definitions: Record<string, SubagentDefinition> = {
   reviewer: { name: 'reviewer', description: 'Reviews code', systemPrompt: 'x', filePath: '/Users/tester/.abu/plugin-packages/official/weather/1.2.0/agents/reviewer/AGENT.md' },
   产品经理: { name: '产品经理', description: '拆需求', systemPrompt: 'x', filePath: '__builtin__' },
   我的助手: { name: '我的助手', description: '我写的', systemPrompt: 'x', filePath: '/Users/tester/.abu/agents/mine/AGENT.md' },
+  // A hand-edited AGENT.md whose `tools:` is not a list — the one thing the
+  // card still has to say about tools.
+  坏工具: { name: '坏工具', description: '配置写坏了', systemPrompt: 'x', filePath: '/Users/tester/.abu/agents/bad/AGENT.md', tools: 'all' as unknown as string[] },
 };
 
 const pluginMeta: SubagentMetadata = { name: 'reviewer', description: 'Reviews code', source: { kind: 'plugin', plugin: 'weather@official' } };
 const builtinMeta: SubagentMetadata = { name: '产品经理', description: '拆需求' };
 const userMeta: SubagentMetadata = { name: '我的助手', description: '我写的' };
+const badToolsMeta: SubagentMetadata = { name: '坏工具', description: '配置写坏了' };
 
 /** The header's "..." button — absent entirely for a 市场 expert. */
 const menuButton = () => [...document.querySelectorAll('button')].find((b) =>
@@ -136,5 +140,27 @@ describe('AgentsSection — the 我的 empty state tells the truth', () => {
     renderShelf('mine', [builtinMeta, pluginMeta]);
     expect(screen.getByText('还没有你创建的专家')).toBeInTheDocument();
     expect(screen.queryByText('未找到专家')).toBeNull();
+  });
+});
+
+/**
+ * The card is avatar + name + description + switch. The tool count and the
+ * source line moved to the detail view so a six-character name survives four
+ * columns; the only badge left is the warning for a tools field Abu could not
+ * read, since that is an error the user has to go fix, not information.
+ */
+describe('AgentsSection — what the card row carries', () => {
+  it('shows no tool count on a card', () => {
+    renderShelf('market', [builtinMeta]);
+    expect(screen.getByText('产品经理')).toBeInTheDocument();
+    expect(screen.queryByText('全部工具')).toBeNull();
+    expect(screen.queryByText(/个工具/)).toBeNull();
+  });
+
+  it('still flags an expert whose tools field is unreadable', () => {
+    renderShelf('mine', [userMeta, badToolsMeta]);
+    expect(screen.getByText('工具配置无效')).toBeInTheDocument();
+    // …and only on that card.
+    expect(screen.getAllByText('工具配置无效')).toHaveLength(1);
   });
 });

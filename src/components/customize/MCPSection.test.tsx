@@ -68,40 +68,56 @@ describe('MCPSection · source="mine"', () => {
     expect(screen.queryByText('weather-mcp')).toBeNull();
   });
 
-  it('keeps a catalog-named server the user configured themselves', () => {
+  /**
+   * A catalog server the user installed (github, memory, …) is a 市场 item with
+   * a switch, exactly like an installed skill — it was on both shelves, which
+   * showed one server twice. 「我的」 is only what the user added by hand.
+   */
+  it('files a catalog-named server under 市场 only, never 我的', () => {
     useMCPStore.setState({ servers: { github: serverEntry('github') } });
-    render(<MCPSection source="mine" />);
-    expect(screen.getByText('github')).toBeTruthy();
+    const { rerender } = render(<MCPSection source="mine" />);
+    expect(screen.queryByText('github')).toBeNull();
+    expect(screen.getByText(tb().connectorsMineEmptyTitle)).toBeTruthy();
+    rerender(<MCPSection source="market" />);
+    expect(screen.getAllByText('github')).toHaveLength(1);
   });
 
-  /**
-   * Under 「我的」 the custom/template split is meaningless — everything left is
-   * the user's. Sorting a configured `github` into the 「市场」 group would file
-   * the user's own server under a heading that says it came from elsewhere.
-   */
   it('renders one ungrouped list — no 市场 heading over the user\u2019s own servers', () => {
     useMCPStore.setState({
-      servers: { github: serverEntry('github'), 'hand-rolled': serverEntry('hand-rolled') },
+      servers: { 'my-db': serverEntry('my-db'), 'hand-rolled': serverEntry('hand-rolled') },
     });
     render(<MCPSection source="mine" />);
-    expect(screen.getByText('github')).toBeTruthy();
+    expect(screen.getByText('my-db')).toBeTruthy();
     expect(screen.getByText('hand-rolled')).toBeTruthy();
     expect(screen.queryByText(tb().exampleServers)).toBeNull();
     expect(screen.queryByText(tb().myServers)).toBeNull();
   });
 
   /**
-   * `abu-browser-bridge` fell through both lists: a template name (so not
-   * "custom") that the Electron host filters out of the template list (so not
-   * an example either). One list cannot lose it.
+   * `abu-browser-bridge` is Abu's own: the Electron host provisions it and so
+   * never OFFERS it to install — but once provisioned it is a shipped server,
+   * so it sits on 市场 as an installed card, not under 「我的」 as if the user
+   * had added it (and it must not fall through both shelves either).
    */
-  it('keeps a configured server that belongs to neither of the old two groups', () => {
+  it('shows the host-provisioned browser bridge on 市场, not 我的', () => {
     // The Electron command host is what drops the bridge from the template list.
     vi.stubEnv('ABU_ELECTRON_COMMAND_HOST', '1');
     try {
       useMCPStore.setState({ servers: { 'abu-browser-bridge': serverEntry('abu-browser-bridge') } });
-      render(<MCPSection source="mine" />);
-      expect(screen.getByText('abu-browser-bridge')).toBeTruthy();
+      const { rerender } = render(<MCPSection source="mine" />);
+      expect(screen.queryByText('abu-browser-bridge')).toBeNull();
+      rerender(<MCPSection source="market" />);
+      expect(screen.getAllByText('abu-browser-bridge')).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('never offers the browser bridge as an install card on the Electron host', () => {
+    vi.stubEnv('ABU_ELECTRON_COMMAND_HOST', '1');
+    try {
+      render(<MCPSection source="market" />);
+      expect(screen.queryByText('abu-browser-bridge')).toBeNull();
     } finally {
       vi.unstubAllEnvs();
     }
@@ -109,12 +125,12 @@ describe('MCPSection · source="mine"', () => {
 
   it('still narrows the ungrouped list by the extensions search box', () => {
     useMCPStore.setState({
-      servers: { github: serverEntry('github'), 'hand-rolled': serverEntry('hand-rolled') },
+      servers: { 'my-db': serverEntry('my-db'), 'hand-rolled': serverEntry('hand-rolled') },
     });
     useSettingsStore.setState({ extensionsSearchQueries: { plugins: '', skills: '', mcp: 'hand' } });
     render(<MCPSection source="mine" />);
     expect(screen.getByText('hand-rolled')).toBeTruthy();
-    expect(screen.queryByText('github')).toBeNull();
+    expect(screen.queryByText('my-db')).toBeNull();
   });
 
   it('says 还没有你添加的连接器 when every server came from a plugin', () => {
@@ -521,19 +537,6 @@ describe('MCPSection · template install requires its fields', () => {
 
 
 describe('released connector grouping', () => {
-  it('keeps configured host-filtered templates visible alongside catalog cards', () => {
-    vi.stubEnv('ABU_ELECTRON_COMMAND_HOST', '1');
-    try {
-      useMCPStore.setState({ servers: { 'abu-browser-bridge': serverEntry('abu-browser-bridge') } });
-      // The host drops this one from the template list, so 「市场」 never shows
-      // it; it is a configured server, so 「我的」 does. Neither shelf loses it.
-      const { rerender } = render(<MCPSection source="mine" />);
-      expect(screen.getByText('abu-browser-bridge')).toBeVisible();
-      rerender(<MCPSection source="market" />);
-      expect(screen.getByText('github')).toBeVisible();
-    } finally { vi.unstubAllEnvs(); }
-  });
-
   it('does not offer independent removal of a plugin-owned connector', () => {
     useMCPStore.setState({ servers: { 'weather-mcp': serverEntry('weather-mcp') } });
     usePluginStore.setState({ installed: [plugin('weather', ['weather-mcp'])] });

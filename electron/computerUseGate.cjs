@@ -851,7 +851,16 @@ function createComputerUseGate(options) {
   // attempt (previous action still unverified) keeps its own verdict.
   function refuseTaskAttempt(sender, session, cmd, error, consequential) {
     const helper = error?.helper;
-    if (!helper || helper.execution !== 'not-executed' || typeof helper.code !== 'string') return null;
+    // Called from one place only: the catch that runs before anything is
+    // dispatched. So an unclassified error here is still a refusal, and it
+    // gets a receipt — the renderer's only alternative is to assume an
+    // ambiguous side effect and stop the whole turn over an action that never
+    // ran. An error that classified itself as dispatched or outcome-unknown is
+    // the exception: it came back from a helper call made during preflight and
+    // genuinely does not know, so it keeps its uncertainty.
+    if (helper && helper.execution !== 'not-executed') return null;
+    const code = helper && typeof helper.code === 'string' ? helper.code : 'host-refused';
+    const retryable = helper ? helper.retryable === true : false;
     let ledger;
     try {
       ledger = getTaskAttemptLedger(sender, session.taskKey);
@@ -862,8 +871,8 @@ function createComputerUseGate(options) {
     ledger.notExecutedReceipt = Object.freeze({
       status: 'not-executed',
       execution: 'not-executed',
-      helper_code: helper.code,
-      retryable: helper.retryable === true,
+      helper_code: code,
+      retryable,
       command: cmd,
       before_state_id: typeof session.expectedStateId === 'string' ? session.expectedStateId : null,
       attempt_count: ledger.attemptCount,
@@ -2553,11 +2562,6 @@ function createComputerUseGate(options) {
     }
 
     const session = getSession(sender, args);
-    assertScope(session, cmd);
-    if (cmd === 'ax_snapshot') {
-      assertObservationAllowed(sender, session.taskKey);
-    }
-    await assertOsPermissions(session.scope, cmd);
     const axSession = typeof args?.sessionId === 'string'
       ? axSessions.get(args.sessionId)
       : null;
@@ -2567,16 +2571,25 @@ function createComputerUseGate(options) {
     let consequence = null;
     let consumedState = null;
     let attemptLedger = null;
-    // A session begun for an observation intent never received the checks a
-    // stateful intent gets at begin_session (browser-origin approval, state
-    // assertion); a stateful command on such a token would ride past them.
-    // The command class is bound to the declared intent here.
-    if (statefulCommand && !STATEFUL_ACTIONS.has(session.actionIntent?.action)) {
-      throw new Error(
-        `Computer Use session for "${session.actionIntent?.action ?? 'unknown'}" does not authorize '${cmd}'`,
-      );
-    }
+    // Everything from here to the native dispatch runs inside the try, so that
+    // every refusal leaves a not-executed receipt. A refusal thrown outside it
+    // reaches the renderer as a bare error, which the renderer can only read as
+    // an action whose outcome it lost — and it stops the whole turn.
     try {
+      assertScope(session, cmd);
+      if (cmd === 'ax_snapshot') {
+        assertObservationAllowed(sender, session.taskKey);
+      }
+      await assertOsPermissions(session.scope, cmd);
+      // A session begun for an observation intent never received the checks a
+      // stateful intent gets at begin_session (browser-origin approval, state
+      // assertion); a stateful command on such a token would ride past them.
+      // The command class is bound to the declared intent here.
+      if (statefulCommand && !STATEFUL_ACTIONS.has(session.actionIntent?.action)) {
+        throw new Error(
+          `Computer Use session for "${session.actionIntent?.action ?? 'unknown'}" does not authorize '${cmd}'`,
+        );
+      }
       await assertCommandTarget(session, cmd, args);
       if (COMPUTER_USE_CONTROL_COMMANDS.has(cmd) && cmd !== 'activate_app') {
         await assertBrowserOriginCurrent(session);

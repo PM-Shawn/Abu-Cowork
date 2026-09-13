@@ -1056,6 +1056,36 @@ test('Windows Explorer takes no keyboard input at all, approval or not', async (
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
 });
 
+test('an unclassified pre-dispatch refusal still leaves a receipt', async () => {
+  // Not every refusal in the Gate labels itself. The catch it lands in runs
+  // before anything is dispatched, so the refusal is receipted anyway — the
+  // renderer's only other reading is "an action whose outcome I lost", and
+  // that stops the whole turn over something that never ran.
+  const h = harness();
+  const session = await begin(h, {
+    actionIntent: { action: 'get_app_state', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'hello',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /does not authorize/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.not_executed_receipt.helper_code, 'host-refused');
+  assert.equal(status.not_executed_receipt.execution, 'not-executed');
+  assert.equal(status.not_executed_receipt.retryable, false);
+  assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_type'), false);
+});
+
 test('Windows Explorer stays clickable and readable under the input ceiling', async () => {
   const h = harness({ platform: 'win32' });
   h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });

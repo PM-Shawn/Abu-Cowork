@@ -69,6 +69,32 @@ test('E2E required-check job names are stable, blocking, and run on PRs to dev',
   );
 });
 
+test('e2e-electron fans out across shards behind a facade job that fails loud', () => {
+  const workflow = YAML.parse(e2e);
+  const shard = workflow.jobs?.['e2e-electron-shard'];
+  assert.ok(shard, 'e2e-electron-shard job missing');
+  assert.deepEqual(shard.strategy?.matrix?.shard, [1, 2, 3]);
+  // One red shard must not cancel its siblings: surface every failure in one round.
+  assert.equal(shard.strategy?.['fail-fast'], false, 'shards must not cancel each other');
+  assert.equal(shard['continue-on-error'], undefined, 'shards must remain blocking');
+  const shardRun = JSON.stringify(shard.steps);
+  assert.match(shardRun, /--shard=\$\{\{ matrix\.shard \}\}\/3/, 'shard job must pass --shard');
+  const traces = shard.steps.find((step) => step.name === 'Upload Electron E2E traces');
+  assert.equal(traces?.with?.name, 'electron-e2e-test-results-shard-${{ matrix.shard }}');
+
+  const facade = workflow.jobs?.['e2e-electron'];
+  assert.equal(facade.needs, 'e2e-electron-shard', 'facade must depend on the shards');
+  // Without always(), a failing upstream can leave the required check skipped.
+  assert.equal(facade.if, 'always()', 'facade must use `if: always()`');
+  const facadeRun = JSON.stringify(facade.steps);
+  assert.match(
+    facadeRun,
+    /needs\['e2e-electron-shard'\]\.result/,
+    'facade must inspect the shard job result explicitly',
+  );
+  assert.match(facadeRun, /exit 1/, 'facade must fail when a shard did not succeed');
+});
+
 test('release CI explicitly skips the local-only branch-protection read', () => {
   assert.match(
     packageJson.scripts['release:check'],

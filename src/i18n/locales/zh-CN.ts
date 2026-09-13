@@ -1434,6 +1434,7 @@ const zhCN: TranslationDict = {
     teamSaveFailed: '保存专家团失败',
     fieldName: '名字',
     fieldNamePlaceholder: '例如：数据小队',
+    nameTakenHint: '已有同名专家团，换个名字吧',
     fieldDescription: '介绍（可选）',
     fieldDescriptionPlaceholder: '一句话说说这个专家团能帮你做什么',
     fieldIntro: '开场白（可选）',

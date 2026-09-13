@@ -68,6 +68,11 @@ const { execFile } = require('node:child_process');
 const { REPO_ROOT } = require('./appEnv.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { resolveWindowPosition, wireWindowMoveEvent } = require('./windowPlacement.cjs');
+// Every floating window this module reveals (overlay / stop-button / pet) goes
+// through the window-show policy main.cjs configured at boot, so an E2E
+// launch with ABU_E2E_QUIET_WINDOW=1 never activates the app from here either
+// (a bare `win.show()` would steal focus on the developer's machine).
+const { revealWindow } = require('./windowShowPolicy.cjs');
 
 const GUI_MISS = Symbol('gui-dispatch-miss');
 
@@ -263,13 +268,13 @@ function applyAllSpaces(win) {
   }
 }
 
-/** `show()` on 'ready-to-show' (avoids a white flash), with a timeout fallback in case that event never fires (e.g. a renderer-side error before first paint) so the window doesn't stay hidden forever. */
+/** Reveal on 'ready-to-show' (avoids a white flash), with a timeout fallback in case that event never fires (e.g. a renderer-side error before first paint) so the window doesn't stay hidden forever. Reveals via the window-show policy (`show()` normally, `showInactive()` under the quiet E2E policy). */
 function showWhenReady(win, timeoutMs = 1500) {
   let shown = false;
   const doShow = () => {
     if (shown || !win || win.isDestroyed()) return;
     shown = true;
-    win.show();
+    revealWindow(win);
   };
   win.once('ready-to-show', doShow);
   setTimeout(doShow, timeoutMs);
@@ -277,7 +282,7 @@ function showWhenReady(win, timeoutMs = 1500) {
 
 function showOverlay() {
   if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.show();
+    revealWindow(overlayWindow);
     return;
   }
   const display = screen.getPrimaryDisplay();
@@ -303,7 +308,7 @@ function showOverlay() {
 
 function showStopButton(stopLabel) {
   if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
-    stopBtnWindow.show();
+    revealWindow(stopBtnWindow);
     return;
   }
   const display = screen.getPrimaryDisplay();
@@ -530,7 +535,7 @@ function initialPetPosition(saved) {
 /** `pet_show {position?}` — pet.rs:48, plus the optional saved position. */
 function petShow(args) {
   if (petWindow && !petWindow.isDestroyed()) {
-    petWindow.show();
+    revealWindow(petWindow);
     return null;
   }
   const { x, y } = initialPetPosition(args && args.position);
@@ -722,5 +727,6 @@ module.exports = {
     WINDOWS_ACTIVE_WINDOW_SCRIPT,
     getActiveWindowForPlatform,
     initialPetPosition,
+    showWhenReady,
   },
 };

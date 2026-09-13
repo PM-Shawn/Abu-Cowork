@@ -470,6 +470,7 @@ describe('MarketplaceBrowser', () => {
 
     const group = screen.getByTestId('plugin-orphan-group');
     expect(group).toHaveTextContent(tb().pluginsOrphanGroup);
+    expect(group).toHaveTextContent(tb().pluginsOrphanHint);
     expect(group).toHaveTextContent('stale');
     expect(group).toHaveTextContent('removed');
 

@@ -2074,6 +2074,8 @@ export interface TranslationDict {
     pluginsMineEmptyHint: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
+    /** One line under it: they still work, and the detail dialog uninstalls. */
+    pluginsOrphanHint: string;
     /** Title of the installed-plugin detail dialog opened from 「管理」. */
     pluginsManageTitle: string;
     /** Install disclosure — the screen that shows what executable code is coming in. */
@@ -2382,7 +2384,9 @@ export interface TranslationDict {
     agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;
-    agentEditorTitle: string;
+    /** Dialog titles — 新建专家 / 编辑专家, mirroring the team dialog. */
+    agentEditorTitleNew: string;
+    agentEditorTitleEdit: string;
     agentEditorName: string;
     agentEditorDescription: string;
     agentEditorMetadata: string;

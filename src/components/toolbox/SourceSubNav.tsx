@@ -49,7 +49,7 @@ export default function SourceSubNav({
             data-testid={sourceTabId(item.id, testIdPrefix)}
             onClick={() => onChange(item.id)}
             className={cn(
-              'rounded-full px-3 py-1 text-body transition-colors',
+              'rounded-lg px-3 py-1 text-body transition-colors',
               active
                 ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)] font-medium'
                 : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]',

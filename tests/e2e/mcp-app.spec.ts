@@ -261,6 +261,10 @@ async function toggleDemoConnector(page: Page, expectConnected: boolean): Promis
   await page.getByLabel('Main navigation').getByRole('button', { name: /^(扩展|Extensions)$/ }).click();
   const panel = page.getByRole('main');
   await panel.getByRole('button', { name: /^(连接器|Connectors)$/ }).click({ timeout: READY_TIMEOUT });
+  // The demo server is a plain user-configured stdio server here (the plugin
+  // install is seeded later), so it sits on 我的 — and the 市场｜我的 sub-nav
+  // opens on 市场.
+  await page.getByTestId('extensions-source-mine').click();
   await panel.getByRole('button', { name: new RegExp(SERVER_NAME) }).first().click();
   const toggle = page.getByTestId('mcp-server-toggle-connection');
   await expect(toggle).toBeVisible({ timeout: READY_TIMEOUT });

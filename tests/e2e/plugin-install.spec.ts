@@ -119,7 +119,8 @@ async function openPluginsTab(page: Page): Promise<void> {
     timeout: READY_TIMEOUT,
   });
   await panel.getByRole('button', { name: PLUGINS_TAB }).click();
-  // My and Market are vertically stacked sections, without a nested tab.
+  // 我的 and 市场 are two shelves behind a pill sub-nav (extensions-source-*),
+  // one rendered at a time; the tab opens on 市场 and remembers the last pick.
 }
 
 async function openAddMarketplace(page: Page): Promise<void> {
@@ -273,8 +274,10 @@ test.describe('plugin install loop', () => {
     await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
 
     // Different-height card rows must remain reachable through virtualization.
-    // The accepted layout scrolls My and Market together in the page.
-    const list = page.getByTestId('plugin-mine-group').locator('..');
+    // Virtuoso hands scrolling to PluginsTab's own container (customScrollParent),
+    // so the element to scroll is the market list's nearest scrolling ancestor.
+    const list = page.getByTestId('plugin-marketplace-list')
+      .locator('xpath=ancestor::div[contains(@class,"overflow-y-auto")][1]');
     const lastCard = page.getByTestId('plugin-marketplace-entry').filter({ hasText: 'preview-29' });
     await expect.poll(async () => {
       await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
@@ -319,8 +322,12 @@ test.describe('plugin install loop', () => {
 
     // A relative source from a market does not establish local authorship.
     const mine = page.getByTestId('plugin-mine-group');
+    await page.getByTestId('extensions-source-mine').click();
     await expect(mine).toContainText(MINE_EMPTY);
     await expect(mine).not.toContainText('e2e-weather');
+    // 市场 is where the rest of this journey happens.
+    await page.getByTestId('extensions-source-market').click();
+    await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
 
     // Removing and reconnecting a source preserves the installation identity.
     await page.getByRole('button', { name: /^(移除市场|Remove marketplace)$/ }).click();
@@ -348,6 +355,7 @@ test.describe('plugin install loop', () => {
     await expect(entry.getByTestId('plugin-item-menu')).toHaveCount(0);
     await expect(entry.getByRole('switch')).toHaveCount(0);
 
+    await page.getByTestId('extensions-source-mine').click();
     await expect(mine).toContainText(MINE_EMPTY);
   });
 });

@@ -7,6 +7,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useTeamStore } from '@/stores/teamStore';
 import type { ImageAttachment, Skill } from '@/types';
 import { clearInputQueue, getQueuedInputs } from '@/core/agent/userInputQueue';
 
@@ -53,6 +54,9 @@ describe('ChatInput inline @mention boundaries', () => {
     });
     useDiscoveryStore.setState({ skills: [], agents: AGENTS, isLoading: false });
     useSettingsStore.setState({ composerEnterBehavior: 'enter', disabledAgents: [], disabledSkills: [] });
+    // The picker lists teams ahead of agents; this file's fixture is the two
+    // AGENTS above, so drop the built-in teams the store seeds itself with.
+    useTeamStore.setState({ teams: [] });
   });
 
   afterEach(() => {

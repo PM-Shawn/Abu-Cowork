@@ -15,6 +15,9 @@ vi.mock('@/stores/discoveryStore', () => {
   return { useDiscoveryStore: { getState: () => state, subscribe: () => () => {} } };
 });
 vi.mock('@/core/agent/registry', () => ({ agentRegistry: { getAvailableAgents: () => registryAgents.list } }));
+// 停用 lives in settings, not in the team — the resolver asks it per run.
+const disabledNames: string[] = [];
+vi.mock('@/stores/settingsStore', () => ({ useSettingsStore: { getState: () => ({ disabledAgents: disabledNames }) } }));
 const discoveryRefreshed = { count: 0 };
 const registryAgents: { list: unknown[] } = { list: [] };
 
@@ -28,6 +31,7 @@ function def(name: string, extra: Partial<SubagentDefinition> = {}): SubagentDef
 describe('resolveTeamRouteContext', () => {
   beforeEach(() => {
     teamsRef.teams = [];
+    disabledNames.length = 0;
     for (const k of Object.keys(defs)) delete defs[k];
     defs['r-lead'] = def('lead', { tools: ['team_propose_plan'] });
     defs['r-a'] = def('a');
@@ -59,6 +63,27 @@ describe('resolveTeamRouteContext', () => {
   it('reports an empty unresolved list when every member resolves', () => {
     teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a'] }];
     expect(resolveTeamRouteContext('t1')!.unresolvedMemberRoleIds).toEqual([]);
+  });
+
+  // A member the user switched off under 专家 is unreachable exactly the way a
+  // deleted one is: dropped from the roster the leader may delegate to, and
+  // REPORTED, so the leader is told rather than quietly given a smaller team.
+  it('a member disabled under 专家 is skipped and reported as unresolved', () => {
+    teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-b'] }];
+    disabledNames.push('b');
+    const ctx = resolveTeamRouteContext('t1')!;
+    expect(teamRosterNames(ctx)).toEqual(['a']);
+    expect(ctx.unresolvedMemberRoleIds).toEqual(['r-b']);
+  });
+
+  // The leader is resolved before the roster loop, so disabling it must not
+  // read as "a team with one fewer member" — TeamView is what refuses the run.
+  it('still resolves when the LEADER is the disabled one', () => {
+    teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a'] }];
+    disabledNames.push('lead');
+    const ctx = resolveTeamRouteContext('t1')!;
+    expect(ctx.leader.name).toBe('lead');
+    expect(ctx.unresolvedMemberRoleIds).toEqual([]);
   });
 });
 

@@ -93,6 +93,9 @@ test.describe('team member identity integrity', () => {
 
       // ---- 1b. A team that lists it -------------------------------------------
       await switchTab(page, '专家团');
+      // 市场｜我的 opens on 市场 (the built-in teams); the 新建专家团 CTA is the
+      // empty state of 我的.
+      await page.getByTestId('team-source-mine').click();
       await page.getByText('新建专家团').first().click();
       await page.getByTestId('team-name-input').fill(TEAM_NAME);
       await page.getByTestId('team-leader-select').click();
@@ -138,7 +141,8 @@ test.describe('team member identity integrity', () => {
       await switchTab(page, '专家');
       await openAgentDetail(page);
       await detailMenuButton(page).click();
-      await page.getByText('卸载', { exact: true }).click();
+      // 自己建的专家是「删除」；「卸载」只留给插件带来的。
+      await page.getByText('删除', { exact: true }).click();
       await expect(page.getByText(`删除「${AGENT_NAME}」？`)).toBeVisible();
       await expect(page.getByText(TEAM_NAME)).toBeVisible();
       await page.getByRole('button', { name: '仍然删除' }).click();

@@ -90,6 +90,8 @@ test.describe('editing an item outside ~/.abu', () => {
       // ---- 1. An expert under the launch cwd is not loaded ---------------------
       await page.getByTestId('sidebar-team').click();
       await page.getByTestId('top-tab-nav').getByRole('button', { name: '专家', exact: true }).click();
+      // A user's own expert is on the 我的 shelf; the sub-nav opens on 市场.
+      await page.getByTestId('team-source-mine').click();
       await page.getByText(AGENT, { exact: true }).first().click();
       await expect(page.getByText('USER-PROMPT')).toBeVisible();
       await expect(page.getByText('PROJECT-PROMPT')).toHaveCount(0);
@@ -102,6 +104,8 @@ test.describe('editing an item outside ~/.abu', () => {
       await page.getByTitle('新任务', { exact: true }).first().click();
       await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
       await page.getByRole('button', { name: '技能', exact: true }).click();
+      // The project skill is a file of the user's, so it is on the 我的 shelf.
+      await page.getByTestId('extensions-source-mine').click();
       const card = page.getByRole('button', { name: new RegExp(`^${SKILL} `) });
       await expect(card).toContainText('项目');
       await card.click();

@@ -51,7 +51,7 @@ vi.mock('@/i18n', () => ({
     t: {
       toolbox: {
         plugins: 'Plugins', skills: 'Skills', connectors: 'Connectors',
-        sourceMarket: 'Market', sourceMine: 'Mine', personalSource: 'Personal', organizationSource: 'Organization',
+        sourceMarket: 'Market', sourceMine: 'Mine', categoryMine: 'Mine', personalSource: 'Personal', organizationSource: 'Organization',
         searchPlaceholder: 'Search', importEntry: 'Import', aiCreateSkillPrompt: '',
       },
     },
@@ -94,10 +94,12 @@ describe('Extensions capability sources (bound enterprise client)', () => {
     render(<ExtensionsView />);
     expect(screen.getByText(activeTab === 'skills' ? 'Personal skills' : 'Personal MCP')).toBeVisible();
     expect(screen.getByTestId('create-control')).toBeVisible();
-    expect(screen.queryByTestId('extensions-source-market')).toBeNull();
+    expect(screen.getByTestId('extensions-source-market')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
     expect(screen.getByTestId('organization-catalog')).toHaveAttribute('data-slot', activeTab === 'skills' ? 'skillTab' : 'mcpTab');
     expect(screen.queryByTestId('create-control')).toBeNull();
+    // The organization catalog IS the enterprise market — no shelf of its own.
+    expect(screen.queryByTestId('extensions-source-market')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Personal' }));
     expect(screen.getByTestId('create-control')).toBeVisible();
   });
@@ -106,7 +108,7 @@ describe('Extensions capability sources (bound enterprise client)', () => {
     settingsState.activeExtensionsTab = 'plugins';
     render(<ExtensionsView />);
     expect(screen.getByText('Personal plugins')).toBeVisible();
-    expect(screen.queryByTestId('extensions-source-mine')).toBeNull();
+    expect(screen.getByTestId('extensions-source-mine')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Organization' }));
     expect(screen.getByTestId('organization-catalog')).toHaveAttribute('data-slot', 'pluginTab');
     fireEvent.click(screen.getByRole('button', { name: 'Personal' }));

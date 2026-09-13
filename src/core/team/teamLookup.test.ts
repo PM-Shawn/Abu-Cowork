@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
 import { saveTeamWouldReplace } from './teamLookup';
+import { BUILTIN_TEAMS } from './builtinTeams';
 
 const team = (name: string) => ({ id: `id-${name}`, name, leaderRoleId: 'r1', memberRoleIds: ['r1'], createdAt: 1 });
 
@@ -11,6 +12,11 @@ describe('saveTeamWouldReplace', () => {
   it('is true for a name a team already carries, trimmed like save_team trims it', () => {
     expect(saveTeamWouldReplace('数据小队')).toBe(true);
     expect(saveTeamWouldReplace('  数据小队  ')).toBe(true);
+  });
+
+  it('is false for a built-in team name — save_team refuses it instead of replacing', () => {
+    useTeamStore.setState({ teams: [team('数据小队'), ...BUILTIN_TEAMS] });
+    expect(saveTeamWouldReplace(BUILTIN_TEAMS[0].name)).toBe(false);
   });
 
   it('is false for a name no team carries', () => {

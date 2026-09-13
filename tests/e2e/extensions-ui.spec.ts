@@ -11,7 +11,7 @@ test('released skill cards keep switches, detail actions and creation', async ()
     await dismissFirstRunOverlays(page);
     await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
     await page.getByRole('button', { name: '技能', exact: true }).click();
-    await expect(page.getByTestId('extensions-source-market')).toHaveCount(0);
+    await expect(page.getByTestId('extensions-source-market')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByText('技能通过插件获取', { exact: true })).toHaveCount(0);
     const card = page.getByRole('button', { name: /^Abu-Browser / });
     await expect(card).toBeVisible();
@@ -67,7 +67,7 @@ test('released connector cards keep template install and connection actions', as
     await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
     await page.getByRole('button', { name: '连接器', exact: true }).click();
     await expect(page.getByText('精选连接器', { exact: true })).toHaveCount(0);
-    await expect(page.getByTestId('extensions-source-market')).toHaveCount(0);
+    await expect(page.getByTestId('extensions-source-market')).toHaveAttribute('aria-selected', 'true');
     const template = page.getByRole('button', { name: /^github / });
     await expect(template).toBeVisible();
     const templateBounds = await template.boundingBox();

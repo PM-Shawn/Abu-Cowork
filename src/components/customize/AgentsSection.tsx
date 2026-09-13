@@ -228,9 +228,13 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
 
   const renderAgentCard = (agent: SubagentDefinition) => {
     // The card carries no tool count or source line — both live in the detail
-    // view — so the name keeps the row's width at four columns. The one badge
-    // that stays is a warning: a tools field Abu could not read.
+    // view — so the name keeps the row's width at four columns. What is left is
+    // reporting: a tools field Abu could not read, and — since the switch moved
+    // into the detail — a quiet tag when Abu may not hand this expert work on
+    // its own. No switch here: on the card it read as a kill switch, which is
+    // not what it does.
     const toolSummary = getAgentToolSummary(agent.tools, agent.disallowedTools, knownToolNames);
+    const offAutoDispatch = disabledSet.has(agent.name);
 
     return (
       <ToolCard
@@ -240,24 +244,27 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         name: displayName(agent, locale),
         description: localizedDescription(agent, locale),
         avatar: <AgentAvatar agent={agent} />,
-        badge: toolSummary.invalidField ? (
-          <span
-            className="rounded-full bg-[var(--abu-warning-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-warning)]"
-            title={t.toolbox.agentInvalidTools}
-          >
-            {t.toolbox.agentInvalidTools}
+        badge: offAutoDispatch || toolSummary.invalidField ? (
+          <span className="flex items-center gap-1.5">
+            {offAutoDispatch && (
+              <span
+                className="rounded-full bg-[var(--abu-bg-muted)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                title={t.toolbox.agentAutoDispatchHint}
+                data-testid="agent-auto-dispatch-off"
+              >
+                {t.toolbox.agentAutoDispatchOff}
+              </span>
+            )}
+            {toolSummary.invalidField && (
+              <span
+                className="rounded-full bg-[var(--abu-warning-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-warning)]"
+                title={t.toolbox.agentInvalidTools}
+              >
+                {t.toolbox.agentInvalidTools}
+              </span>
+            )}
           </span>
         ) : undefined,
-        toggle: (
-          <span onClick={(e) => e.stopPropagation()}>
-            <Toggle
-              checked={!disabledSet.has(agent.name)}
-              onChange={() => toggleAgentEnabled(agent.name)}
-              size="sm"
-              tone="green"
-            />
-          </span>
-        ),
       }}
       onClick={() => setSelectedAgent(agent.name)}
       />
@@ -330,15 +337,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         avatar={selected ? <AgentAvatar agent={selected} /> : undefined}
         title={selected ? displayName(selected, locale) : undefined}
         // Primary action in the sticky footer, solid, exactly where the plugin
-        // and connector details put theirs — the header keeps only the switch
-        // and the 「…」 menu. Disabled (not hidden) while the expert is off, so
-        // the button and the switch beside it explain each other.
+        // and connector details put theirs — the header keeps only the 「…」
+        // menu. Always live: an expert Abu may not hand work to on its own is
+        // still an expert you can talk to.
         footer={selected && selected.name !== 'abu' ? (
           <div className="flex items-center justify-end gap-3">
             <Button
               size="sm"
               className="rounded-xl"
-              disabled={disabledSet.has(selected.name)}
               onClick={() => startChatWithAgent(selected)}
               data-testid="agent-detail-start-chat"
             >
@@ -349,11 +355,6 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         ) : undefined}
         headerActions={selected && selected.name !== 'abu' ? (
           <>
-            <Toggle
-              checked={!disabledSet.has(selected.name)}
-              onChange={() => toggleAgentEnabled(selected.name)}
-              tone="green"
-            />
             {/* "..." menu — edit / delete, for the user's own experts only.
                 市场 experts (the app's own builtins and the ones a plugin brings)
                 have nothing to offer here: there is no file of the user's to edit,
@@ -405,6 +406,21 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
                   ? format(t.toolbox.agentFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, selectedPluginSource.plugin) })
                   : isSystemAgent(selected) ? t.toolbox.sourceBuiltin : t.toolbox.sourceUser}
               </div>
+            </div>
+
+            {/* Auto-dispatch — the one setting this detail owns. It governs
+                whether Abu picks this expert by itself; @ mentions and expert
+                teams reach it either way, which is what the hint says. */}
+            <div className="flex items-start justify-between gap-4" data-testid="agent-auto-dispatch-setting">
+              <div className="min-w-0">
+                <div className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.agentAutoDispatch}</div>
+                <p className="mt-0.5 text-caption text-[var(--abu-text-tertiary)] leading-relaxed">{t.toolbox.agentAutoDispatchHint}</p>
+              </div>
+              <Toggle
+                checked={!disabledSet.has(selected.name)}
+                onChange={() => toggleAgentEnabled(selected.name)}
+                tone="green"
+              />
             </div>
 
             {/* Description */}

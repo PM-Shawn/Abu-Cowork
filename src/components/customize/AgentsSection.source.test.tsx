@@ -7,7 +7,7 @@
  * (a plugin's file comes back on the next refresh).
  */
 
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { SubagentDefinition, SubagentMetadata } from '@/types';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -144,10 +144,10 @@ describe('AgentsSection — the 我的 empty state tells the truth', () => {
 });
 
 /**
- * The card is avatar + name + description + switch. The tool count and the
- * source line moved to the detail view so a six-character name survives four
- * columns; the only badge left is the warning for a tools field Abu could not
- * read, since that is an error the user has to go fix, not information.
+ * The card is avatar + name + description. The tool count and the source line
+ * moved to the detail view so a six-character name survives four columns; what
+ * is left is the warning for a tools field Abu could not read, since that is an
+ * error the user has to go fix, not information.
  */
 describe('AgentsSection — what the card row carries', () => {
   it('shows no tool count on a card', () => {
@@ -162,5 +162,34 @@ describe('AgentsSection — what the card row carries', () => {
     expect(screen.getByText('工具配置无效')).toBeInTheDocument();
     // …and only on that card.
     expect(screen.getAllByText('工具配置无效')).toHaveLength(1);
+  });
+});
+
+/**
+ * The switch on an expert never meant "this expert is off" — it only says
+ * whether Abu may hand it work on its own. Shown as an on/off switch on the
+ * card it read as a kill switch, so the card only reports the state and the
+ * detail owns the setting.
+ */
+describe('AgentsSection — the switch is an auto-dispatch setting, not an on/off', () => {
+  it('renders no toggle on expert cards; shows a 不自动派单 tag only when the expert is off the pool', () => {
+    useSettingsStore.setState({ disabledAgents: ['reviewer'] });
+    renderShelf('market', [pluginMeta, builtinMeta]);
+    expect(screen.queryAllByRole('switch')).toHaveLength(0);
+    expect(screen.getAllByTestId('agent-auto-dispatch-off')).toHaveLength(1);
+    expect(screen.getByTestId('agent-auto-dispatch-off')).toHaveTextContent('不自动派单');
+  });
+
+  it('detail offers 开始对话 and the auto-dispatch setting even when the expert is off the pool', () => {
+    useSettingsStore.setState({ disabledAgents: ['reviewer'] });
+    renderShelf('market', [pluginMeta]);
+    fireEvent.click(screen.getByText('reviewer'));
+    // 开始对话 is the detail's footer button; being off the pool is not being
+    // off, so it is neither hidden nor disabled.
+    expect(screen.getByTestId('agent-detail-start-chat')).toBeEnabled();
+    const toggle = within(screen.getByTestId('agent-auto-dispatch-setting')).getByRole('switch');
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(toggle);
+    expect(useSettingsStore.getState().disabledAgents).toEqual([]);
   });
 });

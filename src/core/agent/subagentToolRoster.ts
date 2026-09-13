@@ -18,12 +18,16 @@ const ALWAYS_BLOCKED_SUBAGENT_TOOLS = new Set<string>([
   TOOL_NAMES.ASK_USER_QUESTION,
   // System configuration. Everything below writes durable state that outlives
   // the single hand-off a member was dispatched for — an expert, team, skill,
-  // plugin, scheduled task, trigger or connector server the user then lives
-  // with. Creating and editing those stays with Abu and a team leader, both of
-  // which run as a `route.type === 'agent'` route resolved by
-  // agentToolPolicy.ts and never by this file, so this list cannot reach them.
+  // plugin, scheduled task, trigger, file watch or connector server the user
+  // then lives with. The three automation managers are exactly the set
+  // permissions/selfExtensionPolicy.ts classifies together, so the two lists
+  // cannot drift apart. Creating and editing any of this stays with Abu and a
+  // team leader, both of which run as a `route.type === 'agent'` route
+  // resolved by agentToolPolicy.ts and never by this file, so this list cannot
+  // reach them.
   TOOL_NAMES.MANAGE_SCHEDULED_TASK,
   TOOL_NAMES.MANAGE_TRIGGER,
+  TOOL_NAMES.MANAGE_FILE_WATCH,
   TOOL_NAMES.MANAGE_MCP_SERVER,
   TOOL_NAMES.SAVE_AGENT,
   TOOL_NAMES.SAVE_TEAM,

@@ -63,6 +63,7 @@ describe('resolveSubagentToolNames', () => {
 const SYSTEM_CONFIG_TOOLS = [
   'manage_scheduled_task',
   'manage_trigger',
+  'manage_file_watch',
   'manage_mcp_server',
   'save_agent',
   'save_team',

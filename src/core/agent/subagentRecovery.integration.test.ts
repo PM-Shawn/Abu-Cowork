@@ -1285,6 +1285,7 @@ describe('subagent max_tokens recovery (integration)', () => {
     ['explicitly allowed nested delegation', { tools: ['delegate_to_agent'] }, 'delegate_to_agent'],
     ['forged leader protocol tool', { tools: ['read_file'] }, 'report_plan'],
     ['self-declared system-configuration tool', { tools: ['save_agent'] }, 'save_agent'],
+    ['self-declared durable automation tool', { tools: ['manage_file_watch'] }, 'manage_file_watch'],
   ])('rejects a hostile model call outside the frozen %s roster', async (_label, boundary, toolName) => {
     mockGetAllTools.mockReturnValue([
       { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
@@ -1293,6 +1294,7 @@ describe('subagent max_tokens recovery (integration)', () => {
       { name: 'delegate_to_agent', description: 'delegate', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
       { name: 'report_plan', description: 'plan', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
       { name: 'save_agent', description: 'save an expert', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
+      { name: 'manage_file_watch', description: 'watch a folder', inputSchema: { type: 'object', properties: {} }, execute: vi.fn() },
     ]);
     mockClaudeChat
       .mockImplementationOnce(emits([

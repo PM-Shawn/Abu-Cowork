@@ -608,7 +608,7 @@ async function clickNewTask(page: Page): Promise<void> {
     return;
   }
   const titleBarButton = page
-    .locator('button[aria-label="新建任务"], button[aria-label="New Task"]')
+    .locator('button[aria-label="新任务"], button[aria-label="New Task"]')
     .first();
   await titleBarButton.click();
 }

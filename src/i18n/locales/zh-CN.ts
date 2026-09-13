@@ -102,7 +102,7 @@ const zhCN: TranslationDict = {
   },
 
   sidebar: {
-    newTask: '新建任务',
+    newTask: '新任务',
     projectFiles: '项目文件',
     backToConversations: '返回会话',
     automation: '自动化',
@@ -2812,7 +2812,7 @@ const zhCN: TranslationDict = {
     step1Desc: '打开设置，填入你的 API Key',
     step1Link: '点击进入 AI 服务配置',
     step2Title: '开始对话',
-    step2Desc: '点击「新建任务」开始向阿布提问',
+    step2Desc: '点击「新任务」开始向阿布提问',
     step3Title: '使用工具与技能',
     step3Desc: '在工具箱中启用技能、专家、MCP 服务',
     step4Title: '探索设置',

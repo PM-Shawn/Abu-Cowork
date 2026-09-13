@@ -6,7 +6,9 @@ import { expertIdentity } from '@/core/team/expertContact';
 import { useI18n, format } from '@/i18n';
 import { agentRegistry } from '@/core/agent/registry';
 import AgentEditor from './AgentEditor';
+import DialogShell from '@/components/team/DialogShell';
 import { Toggle } from '@/components/ui/toggle';
+import { Button } from '@/components/ui/button';
 import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check } from 'lucide-react';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { remove } from '@tauri-apps/plugin-fs';
@@ -225,12 +227,10 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
   }, [menuAgent]);
 
   const renderAgentCard = (agent: SubagentDefinition) => {
+    // The card carries no tool count or source line — both live in the detail
+    // view — so the name keeps the row's width at four columns. The one badge
+    // that stays is a warning: a tools field Abu could not read.
     const toolSummary = getAgentToolSummary(agent.tools, agent.disallowedTools, knownToolNames);
-    const toolLabel = toolSummary.invalidField
-      ? t.toolbox.agentInvalidTools
-      : toolSummary.isUnrestricted
-        ? t.toolbox.agentAllTools
-        : format(t.toolbox.toolCount, { count: toolSummary.toolNames.length });
 
     return (
       <ToolCard
@@ -240,14 +240,14 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         name: displayName(agent, locale),
         description: localizedDescription(agent, locale),
         avatar: <AgentAvatar agent={agent} />,
-        badge: (
+        badge: toolSummary.invalidField ? (
           <span
-            className="rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
-            title={toolSummary.invalidField ? t.toolbox.agentInvalidTools : toolSummary.toolNames.join(', ')}
+            className="rounded-full bg-[var(--abu-warning-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-warning)]"
+            title={t.toolbox.agentInvalidTools}
           >
-            {toolLabel}
+            {t.toolbox.agentInvalidTools}
           </span>
-        ),
+        ) : undefined,
         toggle: (
           <span onClick={(e) => e.stopPropagation()}>
             <Toggle
@@ -273,22 +273,27 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     closeExtensions();
   };
 
-  // If editor is open, show editor full-width
-  if (editorAgent !== null) {
-    return (
-      <AgentEditor
-        agent={editorAgent === 'new' ? null : editorAgent}
-        onClose={() => setEditorAgent(null)}
-        onSave={async () => { await refresh(); setEditorAgent(null); setSource('members', 'mine'); }}
-      />
-    );
-  }
-
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
+      {/* Editor — a dialog over the list, the same shell the team editor uses,
+          rather than a page that replaces the list. */}
+      <DialogShell
+        open={editorAgent !== null}
+        onClose={() => setEditorAgent(null)}
+        title={editorAgent === 'new' ? t.toolbox.agentEditorTitleNew : t.toolbox.agentEditorTitleEdit}
+        maxWidth="max-w-2xl"
+      >
+        {editorAgent !== null && (
+          <AgentEditor
+            agent={editorAgent === 'new' ? null : editorAgent}
+            onClose={() => setEditorAgent(null)}
+            onSave={async () => { await refresh(); setEditorAgent(null); setSource('members', 'mine'); }}
+          />
+        )}
+      </DialogShell>
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
-      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
+      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6">
         {/* One shelf at a time — which one is the sub-nav's job to say, so the
             group heading that used to name it here is gone. */}
         {source === 'mine' ? (
@@ -324,19 +329,26 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         maxWidth="max-w-2xl"
         avatar={selected ? <AgentAvatar agent={selected} /> : undefined}
         title={selected ? displayName(selected, locale) : undefined}
+        // Primary action in the sticky footer, solid, exactly where the plugin
+        // and connector details put theirs — the header keeps only the switch
+        // and the 「…」 menu. Disabled (not hidden) while the expert is off, so
+        // the button and the switch beside it explain each other.
+        footer={selected && selected.name !== 'abu' ? (
+          <div className="flex items-center justify-end gap-3">
+            <Button
+              size="sm"
+              className="rounded-xl"
+              disabled={disabledSet.has(selected.name)}
+              onClick={() => startChatWithAgent(selected)}
+              data-testid="agent-detail-start-chat"
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              {t.toolbox.agentStartChat}
+            </Button>
+          </div>
+        ) : undefined}
         headerActions={selected && selected.name !== 'abu' ? (
           <>
-            {/* Start Chat — clay-tinted pill primary CTA, hidden when disabled. */}
-            {!disabledSet.has(selected.name) && (
-              <button
-                onClick={() => startChatWithAgent(selected)}
-                className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-minor font-medium text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)] border border-[var(--abu-clay-40)] hover:border-[var(--abu-clay)] transition-colors"
-                title={t.toolbox.agentStartChat}
-              >
-                <MessageCircle className="h-3.5 w-3.5" />
-                <span>{t.toolbox.agentStartChat}</span>
-              </button>
-            )}
             <Toggle
               checked={!disabledSet.has(selected.name)}
               onChange={() => toggleAgentEnabled(selected.name)}

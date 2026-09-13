@@ -539,7 +539,7 @@ export default function TeamView() {
           );
         }
         return (
-          <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6 h-full">
+          <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6 h-full">
             <div className="max-w-5xl mx-auto">
               <ToolGrid>{list.map(card)}</ToolGrid>
             </div>
@@ -581,12 +581,14 @@ export default function TeamView() {
         avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="lg" /> : undefined}
         title={detailTeam?.name}
         subtitle={detailTeam?.description?.trim()}
-        headerActions={detailTeam ? (() => {
-          const readOnly = isBuiltinTeam(detailTeam);
+        // Primary action in the sticky footer, solid — the same place and
+        // weight as on the plugin and connector details. The header keeps
+        // only the 「…」 menu.
+        footer={detailTeam ? (() => {
           const leaderAgent = resolveRoleId(detailTeam.leaderRoleId);
           const leaderDisabled = !!leaderAgent && disabledSet.has(leaderAgent.name);
           return (
-            <>
+            <div className="flex items-center justify-end gap-3">
               {/* The disabled button alone left people hunting for a reason —
                   a tooltip only shows up if you happen to hover it. */}
               {leaderDisabled && (
@@ -594,16 +596,24 @@ export default function TeamView() {
                   {t.team.leaderDisabledHint}
                 </span>
               )}
-              <button
+              <Button
+                size="sm"
+                className="rounded-xl"
                 onClick={() => startChatWithTeam(detailTeam)}
                 disabled={leaderDisabled}
                 title={leaderDisabled ? t.team.leaderDisabledHint : undefined}
-                className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-minor font-medium text-[var(--abu-clay)] bg-[var(--abu-clay-bg)] hover:bg-[var(--abu-clay-bg-15)] border border-[var(--abu-clay-40)] hover:border-[var(--abu-clay)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-[var(--abu-clay-bg)] disabled:hover:border-[var(--abu-clay-40)]"
                 data-testid="team-detail-start-chat"
               >
                 <MessageCircle className="h-3.5 w-3.5" />
-                <span>{t.team.detailStartChat}</span>
-              </button>
+                {t.team.detailStartChat}
+              </Button>
+            </div>
+          );
+        })() : undefined}
+        headerActions={detailTeam ? (() => {
+          const readOnly = isBuiltinTeam(detailTeam);
+          return (
+            <>
               {!readOnly && (
                 <div className="relative">
                   <button

@@ -268,37 +268,40 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     return true;
   }
 
-  // 「我的」 = every configured server no plugin owns. Scope by source first,
-  // search second — the two answer different questions, and the empty state
-  // needs them apart: nothing of the user's own at all ("还没有你添加的连接器")
-  // reads differently from "your servers, none matching".
+  // 「我的」 = the servers the user added by hand: no plugin owns them and no
+  // catalog entry names them. A catalog server the user installed (memory,
+  // sequential-thinking) stays on 市场 with its switch, as an installed skill
+  // does — listing it here too showed the same server on both shelves. Scope
+  // by source first, search second: the empty state needs them apart —
+  // nothing of the user's own at all ("还没有你添加的连接器") reads differently
+  // from "your servers, none matching".
   const scopedServers = useMemo(
-    () => mcpServers.filter((s) => !serverOwners[s.config.name]),
-    [mcpServers, serverOwners],
+    () => mcpServers.filter((s) => !serverOwners[s.config.name] && !templateNames.has(s.config.name)),
+    [mcpServers, serverOwners, templateNames],
   );
 
-  // One ungrouped list. The custom/template split is a statement about where a
-  // config *came from*, and under 「我的」 the answer is always "the user" — so
-  // filing a configured `github` under 「市场」 would contradict the tab it sits
-  // in. It also silently lost `abu-browser-bridge`, which is a template name
-  // (never "custom") that the Electron host drops from the template list
-  // (never an "example") — a server in neither group at all.
   const mineServers = useMemo(() => {
     if (!searchLower) return scopedServers;
     return scopedServers.filter((s) => s.config.name.toLowerCase().includes(searchLower));
   }, [scopedServers, searchLower]);
 
-  // "示例": all templates — installed ones first, then uninstalled
+  // 「市场」 catalog: every registry entry, an installed one as its server card
+  // and the rest as install cards. The walk is over the FULL registry, not the
+  // host's offer list: Electron provisions `abu-browser-bridge` itself and so
+  // never offers it to install — but once provisioned it is a shipped server
+  // and belongs on this shelf, not under 「我的」 as if the user had added it.
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: MCPTemplate };
+  const offeredTemplateIds = useMemo(() => new Set(availableTemplates.map((tmpl) => tmpl.id)), [availableTemplates]);
   const exampleItems = useMemo(() => {
     const items: ExampleItem[] = [];
-    for (const tmpl of availableTemplates) {
+    for (const tmpl of getMCPTemplates()) {
       if (searchLower && !tmpl.name.toLowerCase().includes(searchLower) && !tmpl.description.toLowerCase().includes(searchLower)) continue;
       const entry = servers[tmpl.name];
-      items.push(entry ? { kind: 'installed', entry } : { kind: 'template', template: tmpl });
+      if (entry) items.push({ kind: 'installed', entry });
+      else if (offeredTemplateIds.has(tmpl.id)) items.push({ kind: 'template', template: tmpl });
     }
     return items;
-  }, [availableTemplates, servers, searchLower]);
+  }, [offeredTemplateIds, servers, searchLower]);
 
   // 「市场」 = 内置 / 官方 / 插件提供 (ruling 2026-09-13): a plugin's server is
   // someone else's package — read-only here, removed by uninstalling the
@@ -701,7 +704,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
       {/* One shelf at a time: 「我的」 lists the servers this user configured,
           「市场」 the curated catalog (installed entries first). */}
-      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
+      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6">
         {source === 'mine' ? (
           mineServers.length === 0 ? (
             scopedServers.length === 0 ? (

@@ -278,7 +278,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
-      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
+      <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pt-3 pb-6">
         {/* Drafts are not skills on disk yet, so they are absent from
             filteredSkills — they come from the drafts store, under 「我的」 only.
             Falling into the empty state while drafts are pending would hide

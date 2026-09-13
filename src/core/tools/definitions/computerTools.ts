@@ -1017,6 +1017,19 @@ async function makeObservation(
   };
 }
 
+/**
+ * The helper ends its receipt with a parenthetical when it could not leave the
+ * user's clipboard as it found it. The localized success line is written for
+ * the ordinary case, so carry that note across rather than dropping it: the
+ * clipboard route is what multi-line text takes, and this is the only place
+ * the user is told their clipboard changed.
+ */
+function clipboardNote(receipt: unknown): string {
+  const text = typeof receipt === 'string' ? receipt : '';
+  const match = /\s(\([^()]*clipboard[^()]*\))\s*$/i.exec(text);
+  return match ? ` ${match[1]}` : '';
+}
+
 function stateErrorMessage(
   error: unknown,
   t: ReturnType<typeof getI18n>['toolResult']['computer'],
@@ -1987,7 +2000,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
 
           if (elemId !== undefined && axSessionId != null) {
             try {
-              await invokeComputerUse(
+              const receipt = await invokeComputerUse<string>(
                 invocation,
                 isWindows() ? 'ax_replace_text' : 'ax_set_value',
                 { sessionId: axSessionId, elementId: elemId, text },
@@ -1995,7 +2008,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               actionResult = format(
                 isWindows() ? t.typeAxSuccessWindows : t.typeAxSuccess,
                 { elemId },
-              );
+              ) + clipboardNote(receipt);
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               if (electronHost) {
@@ -2078,7 +2091,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             return t.errAxTypeNoSession;
           }
           try {
-            await invokeComputerUse(
+            const receipt = await invokeComputerUse<string>(
               invocation,
               isWindows() ? 'ax_replace_text' : 'ax_set_value',
               { sessionId: axSessionId, elementId: elemId, text },
@@ -2086,7 +2099,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             actionResult = format(
               isWindows() ? t.axTypeSuccessWindows : t.axTypeSuccess,
               { elemId },
-            );
+            ) + clipboardNote(receipt);
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (electronHost) {

@@ -669,9 +669,15 @@ pub fn keyboard_type_impl(
             KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
         ));
     }
-    for chunk in inputs.chunks(64) {
-        assert_target(&app_id, process_id, &window_id, expected_input_epoch)?;
-        send(chunk)?;
+    for (index, chunk) in inputs.chunks(64).enumerate() {
+        // After the first chunk lands, characters are already in the app.
+        // A guard that trips from here on is not "nothing was executed" — the
+        // text is partly typed, and the caller has to look rather than assume
+        // it can replay. The drag loop has always classified this way.
+        let dispatched = index > 0;
+        let stamp = |error: HelperError| if dispatched { error.after_dispatch() } else { error };
+        assert_target(&app_id, process_id, &window_id, expected_input_epoch).map_err(stamp)?;
+        send(chunk).map_err(stamp)?;
     }
     Ok(format!("typed {} UTF-16 units", inputs.len() / 2))
 }
@@ -686,11 +692,6 @@ fn paste_events() -> [KeyboardEvent; 4] {
     ]
 }
 
-/// `type` fallback for targets that ignore injected keystrokes (contract
-/// §2.6): write the text to the clipboard, read it back, press Ctrl+V, restore
-/// what was there. Refuses when the clipboard holds anything but plain text —
-/// an image, files or rich text cannot be put back exactly, and the user's
-/// clipboard is not ours to lose.
 /// Accepts CRLF, lone LF or lone CR and emits CRLF, the CF_UNICODETEXT
 /// convention. Text without line breaks is returned unchanged.
 fn normalize_clipboard_line_breaks(text: &str) -> String {
@@ -702,6 +703,14 @@ fn normalize_clipboard_line_breaks(text: &str) -> String {
         .replace('\n', "\r\n")
 }
 
+/// `type`'s clipboard route (contract §2.6): used for text the keyboard
+/// cannot carry (line breaks) and as the fallback for targets that ignore
+/// injected keystrokes. Write the text, read it back, press Ctrl+V, put back
+/// what was there. What cannot be put back — an image, a file selection, rich
+/// formatting — is named in the receipt rather than refused over; content the
+/// source marked as not to be recorded is cleared rather than restored
+/// unmarked. Nothing is dispatched until the clipboard is staged, so every
+/// failure before the chord leaves the target untouched.
 fn paste_via_clipboard(
     text: &str,
     app_id: &str,
@@ -710,6 +719,10 @@ fn paste_via_clipboard(
     expected_input_epoch: u64,
 ) -> Result<String, HelperError> {
     assert_no_physical_modifier(|vk| unsafe { GetAsyncKeyState(vk as i32) < 0 })?;
+    // Check the target before touching the clipboard, not only before the
+    // chord. A target that has moved on must cost the user nothing; taking
+    // their clipboard and then refusing would leave our text sitting in it.
+    assert_target(app_id, process_id, window_id, expected_input_epoch)?;
     // CF_UNICODETEXT separates lines with CRLF. Normalizing first keeps the
     // read-back check comparing the bytes actually written, and gives targets
     // that follow the convention strictly the breaks they expect.
@@ -721,11 +734,25 @@ fn paste_via_clipboard(
     // ordinary case — a copy out of any browser or editor is rich by
     // default — to protect content the user can reproduce with one more
     // copy, so take the loss and name it in the receipt instead.
-    let (previous, lost_rich_content) = {
+    let (previous, lost_rich_content, dropped_unrecordable) = {
         let clipboard = super::clipboard::Clipboard::open()?;
-        let lost_rich_content = !super::clipboard::is_plain_text_clipboard(&clipboard.formats());
-        let previous = clipboard.read_unicode_text();
-        clipboard.set_unicode_text(text)?;
+        // The one thing worse than losing the user's clipboard is laundering
+        // it: content marked "do not record" cannot be restored with its
+        // marker, so restoring it as plain text would put a password into
+        // clipboard history. Never read it, never put it back.
+        let dropped_unrecordable = clipboard.excludes_recording();
+        let lost_rich_content = !dropped_unrecordable
+            && !super::clipboard::is_plain_text_clipboard(&clipboard.formats());
+        let previous = if dropped_unrecordable { None } else { clipboard.read_unicode_text() };
+        if let Err(error) = clipboard.set_unicode_text(text) {
+            // `set_unicode_text` empties before it writes, so a failure part
+            // way through leaves the clipboard empty rather than untouched.
+            let _ = match &previous {
+                Some(value) => clipboard.set_unicode_text(value),
+                None => Ok(()),
+            };
+            return Err(error);
+        }
         if clipboard.read_unicode_text().as_deref() != Some(text) {
             let _ = match &previous {
                 Some(value) => clipboard.set_unicode_text(value),
@@ -740,11 +767,20 @@ fn paste_via_clipboard(
                 "clipboard did not read back the text that was written",
             ));
         }
-        (previous, lost_rich_content)
+        (previous, lost_rich_content, dropped_unrecordable)
     };
     // Everything up to here touched only the clipboard. The chord below is
-    // the dispatch; its own partial-send classification stands.
-    assert_target(app_id, process_id, window_id, expected_input_epoch)?;
+    // the dispatch; its own partial-send classification stands. Re-check the
+    // target: the clipboard work above took long enough for it to change. If
+    // it did, put the clipboard back before refusing — the user did not ask
+    // to lose it over an action that never ran.
+    if let Err(error) = assert_target(app_id, process_id, window_id, expected_input_epoch) {
+        let _ = super::clipboard::Clipboard::open().and_then(|clipboard| match &previous {
+            Some(value) => clipboard.set_unicode_text(value),
+            None => clipboard.empty(),
+        });
+        return Err(error);
+    }
     let sent = send_keyboard_sequence(&paste_events());
     // Let the target read the clipboard before it changes back.
     thread::sleep(Duration::from_millis(150));
@@ -758,7 +794,9 @@ fn paste_via_clipboard(
     // Two different losses, and the user is owed the distinction: the text
     // went back but its formatting or image did not, versus nothing went
     // back at all.
-    let clipboard_note = if !restored {
+    let clipboard_note = if dropped_unrecordable {
+        " (the clipboard had held content its source marked as not to be recorded, such as a password; it was cleared rather than put back unmarked)"
+    } else if !restored {
         " (previous clipboard content could not be restored)"
     } else if lost_rich_content {
         " (the clipboard had held content that is not plain text; only text was put back)"

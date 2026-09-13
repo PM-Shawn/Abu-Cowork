@@ -799,6 +799,92 @@ describe('computerTool — accessibility permission branch', () => {
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'ax_set_value')).toBe(false);
   });
 
+  it('carries the helper note about the clipboard into the result', async () => {
+    // Multi-line text goes in through the clipboard, and the helper cannot
+    // always put back what was there. The localized success line is written
+    // for the ordinary case, so without this the only place the user would
+    // be told their clipboard changed is dropped on the floor.
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-clipboard-note' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'clipboard-note-token',
+          target: {
+            window_ref: 'wr-clipboard-note',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-clipboard-note',
+          state_id: 'state-clipboard-note',
+          app: 'notepad',
+          total_visited: 1,
+          truncated: false,
+          elements: [{
+            id: 3,
+            role: 'AXTextArea',
+            label: 'Body',
+            value: '',
+            actions: ['AXSetValue'],
+            bounds: [0, 0, 100, 40],
+            depth: 1,
+          }],
+        });
+      }
+      if (cmd === 'ax_replace_text') {
+        return Promise.resolve(
+          'pasted 7 UTF-16 units via clipboard (the clipboard had held content its source'
+          + ' marked as not to be recorded, such as a password; it was cleared rather than'
+          + ' put back unmarked)',
+        );
+      }
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observed = await computerTool.execute(
+      { action: 'get_app_state', app: 'notepad', consequence: 'none' },
+      { ...context, toolCallId: 'observe-clipboard-note' },
+    );
+    const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+    const result = await computerTool.execute({
+      action: 'type',
+      element_id: 3,
+      text: 'a\nb',
+      window_ref: 'wr-clipboard-note',
+      expected_state_id: stateId,
+      consequence: 'none',
+    }, { ...context, toolCallId: 'type-clipboard-note' });
+
+    expect(String(result)).toMatch(/not to be recorded/);
+  });
+
   it('warns instead of inviting retries when Office reports that editing is disabled', async () => {
     setElectronHost(true);
     vi.mocked(isWindows).mockReturnValue(true);

@@ -765,6 +765,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
                     expected_window_id.clone(),
                     expected_input_epoch,
                 )?;
+                // The Ctrl+A above already landed in the app: the field is
+                // selected. So a failure from here on is not "nothing reached
+                // the target" — reporting it that way tells the caller the
+                // scene is untouched, and the model's next keystroke would
+                // replace a selection it does not know about.
                 let result = if text.is_empty() {
                     windows_backend::keyboard_press_impl(
                         "backspace".to_string(),
@@ -773,7 +778,8 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
                         expected_process_id,
                         expected_window_id,
                         expected_input_epoch,
-                    )?
+                    )
+                    .map_err(HelperError::after_dispatch)?
                 } else {
                     windows_backend::keyboard_type_impl(
                         text,
@@ -782,7 +788,8 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
                         expected_process_id,
                         expected_window_id,
                         expected_input_epoch,
-                    )?
+                    )
+                    .map_err(HelperError::after_dispatch)?
                 };
                 Ok(json!(result))
             }

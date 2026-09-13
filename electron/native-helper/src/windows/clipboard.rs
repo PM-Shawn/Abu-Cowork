@@ -11,10 +11,11 @@
 use std::thread;
 use std::time::Duration;
 
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData, OpenClipboard,
-    SetClipboardData,
+    RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
@@ -33,6 +34,29 @@ pub fn is_plain_text_clipboard(formats: &[u32]) -> bool {
     formats
         .iter()
         .all(|format| matches!(*format, CF_TEXT | CF_OEMTEXT | CF_UNICODETEXT | CF_LOCALE))
+}
+
+/// Markers whose only purpose is to say "do not record this". A password
+/// manager stamps them on a copied secret so clipboard history and cloud sync
+/// skip it.
+const UNCONDITIONAL_EXCLUSION_FORMATS: [&str; 2] = [
+    "Clipboard Viewer Ignore",
+    "ExcludeClipboardContentFromMonitorProcessing",
+];
+
+/// Markers that carry a DWORD: 0 opts out, anything else opts in.
+const CONDITIONAL_EXCLUSION_FORMATS: [&str; 2] =
+    ["CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"];
+
+/// `RegisterClipboardFormatW` returns the existing id when the format is
+/// already registered, which is what we want: it tells us the numeric id to
+/// look for. Returns `None` if the call fails.
+fn registered_format(name: &str) -> Option<u32> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    match unsafe { RegisterClipboardFormatW(PCWSTR(wide.as_ptr())) } {
+        0 => None,
+        id => Some(id),
+    }
 }
 
 /// An open clipboard, closed on drop.
@@ -77,6 +101,46 @@ impl Clipboard {
             format = unsafe { EnumClipboardFormats(format) };
         }
         formats
+    }
+
+    /// Whether the source asked for this content not to be recorded.
+    ///
+    /// It matters because we cannot put such content back the way we found
+    /// it: restoring through `SetClipboardData(CF_UNICODETEXT)` writes the
+    /// bytes without the marker, and Windows would then record in clipboard
+    /// history exactly the secret the marker existed to keep out of it. So
+    /// when this is true the caller must neither read the content nor restore
+    /// it — leaving the clipboard empty loses one copy the user can repeat,
+    /// which is the cheaper mistake.
+    pub fn excludes_recording(&self) -> bool {
+        let formats = self.formats();
+        for name in UNCONDITIONAL_EXCLUSION_FORMATS {
+            if registered_format(name).is_some_and(|id| formats.contains(&id)) {
+                return true;
+            }
+        }
+        for name in CONDITIONAL_EXCLUSION_FORMATS {
+            let Some(id) = registered_format(name) else { continue };
+            if formats.contains(&id) && self.read_dword(id) == Some(0) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn read_dword(&self, format: u32) -> Option<u32> {
+        let handle = unsafe { GetClipboardData(format) }.ok()?;
+        if handle.is_invalid() {
+            return None;
+        }
+        let global = HGLOBAL(handle.0);
+        let pointer = unsafe { GlobalLock(global) } as *const u32;
+        if pointer.is_null() {
+            return None;
+        }
+        let value = unsafe { *pointer };
+        let _ = unsafe { GlobalUnlock(global) };
+        Some(value)
     }
 
     pub fn read_unicode_text(&self) -> Option<String> {
@@ -153,7 +217,31 @@ impl Drop for Clipboard {
 
 #[cfg(test)]
 mod tests {
-    use super::is_plain_text_clipboard;
+    use super::{
+        is_plain_text_clipboard, registered_format, CONDITIONAL_EXCLUSION_FORMATS,
+        UNCONDITIONAL_EXCLUSION_FORMATS,
+    };
+
+    #[test]
+    fn exclusion_markers_resolve_to_stable_distinct_format_ids() {
+        // The whole "do not launder a copied password" guard rests on being
+        // able to name these formats and get back the same numeric id the
+        // password manager registered. If that ever stops holding, the guard
+        // silently stops guarding.
+        let mut ids = Vec::new();
+        for name in UNCONDITIONAL_EXCLUSION_FORMATS
+            .iter()
+            .chain(CONDITIONAL_EXCLUSION_FORMATS.iter())
+        {
+            let id = registered_format(name).expect("format name should register");
+            assert_eq!(registered_format(name), Some(id), "id must be stable for {name}");
+            // Registered formats live above the predefined range, so they can
+            // never collide with CF_UNICODETEXT and friends.
+            assert!(id >= 0xC000, "{name} should be a registered format, got {id}");
+            assert!(!ids.contains(&id), "{name} collided with another marker");
+            ids.push(id);
+        }
+    }
 
     #[test]
     fn only_text_and_its_synthesized_formats_count_as_plain_text() {

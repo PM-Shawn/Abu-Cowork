@@ -100,6 +100,14 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(option.tagName).toBe('BUTTON');
   });
 
+  it('lists an expert that is off the auto-dispatch pool', () => {
+    useSettingsStore.setState({ disabledAgents: ['planner'] });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '@');
+
+    expect(screen.getByRole('option', { name: /planner/ })).toBeTruthy();
+  });
+
   it('keeps the active agent option visible while Arrow navigation moves through a long list (no wrap)', () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {

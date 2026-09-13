@@ -591,7 +591,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const agents = useDiscoveryStore((s) => s.agents);
   const enterBehavior = useSettingsStore((s) => s.composerEnterBehavior);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
-  const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
   const providers = useSettingsStore((s) => s.providers);
   const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
@@ -1063,7 +1062,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   const disabledSkillSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
-  const disabledAgentSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
   const agentMentionTarget = useMemo((): AgentMentionTarget | null => {
     // An agent chip does not block a fresh `@` — picking again switches the chip.
@@ -1107,7 +1105,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return [
         ...teamItems,
         ...agents
-          .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
+          .filter((a) => a.name !== 'abu')
           .filter((a) => {
             if (!query) return true;
             return a.name.toLowerCase().includes(query) ||
@@ -1140,7 +1138,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         }));
     }
     return [];
-  }, [text, skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, disabledAgentSet, t.team.suggestionTeamHint]);
+  }, [text, skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, t.team.suggestionTeamHint]);
 
   const suggestionKey = useMemo(() => {
     if (suggestionType === 'agent') return agentMentionTarget?.key ?? null;

@@ -2406,8 +2406,9 @@ export interface TranslationDict {
     agentExpertisePlaceholder: string;
     agentSamplePromptsPlaceholder: string;
     agentTagsPlaceholder: string;
-    agentEnabled: string;
-    agentDisabled: string;
+    agentAutoDispatch: string;
+    agentAutoDispatchHint: string;
+    agentAutoDispatchOff: string;
     agentCategoryAll: string;
     agentCategoryResearch: string;
     agentCategoryDevelopment: string;

@@ -135,7 +135,7 @@ describe('routeInput — agent delegation', () => {
     expect(result.type).toBe('general');
   });
 
-  it('@agent with disabled agent does not delegate', () => {
+  it('@agent still delegates when the agent is off the auto-dispatch pool', () => {
     mockSettingsGetState.mockReturnValueOnce({
       disabledSkills: [],
       disabledAgents: ['coder'],
@@ -143,7 +143,8 @@ describe('routeInput — agent delegation', () => {
     mockGetAgent.mockReturnValueOnce(fakeAgent);
 
     const result = routeInput('@coder 写个函数');
-    expect(result.type).not.toBe('delegate');
+    expect(result.type).toBe('delegate');
+    expect(result.name).toBe('coder');
   });
 
   it('@agent with no task text uses fallback cleanInput', () => {

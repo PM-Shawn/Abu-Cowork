@@ -213,3 +213,30 @@ test('Windows job relies on the config junit reporter (CLI --outputFile is inert
   assert.ok(runLines.every((l) => !l.includes('--outputFile')), 'Windows step must not pass --outputFile');
   assert.match(windows, /run: npx vitest run\n/);
 });
+
+test('CI and Electron Build cancel superseded pull request runs without serialising branch pushes', () => {
+  const electronBuild = readFileSync(
+    path.join(repoRoot, '.github/workflows/electron-build.yml'),
+    'utf8',
+  );
+  for (const [label, source] of [
+    ['ci.yml', ci],
+    ['electron-build.yml', electronBuild],
+  ]) {
+    const workflow = YAML.parse(source);
+    assert.ok(workflow.concurrency, `${label} must declare a concurrency group`);
+    // Keyed on github.sha for non-PR events: a shared key would make successive
+    // dev pushes QUEUE behind each other (cancel-in-progress is false there),
+    // which is slower than today, not faster.
+    assert.match(
+      String(workflow.concurrency.group),
+      /github\.event_name == 'pull_request' && github\.ref \|\| github\.sha/,
+      `${label} concurrency group must fall back to github.sha off pull requests`,
+    );
+    assert.match(
+      String(workflow.concurrency['cancel-in-progress']),
+      /github\.event_name == 'pull_request'/,
+      `${label} must only cancel in-progress runs on pull requests`,
+    );
+  }
+});

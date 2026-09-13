@@ -22,6 +22,8 @@ import { Toggle } from '@/components/ui/toggle';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 const urlPattern = /https?:\/\/[^\s]+/;
 
@@ -95,8 +97,9 @@ type SelectedItem =
 interface MCPSectionProps {
   showAddForm?: boolean;
   onAddFormChange?: (open: boolean) => void;
-  /** Optional authored-only embedding; omit for the released grouped card view. */
-  sourceFilter?: 'mine';
+  /** Which shelf this render is showing — the sub-nav's current pick.
+   *  Defaults to 市场, the shelf a fresh install has something on. */
+  source?: ExtensionSource;
   /** A connector to pre-fill the add-server form with, applied when the form
    *  is open. 「市场」's 「添加」 routes through here rather than adding a server
    *  itself: a catalog entry's `env` carries key names with empty values, so a
@@ -110,8 +113,11 @@ interface MCPSectionProps {
   focusServer?: string | null;
 }
 
-export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange, sourceFilter, prefill, focusServer }: MCPSectionProps = {}) {
+export default function MCPSection({ showAddForm: externalShowAddForm, onAddFormChange, source = 'market', prefill, focusServer }: MCPSectionProps = {}) {
   const extensionsSearchQuery = useExtensionsSearchQuery('mcp');
+  // A connector the user just added is on the other shelf: land them where it
+  // actually is, or the add reads as an add that did nothing.
+  const setSource = useExtensionSourceStore((s) => s.setSource);
   const servers = useMCPStore((s) => s.servers);
   const addServer = useMCPStore((s) => s.addServer);
   const removeServer = useMCPStore((s) => s.removeServer);
@@ -282,14 +288,6 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     return scopedServers.filter((s) => s.config.name.toLowerCase().includes(searchLower));
   }, [scopedServers, searchLower]);
 
-  // "我的": user-added custom servers (not matching any template)
-  const customServers = useMemo(() => {
-    const visibleNames = new Set(availableTemplates.map((template) => template.name));
-    const list = mcpServers.filter((s) => !visibleNames.has(s.config.name));
-    if (!searchLower) return list;
-    return list.filter((s) => s.config.name.toLowerCase().includes(searchLower));
-  }, [mcpServers, availableTemplates, searchLower]);
-
   // "示例": all templates — installed ones first, then uninstalled
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: MCPTemplate };
   const exampleItems = useMemo(() => {
@@ -350,6 +348,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     addServer(config);
 
     handleCloseAddForm();
+    setSource('mcp', 'mine');
     setSelected({ kind: 'server', name: config.name });
 
     // Connect (or reconnect)
@@ -427,6 +426,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         setJsonInput('');
         setJsonError('');
         setShowAddForm(false);
+        setSource('mcp', 'mine');
         setSelected({ kind: 'server', name: firstName });
       }
     } catch {
@@ -573,8 +573,9 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       if (tmpl) {
         setSelected({ kind: 'template', id: tmpl.id });
       } else {
-        // Custom server: select adjacent item in whichever list is on screen
-        const siblings = sourceFilter === 'mine' ? mineServers : customServers;
+        // Custom server: select an adjacent item. A server with no template
+        // behind it is only ever listed under 「我的」, so that is the list.
+        const siblings = mineServers;
         const idx = siblings.findIndex((s) => s.config.name === name);
         const nextName = siblings[idx - 1]?.config.name ?? siblings[idx + 1]?.config.name;
         setSelected(nextName ? { kind: 'server', name: nextName } : null);
@@ -680,9 +681,10 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-[var(--abu-bg-base)]">
-      {/* Shared connector rows for My items; standalone views retain their template grid. */}
+      {/* One shelf at a time: 「我的」 lists the servers this user configured,
+          「市场」 the curated catalog (installed entries first). */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {sourceFilter === 'mine' ? (
+        {source === 'mine' ? (
           mineServers.length === 0 ? (
             scopedServers.length === 0 ? (
               <div className="py-16 text-center">
@@ -696,26 +698,16 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
               <ToolGrid>{mineServers.map((entry) => renderServerCard(entry))}</ToolGrid>
             </div>
           )
-        ) : customServers.length === 0 && exampleItems.length === 0 ? (
+        ) : exampleItems.length === 0 ? (
           <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noServersConnected}</div>
         ) : (
-          <div className="max-w-5xl mx-auto space-y-6">
-            {/* "我的" — user-added custom servers */}
-            {customServers.length > 0 && (
-              <div>
-                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.myServers}</div>
-                <ToolGrid>{customServers.map((entry) => renderServerCard(entry))}</ToolGrid>
-              </div>
-            )}
-            {/* "示例" — template-based (installed + uninstalled together) */}
-            {exampleItems.length > 0 && (
-              <div>
-                <div className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.exampleServers}</div>
-                <ToolGrid>
-                  {exampleItems.map((item) => item.kind === 'installed' ? renderServerCard(item.entry) : renderTemplateCard(item.template))}
-                </ToolGrid>
-              </div>
-            )}
+          /* 「市场」 — the curated catalog, installed entries first. Which shelf
+             this is is the sub-nav's job to say, so the group heading that used
+             to name it here is gone. */
+          <div className="max-w-5xl mx-auto">
+            <ToolGrid>
+              {exampleItems.map((item) => item.kind === 'installed' ? renderServerCard(item.entry) : renderTemplateCard(item.template))}
+            </ToolGrid>
           </div>
         )}
       </div>

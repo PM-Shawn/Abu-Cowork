@@ -14,6 +14,9 @@ import { isBuiltinTeam } from '@/core/team/builtinTeams';
 import { useI18n, format } from '@/i18n';
 import { Bot, UsersRound, Search, MessageCircle, MoreHorizontal, Pencil, Trash2, X, Check } from 'lucide-react';
 import TopTabNav from '@/components/toolbox/TopTabNav';
+import SourceSubNav from '@/components/toolbox/SourceSubNav';
+import { sourceTabId } from '@/components/toolbox/extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 import DialogShell from './DialogShell';
 import TeamAvatar from './TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -222,6 +225,9 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
         addToast({ type: 'success', title: t.team.teamSaved });
       } else {
         createTeam({ name: name.trim(), leaderRoleId, memberRoleIds, leaderNote: leaderNote.trim() || undefined, requirePlanApproval: requireApproval, avatar: avatar.trim() || undefined, ...display });
+        // The new team is on the other shelf: go there, or the create reads as
+        // a create that did nothing.
+        useExtensionSourceStore.getState().setSource('teams', 'mine');
         addToast({ type: 'success', title: t.team.teamCreated });
       }
       onClose();
@@ -360,12 +366,20 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers }: {
 
 // ---------------------------------------------------------------- Task dialog
 
+/** The element the source sub-nav switches between — one pane here, since the
+ *  两 tabs swap their content rather than keeping a panel each. */
+const TEAM_PANEL_ID = 'team-source-panel';
+
 export default function TeamView() {
   const { activeTeamTab: persistedTeamTab, setActiveTeamTab } = useSettingsStore();
   // A stale persisted value (e.g. the removed 'pipelines' tab) falls back to
   // the default tab instead of rendering an empty pane.
   const activeTeamTab: TeamTab = persistedTeamTab === 'teams' ? 'teams' : 'members';
   const { t } = useI18n();
+  // 市场 | 我的 per tab, remembered across restarts (shared with 扩展's store —
+  // the two pages show the same pair over different rosters).
+  const sources = useExtensionSourceStore((s) => s.sources);
+  const setSource = useExtensionSourceStore((s) => s.setSource);
   const teams = useTeamStore((s) => s.teams);
   const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const disabledSet = useMemo(() => new Set(disabledAgents ?? []), [disabledAgents]);
@@ -486,11 +500,16 @@ export default function TeamView() {
     switch (activeTeamTab) {
       case 'members':
         // Single identity source: this IS the toolbox agents surface.
-        return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} />;
+        return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} />;
       case 'teams': {
-        const userTeams = activeTeams.filter((team) => !isBuiltinTeam(team));
-        const marketTeams = activeTeams.filter(isBuiltinTeam);
-        // Same grid + card the 队员 tab uses (ToolGrid/ToolCard), not a
+        const source = sources.teams;
+        // One shelf at a time — which one is the sub-nav's job to say, so the
+        // group heading that used to name it here is gone. 「市场」 is the teams
+        // Abu ships; 「我的」 the ones this user assembled.
+        const list = source === 'mine'
+          ? activeTeams.filter((team) => !isBuiltinTeam(team))
+          : activeTeams.filter(isBuiltinTeam);
+        // Same grid + card the 专家 tab uses (ToolGrid/ToolCard), not a
         // hand-rolled row: a team and a member are peers in this surface.
         const card = (team: Team) => (
           <ToolCard
@@ -505,28 +524,24 @@ export default function TeamView() {
             onClick={() => setDetailTeam(team)}
           />
         );
+        if (source === 'mine' && list.length === 0) {
+          return (
+            <div className="h-full flex flex-col">
+              <div className="flex-1 min-h-0">
+                <EmptyState
+                  icon={UsersRound}
+                  title={t.team.teamsEmpty}
+                  hint={t.team.teamsEmptyHint}
+                  action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
+                />
+              </div>
+            </div>
+          );
+        }
         return (
           <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6 h-full">
-            <div className="max-w-5xl mx-auto space-y-6">
-              <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.team.groupMine}</div>
-                {userTeams.length === 0 ? (
-                  <EmptyState
-                    icon={UsersRound}
-                    title={t.team.teamsEmpty}
-                    hint={t.team.teamsEmptyHint}
-                    action={<Button size="sm" onClick={() => setTeamDialog({ open: true, team: null })}>{t.team.newTeam}</Button>}
-                  />
-                ) : (
-                  <ToolGrid>{userTeams.map(card)}</ToolGrid>
-                )}
-              </div>
-              {marketTeams.length > 0 && (
-                <div>
-                  <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.team.groupMarket}</div>
-                  <ToolGrid>{marketTeams.map(card)}</ToolGrid>
-                </div>
-              )}
+            <div className="max-w-5xl mx-auto">
+              <ToolGrid>{list.map(card)}</ToolGrid>
             </div>
           </div>
         );
@@ -537,7 +552,24 @@ export default function TeamView() {
   return (
     <div className="h-full bg-[var(--abu-bg-base)] flex flex-col">
       <TopTabNav items={navItems} activeId={activeTeamTab} onSelect={setActiveTeamTab} belowChrome right={renderHeaderRight()} />
-      <div className="flex-1 overflow-hidden">{renderContent()}</div>
+      {/* 市场 | 我的 — one row, directly under the tabs and inset to the same
+          grid the cards use, exactly as on 扩展. */}
+      <div className="px-8"><div className="max-w-5xl mx-auto">
+        <SourceSubNav
+          value={sources[activeTeamTab]}
+          onChange={(next) => setSource(activeTeamTab, next)}
+          marketLabel={t.toolbox.sourceMarket}
+          mineLabel={t.toolbox.categoryMine}
+          testIdPrefix="team-source"
+          panelId={TEAM_PANEL_ID}
+        />
+      </div></div>
+      <div
+        id={TEAM_PANEL_ID}
+        role="tabpanel"
+        aria-labelledby={sourceTabId(sources[activeTeamTab], 'team-source')}
+        className="flex-1 overflow-hidden"
+      >{renderContent()}</div>
       {/* Team detail — same shell and header grammar as the 队员 detail:
           read-only body, primary CTA + "…" (edit / archive) in the header.
           Opening a team used to jump straight into the edit form, which is

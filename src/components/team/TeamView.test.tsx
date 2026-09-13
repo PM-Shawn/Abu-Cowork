@@ -3,6 +3,7 @@ import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
+import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 // TeamView reads/writes the real teamStore (zustand works fine in tests);
 // everything else is mocked at the boundary, mirroring ToolboxModal.test.tsx.
@@ -145,6 +146,9 @@ describe('TeamView', () => {
   beforeEach(() => {
     clearAllComposerDrafts();
     useTeamStore.setState({ teams: []});
+    // Every team seeded below is one the user assembled, so these assertions
+    // are about the 「我的」 shelf; 市场 (the default) holds the built-in teams.
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine', teams: 'mine' } });
     settingsState.activeTeamTab = 'members';
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];

@@ -60,10 +60,11 @@ const definition: SubagentDefinition = {
 
 const tb = () => getI18n().toolbox;
 
-/** Render the section with `reviewer` discovered, then open its detail. */
+/** Render the section with `reviewer` discovered, then open its detail.
+ *  A plugin's expert sits on the 市场 shelf (the default), a user's own on 我的. */
 function openDetail(meta: SubagentMetadata) {
   useDiscoveryStore.setState({ agents: [meta], skills: [], isLoading: false });
-  render(<AgentsSection />);
+  render(<AgentsSection source={meta.source?.kind === 'plugin' ? 'market' : 'mine'} />);
   fireEvent.click(screen.getByText('reviewer'));
   // The edit / delete entries live behind the header's "..." menu.
   const menuButton = [...document.querySelectorAll('button')].find((b) =>
@@ -104,7 +105,7 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
       skills: [],
       isLoading: false,
     });
-    render(<AgentsSection />);
+    render(<AgentsSection source="mine" />);
     fireEvent.click(screen.getByText('reviewer'));
 
     expect(screen.getByTestId('agent-added-by').textContent).toBe(tb().sourceUser);
@@ -118,7 +119,7 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
         skills: [],
         isLoading: false,
       });
-      render(<AgentsSection />);
+      render(<AgentsSection source="mine" />);
       fireEvent.click(screen.getByText('reviewer'));
 
       expect(screen.getByTitle('预览')).toBeTruthy();

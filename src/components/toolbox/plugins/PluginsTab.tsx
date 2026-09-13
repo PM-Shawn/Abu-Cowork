@@ -9,15 +9,18 @@ import { archivePluginOperation } from '@/core/plugin/operationBridge';
 import AuthoredPluginList from './AuthoredPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
+import type { ExtensionSource } from '../extensionSource';
 
 interface PluginsTabProps {
   /** Shared toolbox header search box. */
   searchQuery: string;
   addTrigger?: number;
-
+  /** Which shelf this render is showing — the sub-nav's current pick.
+   *  Defaults to 市场, the shelf a fresh install has something on. */
+  source?: ExtensionSource;
 }
 
-export default function PluginsTab({ searchQuery, addTrigger = 0 }: PluginsTabProps) {
+export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'market' }: PluginsTabProps) {
   const { t } = useI18n();
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const [home, setHome] = useState<string | null>(null);
@@ -84,19 +87,20 @@ export default function PluginsTab({ searchQuery, addTrigger = 0 }: PluginsTabPr
         <p>{t.toolbox.pluginsArchivedNotice}</p><p>{archiveResult.archivedPath}</p>
         <ul className="max-h-40 overflow-y-auto">{archiveResult.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>
       </div>}
-      {home !== null && <>
-        <AuthoredPluginList home={home} searchQuery={searchQuery} />
-        <section>
-          <h3 className="mx-auto max-w-[1088px] pl-11 pr-8 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.sourceMarket}</h3>
-          <MarketplaceBrowser
-            home={home}
-            requestedMarket={requestedMarket}
-            searchQuery={searchQuery}
-            onAddMarketplace={() => setAddOpen(true)}
-            scrollParent={scrollParent ?? undefined}
-          />
-        </section>
-      </>}
+      {/* One shelf at a time: 「我的」 is what this user authored, 「市场」 the
+          marketplaces they browse. The sub-nav above names which — the heading
+          that used to do it here is gone. */}
+      {home !== null && (source === 'mine'
+        ? <AuthoredPluginList home={home} searchQuery={searchQuery} />
+        : <section>
+            <MarketplaceBrowser
+              home={home}
+              requestedMarket={requestedMarket}
+              searchQuery={searchQuery}
+              onAddMarketplace={() => setAddOpen(true)}
+              scrollParent={scrollParent ?? undefined}
+            />
+          </section>)}
 
       {home !== null && (
         <AddMarketplaceDialog onAdded={name => setRequestedMarket({ name })} open={addOpen} home={home} onClose={() => setAddOpen(false)} />

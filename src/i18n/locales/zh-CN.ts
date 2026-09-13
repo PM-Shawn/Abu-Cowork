@@ -1868,6 +1868,7 @@ const zhCN: TranslationDict = {
     connectorsAdd: '添加',
     connectorAddLabel: '添加 {name}',
     connectorsMineEmptyTitle: '还没有你添加的连接器',
+    agentsMineEmpty: '还没有你创建的专家',
     installAgentSkills: '安装 Agent Skills',
     installAgentSkillsPlaceholder: '输入 GitHub 仓库名，如 larksuite/cli',
     installAgentSkillsHint: '等同于运行 npx skills add <仓库名> -g',

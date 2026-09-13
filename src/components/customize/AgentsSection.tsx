@@ -26,12 +26,14 @@ import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useTeamStore } from '@/stores/teamStore';
 import { effectiveRoleId } from '@/core/team/roleIdentity';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 function isSystemAgent(agent: SubagentDefinition): boolean {
-  // System / builtin agents ship with the app (registered in registry.ts) —
-  // they live under "Examples" and can't be edited or deleted. Everything
-  // discovered from user / project directories is a user agent.
-  return agent.filePath === '__builtin__';
+  // 市场 = shipped with the app OR brought in by a plugin; both are read-only
+  // here. 「我的」 is what this user wrote — a plugin's expert is someone else's
+  // work, and removing it is uninstalling the plugin, not deleting a file.
+  return isBuiltinAgentPath(agent.filePath) || isPluginOwnedAgent(agent);
 }
 
 
@@ -58,9 +60,12 @@ interface AgentsSectionProps {
   manualCreateTrigger?: number;
   /** Overrides the Extensions store query when a host view owns the search box. */
   searchQuery?: string;
+  /** Which shelf this render is showing — the sub-nav's current pick.
+   *  Defaults to 市场, the shelf a fresh install has something on. */
+  source?: ExtensionSource;
 }
 
-export default function AgentsSection({ manualCreateTrigger, searchQuery }: AgentsSectionProps) {
+export default function AgentsSection({ manualCreateTrigger, searchQuery, source = 'market' }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
   const installedPlugins = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
@@ -70,6 +75,9 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
   // passes it instead, rather than writing into another view's state.
   const storeSearchQuery = useExtensionsSearchQuery();
   const extensionsSearchQuery = searchQuery ?? storeSearchQuery;
+  // An expert the user just saved is on the other shelf: land them where it
+  // actually is, or the save reads as a save that did nothing.
+  const setSource = useExtensionSourceStore((s) => s.setSource);
   const { t, locale } = useI18n();
 
   const [installedAgents, setInstalledAgents] = useState<SubagentDefinition[]>([]);
@@ -165,8 +173,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
     });
   }, [installedAgents, extensionsSearchQuery]);
 
-  // Split into user-defined vs builtin/system agents. Builtins go under the
-  // "Examples" section, user agents under "My agents".
+  // Split into the two shelves: 「我的」 is what the user wrote, 「市场」 what
+  // shipped with Abu or arrived with a plugin.
   const userAgents = filteredAgents
     .filter((a) => !isSystemAgent(a))
     // Newest first (user feedback 2026-08-31); agents predating the created
@@ -261,7 +269,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       <AgentEditor
         agent={editorAgent === 'new' ? null : editorAgent}
         onClose={() => setEditorAgent(null)}
-        onSave={async () => { await refresh(); setEditorAgent(null); }}
+        onSave={async () => { await refresh(); setEditorAgent(null); setSource('members', 'mine'); }}
       />
     );
   }
@@ -271,24 +279,23 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
       {/* Card grid — horizontally inset to match the header row above (ToolboxModal's
           TopTabNav), with a centered max-width so cards don't stretch edge-to-edge. */}
       <div className="flex-1 overflow-y-scroll overlay-scroll px-8 pb-6">
-        {filteredAgents.length === 0 ? (
+        {/* One shelf at a time — which one is the sub-nav's job to say, so the
+            group heading that used to name it here is gone. */}
+        {source === 'mine' ? (
+          userAgents.length === 0 ? (
+            <div className="py-16 text-center">
+              <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.agentsMineEmpty}</p>
+            </div>
+          ) : (
+            <div className="max-w-5xl mx-auto">
+              <ToolGrid>{userAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
+            </div>
+          )
+        ) : systemAgents.length === 0 ? (
           <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>
         ) : (
-          <div className="max-w-5xl mx-auto space-y-6">
-            {/* My agents (user-created) */}
-            {userAgents.length > 0 && (
-              <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.myAgents}</div>
-                <ToolGrid>{userAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
-              </div>
-            )}
-            {/* System agents (builtin/marketplace) */}
-            {systemAgents.length > 0 && (
-              <div>
-                <div className="mb-3 text-body font-medium text-[var(--abu-text-muted)]">{t.toolbox.exampleAgents}</div>
-                <ToolGrid>{systemAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
-              </div>
-            )}
+          <div className="max-w-5xl mx-auto">
+            <ToolGrid>{systemAgents.map((agent) => renderAgentCard(agent))}</ToolGrid>
           </div>
         )}
       </div>
@@ -321,8 +328,10 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery }: Agen
               onChange={() => toggleAgentEnabled(selected.name)}
               tone="green"
             />
-            {/* "..." menu — only for user agents (edit / delete). */}
-            {!isSystemAgent(selected) && (
+            {/* "..." menu — edit / delete, withheld from the app's own builtins
+                (no file to edit). A plugin expert's entries are disabled with a
+                reason rather than hidden; Task A7.2 revisits that. */}
+            {!isBuiltinAgentPath(selected.filePath) && (
               <div className="relative">
                 <button
                   onClick={(e) => { e.stopPropagation(); setMenuAgent(menuAgent === selected.name ? null : selected.name); }}

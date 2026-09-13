@@ -45,7 +45,8 @@ const tb = () => getI18n().toolbox;
 
 function openMenu() {
   useDiscoveryStore.setState({ agents: [{ name: 'reviewer', description: 'Reviews code' }], skills: [], isLoading: false });
-  render(<AgentsSection />);
+  // A user-authored expert lives on the 我的 shelf (市场 is the default).
+  render(<AgentsSection source="mine" />);
   fireEvent.click(screen.getByText('reviewer'));
   const menuButton = [...document.querySelectorAll('button')].find((b) =>
     /ellipsis|more-horizontal/.test(b.querySelector('svg')?.getAttribute('class') ?? ''),

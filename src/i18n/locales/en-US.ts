@@ -1867,6 +1867,7 @@ const enUS: TranslationDict = {
     connectorsAdd: 'Add',
     connectorAddLabel: 'Add {name}',
     connectorsMineEmptyTitle: 'No connectors of your own yet',
+    agentsMineEmpty: 'No experts of your own yet',
     installAgentSkills: 'Install Agent Skills',
     installAgentSkillsPlaceholder: 'GitHub repo, e.g. larksuite/cli',
     installAgentSkillsHint: 'Runs npx skills add <repo> -g',

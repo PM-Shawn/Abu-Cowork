@@ -41,23 +41,24 @@ beforeEach(() => {
 });
 
 describe('PluginsTab', () => {
-  it('mounts the marketplace browser for', async () => {
-    render(<PluginsTab searchQuery="" />);
+  it('mounts the marketplace browser for 市场', async () => {
+    render(<PluginsTab searchQuery="" source="market" />);
     const browser = await screen.findByTestId('stub-marketplace-browser');
     expect(browser).toHaveAttribute('data-home', '/Users/testuser');
-    expect(screen.getByTestId('stub-installed-list')).toBeInTheDocument();
+    // One shelf at a time: the authored list is 「我的」's.
+    expect(screen.queryByTestId('stub-installed-list')).toBeNull();
   });
 
-  it('mounts the authored-only installed list for', async () => {
-    render(<PluginsTab searchQuery="" />);
+  it('mounts the authored-only installed list for 我的', async () => {
+    render(<PluginsTab searchQuery="" source="mine" />);
     const list = await screen.findByTestId('stub-installed-list');
     expect(list).toHaveAttribute('data-home', '/Users/testuser');
-    expect(screen.getByTestId('stub-marketplace-browser')).toBeInTheDocument();
+    expect(screen.queryByTestId('stub-marketplace-browser')).toBeNull();
   });
 
   it('defaults to the market panel when no source is passed', async () => {
-    // ToolboxModal passes `source` in a separate change; until then the tab
-    // must still render something rather than a blank panel.
+    // 市场 is the default shelf on every tab, and a standalone mount must still
+    // render something rather than a blank panel.
     render(<PluginsTab searchQuery="" />);
     await screen.findByTestId('stub-marketplace-browser');
   });

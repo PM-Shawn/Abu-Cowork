@@ -82,7 +82,7 @@ describe('builtin Agent tool boundaries', () => {
       .map(item => registry.getAgent(item.name)!)
       .filter(agent => agent.name !== 'abu')
 
-    expect(experts).toHaveLength(5)
+    expect(experts).toHaveLength(10)
     for (const agent of experts) {
       expect({ name: agent.name, tools: agent.tools, disallowedTools: agent.disallowedTools })
         .toEqual({ name: agent.name, tools: undefined, disallowedTools: undefined })
@@ -110,7 +110,7 @@ describe('builtin expert avatars', () => {
       .map(item => registry.getAgent(item.name)!)
       .filter(agent => agent.name !== 'abu')
 
-    expect(experts).toHaveLength(5)
+    expect(experts).toHaveLength(10)
     expect(experts.map(agent => [agent.name, parseAvatarValue(agent.avatar).kind])).toEqual(
       experts.map(agent => [agent.name, 'icon']),
     )

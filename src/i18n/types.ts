@@ -1911,9 +1911,6 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    memberDisabled: string;
-    memberDisabledHint: string;
-    leaderDisabledHint: string;
     /** Follow-up chips under a finished team turn. */
     followUpRedoStep: string;
     followUpMemberRevise: string;

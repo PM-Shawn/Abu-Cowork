@@ -644,7 +644,7 @@ describe('TeamView', () => {
     });
   });
 
-  describe('disabled members in the team detail', () => {
+  describe('members off the auto-dispatch pool in the team detail', () => {
     const team = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-b'], createdAt: 1 };
 
     beforeEach(() => {
@@ -655,22 +655,15 @@ describe('TeamView', () => {
       useTeamStore.setState({ teams: [team] });
     });
 
-    it('marks a member disabled under 专家 while the team still starts', () => {
-      settingsState.disabledAgents = ['B'];
+    // 停用 is about Abu's automatic delegation only: the team detail shows no
+    // marker for it, and a leader off the pool still starts the team.
+    it('shows no disabled marker and starts the team even when a member is off the auto-dispatch pool', () => {
+      settingsState.disabledAgents = ['B', 'L'];
       render(<TeamView />);
       fireEvent.click(screen.getByTestId('team-row-数据小队'));
-      expect(screen.getByTestId('team-member-disabled')).toHaveTextContent('已停用');
-      expect(screen.getByTestId('team-detail-start-chat')).not.toBeDisabled();
+      expect(screen.queryByTestId('team-member-disabled')).toBeNull();
       expect(screen.queryByTestId('team-leader-disabled-hint')).toBeNull();
-    });
-
-    it('refuses to start the team when its LEADER is disabled, and says why', () => {
-      // A disabled button on its own left people hunting for the reason.
-      settingsState.disabledAgents = ['L'];
-      render(<TeamView />);
-      fireEvent.click(screen.getByTestId('team-row-数据小队'));
-      expect(screen.getByTestId('team-detail-start-chat')).toBeDisabled();
-      expect(screen.getByTestId('team-leader-disabled-hint')).toHaveTextContent('队长已停用，先去「专家」里启用');
+      expect(screen.getByTestId('team-detail-start-chat')).not.toBeDisabled();
     });
   });
 });

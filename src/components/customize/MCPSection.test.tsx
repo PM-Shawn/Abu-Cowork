@@ -149,13 +149,52 @@ describe('MCPSection · source="mine"', () => {
 
   /**
    * Every catalog name is a template name, so a server installed from 「市场」
-   * still has its catalog card there (marked installed) — the shelf a thing was
-   * taken from keeps showing it. `sequential-thinking` is one such name.
+   * still has its catalog card there — the shelf a thing was taken from keeps
+   * showing it. `sequential-thinking` is one such name.
    */
-  it('keeps a catalog-installed server on the 市场 shelf', () => {
+  it('keeps a catalog-installed server on the 市场 shelf, and says which cards are added', () => {
     useMCPStore.setState({ servers: { 'sequential-thinking': serverEntry('sequential-thinking') } });
     render(<MCPSection />);
     expect(screen.getByText('sequential-thinking')).toBeTruthy();
+    // The dot is the whole difference between the two kinds of card here: an
+    // added server has one, a catalog entry the user has not added has none.
+    expect(screen.getByTestId('mcp-status-sequential-thinking')).toBeTruthy();
+    expect(screen.queryByTestId('mcp-status-github')).toBeNull();
+  });
+
+  // The card and the detail read the same state off the same function, so a
+  // server can never be 「连接出错」 in one place and 「未连接」 in the other.
+  it.each([
+    ['connected' as const, undefined, () => tb().connected],
+    ['connecting' as const, undefined, () => tb().connecting],
+    ['disconnected' as const, undefined, () => tb().disconnected],
+    ['error' as const, undefined, () => tb().connectionError],
+    // An error with no message still reads as an error: the label follows
+    // `status`, not the presence of `error` text.
+    ['error' as const, '', () => tb().connectionError],
+    ['disconnected' as const, 'stale message', () => tb().disconnected],
+  ])('reads %s back on the card, not just on / off', (status, error, label) => {
+    useMCPStore.setState({ servers: {
+      'sequential-thinking': { ...serverEntry('sequential-thinking'), status, error },
+    } });
+    render(<MCPSection />);
+    expect(screen.getByTestId('mcp-status-sequential-thinking').textContent).toBe(label());
+  });
+
+  it('shows the same dot on 我的', () => {
+    useMCPStore.setState({ servers: { 'hand-rolled': { ...serverEntry('hand-rolled'), status: 'connected' } } });
+    render(<MCPSection source="mine" />);
+    expect(screen.getByTestId('mcp-status-hand-rolled').textContent).toBe(tb().connected);
+  });
+
+  it('puts the added connectors first on 市场', () => {
+    // `github` sits before `sequential-thinking` in the catalog, so a shelf
+    // that kept catalog order would list it first.
+    useMCPStore.setState({ servers: { 'sequential-thinking': serverEntry('sequential-thinking') } });
+    render(<MCPSection />);
+    const order = screen.getAllByTestId(/^mcp-card-/).map((el) => el.getAttribute('data-testid'));
+    expect(order[0]).toBe('mcp-card-sequential-thinking');
+    expect(order.indexOf('mcp-card-github')).toBeGreaterThan(0);
   });
 
   it('shows each source on its own shelf', () => {

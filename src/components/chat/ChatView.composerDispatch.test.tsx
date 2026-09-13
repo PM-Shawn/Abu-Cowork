@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatView from './ChatView';
+import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -298,6 +299,18 @@ describe('ChatView welcome composer dispatch ownership', () => {
       await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Review sales'));
       expect(useChatStore.getState().conversationIndex).toEqual({});
       expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('lays this team’s prompts out on the same two-column grid as the default guide', async () => {
+      const team = useTeamStore.getState().teams[0];
+      useTeamStore.getState().updateTeam(team.id, { samplePrompts: ['Review sales', 'Draft a much longer suggestion that would otherwise stretch its chip', 'Plan'] });
+      useChatStore.setState({ pendingTeamId: team.id });
+      render(<ChatView />);
+      const grid = await screen.findByTestId('expert-prompts');
+      expect(grid.className.split(' ')).toEqual(expect.arrayContaining(PROMPT_GRID_CLASS.split(' ')));
+      for (const chip of within(grid).getAllByRole('button')) {
+        expect(chip.className).toBe(PROMPT_ITEM_CLASS);
+      }
     });
 
     it('stages the greeting with the actual first user message on the team route', async () => {

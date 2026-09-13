@@ -243,7 +243,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         id: agent.name,
         name: displayName(agent, locale),
         description: localizedDescription(agent, locale),
-        avatar: <AgentAvatar agent={agent} size="xl" />,
+        avatar: <AgentAvatar agent={agent} size="xl" className="bg-[var(--abu-bg-active)]" />,
         badge: offAutoDispatch || toolSummary.invalidField ? (
           // Chips wrap rather than clip: the badge box is the slot that yields
           // width (ToolCard row 1), and a clipped 「工具配置无效」 would hide the one

@@ -163,6 +163,19 @@ describe('AgentsSection — what the card row carries', () => {
     // …and only on that card.
     expect(screen.getAllByText('工具配置无效')).toHaveLength(1);
   });
+
+  it('keeps a visible grey plate under an expert that picked no icon', () => {
+    // The avatar fills the 40px slot now, so it — not the slot — paints what
+    // the user sees. Its own default is `--abu-bg-muted` (#f5f3ee), all but
+    // invisible on a card whose ground is `--abu-bg-subtle` (#f8f8f4), leaving
+    // the robot mark floating. The card asks for the slot's own
+    // `--abu-bg-active` (#f0eee6) back, which is the plate that was there
+    // before the avatar grew.
+    renderShelf('market', [builtinMeta]);
+    const avatar = document.querySelector('[data-testid="agent-avatar"]')!;
+    expect(avatar.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
 });
 
 /**

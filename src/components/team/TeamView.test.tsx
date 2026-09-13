@@ -261,6 +261,20 @@ describe('TeamView', () => {
     expect(screen.getByTestId('team-row-数据小队').textContent).toContain('1 名成员');
   });
 
+  it('teams tab: a team that picked no icon keeps a visible grey plate on its card', () => {
+    // Same reason as the expert card: the avatar fills the 40px slot, so its
+    // own `--abu-bg-muted` would sit invisibly on the card's `--abu-bg-subtle`
+    // ground. The card asks for the slot's `--abu-bg-active` plate back.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
+    render(<TeamView />);
+    const avatar = screen.getByTestId('team-row-数据小队').querySelector('[data-testid="team-avatar"]')!;
+    expect(avatar.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
   it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {
     localeRef.current = 'en-US';
     settingsState.activeTeamTab = 'teams';

@@ -516,7 +516,7 @@ export default function TeamView() {
               testId: `team-row-${team.name}`,
               name: team.name,
               description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
-              avatar: <TeamAvatar avatar={team.avatar} size="xl" />,
+              avatar: <TeamAvatar avatar={team.avatar} size="xl" className="bg-[var(--abu-bg-active)]" />,
             }}
             onClick={() => setDetailTeam(team)}
           />

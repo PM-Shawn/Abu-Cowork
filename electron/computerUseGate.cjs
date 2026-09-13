@@ -338,6 +338,16 @@ const HOST_REFUSAL_CODES = Object.freeze([
   'origin-changed',
 ]);
 
+/**
+ * The app dialog answers with `true` (this task), `'always'` (remember) or
+ * anything else (deny). Older callers and tests still answer booleans.
+ */
+function normalizeAppApprovalDecision(value) {
+  if (value === true || value === 'task') return { allowed: true, remember: false };
+  if (value === 'always') return { allowed: true, remember: true };
+  return { allowed: false, remember: false };
+}
+
 function hostRefusal(code, message) {
   if (!HOST_REFUSAL_CODES.includes(code)) {
     throw new Error(`unknown Host refusal code: ${code}`);
@@ -485,6 +495,7 @@ function createComputerUseGate(options) {
     stateIdFactory = () => `cu-${crypto.randomBytes(18).toString('base64url')}`,
     inputLeaseIdFactory = () => `lease-${crypto.randomBytes(18).toString('base64url')}`,
     turnStopStore = null,
+    grantStore = null,
   } = options;
   const enabledSenders = new WeakSet();
   const sessions = new Map();
@@ -492,6 +503,9 @@ function createComputerUseGate(options) {
   const computerStates = new Map();
   const taskAttemptLedgers = new Map();
   const taskGrants = new Map();
+  // "Cancel" in the app dialog is remembered for the rest of the task so a
+  // rephrased retry cannot re-open the same dialog (L2 §2.3 step 6).
+  const taskDenials = new Map();
   const taskLeases = new Map();
   const turnTargetSnapshots = new Map();
   const windowRegistry = createComputerUseWindowRegistry({
@@ -551,6 +565,9 @@ function createComputerUseGate(options) {
         revoked = true;
       }
     }
+    for (const [key, denial] of taskDenials) {
+      if (denial.sender === sender) taskDenials.delete(key);
+    }
     for (const [key, lease] of taskLeases) {
       if (lease.sender === sender) {
         taskLeases.delete(key);
@@ -582,6 +599,9 @@ function createComputerUseGate(options) {
     }
     for (const [key, grant] of taskGrants) {
       if (grant.expiresAt <= current) taskGrants.delete(key);
+    }
+    for (const [key, denial] of taskDenials) {
+      if (denial.expiresAt <= current) taskDenials.delete(key);
     }
     for (const [key, lease] of taskLeases) {
       if (lease.expiresAt <= current) {
@@ -1729,7 +1749,7 @@ function createComputerUseGate(options) {
       approvalKind,
       approvalDecision: resumeError || callbackError
         ? 'error'
-        : value === true ? 'allowed' : 'denied',
+        : value === true || value?.allowed === true ? 'allowed' : 'denied',
       durationMs: Math.max(0, now() - approvalStartedAt),
     });
     if (resumeError) throw resumeError;
@@ -1792,6 +1812,14 @@ function createComputerUseGate(options) {
     }
   }
 
+  /**
+   * Per-app authorization (L2 §2.3). Returns how the app was authorized:
+   * 'mode' (the permission mode allows this tier), 'task' (granted for this
+   * task, by a dialog earlier or now) or 'remembered' (a persisted grant
+   * whose signer still matches). Order: hard-deny was refused before this;
+   * user denied list → refuse without a dialog; mode allow; task grant;
+   * remembered grant; task-local denial → refuse without a dialog; dialog.
+   */
   async function authorizeTarget(
     sender,
     args,
@@ -1802,7 +1830,7 @@ function createComputerUseGate(options) {
   ) {
     assertTaskAuthorizationLive(authorization);
     const decision = policy.modePolicy[mode]?.[classification] ?? 'confirm';
-    if (decision === 'allow') return;
+    if (decision === 'allow') return 'mode';
 
     const key = taskGrantKey(taskKey(args), target);
     const existing = taskGrants.get(key);
@@ -1812,30 +1840,78 @@ function createComputerUseGate(options) {
       && existing.authorization === authorization
       && grantCoversScope(existing, args.scope)
     ) {
-      return;
+      return existing.grant;
     }
 
-    const approved = await withApprovalPaused(authorization, 'app', () => requestAppApproval({
-      sender,
-      target,
-      classification,
-      scope: args.scope,
-      permissionMode: mode,
-      conversationId: args.conversationId,
-      loopId: typeof args.loopId === 'string' ? args.loopId : null,
-      toolCallId: args.toolCallId,
-    }));
-    if (!approved) {
+    // Only real app control can be remembered; reading the whole screen is
+    // asked per task, and a screen grant never stands in for an app.
+    const rememberable = Boolean(grantStore)
+      && args.scope === 'ui-control'
+      && target.bundle_id !== SCREEN_READ_TARGET.bundle_id;
+    if (rememberable) {
+      if (grantStore.isDenied(target)) {
+        throw new Error(
+          `Computer Use is blocked for "${target.app_name}": you disabled this app in Settings › Computer Use`,
+        );
+      }
+      const remembered = grantStore.remembered(target);
+      if (remembered) {
+        noteComputerUseTrajectory(taskKey(args), 'approval', {
+          approvalKind: 'app',
+          approvalDecision: 'remembered',
+        });
+        taskGrants.set(key, {
+          sender,
+          taskKey: taskKey(args),
+          authorization,
+          scope: args.scope,
+          grant: 'remembered',
+          expiresAt: now() + TASK_GRANT_TTL_MS,
+        });
+        return 'remembered';
+      }
+    }
+    const denial = taskDenials.get(key);
+    if (denial && denial.sender === sender && denial.taskKey === taskKey(args)) {
+      throw new Error(
+        `Computer Use app approval was not granted for "${target.app_name}" (declined earlier in this task)`,
+      );
+    }
+
+    const outcome = await withApprovalPaused(authorization, 'app', async () => (
+      normalizeAppApprovalDecision(await requestAppApproval({
+        sender,
+        target,
+        classification,
+        scope: args.scope,
+        permissionMode: mode,
+        rememberable,
+        conversationId: args.conversationId,
+        loopId: typeof args.loopId === 'string' ? args.loopId : null,
+        toolCallId: args.toolCallId,
+      }))
+    ));
+    if (!outcome.allowed) {
+      taskDenials.set(key, {
+        sender,
+        taskKey: taskKey(args),
+        expiresAt: now() + TASK_GRANT_TTL_MS,
+      });
       throw new Error(`Computer Use app approval was not granted for "${target.app_name}"`);
     }
     assertTaskAuthorizationLive(authorization);
+    if (outcome.remember && rememberable) {
+      grantStore.grant(target, { tier: classification, source: 'dialog' });
+    }
     taskGrants.set(key, {
       sender,
       taskKey: taskKey(args),
       authorization,
       scope: args.scope,
+      grant: 'task',
       expiresAt: now() + TASK_GRANT_TTL_MS,
     });
+    return 'task';
   }
 
   function revokeTask(sender, key, { preserveAttemptLedger = false } = {}) {
@@ -1857,6 +1933,9 @@ function createComputerUseGate(options) {
         taskGrants.delete(grantKey);
         revoked = true;
       }
+    }
+    for (const [denialKey, denial] of taskDenials) {
+      if (denial.sender === sender && denial.taskKey === key) taskDenials.delete(denialKey);
     }
     const state = computerStates.get(key);
     if (state?.sender === sender) {
@@ -2220,7 +2299,7 @@ function createComputerUseGate(options) {
           classification,
           reservation
         );
-        await authorizeTarget(
+        const grant = await authorizeTarget(
           sender,
           args,
           target,
@@ -2277,6 +2356,8 @@ function createComputerUseGate(options) {
           token,
           target: authorizedTarget,
           classification,
+          // How the app was authorized (contract §2.10): 'mode' | 'task' | 'remembered'.
+          grant,
           expires_at: expiresAt,
           // L3 declaration of the running driver (contract §2.8); null when
           // no helper has completed its handshake yet.
@@ -2689,6 +2770,7 @@ function createComputerUseGate(options) {
     computerStates.clear();
     taskAttemptLedgers.clear();
     taskGrants.clear();
+    taskDenials.clear();
     taskLeases.clear();
     taskBudgets.clear();
     turnTargetSnapshots.clear();

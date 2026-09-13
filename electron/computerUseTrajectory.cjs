@@ -8,7 +8,7 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const STAGES = new Set(['approval', 'observation', 'action-attempted', 'action-outcome', 'turn-stopped', 'turn-ended']);
 const ENUMS = {
   approvalKind: new Set(['task', 'app', 'action', 'browser-origin']),
-  approvalDecision: new Set(['requested', 'allowed', 'denied', 'error']),
+  approvalDecision: new Set(['requested', 'allowed', 'denied', 'error', 'remembered']),
   outcome: new Set(['success', 'stopped', 'verified-change', 'no-change', 'outcome-unknown', 'not-executed']),
   verificationStatus: new Set(['verified-change', 'no-change']),
   reason: new Set(['continue', 'recover', 'observe-required', 'stop-no-progress', 'stop-ambiguous-side-effect',
@@ -80,7 +80,7 @@ function projectRun(events, inputIncomplete) {
   const issues = new Set();
   if (inputIncomplete) issues.add('input-incomplete');
   const metrics = { actionAttempts: 0, observations: 0, verifiedChanges: 0, noChanges: 0,
-    unknownOutcomes: 0, approvalsRequested: 0, approvalsDenied: 0, approvalErrors: 0,
+    unknownOutcomes: 0, approvalsRequested: 0, approvalsDenied: 0, approvalErrors: 0, approvalsRemembered: 0,
     approvalWaitMs: 0, elapsedMs: 0, activeMs: 0, interventions: 0 };
   const seen = new Map();
   const attempts = new Map();
@@ -108,7 +108,10 @@ function projectRun(events, inputIncomplete) {
     lastTimestamp = Math.max(lastTimestamp, e.timestamp);
     if (e.stage === 'approval') {
       if (!e.approvalKind || !e.approvalDecision) { issues.add('invalid-approval'); continue; }
-      if (e.approvalDecision === 'requested') {
+      if (e.approvalDecision === 'remembered') {
+        // A persisted grant answered without a dialog: nothing was waited for.
+        metrics.approvalsRemembered++;
+      } else if (e.approvalDecision === 'requested') {
         metrics.approvalsRequested++;
         approvals.set(e.approvalKind, (approvals.get(e.approvalKind) ?? 0) + 1);
         if (approvalDepth++ === 0) approvalStart = e.timestamp;

@@ -32,6 +32,8 @@ export type ComputerProtocolNextAction =
   | 'wait-for-user'
   | 'start-new-turn';
 
+export type ComputerUseGrantKind = 'mode' | 'task' | 'remembered';
+
 export interface ComputerProtocolError {
   code: ComputerProtocolErrorCode;
   recoverable: boolean;
@@ -146,6 +148,8 @@ export type ComputerUseSessionResponse =
       token: string;
       target: ComputerAuthorizedWindowTarget;
       classification: 'ordinary' | 'approval-required';
+      /** How the Host authorized the app: its mode policy, this task's dialog, or a remembered grant. */
+      grant?: ComputerUseGrantKind;
       expires_at: number;
       driver?: ComputerDriverCapabilities | null;
     }
@@ -164,6 +168,7 @@ const PROTOCOL_ERROR_CODES = new Set<ComputerProtocolErrorCode>([
   'screenshot-stale', 'modal-transition', 'approval-denied',
   'manual-handoff-required', 'user-takeover', 'outcome-unknown', 'turn-stopped',
 ]);
+const GRANT_KINDS = new Set<ComputerUseGrantKind>(['mode', 'task', 'remembered']);
 const NEXT_ACTIONS = new Set<ComputerProtocolNextAction>([
   'select-target', 'observe', 'wait-for-user', 'start-new-turn',
 ]);
@@ -274,6 +279,9 @@ export function parseComputerUseSessionResponse(value: unknown): ComputerUseSess
       ...(typeof target.title === 'string' ? { title: target.title } : {}),
     },
     classification: value.classification,
+    ...(typeof value.grant === 'string' && GRANT_KINDS.has(value.grant as ComputerUseGrantKind)
+      ? { grant: value.grant as ComputerUseGrantKind }
+      : {}),
     expires_at: value.expires_at,
     driver: parseDriverCapabilities(value.driver),
   };

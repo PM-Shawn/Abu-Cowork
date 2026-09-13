@@ -39,6 +39,8 @@ test('Host produces replayable versioned observations and an end event without t
   h.gate.teardown();
 });
 
+const { createComputerUseGrantStore } = require('./computerUseGrantStore.cjs');
+
 function harness(overrides = {}) {
   const {
     nativeDispatch: customNativeDispatch,
@@ -3952,4 +3954,148 @@ test('hostRefusal speaks the helper vocabulary and rejects unknown codes', () =>
   for (const code of HOST_REFUSAL_CODES) {
     assert.equal(classifyHelperFailure('stateful', hostRefusal(code, code)).execution, 'not-executed', code);
   }
+});
+
+const OBSERVE = { action: 'get_app_state', category: 'none', summary: '' };
+
+test('"always allow" is remembered across tasks and Gate restarts, and skips the app dialog even in standard mode', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const answers = ['always'];
+  const first = harness({
+    grantStore,
+    requestAppApproval: async (request) => {
+      first.approvalRequests.push(request);
+      return answers.shift() ?? true;
+    },
+  });
+  // Notes is ordinary; standard mode confirms ordinary apps, so this is the
+  // dialog the user sees most. The dialog offers "always" for app control.
+  const session = await begin(first, { actionIntent: OBSERVE });
+  assert.equal(first.approvalRequests.length, 1);
+  assert.equal(first.approvalRequests[0].rememberable, true);
+  assert.equal(session.grant, 'task');
+  assert.equal(grantStore.list().grants[0]?.displayName, 'Notes');
+  assert.equal(grantStore.list().grants[0]?.tier, 'ordinary');
+
+  await first.gate.dispatch(first.record, first.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  const next = await begin(first, { loopId: 'loop-2', toolCallId: 'tool-2', actionIntent: OBSERVE });
+  assert.equal(first.approvalRequests.length, 1, 'no second dialog for a remembered app');
+  assert.equal(next.grant, 'remembered');
+
+  // A fresh Gate (Abu restarted) sharing the persisted store still remembers.
+  const restarted = harness({ grantStore });
+  const afterRestart = await begin(restarted, { actionIntent: OBSERVE });
+  assert.equal(restarted.approvalRequests.length, 0);
+  assert.equal(afterRestart.grant, 'remembered');
+
+  // Revoking makes the next task ask again.
+  grantStore.revoke({ key: 'com.apple.notes' });
+  await restarted.gate.dispatch(restarted.record, restarted.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  await begin(restarted, { loopId: 'loop-2', toolCallId: 'tool-3', actionIntent: OBSERVE });
+  assert.equal(restarted.approvalRequests.length, 1);
+});
+
+test('"this task only" and mode-allowed apps are never persisted', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const h = harness({ grantStore });
+  const task = await begin(h, { actionIntent: OBSERVE });
+  assert.equal(task.grant, 'task');
+  assert.deepEqual(grantStore.list().grants, []);
+
+  const smart = harness({ grantStore });
+  const mode = await begin(smart, { permissionMode: 'smart', actionIntent: OBSERVE });
+  assert.equal(mode.grant, 'mode');
+  assert.equal(smart.approvalRequests.length, 0);
+  assert.deepEqual(grantStore.list().grants, []);
+});
+
+test('reading the whole screen cannot be remembered, and a remembered app does not cover it', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const h = harness({ grantStore, requestAppApproval: async (request) => { h.approvalRequests.push(request); return 'always'; } });
+  await begin(h, { scope: 'screen-read' });
+  assert.equal(h.approvalRequests[0].rememberable, false);
+  assert.deepEqual(grantStore.list().grants, []);
+
+  await begin(h, { toolCallId: 'tool-2', scope: 'ui-control', actionIntent: OBSERVE });
+  assert.equal(grantStore.list().grants[0]?.key, 'com.apple.notes');
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  await begin(h, { loopId: 'loop-2', toolCallId: 'tool-3', scope: 'screen-read' });
+  assert.equal(h.approvalRequests.length, 3, 'screen reading still asks per task');
+});
+
+test('a remembered Windows grant is bound to the signer, not the executable name', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'win32', now: () => 10_000 });
+  const qq = {
+    app_name: 'QQ',
+    bundle_id: 'c:\\program files\\tencent\\qqnt\\qq.exe',
+    process_id: 700,
+    signature_status: 'valid',
+    signer_subject: 'Tencent Technology (Shenzhen) Company Limited',
+  };
+  const h = harness({ platform: 'win32', grantStore, requestAppApproval: async (request) => { h.approvalRequests.push(request); return 'always'; } });
+  h.setIdentity(qq);
+  await begin(h, { targetApp: 'QQ', permissionMode: 'autonomous', actionIntent: OBSERVE });
+  assert.equal(h.approvalRequests.length, 1);
+  assert.equal(h.approvalRequests[0].classification, 'approval-required');
+
+  const impostor = harness({ platform: 'win32', grantStore, requestAppApproval: async (request) => { impostor.approvalRequests.push(request); return true; } });
+  impostor.setIdentity({ ...qq, signer_subject: 'Contoso Ltd' });
+  await begin(impostor, { targetApp: 'QQ', permissionMode: 'autonomous', actionIntent: OBSERVE });
+  assert.equal(impostor.approvalRequests.length, 1, 'same path, other signer: ask again');
+
+  const genuine = harness({ platform: 'win32', grantStore });
+  genuine.setIdentity(qq);
+  const session = await begin(genuine, { targetApp: 'QQ', permissionMode: 'autonomous', actionIntent: OBSERVE });
+  assert.equal(genuine.approvalRequests.length, 0);
+  assert.equal(session.grant, 'remembered');
+});
+
+test('an app on the user denied list is refused without a dialog', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  grantStore.setDenied({ key: 'com.tinyspeck.slackmacgap', displayName: 'Slack' }, true);
+  const h = harness({ grantStore });
+  await assert.rejects(
+    begin(h, { targetApp: 'Slack', permissionMode: 'smart', actionIntent: OBSERVE }),
+    /disabled this app in Settings/
+  );
+  assert.equal(h.approvalRequests.length, 0);
+  grantStore.setDenied({ key: 'com.tinyspeck.slackmacgap' }, false);
+  await begin(h, { targetApp: 'Slack', permissionMode: 'smart', toolCallId: 'tool-2', actionIntent: OBSERVE });
+  assert.equal(h.approvalRequests.length, 1);
+});
+
+test('cancelling the app dialog is remembered for the rest of the task only', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  let asked = 0;
+  const h = harness({
+    grantStore,
+    requestAppApproval: async () => {
+      asked += 1;
+      return false;
+    },
+  });
+  await assert.rejects(begin(h, { actionIntent: OBSERVE }), /approval was not granted/);
+  assert.equal(asked, 1);
+  await assert.rejects(
+    begin(h, { toolCallId: 'tool-2', actionIntent: OBSERVE }),
+    /declined earlier in this task/
+  );
+  assert.equal(asked, 1, 'a rephrased retry does not re-open the dialog');
+  assert.deepEqual(grantStore.list().denied, [], 'dialog cancel is not a persistent denial');
+
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: 'conversation-1',
+    loopId: 'loop-1',
+  });
+  await assert.rejects(begin(h, { loopId: 'loop-2', toolCallId: 'tool-3', actionIntent: OBSERVE }), /approval was not granted/);
+  assert.equal(asked, 2, 'a new task asks again');
 });

@@ -114,6 +114,7 @@ const {
   COMPUTER_USE_GATE_MISS,
 } = require('./computerUseGate.cjs');
 const { createComputerUseTurnStopStore } = require('./computerUseTurnStopStore.cjs');
+const { createComputerUseGrantStore } = require('./computerUseGrantStore.cjs');
 const {
   buildActionApprovalDialogOptions,
 } = require('./computerUseActionPolicy.cjs');
@@ -172,6 +173,7 @@ const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
 let mainWindow = null;
 let quitting = false;
 let computerUseGate = null;
+let computerUseGrantStore = null;
 let unsubscribeNativeHelperEvents = null;
 let migrationStartupBlock = null;
 let migrationStartupPending = false;
@@ -881,6 +883,15 @@ function registerTauriHost(app, options = {}) {
   // safeStorage is only reliably usable once the app is ready — registerTauriHost
   // itself is only ever called from the app.whenReady() path, so this is safe here.
   initSecretStore(app);
+  // Remembered per-app grants ("始终允许") and the user's denied list: identity
+  // key, signer binding, timestamps — no task, no content (L2 §2.1). Only the
+  // Host Gate reads and writes it.
+  computerUseGrantStore = createComputerUseGrantStore({
+    filePath: path.join(app.getPath('userData'), 'computer-use-grants.json'),
+    onError: (error) => {
+      console.warn('[computer-use] grant store unavailable', error);
+    },
+  });
   computerUseGate = createComputerUseGate({
     // BrowserWindow HWNDs and native Electron consent dialogs belong to the
     // main process. Passing the PID lets the Host Gate reject Abu itself even
@@ -893,6 +904,7 @@ function registerTauriHost(app, options = {}) {
         console.warn('[computer-use] stopped-turn store unavailable', error);
       },
     }),
+    grantStore: computerUseGrantStore,
     nativeDispatch: async (cmd, args) => {
       const permissionResult = await computerUsePermissionHostDispatch(cmd);
       if (permissionResult !== COMPUTER_USE_PERMISSION_HOST_MISS) {
@@ -956,7 +968,7 @@ function registerTauriHost(app, options = {}) {
         : await dialog.showMessageBox(options);
       return result.response === 0;
     },
-    requestAppApproval: async ({ target, classification, scope, permissionMode }) => {
+    requestAppApproval: async ({ target, classification, scope, permissionMode, rememberable }) => {
       if (shouldAutoDeclineCuApprovals(app)) return false;
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       const canControl = scope === 'ui-control';
@@ -976,13 +988,17 @@ function registerTauriHost(app, options = {}) {
           : 'Abu wants to view the current screen');
       const detail = isZh
         ? [
-            '授权仅对当前任务有效，任务结束或 Abu 重启后自动失效。',
+            rememberable
+              ? '「仅本次」只对当前任务有效；「始终允许」会记住这个应用，以后不再询问，可在设置 › 操作电脑 里撤销。有后果的动作（发送、删除、覆盖等）每次仍会单独确认。'
+              : '授权仅对当前任务有效，任务结束或 Abu 重启后自动失效。',
             classification === 'approval-required'
               ? '该应用可能包含网页、通信或其他敏感内容，或尚未被 Abu 明确识别，因此所有权限模式都需要你确认。'
               : `当前权限模式为「${permissionMode}」，首次操作此应用需要你确认。`,
           ].join('\n')
         : [
-            'This permission only applies to the current task and expires when the task ends or Abu restarts.',
+            rememberable
+              ? '"This task only" expires when the task ends. "Always allow" remembers this app so Abu stops asking; revoke it under Settings › Computer Use. Consequential actions (send, delete, overwrite) are still confirmed one by one.'
+              : 'This permission only applies to the current task and expires when the task ends or Abu restarts.',
             classification === 'approval-required'
               ? 'This app may contain web, communication, or other sensitive content, or is not yet explicitly recognized by Abu, so every permission mode requires confirmation.'
               : `The current permission mode is "${permissionMode}", so first use of this app needs confirmation.`,
@@ -992,16 +1008,19 @@ function registerTauriHost(app, options = {}) {
         title,
         message,
         detail,
-        buttons: isZh ? ['允许本任务', '取消'] : ['Allow for this task', 'Cancel'],
+        buttons: rememberable
+          ? (isZh ? ['仅本次', '始终允许', '取消'] : ['This task only', 'Always allow', 'Cancel'])
+          : (isZh ? ['允许本任务', '取消'] : ['Allow for this task', 'Cancel']),
         defaultId: 0,
-        cancelId: 1,
+        cancelId: rememberable ? 2 : 1,
         noLink: true,
       };
       const win = getMainWindow();
       const result = win
         ? await dialog.showMessageBox(win, options)
         : await dialog.showMessageBox(options);
-      return result.response === 0;
+      if (result.response === 0) return true;
+      return rememberable && result.response === 1 ? 'always' : false;
     },
     requestBrowserSiteApproval: async ({ target, origin }) => {
       const isZh = app.getLocale().toLowerCase().startsWith('zh');

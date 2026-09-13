@@ -42,6 +42,18 @@ test('unknown input requires observation; a change is never proof of task comple
   assert.equal(result.taskOutcome, 'not-evaluated');
 });
 
+test('a remembered app grant is recorded without opening an approval wait', () => {
+  const result = replay([
+    event(1, 'approval', { approvalKind: 'app', approvalDecision: 'remembered' }),
+    event(2, 'observation', { timestamp: 300 }),
+  ]);
+  assert.equal(result.metrics.approvalsRemembered, 1);
+  assert.equal(result.metrics.approvalsRequested, 0);
+  assert.equal(result.metrics.approvalWaitMs, 0);
+  assert.equal(result.issues.includes('orphan-approval'), false);
+  assert.equal(result.phase, 'ready');
+});
+
 test('stop is terminal even when late approval or outcome events arrive', () => {
   const result = replay([event(1, 'turn-stopped', { reason: 'outcome-unknown' }),
     event(2, 'approval', { approvalKind: 'action', approvalDecision: 'allowed' }),

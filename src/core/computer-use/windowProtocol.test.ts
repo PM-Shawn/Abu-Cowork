@@ -77,6 +77,20 @@ describe('Windows Computer Use window protocol', () => {
     expect(parseComputerUseSessionResponse({ ...base, driver: 'windows-uia' })).toMatchObject({ driver: null });
   });
 
+  it('passes the Host grant kind through and drops unknown kinds', () => {
+    const base = {
+      status: 'authorized',
+      token: 'token-1',
+      target: { window_ref: 'wr-opaque', app_name: 'QQ', bundle_id: 'aumid:qq', process_id: 42, relation: 'root' },
+      classification: 'approval-required',
+      expires_at: 1234,
+    };
+    expect(parseComputerUseSessionResponse({ ...base, grant: 'remembered' })).toMatchObject({ grant: 'remembered' });
+    expect(parseComputerUseSessionResponse({ ...base, grant: 'task' })).toMatchObject({ grant: 'task' });
+    expect(parseComputerUseSessionResponse({ ...base, grant: 'forever' })).not.toHaveProperty('grant');
+    expect(parseComputerUseSessionResponse(base)).not.toHaveProperty('grant');
+  });
+
   it('preserves a structured target error for model recovery', () => {
     expect(parseComputerUseSessionResponse({
       status: 'target-error',

@@ -128,7 +128,7 @@ export function buildTeamRoleBlock(team: TeamRouteContext): string {
     }
   }
   if (unresolved > 0 && team.members.length > 0) {
-    lines.push(`- (${unresolved} ${unresolvedNoun} of this team could not be resolved — deleted or changed since the team was set up. They cannot be dispatched to. Plan with the members listed above and tell the user the team roster needs attention in the team settings.)`);
+    lines.push(`- (${unresolved} ${unresolvedNoun} of this team could not be resolved — deleted, changed, or disabled since the team was set up. They cannot be dispatched to. Plan with the members listed above and tell the user the team roster needs attention in the team settings.)`);
   }
   if (team.leaderNote?.trim()) {
     lines.push('');

@@ -160,11 +160,14 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // Built-ins a same-name user skill covered: still listed under 市场, marked,
   // so the user knows which copy is live instead of thinking one vanished.
   const shadowedBuiltin = useMemo(() => {
+    // A 「我的」-only render has no 市场 group to belong to: scoping here keeps
+    // shadowed built-ins from resurrecting that group on their own.
+    if (sourceFilter === 'mine') return [];
     const q = searchLower;
     return skillLoader.getShadowedSkills().filter((s) =>
       s.source === 'builtin' && (!q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)),
     );
-  }, [skills, searchLower]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [skills, searchLower, sourceFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
 

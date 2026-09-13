@@ -575,7 +575,7 @@ export default function TeamView() {
         open={!!detailTeam}
         onClose={() => { setDetailTeam(null); setDetailMenuOpen(false); }}
         maxWidth="max-w-2xl"
-        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="2xl" /> : undefined}
+        avatar={detailTeam ? <TeamAvatar avatar={detailTeam.avatar} size="2xl" className="bg-[var(--abu-bg-active)]" /> : undefined}
         title={detailTeam?.name}
         subtitle={detailTeam?.description?.trim()}
         // Primary action in the sticky footer, solid — the same place and

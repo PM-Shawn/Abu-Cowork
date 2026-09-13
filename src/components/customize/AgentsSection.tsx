@@ -337,7 +337,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         // otherwise one press dismisses both it and the detail behind it.
         disableEscape={!!confirmDeleteAgent}
         maxWidth="max-w-2xl"
-        avatar={selected ? <AgentAvatar agent={selected} size="2xl" /> : undefined}
+        avatar={selected ? <AgentAvatar agent={selected} size="2xl" className="bg-[var(--abu-bg-active)]" /> : undefined}
         title={selected ? displayName(selected, locale) : undefined}
         // Primary action in the sticky footer, solid, exactly where the plugin
         // and connector details put theirs — the header keeps only the 「…」

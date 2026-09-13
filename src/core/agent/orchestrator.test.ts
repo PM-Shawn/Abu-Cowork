@@ -651,6 +651,34 @@ describe('Available Agents tool boundaries', () => {
     expect(prompt).toContain('they do not authorize any operation');
     expect(prompt).toContain('Tool approval and permission controls remain authoritative');
   });
+
+  // `disabledAgents` now means exactly one thing: this expert is out of the
+  // pool Abu picks from on its own. The only place that meaning is spent is
+  // this list — an expert that is off it must not be offered here, while
+  // staying fully usable by an explicit @ mention or as a team member. Assert
+  // the produced prompt, not the mock, so deleting the filter goes red.
+  it('leaves an expert that is off auto-dispatch out of the delegation list', async () => {
+    const route = routeInput('delegate this');
+    // buildSystemPrompt reads the settings snapshot more than once, so this
+    // has to be a standing return value rather than a `…Once` queue entry.
+    const settingsMock = vi.mocked(useSettingsStore.getState);
+    const baseline = settingsMock();
+    settingsMock.mockReturnValue({ ...baseline, disabledAgents: ['reviewer'] } as never);
+    vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([
+      { name: 'reviewer', description: 'reviews code', systemPrompt: '', filePath: '__test__' },
+      { name: 'planner', description: 'plans work', systemPrompt: '', filePath: '__test__' },
+    ] as never);
+
+    try {
+      const prompt = await buildSystemPrompt(route, 'base prompt', 'test-conv');
+
+      expect(prompt).toContain('- planner: plans work');
+      expect(prompt).not.toContain('reviewer');
+    } finally {
+      settingsMock.mockReturnValue(baseline);
+      vi.mocked(agentRegistry.getAvailableAgents).mockReturnValue([]);
+    }
+  });
 });
 
 describe('routeInput', () => {

@@ -108,6 +108,42 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(screen.getByRole('option', { name: /planner/ })).toBeTruthy();
   });
 
+  // Experts carry an AgentAvatar since v0.43, so the @ rows and the chip show it
+  // the way team rows already do — the literal `@` mark is gone from both.
+  it('renders every expert candidate row with its avatar instead of an @ mark', () => {
+    useDiscoveryStore.setState({
+      agents: [
+        { name: 'publisher', description: 'Draft and edit public posts', avatar: 'icon:code/blue' },
+        { name: 'planner', description: 'Plan work' },
+      ],
+    });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '@');
+
+    const withAvatar = screen.getByRole('option', { name: /publisher/ });
+    const withoutAvatar = screen.getByRole('option', { name: /planner/ });
+    expect(withAvatar.querySelector('[data-testid="agent-avatar"]')?.getAttribute('data-avatar-kind')).toBe('icon');
+    // An expert with no avatar still renders the default mark, never a bare `@`.
+    expect(withoutAvatar.querySelector('[data-testid="agent-avatar"]')?.getAttribute('data-avatar-kind')).toBe('default');
+    expect(withAvatar.textContent).not.toContain('@');
+    expect(withoutAvatar.textContent).not.toContain('@');
+  });
+
+  it('shows the expert avatar in the chip and keeps the @name accessible label', () => {
+    useDiscoveryStore.setState({
+      agents: [{ name: 'publisher', description: 'Draft and edit public posts', avatar: 'icon:code/blue' }],
+    });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(textarea, '@pub');
+    fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+
+    const chip = screen.getByRole('button', { name: '@publisher' });
+    expect(chip.querySelector('[data-testid="agent-avatar"]')?.getAttribute('data-avatar-kind')).toBe('icon');
+    expect(chip.textContent).not.toContain('@');
+    expect(chip.textContent).toContain('publisher');
+  });
+
   it('keeps the active agent option visible while Arrow navigation moves through a long list (no wrap)', () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {

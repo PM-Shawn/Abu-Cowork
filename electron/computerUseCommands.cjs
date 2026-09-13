@@ -50,6 +50,10 @@ const COMPUTER_USE_HOST_COMMANDS = new Set([
   'computer_use_end_task',
   'computer_use_stop_turn',
   'computer_use_get_task_status',
+  // Settings › Security › Computer Use: the remembered-grant list (L2 §2.4).
+  'computer_use_list_grants',
+  'computer_use_revoke_grant',
+  'computer_use_set_denied',
 ]);
 
 module.exports = {

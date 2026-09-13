@@ -342,6 +342,19 @@ const HOST_REFUSAL_CODES = Object.freeze([
  * The app dialog answers with `true` (this task), `'always'` (remember) or
  * anything else (deny). Older callers and tests still answer booleans.
  */
+const MAX_GRANT_KEY_LENGTH = 1024;
+function assertGrantKey(value) {
+  const key = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (
+    !key
+    || key.length > MAX_GRANT_KEY_LENGTH
+    || [...key].some((char) => char.charCodeAt(0) < 32)
+  ) {
+    throw new Error('Computer Use grant key is invalid');
+  }
+  return key;
+}
+
 function normalizeAppApprovalDecision(value) {
   if (value === true || value === 'task') return { allowed: true, remember: false };
   if (value === 'always') return { allowed: true, remember: true };
@@ -1851,7 +1864,7 @@ function createComputerUseGate(options) {
     if (rememberable) {
       if (grantStore.isDenied(target)) {
         throw new Error(
-          `Computer Use is blocked for "${target.app_name}": you disabled this app in Settings › Computer Use`,
+          `Computer Use is blocked for "${target.app_name}": you disabled this app in Settings › Security › Computer Use`,
         );
       }
       const remembered = grantStore.remembered(target);
@@ -2186,6 +2199,33 @@ function createComputerUseGate(options) {
         revokeSender(sender);
       }
       return null;
+    }
+
+    // Settings › Security › Computer Use (L2 §2.4). No task context: the
+    // grant store is the source of truth and none of these touch a live
+    // session — a running task keeps its task grant until it ends.
+    if (cmd === 'computer_use_list_grants') {
+      if (!grantStore) return { available: false, grants: [], denied: [] };
+      return { available: true, ...grantStore.list() };
+    }
+    if (cmd === 'computer_use_revoke_grant') {
+      const key = assertGrantKey(args?.key);
+      if (!grantStore) throw new Error('Computer Use grant store is unavailable');
+      return { revoked: grantStore.revoke({ key }) };
+    }
+    if (cmd === 'computer_use_set_denied') {
+      const key = assertGrantKey(args?.key);
+      if (typeof args?.denied !== 'boolean') {
+        throw new Error('computer_use_set_denied requires a boolean denied value');
+      }
+      if (!grantStore) throw new Error('Computer Use grant store is unavailable');
+      const displayName = typeof args?.displayName === 'string' ? args.displayName.trim().slice(0, 200) : undefined;
+      // Red lines are not user-managed in either direction: they never get
+      // a grant, and a denied-list entry for them would only mislead.
+      if (classifyIdentity(platform, { app_name: displayName || key, bundle_id: key, process_id: null }) === 'hard-deny') {
+        throw new Error('Computer Use red-line apps cannot be added to or removed from the denied list');
+      }
+      return { denied: args.denied, persisted: grantStore.setDenied({ key, displayName }, args.denied) };
     }
 
     if (cmd === 'computer_use_capture_turn_target') {

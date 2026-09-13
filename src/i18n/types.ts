@@ -1651,6 +1651,23 @@ export interface TranslationDict {
     appAutomationContinuePrompt: string;
     appAutomationContinueFailed: string;
     appAutomationOutcomeUncertain: string;
+    // Computer Use › remembered per-app grants (Settings › Security)
+    computerUseGrantsTitle: string;
+    computerUseGrantsDescription: string;
+    computerUseGrantsEmpty: string;
+    computerUseGrantsUnavailable: string;
+    computerUseGrantsLoadFailed: string;
+    computerUseGrantsAlwaysTitle: string;
+    computerUseGrantsDeniedTitle: string;
+    computerUseGrantsDeniedEmpty: string;
+    computerUseGrantTierOrdinary: string;
+    computerUseGrantTierApprovalRequired: string;
+    computerUseGrantGrantedAt: string; // {date}
+    computerUseGrantLastUsed: string; // {date}
+    computerUseGrantRevoke: string;
+    computerUseGrantDeny: string;
+    computerUseGrantRestore: string;
+    computerUseGrantsRedLines: string;
   };
 
   // Diagnostic

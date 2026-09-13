@@ -989,7 +989,7 @@ function registerTauriHost(app, options = {}) {
       const detail = isZh
         ? [
             rememberable
-              ? '「仅本次」只对当前任务有效；「始终允许」会记住这个应用，以后不再询问，可在设置 › 操作电脑 里撤销。有后果的动作（发送、删除、覆盖等）每次仍会单独确认。'
+              ? '「仅本次」只对当前任务有效；「始终允许」会记住这个应用，以后不再询问，可在 设置 › 安全 › 操作电脑 里撤销。有后果的动作（发送、删除、覆盖等）每次仍会单独确认。'
               : '授权仅对当前任务有效，任务结束或 Abu 重启后自动失效。',
             classification === 'approval-required'
               ? '该应用可能包含网页、通信或其他敏感内容，或尚未被 Abu 明确识别，因此所有权限模式都需要你确认。'
@@ -997,7 +997,7 @@ function registerTauriHost(app, options = {}) {
           ].join('\n')
         : [
             rememberable
-              ? '"This task only" expires when the task ends. "Always allow" remembers this app so Abu stops asking; revoke it under Settings › Computer Use. Consequential actions (send, delete, overwrite) are still confirmed one by one.'
+              ? '"This task only" expires when the task ends. "Always allow" remembers this app so Abu stops asking; revoke it under Settings › Security › Computer Use. Consequential actions (send, delete, overwrite) are still confirmed one by one.'
               : 'This permission only applies to the current task and expires when the task ends or Abu restarts.',
             classification === 'approval-required'
               ? 'This app may contain web, communication, or other sensitive content, or is not yet explicitly recognized by Abu, so every permission mode requires confirmation.'

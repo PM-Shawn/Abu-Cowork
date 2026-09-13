@@ -4099,3 +4099,47 @@ test('cancelling the app dialog is remembered for the rest of the task only', as
   await assert.rejects(begin(h, { loopId: 'loop-2', toolCallId: 'tool-3', actionIntent: OBSERVE }), /approval was not granted/);
   assert.equal(asked, 2, 'a new task asks again');
 });
+
+test('settings commands list, deny and revoke remembered apps without a task, and never touch red lines', async () => {
+  const grantStore = createComputerUseGrantStore({ platform: 'darwin', now: () => 10_000 });
+  const h = harness({ grantStore, requestAppApproval: async (request) => { h.approvalRequests.push(request); return 'always'; } });
+  await begin(h, { actionIntent: OBSERVE });
+
+  const listed = await h.gate.dispatch(h.record, h.sender, 'computer_use_list_grants', {});
+  assert.equal(listed.available, true);
+  assert.equal(listed.grants[0].key, 'com.apple.notes');
+  assert.equal(listed.grants[0].tier, 'ordinary');
+  assert.equal('signer' in listed.grants[0], false);
+
+  const denied = await h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', {
+    key: 'com.apple.notes', denied: true, displayName: 'Notes',
+  });
+  assert.equal(denied.denied, true);
+  const afterDeny = await h.gate.dispatch(h.record, h.sender, 'computer_use_list_grants', {});
+  assert.deepEqual(afterDeny.grants, []);
+  assert.equal(afterDeny.denied[0].displayName, 'Notes');
+
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', { key: 'com.apple.notes', denied: false });
+  const revoked = await h.gate.dispatch(h.record, h.sender, 'computer_use_revoke_grant', { key: 'com.apple.notes' });
+  assert.equal(revoked.revoked, false, 'denying already removed the grant');
+  assert.deepEqual(await h.gate.dispatch(h.record, h.sender, 'computer_use_list_grants', {}), { available: true, grants: [], denied: [] });
+
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', { key: 'com.apple.keychainaccess', denied: true }),
+    /red-line/
+  );
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'computer_use_revoke_grant', { key: '  ' }),
+    /grant key is invalid/
+  );
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'computer_use_set_denied', { key: 'com.apple.notes', denied: 'yes' }),
+    /boolean denied/
+  );
+
+  const bare = harness();
+  assert.deepEqual(
+    await bare.gate.dispatch(bare.record, bare.sender, 'computer_use_list_grants', {}),
+    { available: false, grants: [], denied: [] },
+  );
+});

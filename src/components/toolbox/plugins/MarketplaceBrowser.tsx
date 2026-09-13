@@ -472,7 +472,9 @@ export default function MarketplaceBrowser({
 
         <div className="ml-auto flex items-center gap-1.5">
           {selectedName && <Button size="icon-sm" variant="ghost" aria-label={tb.pluginsRefreshMarketplace} disabled={entriesState.kind === 'loading'} onClick={() => setReload(value => value + 1)}><RefreshCw className="h-3.5 w-3.5" /></Button>}
-          {selectedName && (
+          {/* The built-in market cannot be removed (the store short-circuits it),
+              so it gets no Remove control rather than one that silently no-ops. */}
+          {selectedName && !selected?.builtin && (
             <Button
               variant="ghost"
               size="icon-sm"

@@ -1,7 +1,6 @@
 import { Bot } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import abuAvatar from '@/assets/abu-avatar.png';
-import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { AVATAR_ICON_MAP, AVATAR_TINT_MAP, parseAvatarValue } from '@/core/team/avatarPresets';
 
 export type AvatarSize = 'xs' | 'sm' | 'md' | 'lg';
@@ -16,26 +15,30 @@ const BOX = AVATAR_SIZE.box;
 const ICON = AVATAR_SIZE.icon;
 const EMOJI = AVATAR_SIZE.emoji;
 
-/** Only an avatar the user set on their own agent counts; builtin / marketplace
- *  presets keep the uniform robot mark (user decision 2026-09-05: "都先保持系统默认"). */
+/** Any avatar an expert carries is rendered, whatever its source: the built-in
+ *  and marketplace presets ship their own `icon:<icon>/<tint>` references now
+ *  (user ruling 2026-09-13, replacing the 2026-09-05 "builtin / marketplace
+ *  presets keep the uniform robot mark"). One rule — a valid value renders,
+ *  nothing renders the default mark — so the source no longer changes what is
+ *  drawn, matching TeamAvatar and WelcomeAvatar. */
 export interface AvatarAgentLike {
   name: string;
   avatar?: string;
   filePath?: string;
 }
 
+/** Kept under its original name and signature so callers stay untouched; it now
+ *  normalizes rather than filters. @see AvatarAgentLike */
 // eslint-disable-next-line react-refresh/only-export-components
 export function userAgentAvatar(agent: Pick<AvatarAgentLike, 'avatar' | 'filePath'> | null | undefined): string | null {
-  if (!agent) return null;
-  const avatar = agent.avatar?.trim();
-  if (!avatar || isBuiltinAgentPath(agent.filePath)) return null;
-  return avatar;
+  return agent?.avatar?.trim() || null;
 }
 
 /**
  * One avatar for an agent everywhere (队员 cards, team dialog, chat rows, team
- * tab, member bar): Abu's mascot for abu, the user's avatar for their own
- * agents, otherwise the uniform robot mark.
+ * tab, member bar): Abu's mascot for abu, otherwise whatever avatar the expert
+ * carries — a preset icon or a legacy emoji — and the robot mark when it has
+ * none.
  */
 export default function AgentAvatar({ agent, size = 'md', round = false, className }: {
   agent: AvatarAgentLike;

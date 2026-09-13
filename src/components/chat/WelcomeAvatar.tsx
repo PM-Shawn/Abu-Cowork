@@ -3,9 +3,9 @@ import { AVATAR_ICON_MAP, AVATAR_TINT_MAP, parseAvatarValue } from '@/core/team/
 /**
  * The expert welcome page's 80px circle. A built-in icon reference
  * (`icon:<icon>/<tint>`, what the picker and Abu itself now write) renders as
- * that icon in its tint; a builtin expert's emoji keeps rendering exactly as
- * before; anything else falls back to the robot mark. Deliberately NOT
- * AgentAvatar: that one drops a builtin agent's emoji by design.
+ * that icon in its tint; a legacy emoji keeps rendering exactly as before;
+ * anything else falls back to the robot mark. Separate from AgentAvatar only
+ * for its geometry — the two agree on what a value means.
  */
 export default function WelcomeAvatar({ avatar }: { avatar?: string }) {
   const parsed = parseAvatarValue(avatar);

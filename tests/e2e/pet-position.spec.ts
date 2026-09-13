@@ -24,6 +24,7 @@ import {
   firstShowRecordFor,
   launchAbuElectron,
   removeElectronDataRoot,
+  windowListenerRegistered,
 } from './electronHelpers';
 
 const READY_TIMEOUT = 45_000;
@@ -72,7 +73,12 @@ async function enablePet(page: Page): Promise<void> {
 test('the desktop pet reopens where it was left, without a jump', async () => {
   const dataRoot = createElectronDataRoot();
   try {
-    let launched = await launchAbuElectron(dataRoot);
+    // Both launches inject tests/e2e/mainProcessRecorder.cjs ahead of
+    // electron/main.cjs: the first so the move below can be sequenced after the
+    // pet renderer's `listen()`, the second so the pet's first reveal is on
+    // record. Installing either hook from here after electron.launch() resolves
+    // races the app's own startup (the original ~40% CI flake).
+    let launched = await launchAbuElectron(dataRoot, { recordMainProcess: true });
     let target: { x: number; y: number };
     let expectedPhysical: { x: number; y: number };
     try {
@@ -81,6 +87,15 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
       await dismissFirstRunOverlays(main);
       await enablePet(main);
       await expect.poll(() => petBounds(launched.app), { timeout: 20_000 }).not.toBeNull();
+      // The pet persists its position from getCurrentWindow().onMoved, and
+      // `tauri://move` is delivered only to subscriptions that already exist.
+      // The window is revealed on ready-to-show or a 1.5 s timeout (guiHost.cjs
+      // showWhenReady), which under CI load can precede the renderer's
+      // `listen()` round-trip by seconds — a move issued in that gap is dropped
+      // and nothing is ever persisted. Sequence the move after the subscription.
+      await expect
+        .poll(() => windowListenerRegistered(launched.app, '/pet.html', 'tauri://move'), { timeout: 20_000 })
+        .toBe(true);
 
       // A spot well inside the primary work area, away from the snap edges, so
       // edge-snap leaves it untouched.
@@ -112,12 +127,7 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
       await closeAbuElectron(launched.app);
     }
 
-    // `recordWindowShows` injects the first-show recorder into the main process
-    // ahead of electron/main.cjs, so it is watching before the app can create a
-    // single window. Installing that hook from here instead — after
-    // electron.launch() resolves — races the app's own startup, which is what
-    // made this journey report a missing pet window on ~40% of CI runs.
-    launched = await launchAbuElectron(dataRoot, { recordWindowShows: true });
+    launched = await launchAbuElectron(dataRoot, { recordMainProcess: true });
     try {
       const main = await launched.app.firstWindow();
       await waitForApp(main);
@@ -128,10 +138,14 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
           return b ? Math.max(Math.abs(b.x - target.x), Math.abs(b.y - target.y)) : Infinity;
         }, { timeout: 10_000 })
         .toBeLessThanOrEqual(1);
-      // …and it was already there when it first became visible: the host creates
+      // …and it was already there when it was first revealed: the host creates
       // the pet window AT the saved spot (guiHost.cjs initialPetPosition), so a
       // regression that let the renderer move it after first paint would show up
-      // here as the default bottom-right corner.
+      // here as the default bottom-right corner. The record is captured at the
+      // host's show() call, so it is complete as soon as isVisible() is true —
+      // Electron's macOS `show` EVENT is emitted later, from the NSWindow
+      // occlusion-state delegate, which is what left this record empty on ~1
+      // in 3 CI runs (see mainProcessRecorderCore.cjs).
       const firstShow = await firstShowRecordFor(launched.app, '/pet.html');
       expect(firstShow, 'the recorder saw the pet window being created').not.toBeNull();
       expect(firstShow!.shownBounds, 'the pet window was shown during this launch').not.toBeNull();

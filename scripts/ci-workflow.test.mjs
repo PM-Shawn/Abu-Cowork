@@ -214,6 +214,37 @@ test('Windows job relies on the config junit reporter (CLI --outputFile is inert
   assert.match(windows, /run: npx vitest run\n/);
 });
 
+test('the pull request Windows build skips renderer-only changes', () => {
+  const workflow = YAML.parse(
+    readFileSync(path.join(repoRoot, '.github/workflows/electron-build.yml'), 'utf8'),
+  );
+  const paths = workflow.on?.pull_request?.paths ?? [];
+  assert.ok(paths.length > 0, 'the pull request trigger must keep a paths filter');
+  // Renderer sources cannot break Windows packaging in a way `check`'s
+  // `npm run build` and the macOS e2e-electron app launch do not already catch,
+  // and release.yml re-runs the full Windows package + smoke via workflow_call.
+  for (const dropped of ['src/**', 'public/**']) {
+    assert.ok(!paths.includes(dropped), `${dropped} must not trigger the pull request Windows build`);
+  }
+  // Everything that CAN break packaging must still trigger it.
+  for (const kept of [
+    'electron/**',
+    'scripts/**',
+    'package.json',
+    'package-lock.json',
+    'electron-builder.yml',
+    'vite.config.ts',
+  ]) {
+    assert.ok(paths.includes(kept), `${kept} must still trigger the pull request Windows build`);
+  }
+  // The trigger itself must not move: 6 steps use `github.event_name !=
+  // 'pull_request'` to mean "official release build", and a reusable workflow
+  // reports the CALLER's event, so a dev push and a release tag are
+  // indistinguishable by event_name.
+  assert.ok(workflow.on?.pull_request, 'the Windows build must stay on pull_request');
+  assert.equal(workflow.on?.push, undefined, 'the Windows build must not gain a push trigger');
+});
+
 test('CI and Electron Build cancel superseded pull request runs without serialising branch pushes', () => {
   const electronBuild = readFileSync(
     path.join(repoRoot, '.github/workflows/electron-build.yml'),

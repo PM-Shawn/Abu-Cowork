@@ -16,6 +16,19 @@ const ALWAYS_BLOCKED_SUBAGENT_TOOLS = new Set<string>([
   TOOL_NAMES.RUN_AGENT_BATCH,
   TOOL_NAMES.UPDATE_SOUL,
   TOOL_NAMES.ASK_USER_QUESTION,
+  // System configuration. Everything below writes durable state that outlives
+  // the single hand-off a member was dispatched for — an expert, team, skill,
+  // plugin, scheduled task, trigger or connector server the user then lives
+  // with. Creating and editing those stays with Abu and a team leader, both of
+  // which run as a `route.type === 'agent'` route resolved by
+  // agentToolPolicy.ts and never by this file, so this list cannot reach them.
+  TOOL_NAMES.MANAGE_SCHEDULED_TASK,
+  TOOL_NAMES.MANAGE_TRIGGER,
+  TOOL_NAMES.MANAGE_MCP_SERVER,
+  TOOL_NAMES.SAVE_AGENT,
+  TOOL_NAMES.SAVE_TEAM,
+  TOOL_NAMES.SKILL_MANAGE,
+  TOOL_NAMES.PLUGIN_PREPARE,
 ]);
 
 /** Members have no harness-granted protocol tools. */

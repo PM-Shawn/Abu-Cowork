@@ -59,7 +59,7 @@ const ADD_SITE_LABEL = /^(网站地址|Site address)$/;
 const ADD_SITE_BUTTON = /^(添加|Add)$/;
 const AUTOMATION_NAV = /^(自动化|Automation)$/;
 const SCHEDULED_TASKS_TAB = /^(定时任务|Scheduled Tasks)$/;
-const NEW_TASK = /^(新任务|New Task)$/;
+const NEW_TASK = /^(新建任务|New Task)$/;
 
 /** Seeded site verdicts, so the list page has something to show. */
 const SEEDED_SITES = {

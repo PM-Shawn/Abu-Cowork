@@ -641,6 +641,16 @@ pub fn keyboard_type_impl(
         ));
     }
     match method.as_str() {
+        // A line break cannot be injected as a Unicode scan code: Win32 edit
+        // controls open a new line on VK_RETURN, and a U+000A sent as text is
+        // silently swallowed, so `1\n2` used to arrive as `12` while the
+        // action still reported success. Pressing Return instead is not an
+        // option here — in a chat window Return sends the message, which would
+        // route a send around the Host's consequence confirmation. The
+        // clipboard carries the break as literal text, pressing nothing.
+        "unicode" | "" if text.contains('\n') || text.contains('\r') => {
+            return paste_via_clipboard(&text, &app_id, process_id, &window_id, expected_input_epoch)
+        }
         "unicode" | "" => {}
         "paste" => return paste_via_clipboard(&text, &app_id, process_id, &window_id, expected_input_epoch),
         other => {
@@ -681,6 +691,17 @@ fn paste_events() -> [KeyboardEvent; 4] {
 /// what was there. Refuses when the clipboard holds anything but plain text —
 /// an image, files or rich text cannot be put back exactly, and the user's
 /// clipboard is not ours to lose.
+/// Accepts CRLF, lone LF or lone CR and emits CRLF, the CF_UNICODETEXT
+/// convention. Text without line breaks is returned unchanged.
+fn normalize_clipboard_line_breaks(text: &str) -> String {
+    if !text.contains('\n') && !text.contains('\r') {
+        return text.to_string();
+    }
+    text.replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n")
+}
+
 fn paste_via_clipboard(
     text: &str,
     app_id: &str,
@@ -689,15 +710,20 @@ fn paste_via_clipboard(
     expected_input_epoch: u64,
 ) -> Result<String, HelperError> {
     assert_no_physical_modifier(|vk| unsafe { GetAsyncKeyState(vk as i32) < 0 })?;
-    let previous = {
+    // CF_UNICODETEXT separates lines with CRLF. Normalizing first keeps the
+    // read-back check comparing the bytes actually written, and gives targets
+    // that follow the convention strictly the breaks they expect.
+    let normalized = normalize_clipboard_line_breaks(text);
+    let text = normalized.as_str();
+    // Only CF_UNICODETEXT can be put back byte for byte. An image, a file
+    // selection, or the HTML flavour a browser copy carries alongside its
+    // text is gone the moment we write. Refusing over that would block the
+    // ordinary case — a copy out of any browser or editor is rich by
+    // default — to protect content the user can reproduce with one more
+    // copy, so take the loss and name it in the receipt instead.
+    let (previous, lost_rich_content) = {
         let clipboard = super::clipboard::Clipboard::open()?;
-        let formats = clipboard.formats();
-        if !super::clipboard::is_plain_text_clipboard(&formats) {
-            return Err(HelperError::not_executed(
-                "clipboard-busy",
-                "clipboard holds non-text content that could not be restored; type with the unicode method instead",
-            ));
-        }
+        let lost_rich_content = !super::clipboard::is_plain_text_clipboard(&clipboard.formats());
         let previous = clipboard.read_unicode_text();
         clipboard.set_unicode_text(text)?;
         if clipboard.read_unicode_text().as_deref() != Some(text) {
@@ -705,12 +731,16 @@ fn paste_via_clipboard(
                 Some(value) => clipboard.set_unicode_text(value),
                 None => clipboard.empty(),
             };
-            return Err(HelperError::not_executed(
+            // Something else wrote the clipboard between our write and our
+            // read. Same reasoning as a busy clipboard: transient, so the
+            // recovery is to observe and try again, not to give up on the
+            // action.
+            return Err(HelperError::observe_again(
                 "clipboard-write-failed",
                 "clipboard did not read back the text that was written",
             ));
         }
-        previous
+        (previous, lost_rich_content)
     };
     // Everything up to here touched only the clipboard. The chord below is
     // the dispatch; its own partial-send classification stands.
@@ -725,10 +755,20 @@ fn paste_via_clipboard(
         })
         .is_ok();
     sent?;
+    // Two different losses, and the user is owed the distinction: the text
+    // went back but its formatting or image did not, versus nothing went
+    // back at all.
+    let clipboard_note = if !restored {
+        " (previous clipboard content could not be restored)"
+    } else if lost_rich_content {
+        " (the clipboard had held content that is not plain text; only text was put back)"
+    } else {
+        ""
+    };
     Ok(format!(
         "pasted {} UTF-16 units via clipboard{}",
         text.encode_utf16().count(),
-        if restored { "" } else { " (previous clipboard content could not be restored)" }
+        clipboard_note
     ))
 }
 
@@ -905,7 +945,8 @@ mod tests {
     use windows::Win32::UI::Input::KeyboardAndMouse::{VK_CONTROL, VK_LWIN, VK_MENU, VK_V};
     use super::{
         absolute_coordinate, assert_no_physical_modifier, character_layout_error,
-        contains_blocked_control, modifier_virtual_keys, paste_events,
+        contains_blocked_control, modifier_virtual_keys, normalize_clipboard_line_breaks,
+        paste_events,
         coordinate_within, integrity_allows, mapped_source_extent, resolve_character_key,
         send_keyboard_sequence_with, unicode_key_events, KeyboardEvent,
     };
@@ -1123,5 +1164,16 @@ mod tests {
         assert!(!contains_blocked_control("plain text\twith\r\nbreaks"));
         assert!(contains_blocked_control("a\u{3}b"));
         assert!(contains_blocked_control("del\u{7f}"));
+    }
+
+    #[test]
+    fn clipboard_line_breaks_normalize_to_crlf_without_doubling() {
+        assert_eq!(normalize_clipboard_line_breaks("1\n2"), "1\r\n2");
+        assert_eq!(normalize_clipboard_line_breaks("1\r\n2"), "1\r\n2");
+        assert_eq!(normalize_clipboard_line_breaks("1\r2"), "1\r\n2");
+        assert_eq!(normalize_clipboard_line_breaks("1\r\n\n2"), "1\r\n\r\n2");
+        // Untouched when there is nothing to normalize, so the read-back
+        // verification keeps comparing the caller's own string.
+        assert_eq!(normalize_clipboard_line_breaks("plain 文本"), "plain 文本");
     }
 }

@@ -1994,6 +1994,132 @@ describe('computerTool — accessibility permission branch', () => {
     );
   });
 
+  it('does not stop the rest of the turn after a refusal that never reached the app', async () => {
+    // A consequential action was refused before anything was dispatched. The
+    // Host receipt says so, so there is no ambiguous side effect to stop over
+    // and the next action must still be allowed to run. Until this was fixed
+    // the refusal fell through to the `finally`, which assessed it as an
+    // ambiguous outcome and stopped the run; every later action in the turn
+    // came back "stopped by the host safety controller", and the model went
+    // around Computer Use entirely to finish the task.
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+    setElectronHost(true);
+    const runKey = { conversationId: 'active-conversation', loopId: 'loop-refusal-not-terminal' };
+    recoveryBudget.clear(runBudgetKey(runKey));
+    let snapshotCount = 0;
+    let typeAttempts = 0;
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'notepad',
+          bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'refusal-not-terminal-token',
+          target: {
+            window_ref: 'wr-refusal-not-terminal',
+            app_name: 'notepad',
+            bundle_id: 'C:\\Windows\\System32\\notepad.exe',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        snapshotCount += 1;
+        return Promise.resolve({
+          session_id: `refusal-not-terminal-ax-${snapshotCount}`,
+          state_id: `refusal-not-terminal-state-${snapshotCount}`,
+          app: 'notepad',
+          total_visited: 0,
+          truncated: false,
+          elements: [],
+        });
+      }
+      if (cmd === 'keyboard_type') {
+        typeAttempts += 1;
+        return typeAttempts === 1
+          ? Promise.reject(new Error('the model asked for a key this layout cannot produce'))
+          : Promise.resolve('typed 4 UTF-16 units');
+      }
+      if (cmd === 'computer_use_get_task_status') {
+        return Promise.resolve({
+          active: true,
+          stopped: false,
+          stopped_reason: null,
+          outcome_unknown_receipt: null,
+          not_executed_receipt: typeAttempts === 1
+            ? {
+              status: 'not-executed',
+              execution: 'not-executed',
+              helper_code: 'key-unavailable',
+              retryable: false,
+              command: 'keyboard_type',
+              before_state_id: `refusal-not-terminal-state-${snapshotCount}`,
+              attempt_count: 1,
+              consequential: true,
+              decision: 'observe-required',
+            }
+            : null,
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const context = {
+      ...runKey,
+      interactionMode: 'foreground' as const,
+      supportsVision: false,
+    };
+    const observe = async (call: string): Promise<string> => {
+      const observed = await computerTool.execute(
+        { action: 'get_app_state', consequence: 'none' },
+        { ...context, toolCallId: call },
+      );
+      const stateId = String(observed).match(/state_id[：:]\s*([^（(\s]+)/)?.[1];
+      expect(stateId).toBeTruthy();
+      return String(stateId);
+    };
+
+    const refused = computerTool.execute(
+      {
+        action: 'type',
+        text: 'one',
+        window_ref: 'wr-refusal-not-terminal',
+        expected_state_id: await observe('tool-refusal-observe-1'),
+        consequence: 'overwrite',
+        consequence_detail: 'replaces the note body with "one"',
+      },
+      { ...context, toolCallId: 'tool-refusal-type-1' },
+    );
+    await expect(refused).rejects.toThrow(/this layout cannot produce/);
+
+    // The turn is still usable: observe again, act again, and the action runs.
+    const second = await computerTool.execute(
+      {
+        action: 'type',
+        text: 'two',
+        window_ref: 'wr-refusal-not-terminal',
+        expected_state_id: await observe('tool-refusal-observe-2'),
+        consequence: 'overwrite',
+        consequence_detail: 'replaces the note body with "two"',
+      },
+      { ...context, toolCallId: 'tool-refusal-type-2' },
+    );
+    expect(String(second)).not.toMatch(/stopped/i);
+    expect(typeAttempts).toBe(2);
+  });
+
   it('ignores a not-executed receipt written against a different state_id', async () => {
     vi.mocked(isWindows).mockReturnValue(true);
     vi.mocked(isMacOS).mockReturnValue(false);

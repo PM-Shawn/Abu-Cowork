@@ -1021,13 +1021,21 @@ test('Windows releases the pre-approval task reservation when the user rejects',
   assert.equal(h.nativeCalls.filter(({ cmd }) => cmd === 'mouse_move').length, 1);
 });
 
-test('Windows Explorer Delete cannot bypass action approval by declaring none', async () => {
+test('Windows Explorer takes no keyboard input at all, approval or not', async () => {
+  // Explorer is grantable and clickable, but every path that puts characters
+  // into it reaches a command line: the address bar, the Search box and the
+  // Run dialog all hand typed text to ShellExecute. The ceiling therefore
+  // refuses before the consequence machinery is even consulted — an approval
+  // dialog for "permanently delete" would be a worse outcome than not being
+  // able to press the key. The Shift+Delete inference itself still has its
+  // own coverage in computerUseActionPolicy.test.cjs and still applies to
+  // Finder on macOS.
   const requests = [];
   const h = harness({
     platform: 'win32',
     requestActionApproval: async (request) => {
       requests.push(request);
-      return false;
+      return true;
     },
   });
   h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
@@ -1042,11 +1050,52 @@ test('Windows Explorer Delete cannot bypass action approval by declaring none', 
       modifiers: ['Shift'],
       [COMPUTER_USE_TOKEN_ARG]: session.token,
     }),
-    /was not approved/,
+    /cannot type into it/,
   );
-  assert.equal(requests[0].consequence.category, 'delete');
-  assert.match(requests[0].consequence.summary, /Permanently delete/);
+  assert.equal(requests.length, 0);
   assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'), false);
+});
+
+test('Windows Explorer stays clickable and readable under the input ceiling', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'explorer',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'click', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'mouse_click', {
+    x: 20,
+    y: 30,
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+  assert.equal(h.nativeCalls.some(({ cmd }) => cmd === 'mouse_click'), true);
+});
+
+test('the input ceiling refuses as not-executed so the turn survives it', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({ app_name: 'explorer', bundle_id: 'explorer.exe', process_id: 500 });
+  const session = await begin(h, {
+    targetApp: 'explorer',
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_type', {
+      text: 'powershell',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /cannot type into it/,
+  );
+  const status = await h.gate.dispatch(
+    h.record,
+    h.sender,
+    'computer_use_get_task_status',
+    { conversationId: 'conversation-1', loopId: 'loop-1' },
+  );
+  assert.equal(status.not_executed_receipt.helper_code, 'app-input-restricted');
+  assert.equal(status.not_executed_receipt.retryable, false);
+  assert.equal(status.stopped, false);
 });
 
 test('a risky native accessibility label cannot bypass approval by declaring none', async () => {
@@ -3915,7 +3964,7 @@ test('a Windows UI change caught by preflight revalidation is a not-executed rec
   assert.equal(status.not_executed_receipt.command, 'mouse_move');
 });
 
-test('a denied consequential approval is not a not-executed receipt', async () => {
+test('a denied consequential approval is a final refusal that nothing ran', async () => {
   const h = harness({ requestActionApproval: async () => false });
   const session = await begin(h, {
     actionIntent: {
@@ -3938,10 +3987,17 @@ test('a denied consequential approval is not a not-executed receipt', async () =
     'computer_use_get_task_status',
     { conversationId: 'conversation-1', loopId: 'loop-1' },
   );
-  // The user's answer is final; re-observing would not change it, so the
-  // renderer must not spend a recovery on it.
-  assert.equal(status.not_executed_receipt, null);
+  // Two facts, and the renderer needs both. `not-executed` says the click
+  // never happened, so the turn must not be stopped as an ambiguous side
+  // effect — a "no" to one action leaves the rest of the turn usable.
+  // `retryable: false` says the user's answer is final, so no recovery is
+  // spent re-observing something that would only be refused again.
+  assert.equal(status.not_executed_receipt.helper_code, 'approval-denied');
+  assert.equal(status.not_executed_receipt.execution, 'not-executed');
+  assert.equal(status.not_executed_receipt.retryable, false);
+  assert.equal(status.not_executed_receipt.consequential, true);
   assert.equal(status.outcome_unknown_receipt, null);
+  assert.equal(status.stopped, false);
 });
 
 test('hostRefusal speaks the helper vocabulary and rejects unknown codes', () => {

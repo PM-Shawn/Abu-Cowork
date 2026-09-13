@@ -1109,6 +1109,8 @@ For a named app, never call standalone screenshot before get_window_state: windo
 If a named app is unavailable or has no visible window, do not omit/change the app and do not inspect or operate another foreground app. Stop and ask the user to open a visible window for that exact app. When several windows match, select only from the returned window_ref candidates.
 When the user names an application—even with a localized name such as “记事本”—you MUST pass that name in app on the first get_app_state call. Omit app only when the user truly did not identify an application. Never use run_command, a shell, or another tool to launch a missing app when the user asked to operate only the current/already-open app.
 
+THIS TOOL IS THE ONLY WAY TO OPERATE THE DESKTOP. When an action here is refused, blocked, or stopped, that refusal is the answer — do not reach for another tool to accomplish the same thing. Never use run_command, a shell, a script you write, AppleScript, or any other mechanism to send clicks or keystrokes, move or focus a window, or drive an application's UI. Writing the clipboard through another tool in order to paste here counts as the same workaround. Re-observe with get_app_state and choose differently, or tell the user what is blocking you and stop.
+
 SAFETY CONTRACT: Every call must set consequence. Use "none" only when this
 specific action cannot itself send, publish, delete, overwrite, install,
 purchase, change credentials, or change security settings. Typing a draft is
@@ -1128,7 +1130,7 @@ immediately before that one action, even in Full Autonomy.
 
 ✅ Recommended operations (AX path — no mouse movement, no focus stealing)
 • click           Click. element_id=N (AXPress, preferred) or x, y (pixel click). Optional button (left/right/middle/double).
-• type            Type text. element_id=N (AXSetValue, preferred) + text, or text alone (keyboard input). Optional method=paste (clipboard + Ctrl+V) only after a previous type verified as no change: some apps ignore injected keystrokes. Refused when the clipboard holds non-text content.
+• type            Type text. element_id=N (AXSetValue, preferred) + text, or text alone (keyboard input). Text containing line breaks is inserted through the clipboard automatically and presses nothing, so type the whole multi-line block in one call rather than pressing Return between lines (Return may send or submit). Optional method=paste (clipboard + Ctrl+V) only after a previous type verified as no change: some apps ignore injected keystrokes. A clipboard paste restores the user's previous text afterwards and says so in the receipt when it could not.
 • perform_action  Execute a secondary AX action, e.g. context menu (AXShowMenu), select (AXPick), increment/decrement (AXIncrement/AXDecrement). Parameters: element_id, action_name.
 • scroll          Scroll. element_id=N (scroll at element position) or x, y. direction (up/down/left/right), amount (default 3).
 
@@ -1623,6 +1625,12 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       ['click', 'move', 'scroll', 'drag', 'type', 'key'].includes(action);
     let preparedState: ComputerState | null = null;
     let actionCompleted = false;
+    // Set when the Host's receipt attests that nothing reached the target. It
+    // survives the rethrow below so the `finally` cannot turn a refusal into
+    // an ambiguous side effect: "nothing was dispatched" and "we dispatched
+    // and lost the outcome" are opposite facts, and only the receipt knows
+    // which happened.
+    let hostAttestedNotExecuted = false;
     try {
       if (statefulAction && electronHost && runKey) {
         try {
@@ -1984,7 +1992,10 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
                 isWindows() ? 'ax_replace_text' : 'ax_set_value',
                 { sessionId: axSessionId, elementId: elemId, text },
               );
-              actionResult = format(t.typeAxSuccess, { elemId });
+              actionResult = format(
+                isWindows() ? t.typeAxSuccessWindows : t.typeAxSuccess,
+                { elemId },
+              );
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
               if (electronHost) {
@@ -2072,7 +2083,10 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
               isWindows() ? 'ax_replace_text' : 'ax_set_value',
               { sessionId: axSessionId, elementId: elemId, text },
             );
-            actionResult = format(t.axTypeSuccess, { elemId });
+            actionResult = format(
+              isWindows() ? t.axTypeSuccessWindows : t.axTypeSuccess,
+              { elemId },
+            );
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             if (electronHost) {
@@ -2277,6 +2291,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         receipt: R | null | undefined,
       ): R | null => (receipt && receipt.before_state_id === offeredStateId ? receipt : null);
       const notExecuted = attributed(status?.not_executed_receipt);
+      if (notExecuted) hostAttestedNotExecuted = true;
       if (notExecuted && notExecuted.retryable === false) {
         // The helper says re-observing would not change the answer. Either a
         // platform boundary the user has to clear — hand the turn back with
@@ -2398,7 +2413,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     } finally {
       if (preparedState && runKey && !actionCompleted) {
         computerUseController.failAction(runKey);
-        if (consequence !== 'none') {
+        if (consequence !== 'none' && !hostAttestedNotExecuted) {
           computerUseController.assessProgress(runKey, {
             status: 'ambiguous',
             beforeStateId: preparedState.stateId,

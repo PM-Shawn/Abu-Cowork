@@ -1,10 +1,12 @@
 //! Clipboard round-trip for the `type` paste fallback (contract §2.6/§2.8
 //! `input.clipboard_paste`): write → read back → Ctrl+V → restore.
 //!
-//! The user's clipboard is theirs. Only plain text can be put back exactly as
-//! it was, so the fallback refuses to run when the clipboard holds anything
-//! else (an image, files, rich text from a browser) instead of quietly
-//! replacing it; the model is told to type instead.
+//! The user's clipboard is theirs, and only plain text can be put back
+//! exactly as it was. The paste runs anyway when the clipboard holds
+//! something else (an image, files, rich text from a browser) — refusing
+//! would block the ordinary case, since a copy out of any browser or editor
+//! carries extra formats — and the receipt says what could not be restored.
+//! `is_plain_text_clipboard` reports that; it does not gate the paste.
 
 use std::thread;
 use std::time::Duration;
@@ -54,7 +56,11 @@ impl Clipboard {
                 }
             }
         }
-        Err(HelperError::not_executed(
+        // Another process held it through all the retries. That is a moment
+        // in time, not a verdict: observing again and trying once more is the
+        // right recovery, so this must not be classified as a refusal that a
+        // retry would only repeat.
+        Err(HelperError::observe_again(
             "clipboard-busy",
             format!(
                 "clipboard could not be opened: {}",

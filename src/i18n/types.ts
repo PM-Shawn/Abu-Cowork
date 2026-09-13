@@ -4920,6 +4920,8 @@ export interface TranslationDict {
       errScrollNeedsCoords: string;
       /** type: AXSetValue succeeded. {elemId} */
       typeAxSuccess: string;
+    /** Windows replaces the value with guarded keystrokes, so it must not claim otherwise. */
+    typeAxSuccessWindows: string;
       /** type: AXSetValue failed, fallback to keyboard. {msg} */
       typeAxFallback: string;
       /** perform_action: missing action_name. */
@@ -4942,6 +4944,7 @@ export interface TranslationDict {
       errAxTypeNoSession: string;
       /** ax_type: AXSetValue succeeded. {elemId} */
       axTypeSuccess: string;
+      axTypeSuccessWindows: string;
       /** ax_type: AXSetValue failed, fallback to keyboard. {msg} */
       axTypeFallback: string;
       /** Screen recording permission denied (bilingual). zh half. */

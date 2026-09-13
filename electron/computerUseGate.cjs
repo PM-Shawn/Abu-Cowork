@@ -112,24 +112,51 @@ function policyForPlatform(platform) {
   return platform === 'win32' ? policy.windows : policy.macos;
 }
 
+/**
+ * The names a policy list may match an app by: on Windows the full path, the
+ * file name and the stem of every identifier the target carries; elsewhere
+ * the bundle id alone.
+ */
+function identityPolicyKeys(platform, identity) {
+  if (platform !== 'win32') return new Set([identity.bundle_id]);
+  const values = [identity.bundle_id, identity.app_id, identity.executable_path]
+    .filter((value) => typeof value === 'string' && value)
+    .map((value) => value.toLowerCase());
+  const keys = new Set();
+  for (const full of values) {
+    const fileName = full.split(/[\\/]/).at(-1) || full;
+    const stem = fileName.endsWith('.exe') ? fileName.slice(0, -4) : fileName;
+    keys.add(full);
+    keys.add(fileName);
+    keys.add(stem);
+  }
+  return keys;
+}
+
+function matchesPolicyList(platform, keys, list) {
+  return (list || []).some((value) => keys.has(platform === 'win32' ? value.toLowerCase() : value));
+}
+
+/**
+ * Apps Computer Use may look at and click, but never type into.
+ *
+ * Windows hands text from the Explorer address bar, the Start search box and
+ * the Run dialog straight to ShellExecute, so "type here, press Return" in a
+ * file manager is a command line wearing a different hat. Clicking through
+ * folders stays ordinary and useful, so this caps one capability rather than
+ * denying the app.
+ */
+function isInputRestrictedIdentity(platform, identity) {
+  return matchesPolicyList(
+    platform,
+    identityPolicyKeys(platform, identity),
+    policyForPlatform(platform).inputRestricted,
+  );
+}
+
 function classifyIdentity(platform, identity) {
   const platformPolicy = policyForPlatform(platform);
-  const keys = platform === 'win32'
-    ? (() => {
-        const values = [identity.bundle_id, identity.app_id, identity.executable_path]
-          .filter((value) => typeof value === 'string' && value)
-          .map((value) => value.toLowerCase());
-        const keys = new Set();
-        for (const full of values) {
-          const fileName = full.split(/[\\/]/).at(-1) || full;
-          const stem = fileName.endsWith('.exe') ? fileName.slice(0, -4) : fileName;
-          keys.add(full);
-          keys.add(fileName);
-          keys.add(stem);
-        }
-        return keys;
-      })()
-    : new Set([identity.bundle_id]);
+  const keys = identityPolicyKeys(platform, identity);
   if (platformPolicy.hardDeny.some((value) => (
     keys.has(platform === 'win32' ? value.toLowerCase() : value)
   ))) {
@@ -338,6 +365,29 @@ const HOST_REFUSAL_CODES = Object.freeze([
   'origin-changed',
 ]);
 
+// Host policy refusals. Unlike the codes above, re-observing does not change
+// their answer, so they carry `retryable: false`. They are still shaped like
+// helper errors for one reason that matters: `execution: 'not-executed'` is
+// the Host attesting that nothing reached the app. Without that attestation
+// the renderer cannot tell a refusal from an action whose outcome was lost,
+// and treats a policy answer as an ambiguous side effect — which stops the
+// whole turn over an action that never ran.
+const POLICY_REFUSAL_CODES = Object.freeze([
+  'blocked-shortcut',
+  'blocked-control-character',
+  'approval-denied',
+  'app-input-restricted',
+]);
+
+function policyRefusal(code, message) {
+  if (!POLICY_REFUSAL_CODES.includes(code)) {
+    throw new Error(`unknown Host policy refusal code: ${code}`);
+  }
+  return Object.assign(new Error(message), {
+    helper: Object.freeze({ code, execution: 'not-executed', retryable: false }),
+  });
+}
+
 /**
  * The app dialog answers with `true` (this task), `'always'` (remember) or
  * anything else (deny). Older callers and tests still answer booleans.
@@ -392,7 +442,8 @@ function assertSafeKeyboardCommand(platform, cmd, args) {
   if (cmd === 'keyboard_type' || cmd === 'keyboard_press') {
     const raw = cmd === 'keyboard_type' ? args?.text : args?.key;
     if (typeof raw === 'string' && BLOCKED_CONTROL_CHARACTERS.test(raw)) {
-      throw new Error(
+      throw policyRefusal(
+        'blocked-control-character',
         `Computer Use blocked a control character in ${cmd === 'keyboard_type' ? 'text' : 'key'}; use a named key instead`,
       );
     }
@@ -437,7 +488,7 @@ function assertSafeKeyboardCommand(platform, cmd, args) {
         'meta+shift+delete',
       ]);
   if (blocked.has(combo)) {
-    throw new Error(`Computer Use blocked dangerous system shortcut "${combo}"`);
+    throw policyRefusal('blocked-shortcut', `Computer Use blocked dangerous system shortcut "${combo}"`);
   }
 }
 
@@ -1415,6 +1466,28 @@ function createComputerUseGate(options) {
     ) {
       throw new Error(`Computer Use command is not authorized: ${cmd}`);
     }
+  }
+
+  // Everything that puts characters into the target, whether through the
+  // keyboard, the clipboard, or a UIA value pattern. Clicks, scrolls and
+  // observations are deliberately absent: the point is to keep the app
+  // usable while its command surface stays out of reach.
+  const TEXT_INPUT_COMMANDS = new Set([
+    'keyboard_type',
+    'keyboard_press',
+    'ax_set_value',
+    'ax_replace_text',
+  ]);
+
+  function assertInputCapability(session, cmd) {
+    if (!TEXT_INPUT_COMMANDS.has(cmd)) return;
+    if (!isInputRestrictedIdentity(platform, session.target)) return;
+    throw policyRefusal(
+      'app-input-restricted',
+      `Computer Use can see and click "${session.target.app_name}" but cannot type into it: `
+      + 'this surface passes typed text to the shell to run. '
+      + 'Click the item you want instead, or ask the user to do this one step.',
+    );
   }
 
   function assertIdentityAllowed(identity) {
@@ -2509,6 +2582,7 @@ function createComputerUseGate(options) {
         await assertBrowserOriginCurrent(session);
       }
       assertSafeKeyboardCommand(platform, cmd, args);
+      assertInputCapability(session, cmd);
       if (axSession && ['ax_press', 'ax_set_value', 'ax_replace_text', 'ax_perform_action'].includes(cmd)) {
         observability.noteComputerUseCache?.(
           'uia-element',
@@ -2551,7 +2625,10 @@ function createComputerUseGate(options) {
             }),
           );
           if (!approved) {
-            throw new Error(`Computer Use consequential action was not approved for "${session.target.app_name}"`);
+            throw policyRefusal(
+              'approval-denied',
+              `Computer Use consequential action was not approved for "${session.target.app_name}"`,
+            );
           }
           assertTaskAuthorizationLive(session.authorization);
           await assertOsPermissions(session.scope, cmd);

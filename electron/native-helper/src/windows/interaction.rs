@@ -8,7 +8,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, SetWindowsHookExW,
     HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, LLMHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL,
-    WH_MOUSE_LL, WM_KEYDOWN, WM_SYSKEYDOWN,
+    WH_MOUSE_LL, WM_KEYDOWN, WM_MOUSEMOVE, WM_SYSKEYDOWN,
 };
 
 const ABU_INJECTED_INPUT_MARKER: usize = 0x4142_5543_5553_4532;
@@ -24,6 +24,21 @@ enum LeasePhase {
     Observing,
     Running,
     PausedForConsent,
+}
+
+/// What a physical input event can do to the target, which is not the same as
+/// whether the user touched the hardware. A button, wheel or key press can
+/// change what is on screen; moving the pointer cannot. The distinction only
+/// matters outside `Running`: between actions, and while a consent dialog is
+/// open, a bare move must not invalidate the observation the model is about to
+/// act on, or the approval the user is reaching across the screen to click.
+/// While Abu is actually sending input, every kind still hands control back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhysicalInputKind {
+    /// Button, wheel or key: may change the target's state.
+    StateChanging,
+    /// Pointer movement with no button held and no wheel.
+    PointerMove,
 }
 
 #[derive(Debug)]
@@ -52,10 +67,15 @@ impl InputLease {
     /// counts as a takeover while Abu is actually sending input (`Running`);
     /// between actions it merely dirties the observation. ESC stops in every
     /// phase except when the consent dialog itself has the keyboard — there it
-    /// is the dialog's own cancel.
+    /// is the dialog's own cancel. Bare pointer movement is ignored outside
+    /// `Running`: it changes nothing the model could act on, and treating it
+    /// as state change made a hand resting on the mouse abort every
+    /// observation, and made reaching for the consent dialog discard the very
+    /// action it had just approved.
     fn classify_physical_input(
         &mut self,
         foreground_pid: Option<u32>,
+        kind: PhysicalInputKind,
         interrupted: bool,
     ) -> PhysicalInputDecision {
         let dirty_or_stop = |lease: &mut Self| {
@@ -66,12 +86,18 @@ impl InputLease {
                 PhysicalInputDecision::RecordOnly
             }
         };
+        // ESC always arrives from the keyboard, so it is always state changing
+        // and can never be filtered out here.
+        let moved_only = kind == PhysicalInputKind::PointerMove;
         match self.phase {
             LeasePhase::Idle => PhysicalInputDecision::Ignore,
+            LeasePhase::Observing if moved_only => PhysicalInputDecision::Ignore,
             LeasePhase::Observing => dirty_or_stop(self),
             LeasePhase::Running => PhysicalInputDecision::Publish,
             LeasePhase::PausedForConsent => {
                 if foreground_pid.is_some() && foreground_pid == self.consent_owner_process_id {
+                    PhysicalInputDecision::Ignore
+                } else if moved_only {
                     PhysicalInputDecision::Ignore
                 } else {
                     dirty_or_stop(self)
@@ -255,15 +281,19 @@ enum PhysicalInputDecision {
     Publish,
 }
 
-fn classify_physical_input(foreground_pid: Option<u32>, interrupted: bool) -> PhysicalInputDecision {
+fn classify_physical_input(
+    foreground_pid: Option<u32>,
+    kind: PhysicalInputKind,
+    interrupted: bool,
+) -> PhysicalInputDecision {
     let Ok(mut lease) = input_lease().lock() else {
         return PhysicalInputDecision::Publish;
     };
-    lease.classify_physical_input(foreground_pid, interrupted)
+    lease.classify_physical_input(foreground_pid, kind, interrupted)
 }
 
-fn note_physical_input(interrupted: bool) {
-    let decision = classify_physical_input(foreground_process_id(), interrupted);
+fn note_physical_input(kind: PhysicalInputKind, interrupted: bool) {
+    let decision = classify_physical_input(foreground_process_id(), kind, interrupted);
     if matches!(decision, PhysicalInputDecision::Ignore) {
         return;
     }
@@ -292,11 +322,24 @@ fn is_physical_mouse_event(event: &MSLLHOOKSTRUCT) -> bool {
     event.flags & LLMHF_INJECTED == 0 && event.dwExtraInfo != ABU_INJECTED_INPUT_MARKER
 }
 
+/// `WH_MOUSE_LL` delivers movement as its own message, separate from every
+/// button and wheel message. Only movement is harmless to an observation.
+fn mouse_input_kind(message: u32) -> PhysicalInputKind {
+    if message == WM_MOUSEMOVE {
+        PhysicalInputKind::PointerMove
+    } else {
+        PhysicalInputKind::StateChanging
+    }
+}
+
 unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && (wparam.0 as u32 == WM_KEYDOWN || wparam.0 as u32 == WM_SYSKEYDOWN) {
         let event = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         if is_physical_keyboard_event(event) {
-            note_physical_input(event.vkCode == VK_ESCAPE.0 as u32);
+            note_physical_input(
+                PhysicalInputKind::StateChanging,
+                event.vkCode == VK_ESCAPE.0 as u32,
+            );
         }
     }
     CallNextHookEx(HHOOK::default(), code, wparam, lparam)
@@ -306,7 +349,7 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
     if code >= 0 {
         let event = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         if is_physical_mouse_event(event) {
-            note_physical_input(false);
+            note_physical_input(mouse_input_kind(wparam.0 as u32), false);
         }
     }
     CallNextHookEx(HHOOK::default(), code, wparam, lparam)
@@ -406,32 +449,115 @@ mod tests {
             dirty: false,
         };
         assert_eq!(
-            lease.classify_physical_input(Some(42), false),
+            lease.classify_physical_input(Some(42), PhysicalInputKind::StateChanging, false),
             PhysicalInputDecision::Ignore,
         );
         assert!(!lease.dirty);
         assert_eq!(
-            lease.classify_physical_input(Some(99), false),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, false),
+            PhysicalInputDecision::RecordOnly,
+        );
+        assert!(lease.dirty);
+    }
+
+    fn lease_in(phase: LeasePhase) -> InputLease {
+        InputLease {
+            id: Some("lease-a".to_string()),
+            phase,
+            resume_phase: phase,
+            consent_owner_process_id: None,
+            dirty: false,
+        }
+    }
+
+    #[test]
+    fn only_movement_messages_are_treated_as_harmless_pointer_motion() {
+        assert_eq!(mouse_input_kind(WM_MOUSEMOVE), PhysicalInputKind::PointerMove);
+        // Every other WH_MOUSE_LL message is a button or a wheel.
+        for message in [0x0201u32, 0x0202, 0x0204, 0x0205, 0x0207, 0x0208, 0x020A, 0x020B, 0x020E] {
+            assert_eq!(
+                mouse_input_kind(message),
+                PhysicalInputKind::StateChanging,
+                "message {message:#06x} must count as state changing",
+            );
+        }
+    }
+
+    #[test]
+    fn a_hand_resting_on_the_mouse_does_not_invalidate_an_observation() {
+        let mut lease = lease_in(LeasePhase::Observing);
+        assert_eq!(
+            lease.classify_physical_input(None, PhysicalInputKind::PointerMove, false),
+            PhysicalInputDecision::Ignore,
+        );
+        assert!(!lease.dirty, "a bare move changes nothing the model could act on");
+
+        // A click during the same phase still invalidates it.
+        assert_eq!(
+            lease.classify_physical_input(None, PhysicalInputKind::StateChanging, false),
             PhysicalInputDecision::RecordOnly,
         );
         assert!(lease.dirty);
     }
 
     #[test]
+    fn reaching_for_the_consent_dialog_does_not_discard_the_approved_action() {
+        // The pointer crosses the target app on its way to the dialog, so the
+        // foreground is not yet the consent owner when the moves arrive.
+        let mut lease = InputLease {
+            consent_owner_process_id: Some(42),
+            ..lease_in(LeasePhase::PausedForConsent)
+        };
+        assert_eq!(
+            lease.classify_physical_input(Some(99), PhysicalInputKind::PointerMove, false),
+            PhysicalInputDecision::Ignore,
+        );
+        assert!(!lease.dirty, "the approval the user is reaching for must survive the reach");
+
+        // Clicking a different app while the dialog waits is a real change.
+        assert_eq!(
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, false),
+            PhysicalInputDecision::RecordOnly,
+        );
+        assert!(lease.dirty);
+    }
+
+    #[test]
+    fn moving_the_mouse_still_hands_control_back_while_abu_is_typing() {
+        let mut lease = lease_in(LeasePhase::Running);
+        assert_eq!(
+            lease.classify_physical_input(None, PhysicalInputKind::PointerMove, false),
+            PhysicalInputDecision::Publish,
+        );
+    }
+
+    #[test]
+    fn escape_still_stops_every_phase_it_used_to() {
+        for phase in [LeasePhase::Observing, LeasePhase::Running] {
+            let mut lease = lease_in(phase);
+            assert_eq!(
+                lease.classify_physical_input(None, PhysicalInputKind::StateChanging, true),
+                PhysicalInputDecision::Publish,
+                "ESC must stop in {phase:?}",
+            );
+        }
+    }
+
+    #[test]
     fn only_running_lease_publishes_takeover() {
         let mut lease = InputLease::default();
         assert_eq!(
-            lease.classify_physical_input(Some(99), false),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, false),
             PhysicalInputDecision::Ignore,
         );
         lease.phase = LeasePhase::Observing;
         assert_eq!(
-            lease.classify_physical_input(Some(99), false),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, false),
             PhysicalInputDecision::RecordOnly,
         );
         lease.phase = LeasePhase::Running;
         assert_eq!(
-            lease.classify_physical_input(Some(99), false),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, false),
             PhysicalInputDecision::Publish,
         );
     }
@@ -446,14 +572,14 @@ mod tests {
             dirty: false,
         };
         assert_eq!(
-            lease.classify_physical_input(Some(99), false),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, false),
             PhysicalInputDecision::RecordOnly,
         );
         assert!(lease.dirty);
         lease.dirty = false;
         lease.phase = LeasePhase::Running;
         assert_eq!(
-            lease.classify_physical_input(Some(99), false),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, false),
             PhysicalInputDecision::Publish,
         );
     }
@@ -462,28 +588,28 @@ mod tests {
     fn escape_stops_in_every_phase_except_inside_the_consent_dialog() {
         let mut lease = InputLease::default();
         assert_eq!(
-            lease.classify_physical_input(Some(99), true),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, true),
             PhysicalInputDecision::Ignore,
         );
         lease.phase = LeasePhase::Observing;
         assert_eq!(
-            lease.classify_physical_input(Some(99), true),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, true),
             PhysicalInputDecision::Publish,
         );
         assert!(lease.dirty);
         lease.phase = LeasePhase::Running;
         assert_eq!(
-            lease.classify_physical_input(Some(99), true),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, true),
             PhysicalInputDecision::Publish,
         );
         lease.phase = LeasePhase::PausedForConsent;
         lease.consent_owner_process_id = Some(42);
         assert_eq!(
-            lease.classify_physical_input(Some(42), true),
+            lease.classify_physical_input(Some(42), PhysicalInputKind::StateChanging, true),
             PhysicalInputDecision::Ignore,
         );
         assert_eq!(
-            lease.classify_physical_input(Some(99), true),
+            lease.classify_physical_input(Some(99), PhysicalInputKind::StateChanging, true),
             PhysicalInputDecision::Publish,
         );
     }

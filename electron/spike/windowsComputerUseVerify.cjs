@@ -422,20 +422,50 @@ async function verifyMovedWindowInvalidation(window) {
   return { staleScreenshotRejectedAfterMove: true };
 }
 
+/**
+ * The half of the journey a human has to be present for. It pins the input
+ * lease at the two points that decide whether a run is usable while the user
+ * sits in front of it:
+ *
+ *   1. Bare pointer movement between actions changes nothing on screen, so it
+ *      must NOT invalidate the observation the model is about to act on. This
+ *      regressed once: a hand resting on the mouse aborted every observation,
+ *      and reaching across the screen for a consent dialog discarded the very
+ *      action the user had just approved.
+ *   2. A click is different. It can change the target, so every guarded action
+ *      must be refused until the model observes again.
+ *
+ * Takeover itself, moving the mouse while Abu is mid-action, lives in the
+ * `Running` phase. That window is far too short to ask a person to hit on cue,
+ * so it stays an interactive acceptance step rather than a scripted one.
+ */
 async function verifyUserTakeover(window, timeoutMs = 10_000) {
   const state = await snapshot(window);
   const capture = await captureWindow(window, {
     max_width: 1280,
   });
+  // Re-activating the lease against the original epoch is the whole contract
+  // in one call, and unlike a guarded action it leaves the pointer alone, so
+  // polling it does not fight the user who is trying to click.
+  const probeLease = async () => {
+    await call('input_lease_activate', {
+      lease_id: inputLeaseId,
+      expected_input_epoch: state.input_epoch,
+    });
+    await call('input_lease_observe', { lease_id: inputLeaseId });
+  };
+
+  const moveWindowMs = Math.max(4_000, Math.round(timeoutMs / 2));
   const eventCount = events.length;
-  console.error(`[windows-cu] Move the physical mouse now to verify user takeover (${Math.round(timeoutMs / 1000)} seconds)`);
-  const deadline = Date.now() + timeoutMs;
-  while (events.length === eventCount && Date.now() < deadline) await delay(25);
-  assert.ok(
+  console.error(`[windows-cu] Move the physical mouse WITHOUT clicking for the next ${Math.round(moveWindowMs / 1000)} seconds`);
+  await delay(moveWindowMs);
+  assert.equal(
     events.slice(eventCount).some(({ event }) => event === 'user-input-detected'),
-    'physical user input was not observed before the manual verification timeout',
+    false,
+    'pointer movement between actions was published as a takeover',
   );
-  await assert.rejects(withGuardedInput(state.input_epoch, () => call('mouse_move', {
+  // A real guarded action, not just the lease, still dispatches after the move.
+  await withGuardedInput(state.input_epoch, () => call('mouse_move', {
     x: Math.round(window.bounds[0] + window.bounds[2] / 2),
     y: Math.round(window.bounds[1] + window.bounds[3] / 2),
     screenshot_id: capture.screenshot_id,
@@ -443,9 +473,27 @@ async function verifyUserTakeover(window, timeoutMs = 10_000) {
     expected_process_id: window.process_id,
     expected_window_id: window.window_id,
     expected_input_epoch: state.input_epoch,
-  })), /physical user input|stale/i);
+  }));
+
+  console.error(`[windows-cu] Now CLICK once on the target window (${Math.round(timeoutMs / 1000)} seconds)`);
+  const deadline = Date.now() + timeoutMs;
+  let refusal = null;
+  while (refusal === null && Date.now() < deadline) {
+    try {
+      await probeLease();
+      await delay(100);
+    } catch (error) {
+      refusal = error;
+    }
+  }
+  assert.ok(refusal, 'no physical click was observed before the manual verification timeout');
+  assert.match(
+    String(refusal?.message ?? refusal),
+    /physical user input|stale/i,
+    'a click must refuse the next guarded action until the model observes again',
+  );
   await call('ax_close_session', { session_id: state.session_id });
-  return { nativeEvent: true, staleInputRejected: true };
+  return { pointerMoveIgnored: true, clickInvalidatedObservation: true };
 }
 
 let spawnedCalculator = null;

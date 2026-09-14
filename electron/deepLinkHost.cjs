@@ -4,8 +4,7 @@
  * Abu deep links today:
  *   - `abu://enroll?server=<url>&token=<token>` — pre-fill enterprise bind
  *   - `abu://open?server=<url>` — browser asks the client to start OAuth
- *   - `abu://login?code=<once>&state=<csrf>` — OAuth redirect callback
- *   - `abu://auth?code=<once>&state=<csrf>` — personal-account OAuth callback
+ *   - `abu://auth?code=<once>&state=<csrf>` — account OAuth callback
  * The frontend consumes accepted links via `@tauri-apps/plugin-deep-link`:
  *   - getCurrent()  → invoke('plugin:deep-link|get_current')  → string[] | null
  *   - onOpenUrl(cb) → listen('deep-link://new-url')           → payload string[]
@@ -42,7 +41,7 @@ const NEW_URL_EVENT = 'deep-link://new-url';
 
 // Known deep-link actions. New hosts must be added here so the whitelist
 // keeps rejecting everything else.
-const KNOWN_HOSTS = new Set(['enroll', 'login', 'open', 'auth']);
+const KNOWN_HOSTS = new Set(['enroll', 'open', 'auth']);
 
 let activeScheme = PROD_SCHEME;
 let coldStartUrls = []; // URLs that cold-launched the app (get_current path)
@@ -113,7 +112,7 @@ function normalizeDeepLinkUrl(raw, allowDevScheme = activeScheme === DEV_SCHEME)
     const u = new URL(s);
     if (u.protocol !== 'abu:') return null;
     if (!KNOWN_HOSTS.has(u.hostname)) return null; // reject unknown actions
-    if ((u.hostname === 'auth' || u.hostname === 'login')
+    if (u.hostname === 'auth'
       && (u.username || u.password || u.port || u.pathname || u.hash)) {
       return null;
     }

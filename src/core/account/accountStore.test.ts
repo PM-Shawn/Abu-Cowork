@@ -112,13 +112,13 @@ describe('account store', () => {
     });
   });
 
-  it('discards a callback whose state does not match the pending request', async () => {
+  it('ignores a valid auth callback owned by another pending account flow', async () => {
     await start();
     await expect(useAccountStore.getState().handleDeepLink(
       'abu://auth?code=one-time-code&state=attacker-state',
-    )).resolves.toBe(true);
+    )).resolves.toBe(false);
     expect(exchangeCode).not.toHaveBeenCalled();
-    expect(useAccountStore.getState()).toMatchObject({ status: 'awaiting_browser', error: 'state_mismatch' });
+    expect(useAccountStore.getState()).toMatchObject({ status: 'awaiting_browser', error: null });
   });
 
   it('discards a callback with missing state', async () => {

@@ -264,8 +264,10 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
     const pending = pendingAuthorization;
     if (!pending || get().status !== 'awaiting_browser') return true;
     if (callback.state !== pending.pkce.state) {
-      set({ error: 'state_mismatch' });
-      return true;
+      // `abu://auth` is shared by personal and enterprise OAuth. A valid
+      // callback with another state belongs to the other pending flow; leave
+      // this request untouched so its own callback can still complete.
+      return false;
     }
 
     if (pending.timeout !== null) {

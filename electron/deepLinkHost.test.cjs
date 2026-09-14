@@ -21,7 +21,7 @@ const deps = {
 
 test.afterEach(() => deepLinkHost.__resetForTest());
 
-test('accepts every account and enterprise action', () => {
+test('accepts every account and enterprise action through one auth callback', () => {
   assert.equal(
     deepLinkHost.normalizeDeepLinkUrl('abu://open?server=https://console.example.com'),
     'abu://open?server=https://console.example.com',
@@ -31,21 +31,17 @@ test('accepts every account and enterprise action', () => {
     'abu://enroll?server=https://console.example.com&token=one',
   );
   assert.equal(
-    deepLinkHost.normalizeDeepLinkUrl('abu://login?code=one&state=csrf'),
-    'abu://login?code=one&state=csrf',
-  );
-  assert.equal(
     deepLinkHost.normalizeDeepLinkUrl('abu://auth?code=one&state=csrf'),
     'abu://auth?code=one&state=csrf',
+  );
+  assert.equal(
+    deepLinkHost.normalizeDeepLinkUrl('abu://login?code=one&state=csrf'),
+    null,
   );
 });
 
 test('rewrites abu-dev only for an unpackaged app', () => {
   deepLinkHost.initDeepLink(fakeApp(false), deps);
-  assert.equal(
-    deepLinkHost.normalizeDeepLinkUrl('abu-dev://login?code=one&state=csrf'),
-    'abu://login?code=one&state=csrf',
-  );
   assert.equal(
     deepLinkHost.normalizeDeepLinkUrl('abu-dev://auth?code=one&state=csrf'),
     'abu://auth?code=one&state=csrf',
@@ -54,7 +50,7 @@ test('rewrites abu-dev only for an unpackaged app', () => {
   deepLinkHost.__resetForTest();
   deepLinkHost.initDeepLink(fakeApp(true), deps);
   assert.equal(
-    deepLinkHost.normalizeDeepLinkUrl('abu-dev://login?code=one&state=csrf'),
+    deepLinkHost.normalizeDeepLinkUrl('abu-dev://auth?code=one&state=csrf'),
     null,
   );
 });
@@ -104,11 +100,9 @@ test('keeps registration query failures distinct from not registered', () => {
 });
 
 test('rejects OAuth callbacks with path, fragment, or userinfo', () => {
-  for (const host of ['auth', 'login']) {
-    assert.equal(deepLinkHost.normalizeDeepLinkUrl(`abu://${host}/path?code=c&state=s`), null);
-    assert.equal(deepLinkHost.normalizeDeepLinkUrl(`abu://${host}?code=c&state=s#fragment`), null);
-    assert.equal(deepLinkHost.normalizeDeepLinkUrl(`abu://user@${host}?code=c&state=s`), null);
-  }
+  assert.equal(deepLinkHost.normalizeDeepLinkUrl('abu://auth/path?code=c&state=s'), null);
+  assert.equal(deepLinkHost.normalizeDeepLinkUrl('abu://auth?code=c&state=s#fragment'), null);
+  assert.equal(deepLinkHost.normalizeDeepLinkUrl('abu://user@auth?code=c&state=s'), null);
 });
 
 test('never logs OAuth codes or state while preserving accepted payloads', () => {
@@ -129,21 +123,16 @@ test('never logs OAuth codes or state while preserving accepted payloads', () =>
     });
     listeners.get('open-url')(
       { preventDefault() {} },
-      'abu-dev://login?code=ENTERPRISE_CODE&state=ENTERPRISE_STATE',
-    );
-    listeners.get('open-url')(
-      { preventDefault() {} },
-      'abu-dev://auth?code=PERSONAL_CODE&state=PERSONAL_STATE',
+      'abu-dev://auth?code=ACCOUNT_CODE&state=ACCOUNT_STATE',
     );
   } finally {
     console.log = originalLog;
   }
   assert.deepEqual(delivered, [
-    'abu://login?code=ENTERPRISE_CODE&state=ENTERPRISE_STATE',
-    'abu://auth?code=PERSONAL_CODE&state=PERSONAL_STATE',
+    'abu://auth?code=ACCOUNT_CODE&state=ACCOUNT_STATE',
   ]);
   const output = logs.join('\n');
-  assert.doesNotMatch(output, /ENTERPRISE_CODE|ENTERPRISE_STATE|PERSONAL_CODE|PERSONAL_STATE/);
+  assert.doesNotMatch(output, /ACCOUNT_CODE|ACCOUNT_STATE/);
 });
 
 test('never logs secrets from malformed OAuth-like URLs', () => {
@@ -192,7 +181,7 @@ test('activates the macOS app when a running deep link arrives', {
 
   listeners.get('open-url')(
     { preventDefault() {} },
-    'abu-dev://login?code=one&state=csrf',
+    'abu-dev://auth?code=one&state=csrf',
   );
 
   assert.deepEqual(calls, [

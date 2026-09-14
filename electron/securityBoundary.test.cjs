@@ -797,7 +797,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     /native path is unavailable/,
   );
   assert.throws(
-    () => shellBridge.selectUserAttachments({ mediaTypes: ['application/pdf'] }),
+    () => shellBridge.selectUserAttachments({ mediaTypes: ['application/octet-stream'] }),
     /media types are unsupported/,
   );
   assert.deepEqual(
@@ -809,6 +809,10 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
       expiresAt: 2_000,
     }],
   );
+  await shellBridge.selectUserAttachments({ mediaTypes: ['application/pdf'] });
+  assert.ok(invoked.some(({ channel, payload }) => channel === 'abu:select-user-attachments'
+    && payload.mediaTypes?.[0] === 'application/pdf'));
+  assert.throws(() => shellBridge.selectUserAttachments({ path: '/private/secret.pdf' }), /does not accept path/);
   const imageSelectInvoke = invoked.find(({ channel, payload }) => (
     channel === 'abu:select-user-attachments'
       && Array.isArray(payload?.mediaTypes)

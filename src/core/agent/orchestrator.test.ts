@@ -732,3 +732,18 @@ describe('buildSystemPrompt - memory index under concurrency', () => {
     expect(b).toContain('CONCURRENT-INDEX-MARKER');
   });
 });
+
+describe('audit: routing preserves user body', () => {
+  it('preserves multiline expert input', () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValueOnce({ name: 'expert', description: 'specialist', systemPrompt: 'help', tools: [], filePath: '/agents/expert/AGENT.md' });
+    expect(routeInput('@expert first\n  second').cleanInput).toBe('first\n  second');
+  });
+  it('preserves multiline skill input', () => {
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce({ name: 'brief', description: 'Brief', content: '', filePath: '/skills/brief/SKILL.md', skillDir: '/skills/brief' });
+    expect(routeInput('/brief first\n  second').cleanInput).toBe('first\n  second');
+  });
+  it('keeps the default skill instruction when its body contains only whitespace', () => {
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce({ name: 'brief', description: 'Brief', content: '', filePath: '/skills/brief/SKILL.md', skillDir: '/skills/brief' });
+    expect(routeInput('/brief  \n ').cleanInput).toBe('Execute the brief skill');
+  });
+});

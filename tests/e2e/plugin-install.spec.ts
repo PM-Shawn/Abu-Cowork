@@ -481,7 +481,10 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
     const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
     await expect(page.getByRole('button', { name: '/abu-plugin-builder', exact: true })).toBeVisible();
-    await expect(page.locator('textarea').first()).not.toHaveValue(/plugin_prepare/);
+    const composer = page.locator('[data-chat-composer]');
+    const composerText = () => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '');
+    await expect(composer).toBeVisible();
+    await expect.poll(composerText).not.toMatch(/plugin_prepare/);
     const sourceDir = path.join(launched.appDataDir, 'Home/Abu Plugins', author.id);
     expect(fs.existsSync(sourceDir)).toBe(true);
     fs.mkdirSync(path.join(sourceDir, '.abu-plugin'));
@@ -518,7 +521,8 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: /^(立即试用|Try now)$/ }).click();
     await expect(page.getByTestId('plugin-mine-group')).toBeHidden();
-    await expect(page.locator('textarea').first()).toHaveValue(/e2e-author/);
+    await expect(composer).toBeVisible();
+    await expect.poll(composerText).toMatch(/e2e-author/);
     await openPluginsTab(page);
     await row.getByRole('switch').click();
     await expect(row.getByRole('switch')).toHaveAttribute('aria-checked', 'false');

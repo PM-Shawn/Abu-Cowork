@@ -1,6 +1,9 @@
 import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId } from 'react';
 import { createPortal } from 'react-dom';
 import { Plus, ArrowUp, Square, X, ChevronDown, FileText, Paperclip, Users, Sparkles } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
+import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import TeamAvatar from '@/components/team/TeamAvatar';
@@ -21,7 +24,7 @@ import {
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
-import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
+import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
 import { requestDispatchInput } from '@/core/agent/dispatchCancel';
@@ -42,6 +45,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { fileReferenceForPath, InvalidAttachmentPathError } from '@/utils/fileReference';
 import type { ImageAttachment } from '@/types';
 import { generateAttachmentId, SUPPORTED_IMAGE_TYPES, sniffImageMediaType, IMAGE_MAGIC_PREFIX_BYTES } from '@/utils/imageUtils';
 import { fitImageToDimension } from '@/utils/imageCompress';
@@ -149,6 +153,7 @@ interface ChatInputProps {
 }
 
 interface SuggestionItem {
+  offset?: number;
   name: string;
   description: string;
   trigger?: string;
@@ -233,14 +238,21 @@ function mergeDraftForRejectedSend(currentDraft: ComposerDraft, sentDraft: Compo
     ...currentDraft,
     files: currentExpiry.files,
   };
+  const mergedText = mergeDraftTextForRestore(currentWithoutExpiredTokens.text, cleanSentDraft.text);
+  const currentSkill = currentWithoutExpiredTokens.text.length === 0 && currentWithoutExpiredTokens.selectedSkill?.name === cleanSentDraft.selectedSkill?.name
+    ? null : currentWithoutExpiredTokens.selectedSkill;
+  const restoredSkill = currentSkill ?? (cleanSentDraft.selectedSkill ? {
+    ...cleanSentDraft.selectedSkill,
+    offset: Math.max(0, mergedText.lastIndexOf(cleanSentDraft.text)) + (cleanSentDraft.selectedSkill.offset ?? 0),
+  } : null);
   const mergedFiles = mergeFileAttachments(currentWithoutExpiredTokens.files, cleanSentDraft.files).files;
   return {
     draft: {
-      text: mergeDraftTextForRestore(currentWithoutExpiredTokens.text, cleanSentDraft.text),
+      text: mergedText,
       images: [...currentWithoutExpiredTokens.images, ...cleanSentDraft.images],
       files: mergedFiles,
       references: dedupeReferencesForRestore([...currentWithoutExpiredTokens.references, ...cleanSentDraft.references]),
-      selectedSkill: currentWithoutExpiredTokens.selectedSkill ?? cleanSentDraft.selectedSkill,
+      selectedSkill: restoredSkill,
       selectedAgent: currentWithoutExpiredTokens.selectedAgent ?? cleanSentDraft.selectedAgent,
     },
     expiredFiles: [...currentExpiry.removedFiles, ...sentExpiry.removedFiles],
@@ -314,10 +326,10 @@ async function processFilePaths(
   addFiles: (items: FileAttachmentItem[]) => void,
   fileMetadataForPath?: (path: string) => Pick<FileAttachmentItem, 'readScope'>,
 ): Promise<void> {
+  if (paths.some((path) => fileReferenceForPath(path) === null)) throw new InvalidAttachmentPathError();
   const imgPaths: string[] = [];
   const filePaths: string[] = [];
   for (const p of paths) {
-    if (p.toLowerCase().endsWith('.pdf')) continue;
     (isImageFile(p) ? imgPaths : filePaths).push(p);
   }
   if (imgPaths.length > 0) {
@@ -375,7 +387,8 @@ async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<
 const SUGGESTION_MAX_HEIGHT = 320;
 const SUGGESTION_TOP_MARGIN = 16;
 
-function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, pluginTagLabel, optionId, onApply, anchorRef }: {
+function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, pluginTagLabel, optionId, onApply, anchorRef, search }: {
+  search?: { query: string; label: string; closeLabel: string; onChange: (query: string) => void; onClose: () => void; onKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => void };
   listboxId: string;
   ariaLabel: string;
   suggestions: SuggestionItem[];
@@ -398,6 +411,15 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
   // on capture-phase scroll (dialog/chat bodies scroll, not the window) and on
   // resize. Height is clamped to the space above the anchor so the popup never
   // leaves the window either.
+  const popupRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!search) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !popupRef.current?.contains(event.target)) search.onClose();
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [search]);
   const [style, setStyle] = useState<React.CSSProperties | null>(null);
   // useEffect, not useLayoutEffect: when the popup is already open on the
   // composer's FIRST render (a restored draft ending in `@`), it mounts in the
@@ -438,15 +460,24 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
   if (!style) return null;
   return createPortal(
     <div
-      id={listboxId}
-      role="listbox"
-      aria-label={ariaLabel}
+      ref={popupRef}
+      role={search ? "dialog" : undefined}
+      aria-label={search ? ariaLabel : undefined}
       style={style}
       // Overlays painted above the window chrome must carve themselves out of
       // the drag lane (src/styles/index.css) — this one can now overlap it.
       data-electron-no-drag
+      data-composer-suggestions
       className="bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto py-1.5 z-[10001]"
     >
+      {search && <div className="flex items-center gap-2 px-3 py-2">
+        <Input autoFocus value={search.query} aria-label={search.label} placeholder={search.label}
+          aria-controls={listboxId} aria-autocomplete="list"
+          aria-activedescendant={suggestions[selectedIndex] ? optionId(selectedIndex) : undefined}
+          onChange={(event) => search.onChange(event.target.value)} onKeyDown={search.onKeyDown} />
+        <button type="button" onClick={search.onClose} aria-label={search.closeLabel} className="btn-ghost p-1"><X className="h-4 w-4" /></button>
+      </div>}
+      <div id={listboxId} role="listbox" aria-label={ariaLabel}>
       {sections.filter((section) => section.items.length > 0).map((section) => (
         <div key={section.label} role="group" aria-label={section.label}>
           <div className="px-4 pt-2 pb-1 text-minor text-[var(--abu-text-tertiary)] select-none">{section.label}</div>
@@ -488,6 +519,7 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
           ))}
         </div>
       ))}
+      </div>
     </div>,
     document.body,
   );
@@ -509,6 +541,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Context usage indicator shows only in chat variant once a conversation exists.
   const activeConvIdForIndicator = useChatStore((s) => (isWelcome ? null : s.activeConversationId));
 
+  const [editorHistoryKey, setEditorHistoryKey] = useState(draftKey);
   const [text, setText] = useState(initialDraft.text);
   const [images, setImages] = useState<ImageAttachment[]>(initialDraft.images);
   const [files, setFiles] = useState<FileAttachmentItem[]>(initialDraft.files);
@@ -518,6 +551,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const allTeams = useTeamStore((store) => store.teams);
   const activeTeams = allTeams;
   const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
+  const [menuPicker, setMenuPicker] = useState<{ type: 'skill' | 'agent'; query: string } | null>(null);
   const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [selection, setSelection] = useState<ComposerSelection>({
@@ -525,7 +559,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     end: initialDraft.text.length,
   });
   const [isComposing, setIsComposing] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<InlineSkillInputHandle>(null);
   const composerAnchorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const isMountedRef = useRef(false);
@@ -569,7 +603,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setSelection((prev) => (
       prev.start === start && prev.end === end ? prev : { start, end }
     ));
-  }, [text]);
+  }, [text, selectedSkill]);
 
   // Welcome-only state (always declared for hook stability).
   // `localWorkspace` defaults to the active conv's bound workspace (set
@@ -588,6 +622,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Store hooks (always called)
   const cancelStreaming = useChatStore((s) => s.cancelStreaming);
   const pendingInput = useChatStore((s) => s.pendingInput);
+  const pendingInputStartsTask = useChatStore((s) => s.pendingInputStartsTask);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const pendingInputAppend = useChatStore((s) => s.pendingInputAppend);
   const appendPendingInput = useChatStore((s) => s.appendPendingInput);
@@ -632,10 +667,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
-  const showAttachmentAdmissionFailed = useCallback((_error?: unknown) => {
+  const showAttachmentAdmissionFailed = useCallback((error?: unknown) => {
     useToastStore.getState().addToast({
       type: 'error',
-      title: t.chat.attachmentAdmissionFailed,
+      title: error instanceof InvalidAttachmentPathError ? t.chat.attachmentInvalidFileName : t.chat.attachmentAdmissionFailed,
     });
   }, [t]);
 
@@ -747,7 +782,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // An image already admitted from its bytes must not come back as a badge.
       const badgePaths = paths.filter((p) => {
         const name = getBaseName(p);
-        return !admittedNames.has(name) && !name.toLowerCase().endsWith('.pdf');
+        return !admittedNames.has(name);
       });
       if (badgePaths.length === 0) return;
 
@@ -854,6 +889,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     currentDraftKeyRef.current = draftKey;
     restoringDraftRef.current = true;
     setText(draft.text);
+    setEditorHistoryKey(draftKey);
     setImages(draft.images);
     setFiles(draft.files);
     setReferences(draft.references);
@@ -863,6 +899,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setDismissedSuggestionKey(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
+    setMenuPicker(null);
     prevDraftKeyRef.current = draftKey;
   }, [draftKey]);
 
@@ -916,25 +953,51 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (isWelcome) onInputChange?.(text.trim().length > 0);
   }, [isWelcome, onInputChange, text]);
 
-  // Consume pending input (just set text; auto-selection handled in a later effect)
+  // Prefills supplement the target draft; explicit commands select a route without replacing its body.
   useEffect(() => {
     if (pendingInput !== null) {
-      const pendingSelection = { start: pendingInput.length, end: pendingInput.length };
+      if (pendingInputStartsTask) {
+        setSelectedAgent(null);
+        setSelectedSkill(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      }
+      const command = splitInputCommand(pendingInput);
+      const skill = command?.prefix === '/' ? skills.find((item) => item.name === command.name && item.userInvocable !== false && !disabledSkills.includes(item.name)) : undefined;
+      const agent = command?.prefix === '@' ? agents.find((item) => item.name === command.name && item.name !== 'abu') : undefined;
+      const currentText = currentDraftRef.current.text;
+      const body = command ? mergeDraftPrefill(currentText === pendingInput ? '' : currentText, command.body) : '';
+      const nextText = command
+        ? (skill || agent ? body : `${command.prefix}${command.name}${body ? ' ' + body : ''}`)
+        : mergeDraftPrefill(currentText, pendingInput);
+      if (skill) {
+        setSelectedSkill({ name: skill.name, description: skill.description, trigger: skill.trigger });
+        setSelectedAgent(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      } else if (agent) {
+        setSelectedAgent({ name: agent.name, description: agent.description, avatar: agent.avatar });
+        setSelectedSkill(null);
+      } else if (command) {
+        // Discovery may still be loading: retain the command for later auto-selection.
+        setSelectedAgent(null);
+        setSelectedSkill(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      }
+      const pendingSelection = { start: nextText.length, end: nextText.length };
       pendingSelectionRef.current = pendingSelection;
-      setText(pendingInput);
+      setText(nextText);
       setSelection(pendingSelection);
       // React does not schedule a render when the store value equals the
       // current draft. Keep the real DOM caret in sync in that case too.
       const textarea = textareaRef.current;
       if (textarea) {
-        const alreadyRendered = textarea.value === pendingInput;
+        const alreadyRendered = textarea.value === nextText;
         textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
         if (alreadyRendered) pendingSelectionRef.current = null;
       }
       setPendingInput(null);
       textarea?.focus();
     }
-  }, [pendingInput, setPendingInput]);
+  }, [pendingInput, pendingInputStartsTask, setPendingInput, skills, agents, disabledSkills, activeConvId]);
 
   // Consume APPEND pending input (inline-widget window.sendPrompt bridge):
   // append to the current draft with a newline separator instead of
@@ -1069,6 +1132,16 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setPendingFolder(null);
   };
 
+  const skillTarget = useMemo(() => {
+    if (isComposing || selection.start !== selection.end) return null;
+    const head = text.slice(0, selection.start);
+    const match = /(?:^|[\s（(，。；：！？、\p{Script=Han}])\/([^\s/]*)$/u.exec(head);
+    if (match) return { start: head.length - match[1].length - 1, end: head.length, query: match[1].toLowerCase() };
+    // Preserve pasted leading commands with a body until explicitly selected.
+    const command = !selectedSkill ? /^\s*\/([^\s]+)[ \t]/.exec(text) : null;
+    return command ? { start: text.indexOf('/'), end: text.indexOf('/') + command[1].length + 1, query: command[1].toLowerCase() } : null;
+  }, [isComposing, selection.start, selection.end, text, selectedSkill]);
+
   const disabledSkillSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
 
   const agentMentionTarget = useMemo((): AgentMentionTarget | null => {
@@ -1091,22 +1164,20 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   // Suggestion type tracking: 'skill' for / prefix, 'agent' for @ prefix
   const suggestionType = useMemo((): 'skill' | 'agent' | null => {
-    const trimmed = text.trim();
     // `@` keeps working with an agent chip set — picking again switches the
     // chip (user report 2026-09-04: "已选择 Agent 后再输入 @ 没反应").
+    if (menuPicker) return menuPicker.type;
     if (agentMentionTarget) return 'agent';
-    if (!selectedSkill && !selectedAgent && trimmed.startsWith('/')) return 'skill';
+    if (skillTarget) return 'skill';
     return null;
-  }, [agentMentionTarget, text, selectedSkill, selectedAgent]);
+  }, [agentMentionTarget, skillTarget, menuPicker]);
 
   // Skill/Agent suggestions
   const suggestions = useMemo((): SuggestionItem[] => {
-    const trimmed = text.trim();
-
     // Agent + team suggestions when typing @. Teams come first with a kind
     // badge so 用户 can tell 团队 from 单个队员 at a glance (feedback 2026-08-31).
     if (suggestionType === 'agent') {
-      const query = agentMentionTarget?.query ?? '';
+      const query = menuPicker?.query.toLowerCase() ?? agentMentionTarget?.query ?? '';
       const teamItems: SuggestionItem[] = activeTeams
         .filter((team) => !query || team.name.toLowerCase().includes(query))
         .map((team) => ({ name: team.name, description: t.team.suggestionTeamHint, team: true, teamId: team.id, avatar: team.avatar }));
@@ -1130,7 +1201,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
     // Skill suggestions when typing /
     if (suggestionType === 'skill') {
-      const query = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
+      const query = menuPicker?.query.toLowerCase() ?? skillTarget?.query ?? '';
       return skills
         .filter((s) => s.userInvocable !== false && !disabledSkillSet.has(s.name))
         .filter((s) => {
@@ -1147,16 +1218,16 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         }));
     }
     return [];
-  }, [text, skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, t.team.suggestionTeamHint]);
+  }, [skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, t.team.suggestionTeamHint, menuPicker, skillTarget]);
 
   const suggestionKey = useMemo(() => {
+    if (menuPicker) return `menu:${menuPicker.type}:${menuPicker.query}`;
     if (suggestionType === 'agent') return agentMentionTarget?.key ?? null;
     if (suggestionType === 'skill') {
-      const command = text.trim().split(/\s+/, 1)[0].toLowerCase();
-      return `skill:${command}`;
+      return skillTarget ? `skill:${skillTarget.start}:${skillTarget.query}` : null;
     }
     return null;
-  }, [agentMentionTarget, suggestionType, text]);
+  }, [agentMentionTarget, suggestionType, menuPicker, skillTarget]);
 
   // Reset highlighted suggestion when the active token changes.
   useEffect(() => {
@@ -1176,7 +1247,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const showSuggestions = suggestionKey !== null &&
     dismissedSuggestionKey !== suggestionKey &&
     suggestionType !== null &&
-    suggestions.length > 0;
+    (menuPicker !== null || suggestions.length > 0);
 
   useLayoutEffect(() => {
     if (!showSuggestions) return;
@@ -1188,7 +1259,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // header scrolled out — which is exactly what happened when a stale
       // non-zero index from a previous open scrolled the list first (real-
       // machine report 2026-09-03: "卡片上面被截断"). Show the list top instead.
-      const listbox = option.closest<HTMLElement>('[role="listbox"]');
+      const listbox = option.closest<HTMLElement>('[data-composer-suggestions]');
       if (listbox) listbox.scrollTop = 0;
       return;
     }
@@ -1200,20 +1271,19 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   // Auto-select skill/agent when text exactly matches "/name " or "@name " (e.g. from "Try in chat")
   useEffect(() => {
-    if (!suggestionType || selectedSkill || selectedAgent || isComposing) return;
-    const trimmed = text.trim();
+    if (menuPicker || !suggestionType || selectedSkill || selectedAgent || isComposing) return;
+    const command = splitInputCommand(text);
 
     if (suggestionType === 'skill') {
-      const skillMatch = /^\/([a-z0-9-]+)(?:\s+(.*))?$/.exec(trimmed);
-      if (skillMatch && suggestions.length === 1 && suggestions[0].name === skillMatch[1]) {
-        setSelectedSkill(suggestions[0]);
-        setText(skillMatch[2] ?? '');
-        setSelection({ start: (skillMatch[2] ?? '').length, end: (skillMatch[2] ?? '').length });
+      if (command?.prefix === '/' && /^\s*\/\S+\s/.test(text) && suggestions.length === 1 && suggestions[0].name === command.name) {
+        setSelectedSkill({ ...suggestions[0], offset: 0 });
+        setText(command.body);
+        setSelection({ start: (command.body).length, end: (command.body).length });
         setDismissedSuggestionKey(suggestionKey);
       }
     } else if (suggestionType === 'agent') {
       const leadingCommand = parseLeadingAgentCommand(text);
-      if (leadingCommand &&
+      if (leadingCommand && /\s/.test(text[leadingCommand.range.end] ?? '') &&
         suggestions.length === 1 &&
         suggestions[0].name.toLowerCase() === leadingCommand.query
       ) {
@@ -1229,7 +1299,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         setDismissedSuggestionKey(suggestionKey);
       }
     }
-  }, [isComposing, text, suggestionKey, suggestionType, suggestions, selectedSkill, selectedAgent, pinTeam]);
+  }, [isComposing, text, suggestionKey, suggestionType, suggestions, selectedSkill, selectedAgent, pinTeam, menuPicker]);
 
   // Auto-resize textarea
   const maxHeight = isWelcome ? 180 : 160;
@@ -1241,7 +1311,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     }
   }, [text, maxHeight]);
 
-  const syncSelectionFromTextarea = useCallback((textarea: HTMLTextAreaElement) => {
+  const syncSelectionFromTextarea = useCallback((textarea: InlineSkillInputHandle) => {
     if (pendingSelectionRef.current) return;
 
     const start = textarea.selectionStart ?? textarea.value.length;
@@ -1251,7 +1321,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     ));
   }, []);
 
-  const resolveDomAgentMentionTarget = useCallback((textarea: HTMLTextAreaElement): AgentMentionTarget | null => {
+  const resolveDomAgentMentionTarget = useCallback((textarea: InlineSkillInputHandle): AgentMentionTarget | null => {
     if (/^\s*\/\S*/.test(textarea.value)) return null;
     const start = textarea.selectionStart ?? textarea.value.length;
     const end = textarea.selectionEnd ?? start;
@@ -1266,6 +1336,25 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   }, []);
 
   const applySuggestion = (item: SuggestionItem) => {
+    if (menuPicker) {
+      if (menuPicker.type === 'skill') {
+        const point = Math.min(selection.start, text.length);
+        setSelectedSkill({ ...item, offset: point });
+        pendingSelectionRef.current = { start: point, end: point };
+        setSelectedAgent(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      } else {
+        setSelectedSkill(null);
+        if (item.team) {
+          pinTeam(item.teamId);
+          setSelectedAgent(null);
+        } else setSelectedAgent(item);
+      }
+      setMenuPicker(null);
+      setDismissedSuggestionKey(suggestionKey);
+      textareaRef.current?.focus();
+      return;
+    }
     if (suggestionType === 'agent') {
       const textarea = textareaRef.current;
       const currentTarget = textarea ? resolveDomAgentMentionTarget(textarea) : null;
@@ -1279,8 +1368,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       }
 
       const replacementRange = resolveAgentMentionReplacementRange(currentTarget, item.name, textarea.value);
+      const bodyStart = replacementRange.end + (currentTarget.source === 'leading-command' && /[ \t]/.test(textarea.value[replacementRange.end] ?? '') ? 1 : 0);
       const nextText = textarea.value.slice(0, replacementRange.start) +
-        textarea.value.slice(replacementRange.end);
+        textarea.value.slice(bodyStart);
       const nextCaret = replacementRange.start;
       pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
       if (item.team) {
@@ -1295,9 +1385,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       setSelection({ start: nextCaret, end: nextCaret });
       setDismissedSuggestionKey(currentTarget.key);
     } else {
-      setSelectedSkill(item);
-      setText('');
-      setSelection({ start: 0, end: 0 });
+      if (!skillTarget) return;
+      const current = textareaRef.current?.value ?? text;
+      const suffix = item.name.toLowerCase().startsWith(skillTarget.query) ? item.name.slice(skillTarget.query.length) : '';
+      const triggerEnd = skillTarget.end + (suffix && current.slice(skillTarget.end, skillTarget.end + suffix.length).toLowerCase() === suffix.toLowerCase() ? suffix.length : 0);
+      const end = triggerEnd + (skillTarget.start === 0 && /[ \t]/.test(current[triggerEnd] ?? '') ? 1 : 0);
+      const body = current.slice(0, skillTarget.start) + current.slice(end);
+      setSelectedSkill({ ...item, offset: skillTarget.start });
+      setSelectedAgent(null);
+      setText(body);
+      pendingSelectionRef.current = { start: skillTarget.start, end: skillTarget.start };
+      setSelection({ start: skillTarget.start, end: skillTarget.start });
       setDismissedSuggestionKey(suggestionKey);
     }
     textareaRef.current?.focus();
@@ -1321,7 +1419,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       images: [],
       files: [],
       references: [],
-      selectedSkill: keepSelectors ? selectedSkill : null,
+      selectedSkill: keepSelectors && selectedSkill ? { ...selectedSkill, offset: 0 } : null,
       selectedAgent: keepSelectors ? selectedAgent : null,
     };
     if (keepSelectors) {
@@ -1333,6 +1431,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       clearComposerDraft(draftKey, { disposeResources: false });
     }
     setText('');
+    if (keepSelectors && selectedSkill) setSelectedSkill({ ...selectedSkill, offset: 0 });
     setSelection({ start: 0, end: 0 });
     setImages([]);
     setFiles([]);
@@ -1392,15 +1491,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return;
     }
 
-    const unsupportedPdf = files.find((file) => (
+    if (files.some((file) => file.path !== undefined && fileReferenceForPath(file.path) === null)) {
+      showAttachmentAdmissionFailed(new InvalidAttachmentPathError());
+      return;
+    }
+
+    const unsupportedToken = files.find((file) => (
       file.token !== undefined
-      || file.name.toLowerCase().endsWith('.pdf')
-      || file.path?.toLowerCase().endsWith('.pdf')
     ));
-    if (unsupportedPdf) {
+    if (unsupportedToken) {
       useToastStore.getState().addToast({
         type: 'error',
-        title: format(t.chat.unsupportedDocumentAttachment, { name: unsupportedPdf.name }),
+        title: format(t.chat.unsupportedDocumentAttachment, { name: unsupportedToken.name }),
       });
       return;
     }
@@ -1409,12 +1511,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // files. These are prompt context only; unlike image attachments, no file
     // bytes cross the provider boundary here.
     const fileContext = files
-      .flatMap((file) => file.path ? [`[Attachment: \`${file.path}\`]`] : [])
+      .flatMap((file) => {
+        const reference = file.path ? fileReferenceForPath(file.path) : null;
+        return reference ? [reference] : [];
+      })
       .join('\n');
     const referenceContext = serializeReferences(references);
 
     // Compose parts, then join with newline
-    const bodyParts = [fileContext, referenceContext, trimmed].filter(Boolean).join('\n\n');
+    const bodyParts = [fileContext, referenceContext, trimmed ? text : ''].filter(Boolean).join('\n\n');
 
     let message: string;
     if (selectedAgent) {
@@ -1580,7 +1685,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         const textarea = textareaRef.current;
         if (textarea) {
           const insertionPoint = textarea.selectionStart ?? text.length;
-          setText(insertNewlineAtCursor(textarea));
+          textarea.insertText('\n');
           setSelection({ start: insertionPoint + 1, end: insertionPoint + 1 });
         }
       }
@@ -1612,9 +1717,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const admissionKey = draftKey;
     const finishAdmission = beginAttachmentAdmission(admissionKey);
     try {
-      const selected = await selectElectronUserAttachments({ mediaTypes: [...ELECTRON_PICKER_MEDIA_TYPES] });
+      const selected = await selectElectronUserAttachments({ mediaTypes: [...ELECTRON_PICKER_MEDIA_TYPES, 'application/pdf'] });
       if (selected.length === 0) return;
-      const imageResults = await Promise.allSettled(selected.map(imageFromToken));
+      const filePaths = selected.flatMap((item) => 'path' in item ? [item.path] : []);
+      const imageTokens = selected.filter((item): item is ElectronUserAttachmentToken => 'token' in item);
+      try {
+        await processFilePaths(
+          filePaths,
+          (imgs) => appendImagesForDraftKey(admissionKey, imgs),
+          (items) => appendFilesForDraftKey(admissionKey, items),
+        );
+      } catch (error) {
+        for (const image of imageTokens) releaseToken(image.token);
+        throw error;
+      }
+      const imageResults = await Promise.allSettled(imageTokens.map(imageFromToken));
       const nextImages = imageResults
         .filter((result): result is PromiseFulfilledResult<ImageAttachment> => result.status === 'fulfilled' && result.value !== null)
         .map((result) => result.value);
@@ -1630,36 +1747,11 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleAttachClick = hasElectronUserAttachmentSelectHost() ? handleAttachElectron : handleAttach;
 
-  /** `+` menu → 队员·团队: drop an `@` at the caret so the grouped picker opens. */
-  const openMentionPicker = () => {
-    const textarea = textareaRef.current;
-    const base = textarea?.value ?? text;
-    const caret = textarea?.selectionStart ?? base.length;
-    const before = base.slice(0, caret);
-    const token = before.length > 0 && !/\s$/.test(before) ? ' @' : '@';
-    const nextText = before + token + base.slice(caret);
-    const nextCaret = before.length + token.length;
-    // The menu means "pick a new one": both chips are cleared, or the mention
-    // picker stays gated off (agentMentionTarget bails on a skill chip).
-    setSelectedAgent(null);
-    if (!activeConvId) useChatStore.getState().setPendingAgent(null);
-    setSelectedSkill(null);
-    pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
-    setText(nextText);
-    setSelection({ start: nextCaret, end: nextCaret });
-    setDismissedSuggestionKey(null);
-    textarea?.focus();
-  };
-
-  /** `+` menu → 技能: make the text a `/` command so the skill picker opens. */
-  const openSkillPicker = () => {
-    const base = textareaRef.current?.value ?? text;
-    const nextText = base.trimStart().startsWith('/') ? base : '/' + base.trimStart();
-    setSelectedSkill(null);
-    pendingSelectionRef.current = { start: 1, end: 1 };
-    setText(nextText);
-    setSelection({ start: 1, end: 1 });
-    setDismissedSuggestionKey(null);
+  // Opening a picker is a read-only action on the draft. Commit only on selection.
+  const openMentionPicker = () => setMenuPicker({ type: 'agent', query: '' });
+  const openSkillPicker = () => setMenuPicker({ type: 'skill', query: '' });
+  const closeMenuPicker = () => {
+    setMenuPicker(null);
     textareaRef.current?.focus();
   };
 
@@ -1687,7 +1779,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           <Plus className="h-4 w-4" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" className="w-48 p-1.5" role="menu" aria-label={t.chat.composerMenu.open} data-electron-no-drag>
+      <PopoverContent onCloseAutoFocus={(event) => { if (menuPicker) event.preventDefault(); }} side="top" align="start" className="w-48 p-1.5" role="menu" aria-label={t.chat.composerMenu.open} data-electron-no-drag>
         <button type="button" role="menuitem" data-testid="composer-menu-add-file" onClick={pickAddFile} className={plusMenuItemClass}>
           <Paperclip className={plusMenuIconClass} />
           <span className="truncate">{t.chat.composerMenu.addFile}</span>
@@ -1732,13 +1824,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           <span className="truncate">{selectedAgent.name}</span>
         </button>
       )}
-      {selectedSkill && (
-        <button type="button" onClick={removeSkill} className={chipClass} title={t.common.close} aria-label={`/${selectedSkill.name}`}>
-          <span aria-hidden="true" className={chipMarkClass}>/</span>
-          <X aria-hidden="true" className={chipCloseClass} />
-          <span className="truncate">{selectedSkill.name}</span>
-        </button>
-      )}
+
     </>
   );
 
@@ -1778,7 +1864,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
       <div className="relative" ref={composerAnchorRef}>
         {/* Suggestions Popup (Skills / Agents) — portaled, anchored above this card */}
-        {showSuggestions && suggestions.length > 0 && (
+        {showSuggestions && (
           <SuggestionPopup
             anchorRef={composerAnchorRef}
             listboxId={suggestionListboxId}
@@ -1790,6 +1876,20 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
             pluginTagLabel={t.chat.pickAgentPluginTag}
             optionId={suggestionOptionId}
             onApply={applySuggestion}
+            search={menuPicker ? {
+              query: menuPicker.query,
+              label: t.common.search,
+              closeLabel: t.common.close,
+              onChange: (query) => setMenuPicker({ ...menuPicker, query }),
+              onClose: closeMenuPicker,
+              onKeyDown: (event) => {
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                if (event.key === 'Escape') { event.preventDefault(); closeMenuPicker(); }
+                else if (event.key === 'ArrowDown') { event.preventDefault(); setSelectedIndex((index) => Math.max(0, Math.min(suggestions.length - 1, index + 1))); }
+                else if (event.key === 'ArrowUp') { event.preventDefault(); setSelectedIndex((index) => Math.max(0, index - 1)); }
+                else if (event.key === 'Enter' && suggestions[selectedIndex]) { event.preventDefault(); applySuggestion(suggestions[selectedIndex]); }
+              },
+            } : undefined}
           />
         )}
 
@@ -1904,9 +2004,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               ? hasAttachments ? 'px-5 pt-1 pb-1' : 'px-5 pt-4 pb-1'
               : hasAttachments ? 'px-4 pt-1 pb-1' : 'px-4 pt-3.5 pb-1'
           )}>
-            <textarea
+            <InlineSkillInput
+              historyKey={editorHistoryKey}
+              imeActive={isComposing}
+              skill={selectedSkill}
+              removeLabel={t.common.close}
               ref={textareaRef}
-              data-chat-composer
               aria-autocomplete="list"
               aria-expanded={showSuggestions && suggestions.length > 0}
               aria-controls={showSuggestions && suggestions.length > 0 ? suggestionListboxId : undefined}
@@ -1916,14 +2019,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   : undefined
               }
               value={text}
-              onChange={(e) => {
-                setText(e.currentTarget.value);
-                syncSelectionFromTextarea(e.currentTarget);
+              onChange={(value, skill) => {
+                setText(value);
+                setSelectedSkill(skill);
+                if (skill) {
+                  setSelectedAgent(null);
+                  if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+                }
+                if (textareaRef.current) syncSelectionFromTextarea(textareaRef.current);
               }}
               onKeyDown={handleKeyDown}
-              onSelect={(e) => syncSelectionFromTextarea(e.currentTarget)}
-              onClick={(e) => syncSelectionFromTextarea(e.currentTarget)}
-              onKeyUp={(e) => syncSelectionFromTextarea(e.currentTarget)}
+              onSelect={() => { if (textareaRef.current) syncSelectionFromTextarea(textareaRef.current); }}
               onCompositionStart={() => {
                 if (compositionResetTimerRef.current !== null) {
                   window.clearTimeout(compositionResetTimerRef.current);

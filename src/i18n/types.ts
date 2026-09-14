@@ -530,6 +530,7 @@ export interface TranslationDict {
     /** Toast after a direct instruction was queued for a running team member. */
     memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
+    attachmentInvalidFileName: string;
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;

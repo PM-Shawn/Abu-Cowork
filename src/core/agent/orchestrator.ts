@@ -1,3 +1,4 @@
+import { splitInputCommand } from '@/utils/inputCommand';
 import type { SubagentDefinition, Skill, ToolExecutionContext } from '../../types';
 import { loadMemoryIndex } from '../memdir/scan';
 import { agentRegistry } from './registry';
@@ -184,11 +185,12 @@ export function routeInput(input: string): RouteResult {
     };
   }
 
+  const command = splitInputCommand(input);
+
   // 1. @agent delegation: @agent-name [task]
   if (trimmed.startsWith('@')) {
-    const parts = trimmed.slice(1).split(/\s+/);
-    const mention = parts[0];
-    const taskText = parts.slice(1).join(' ');
+    const mention = command?.name;
+    const taskText = command?.body ?? '';
 
     if (mention) {
       // First try exact match against the canonical registry name (primary path
@@ -221,7 +223,7 @@ export function routeInput(input: string): RouteResult {
           type: 'delegate',
           name: agent.name,
           delegateAgent: agent,
-          cleanInput: taskText || `@${agent.name}`,
+          cleanInput: taskText.trim() ? taskText : `@${agent.name}`,
         };
       }
     }
@@ -229,9 +231,8 @@ export function routeInput(input: string): RouteResult {
 
   // 2. Slash command: /skill-name [args]
   if (trimmed.startsWith('/')) {
-    const parts = trimmed.slice(1).split(/\s+/);
-    const skillName = parts[0];
-    const args = parts.slice(1).join(' ');
+    const skillName = command?.name ?? '';
+    const args = command?.body ?? '';
 
     const skill = skillLoader.getSkill(skillName);
     if (skill) {
@@ -241,7 +242,7 @@ export function routeInput(input: string): RouteResult {
         skill,
         skillContent: skill.content,
         args,
-        cleanInput: args || `Execute the ${skillName} skill`,
+        cleanInput: args.trim() ? args : `Execute the ${skillName} skill`,
       };
     }
   }

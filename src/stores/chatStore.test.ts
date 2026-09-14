@@ -3748,3 +3748,17 @@ describe('pending team pin (welcome-page chip)', () => {
     expect(useChatStore.getState().pendingTeamId).toBeUndefined();
   });
 });
+
+
+describe('prefill intent', () => {
+  it('resets new-task intent when the buffer is consumed or reused for an ordinary prompt', () => {
+    useChatStore.getState().setPendingInput('template', { startsTask: true });
+    expect(useChatStore.getState().pendingInputStartsTask).toBe(true);
+    useChatStore.getState().setPendingInput(null);
+    expect(useChatStore.getState().pendingInputStartsTask).toBe(false);
+    useChatStore.getState().setPendingInput('template', { startsTask: true });
+    useChatStore.getState().setPendingInput('suggested question');
+    expect(useChatStore.getState().pendingInputStartsTask).toBe(false);
+    useChatStore.getState().setPendingInput(null);
+  });
+});

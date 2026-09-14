@@ -202,7 +202,7 @@ export interface TranslationDict {
     localWithoutLogin: string;
     loginRegister: string;
     accountSettings: string;
-    switchToPersonal: string;
+    switchAccount: string;
     switchToEnterprise: string;
     waitingBrowser: string;
     completingLogin: string;

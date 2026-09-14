@@ -299,7 +299,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             <>
               <MenuRow
                 icon={LogIn}
-                label={t.account.switchToPersonal}
+                label={t.account.switchAccount}
                 onClick={() => run(openAccountLogin)}
               />
               <MenuRow

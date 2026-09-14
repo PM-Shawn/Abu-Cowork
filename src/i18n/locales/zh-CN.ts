@@ -169,7 +169,7 @@ const zhCN: TranslationDict = {
     localWithoutLogin: '不登录也能继续使用本地模型和自己的 API Key',
     loginRegister: '登录 / 注册',
     accountSettings: '账号设置',
-    switchToPersonal: '切换到个人账号',
+    switchAccount: '切换账号',
     switchToEnterprise: '切换到企业账号',
     waitingBrowser: '请在浏览器中完成登录',
     completingLogin: '正在完成登录...',

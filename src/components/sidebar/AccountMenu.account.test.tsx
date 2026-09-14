@@ -95,7 +95,7 @@ describe('AccountMenu identity', () => {
     fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
-    expect(screen.getByText('切换到个人账号')).toBeInTheDocument();
+    expect(screen.getByText('切换账号')).toBeInTheDocument();
     expect(screen.getByText('退出企业账号')).toBeInTheDocument();
     expect(screen.queryByText('登录 / 注册')).not.toBeInTheDocument();
   });
@@ -131,7 +131,7 @@ describe('AccountMenu identity', () => {
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
     expect(screen.queryByText('Personal User')).not.toBeInTheDocument();
-    expect(screen.getByText('切换到个人账号')).toBeInTheDocument();
+    expect(screen.getByText('切换账号')).toBeInTheDocument();
     expect(screen.getByText('退出企业账号')).toBeInTheDocument();
     expect(screen.queryByText('账号设置')).not.toBeInTheDocument();
     expect(screen.queryByText('退出个人账号')).not.toBeInTheDocument();

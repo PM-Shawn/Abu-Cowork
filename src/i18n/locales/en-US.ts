@@ -169,7 +169,8 @@ const enUS: TranslationDict = {
     localWithoutLogin: 'You can keep using local models and your own API key without signing in',
     loginRegister: 'Sign in / Sign up',
     accountSettings: 'Account settings',
-    personalAccountSettings: 'Personal account settings',
+    switchToPersonal: 'Switch to personal account',
+    switchToEnterprise: 'Switch to enterprise account',
     waitingBrowser: 'Complete sign-in in your browser',
     completingLogin: 'Finishing sign-in...',
     cancelled: 'Sign-in cancelled.',
@@ -187,6 +188,7 @@ const enUS: TranslationDict = {
     email: 'Email',
     signOut: 'Sign out',
     signOutPersonal: 'Sign out of personal account',
+    signOutEnterprise: 'Sign out of enterprise account',
   },
 
   todos: {

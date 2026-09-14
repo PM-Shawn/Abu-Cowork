@@ -2,7 +2,9 @@ import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useAccountStore } from '@/core/account/accountStore';
+import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import {
   Settings,
@@ -53,6 +55,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const profileStatus = useAccountStore((s) => s.profileStatus);
   const signOut = useAccountStore((s) => s.signOut);
   const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const unbindEnterprise = useEnterpriseStore((s) => s.unbind);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
@@ -133,6 +136,14 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
       console.error('[AccountMenu] Failed to open help documentation:', error);
     });
   }, [locale]);
+
+  const handleEnterpriseLogin = useCallback(() => {
+    void startEnterpriseAccountLogin()
+      .then((result) => {
+        if (result === 'configuration_required') openSystemSettings('enterprise');
+      })
+      .catch(() => openSystemSettings('enterprise'));
+  }, [openSystemSettings]);
 
   const languageOptions = [
     { value: 'system', label: t.settings.followSystem },
@@ -284,27 +295,43 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
 
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
-          {signedIn ? (
+          {enterpriseSignedIn ? (
+            <>
+              <MenuRow
+                icon={LogIn}
+                label={t.account.switchToPersonal}
+                onClick={() => run(openAccountLogin)}
+              />
+              <MenuRow
+                icon={LogOut}
+                label={t.account.signOutEnterprise}
+                onClick={() => run(() => void unbindEnterprise())}
+              />
+            </>
+          ) : signedIn ? (
             <>
               <MenuRow
                 icon={UserRound}
-                label={enterpriseBinding ? t.account.personalAccountSettings : t.account.accountSettings}
+                label={t.account.accountSettings}
                 onClick={() => run(() => openSystemSettings('account'))}
               />
               <MenuRow
                 icon={LogOut}
-                label={enterpriseBinding ? t.account.signOutPersonal : t.account.signOut}
+                label={IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
                 onClick={() => run(() => void signOut())}
               />
+              {IS_ENTERPRISE_BUILD && (
+                <MenuRow
+                  icon={LogIn}
+                  label={t.account.switchToEnterprise}
+                  onClick={() => run(handleEnterpriseLogin)}
+                />
+              )}
             </>
           ) : (
             <MenuRow
               icon={LogIn}
-              label={enterpriseBinding
-                ? t.account.personalLogin
-                : expired
-                  ? t.account.retry
-                  : t.account.loginRegister}
+              label={expired ? t.account.retry : t.account.loginRegister}
               onClick={() => run(openAccountLogin)}
             />
           )}

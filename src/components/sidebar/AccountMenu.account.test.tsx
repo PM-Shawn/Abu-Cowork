@@ -8,6 +8,13 @@ const mocks = vi.hoisted(() => ({
   settings: {} as Record<string, unknown>,
   account: {} as Record<string, unknown>,
   enterprise: {} as Record<string, unknown>,
+  startEnterpriseLogin: vi.fn(),
+}));
+
+vi.mock('@/config/featureGates', () => ({ IS_ENTERPRISE_BUILD: true }));
+
+vi.mock('@/core/enterprise/accountLogin', () => ({
+  startEnterpriseAccountLogin: mocks.startEnterpriseLogin,
 }));
 
 vi.mock('@/stores/settingsStore', () => ({
@@ -53,6 +60,9 @@ describe('AccountMenu identity', () => {
       signOut: vi.fn(),
     };
     mocks.enterprise = { mode: { kind: 'personal' } };
+    mocks.enterprise.unbind = vi.fn();
+    mocks.startEnterpriseLogin.mockReset();
+    mocks.startEnterpriseLogin.mockResolvedValue('started');
   });
 
   it('does not present the local nickname as authenticated identity when profile loading fails', () => {
@@ -85,11 +95,12 @@ describe('AccountMenu identity', () => {
     fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
-    expect(screen.getByText('个人账号登录')).toBeInTheDocument();
+    expect(screen.getByText('切换到个人账号')).toBeInTheDocument();
+    expect(screen.getByText('退出企业账号')).toBeInTheDocument();
     expect(screen.queryByText('登录 / 注册')).not.toBeInTheDocument();
   });
 
-  it('keeps the active enterprise identity primary when a personal account also exists', () => {
+  it('shows only enterprise actions while stale personal credentials are being cleaned up', () => {
     mocks.account = {
       status: 'signed_in',
       account: {
@@ -112,6 +123,7 @@ describe('AccountMenu identity', () => {
         },
         config: null,
       },
+      unbind: vi.fn(),
     };
 
     render(<AccountMenu onEditProfile={() => {}} />);
@@ -119,7 +131,17 @@ describe('AccountMenu identity', () => {
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
     expect(screen.queryByText('Personal User')).not.toBeInTheDocument();
-    expect(screen.getByText('个人账号设置')).toBeInTheDocument();
-    expect(screen.getByText('退出个人账号')).toBeInTheDocument();
+    expect(screen.getByText('切换到个人账号')).toBeInTheDocument();
+    expect(screen.getByText('退出企业账号')).toBeInTheDocument();
+    expect(screen.queryByText('账号设置')).not.toBeInTheDocument();
+    expect(screen.queryByText('退出个人账号')).not.toBeInTheDocument();
+  });
+
+  it('starts enterprise login from an active personal account', async () => {
+    render(<AccountMenu onEditProfile={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: '账号' }));
+    fireEvent.click(screen.getByText('切换到企业账号'));
+
+    expect(mocks.startEnterpriseLogin).toHaveBeenCalledOnce();
   });
 });

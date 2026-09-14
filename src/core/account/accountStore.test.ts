@@ -12,6 +12,7 @@ import {
 import { clearAccountCredentials, loadAccountCredentials, saveAccountCredentials } from '@/core/account/credentials';
 import { createPkcePair } from '@/core/account/pkce';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { registerAccountSessionDeactivator } from '@/core/account/sessionCoordinator';
 import {
   ACCOUNT_BROWSER_TIMEOUT_MS,
   __resetAccountStoreForTest,
@@ -176,6 +177,79 @@ describe('account store', () => {
       profileStatus: 'ready',
       error: null,
     });
+  });
+
+  it('clears an enterprise session before saving a successful personal login', async () => {
+    const order: string[] = [];
+    const unregister = registerAccountSessionDeactivator('enterprise', async () => {
+      order.push('clear-enterprise');
+    });
+    vi.mocked(saveAccountCredentials).mockImplementation(async () => {
+      order.push('save-personal');
+    });
+
+    try {
+      await start();
+      await useAccountStore.getState().handleDeepLink(
+        'abu://auth?code=one-time-code&state=expected-state',
+      );
+      expect(order).toEqual(['clear-enterprise', 'save-personal']);
+    } finally {
+      unregister();
+    }
+  });
+
+  it('restores the enterprise session when personal credential persistence fails', async () => {
+    const restoreEnterprise = vi.fn().mockResolvedValue(undefined);
+    const unregister = registerAccountSessionDeactivator('enterprise', async () => ({
+      rollback: restoreEnterprise,
+    }));
+    vi.mocked(saveAccountCredentials).mockRejectedValue(new Error('safeStorage unavailable'));
+
+    try {
+      await start();
+      await useAccountStore.getState().handleDeepLink(
+        'abu://auth?code=one-time-code&state=expected-state',
+      );
+      expect(restoreEnterprise).toHaveBeenCalledOnce();
+      expect(useAccountStore.getState()).toMatchObject({
+        status: 'signed_out',
+        account: null,
+        error: 'credential_storage_unavailable',
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  it('restores the enterprise session when personal login is cancelled during cleanup', async () => {
+    let markCleanupStarted!: () => void;
+    const cleanupStarted = new Promise<void>((resolve) => { markCleanupStarted = resolve; });
+    let releaseCleanup!: () => void;
+    const cleanupBlocked = new Promise<void>((resolve) => { releaseCleanup = resolve; });
+    const restoreEnterprise = vi.fn().mockResolvedValue(undefined);
+    const unregister = registerAccountSessionDeactivator('enterprise', async () => {
+      markCleanupStarted();
+      await cleanupBlocked;
+      return { rollback: restoreEnterprise };
+    });
+
+    try {
+      await start();
+      const handling = useAccountStore.getState().handleDeepLink(
+        'abu://auth?code=one-time-code&state=expected-state',
+      );
+      await cleanupStarted;
+      useAccountStore.getState().cancel();
+      releaseCleanup();
+      await handling;
+
+      expect(saveAccountCredentials).not.toHaveBeenCalled();
+      expect(restoreEnterprise).toHaveBeenCalledOnce();
+      expect(useAccountStore.getState()).toMatchObject({ status: 'signed_out', error: 'cancelled' });
+    } finally {
+      unregister();
+    }
   });
 
   it('hydrates a stored login and loads its authenticated profile', async () => {
@@ -452,6 +526,7 @@ describe('account store', () => {
       'old-save-start',
       'old-save-end',
       'load-old',
+      'clear-old',
       'clear-old',
       'new-save',
     ]);

@@ -118,7 +118,7 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
 
       // Any later settings write from the MAIN window (opening Settings is one)
       // must not overwrite the pet's position with the main window's copy.
-      await main.getByRole('button', { name: /^(我|Me)$/ }).click();
+      await main.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).click();
       await main.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
       await main.keyboard.press('Escape');
       await expect.poll(() => persistedPetPosition(main), { timeout: 3_000 }).toEqual(expectedPhysical);

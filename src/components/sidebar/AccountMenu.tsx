@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useAccountStore } from '@/core/account/accountStore';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import {
   Settings,
@@ -15,6 +16,9 @@ import {
   ChevronsUpDown,
   Pencil,
   ExternalLink,
+  LogIn,
+  LogOut,
+  UserRound,
 } from 'lucide-react';
 import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { Select } from '@/components/ui/select';
@@ -32,19 +36,21 @@ import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
  * High-frequency prefs are surfaced inline so the user doesn't have to open the
  * full settings dialog: theme toggles in place, language switches via an inline
  * select, and check-for-updates runs the real update flow (check → download →
- * restart) reusing the store-backed update state. As an open-source BYO-key
- * client there is deliberately no account / plan / logout — the identity head
- * reads "本地模式".
+ * restart) reusing the store-backed update state.
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
   const { t, locale } = useI18n();
-  const userNickname = useSettingsStore((s) => s.userNickname);
   const userAvatar = useSettingsStore((s) => s.userAvatar);
   const theme = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
   const language = useSettingsStore((s) => s.language);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
+  const openAccountLogin = useSettingsStore((s) => s.openAccountLogin);
+  const accountStatus = useAccountStore((s) => s.status);
+  const account = useAccountStore((s) => s.account);
+  const profileStatus = useAccountStore((s) => s.profileStatus);
+  const signOut = useAccountStore((s) => s.signOut);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
@@ -192,6 +198,22 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
                   trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
                 };
   const UpdateIcon = updateRow.icon;
+  const signedIn = accountStatus === 'signed_in' && account !== null;
+  const expired = accountStatus === 'expired' && account !== null;
+  const accountLabel = signedIn
+    ? account.name || account.email || t.account.title
+    : expired
+      ? t.account.retry
+      : t.account.loginRegister;
+  const accountDetail = signedIn
+    ? profileStatus === 'loading'
+      ? t.account.profileLoading
+      : profileStatus === 'error'
+        ? t.account.profileUnavailable
+        : account.email || t.account.title
+    : expired
+      ? t.account.sessionExpired
+      : t.sidebar.localMode;
 
   return (
     <div ref={rootRef} className="relative">
@@ -217,10 +239,10 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
         <span
           className={cn(
             'flex-1 min-w-0 text-h-xs font-semibold truncate',
-            userNickname ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
+            signedIn ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
           )}
         >
-          {userNickname || t.sidebar.defaultNickname}
+          {accountLabel}
         </span>
         {updateInfo && !open && <span className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0" />}
         <ChevronsUpDown className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" strokeWidth={1.6} />
@@ -232,8 +254,8 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           role="menu"
           className="absolute bottom-full left-0 right-0 mb-2 z-50 p-1.5 rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-[0_12px_34px_-8px_rgba(20,20,19,0.22),0_2px_8px_-2px_rgba(20,20,19,0.10)]"
         >
-          {/* Identity head */}
-          <div className="group flex items-center gap-2.5 px-2 py-2">
+          {/* Authenticated identity, or the local-mode account entry. */}
+          <div className="flex w-full items-center gap-2.5 px-2 py-2">
             <span className="w-9 h-9 rounded-full overflow-hidden shrink-0">
               {userAvatar ? (
                 <img src={userAvatar} alt="" className="w-full h-full object-cover" />
@@ -243,18 +265,32 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             </span>
             <div className="flex-1 min-w-0">
               <div className="text-body font-semibold truncate text-[var(--abu-text-primary)]">
-                {userNickname || t.sidebar.defaultNickname}
+                {accountLabel}
               </div>
-              <div className="text-caption text-[var(--abu-text-muted)] truncate">{t.sidebar.localMode}</div>
+              <div className="text-caption text-[var(--abu-text-muted)] truncate">{accountDetail}</div>
             </div>
-            <button
-              onClick={() => run(onEditProfile)}
-              title={t.sidebar.editProfile}
-              className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
-            >
-              <Pencil className="h-[15px] w-[15px]" strokeWidth={1.7} />
-            </button>
           </div>
+
+          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+
+          {signedIn ? (
+            <>
+              <MenuRow
+                icon={UserRound}
+                label={t.account.accountSettings}
+                onClick={() => run(() => openSystemSettings('account'))}
+              />
+              <MenuRow icon={LogOut} label={t.account.signOut} onClick={() => run(() => void signOut())} />
+            </>
+          ) : (
+            <MenuRow
+              icon={LogIn}
+              label={expired ? t.account.retry : t.account.loginRegister}
+              onClick={() => run(openAccountLogin)}
+            />
+          )}
+
+          <MenuRow icon={Pencil} label={t.sidebar.editProfile} onClick={() => run(onEditProfile)} />
 
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 

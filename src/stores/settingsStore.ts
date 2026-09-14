@@ -179,7 +179,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
+export type SystemSettingsTab = 'account' | 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
 export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
 
@@ -257,6 +257,8 @@ export interface SettingsState {
   /** System settings render as an overlay dialog on top of the current view,
    *  decoupled from viewMode. Ephemeral — not persisted. */
   systemSettingsOpen: boolean;
+  /** Centered personal/enterprise account entry dialog. Ephemeral. */
+  accountLoginOpen: boolean;
   /** Ephemeral deep link used when an in-flight task needs user setup. */
   capabilitySetupTarget: CapabilitySetupTarget | null;
   disabledSkills: string[];
@@ -512,6 +514,8 @@ interface SettingsActions {
   requestCapabilitySetup: (target: CapabilitySetupTarget) => void;
   clearCapabilitySetupTarget: () => void;
   closeSystemSettings: () => void;
+  openAccountLogin: () => void;
+  closeAccountLogin: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
   /** Toggle a Labs (experimental features) flag. Takes effect immediately. */
   setLabsFlag: (id: string, enabled: boolean) => void;
@@ -1073,6 +1077,7 @@ export const useSettingsStore = create<SettingsStore>()(
       viewMode: 'chat' as ViewMode,
       activeTeamTab: 'members' as TeamTab,
       systemSettingsOpen: false,
+      accountLoginOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [
         'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
@@ -1387,6 +1392,8 @@ export const useSettingsStore = create<SettingsStore>()(
         set({ capabilitySetupTarget: null }),
       closeSystemSettings: () =>
         set({ systemSettingsOpen: false, capabilitySetupTarget: null }),
+      openAccountLogin: () => set({ accountLoginOpen: true }),
+      closeAccountLogin: () => set({ accountLoginOpen: false }),
       setActiveSystemTab: (tab) => set({
         activeSystemTab: tab,
         ...(tab !== 'capabilities' ? { capabilitySetupTarget: null } : {}),
@@ -2662,6 +2669,7 @@ export const useSettingsStore = create<SettingsStore>()(
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        state.accountLoginOpen = false;
         // Main owns the runtime gate. Restore it only from persisted user
         // settings; Computer Use tools are never allowed to enable themselves.
         syncComputerUseGate(state.computerUseEnabled);

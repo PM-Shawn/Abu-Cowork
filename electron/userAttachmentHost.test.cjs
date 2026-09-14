@@ -262,7 +262,7 @@ test('selects a PNG through the main picker as an image token and reads it back'
   assert.deepEqual(Buffer.from(bytes), PNG);
 });
 
-test('select defaults to image types and rejects PDF selections', async () => {
+test('select defaults to image types and admits an explicitly selected PDF as a path reference', async () => {
   const sender = {};
   const selected = await selectUserAttachments({ sender }, {}, {
     dialog: {
@@ -278,16 +278,16 @@ test('select defaults to image types and rejects PDF selections', async () => {
   });
   assert.equal(selected[0].mediaType, 'image/png');
 
-  await assert.rejects(
-    selectUserAttachments({ sender }, {
-      mediaTypes: ['application/pdf'],
-    }, {
-      dialog: {
-        showOpenDialog: async () => ({ canceled: false, filePaths: ['/tmp/brief.pdf'] }),
-      },
-    }),
-    /media type is unsupported/,
-  );
+  const before = __testing.countTokens();
+  const pdfs = await selectUserAttachments({ sender }, { mediaTypes: ['application/pdf'] }, {
+    dialog: { showOpenDialog: async (options) => {
+      assert.ok(options.filters.some((filter) => filter.extensions.includes('pdf')));
+      return { canceled: false, filePaths: ['/tmp/brief.PDF'] };
+    } },
+  });
+  assert.deepEqual(pdfs, [{ path: '/tmp/brief.PDF', name: 'brief.PDF', mediaType: 'application/pdf' }]);
+  assert.equal(__testing.countTokens(), before);
+
 });
 
 test('raw authorize API is image-only and rejects PDF direct input', () => {

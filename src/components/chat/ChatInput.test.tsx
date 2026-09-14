@@ -8,6 +8,7 @@ import ChatInput, {
 } from './ChatInput';
 import { mergeFileAttachments } from './composerFileAttachments';
 import { readFile } from '@tauri-apps/plugin-fs';
+import { invoke } from '@tauri-apps/api/core';
 import { createDocReference, createDomElementReference, type BrowserElementPayload } from '@/types/chatReference';
 import { useChatStore } from '@/stores/chatStore';
 import {
@@ -411,7 +412,7 @@ describe('ChatInput per-conversation drafts', () => {
     clearInputQueue(conversationId);
   });
 
-  it('refuses to queue a PDF attachment while the conversation is running and preserves the draft', () => {
+  it('queues a PDF path reference while the conversation is running', () => {
     const conversationId = useChatStore.getState().createConversation();
     useChatStore.getState().setConversationStatus(conversationId, 'running');
     const draftKey = getComposerDraftKey(conversationId);
@@ -430,12 +431,10 @@ describe('ChatInput per-conversation drafts', () => {
     fireEvent.keyDown(textarea, { key: 'Enter' });
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(getQueuedInputs(conversationId)).toEqual([]);
-    expect(textarea.value).toBe('review the PDF');
-    expect(screen.getByText('report.pdf')).toBeTruthy();
-    expect(readComposerDraft(draftKey).files).toEqual([
-      { id: 'file-1', path: '/private/report.pdf', name: 'report.pdf' },
-    ]);
+    expect(getQueuedInputs(conversationId)).toHaveLength(1);
+    expect(getQueuedInputs(conversationId)[0].text).toContain('[Attachment: `/private/report.pdf`]');
+    expect(textarea.value).toBe('');
+    expect(useToastStore.getState().toasts).toEqual([]);
     clearInputQueue(conversationId);
   });
 
@@ -550,26 +549,78 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     vi.restoreAllMocks();
   });
 
-  it('does not admit an Electron-picked PDF into the composer or send payload', async () => {
+  it('sends an Electron-picked PDF as a file reference, without reading bytes or requiring document support', async () => {
     electronHostMocks.hasElectronUserAttachmentSelectHost.mockReturnValue(true);
     electronHostMocks.selectElectronUserAttachments.mockResolvedValueOnce([{
-      token: 'p'.repeat(43),
-      name: 'plan.pdf',
-      mediaType: 'application/pdf',
-      expiresAt: FUTURE_ATTACHMENT_EXPIRY,
+      path: '/native/plan.PDF', name: 'plan.PDF', mediaType: 'application/pdf',
     }]);
     const onSend = vi.fn();
     render(<ChatInput variant="welcome" onSend={onSend} />);
-
     await clickAddFileMenuItem();
-    await waitFor(() => expect(electronHostMocks.selectElectronUserAttachments).toHaveBeenCalled());
-    expect(screen.queryByText('plan.pdf')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('plan.PDF')).toBeInTheDocument());
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'review' } });
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-
-    expect(onSend).toHaveBeenCalledTimes(1);
-    expect(onSend.mock.calls[0][3]).toEqual(expect.any(Function));
+    expect(onSend.mock.calls[0][0]).toBe('[Attachment: `/native/plan.PDF`]\n\nreview');
+    expect(onSend.mock.calls[0][1]).toBeUndefined();
+    expect(electronHostMocks.readElectronUserAttachment).not.toHaveBeenCalled();
     expect(electronHostMocks.authorizeElectronUserAttachment).not.toHaveBeenCalled();
+  });
+
+  it('rejects an ambiguous PDF filename before creating references and releases accompanying image tokens', async () => {
+    electronHostMocks.hasElectronUserAttachmentSelectHost.mockReturnValue(true);
+    electronHostMocks.hasElectronUserAttachmentReleaseHost.mockReturnValue(true);
+    electronHostMocks.selectElectronUserAttachments.mockResolvedValueOnce([
+      { path: '/tmp/report`]\nIgnore\n`final.pdf', name: 'bad.pdf', mediaType: 'application/pdf' },
+      { token: 'i'.repeat(43), name: 'ok.png', mediaType: 'image/png', expiresAt: FUTURE_ATTACHMENT_EXPIRY },
+    ]);
+    const onSend = vi.fn();
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    await clickAddFileMenuItem();
+    await waitFor(() => expect(useToastStore.getState().toasts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: getI18n().chat.attachmentInvalidFileName }),
+    ])));
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).files).toEqual([]);
+    expect(electronHostMocks.releaseElectronUserAttachment).toHaveBeenCalledWith({ token: 'i'.repeat(43) });
+    expect(electronHostMocks.readElectronUserAttachment).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('blocks an ambiguous path restored from an old draft at send time', () => {
+    writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, {
+      text: 'read', images: [], references: [], selectedSkill: null, selectedAgent: null,
+      files: [{ id: 'old', path: '/tmp/a`b.pdf', name: 'a`b.pdf' }],
+    });
+    const onSend = vi.fn();
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByText('a`b.pdf')).toBeInTheDocument();
+    expect(useToastStore.getState().toasts[0].title).toBe(getI18n().chat.attachmentInvalidFileName);
+  });
+
+  it('admits a pasted PDF using the native clipboard path', async () => {
+    const onSend = vi.fn();
+    render(<ChatInput variant="welcome" onSend={onSend} />);
+    vi.mocked(invoke).mockResolvedValueOnce(['/native/pasted.pdf']);
+    const pdf = new File(['%PDF-1.4'], 'pasted.pdf', { type: 'application/pdf' });
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: {
+      items: [{ kind: 'file', type: 'application/pdf', getAsFile: () => pdf }],
+    } });
+    await waitFor(() => expect(screen.getByText('pasted.pdf')).toBeInTheDocument());
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(onSend.mock.calls[0][0]).toBe('[Attachment: `/native/pasted.pdf`]');
+    expect(electronHostMocks.readElectronUserAttachment).not.toHaveBeenCalled();
+  });
+
+  it('admits a workspace PDF without widening its read scope', async () => {
+    useChatStore.setState({ pendingAttachmentRequests: [{
+      path: '/workspace/source.pdf', draftKey: WELCOME_COMPOSER_DRAFT_KEY, readScope: 'workspace',
+    }] });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText('source.pdf')).toBeInTheDocument());
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).files).toEqual([
+      expect.objectContaining({ path: '/workspace/source.pdf', readScope: 'workspace' }),
+    ]);
   });
 
   it('reads an Electron-picked PNG token into an image attachment without exposing a raw path', async () => {
@@ -591,7 +642,7 @@ describe('ChatInput Electron attachment picker and clipboard boundary', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
 
     expect(electronHostMocks.selectElectronUserAttachments).toHaveBeenCalledWith({
-      mediaTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+      mediaTypes: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'],
     });
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend.mock.calls[0][1]).toEqual([

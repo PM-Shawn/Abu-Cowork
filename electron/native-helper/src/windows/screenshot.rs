@@ -65,8 +65,78 @@ pub struct ScreenshotResult {
     pub screenshot_id: String,
     pub monitor_id: String,
     pub z_index: i32,
+    /// How many other applications' windows were painted out of this frame.
+    /// Reported so the model is told why part of the image is blank rather
+    /// than left to interpret a grey rectangle as something it can act on.
+    pub masked_window_count: u32,
     pub snapshot_revision: u64,
     pub input_epoch: u64,
+}
+
+/// What a masked-out region is filled with. Flat and dark, so the model reads
+/// it as an absence rather than mistaking it for a panel it could act on.
+const MASK_FILL: [u8; 4] = [28, 28, 30, 255];
+
+/// Rectangles, in monitor-local pixels, of windows stacked above the target
+/// that belong to another process.
+///
+/// A window capture is cut from a whole-monitor frame, so anything overlapping
+/// the target survives the crop. Input cannot land on those windows —
+/// `assert_point` hit-tests every coordinate and refuses with `occluded` — but
+/// a screenshot has no such defence: the pixels simply arrive at the model. A
+/// session authorized for one application must not get to read another one's
+/// screen, so they are painted out here, the one place that sees both the
+/// frame and the window stack.
+///
+/// The target's own process is never masked: its owned menus and popups are
+/// part of what the session was granted, and they are already unioned into the
+/// capture bounds.
+fn occluding_rects(
+    z_order: &[WindowRef],
+    target: &WindowRef,
+    target_catalog_index: usize,
+    monitor_x: i32,
+    monitor_y: i32,
+) -> Vec<[i32; 4]> {
+    z_order
+        .iter()
+        .take(target_catalog_index)
+        .filter(|window| window.process_id != target.process_id && !window.minimized)
+        .map(|window| {
+            [
+                window.bounds[0].saturating_sub(monitor_x),
+                window.bounds[1].saturating_sub(monitor_y),
+                window.bounds[2],
+                window.bounds[3],
+            ]
+        })
+        .filter(|rect| rect[2] > 0 && rect[3] > 0)
+        .collect()
+}
+
+/// Fills each rectangle in place, clamped to the frame. Returns how many
+/// actually covered any pixels, which is what the caller reports — a mask that
+/// fell entirely outside the frame did not hide anything from anyone.
+fn apply_mask(image: &mut RgbaImage, rects: &[[i32; 4]]) -> u32 {
+    let frame_width = image.width() as i64;
+    let frame_height = image.height() as i64;
+    let mut masked = 0u32;
+    for rect in rects {
+        let left = i64::from(rect[0]).max(0);
+        let top = i64::from(rect[1]).max(0);
+        let right = (i64::from(rect[0]) + i64::from(rect[2])).min(frame_width);
+        let bottom = (i64::from(rect[1]) + i64::from(rect[3])).min(frame_height);
+        if right <= left || bottom <= top {
+            continue;
+        }
+        masked += 1;
+        for y in top..bottom {
+            for x in left..right {
+                image.put_pixel(x as u32, y as u32, image::Rgba(MASK_FILL));
+            }
+        }
+    }
+    masked
 }
 
 fn cache() -> &'static Mutex<VecDeque<CachedScreenshot>> {
@@ -313,10 +383,20 @@ pub fn capture_screen_state_impl(
             bottom.saturating_sub(top),
         ]
     });
-    let image = capture_next_monitor_frame(&monitor, &monitor_id, input_epoch)?;
+    let mut image = capture_next_monitor_frame(&monitor, &monitor_id, input_epoch)?;
     if input_epoch != super::interaction::input_epoch() {
         return Err(HelperError::observe_again("physical-input", "physical user input occurred during capture; observe again"));
     }
+    // Only a window-scoped capture is masked. A whole-screen capture has no
+    // target to be scoped to and is authorized separately, by a user who asked
+    // to see the whole screen; masking it would defeat what they asked for.
+    let masked_window_count = match (target.as_ref(), target_catalog_index) {
+        (Some(target), Some(index)) => {
+            let rects = occluding_rects(&z_order, target, index, monitor_x, monitor_y);
+            apply_mask(&mut image, &rects)
+        }
+        _ => 0,
+    };
     // With an exact target, default to the union of its physical-pixel
     // rectangle and owned top-level popups/menus above it. They are all cut
     // from this single WGC monitor frame. Explicit coordinates still permit a
@@ -412,7 +492,94 @@ pub fn capture_screen_state_impl(
         screenshot_id,
         monitor_id,
         z_index: target_z_index,
+        masked_window_count,
         snapshot_revision,
         input_epoch,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{apply_mask, occluding_rects, RgbaImage, WindowRef, MASK_FILL};
+
+    fn window(process_id: u32, bounds: [i32; 4], minimized: bool) -> WindowRef {
+        WindowRef {
+            app_id: format!("app-{process_id}"),
+            app_name: format!("app-{process_id}"),
+            window_id: format!("hwnd:{process_id}-{}", bounds[0]),
+            process_id,
+            title: String::new(),
+            bounds,
+            executable_path: String::new(),
+            minimized,
+            signature_status: "unknown".to_string(),
+            signer_subject: None,
+            package_full_name: None,
+        }
+    }
+
+    #[test]
+    fn only_other_apps_stacked_above_the_target_are_masked() {
+        let target = window(100, [200, 200, 400, 300], false);
+        let z_order = vec![
+            window(999, [0, 0, 100, 100], false),   // another app, above
+            window(100, [180, 180, 60, 60], false), // the target's own menu, above
+            window(888, [0, 0, 50, 50], true),      // another app, above, minimized
+            target.clone(),
+            window(777, [0, 0, 80, 80], false), // another app, but behind
+        ];
+        let rects = occluding_rects(&z_order, &target, 3, 0, 0);
+        // The target's own popup stays: it is part of what the session was
+        // granted. The minimized window is not on screen. The window behind
+        // cannot be covering anything.
+        assert_eq!(rects, vec![[0, 0, 100, 100]]);
+    }
+
+    #[test]
+    fn rects_are_translated_into_monitor_local_pixels() {
+        let target = window(100, [2000, 100, 400, 300], false);
+        let z_order = vec![window(999, [1920, 0, 200, 200], false), target.clone()];
+        // The target lives on a second monitor whose origin is (1920, 0).
+        let rects = occluding_rects(&z_order, &target, 1, 1920, 0);
+        assert_eq!(rects, vec![[0, 0, 200, 200]]);
+    }
+
+    #[test]
+    fn a_whole_screen_capture_has_no_target_so_nothing_is_masked() {
+        // Guarded by the caller rather than here, but the shape matters: with
+        // the target at index 0 there is nothing stacked above it.
+        let target = window(100, [0, 0, 400, 300], false);
+        let z_order = vec![target.clone(), window(999, [0, 0, 100, 100], false)];
+        assert!(occluding_rects(&z_order, &target, 0, 0, 0).is_empty());
+    }
+
+    #[test]
+    fn masking_fills_only_the_overlap_and_counts_what_it_covered() {
+        let mut image = RgbaImage::from_pixel(10, 10, image::Rgba([255, 255, 255, 255]));
+        let covered = apply_mask(
+            &mut image,
+            &[
+                [2, 2, 3, 3],       // inside
+                [8, 8, 50, 50],     // runs off the edge, still covers pixels
+                [-40, -40, 10, 10], // entirely off the frame
+                [100, 0, 5, 5],     // entirely off the frame
+            ],
+        );
+        assert_eq!(covered, 2);
+        assert_eq!(image.get_pixel(3, 3).0, MASK_FILL);
+        assert_eq!(image.get_pixel(9, 9).0, MASK_FILL);
+        assert_eq!(image.get_pixel(0, 0).0, [255, 255, 255, 255]);
+        assert_eq!(image.get_pixel(5, 5).0, [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn a_negative_origin_still_masks_the_part_that_is_on_screen() {
+        // A window half off the left edge of the monitor must not leave its
+        // visible half unmasked.
+        let mut image = RgbaImage::from_pixel(6, 6, image::Rgba([255, 255, 255, 255]));
+        assert_eq!(apply_mask(&mut image, &[[-3, -3, 6, 6]]), 1);
+        assert_eq!(image.get_pixel(0, 0).0, MASK_FILL);
+        assert_eq!(image.get_pixel(2, 2).0, MASK_FILL);
+        assert_eq!(image.get_pixel(3, 3).0, [255, 255, 255, 255]);
+    }
 }

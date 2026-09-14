@@ -4863,6 +4863,7 @@ export interface TranslationDict {
       /** Automatic post-action verification result. {status}, {stateId} */
       verificationResult: string;
       /** A modal appeared during post-action verification. {formatted} */
+      screenshotMaskedWindows: string;
       verificationModal: string;
       /** Office reports that desktop editing is unavailable until activation. */
       officeEditingUnavailable: string;

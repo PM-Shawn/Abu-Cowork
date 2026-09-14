@@ -3713,6 +3713,7 @@ const zhCN: TranslationDict = {
       errStateProtocol: 'Error: 电脑操控状态协议参数无效：{reason}。本次没有执行。',
       stateHeader: '电脑状态 state_id：{stateId}（30 秒内有效，且只能用于一次写操作）',
       verificationResult: '自动验证：{status}。新的 state_id：{stateId}。',
+      screenshotMaskedWindows: '有 {count} 个未授权应用的窗口压在目标上方，它们的区域已涂成纯色块。那些色块不是目标应用的界面，不要在上面找元素或点击；如果确实需要看到被挡住的部分，请让用户把目标窗口切到前台。',
       verificationModal: '\n⚠️ 检测到当前模态弹窗。必须使用上面的新 state_id 先处理以下弹窗控件，不能继续向后台窗口输入：\n{formatted}',
       officeEditingUnavailable: '\n⛔ Office 当前显示“未经授权产品/功能已禁用”，桌面编辑不可用。不要继续点击或重复输入；请明确告知用户先激活 Office，或改用可编辑的 Microsoft 365 网页版。',
       verificationObservationChanged: '已观察到界面变化',

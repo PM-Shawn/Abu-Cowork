@@ -3711,6 +3711,7 @@ const enUS: TranslationDict = {
       errStateProtocol: 'Error: Invalid Computer Use state protocol input: {reason}. No action was executed.',
       stateHeader: 'Computer state_id: {stateId} (valid for 30 seconds and one write action)',
       verificationResult: 'Automatic verification: {status}. New state_id: {stateId}.',
+      screenshotMaskedWindows: '{count} window(s) belonging to applications this session was not granted were stacked over the target; their areas are painted flat. Those blocks are not part of the target app — do not look for elements in them or click them. If you need to see what they cover, ask the user to bring the target window to the front.',
       verificationModal: '\n⚠️ A modal dialog is now active. Use the new state_id above to handle one of these dialog controls before sending any input to the background window:\n{formatted}',
       officeEditingUnavailable: '\n⛔ Office reports “Unlicensed Product” or disabled features, so desktop editing is unavailable. Do not keep clicking or repeat text input; tell the user to activate Office or use the editable Microsoft 365 web app.',
       verificationObservationChanged: 'a UI change was observed',

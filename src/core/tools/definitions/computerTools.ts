@@ -248,6 +248,23 @@ interface ScreenshotResult {
   origin_y?: number;
   screenshot_id?: string;
   input_epoch?: number;
+  /**
+   * Other applications' windows the helper painted out of this frame. A
+   * window capture is cut from a whole-monitor frame, so anything stacked over
+   * the target survives the crop; those pixels belong to apps this session was
+   * never granted. The count is surfaced to the model because an unexplained
+   * flat rectangle is worse than a named one — it would otherwise be read as
+   * something to click.
+   */
+  masked_window_count?: number;
+}
+
+/** One sentence for the model when part of a frame was painted out. */
+function maskedWindowNote(result: ScreenshotResult): string {
+  const count = result.masked_window_count ?? 0;
+  if (count <= 0) return '';
+  const t = getI18n().toolResult.computer;
+  return '\n' + format(t.screenshotMaskedWindows, { count: String(count) });
 }
 
 function explicitTargetApp(input: Record<string, unknown>): string | null {
@@ -778,7 +795,7 @@ async function takeAutoScreenshot(
     // Update floating console preview
     updateLatestScreenshot(result.base64);
     return [
-      { type: 'text', text: `Auto-screenshot after action: ${result.width}x${result.height} (scale: ${result.scale_factor.toFixed(2)}x)\nExamine the screenshot to verify the action result and determine next steps.` },
+      { type: 'text', text: `Auto-screenshot after action: ${result.width}x${result.height} (scale: ${result.scale_factor.toFixed(2)}x)${maskedWindowNote(result)}\nExamine the screenshot to verify the action result and determine next steps.` },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.base64 } },
     ];
   } catch (e) {
@@ -937,7 +954,7 @@ async function formatScreenshotResult(result: ScreenshotResult, workspacePath: s
 
   const saveInfo = savedPath ? `\nScreenshot saved to: ${savedPath}` : '';
   return [
-    { type: 'text', text: `Screenshot: ${result.width}x${result.height} (scale: ${result.scale_factor.toFixed(2)}x)${saveInfo}\nThe screenshot image is attached. Examine it carefully to identify UI elements and their coordinates. Do NOT use screencapture command to take another screenshot.` },
+    { type: 'text', text: `Screenshot: ${result.width}x${result.height} (scale: ${result.scale_factor.toFixed(2)}x)${saveInfo}${maskedWindowNote(result)}\nThe screenshot image is attached. Examine it carefully to identify UI elements and their coordinates. Do NOT use screencapture command to take another screenshot.` },
     { type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.base64 } },
   ];
 }

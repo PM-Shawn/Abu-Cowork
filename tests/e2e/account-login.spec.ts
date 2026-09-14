@@ -17,22 +17,28 @@ const ACCOUNT_SERVER_URL = process.env.VITE_PERSONAL_ACCOUNT_SERVER_URL || 'http
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const BROWSER_TIMEOUT_MS = 10 * 60 * 1000;
 
-type ServerMode = 'success' | 'unavailable' | 'profile-unauthorized';
+type ServerMode = 'success' | 'unavailable' | 'refresh-required' | 'profile-unauthorized';
 
-function tokenFor(userId: string): string {
+function tokenFor(userId: string, generation = 'initial'): string {
   return [
     Buffer.from('{"alg":"none"}').toString('base64url'),
-    Buffer.from(JSON.stringify({ sub: userId })).toString('base64url'),
+    Buffer.from(JSON.stringify({ sub: userId, generation })).toString('base64url'),
     'e2e-signature',
   ].join('.');
 }
 
-function startAccountServer(mode: () => ServerMode, onLogout: () => void): Promise<http.Server> {
+function startAccountServer(
+  mode: () => ServerMode,
+  onLogout: () => void,
+  onRefresh: () => void,
+): Promise<http.Server> {
   const origin = new URL(ACCOUNT_SERVER_URL);
   if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname)) {
     throw new Error('Account E2E server must use a loopback origin');
   }
   const port = Number(origin.port || (origin.protocol === 'https:' ? 443 : 80));
+  const initialAccessToken = tokenFor('user-1');
+  const rotatedAccessToken = tokenFor('user-1', 'rotated');
   const server = http.createServer((request, response) => {
     request.resume();
     request.on('end', () => {
@@ -50,10 +56,29 @@ function startAccountServer(mode: () => ServerMode, onLogout: () => void): Promi
       if (request.method === 'POST' && request.url === '/api/client/v1/auth/exchange') {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({
-          access_token: tokenFor('user-1'),
+          access_token: initialAccessToken,
           token_type: 'Bearer',
           expires_in: 900,
           refresh_token: 'e2e-refresh-token',
+          refresh_idle_expires_at: '2026-09-28T00:00:00Z',
+          refresh_absolute_expires_at: '2026-12-13T00:00:00Z',
+          family_id: 'e2e-family',
+        }));
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/api/client/v1/auth/refresh') {
+        onRefresh();
+        if (mode() === 'profile-unauthorized') {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'expired_token' }));
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          access_token: rotatedAccessToken,
+          token_type: 'Bearer',
+          expires_in: 900,
+          refresh_token: 'e2e-rotated-refresh-token',
           refresh_idle_expires_at: '2026-09-28T00:00:00Z',
           refresh_absolute_expires_at: '2026-12-13T00:00:00Z',
           family_id: 'e2e-family',
@@ -64,6 +89,14 @@ function startAccountServer(mode: () => ServerMode, onLogout: () => void): Promi
         if (mode() === 'profile-unauthorized') {
           response.writeHead(401, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        if (
+          mode() === 'refresh-required' &&
+          request.headers.authorization !== `Bearer ${rotatedAccessToken}`
+        ) {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'unauthenticated' }));
           return;
         }
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -186,8 +219,11 @@ test.describe.serial('personal account login UI', () => {
     const testInfo = test.info();
     let serverMode: ServerMode = 'success';
     let logoutRequests = 0;
+    let refreshRequests = 0;
     server = await startAccountServer(() => serverMode, () => {
       logoutRequests += 1;
+    }, () => {
+      refreshRequests += 1;
     });
     dataRoot = createElectronDataRoot();
     const launched = await launchAbuElectron(dataRoot);
@@ -247,6 +283,18 @@ test.describe.serial('personal account login UI', () => {
     await expect(dialog).toBeHidden();
     await expect(page.getByRole('button', { name: 'Ada', exact: true }).first()).toBeVisible();
     await captureLightAndDark(page, testInfo, '08-sidebar-signed-in');
+
+    // A real renderer restart restores safeStorage, rotates exactly once after
+    // profile rejects the old access token, and persists the replacement pair.
+    serverMode = 'refresh-required';
+    await page.reload();
+    await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByRole('button', { name: 'Ada', exact: true }).first()).toBeVisible();
+    await expect.poll(() => refreshRequests).toBe(1);
+    await page.reload();
+    await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByRole('button', { name: 'Ada', exact: true }).first()).toBeVisible();
+    expect(refreshRequests).toBe(1);
 
     await page.getByRole('button', { name: 'Ada', exact: true }).first().click();
     await page.getByRole('menuitem', { name: '账号设置', exact: true }).click();

@@ -4229,3 +4229,63 @@ test('settings commands list, deny and revoke remembered apps without a task, an
     { available: false, grants: [], denied: [] },
   );
 });
+
+// The renderer used to probe the foreground app before every action and
+// refuse when that probe threw, which cost a whole turn on 2026-09-14: the
+// foreground window was one the helper reports as not visible, and nine
+// actions aimed at a live, listable window were refused over thirty seconds.
+// The renderer no longer asks. This pins the Gate behaviour that makes that
+// safe — a named target is resolved by identity, not by what is frontmost,
+// so an unidentifiable foreground window blocks neither reading nor writing.
+test('a named target is observable and writable while the foreground window is unidentifiable', async () => {
+  let activeWindowCalls = 0;
+  const h = harness({
+    platform: 'win32',
+    getActiveWindow: async () => {
+      activeWindowCalls += 1;
+      throw new Error('window is not visible');
+    },
+    nativeDispatch: async (cmd) => {
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_app_identity') {
+        return {
+          app_name: 'Notepad', bundle_id: 'notepad.exe', app_id: 'notepad.exe',
+          process_id: 100, window_id: 'hwnd:0x100',
+        };
+      }
+      if (cmd === 'get_window') {
+        return { app_name: 'Notepad', app_id: 'notepad.exe', process_id: 100, window_id: 'hwnd:0x100' };
+      }
+      if (cmd === 'input_lease_begin') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'input_lease_commit_observation') return { phase: 'observing', input_epoch: 1 };
+      if (cmd === 'ax_snapshot') {
+        return {
+          session_id: 'ax-dead-foreground', app: 'Notepad', total_visited: 1, truncated: false,
+          elements: [], input_epoch: 1, window_id: 'hwnd:0x100', accessibility_revision: 1,
+        };
+      }
+      return { ok: true };
+    },
+  });
+  h.setIdentity({ app_name: 'Notepad', bundle_id: 'notepad.exe', process_id: 100, window_id: 'hwnd:0x100' });
+
+  const before = await observeState(h, { targetApp: 'Notepad' });
+  assert.equal(typeof before.state_id, 'string');
+
+  const actionSession = await begin(h, {
+    targetApp: 'Notepad',
+    expectedStateId: before.state_id,
+    actionIntent: { action: 'type', category: 'none', summary: '' },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'ax_press', {
+    sessionId: before.session_id,
+    elementId: 0,
+    expectedStateId: before.state_id,
+    [COMPUTER_USE_TOKEN_ARG]: actionSession.token,
+  });
+
+  // Naming the app is what makes this independent of the foreground: the
+  // whole flow must never have needed to ask.
+  assert.equal(activeWindowCalls, 0);
+  h.gate.teardown();
+});

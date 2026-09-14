@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useAccountStore } from '@/core/account/accountStore';
+import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import {
   Settings,
@@ -51,6 +54,8 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const account = useAccountStore((s) => s.account);
   const profileStatus = useAccountStore((s) => s.profileStatus);
   const signOut = useAccountStore((s) => s.signOut);
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const unbindEnterprise = useEnterpriseStore((s) => s.unbind);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
@@ -132,6 +137,14 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     });
   }, [locale]);
 
+  const handleEnterpriseLogin = useCallback(() => {
+    void startEnterpriseAccountLogin()
+      .then((result) => {
+        if (result === 'configuration_required') openSystemSettings('enterprise');
+      })
+      .catch(() => openSystemSettings('enterprise'));
+  }, [openSystemSettings]);
+
   const languageOptions = [
     { value: 'system', label: t.settings.followSystem },
     { value: 'zh-CN', label: '简体中文' },
@@ -200,17 +213,26 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const UpdateIcon = updateRow.icon;
   const signedIn = accountStatus === 'signed_in' && account !== null;
   const expired = accountStatus === 'expired' && account !== null;
-  const accountLabel = signedIn
-    ? account.name || account.email || t.account.title
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseSignedIn = enterpriseBinding !== null;
+  const hasDisplayedIdentity = signedIn || enterpriseSignedIn;
+  const accountLabel = enterpriseBinding
+    ? enterpriseBinding.userName || enterpriseBinding.userEmail || enterpriseBinding.orgName
+    : signedIn
+      ? account.name || account.email || t.account.title
     : expired
       ? t.account.retry
       : t.account.loginRegister;
-  const accountDetail = signedIn
-    ? profileStatus === 'loading'
-      ? t.account.profileLoading
-      : profileStatus === 'error'
-        ? t.account.profileUnavailable
-        : account.email || t.account.title
+  const accountDetail = enterpriseBinding
+    ? [enterpriseBinding.userEmail, enterpriseBinding.orgName].filter(Boolean).join(' · ')
+    : signedIn
+      ? profileStatus === 'loading'
+        ? t.account.profileLoading
+        : profileStatus === 'error'
+          ? t.account.profileUnavailable
+          : account.email || t.account.title
     : expired
       ? t.account.sessionExpired
       : t.sidebar.localMode;
@@ -239,7 +261,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
         <span
           className={cn(
             'flex-1 min-w-0 text-h-xs font-semibold truncate',
-            signedIn ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
+            hasDisplayedIdentity ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
           )}
         >
           {accountLabel}
@@ -273,14 +295,38 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
 
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
-          {signedIn ? (
+          {enterpriseSignedIn ? (
+            <>
+              <MenuRow
+                icon={LogIn}
+                label={t.account.switchAccount}
+                onClick={() => run(openAccountLogin)}
+              />
+              <MenuRow
+                icon={LogOut}
+                label={t.account.signOutEnterprise}
+                onClick={() => run(() => void unbindEnterprise())}
+              />
+            </>
+          ) : signedIn ? (
             <>
               <MenuRow
                 icon={UserRound}
                 label={t.account.accountSettings}
                 onClick={() => run(() => openSystemSettings('account'))}
               />
-              <MenuRow icon={LogOut} label={t.account.signOut} onClick={() => run(() => void signOut())} />
+              <MenuRow
+                icon={LogOut}
+                label={IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
+                onClick={() => run(() => void signOut())}
+              />
+              {IS_ENTERPRISE_BUILD && (
+                <MenuRow
+                  icon={LogIn}
+                  label={t.account.switchToEnterprise}
+                  onClick={() => run(handleEnterpriseLogin)}
+                />
+              )}
             </>
           ) : (
             <MenuRow

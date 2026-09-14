@@ -109,12 +109,17 @@ export interface PendingEnroll {
   serverUrl: string
   enrollmentToken?: string
 }
+export interface PendingOpen {
+  serverUrl: string
+}
 
 export function useDeepLinkEnroll(): {
   pendingEnroll: PendingEnroll | null
   dismissEnroll: () => void
+  pendingOpen: PendingOpen | null
+  dismissOpen: () => void
 } {
-  return { pendingEnroll: null, dismissEnroll() {} }
+  return { pendingEnroll: null, dismissEnroll() {}, pendingOpen: null, dismissOpen() {} }
 }
 
 export function BindToEnterpriseFlow(_props: {
@@ -122,5 +127,11 @@ export function BindToEnterpriseFlow(_props: {
   onCancel: () => void
   initialServerUrl?: string
 }): null { return null }
+export type EnterpriseAccountLoginResult = 'started' | 'configuration_required'
+export function startEnterpriseAccountLogin(): Promise<EnterpriseAccountLoginResult> {
+  return Promise.resolve('configuration_required')
+}
+export function EnterpriseConnectionSlot(_props: { currentServerUrl?: string }): null { return null }
+
 export function PolicyConfirmModal(): null { return null }
 export function EnterpriseLlmBadge(): null { return null }

@@ -6,6 +6,8 @@ import AccountLoginDialog from './AccountLoginDialog';
 
 const mocks = vi.hoisted(() => ({
   close: vi.fn(),
+  openSystemSettings: vi.fn(),
+  startEnterpriseLogin: vi.fn(),
   start: vi.fn(),
   cancel: vi.fn(),
   signOut: vi.fn(),
@@ -21,8 +23,10 @@ vi.mock('@/core/account/accountStore', () => ({
   useAccountStore: (selector: (state: Record<string, unknown>) => unknown) => selector(mocks.accountState),
 }));
 
-vi.mock('@/components/enterprise/BindToEnterpriseFlow', () => ({
-  default: () => null,
+vi.mock('@/config/featureGates', () => ({ IS_ENTERPRISE_BUILD: true }));
+
+vi.mock('@/core/enterprise/accountLogin', () => ({
+  startEnterpriseAccountLogin: mocks.startEnterpriseLogin,
 }));
 
 describe('AccountLoginDialog', () => {
@@ -32,7 +36,14 @@ describe('AccountLoginDialog', () => {
     mocks.start.mockReset();
     mocks.cancel.mockReset();
     mocks.signOut.mockReset();
-    mocks.uiState = { accountLoginOpen: true, closeAccountLogin: mocks.close };
+    mocks.openSystemSettings.mockReset();
+    mocks.startEnterpriseLogin.mockReset();
+    mocks.startEnterpriseLogin.mockResolvedValue('started');
+    mocks.uiState = {
+      accountLoginOpen: true,
+      closeAccountLogin: mocks.close,
+      openSystemSettings: mocks.openSystemSettings,
+    };
     mocks.accountState = {
       status: 'signed_out',
       account: null,
@@ -56,5 +67,24 @@ describe('AccountLoginDialog', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭' }));
     expect(mocks.cancel).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();
+  });
+
+  it('starts enterprise browser login directly when the domain is configured', async () => {
+    render(<AccountLoginDialog />);
+    fireEvent.click(screen.getByRole('button', { name: '企业账号登录' }));
+
+    await vi.waitFor(() => expect(mocks.startEnterpriseLogin).toHaveBeenCalledOnce());
+    expect(mocks.close).toHaveBeenCalledOnce();
+    expect(mocks.openSystemSettings).not.toHaveBeenCalled();
+  });
+
+  it('opens enterprise settings when a domain still needs configuration', async () => {
+    mocks.startEnterpriseLogin.mockResolvedValue('configuration_required');
+    render(<AccountLoginDialog />);
+    fireEvent.click(screen.getByRole('button', { name: '企业账号登录' }));
+
+    await vi.waitFor(() => {
+      expect(mocks.openSystemSettings).toHaveBeenCalledWith('enterprise');
+    });
   });
 });

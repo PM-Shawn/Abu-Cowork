@@ -46,8 +46,6 @@ interface MCPActions {
   refreshStatus: () => Promise<void>;
   /** Sync state from mcpManager */
   syncFromManager: () => void;
-  /** Toggle server enabled state */
-  toggleServerEnabled: (name: string) => void;
   /** Connect all enabled servers */
   connectAllEnabled: () => Promise<void>;
 }
@@ -210,15 +208,6 @@ export const useMCPStore = create<MCPStore>()(
               state.servers[name].status = 'disconnected';
               state.servers[name].tools = [];
             }
-          }
-        });
-      },
-
-      toggleServerEnabled: (name) => {
-        set((state) => {
-          const entry = state.servers[name];
-          if (entry) {
-            entry.config.enabled = !entry.config.enabled;
           }
         });
       },

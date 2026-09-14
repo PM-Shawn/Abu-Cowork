@@ -3675,7 +3675,6 @@ const enUS: TranslationDict = {
       errPermissionRelaunch: 'Error: The required macOS permission is enabled but is not active in this Abu process yet. Restart Abu, then continue this task.',
       errModelUnsupported: 'Error: {model} is not suitable for Computer Use because native tool calling is disabled. Switch to a compatible model.',
       errModelUnknown: 'Error: Abu cannot verify that {model} can call Computer Use reliably. Declare native tool support for this custom model or switch to a verified model.',
-      errTargetIdentityFailed: 'Error: Abu could not verify which app would be controlled, so the computer action was stopped: {msg}',
       errTargetUnavailable: 'Error: No visible window for "{app}" was found. No computer action was executed. Ask the user to open that app and keep its target window visible; do not omit or change the app parameter, and do not operate the current foreground app instead.',
       errTargetRequired: 'Error: No target window was selected. Every write must carry the exact window_ref from the latest window state. For selection, use list_windows with the named app, or target_selector="foreground-at-submit" only when the user referred to that window.',
       errTargetNotFound: 'Error: The selected target has no visible window. Ask the user to open it, then observe again; do not fall back to another app or the whole screen.',

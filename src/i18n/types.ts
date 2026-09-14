@@ -4803,7 +4803,6 @@ export interface TranslationDict {
       errModelUnsupported: string;
       errModelUnknown: string;
       /** Foreground target identity probe failed. {msg} */
-      errTargetIdentityFailed: string;
       /** A specifically requested app has no visible target window. {app} */
       errTargetUnavailable: string;
       /** No target selector was supplied for a window operation. */

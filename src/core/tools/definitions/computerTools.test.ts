@@ -1051,7 +1051,71 @@ describe('computerTool — accessibility permission branch', () => {
     });
   });
 
-  it('uses the native frontmost-app identity probe in Electron without Apple Events', async () => {
+  // Regression: the renderer used to probe the foreground app here and
+  // discard the answer on the Electron path, while a failed probe still
+  // refused the action. On 2026-09-14 a foreground window that was merely
+  // invisible made the probe throw and nine consecutive actions aimed at a
+  // different, live window were refused over 30 seconds. The Host Gate is the
+  // authoritative classifier, so an unusable answer must not fail the call.
+  it('acts on a live target while the foreground window is unavailable', async () => {
+    setElectronHost(true);
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: false, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity') {
+        return Promise.reject(new Error('window is not visible'));
+      }
+      if (cmd === 'resolve_app_identity') {
+        return Promise.resolve({
+          app_name: 'Finder',
+          bundle_id: 'com.apple.finder',
+          process_id: 42,
+        });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'authorized',
+          token: 'task-owned-token',
+          target: {
+            window_ref: 'wr-finder-native',
+            app_name: 'Finder',
+            bundle_id: 'com.apple.finder',
+            process_id: 42,
+            relation: 'root',
+          },
+          classification: 'ordinary',
+          expires_at: 61_000,
+        });
+      }
+      if (cmd === 'ax_snapshot') {
+        return Promise.resolve({
+          session_id: 'ax-finder',
+          app: 'Finder',
+          total_visited: 1,
+          truncated: false,
+          elements: [],
+        });
+      }
+      return Promise.resolve(null);
+    });
+
+    const result = await computerTool.execute(
+      { action: 'get_app_state', app: 'Finder', consequence: 'none' },
+      {
+        conversationId: 'active-conversation',
+        loopId: 'loop-dead-foreground',
+        toolCallId: 'tool-dead-foreground',
+        interactionMode: 'foreground',
+        supportsVision: false,
+      },
+    );
+
+    expect(String(result)).not.toContain('window is not visible');
+    expect(String(result)).toContain('window_ref: wr-finder-native');
+  });
+
+  it('classifies the Electron target through the Host Gate, not Apple Events', async () => {
     setElectronHost(true);
     vi.mocked(invoke).mockImplementation((cmd: string) => {
       if (cmd === 'check_macos_permissions') {
@@ -1103,7 +1167,10 @@ describe('computerTool — accessibility permission branch', () => {
     );
 
     const commands = vi.mocked(invoke).mock.calls.map(([cmd]) => cmd);
-    expect(commands).toContain('frontmost_app_identity');
+    // The Host Gate classifies the target it actually resolves. The renderer
+    // asks for no foreground identity of its own — neither the Electron probe
+    // nor the legacy Tauri one.
+    expect(commands).not.toContain('frontmost_app_identity');
     expect(commands).not.toContain('get_active_window');
   });
 
@@ -1471,8 +1538,8 @@ describe('computerTool — accessibility permission branch', () => {
       windowRef: 'wr-notepad-task',
       targetApp: 'notepad',
     });
-    expect(commands).toContain('frontmost_app_identity');
     expect(commands).toContain('keyboard_press');
+    expect(commands).not.toContain('frontmost_app_identity');
     expect(commands).not.toContain('get_active_window');
     expect(commands).toContain('ax_snapshot');
     expect(String(actionResult)).toContain('next_state:');

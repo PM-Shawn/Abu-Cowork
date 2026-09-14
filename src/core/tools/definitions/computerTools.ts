@@ -1399,11 +1399,30 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       }
       const app = explicitTargetApp(input);
       if (!app) return t.errTargetRequired;
-      const response = await listComputerUseWindows(
-        runKey.conversationId,
-        runKey.loopId,
-        app,
-      );
+      let response;
+      try {
+        response = await listComputerUseWindows(
+          runKey.conversationId,
+          runKey.loopId,
+          app,
+        );
+      } catch (e) {
+        // The helper reports "app X has no visible window" by throwing, and
+        // this was the one action that let it through raw. The model read it
+        // as plumbing rather than an answer and went to the shell to
+        // enumerate windows instead — the surface Computer Use exists to make
+        // unnecessary. Every other action already names the condition and
+        // says who can clear it.
+        if (!targetUnavailableError(e)) throw e;
+        traceComputerUse('blocked', context, {
+          stage: action,
+          reason: 'target-unavailable',
+        });
+        context?.reportMetadata?.({
+          requiresUserRecovery: 'computer-target-unavailable',
+        });
+        return format(t.errTargetUnavailable, { app });
+      }
       if (response.status === 'target-error') {
         return protocolErrorText(response.error, t);
       }
@@ -1516,27 +1535,31 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       // Check whether the foreground app is sensitive. Electron resolves this
       // through the native helper (NSWorkspace on macOS), so the Computer Use
       // path does not require Apple Events/System Events authorization.
-      try {
-        const electronHostOwnsIdentityPolicy = hasElectronCommandHost();
-        const activeWin = await invoke<{ app_name: string; bundle_id: string | null }>(
-          electronHostOwnsIdentityPolicy
-            ? 'frontmost_app_identity'
-            : 'get_active_window',
-        );
-        const blocked = checkSensitiveApp(activeWin.bundle_id, activeWin.app_name, {
-          approvalHandledByHost: electronHostOwnsIdentityPolicy,
-        });
-        // The Electron Host Gate resolves the actual requested/pinned target
-        // after this renderer probe. Prompt submission commonly makes Abu the
-        // foreground app, so a renderer-side denial here would reject Abu
-        // before the Host can recover the external Z-order target. The probe
-        // remains useful on the legacy Tauri path; Electron's process/HWND-
-        // bound gate is the authoritative policy boundary.
-        if (blocked && !electronHostOwnsIdentityPolicy) return `Error: ${blocked}`;
-      } catch (e) {
-        if (hasElectronCommandHost()) {
-          const msg = e instanceof Error ? e.message : String(e);
-          return format(t.errTargetIdentityFailed, { msg });
+      // Only the legacy Tauri path consults the foreground app here. The
+      // Electron Host Gate resolves the actual requested/pinned target after
+      // this point and classifies it against the same policy, so its verdict —
+      // not this probe's — is authoritative; prompt submission also commonly
+      // makes Abu itself the foreground app, which a renderer-side denial
+      // would reject before the Host can recover the external Z-order target.
+      //
+      // The probe therefore had its answer discarded on the Electron path
+      // while its failures still refused the action, and that inversion cost a
+      // whole turn on 2026-09-14: a foreground window that was merely
+      // invisible made the helper throw, and nine consecutive actions aimed at
+      // a different, live, listable window were refused over 30 seconds. An
+      // unusable answer must not be able to fail the operation, so the
+      // Electron path no longer asks the question.
+      if (!hasElectronCommandHost()) {
+        try {
+          const activeWin = await invoke<{ app_name: string; bundle_id: string | null }>(
+            'get_active_window',
+          );
+          const blocked = checkSensitiveApp(activeWin.bundle_id, activeWin.app_name, {
+            approvalHandledByHost: false,
+          });
+          if (blocked) return `Error: ${blocked}`;
+        } catch {
+          // Keep the historical Tauri fallback while Electron migration is active.
         }
       }
 

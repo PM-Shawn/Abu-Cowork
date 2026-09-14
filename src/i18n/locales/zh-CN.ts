@@ -3677,7 +3677,6 @@ const zhCN: TranslationDict = {
       errPermissionRelaunch: 'Error: 所需的 macOS 权限已开启，但当前 Abu 进程尚未生效。请重启 Abu 后继续本任务。',
       errModelUnsupported: 'Error: {model} 已关闭原生工具调用，当前不适合电脑操控。请切换到兼容模型。',
       errModelUnknown: 'Error: Abu 无法确认 {model} 能可靠调用电脑操控工具。请为该自定义模型明确声明原生工具能力，或切换到已验证模型。',
-      errTargetIdentityFailed: 'Error: Abu 无法确认将要操控的具体应用，已停止本次电脑操作：{msg}',
       errTargetUnavailable: 'Error: 找不到可见的「{app}」窗口，本次没有执行任何电脑操作。请让用户打开该应用并保持目标窗口可见；不要省略或更换 app 参数，也不要改为操作当前前台应用。',
       errTargetRequired: 'Error: 尚未选择目标窗口。每个写操作都必须携带最新窗口状态中的准确 window_ref。选择窗口时，请对用户点名的应用调用 list_windows；只有用户明确指向提交消息时的前台窗口，才使用 target_selector="foreground-at-submit"。',
       errTargetNotFound: 'Error: 所选目标没有可见窗口。请让用户打开后重新观察；禁止降级到其他应用或整个屏幕。',

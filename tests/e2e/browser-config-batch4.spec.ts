@@ -42,7 +42,7 @@ function screenshotPath(name: string): string {
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
 const QUICK_START = /^(快速入门|Quick Start)$/;
-const ACCOUNT = /^(我|Me)$/;
+const ACCOUNT = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 const SETTINGS = /^(设置|Settings)$/;
 const CAPABILITIES = /^(能力|Capabilities)$/;
 const BUILTIN_BROWSER = /^(阿布内置浏览器|Abu built-in browser)$/;

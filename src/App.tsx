@@ -12,6 +12,7 @@ import ChatView from '@/components/chat/ChatView';
 import ImageLightbox from '@/components/chat/ImageLightbox';
 import AutomationView from '@/components/automation/AutomationView';
 import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
+import AccountLoginDialog from '@/components/account/AccountLoginDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
@@ -950,6 +951,9 @@ function App() {
 
         {/* System settings — overlay dialog, self-gates on systemSettingsOpen */}
         <SystemSettingsDialog />
+
+        {/* Personal / enterprise account entry — centered, optional, and non-blocking. */}
+        <AccountLoginDialog />
 
         {/* Task-local capability setup — suspends the exact requesting tool call. */}
         <CapabilitySetupDialog />

@@ -3639,6 +3639,7 @@ const enUS: TranslationDict = {
     },
     file: {
       imageSkipNoVision: '[Image file {path} ({mediaType}): the current model has no vision capability; image content was not read. To analyse images, switch to a vision-capable model (e.g. Claude / GPT-4o).]',
+      errFileHeldByAnotherApp: 'Error: {path} is open and locked by another program; nothing was written. This is not transient and a retry will not clear it — if the file is open in Office or WPS, ask the user to save and close it, or make this change inside that application instead.',
       errFileLocked: 'Error: {path} is being edited by another expert — please retry later.',
       movedToTrash: 'Moved to Trash (usually recoverable): {path}',
       trashFailed: 'Error: could not move to Trash: {error} (nothing was deleted)',

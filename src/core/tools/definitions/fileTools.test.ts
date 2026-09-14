@@ -291,6 +291,58 @@ describe('writeFileTool — HTML charset injection', () => {
   });
 });
 
+describe('write/edit — a file another program holds open', () => {
+  // Office and WPS open a document with a share mode that denies writes, so a
+  // spreadsheet the user is looking at fails the write with EBUSY. Handed back
+  // raw that reads as a glitch, and the model retries a lock that will not
+  // clear on its own. It has to come back as a fact about the world.
+  const busy = (code: string): NodeJS.ErrnoException => {
+    const error = new Error(`${code}: resource busy or locked, open 'C:/table.csv'`) as NodeJS.ErrnoException;
+    error.code = code;
+    return error;
+  };
+
+  beforeEach(() => {
+    vi.mocked(writeTextFile).mockClear();
+    vi.mocked(readTextFile).mockClear();
+  });
+
+  // A queued one-shot rejection that a test never reaches would fire in the
+  // next one instead, so nothing here is allowed to leak.
+  afterEach(() => {
+    vi.mocked(writeTextFile).mockReset();
+    vi.mocked(writeTextFile).mockResolvedValue(undefined);
+  });
+
+  it.each(['EBUSY', 'EPERM', 'EACCES'])('explains a %s write instead of inviting a retry', async (code) => {
+    vi.mocked(writeTextFile).mockRejectedValueOnce(busy(code));
+    const result = String(await writeFileTool.execute({ path: 'C:/table.csv', content: 'x' }));
+    expect(result).toMatch(/open and locked by another program/);
+    expect(result).toMatch(/retry will not clear it/);
+    expect(result).not.toMatch(new RegExp(code));
+  });
+
+  it('explains the same for an edit', async () => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(readTextFile).mockResolvedValueOnce('before');
+    vi.mocked(writeTextFile).mockRejectedValueOnce(busy('EBUSY'));
+    const result = String(await editFileTool.execute({
+      path: 'C:/table.csv',
+      old_content: 'before',
+      new_content: 'after',
+    }));
+    expect(result).toMatch(/open and locked by another program/);
+  });
+
+  it('leaves an unrelated failure as it was', async () => {
+    const other = new Error('ENOSPC: no space left on device') as NodeJS.ErrnoException;
+    other.code = 'ENOSPC';
+    vi.mocked(writeTextFile).mockRejectedValueOnce(other);
+    const result = String(await writeFileTool.execute({ path: 'C:/table.csv', content: 'x' }));
+    expect(result).toMatch(/no space left on device/);
+  });
+});
+
 describe('deleteFileTool \u2014 move to trash (safe delete)', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();

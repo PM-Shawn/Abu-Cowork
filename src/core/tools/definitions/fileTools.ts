@@ -272,13 +272,30 @@ export const writeFileTool: ToolDefinition = {
       }
       return `Successfully wrote ${content.length} characters to ${path}`;
     } catch (err) {
-      return `Error writing file: ${err instanceof Error ? err.message : String(err)}`;
+      return fileBusyMessage(err, path)
+        ?? `Error writing file: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       releaseFileLock(path);
     }
   },
   isConcurrencySafe: false,
 };
+
+/**
+ * Turns a Windows sharing violation into something the model can act on.
+ *
+ * Office and WPS hold a document open with a share mode that denies writes, so
+ * editing a spreadsheet the user is looking at fails with EBUSY. Handed back
+ * raw, that reads as a transient glitch and invites a retry loop against a lock
+ * that will not clear on its own. It is not transient: someone has the file
+ * open, and the only ways forward are for them to close it or for the edit to
+ * happen inside the application instead.
+ */
+function fileBusyMessage(error: unknown, path: string): string | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'EACCES') return null;
+  return format(getI18n().toolResult.file.errFileHeldByAnotherApp, { path });
+}
 
 export const editFileTool: ToolDefinition = {
   name: TOOL_NAMES.EDIT_FILE,
@@ -382,7 +399,8 @@ export const editFileTool: ToolDefinition = {
       const newLines = newContent.split('\n').length;
       return `Successfully edited ${path}: replaced ${oldLines} line(s) with ${newLines} line(s)`;
     } catch (err) {
-      return `Error editing file: ${err instanceof Error ? err.message : String(err)}`;
+      return fileBusyMessage(err, path)
+        ?? `Error editing file: ${err instanceof Error ? err.message : String(err)}`;
     } finally {
       releaseFileLock(path);
     }

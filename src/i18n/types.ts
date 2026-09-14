@@ -4580,6 +4580,7 @@ export interface TranslationDict {
       /** Non-vision model image skip note. {path}, {mediaType} */
       imageSkipNoVision: string;
       /** File locked by another agent. {path} */
+      errFileHeldByAnotherApp: string;
       errFileLocked: string;
       /** delete_file succeeded — moved to OS Trash. {path} */
       movedToTrash: string;

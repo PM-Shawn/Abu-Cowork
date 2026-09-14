@@ -3641,6 +3641,7 @@ const zhCN: TranslationDict = {
     },
     file: {
       imageSkipNoVision: '[图片文件 {path}（{mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]',
+      errFileHeldByAnotherApp: 'Error: {path} 正被另一个程序打开并锁定，本次没有写入。这不是临时故障，重试不会成功——如果文件开在 Office/WPS 里，请让用户保存并关闭它；或者改为在那个程序里直接完成这次修改。',
       errFileLocked: 'Error: {path} 正在被其他专家编辑，请稍后重试。',
       movedToTrash: '已移入废纸篓（一般可恢复）：{path}',
       trashFailed: 'Error: 移入废纸篓失败：{error}（未删除，也未永久删除）',

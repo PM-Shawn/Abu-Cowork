@@ -202,6 +202,7 @@ export interface TranslationDict {
     localWithoutLogin: string;
     loginRegister: string;
     accountSettings: string;
+    personalAccountSettings: string;
     waitingBrowser: string;
     completingLogin: string;
     cancelled: string;
@@ -218,6 +219,7 @@ export interface TranslationDict {
     name: string;
     email: string;
     signOut: string;
+    signOutPersonal: string;
   };
 
   // Todos

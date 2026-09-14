@@ -1,10 +1,8 @@
 /**
  * Deep-link host — the Electron equivalent of tauri_plugin_deep_link.
  *
- * Abu's only deep link today is `abu://enroll?server=<url>&token=<token>`,
- * used to pre-fill the enterprise-binding form (an admin sends the user a link;
- * clicking it launches/focuses Abu with the server address filled in). The
- * frontend consumes it unchanged via `@tauri-apps/plugin-deep-link`:
+ * Abu accepts an enterprise enrollment link and a personal-account OAuth
+ * callback. The frontend consumes accepted links via `@tauri-apps/plugin-deep-link`:
  *   - getCurrent()  → invoke('plugin:deep-link|get_current')  → string[] | null
  *   - onOpenUrl(cb) → listen('deep-link://new-url')           → payload string[]
  *
@@ -38,9 +36,9 @@ const PROD_SCHEME = 'abu';
 const DEV_SCHEME = 'abu-dev';
 const NEW_URL_EVENT = 'deep-link://new-url';
 
-// The single known deep-link action today. New actions must be added here so
+// Every known deep-link action must be added here so
 // the whitelist keeps rejecting everything else.
-const KNOWN_HOSTS = new Set(['enroll']);
+const KNOWN_HOSTS = new Set(['enroll', 'auth']);
 
 let activeScheme = PROD_SCHEME;
 let coldStartUrls = []; // URLs that cold-launched the app (get_current path)
@@ -48,8 +46,38 @@ let pendingHotUrls = []; // running-app URLs awaiting a renderer subscriber
 let emitFn = null; // injected tauriHost.emitEvent (returns delivered count)
 let getWindowFn = null; // injected tauriHost.getMainWindow
 
+function registrationTarget() {
+  if (process.defaultApp && process.argv.length >= 2) {
+    return {
+      executablePath: process.execPath,
+      args: [path.resolve(process.argv[1])],
+    };
+  }
+  return null;
+}
+
 function log(msg, extra) {
   console.log(`[deepLink] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`);
+}
+
+// Authorization codes and CSRF state must never enter logs. Keep the existing
+// enroll logging behavior unchanged because support workflows rely on it.
+function safeUrlLogDetails(raw) {
+  if (typeof raw === 'string') {
+    const candidate = raw.trim().replace(/^abu-dev:/i, 'abu:');
+    // Parse-independent guard: malformed auth callbacks (for example an
+    // invalid port) still contain secrets and must not fall back to raw logs.
+    if (/^abu:(?:\/\/)?(?:[^/?#]*@)?auth(?:[/?#:%.]|$)/i.test(candidate)) {
+      return { host: 'auth' };
+    }
+    try {
+      const url = new URL(candidate);
+      if (url.protocol === 'abu:' && url.hostname === 'auth') return { host: 'auth' };
+    } catch {
+      // Fall through to the existing raw-value diagnostics for unrelated input.
+    }
+  }
+  return { url: raw };
 }
 
 /**
@@ -75,6 +103,9 @@ function normalizeDeepLinkUrl(raw) {
     const u = new URL(s);
     if (u.protocol !== 'abu:') return null;
     if (!KNOWN_HOSTS.has(u.hostname)) return null; // reject unknown actions
+    if (u.hostname === 'auth' && (u.username || u.password || u.port || u.pathname || u.hash)) {
+      return null;
+    }
     return s;
   } catch {
     return null;
@@ -112,10 +143,9 @@ function initDeepLink(app, deps) {
   // electron binary + entry script so the OS can relaunch us with the URL
   // (required on Windows; harmless on macOS). Mirrors the Electron docs recipe.
   try {
-    if (process.defaultApp && process.argv.length >= 2) {
-      app.setAsDefaultProtocolClient(activeScheme, process.execPath, [
-        path.resolve(process.argv[1]),
-      ]);
+    const target = registrationTarget();
+    if (target) {
+      app.setAsDefaultProtocolClient(activeScheme, target.executablePath, target.args);
     } else {
       app.setAsDefaultProtocolClient(activeScheme);
     }
@@ -132,14 +162,14 @@ function initDeepLink(app, deps) {
     event.preventDefault();
     const n = normalizeDeepLinkUrl(url);
     if (!n) {
-      log('ignored non-abu open-url', { url });
+      log('ignored non-abu open-url', safeUrlLogDetails(url));
       return;
     }
     if (app.isReady()) {
       deliverHotUrl(n);
     } else {
       coldStartUrls.push(n);
-      log('queued cold-start url (open-url before ready)', { url: n });
+      log('queued cold-start url (open-url before ready)', safeUrlLogDetails(n));
     }
   });
 
@@ -147,8 +177,24 @@ function initDeepLink(app, deps) {
   const fromArgv = extractDeepLinkFromArgv(process.argv);
   if (fromArgv) {
     coldStartUrls.push(fromArgv);
-    log('found cold-start url in argv', { url: fromArgv });
+    log('found cold-start url in argv', safeUrlLogDetails(fromArgv));
   }
+}
+
+/**
+ * Whether this exact Electron shell is the current handler for its active
+ * scheme. `false` means another handler currently owns it; query failures are
+ * allowed to throw so the renderer can represent an unknown state honestly.
+ * @param {import('electron').App} app
+ * @returns {boolean}
+ */
+function isCurrentSchemeRegistered(app) {
+  if (!app.isReady()) throw new Error('deep_link_registration_not_ready');
+  const target = registrationTarget();
+  if (target) {
+    return app.isDefaultProtocolClient(activeScheme, target.executablePath, target.args);
+  }
+  return app.isDefaultProtocolClient(activeScheme);
 }
 
 /**
@@ -227,6 +273,7 @@ module.exports = {
   handleSecondInstanceArgv,
   flushPendingDeepLinks,
   getCurrentDeepLinks,
+  isCurrentSchemeRegistered,
   normalizeDeepLinkUrl,
   extractDeepLinkFromArgv,
   NEW_URL_EVENT,

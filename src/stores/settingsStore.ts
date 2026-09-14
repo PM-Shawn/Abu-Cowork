@@ -42,7 +42,6 @@ import {
   deleteSecret,
   listFailedSecrets,
   listSecrets,
-  clearAllSecrets,
 } from '@/utils/secretStore';
 // Relocated to a pure module so the sidecar bundle (and anything else that
 // needs zero store-graph coupling) can import them directly — see
@@ -1593,8 +1592,8 @@ export const useSettingsStore = create<SettingsStore>()(
 
       clearAllStoredKeys: async () => {
         const s = useSettingsStore.getState();
-        // Collect the full set of known secret keys so the Windows/Linux
-        // keyring path (no enumeration API) has something to iterate.
+        // This action is scoped to API keys. Delete those exact entries so an
+        // unrelated account credential in the same OS store remains intact.
         const knownKeys = [
           ...s.providers.map((p) => SECRET_KEYS.provider(p.id)),
           SECRET_KEYS.auxWebSearch,
@@ -1602,7 +1601,9 @@ export const useSettingsStore = create<SettingsStore>()(
           ...s.imageGeneration.backends.map((b) => SECRET_KEYS.imageGenBackend(b.id)),
         ];
         try {
-          await clearAllSecrets(knownKeys);
+          const outcomes = await Promise.allSettled(knownKeys.map((key) => deleteSecret(key)));
+          const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+          if (failure?.status === 'rejected') throw failure.reason;
         } catch (err) {
           console.warn('[secrets] clearAll backend failed:', err);
           // Continue anyway — at minimum blank the in-memory keys so the

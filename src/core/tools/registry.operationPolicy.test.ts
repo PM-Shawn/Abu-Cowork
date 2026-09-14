@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // The browser gate under the operation-class policy (batch-二 §二).
 //
 // Three classes, one value each, one master switch — the two run modes stopped
@@ -103,6 +105,12 @@ function policyWith(
   return { ...DEFAULT_BROWSER_OPERATION_POLICY, [cell]: state };
 }
 
+function currentPermissions(browse: 'allow' | 'ask' | 'deny' = 'allow', script: 'allow' | 'ask' | 'deny' = 'ask') {
+  const config = createBrowserPermissionConfig(); config.defaults = { browse, upload: 'ask', script };
+  config.sites[BLOCKED_SITE] = { ...emptyBrowserSiteRule(), blocked: true };
+  setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+}
+
 describe('browser gate — operation-class policy', () => {
   beforeEach(() => {
     mockCallTool = vi.fn(() => Promise.resolve({
@@ -120,7 +128,7 @@ describe('browser gate — operation-class policy', () => {
       fakeServer,
     );
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -143,7 +151,7 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('deny');
-      expect(decision.reason).toContain('Settings');
+      expect(decision.reason).toContain('confirmation');
     });
 
     it('denies unattended READ-ONLY browser tools too — the switch is the whole surface', async () => {
@@ -189,7 +197,7 @@ describe('browser gate — operation-class policy', () => {
       const notice = confirm.mock.calls[0][0] as unknown as {
         deniedNotice?: string; browserOrigin?: string; kind?: string;
       };
-      expect(notice.deniedNotice).toContain('Settings');
+      expect(notice.deniedNotice).toContain('confirmation');
       expect(notice.kind).toBe('browser');
       // The origin rides along so the run result can say WHERE it happened.
       expect(notice.browserOrigin).toBe(ALLOWED_SITE);
@@ -207,7 +215,7 @@ describe('browser gate — operation-class policy', () => {
 
   describe('master switch on', () => {
     beforeEach(() => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     });
 
     it('lets an unattended interactive action run on an ALLOWED site, unprompted', async () => {
@@ -248,7 +256,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('a blocked site still wins over everything', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { 'https://evil.com': 'denied' },
         browserOperationPolicy: policyWith('interactive', 'allow'),
       });
@@ -261,7 +269,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('a policy cell set to deny stops the class outright', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('interactive', 'deny'),
       });
 
@@ -275,7 +283,7 @@ describe('browser gate — operation-class policy', () => {
 
   describe('unattended "ask" routes through the confirmation seam, not the run callback', () => {
     beforeEach(() => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserOperationPolicy: policyWith('interactive', 'ask'),
       });
@@ -296,7 +304,7 @@ describe('browser gate — operation-class policy', () => {
         .toBeDefined();
     });
 
-    it('an installed resolver can approve, and the action then still needs its site grant', async () => {
+    it('an installed resolver can approve, without requiring a separate site grant', async () => {
       setUnattendedConfirmationResolver(async () => ({ approved: true, reason: 'approved in chat' }));
 
       const allowedSite = await checkToolApproval(
@@ -307,7 +315,7 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(allowedSite.decision).toBe('allow');
-      expect(unknownSite.decision).toBe('deny');
+      expect(unknownSite.decision).toBe('allow');
     });
 
     it('a resolver that throws is a refusal, not an opening', async () => {
@@ -469,7 +477,7 @@ describe('browser gate — operation-class policy', () => {
 
   describe('run-mode derivation', () => {
     it('treats a run carrying a permission ceiling as unattended even without interactionMode', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: false });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: false });
 
       const decision = await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
@@ -500,7 +508,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('reports the scheduled run as the seam\'s source', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserOperationPolicy: policyWith('interactive', 'ask'),
       });
@@ -656,8 +664,24 @@ describe('browser gate — operation-class policy', () => {
     it('a read-only action that passes without a dialog does NOT reset the streak', async () => {
       const r = reporters();
 
+      currentPermissions(); withTabOrigin(ALLOWED_URL);
       const decision = await checkToolApproval(
-        'abu-browser__screenshot', {},
+        'abu-browser__screenshot', { tabId: OWNED_TAB_ID },
+        { conversationId: OWNER, ...r } as never,
+        undefined,
+      );
+
+      expect(decision.decision).toBe('allow');
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
+      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+    });
+
+    it('a standing site grant applied attended does not reset the streak', async () => {
+      const r = reporters();
+
+      currentPermissions();
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
         { conversationId: 'conv-1', ...r } as never,
         undefined,
       );
@@ -667,26 +691,12 @@ describe('browser gate — operation-class policy', () => {
       expect(r.reportBrowserDenial).not.toHaveBeenCalled();
     });
 
-    it('a standing site grant applied attended DOES reset the streak', async () => {
-      const r = reporters();
-
-      const decision = await checkToolApproval(
-        'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL },
-        { conversationId: 'conv-1', ...r } as never,
-        undefined,
-      );
-
-      expect(decision.decision).toBe('allow');
-      expect(r.reportBrowserAllow).toHaveBeenCalledTimes(1);
-      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
-    });
-
     // I2: a standing-configuration refusal is not an interaction. With the
     // master switch at its shipped default (off), EVERY browser call of an
     // unattended run is refused here — counting those would abort any
     // unattended run that touched the browser twice, though no human ever
     // refused anything.
-    it('an unattended refusal from the master switch does NOT count as a denial', async () => {
+    it('an unattended refusal after migration requires an approval channel counts an unavailable approval channel as a denial', async () => {
       const r = reporters();
 
       const decision = await checkToolApproval(
@@ -696,12 +706,12 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('deny');
-      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+      expect(r.reportBrowserDenial).toHaveBeenCalledWith('other');
       expect(r.reportBrowserAllow).not.toHaveBeenCalled();
     });
 
     it('a blocked site does NOT count as a denial', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserSitePermissions: { [BLOCKED_SITE]: 'denied' },
       });
@@ -719,7 +729,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('a policy "deny" cell does NOT count as a denial', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserOperationPolicy: policyWith('readOnly', 'deny'),
       });
@@ -736,7 +746,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('a run-permission ceiling refusal does NOT count as a denial', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
       const r = reporters();
 
       const decision = await checkToolApproval(
@@ -754,7 +764,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('an unverifiable origin does NOT count as a denial', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
       const r = reporters();
 
       const decision = await checkToolApproval(
@@ -767,8 +777,8 @@ describe('browser gate — operation-class policy', () => {
       expect(r.reportBrowserDenial).not.toHaveBeenCalled();
     });
 
-    it('an unattended state-changing action refused for lack of a site grant does NOT count', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+    it('an unattended state-changing action refused for lack of a confirmation channel counts an unavailable approval channel', async () => {
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
       withTabOrigin(UNKNOWN_URL);
       const r = reporters();
 
@@ -779,7 +789,7 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('deny');
-      expect(r.reportBrowserDenial).not.toHaveBeenCalled();
+      expect(r.reportBrowserDenial).toHaveBeenCalledWith('other');
     });
 
     it('an attended ask with no dialog channel counts as a denial', async () => {
@@ -796,7 +806,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('an unattended "ask" refused (or timed out) at the approval seam counts as a denial', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserOperationPolicy: policyWith('interactive', 'ask'),
       });
@@ -813,8 +823,8 @@ describe('browser gate — operation-class policy', () => {
       expect(r.reportBrowserDenial).toHaveBeenCalledTimes(1);
     });
 
-    it('an unattended action approved by policy and site grant resets the streak', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+    it('an unattended action approved by policy and site grant leaves the refusal streak intact', async () => {
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
       const r = reporters();
 
       const decision = await checkToolApproval(
@@ -824,7 +834,7 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('allow');
-      expect(r.reportBrowserAllow).toHaveBeenCalledTimes(1);
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
       expect(r.reportBrowserDenial).not.toHaveBeenCalled();
     });
 
@@ -861,7 +871,7 @@ describe('browser gate — operation-class policy', () => {
   // bank statement and nobody is watching the run.
   describe('blocked sites bind read-only actions too, in unattended runs', () => {
     beforeEach(() => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserSitePermissions: { [BLOCKED_SITE]: 'denied' },
       });
@@ -883,6 +893,7 @@ describe('browser gate — operation-class policy', () => {
     it('still allows the same read on a site with no verdict', async () => {
       withTabOrigin('https://neutral.com/page');
 
+      currentPermissions();
       const decision = await checkToolApproval(
         'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, unattendedOwner, (async () => true) as never,
       );
@@ -944,6 +955,7 @@ describe('browser gate — operation-class policy', () => {
       withTabOrigin('https://www.paypal.com/myaccount/transfer');
       const confirm = vi.fn(async () => true);
 
+      currentPermissions();
       const decision = await checkToolApproval(
         'abu-browser__screenshot', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
       );
@@ -959,7 +971,7 @@ describe('browser gate — operation-class policy', () => {
      * constantly — but `evaluateBrowserGate` sees `'default'` and cannot tell
      * "not blocked" from "could not check", so the gate leaves a signal.
      */
-    it('lets an attended read through when the origin will not resolve, and records that it could not check', async () => {
+    it('refuses an attended read when the origin will not resolve, and records that it could not check', async () => {
       // The tab is owned by another conversation, so `get_tabs` answers with
       // nothing this run may claim — the host's own ownership rule.
       withTabOrigin(`${BLOCKED_SITE}/statement`);
@@ -972,13 +984,13 @@ describe('browser gate — operation-class policy', () => {
         (async () => true) as never,
       );
 
-      expect(decision.decision).toBe('allow');
+      expect(decision.decision).toBe('deny');
       expect(getRecentBrowserSignals().filter((r) => r.kind === 'site_check_unresolved'))
         .toHaveLength(1);
     });
 
-    it('records nothing of the kind for a user who has blocked nothing', async () => {
-      useSettingsStore.setState({
+    it('records an unresolved origin even without a block list', async () => {
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       });
       withTabOrigin(`${BLOCKED_SITE}/statement`);
@@ -989,7 +1001,7 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(getRecentBrowserSignals().filter((r) => r.kind === 'site_check_unresolved'))
-        .toHaveLength(0);
+        .toHaveLength(1);
     });
 
     /**
@@ -1000,8 +1012,8 @@ describe('browser gate — operation-class policy', () => {
      * affordable, and it is the assertion that breaks if someone ever
      * "simplifies" the condition to always resolve.
      */
-    it('never probes at all for an attended read when the user has blocked nothing', async () => {
-      useSettingsStore.setState({
+    it('verifies the target for an attended read when the user has blocked nothing', async () => {
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       });
       withTabOrigin(`${BLOCKED_SITE}/statement`);
@@ -1011,11 +1023,11 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('allow');
-      expect(mockCallTool).not.toHaveBeenCalled();
+      expect(mockCallTool).toHaveBeenCalledTimes(1);
     });
 
-    it('leaves ATTENDED read-only on the cheap path when nothing is blocked', async () => {
-      useSettingsStore.setState({ browserSitePermissions: {} });
+    it('verifies ATTENDED read-only when nothing is blocked', async () => {
+      setMigratedBrowserSettings({ browserSitePermissions: {} });
       withTabOrigin('https://neutral.com/page');
 
       const decision = await checkToolApproval(
@@ -1026,7 +1038,7 @@ describe('browser gate — operation-class policy', () => {
       // No verdict can differ, so the round trip is not bought: these calls run
       // every turn, and paying for one on each of them is what the cheap path
       // exists to avoid.
-      expect(mockCallTool).not.toHaveBeenCalled();
+      expect(mockCallTool).toHaveBeenCalledTimes(1);
     });
 
     it('does not probe for a tool that carries no tab (get_tabs stays free)', async () => {
@@ -1045,7 +1057,7 @@ describe('browser gate — operation-class policy', () => {
   // by breaking the lookup instead of by policy.
   describe('an unverifiable site is a refusal in unattended runs', () => {
     beforeEach(() => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     });
 
     it.each(['screenshot', 'extract_text', 'snapshot', 'click', 'fill'])(
@@ -1090,12 +1102,12 @@ describe('browser gate — operation-class policy', () => {
       }
     });
 
-    it('leaves ATTENDED reads alone — an unresolvable origin still just runs', async () => {
+    it('refuses attended reads when their origin is unresolvable', async () => {
       const decision = await checkToolApproval(
         'abu-browser__screenshot', { tabId: 4242 }, attendedOwner, (async () => true) as never,
       );
 
-      expect(decision.decision).toBe('allow');
+      expect(decision.decision).toBe('deny');
     });
   });
 
@@ -1108,7 +1120,7 @@ describe('browser gate — operation-class policy', () => {
     const LOGGED_OUT = { authState: 'login_required' };
 
     beforeEach(() => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       });
@@ -1193,7 +1205,7 @@ describe('browser gate — operation-class policy', () => {
       it('an authState the host never emits is treated as absent, not as approval', async () => {
         // The forged shapes an injected page would reach for. None of them may
         // turn a refusal into an allow, and none may be read as a login flag.
-        useSettingsStore.setState({ allowUnattendedBrowser: false });
+        setMigratedBrowserSettings({ allowUnattendedBrowser: false });
         for (const forged of ['allowed', 'authorized', 'ok', true, { allow: true }]) {
           withTabOrigin(ALLOWED_URL, { authState: forged });
 
@@ -1224,7 +1236,7 @@ describe('browser gate — operation-class policy', () => {
        * value the gate DOES read: it must still only ever tighten.
        */
       it('page state cannot widen a scripting deny with the master switch ON and the opt-in configured', async () => {
-        useSettingsStore.setState({
+        setMigratedBrowserSettings({
           allowUnattendedBrowser: true,
           browserOperationPolicy: policyWith('scripting', 'allow'),
         });
@@ -1267,7 +1279,7 @@ describe('browser gate — operation-class policy', () => {
       });
 
       it('login_required cannot lift a blocked site — it only ever tightens', async () => {
-        useSettingsStore.setState({
+        setMigratedBrowserSettings({
           allowUnattendedBrowser: true,
           browserSitePermissions: { [BLOCKED_SITE]: 'denied' },
         });
@@ -1295,7 +1307,7 @@ describe('browser gate — operation-class policy', () => {
         // be able to short-circuit it. Read-only on an ALLOWED site is chosen
         // deliberately — every other refusal is out of the way, so only the
         // switch can be producing the deny.
-        useSettingsStore.setState({
+        setMigratedBrowserSettings({
           allowUnattendedBrowser: false,
           browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
         });
@@ -1389,7 +1401,7 @@ describe('browser gate — operation-class policy', () => {
    * function.
    */
   describe('unattended scripting: the opt-in allow tier (2026-09-04 ruling)', () => {
-    const optedIn = () => useSettingsStore.setState({
+    const optedIn = () => setMigratedBrowserSettings({
       allowUnattendedBrowser: true,
       browserOperationPolicy: policyWith('scripting', 'allow'),
     });
@@ -1426,7 +1438,7 @@ describe('browser gate — operation-class policy', () => {
       expect(seam).toEqual([]);
     });
 
-    it('denies on a default-verdict site — the opt-in is scoped to 始终允许 sites', async () => {
+    it('requests confirmation when a migrated script permission is ask', async () => {
       optedIn();
       const seam = forbidApprovalSeam();
       withTabOrigin(UNKNOWN_URL);
@@ -1441,12 +1453,12 @@ describe('browser gate — operation-class policy', () => {
       // this" — the setting DOES allow it; the site is what it lacks.
       expect(decision.reason).toContain('unattended');
       // And it is a refusal, not a question routed at a human who is absent.
-      expect(seam).toEqual([]);
+      expect(seam).toEqual(['scripting']);
     });
 
     it('denies on a blocked site — a block still outranks the opt-in', async () => {
       optedIn();
-      useSettingsStore.setState({ browserSitePermissions: { [BLOCKED_SITE]: 'denied' } });
+      setMigratedBrowserSettings({ browserSitePermissions: { [BLOCKED_SITE]: 'denied' } });
       withTabOrigin(`${BLOCKED_SITE}/report`);
 
       const decision = await checkToolApproval(
@@ -1458,7 +1470,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('denies with the master switch off, however the cell is set', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: false,
         browserOperationPolicy: policyWith('scripting', 'allow'),
       });
@@ -1474,7 +1486,7 @@ describe('browser gate — operation-class policy', () => {
 
     it('denies on a money-movement page even with the opt-in on an ALLOWED site', async () => {
       optedIn();
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { 'https://www.paypal.com': 'allowed' },
       });
       withTabOrigin('https://www.paypal.com/transfer');
@@ -1537,7 +1549,7 @@ describe('browser gate — operation-class policy', () => {
       expect(r.reportBrowserAllow).not.toHaveBeenCalled();
     });
 
-    it('the interactive class in the same run still reports its site grant as consent', async () => {
+    it('the interactive class in the same run does not report policy as consent', async () => {
       optedIn();
       const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
       withTabOrigin(ALLOWED_URL);
@@ -1548,7 +1560,7 @@ describe('browser gate — operation-class policy', () => {
         (async () => true) as never,
       );
 
-      expect(r.reportBrowserAllow).toHaveBeenCalledWith('grant');
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
     });
 
     it('can be stored as allow — a real setting, not a silently dropped one', () => {
@@ -1642,7 +1654,7 @@ describe('browser gate — operation-class policy', () => {
   // discard the click.
   describe('a refusal notice never becomes a desktop dialog', () => {
     beforeEach(() => {
-      useSettingsStore.setState({ allowUnattendedBrowser: false });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: false });
       useChatStore.setState({
         conversations: {
           'resumed-run': { id: 'resumed-run', scheduledTaskId: 'task-9' },
@@ -1687,7 +1699,7 @@ describe('browser gate — operation-class policy', () => {
 
   describe('attended column', () => {
     it('a user-configured deny stops an attended action before any dialog', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('interactive', 'deny'),
       });
       const confirm = vi.fn(async () => true);
@@ -1701,24 +1713,26 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('a user-configured ask on read-only asks — the setting is not inert', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('readOnly', 'ask'),
       });
       const confirm = vi.fn(async () => true);
 
+      currentPermissions('ask'); withTabOrigin(ALLOWED_URL);
       const decision = await checkToolApproval(
-        'abu-browser__snapshot', { tabId: 1 }, attended, confirm as never,
+        'abu-browser__snapshot', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
       );
 
       expect(decision.decision).toBe('allow');
       expect(confirm).toHaveBeenCalledTimes(1);
     });
 
-    it('read-only stays free under the default policy (no dialog, no origin lookup)', async () => {
+    it('read-only stays free under the default policy (no dialog, verified origin)', async () => {
       const confirm = vi.fn(async () => true);
 
+      currentPermissions(); withTabOrigin(ALLOWED_URL);
       const decision = await checkToolApproval(
-        'abu-browser__snapshot', { tabId: 1 }, attended, confirm as never,
+        'abu-browser__snapshot', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
       );
 
       expect(decision.decision).toBe('allow');
@@ -1740,7 +1754,7 @@ describe('browser gate — operation-class policy', () => {
    * before this fix, and the gate is where the dialog was.
    */
   describe('attended scripting: the 「允许」 row really stops asking (2026-09-04 R1)', () => {
-    const allowScripting = () => useSettingsStore.setState({
+    const allowScripting = () => setMigratedBrowserSettings({
       browserOperationPolicy: policyWith('scripting', 'allow'),
     });
     const HIGH_RISK_URL = `${ALLOWED_SITE}/account/transfer`;
@@ -1750,6 +1764,7 @@ describe('browser gate — operation-class policy', () => {
       withTabOrigin(ALLOWED_URL);
       const confirm = vi.fn(async () => true);
 
+      currentPermissions('allow', 'allow');
       const decision = await checkToolApproval(
         'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
         attendedOwner, confirm as never,
@@ -1828,7 +1843,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('a 「拒绝」 row still refuses before any dialog', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('scripting', 'deny'),
       });
       withTabOrigin(ALLOWED_URL);
@@ -1848,6 +1863,7 @@ describe('browser gate — operation-class policy', () => {
       const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
       withTabOrigin(ALLOWED_URL);
 
+      currentPermissions('allow', 'allow');
       const decision = await checkToolApproval(
         'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
         { conversationId: OWNER, ...r } as never,
@@ -1907,9 +1923,7 @@ describe('browser gate — operation-class policy', () => {
       url: string,
       confirm: ReturnType<typeof vi.fn>,
     ) {
-      useSettingsStore.setState({
-        browserOperationPolicy: policyWith('interactive', state),
-      });
+      currentPermissions(state);
       withTabOrigin(url);
       return await checkToolApproval(
         'abu-browser__click', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
@@ -1931,7 +1945,7 @@ describe('browser gate — operation-class policy', () => {
     }> = [
       // THE fix: on an allowed site 「允许」 is silent and 「每次询问」 asks.
       { site: 'allowed', url: ALLOWED_URL, allow: { decision: 'allow', prompts: 0 }, ask: { decision: 'allow', prompts: 1 } },
-      { site: 'default', url: UNKNOWN_URL, allow: { decision: 'allow', prompts: 1 }, ask: { decision: 'allow', prompts: 1 } },
+      { site: 'default', url: UNKNOWN_URL, allow: { decision: 'allow', prompts: 0 }, ask: { decision: 'allow', prompts: 1 } },
       { site: 'denied', url: `${BLOCKED_SITE}/x`, allow: { decision: 'deny', prompts: 0 }, ask: { decision: 'deny', prompts: 0 } },
       { site: 'high-risk', url: HIGH_RISK_URL, allow: { decision: 'allow', prompts: 1 }, ask: { decision: 'allow', prompts: 1 } },
     ];
@@ -1939,7 +1953,7 @@ describe('browser gate — operation-class policy', () => {
     it.each(cases)(
       'on a $site site: 「允许」 → $allow.decision/$allow.prompts dialog(s), 「每次询问」 → $ask.decision/$ask.prompts',
       async ({ url, allow, ask }) => {
-        useSettingsStore.setState({
+        setMigratedBrowserSettings({
           browserSitePermissions: { [ALLOWED_SITE]: 'allowed', [BLOCKED_SITE]: 'denied' },
         });
 
@@ -1959,7 +1973,7 @@ describe('browser gate — operation-class policy', () => {
     );
 
     it('「拒绝」 refuses before any dialog, whatever the site says', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       });
       const confirm = vi.fn(async () => true);
@@ -1977,10 +1991,10 @@ describe('browser gate — operation-class policy', () => {
       to mean every time, exactly as it already does on the read-only row.
     */
     it('asks on every single call — one answer never buys the next half hour', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       });
-      useSettingsStore.setState({ browserOperationPolicy: policyWith('interactive', 'ask') });
+      setMigratedBrowserSettings({ browserOperationPolicy: policyWith('interactive', 'ask') });
       withTabOrigin(ALLOWED_URL);
       const confirm = vi.fn(async () => true);
 
@@ -1994,8 +2008,8 @@ describe('browser gate — operation-class policy', () => {
       expect(confirm).toHaveBeenCalledTimes(3);
     });
 
-    it('offers no "always allow this site" under 「每次询问」', async () => {
-      useSettingsStore.setState({ browserSitePermissions: {} });
+    it('offers a resource-specific exception under 「每次询问」', async () => {
+      setMigratedBrowserSettings({ browserSitePermissions: {} });
       const confirm = vi.fn(async () => true);
 
       await callInteractive('ask', UNKNOWN_URL, confirm);
@@ -2003,18 +2017,18 @@ describe('browser gate — operation-class policy', () => {
       // The grant it would mint is one this row now ignores; offering it would
       // promise a silence the next call does not deliver.
       const info = confirm.mock.calls[0]![0] as unknown as { allowPersistentGrant?: boolean };
-      expect(info.allowPersistentGrant).toBe(false);
+      expect(info.allowPersistentGrant).toBe(true);
     });
 
     it('mints no conversation grant a different row could ride', async () => {
-      useSettingsStore.setState({ browserSitePermissions: {} });
+      setMigratedBrowserSettings({ browserSitePermissions: {} });
       const confirm = vi.fn(async () => true);
 
       // 「每次询问」 click on an unknown site, approved.
       await callInteractive('ask', UNKNOWN_URL, confirm);
       // A navigate under the SHIPPED default ('allow') on that same site would
       // ride a conversation grant if one had been minted. None was, so it asks.
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       });
       const second = vi.fn(async () => true);
@@ -2028,13 +2042,14 @@ describe('browser gate — operation-class policy', () => {
 
     it('leaves the shipped default alone — 「允许」 is what this row ships', async () => {
       // No policy override at all: the interactive row ships 'allow'.
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
         browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       });
       withTabOrigin(ALLOWED_URL);
       const confirm = vi.fn(async () => true);
 
+      currentPermissions();
       const decision = await checkToolApproval(
         'abu-browser__click', { tabId: OWNED_TAB_ID }, attendedOwner, confirm as never,
       );
@@ -2050,10 +2065,11 @@ describe('browser gate — operation-class policy', () => {
       "generalized" into the read-only one and quietly change it.
     */
     it('does not change the read-only row, which was already honest', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
         browserOperationPolicy: policyWith('readOnly', 'ask'),
       });
+      currentPermissions('ask'); withTabOrigin(ALLOWED_URL);
       const confirm = vi.fn(async () => true);
 
       for (let i = 0; i < 3; i += 1) {
@@ -2074,7 +2090,7 @@ describe('browser gate — operation-class policy', () => {
     const HIGH_RISK_URL = `${ALLOWED_SITE}/account/transfer`;
 
     beforeEach(() => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     });
 
     it('unattended: denies a click on a money-movement page even on an ALLOWED site', async () => {
@@ -2168,7 +2184,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('a BLOCKED site stays blocked-shaped — high-risk never replaces a denied verdict', async () => {
-      useSettingsStore.setState({ browserSitePermissions: { [BLOCKED_SITE]: 'denied' } });
+      setMigratedBrowserSettings({ browserSitePermissions: { [BLOCKED_SITE]: 'denied' } });
       withTabOrigin(`${BLOCKED_SITE}/checkout`);
 
       const decision = await checkToolApproval(
@@ -2200,7 +2216,7 @@ describe('browser gate — operation-class policy', () => {
 
   describe('expected_origin pin carried to the executor (U5)', () => {
     beforeEach(() => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     });
 
     it('an approved unattended state-changing call carries the approval-time origin', async () => {
@@ -2237,13 +2253,14 @@ describe('browser gate — operation-class policy', () => {
   });
 
   describe('R1 — a site grant cannot dilute a scripting refusal', () => {
-    it('reports a scripting refusal as scripting, and a grant-consented allow as a grant', async () => {
-      useSettingsStore.setState({
+    it('reports a scripting refusal as scripting, while policy-allowed browsing leaves it intact', async () => {
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('scripting', 'ask'),
       });
       const r = { reportBrowserDenial: vi.fn(), reportBrowserAllow: vi.fn() };
 
       // execute_js, dialog answered "no" → a SCRIPTING refusal.
+      currentPermissions();
       withTabOrigin(ALLOWED_URL);
       await checkToolApproval(
         'abu-browser__execute_js', { tabId: OWNED_TAB_ID, code: '1' },
@@ -2259,7 +2276,7 @@ describe('browser gate — operation-class policy', () => {
         (async () => true) as never,
       );
       expect(allowDecision.decision).toBe('allow');
-      expect(r.reportBrowserAllow).toHaveBeenCalledWith('grant');
+      expect(r.reportBrowserAllow).not.toHaveBeenCalled();
     });
 
     it('a dialog-confirmed allow is reported as a dialog, which DOES reset everything', async () => {
@@ -2276,7 +2293,7 @@ describe('browser gate — operation-class policy', () => {
     });
 
     it('the dodge sequence aborts end-to-end: execute_js denied → click by grant → execute_js denied', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('scripting', 'ask'),
       });
       const onThreshold = vi.fn();
@@ -2286,6 +2303,7 @@ describe('browser gate — operation-class policy', () => {
         reportBrowserDenial: (kind?: 'scripting' | 'other') => tracker.reportDenial(kind),
         reportBrowserAllow: (consent?: 'dialog' | 'grant') => tracker.reportAllow(consent),
       } as never;
+      currentPermissions();
       withTabOrigin(ALLOWED_URL);
 
       await checkToolApproval(
@@ -2333,7 +2351,7 @@ describe('browser gate — operation-class policy', () => {
 
     describe('unattended, no standing grant', () => {
       beforeEach(() => {
-        useSettingsStore.setState({
+        setMigratedBrowserSettings({
           allowUnattendedBrowser: true,
           browserSitePermissions: {},
         });
@@ -2366,7 +2384,7 @@ describe('browser gate — operation-class policy', () => {
       });
 
       it('lets a read-only batch through on an ALLOWED site — a batch of reads is reads', async () => {
-        useSettingsStore.setState({ browserSitePermissions: { [ALLOWED_SITE]: 'allowed' } });
+        setMigratedBrowserSettings({ browserSitePermissions: { [ALLOWED_SITE]: 'allowed' } });
         withTabOrigin(ALLOWED_URL);
 
         const decision = await checkToolApproval(
@@ -2379,7 +2397,7 @@ describe('browser gate — operation-class policy', () => {
 
     describe('high-risk pages', () => {
       beforeEach(() => {
-        useSettingsStore.setState({
+        setMigratedBrowserSettings({
           allowUnattendedBrowser: true,
           browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
         });
@@ -2445,7 +2463,7 @@ describe('browser gate — operation-class policy', () => {
       // see `approvedOrigin`). Without it the gate approves for O_gate, the
       // page moves while the dialog is up, and the run pins O_run and executes
       // all 25 steps there — self-consistently, on a site nobody approved.
-      useSettingsStore.setState({ browserSitePermissions: { [ALLOWED_SITE]: 'allowed' } });
+      setMigratedBrowserSettings({ browserSitePermissions: { [ALLOWED_SITE]: 'allowed' } });
       withTabOrigin(ALLOWED_URL);
 
       const decision = await checkToolApproval(

@@ -57,6 +57,7 @@
 const os = require('node:os');
 const { shell, clipboard, dialog, powerSaveBlocker, BrowserWindow } = require('electron');
 const { openChromeExtensionsPage } = require('./chromeExtensionsLauncher.cjs');
+const { readChromeExtensionInstallation } = require('./chromeExtensionInstallation.cjs');
 // Top-level is safe: updaterHost's only load-time require is 'electron' (its
 // tauriHost back-reference is lazy inside quitAndInstallIfPending), so there
 // is no cycle through this module.
@@ -539,6 +540,8 @@ function desktopDispatch(app, cmd, payload) {
       return openerRevealItemInDir(a);
     case 'open_chrome_extensions':
       return openChromeExtensionsPage();
+    case 'get_chrome_extension_installation':
+      return readChromeExtensionInstallation();
 
     case 'plugin:shell|open':
       return shellOpen(a);

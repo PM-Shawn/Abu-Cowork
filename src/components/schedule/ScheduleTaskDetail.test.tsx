@@ -56,49 +56,12 @@ describe('ScheduleTaskDetail — browser authorization', () => {
 
   afterEach(() => cleanup());
 
-  it('lists the origins an unattended run of this task may act on', () => {
-    useSettingsStore.setState({
-      browserSitePermissions: testSiteVerdicts({
-        'https://reports.example.com': 'allowed',
-        'https://blocked.example.com': 'denied',
-      }),
-    });
+  it('points to shared browser permissions without duplicating the settings or old switch', () => {
+    useSettingsStore.setState({ allowUnattendedBrowser: false, browserSitePermissions: testSiteVerdicts({ 'https://reports.example.com': 'allowed' }) });
     render(<ScheduleTaskDetail />);
-
-    expect(within(card()).getByText('https://reports.example.com')).toBeInTheDocument();
-    // A blocked site is not an authorization this task can use.
-    expect(within(card()).queryByText('https://blocked.example.com')).not.toBeInTheDocument();
-  });
-
-  it('leaves a high-risk site out of the set, even when the user allowed it', () => {
-    useSettingsStore.setState({
-      browserSitePermissions: testSiteVerdicts({ 'https://www.paypal.com': 'allowed' }),
-    });
-    render(<ScheduleTaskDetail />);
-
-    expect(within(card()).queryByText('https://www.paypal.com')).not.toBeInTheDocument();
-    expect(within(card()).getByText(/No site is authorized/)).toBeInTheDocument();
-  });
-
-  it('says the task cannot use the browser at all while the master switch is off', () => {
-    useSettingsStore.setState({
-      browserSitePermissions: testSiteVerdicts({ 'https://reports.example.com': 'allowed' }),
-      allowUnattendedBrowser: false,
-    });
-    render(<ScheduleTaskDetail />);
-
-    expect(within(card()).getByText(/master switch is off/)).toBeInTheDocument();
-    // The list is not shown at all — it would read as "this task uses these".
-    expect(within(card()).queryByText('https://reports.example.com')).not.toBeInTheDocument();
-  });
-
-  it('caps a long list and counts the rest', () => {
-    const many: Record<string, 'allowed'> = {};
-    for (let i = 0; i < 9; i += 1) many[`https://s${i}.example.com`] = 'allowed';
-    useSettingsStore.setState({ browserSitePermissions: testSiteVerdicts(many) });
-    render(<ScheduleTaskDetail />);
-
-    expect(within(card()).getByText('3 more')).toBeInTheDocument();
+    expect(within(card()).getByText('Applies to the built-in browser and My Chrome.')).toBeVisible();
+    expect(within(card()).queryByText('https://reports.example.com')).toBeNull();
+    expect(within(card()).queryByText(/master switch/)).toBeNull();
   });
 
   it('the revoke entry point opens Settings → Capabilities, where the verdicts live', async () => {

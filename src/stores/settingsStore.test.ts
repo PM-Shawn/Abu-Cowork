@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets, __resetBrowserConfigPersistenceForTests } from './settingsStore';
 import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
@@ -9,6 +9,13 @@ import {
 } from '@/core/permissions/browserToolPolicy';
 
 // ─── Test fixture helpers ─────────────────────────────────────
+
+// These synchronous legacy-store tests have no competing window. Concurrency
+// is exercised with queued lock callbacks in settingsStore.browserPermissions.
+beforeEach(() => {
+  vi.stubGlobal('navigator', { locks: { request: (_name: string, callback: () => unknown) => Promise.resolve(callback()) } });
+});
+afterEach(() => { vi.unstubAllGlobals(); });
 
 function makeProvider(overrides: Partial<ProviderInstance> = {}): ProviderInstance {
   return {

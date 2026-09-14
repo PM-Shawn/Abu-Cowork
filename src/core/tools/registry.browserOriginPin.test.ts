@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // U5 — the two execution-time compensating controls that need the FULL chain
 // (`executeAnyTool` → `mcpManager.callTool` → MCP `_meta`), not just the gate:
 //
@@ -16,7 +18,6 @@ import { checkToolApproval, executeAnyTool, filterDownloadsByOrigin, filterTabsB
 import { mcpManager } from '../mcp/client';
 import { getI18n } from '../../i18n';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   __resetBrowserGrantsForTests,
@@ -90,7 +91,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
       fakeServer,
     );
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -233,7 +234,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
     }
 
     it('drops a download from a BLOCKED site in an attended run', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed', [BLOCKED_SITE]: 'denied' },
       });
       serveDownloads([
@@ -249,14 +250,14 @@ describe('U5 execution-time controls through executeAnyTool', () => {
       expect(result).toContain('report.pdf');
     });
 
-    it('an attended run still sees downloads from UNLISTED sites', async () => {
+    it('an attended run also withholds downloads requiring browse consent', async () => {
       serveDownloads([{ url: 'https://unknown.com/a.pdf', filename: 'a.pdf' }]);
 
       const result = await executeAnyTool(
         'abu-browser__get_downloads', {}, (async () => true) as never, undefined, attendedOwner,
       ) as string;
 
-      expect(result).toContain('a.pdf');
+      expect(result).not.toContain('a.pdf');
     });
 
     it('an unattended run sees ONLY downloads from sites it was granted', async () => {
@@ -286,7 +287,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
      * — the reason it holds just stopped mentioning who is watching.
      */
     it('an unattended run does not see downloads from a VIA-EMBED granted site', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
         browserSiteGrantViaEmbed: { [ALLOWED_SITE]: { 'https://oa.example.com': true } },
       });
@@ -299,8 +300,8 @@ describe('U5 execution-time controls through executeAnyTool', () => {
       expect(result).not.toContain('report.pdf');
     });
 
-    it('the same run WITH a human present still sees it', async () => {
-      useSettingsStore.setState({
+    it('the same scope restriction applies with a human present', async () => {
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
         browserSiteGrantViaEmbed: { [ALLOWED_SITE]: { 'https://oa.example.com': true } },
       });
@@ -310,7 +311,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
         'abu-browser__get_downloads', {}, (async () => true) as never, undefined, attendedOwner,
       ) as string;
 
-      expect(result).toContain('report.pdf');
+      expect(result).not.toContain('report.pdf');
     });
   });
 
@@ -351,7 +352,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
     }
 
     beforeEach(() => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: { [ALLOWED_SITE]: 'allowed', [BLOCKED_SITE]: 'denied' },
       });
     });
@@ -405,15 +406,15 @@ describe('U5 execution-time controls through executeAnyTool', () => {
       expect(parsed.summary.currentTabTitle).not.toBe(SECRET_TITLE);
     });
 
-    it('changes NOTHING for an attended run — a human looking at their own browser', async () => {
+    it('also redacts denied sites during an attended run', async () => {
       serveTabListing([{ tabId: 1, url: `${BLOCKED_SITE}/accounts`, title: SECRET_TITLE }]);
 
       const result = await executeAnyTool(
         'abu-browser__get_tabs', {}, (async () => true) as never, undefined, attendedOwner,
       ) as string;
 
-      expect(result).toContain('blocked.com');
-      expect(result).toContain(SECRET_TITLE);
+      expect(result).not.toContain('blocked.com');
+      expect(result).not.toContain(SECRET_TITLE);
     });
 
     it('leaves an unattended listing untouched when no tab is blocked', async () => {
@@ -447,139 +448,70 @@ describe('U5 execution-time controls through executeAnyTool', () => {
   });
 });
 
-describe('filterTabsBySitePermissions (unit)', () => {
-  const perms = { 'https://blocked.com': 'denied' } as const;
-  const listing = (url: string): string => JSON.stringify({
-    summary: { totalTabs: 1, currentTabUrl: url, currentTabTitle: 'T' },
-    windows: [{ windowId: 1, tabs: [{ tabId: 1, url, title: 'T' }] }],
+describe('pageless browser listing permissions', () => {
+  const config = () => ({ ...createBrowserPermissionConfig(), sites: {
+    [BLOCKED_SITE]: { ...emptyBrowserSiteRule(), blocked: true },
+  } });
+  const listing = (url: string) => JSON.stringify({
+    summary: { totalTabs: 1, currentTabUrl: url, currentTabTitle: 'secret' },
+    windows: [{ tabs: [{ tabId: 1, active: true, url, title: 'secret' }] }],
   });
-
-  it('returns the input untouched when nothing was blocked', () => {
-    const json = listing('https://ok.com/a');
-    expect(filterTabsBySitePermissions(json, 'unattended', { ...perms })).toBe(json);
+  it('preserves an allowed listing byte for byte', () => {
+    const json = listing(ALLOWED_URL);
+    expect(filterTabsBySitePermissions(json, config())).toBe(json);
+    const downloads = JSON.stringify([{ url: ALLOWED_URL, filename: 'report' }]);
+    expect(filterDownloadsByOrigin(downloads, config())).toBe(downloads);
   });
-
-  it('returns the input untouched for an attended run, blocked or not', () => {
-    const json = listing('https://blocked.com/a');
-    expect(filterTabsBySitePermissions(json, 'attended', { ...perms })).toBe(json);
+  it.each(['ask', 'deny'] as const)('redacts rows and summary when browse is %s', (decision) => {
+    const permissions = config(); permissions.defaults.browse = decision;
+    const output = filterTabsBySitePermissions(listing(ALLOWED_URL), permissions) as string;
+    expect(output).not.toContain(ALLOWED_URL);
+    expect(output).not.toContain('secret');
+    expect(JSON.parse(output).windows[0].tabs[0]).toMatchObject({ tabId: 1, active: true });
+    expect(filterDownloadsByOrigin(JSON.stringify([{ url: ALLOWED_URL }]), permissions)).toBe('[]');
   });
-
-  it('withholds an unparseable listing from an unattended run, passes it through attended', () => {
-    expect(filterTabsBySitePermissions('<html>', 'unattended', { ...perms })).toMatch(/^Error: /);
-    expect(filterTabsBySitePermissions('<html>', 'attended', { ...perms })).toBe('<html>');
+  it('keeps allowed rows and suppresses blocked and unverified content', () => {
+    const output = filterDownloadsByOrigin(JSON.stringify([
+      { url: ALLOWED_URL }, { url: BLOCKED_SITE }, { url: 'invalid' }, null,
+    ]), config()) as string;
+    expect(JSON.parse(output)).toEqual([{ url: ALLOWED_URL }]);
+    expect(filterTabsBySitePermissions(listing(BLOCKED_SITE), config())).not.toContain('secret');
+    expect(filterTabsBySitePermissions(listing('invalid'), config())).not.toContain('secret');
   });
-
-  it('leaves an error string and non-string results alone', () => {
-    expect(filterTabsBySitePermissions('Error: boom', 'unattended', { ...perms })).toBe('Error: boom');
-    const rich = [{ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'x' } }];
-    expect(filterTabsBySitePermissions(rich, 'unattended', { ...perms })).toBe(rich);
+  it('does not promote an embedded grant to top-level listing access', () => {
+    const permissions = config(); permissions.defaults.browse = 'ask';
+    permissions.embeddedSites = { 'https://host.example': {
+      [ALLOWED_SITE]: { ...emptyBrowserSiteRule(), browse: 'allow' },
+    } };
+    expect(filterDownloadsByOrigin(JSON.stringify([{ url: ALLOWED_URL }]), permissions)).toBe('[]');
+    expect(filterTabsBySitePermissions(listing(ALLOWED_URL), permissions)).not.toContain('secret');
   });
-
-  it('survives a listing whose windows/tabs are not the expected shape', () => {
-    const odd = JSON.stringify({ windows: [null, { tabs: 'nope' }, { tabs: [null, 7] }] });
-    expect(filterTabsBySitePermissions(odd, 'unattended', { ...perms })).toBe(odd);
+  it.each(['<html>', 'null', '7', '{}'])('withholds malformed listing %s', (input) => {
+    expect(filterTabsBySitePermissions(input, config())).toMatch(/^Error:/);
+    expect(filterDownloadsByOrigin(input, config())).toMatch(/^Error:/);
   });
-
-  it('hides only the denied rows, leaving the rest of the entry intact', () => {
-    const json = JSON.stringify({
-      windows: [{ tabs: [
-        { tabId: 1, url: 'https://blocked.com/x', title: 'secret', active: true },
-        { tabId: 2, url: 'https://ok.com/y', title: 'fine', active: false },
-      ] }],
-    });
-    const out = filterTabsBySitePermissions(json, 'unattended', { ...perms }) as string;
-    const parsed = JSON.parse(out) as { windows: Array<{ tabs: Array<Record<string, unknown>> }> };
-
-    expect(parsed.windows[0].tabs[0]).toMatchObject({ tabId: 1, active: true });
-    expect(parsed.windows[0].tabs[0].url).not.toContain('blocked.com');
-    expect(parsed.windows[0].tabs[0].title).not.toBe('secret');
-    expect(parsed.windows[0].tabs[1]).toMatchObject({ tabId: 2, url: 'https://ok.com/y', title: 'fine' });
-  });
-
-  /**
-   * Round-3 R3-D, the other half of the same ruling. The marks are threaded
-   * into this filter too, so there is one verdict rule in `registry.ts` rather
-   * than two spellings that can drift — and the honest thing to pin is that it
-   * changes NOTHING here. A mark can only take a grant down to `'default'`,
-   * and this filter hides `'denied'` only. Hiding marked sites as well would
-   * be a new rule, and a self-contradictory one: it would hide a partially
-   * granted site's tab while still showing every never-listed site's tab.
-   */
-  it('a via-embed mark does not hide a tab: it downgrades to default, and default is visible', () => {
-    const json = JSON.stringify({
-      summary: { currentTabUrl: `${ALLOWED_SITE}/x`, currentTabTitle: 'fine' },
-      windows: [{ tabs: [{ tabId: 1, url: `${ALLOWED_SITE}/x`, title: 'fine' }] }],
-    });
-
-    expect(filterTabsBySitePermissions(json, 'unattended', { ...perms }, { [ALLOWED_SITE]: true }))
-      .toBe(json);
-  });
-
-  it('a BLOCKED site is still redacted when marks are supplied', () => {
-    const json = JSON.stringify({
-      summary: { currentTabUrl: `${BLOCKED_SITE}/x`, currentTabTitle: 'secret' },
-      windows: [{ tabs: [{ tabId: 1, url: `${BLOCKED_SITE}/x`, title: 'secret' }] }],
-    });
-
-    const out = filterTabsBySitePermissions(
-      json, 'unattended', { ...perms }, { [ALLOWED_SITE]: true },
-    ) as string;
-    expect(out).not.toContain('secret');
+  it('preserves explicit host errors', () => {
+    expect(filterTabsBySitePermissions('Error: boom', config())).toBe('Error: boom');
+    expect(filterDownloadsByOrigin('Error: boom', config())).toBe('Error: boom');
   });
 });
 
-describe('filterDownloadsByOrigin (unit)', () => {
-  const perms = { [ALLOWED_SITE]: 'allowed', [BLOCKED_SITE]: 'denied' } as const;
-
-  it('returns the input untouched when nothing was dropped', () => {
-    const json = JSON.stringify([{ url: `${ALLOWED_SITE}/a` }], null, 2);
-    expect(filterDownloadsByOrigin(json, 'unattended', { ...perms })).toBe(json);
-  });
-
-  it('drops an entry whose url does not parse, unattended', () => {
-    const json = JSON.stringify([{ url: 'not a url' }, { url: `${ALLOWED_SITE}/a` }]);
-    const out = filterDownloadsByOrigin(json, 'unattended', { ...perms }) as string;
-    expect(JSON.parse(out)).toHaveLength(1);
-  });
-
-  it('keeps an unparseable-url entry attended (a human is reading it)', () => {
-    const json = JSON.stringify([{ url: 'not a url' }]);
-    expect(filterDownloadsByOrigin(json, 'attended', { ...perms })).toBe(json);
-  });
-
-  it('withholds an unparseable LISTING from an unattended run, passes it through attended', () => {
-    expect(filterDownloadsByOrigin('<html>', 'unattended', { ...perms }))
-      .toMatch(/^Error: /);
-    expect(filterDownloadsByOrigin('<html>', 'attended', { ...perms })).toBe('<html>');
-  });
-
-  it('leaves an error string and non-string results alone', () => {
-    expect(filterDownloadsByOrigin('Error: boom', 'unattended', { ...perms })).toBe('Error: boom');
-    const rich = [{ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'x' } }];
-    expect(filterDownloadsByOrigin(rich, 'unattended', { ...perms })).toBe(rich);
-  });
-
-  /**
-   * Round-3 R3-D. A via-embed mark says "full grant with a human present, no
-   * standing grant for a run nobody is watching". This filter's unattended
-   * tier keeps only `'allowed'` origins — the exact side the mark takes away —
-   * so a marked site's download records were still being handed to a run that
-   * could not click anything on that site. The interface said 「自动任务不适用」
-   * while the model was reading that site's filenames and addresses.
-   */
-  it('drops a via-embed marked site unattended, and keeps it attended', () => {
-    const json = JSON.stringify([{ url: `${ALLOWED_SITE}/a` }], null, 2);
-    const marked = { [ALLOWED_SITE]: true } as const;
-
-    const unattended = filterDownloadsByOrigin(json, 'unattended', { ...perms }, { ...marked }) as string;
-    expect(JSON.parse(unattended)).toHaveLength(0);
-
-    // Attended is untouched: the mark only ever narrows the unattended path.
-    expect(filterDownloadsByOrigin(json, 'attended', { ...perms }, { ...marked })).toBe(json);
-  });
-
-  it('an UNMARKED allowed site is still handed over, so the mark is what did it', () => {
-    const json = JSON.stringify([{ url: `${ALLOWED_SITE}/a` }], null, 2);
-    expect(filterDownloadsByOrigin(json, 'unattended', { ...perms }, {})).toBe(json);
-  });
+describe('audit-list fail closed',()=>{
+ const denied=()=>({...createBrowserPermissionConfig(),defaults:{browse:'deny',upload:'deny',script:'deny'}});
+ it.each([
+  {windows:[{tabs:{tabId:1,url:'https://blocked.example',title:'audit-secret'}}]},
+  {windows:['audit-secret']},
+  {windows:[{tabs:['audit-secret']}]},
+  {windows:[],summary:'audit-secret'},
+ ])('audit-list: malformed nested rows do not expose content %j',(value)=>{
+  expect(filterTabsBySitePermissions(JSON.stringify(value),denied())).not.toContain('audit-secret');
+ });
+ it.each([filterTabsBySitePermissions,filterDownloadsByOrigin])('audit-list: nonstring results cannot bypass the pageless filter',(filter)=>{
+  const value=[{type:'text',text:'audit-secret'}] as never;
+  expect(JSON.stringify(filter(value,denied()))).not.toContain('audit-secret');
+ });
+ it('audit-list: forbidden tab extra fields are not retained by object spread',()=>{
+  const value={windows:[{tabs:[{tabId:1,url:'https://blocked.example',title:'hidden',frames:[{frameId:'f0',origin:'https://blocked.example',url:'https://blocked.example/audit-secret'}]}]}]};
+  expect(filterTabsBySitePermissions(JSON.stringify(value),denied())).not.toContain('audit-secret');
+ });
 });

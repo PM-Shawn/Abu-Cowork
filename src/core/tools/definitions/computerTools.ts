@@ -1132,6 +1132,7 @@ export const computerTool: ToolDefinition = {
    If the result is target-ambiguous, choose exactly one returned candidate and retry with its opaque window_ref. Never invent or modify a window_ref.
 ② Every write must carry window_ref, the exact state_id as expected_state_id, and screenshot_id for coordinate actions. Add expected_effect when the result is machine-checkable.
 ③ Abu consumes state_id once and automatically observes the app again, returning separate observation evidence (changed/unchanged/unavailable) and expectation evidence (not-requested/satisfied/not-satisfied/unverifiable). A UI change without a specific expected_effect does not prove the target was achieved.
+④ Evidence that a task is done must come from an action you took. State that was already present when you first observed the app proves nothing: the app may have restored a previous session, an earlier attempt may have left it behind, or the user may have done it themselves. If what the user asked for is already there before you act, say so and ask — do not report it as your result. A task in which no action of yours changed the target is not a completed task.
 
 COORDINATE CONTRACT: AX element bounds are screen coordinates. x/y action coordinates are relative to the referenced screenshot and must carry that screenshot's screenshot_id. Never copy screen-coordinate bounds into x/y.
 

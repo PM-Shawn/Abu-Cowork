@@ -1091,8 +1091,8 @@ describe('ChatInput inline agent selection', () => {
         expect(within(menu).getAllByRole('menuitem').map((el) => el.textContent)).toEqual(['Add files', 'Expert · Expert Team', 'Skill']);
 
         fireEvent.click(screen.getByTestId('composer-menu-team'));
-        const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-        await waitFor(() => expect(textarea.value).toBe('@'));
+        const textarea = screen.getByRole('textbox', { name: '' }) as HTMLTextAreaElement;
+        await waitFor(() => expect(textarea.value).toBe(''));
         const listbox = await screen.findByRole('listbox');
         expect(within(listbox).getAllByRole('group').map((g) => g.getAttribute('aria-label'))).toEqual(['Expert Teams', 'Experts']);
       } finally {
@@ -1100,7 +1100,7 @@ describe('ChatInput inline agent selection', () => {
       }
     });
 
-    it('the + menu skill entry turns the text into a / command so the skill picker opens', async () => {
+    it('the + menu skill entry opens an independent skill picker', async () => {
       useDiscoveryStore.setState({
         skills: [{ name: 'weekly-report', description: 'Weekly report' } as never],
         agents: [{ name: 'publisher', description: 'Draft and edit public posts' }],
@@ -1109,8 +1109,8 @@ describe('ChatInput inline agent selection', () => {
       render(<ChatInput variant="welcome" onSend={vi.fn()} />);
       fireEvent.click(screen.getByTestId('composer-plus'));
       fireEvent.click(await screen.findByTestId('composer-menu-skill'));
-      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-      await waitFor(() => expect(textarea.value).toBe('/'));
+      const textarea = screen.getByRole('textbox', { name: '' }) as HTMLTextAreaElement;
+      await waitFor(() => expect(textarea.value).toBe(''));
       const listbox = await screen.findByRole('listbox');
       expect(within(listbox).getByRole('option', { name: /weekly-report/ })).toBeTruthy();
     });
@@ -1160,7 +1160,7 @@ describe('ChatInput inline agent selection', () => {
     fireEvent.change(textarea, { target: { value: '@pub 保留这段任务' } });
     fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
 
-    expect(textarea.value).toBe(' 保留这段任务');
+    expect(textarea.value).toBe('保留这段任务');
     expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
   });
 });

@@ -456,13 +456,13 @@ export default function TeamView() {
   const handleAICreateTeam = () => {
     closeTeam();
     startNewConversation();
-    setPendingInput(t.team.aiCreateTeamPrompt);
+    setPendingInput(t.team.aiCreateTeamPrompt, { startsTask: true });
   };
 
   const handleAICreateMember = () => {
     closeTeam();
     startNewConversation();
-    setPendingInput(t.toolbox.aiCreateAgentPrompt);
+    setPendingInput(t.toolbox.aiCreateAgentPrompt, { startsTask: true });
   };
 
   const renderHeaderRight = () => {

@@ -613,12 +613,13 @@ interface ChatState {
   agentStates: Map<string, ConversationAgentState>;
   // Token usage tracking
   currentUsage: TokenUsage | null;
-  // Pending input for prefilling the chat input (REPLACES the current draft)
+  // Pending prefill supplements the target draft. A new-task intent resets its route.
   pendingInput: string | null;
+  pendingInputStartsTask: boolean;
   // Pending input to APPEND to the current draft (does not clobber an
   // in-progress composer draft). Ephemeral one-shot buffer drained by
   // ChatInput. Used only by the inline-widget `window.sendPrompt` bridge —
-  // kept separate from pendingInput so other callers keep replace-semantics.
+  // kept separate from command-aware prefills so widget text stays literal.
   pendingInputAppend: string | null;
   // Pending agent name — set when starting a chat from an agent surface (toolbox
   // detail panel, agent selector, etc.) so the welcome screen can render an
@@ -805,7 +806,7 @@ interface ChatActions {
   setRetryInfo: (convId: string, info: RetryInfo | null) => void;
   removeActiveAgent: (convId: string, agentName: string) => void;
   setCurrentUsage: (usage: TokenUsage | null) => void;
-  setPendingInput: (text: string | null) => void;
+  setPendingInput: (text: string | null, options?: { startsTask?: boolean }) => void;
   setPendingSearchJump: (v: { convId: string; query: string } | null) => void;
   appendPendingInput: (text: string | null) => void;
   addPendingReference: (ref: ChatReference) => void;
@@ -869,6 +870,7 @@ export const useChatStore = create<ChatStore>()(
       currentUsage: null,
       outputsRev: {} as Record<string, number>,
       pendingInput: null,
+      pendingInputStartsTask: false,
       pendingInputAppend: null,
       pendingAgentName: null,
       pendingExpertContact: null,
@@ -2322,9 +2324,10 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
-      setPendingInput: (text) => {
+      setPendingInput: (text, options) => {
         set((state) => {
           state.pendingInput = text;
+          state.pendingInputStartsTask = text !== null && options?.startsTask === true;
         });
       },
 

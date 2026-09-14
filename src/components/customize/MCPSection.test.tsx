@@ -181,6 +181,34 @@ describe('MCPSection · source="mine"', () => {
     expect(screen.getByTestId('mcp-status-sequential-thinking').textContent).toBe(label());
   });
 
+  // Switching a connector off has to outlive the session: the startup pass
+  // (`connectAllEnabled`) reconnects everything still marked enabled, so a
+  // disconnect that only changed `status` came back on the next launch — and
+  // nothing else in the app ever wrote `enabled: false` for a non-plugin
+  // server, which is why `provisionFirstPartyMCPServers`' "an explicit disable
+  // is preserved" could never actually be reached.
+  it('remembers a connector the user switched off', async () => {
+    useMCPStore.setState({ servers: {
+      'hand-rolled': { ...serverEntry('hand-rolled'), status: 'connected' },
+    } });
+    render(<MCPSection source="mine" />);
+    fireEvent.click(screen.getByRole('switch'));
+    await waitFor(() => {
+      expect(useMCPStore.getState().servers['hand-rolled'].config.enabled).toBe(false);
+    });
+  });
+
+  it('switches it back on when the user reconnects', async () => {
+    useMCPStore.setState({ servers: {
+      'hand-rolled': { ...serverEntry('hand-rolled'), config: { name: 'hand-rolled', command: 'npx', args: [], enabled: false }, status: 'disconnected' },
+    } });
+    render(<MCPSection source="mine" />);
+    fireEvent.click(screen.getByRole('switch'));
+    await waitFor(() => {
+      expect(useMCPStore.getState().servers['hand-rolled'].config.enabled).toBe(true);
+    });
+  });
+
   it('shows the same dot on 我的', () => {
     useMCPStore.setState({ servers: { 'hand-rolled': { ...serverEntry('hand-rolled'), status: 'connected' } } });
     render(<MCPSection source="mine" />);

@@ -569,12 +569,27 @@ contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sen
 // its own renderer heartbeat. This global is exposed ONLY here (Electron) —
 // under Tauri it's simply absent, which is exactly what tells sidecarManager
 // to fall back to running its own renderer heartbeat.
+// Which deep-link scheme this shell registered with the OS ('abu' packaged,
+// 'abu-dev' unpackaged — see electron/deepLinkHost.cjs). Passed in via
+// webPreferences.additionalArguments so it's readable synchronously here; the
+// renderer needs it while assembling an OAuth `redirect_uri`, and getting that
+// wrong sends the authorization code to a DIFFERENT Abu install.
+function readDeepLinkScheme() {
+  const flag = '--abu-deep-link-scheme=';
+  const arg = process.argv.find(a => a.startsWith(flag));
+  const value = arg ? arg.slice(flag.length) : '';
+  // Only ever the two schemes the shell can register; anything else falls back
+  // to the production scheme rather than propagating a bogus redirect_uri.
+  return value === 'abu-dev' || value === 'abu' ? value : 'abu';
+}
+
 contextBridge.exposeInMainWorld('__ABU_SHELL__', {
   mainSupervisesSidecar: true,
+  deepLinkScheme: readDeepLinkScheme(),
   pluginAuthor: (action, request) => ipcRenderer.invoke('abu:plugin-author', { action, request }),
   pluginSnapshot: (action, request) => ipcRenderer.invoke('abu:plugin-snapshot', { action, request }),
-    pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
-    pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
+  pluginRegistry: (action, request) => ipcRenderer.invoke('abu:plugin-registry', { action, request }),
+  pluginOperation: (action, request) => ipcRenderer.invoke('abu:plugin-operation', { action, request }),
   canonicalizePathForPolicy: (path, followFinalSymlink = true) => ipcRenderer.invoke(
     FS_CANONICALIZE_FOR_POLICY_CHANNEL,
     { path, followFinalSymlink },

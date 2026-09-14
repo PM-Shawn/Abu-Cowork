@@ -47,12 +47,12 @@ under `scripts/`). E2E (`e2e/*.spec.ts`) is handled by Playwright and runs as a 
 | Unit (`*.test.ts(x)`, Vitest) | 676 |
 | Integration (`*.integration.test.ts`) | 11 |
 | Contract (`*.contract.test.ts`) | 11 |
-| Enterprise (`enterprise-tests/**`, `npm run test:enterprise`, private build only — not in the default gate) | 32 |
+| Enterprise (`enterprise-tests/**`, `npm run test:enterprise`, private build only — not in the default gate) | 35 |
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Quarantined specs (`e2e/**/*.spec.ts`, `tests/e2e/**/*.spec.ts`) | 0 |
 | Web E2E (`e2e/*.spec.ts`, Playwright) | 8 |
 | Real-Electron E2E (`tests/e2e/*.spec.ts`) | 36 |
-| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 63 |
+| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 64 |
 <!-- test-inventory:end -->
 
 ---

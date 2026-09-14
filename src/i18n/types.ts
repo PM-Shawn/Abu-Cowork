@@ -3782,6 +3782,8 @@ export interface TranslationDict {
     tabPassword: string;
     tabMagicLink: string;
     tabSso: string;
+    webDesktopLoginButton: string;
+    webDesktopLoginHint: string;
     emailLabel: string;
     emailPlaceholder: string;
     passwordLabel: string;
@@ -3845,6 +3847,35 @@ export interface TranslationDict {
     migrateDescription: string;
     unbindConfirm: string;
     unbindButton: string;
+    /** Usage lane label — org gateway (shared with model picker). */
+    laneGateway: string;
+    /** Usage lane label — personal API key. */
+    lanePersonal: string;
+    /** /me transparency panel (Settings → Enterprise → My Data). */
+    meTransparency: {
+      tabProfile: string;
+      tabTokens: string;
+      tabAudit: string;
+      tabUsage: string;
+      fieldName: string;
+      fieldEmail: string;
+      fieldDepartment: string;
+      fieldRole: string;
+      /** Shown when users.email is null (SSO without mailbox). */
+      noEmailBound: string;
+      noClients: string;
+      noAudit: string;
+      rangeDays: string;
+      tokensIn: string;
+      tokensOut: string;
+      cost: string;
+      unpriced: string;
+      byModel: string;
+      noCalls: string;
+      calls: string;
+      errors: string;
+      laneNote: string;
+    };
   };
 
   // Computer-use runtime status bar + screen-border overlay windows

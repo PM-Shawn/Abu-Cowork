@@ -1,8 +1,12 @@
 /**
  * Deep-link host — the Electron equivalent of tauri_plugin_deep_link.
  *
- * Abu accepts an enterprise enrollment link and a personal-account OAuth
- * callback. The frontend consumes accepted links via `@tauri-apps/plugin-deep-link`:
+ * Abu deep links today:
+ *   - `abu://enroll?server=<url>&token=<token>` — pre-fill enterprise bind
+ *   - `abu://open?server=<url>` — browser asks the client to start OAuth
+ *   - `abu://login?code=<once>&state=<csrf>` — OAuth redirect callback
+ *   - `abu://auth?code=<once>&state=<csrf>` — personal-account OAuth callback
+ * The frontend consumes accepted links via `@tauri-apps/plugin-deep-link`:
  *   - getCurrent()  → invoke('plugin:deep-link|get_current')  → string[] | null
  *   - onOpenUrl(cb) → listen('deep-link://new-url')           → payload string[]
  *
@@ -36,9 +40,9 @@ const PROD_SCHEME = 'abu';
 const DEV_SCHEME = 'abu-dev';
 const NEW_URL_EVENT = 'deep-link://new-url';
 
-// Every known deep-link action must be added here so
-// the whitelist keeps rejecting everything else.
-const KNOWN_HOSTS = new Set(['enroll', 'auth']);
+// Known deep-link actions. New hosts must be added here so the whitelist
+// keeps rejecting everything else.
+const KNOWN_HOSTS = new Set(['enroll', 'login', 'open', 'auth']);
 
 let activeScheme = PROD_SCHEME;
 let coldStartUrls = []; // URLs that cold-launched the app (get_current path)
@@ -65,14 +69,17 @@ function log(msg, extra) {
 function safeUrlLogDetails(raw) {
   if (typeof raw === 'string') {
     const candidate = raw.trim().replace(/^abu-dev:/i, 'abu:');
-    // Parse-independent guard: malformed auth callbacks (for example an
+    // Parse-independent guard: malformed OAuth callbacks (for example an
     // invalid port) still contain secrets and must not fall back to raw logs.
-    if (/^abu:(?:\/\/)?(?:[^/?#]*@)?auth(?:[/?#:%.]|$)/i.test(candidate)) {
-      return { host: 'auth' };
+    const sensitiveHost = /^abu:(?:\/\/)?(?:[^/?#]*@)?(auth|login)(?:[/?#:%.]|$)/i.exec(candidate)?.[1];
+    if (sensitiveHost) {
+      return { host: sensitiveHost.toLowerCase() };
     }
     try {
       const url = new URL(candidate);
-      if (url.protocol === 'abu:' && url.hostname === 'auth') return { host: 'auth' };
+      if (url.protocol === 'abu:' && (url.hostname === 'auth' || url.hostname === 'login')) {
+        return { host: url.hostname };
+      }
     } catch {
       // Fall through to the existing raw-value diagnostics for unrelated input.
     }
@@ -85,9 +92,10 @@ function safeUrlLogDetails(raw) {
  * if it is not one of our schemes / not a known action. This is the ONE parser
  * all three arrival sources funnel through (competitor convention #2/#3).
  * @param {unknown} raw
+ * @param {boolean} [allowDevScheme] testable form of the packaged-app gate
  * @returns {string | null}
  */
-function normalizeDeepLinkUrl(raw) {
+function normalizeDeepLinkUrl(raw, allowDevScheme = activeScheme === DEV_SCHEME) {
   if (typeof raw !== 'string') return null;
   let s = raw.trim();
   // Windows may hand us "abu://…" or (rarely) "abu:…"; accept both forms.
@@ -96,6 +104,7 @@ function normalizeDeepLinkUrl(raw) {
   const scheme = m[1].toLowerCase();
   if (scheme !== PROD_SCHEME && scheme !== DEV_SCHEME) return null;
   if (scheme === DEV_SCHEME) {
+    if (!allowDevScheme) return null;
     // abu-dev://…  →  abu://…  (rewrite the dev scheme to the canonical one)
     s = PROD_SCHEME + s.slice(m[1].length);
   }
@@ -103,7 +112,8 @@ function normalizeDeepLinkUrl(raw) {
     const u = new URL(s);
     if (u.protocol !== 'abu:') return null;
     if (!KNOWN_HOSTS.has(u.hostname)) return null; // reject unknown actions
-    if (u.hostname === 'auth' && (u.username || u.password || u.port || u.pathname || u.hash)) {
+    if ((u.hostname === 'auth' || u.hostname === 'login')
+      && (u.username || u.password || u.port || u.pathname || u.hash)) {
       return null;
     }
     return s;
@@ -128,6 +138,24 @@ function extractDeepLinkFromArgv(argv) {
 }
 
 /**
+ * Which scheme this shell owns. Single source of truth for the packaged/dev
+ * split — anything that needs to know (protocol registration below, and the
+ * scheme handed to the renderer so it can build an OAuth `redirect_uri` the OS
+ * will route back to THIS shell) must go through here rather than re-deriving
+ * it from `app.isPackaged`.
+ * @param {import('electron').App} appInstance
+ * @returns {string}
+ */
+function resolveDeepLinkScheme(appInstance) {
+  return appInstance.isPackaged ? PROD_SCHEME : DEV_SCHEME;
+}
+
+/** The scheme actually registered (PROD_SCHEME until initDeepLink runs). */
+function getActiveScheme() {
+  return activeScheme;
+}
+
+/**
  * Wire deep-link handling. MUST be called before app 'ready' so the early
  * `open-url` listener is in place when the OS delivers a launching URL.
  * @param {import('electron').App} app
@@ -136,7 +164,7 @@ function extractDeepLinkFromArgv(argv) {
 function initDeepLink(app, deps) {
   emitFn = deps.emitEvent;
   getWindowFn = deps.getMainWindow;
-  activeScheme = app.isPackaged ? PROD_SCHEME : DEV_SCHEME;
+  activeScheme = resolveDeepLinkScheme(app);
 
   // Register as the OS default handler for our scheme. In an unpackaged dev run
   // (`electron electron/main.cjs`) the registration must point back at the
@@ -276,6 +304,8 @@ module.exports = {
   isCurrentSchemeRegistered,
   normalizeDeepLinkUrl,
   extractDeepLinkFromArgv,
+  resolveDeepLinkScheme,
+  getActiveScheme,
   NEW_URL_EVENT,
   __resetForTest,
 };

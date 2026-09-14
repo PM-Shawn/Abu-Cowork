@@ -41,7 +41,7 @@ const {
   sidecarBundleExists,
   sidecarPathFor,
 } = require('./appEnv.cjs');
-const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
+const { initDeepLink, handleSecondInstanceArgv, getActiveScheme } = require('./deepLinkHost.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
@@ -219,6 +219,12 @@ function createWindow(transitionWindow = null) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The renderer must build an OAuth `redirect_uri` the OS will route back
+      // to THIS shell — an unpackaged dev run owns `abu-dev://`, while `abu://`
+      // belongs to whatever production Abu is installed on the machine. Passed
+      // as a launch argument (not IPC) because the renderer needs it
+      // synchronously while assembling the authorization URL.
+      additionalArguments: [`--abu-deep-link-scheme=${getActiveScheme()}`],
     },
   });
   attachEditContextMenu(win, Menu, {

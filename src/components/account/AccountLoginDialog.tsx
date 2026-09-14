@@ -1,17 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { useAccountStore } from '@/core/account/accountStore';
-import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { isMacOS } from '@/utils/platform';
 import { cn } from '@/lib/utils';
+import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
 import LoginPage, { type LoginPageStatus } from './LoginPage';
 
 /** Centered account entry dialog shared by the sidebar and account settings. */
 export default function AccountLoginDialog() {
   const open = useSettingsStore((state) => state.accountLoginOpen);
   const close = useSettingsStore((state) => state.closeAccountLogin);
+  const openSystemSettings = useSettingsStore((state) => state.openSystemSettings);
   const status = useAccountStore((state) => state.status);
   const account = useAccountStore((state) => state.account);
   const error = useAccountStore((state) => state.error);
@@ -19,7 +20,6 @@ export default function AccountLoginDialog() {
   const cancel = useAccountStore((state) => state.cancel);
   const signOut = useAccountStore((state) => state.signOut);
   const { t } = useI18n();
-  const [enterpriseFlowOpen, setEnterpriseFlowOpen] = useState(false);
   const personalStartRequested = useRef(false);
 
   const cancelAttempt = useCallback(() => {
@@ -46,7 +46,6 @@ export default function AccountLoginDialog() {
   useEffect(() => {
     if (!open) {
       personalStartRequested.current = false;
-      setEnterpriseFlowOpen(false);
     }
   }, [open]);
 
@@ -55,27 +54,15 @@ export default function AccountLoginDialog() {
   }, [error]);
 
   useEffect(() => {
-    if (!open || enterpriseFlowOpen) return;
+    if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closeDialog();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [closeDialog, enterpriseFlowOpen, open]);
+  }, [closeDialog, open]);
 
   if (!open || status === 'signed_in') return null;
-
-  if (enterpriseFlowOpen) {
-    return (
-      <BindToEnterpriseFlow
-        onDone={() => {
-          setEnterpriseFlowOpen(false);
-          close();
-        }}
-        onCancel={() => setEnterpriseFlowOpen(false)}
-      />
-    );
-  }
 
   const pageStatus: LoginPageStatus = status;
 
@@ -120,7 +107,12 @@ export default function AccountLoginDialog() {
           }}
           onEnterpriseLogin={() => {
             if (personalStartRequested.current) cancelAttempt();
-            setEnterpriseFlowOpen(true);
+            close();
+            void startEnterpriseAccountLogin()
+              .then((result) => {
+                if (result === 'configuration_required') openSystemSettings('enterprise');
+              })
+              .catch(() => openSystemSettings('enterprise'));
           }}
           onCancel={cancelAttempt}
           onSignOut={() => void signOut()}

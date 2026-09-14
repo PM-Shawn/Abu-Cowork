@@ -103,7 +103,6 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 // Side-effect import: registers policyEnforcer in the enterprise mounts registry
 import '@/core/enterprise/policy/enforcer';  // enforcer.ts — non-JSX, side-effect only
 import PolicyConfirmModal from '@/components/enterprise/PolicyConfirmModal';
-import BindToEnterpriseFlow from '@/components/enterprise/BindToEnterpriseFlow';
 import { useDeepLinkEnroll } from '@/core/enterprise/useDeepLinkEnroll';
 import {
   consumeComputerUseResumeToken,
@@ -280,7 +279,7 @@ function App() {
   const setShowCloseDialog = usePreviewStore((s) => s.setAppModalOpen);
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [pendingAnnouncements, setPendingAnnouncements] = useState<AnnouncementItem[]>([]);
-  const { pendingEnroll, dismissEnroll } = useDeepLinkEnroll();
+  useDeepLinkEnroll();
   const hasRunningAgent = useChatStore((s) =>
     Object.values(s.conversations).some((c) => c.status === 'running')
   );
@@ -992,16 +991,6 @@ function App() {
           />
         )}
 
-        {/* Deep-link enrollment: show BindToEnterpriseFlow pre-seeded with serverUrl
-            when the app is opened via abu://enroll?server=<URL>&token=<token>.
-            Renders above all other overlays (z-50 inside BindToEnterpriseFlow). */}
-        {pendingEnroll && (
-          <BindToEnterpriseFlow
-            initialServerUrl={pendingEnroll.serverUrl}
-            onDone={dismissEnroll}
-            onCancel={dismissEnroll}
-          />
-        )}
       </div>
     </TooltipProvider>
     </ErrorBoundary>

@@ -20,6 +20,7 @@ const mockSettingsState = {
 };
 
 vi.mock('../../stores/settingsStore', () => ({
+  readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: {
     getState: () => mockSettingsState,
   },

@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // Regression: the browser permission gate must be able to SEE the tab it is
 // gating.
 //
@@ -18,7 +20,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import type { ToolDefinition } from '../../types';
 
@@ -79,7 +80,7 @@ describe('browser permission gate ↔ per-conversation tab ownership', () => {
     );
 
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard', browserSitePermissions: {} });
+    setMigratedBrowserSettings({ permissionMode: 'standard', browserSitePermissions: {} });
     __resetBrowserGrantsForTests();
   });
 
@@ -176,7 +177,7 @@ describe('browser permission gate ↔ per-conversation tab ownership', () => {
           : tabsPayload([]),
       ),
     );
-    useSettingsStore.setState({ browserSitePermissions: { 'https://evil.com': 'denied' } });
+    setMigratedBrowserSettings({ browserSitePermissions: { 'https://evil.com': 'denied' } });
     const asked: ConfirmInfo[] = [];
     const confirm = async (info: ConfirmInfo) => { asked.push(info); return true; };
 
@@ -192,8 +193,8 @@ describe('browser permission gate ↔ per-conversation tab ownership', () => {
   });
 
   it('lets a pre-authorized unattended run act on an owned tab with no confirmation channel', async () => {
-    useSettingsStore.setState({
-      browserSitePermissions: { 'https://example.com': 'allowed' },
+    setMigratedBrowserSettings({
+      browserPermissionConfigV2: { ...createBrowserPermissionConfig(), sites: { 'https://example.com': { ...emptyBrowserSiteRule(), browse: 'allow' } } },
     });
 
     const decision = await checkToolApproval(

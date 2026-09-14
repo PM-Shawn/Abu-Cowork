@@ -231,27 +231,24 @@ export async function windowListenerRegistered(
   }, { suffix: urlSuffix, name: event });
 }
 
-async function reloadAndWaitForApp(page: Page): Promise<void> {
-  await page.reload();
-  await page.waitForLoadState('domcontentloaded');
-  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
 /** Persist the common first-run acknowledgements used by Electron E2E journeys. */
 export async function dismissFirstRunOverlays(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    Object.assign(persisted.state, {
-      guideShown: true,
-      guideOpen: false,
-      hasAcknowledgedDisclaimer: true,
-      hasRunSensitiveAudit_v015: true,
+  // Settings writes are serialized now. Seed under the same lock and reload
+  // before returning control, so a queued pre-seed save cannot restore overlays.
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async () => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
+      const raw = window.localStorage.getItem('abu-settings');
+      if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+      const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+      Object.assign(persisted.state, {
+        guideShown: true, guideOpen: false,
+        hasAcknowledgedDisclaimer: true, hasRunSensitiveAudit_v015: true,
+      });
+      window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+      window.location.reload();
     });
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(/^(想让阿布帮你做点什么？|What can Abu help you with\?)$/)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 export interface LocalMockProviderOptions {
@@ -286,7 +283,8 @@ export async function configureLocalMockProvider(
     supportsTools = false,
   } = options;
 
-  await page.evaluate((configuration) => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
@@ -335,6 +333,8 @@ export async function configureLocalMockProvider(
     // reload below — so a future migrate branch that rewrites one of these
     // fields would silently clobber every spec's provider setup.
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+    window.location.reload();
+    });
   }, {
     apiKey,
     baseUrl,
@@ -347,8 +347,8 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 /**

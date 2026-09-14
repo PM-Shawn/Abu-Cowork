@@ -1,3 +1,5 @@
+import { grantBrowserPermissionTargets, type BrowserPermissionTarget, createBrowserPermissionConfig, migrateBrowserPermissionConfig, emptyBrowserSiteRule, isBrowserDefaultDecision, isExactBrowserPermissionOrigin, parseBrowserPermissionConfig, type BrowserPermissionConfig, type BrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import type { BrowserDefaultDecision, BrowserPermissionResource, BrowserSiteOverride } from '@/core/permissions/browserPermissionDefaults';
 import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
 import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { create } from 'zustand';
@@ -29,7 +31,7 @@ import {
   type BrowserConfigField,
   type BrowserConfigRevisions,
 } from './browserConfigPersistence';
-import { browserSaveStatus } from './browserSaveStatus';
+import { browserSaveStatus, useBrowserSaveStatusStore } from './browserSaveStatus';
 import { hasElectronCommandHost } from '../utils/electronHost';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
@@ -312,6 +314,7 @@ export interface SettingsState {
    * typecheck. See `BROWSER_SITE_VERDICTS_BRAND` and
    * `src/__tests__/browserSiteGrantWriters.test.ts`, its runtime counterpart.
    */
+  browserPermissionConfigV2: BrowserPermissionConfig;
   browserSitePermissions: BrowserSiteVerdicts;
   /**
    * Which of those `'allowed'` verdicts were minted through the MERGED prompt
@@ -556,6 +559,13 @@ interface SettingsActions {
   setBehaviorSensorEnabled: (enabled: boolean) => void;
   setTelemetryOptOut: (optOut: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
+  grantBrowserPermissionTargets: (resource: BrowserPermissionResource, targets: readonly BrowserPermissionTarget[], shouldApply: () => boolean) => Promise<boolean>;
+  setBrowserPermissionDefault: (resource: BrowserPermissionResource, decision: BrowserDefaultDecision) => Promise<boolean>;
+  setBrowserSiteResourcePermission: (origin: string, resource: BrowserPermissionResource, decision: BrowserSiteOverride, shouldApply?: () => boolean, embeddedIn?: string) => Promise<boolean>;
+  setBrowserEmbeddedRule: (topOrigin: string, origin: string, rule: Omit<BrowserSiteRule, 'blocked'> | null, expected: Omit<BrowserSiteRule, 'blocked'> | null, shouldApply?: () => boolean) => Promise<'saved' | 'conflict' | 'failed'>;
+  setBrowserSiteBlocked: (origin: string, blocked: boolean) => Promise<boolean>;
+  setBrowserSiteRule: (origin: string, nextRule: BrowserSiteRule, expectedRule: BrowserSiteRule | null, shouldApply?: () => boolean) => Promise<'saved' | 'conflict' | 'failed'>;
+  removeBrowserSiteRule: (origin: string, expectedRule: BrowserSiteRule, shouldApply?: () => boolean) => Promise<boolean>;
   setBrowserSitePermission: (
     origin: string,
     verdict: 'allowed' | 'denied',
@@ -592,6 +602,9 @@ interface SettingsActions {
   ) => void;
   /** Try the failed write again, with the value it was trying to store. */
   retryBrowserConfigSave: (field: BrowserConfigField) => void;
+  /** Discard a failed write so a later generic Retry cannot restore an edit
+   *  the user explicitly abandoned. Does not write settings. */
+  discardFailedBrowserConfigSave: (field: BrowserConfigField) => void;
   setPreventSleep: (enabled: boolean) => void;
   setSoulInitialized: (initialized: boolean) => void;
   setProactivity: (level: 'shy' | 'companion' | 'butler') => void;
@@ -809,6 +822,40 @@ function safeLocalStorage(): Storage | undefined {
   }
 }
 
+const INVALID_BROWSER_PERMISSION_CONFIG = migrateBrowserPermissionConfig(null);
+let browserPermissionStorageWasPresent = false;
+function permissionConfigFromStoredBlob(blob: NonNullable<ReturnType<typeof parsePersistedSettings>>): BrowserPermissionConfig {
+  return parseBrowserPermissionConfig(blob.state.browserPermissionConfigV2)
+    ?? migrateBrowserPermissionConfig(typeof blob.version === 'number' && blob.version < 53
+      ? blob.state
+      : { ...blob.state, browserPermissionConfigV2: blob.state.browserPermissionConfigV2 ?? {} });
+}
+/** Only a confirmed absence of storage is a fresh install. */
+export function initialBrowserPermissionConfig(): BrowserPermissionConfig {
+  try {
+    const raw = safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY);
+    if (raw === null) return createBrowserPermissionConfig();
+    if (raw !== undefined) browserPermissionStorageWasPresent = true;
+    const blob = parsePersistedSettings(raw ?? null);
+    return blob ? permissionConfigFromStoredBlob(blob) : INVALID_BROWSER_PERMISSION_CONFIG;
+  } catch { return INVALID_BROWSER_PERMISSION_CONFIG; }
+}
+/** A running window must observe confirmed revocations, never an optimistic grant. */
+export function readConfirmedBrowserPermissionConfig(state: Readonly<SettingsState>): BrowserPermissionConfig {
+  void state;
+  try {
+    const storage = safeLocalStorage();
+    if (!storage) return INVALID_BROWSER_PERMISSION_CONFIG;
+    const raw = storage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw === null) return browserPermissionStorageWasPresent ? INVALID_BROWSER_PERMISSION_CONFIG
+      : (lastConfirmedBrowserConfig.get('browserPermissionConfigV2')?.value as BrowserPermissionConfig | undefined) ?? INVALID_BROWSER_PERMISSION_CONFIG;
+    browserPermissionStorageWasPresent = true;
+    const blob = parsePersistedSettings(raw);
+    if (!blob) return INVALID_BROWSER_PERMISSION_CONFIG;
+    return permissionConfigFromStoredBlob(blob);
+  } catch { return INVALID_BROWSER_PERMISSION_CONFIG; }
+}
+
 /**
  * Browser fields edited since the last write landed. The storage adapter
  * settles exactly these, because `persist` writes the whole blob on EVERY
@@ -818,11 +865,13 @@ function safeLocalStorage(): Storage | undefined {
 const browserConfigWriteQueue = new Set<BrowserConfigField>();
 
 /**
- * The last value of each browser field that was READ BACK from storage.
+ * The last known effective value of each browser field: either produced by a
+ * successful hydration (including fresh-install defaults), or read back after
+ * a successful write.
  *
  * This is what a failed write rolls back to. Not the previous in-memory value:
  * that one may itself never have been stored, and rolling back to an
- * unconfirmed value would be the same lie one step removed.
+ * unconfirmed edit would be the same lie one step removed.
  */
 const lastConfirmedBrowserConfig = new Map<
   BrowserConfigField,
@@ -854,80 +903,143 @@ let repairingBrowserConfig = false;
  * The storage zustand persists through: `localStorage`, plus a per-field merge
  * and a read-back confirmation for the three browser authorization fields.
  *
- * Everything else in the blob is written exactly as before. If any part of the
- * merge or confirmation throws, the write still goes through unmerged — a bug
- * in this layer must not be able to stop settings being saved at all.
+ * Every blob write participates in the same lock; ordinary settings must not
+ * overwrite a newer browser restriction. Unreadable permission data stops the
+ * write rather than falling back to an unmerged snapshot.
  */
+const BROWSER_PERMISSION_LOCK = 'abu-browser-permission-config-v2';
+let browserPermissionLockHeld = false;
 const settingsStateStorage: StateStorage = {
-  getItem: (name) => safeLocalStorage()?.getItem(name) ?? null,
+  getItem: (name) => {
+    const raw = safeLocalStorage()?.getItem(name) ?? null;
+    if (name === SETTINGS_STORAGE_KEY && raw !== null) browserPermissionStorageWasPresent = true;
+    return raw;
+  },
   removeItem: (name) => { safeLocalStorage()?.removeItem(name); },
   setItem: (name, value) => {
     const storage = safeLocalStorage();
     const pending = [...browserConfigWriteQueue];
     browserConfigWriteQueue.clear();
+    const performWrite = () => {
 
-    if (!storage) {
-      // No storage at all: nothing was saved, and saying so is the point.
-      for (const field of pending) browserSaveStatus.settle(field, 'failed');
-      if (pending.length > 0) repairBrowserConfig(pending, null);
-      return;
-    }
-
-    let intended = parsePersistedSettings(value);
-    let adopted: BrowserConfigField[] = [];
-    let toWrite = value;
-    try {
-      if (intended !== null) {
-        const merge = mergeBrowserConfigForWrite(
-          intended,
-          parsePersistedSettings(storage.getItem(name)),
-        );
-        intended = merge.merged;
-        adopted = merge.adopted;
-        toWrite = JSON.stringify(merge.merged);
+      if (!storage) {
+        // No storage at all: nothing was saved, and saying so is the point.
+        for (const field of pending) browserSaveStatus.settle(field, 'failed');
+        if (pending.length > 0) repairBrowserConfig(pending, null);
+        return;
       }
-    } catch {
-      // Fall through and write the original value: an unmerged save beats no
-      // save, and the confirmation below still reports the truth about it.
-      intended = parsePersistedSettings(value);
-      adopted = [];
-      toWrite = value;
-    }
 
-    let stored: boolean;
-    try {
-      storage.setItem(name, toWrite);
-      // A `setItem` that returns without throwing is not evidence: a
-      // quota-exceeded write can be partially applied, and some engines
-      // swallow the write entirely. Read it back.
-      stored = intended !== null && browserConfigWasStored(intended, storage.getItem(name));
-    } catch {
-      stored = false;
-    }
-
-    if (stored && intended !== null) {
-      const revisions = readBrowserConfigRevisions(intended.state);
-      for (const field of BROWSER_CONFIG_FIELDS) {
-        lastConfirmedBrowserConfig.set(field, {
-          value: intended.state[field],
-          revision: revisions[field],
-          companions: companionValues(field, intended.state),
-        });
-      }
-    }
-    for (const field of pending) browserSaveStatus.settle(field, stored ? 'saved' : 'failed');
-    if (!stored) {
-      for (const field of pending) {
+      let intended = parsePersistedSettings(value);
+      let confirmedBeforeWrite: ReturnType<typeof parsePersistedSettings>;
+      let adopted: BrowserConfigField[] = [];
+      let toWrite = value;
+      try {
+        // Keep the value successfully read immediately before this attempt. A
+        // cold-start process may not have completed any writes of its own yet,
+        // but this disk snapshot is still the authoritative rollback target.
+        const rawDisk = storage.getItem(name);
+        if (rawDisk !== null) browserPermissionStorageWasPresent = true;
+        if (rawDisk === null && browserPermissionStorageWasPresent) {
+          for (const field of pending) browserSaveStatus.settle(field, 'failed');
+          return;
+        }
+        const diskBeforeWrite = parsePersistedSettings(rawDisk);
+        if (diskBeforeWrite && typeof diskBeforeWrite.version === 'number' && diskBeforeWrite.version < 53) {
+          diskBeforeWrite.state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(diskBeforeWrite.state);
+        }
+        if (rawDisk !== null && (!diskBeforeWrite || !parseBrowserPermissionConfig(diskBeforeWrite.state.browserPermissionConfigV2))) {
+          for (const field of pending) browserSaveStatus.settle(field, 'failed');
+          if (pending.length) repairBrowserConfig(pending, diskBeforeWrite);
+          return;
+        }
+        // A current-version blob already has the shape restore expects. Older
+        // blobs must fall back to the migrated baseline recorded at hydration;
+        // restoring their raw pre-migration fields would reintroduce invalid or
+        // absent values after a failed save.
+        confirmedBeforeWrite = diskBeforeWrite?.version === 53 ? diskBeforeWrite : null;
         if (intended !== null) {
-          lastAttemptedBrowserConfig.set(field, {
+          // A counter orders cooperative writers, not authority. An ordinary
+          // blob save must keep the valid permissions read under this lock,
+          // even when that copy's counter was lost or rolled back.
+          const adoptPermissions = diskBeforeWrite !== null && !pending.includes('browserPermissionConfigV2');
+          const permissionValueChanged = adoptPermissions
+            && JSON.stringify(intended.state.browserPermissionConfigV2) !== JSON.stringify(diskBeforeWrite.state.browserPermissionConfigV2);
+          if (adoptPermissions) {
+            intended = { ...intended, state: { ...intended.state, browserPermissionConfigV2: diskBeforeWrite.state.browserPermissionConfigV2 } };
+          }
+          const merge = mergeBrowserConfigForWrite(
+            intended,
+            diskBeforeWrite,
+          );
+          intended = merge.merged;
+          adopted = merge.adopted;
+          if (permissionValueChanged && !adopted.includes('browserPermissionConfigV2')) adopted.push('browserPermissionConfigV2');
+          toWrite = JSON.stringify(merge.merged);
+        }
+      } catch {
+        for (const field of pending) browserSaveStatus.settle(field, 'failed');
+        if (pending.length) repairBrowserConfig(pending, null);
+        return;
+      }
+
+      let stored: boolean;
+      try {
+        storage.setItem(name, toWrite);
+        // A `setItem` that returns without throwing is not evidence: a
+        // quota-exceeded write can be partially applied, and some engines
+        // swallow the write entirely. Read it back.
+        const readback = storage.getItem(name);
+        if (readback !== null) browserPermissionStorageWasPresent = true;
+        stored = intended !== null && browserConfigWasStored(intended, readback);
+      } catch {
+        stored = false;
+      }
+
+      if (stored && intended !== null) {
+        browserPermissionStorageWasPresent = true;
+        const revisions = readBrowserConfigRevisions(intended.state);
+        for (const field of BROWSER_CONFIG_FIELDS) {
+          lastConfirmedBrowserConfig.set(field, {
             value: intended.state[field],
+            revision: revisions[field],
             companions: companionValues(field, intended.state),
           });
         }
       }
-      if (pending.length > 0) repairBrowserConfig(pending, null);
+      for (const field of pending) browserSaveStatus.settle(field, stored ? 'saved' : 'failed');
+      if (stored) {
+        // A later ordinary save of the same field supersedes its failed intent.
+        // Leave other fields alone: their Retry still represents unsaved work.
+        for (const field of pending) lastAttemptedBrowserConfig.delete(field);
+      }
+      if (!stored) {
+        for (const field of pending) {
+          if (intended !== null) {
+            lastAttemptedBrowserConfig.set(field, {
+              value: intended.state[field],
+              companions: companionValues(field, intended.state),
+            });
+          }
+        }
+        if (pending.length > 0) repairBrowserConfig(pending, confirmedBeforeWrite);
+      }
+      if (stored && adopted.length > 0 && intended !== null) repairBrowserConfig(adopted, intended);
+    };
+    if (browserPermissionLockHeld) return performWrite();
+    if (typeof navigator === 'undefined' || !navigator.locks) {
+      for (const field of pending) browserSaveStatus.settle(field, 'failed');
+      if (pending.length) repairBrowserConfig(pending, null);
+      return;
     }
-    if (stored && adopted.length > 0 && intended !== null) repairBrowserConfig(adopted, intended);
+    // All current-version blob writes participate, including ordinary settings
+    // and hydration writes. Otherwise a stale ordinary save could erase a ban.
+    return navigator.locks.request(BROWSER_PERMISSION_LOCK, () => {
+      browserPermissionLockHeld = true;
+      try { performWrite(); } finally { browserPermissionLockHeld = false; }
+    }).catch(() => {
+      for (const field of pending) browserSaveStatus.settle(field, 'failed');
+      if (pending.length) repairBrowserConfig(pending, null);
+    });
   },
 };
 
@@ -957,9 +1069,9 @@ function repairBrowserConfig(
           companions: companionValues(field, source.state),
         }
         : lastConfirmedBrowserConfig.get(field);
-      // Nothing was ever confirmed for this field (the very first write of a
-      // fresh install failed). There is no known-good value to show, so the
-      // status is left as the only signal rather than inventing one.
+      // Hydration failed before any effective baseline could be established,
+      // and no later write was confirmed. Leave the status as the signal
+      // rather than inventing a value after an unreadable store.
       if (confirmed === undefined) continue;
       useSettingsStore.getState()
         .restoreBrowserConfigField(field, confirmed.value, confirmed.revision, confirmed.companions);
@@ -983,12 +1095,78 @@ function companionValues(
   return out;
 }
 
+/** Record the effective browser configuration produced by a successful
+ * hydration, after migrations and fail-safe normalization. A fresh install's
+ * defaults are also its known effective baseline. Hydration errors never call
+ * this helper, so an unreadable store is not presented as confirmed. */
+function rememberHydratedBrowserConfig(state: SettingsStore): void {
+  const revisions = readBrowserConfigRevisions(state);
+  const snapshot = state as unknown as Record<string, unknown>;
+  for (const field of BROWSER_CONFIG_FIELDS) {
+    lastConfirmedBrowserConfig.set(field, {
+      value: state[field],
+      revision: revisions[field],
+      companions: companionValues(field, snapshot),
+    });
+  }
+}
+
+type BrowserPermissionEdit = (config: BrowserPermissionConfig) => BrowserPermissionConfig | null;
+let lastBrowserPermissionEdit: BrowserPermissionEdit | null = null;
+/** Single-item edits start from the freshest stored configuration, so unrelated
+ * changes from another window survive. This is not a whole-draft CAS API. */
+async function editBrowserPermissionConfig(edit: BrowserPermissionEdit): Promise<boolean> {
+  lastBrowserPermissionEdit = edit;
+  browserSaveStatus.begin('browserPermissionConfigV2');
+  if (typeof navigator === 'undefined' || !navigator.locks) {
+    browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+    return false;
+  }
+  try {
+    return await navigator.locks.request(BROWSER_PERMISSION_LOCK, () => {
+      browserPermissionLockHeld = true;
+      try {
+        const state = useSettingsStore.getState();
+        let current = parseBrowserPermissionConfig(state.browserPermissionConfigV2);
+        const rawDisk = safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null;
+        if (rawDisk !== null) browserPermissionStorageWasPresent = true;
+        if (rawDisk === null && browserPermissionStorageWasPresent) {
+          browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+          return false;
+        }
+        const disk = parsePersistedSettings(rawDisk);
+        if (disk && typeof disk.version === 'number' && disk.version < 53) disk.state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(disk.state);
+        if (rawDisk !== null && (!disk || !parseBrowserPermissionConfig(disk.state.browserPermissionConfigV2))) {
+          browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+          return false;
+        }
+        if (disk) {
+          current = parseBrowserPermissionConfig(disk.state.browserPermissionConfigV2);
+        }
+        if (!current) { browserSaveStatus.settle('browserPermissionConfigV2', 'failed'); return false; }
+        lastBrowserPermissionEdit = edit;
+        const next = edit(current);
+        if (!next || !parseBrowserPermissionConfig(next)) { browserSaveStatus.settle('browserPermissionConfigV2', 'failed'); return false; }
+        useSettingsStore.setState({ browserPermissionConfigV2: next, ...beginBrowserFieldWrite('browserPermissionConfigV2', state.browserConfigRevisions) });
+        const saved = useBrowserSaveStatusStore.getState().status.browserPermissionConfigV2 === 'saved';
+        if (saved) lastBrowserPermissionEdit = null;
+        return saved;
+      } finally { browserPermissionLockHeld = false; }
+    });
+  } catch {
+    browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+    return false;
+  }
+}
+
 /** Test-only — module-level bookkeeping shared across a test file. */
 export function __resetBrowserConfigPersistenceForTests(): void {
+  browserPermissionStorageWasPresent = false;
   browserConfigWriteQueue.clear();
   lastConfirmedBrowserConfig.clear();
   lastAttemptedBrowserConfig.clear();
   repairingBrowserConfig = false;
+  lastBrowserPermissionEdit = null;
 }
 
 /**
@@ -1002,7 +1180,9 @@ export function __resetBrowserConfigPersistenceForTests(): void {
  */
 function diskBrowserConfigRevisions(): BrowserConfigRevisions {
   try {
-    const stored = parsePersistedSettings(safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null);
+    const raw = safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null;
+    if (raw !== null) browserPermissionStorageWasPresent = true;
+    const stored = parsePersistedSettings(raw);
     return readBrowserConfigRevisions(stored?.state);
   } catch {
     return INITIAL_BROWSER_CONFIG_REVISIONS;
@@ -1042,7 +1222,7 @@ export function useExtensionsSearchQuery(tab?: ExtensionsTab): string {
 
 export const useSettingsStore = create<SettingsStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       // ── Provider & Model defaults ──
       providers: defaultProviders,
       // Must name a model that exists in PROVIDER_CONFIGS.anthropic.models —
@@ -1102,6 +1282,7 @@ export const useSettingsStore = create<SettingsStore>()(
       behaviorSensorEnabled: false,
       telemetryOptOut: false,
       computerUseEnabled: false,
+      browserPermissionConfigV2: initialBrowserPermissionConfig(),
       browserSitePermissions: mintBrowserSiteVerdicts({}),
       browserSiteGrantViaEmbed: {} as BrowserSiteGrantScopes,
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -1464,6 +1645,79 @@ export const useSettingsStore = create<SettingsStore>()(
       closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
+      grantBrowserPermissionTargets: (resource, targets, shouldApply) => {
+        // Capture the exact prompt scope before waiting for another window's lock.
+        const captured = targets.map(({ origin, embeddedIn }) => ({ origin, embeddedIn }));
+        return editBrowserPermissionConfig((config) => shouldApply()
+          ? grantBrowserPermissionTargets(config, resource, captured) : null);
+      },
+      setBrowserPermissionDefault: (resource, decision) => editBrowserPermissionConfig((config) => {
+        if (!isBrowserDefaultDecision(decision) || !['browse', 'upload', 'script'].includes(resource)) return null;
+        return { ...config, defaults: { ...config.defaults, [resource]: decision } };
+      }),
+      setBrowserSiteResourcePermission: (origin, resource, decision, shouldApply, embeddedIn) => editBrowserPermissionConfig((config) => {
+        if (shouldApply && !shouldApply()) return null;
+        if (!isExactBrowserPermissionOrigin(origin) || !['browse', 'upload', 'script'].includes(resource)
+          || (decision !== 'inherit' && !isBrowserDefaultDecision(decision))) return null;
+        if (embeddedIn !== undefined) {
+          if (!isExactBrowserPermissionOrigin(embeddedIn)) return null;
+          const sites = config.embeddedSites[embeddedIn] ?? {};
+          return { ...config, embeddedSites: { ...config.embeddedSites, [embeddedIn]: {
+            ...sites, [origin]: { ...(sites[origin] ?? { browse: 'inherit', upload: 'inherit', script: 'inherit' }), [resource]: decision },
+          } } };
+        }
+        return { ...config, sites: { ...config.sites, [origin]: { ...emptyBrowserSiteRule(), ...config.sites[origin], [resource]: decision } } };
+      }),
+      setBrowserEmbeddedRule: async (topOrigin, origin, rule, expectedRule, shouldApply) => {
+        const next = rule ? { ...rule } : null;
+        const expected = expectedRule ? { ...expectedRule } : null;
+        let conflict = false;
+        const saved = await editBrowserPermissionConfig((config) => {
+          if (shouldApply && !shouldApply()) return null;
+          if (!isExactBrowserPermissionOrigin(topOrigin) || !isExactBrowserPermissionOrigin(origin)) return null;
+          const current = config.embeddedSites[topOrigin]?.[origin] ?? null;
+          if (current === null ? expected !== null : expected === null
+            || current.browse !== expected.browse || current.upload !== expected.upload || current.script !== expected.script) {
+            conflict = true;
+            return null;
+          }
+          const sites = { ...config.embeddedSites[topOrigin] };
+          if (next && !parseBrowserPermissionConfig({ ...config, embeddedSites: { ...config.embeddedSites, [topOrigin]: { ...sites, [origin]: next } } })) return null;
+          if (!next || Object.values(next).every((value) => value === 'inherit')) delete sites[origin];
+          else sites[origin] = next;
+          const embeddedSites = { ...config.embeddedSites, [topOrigin]: sites };
+          if (!Object.keys(sites).length) delete embeddedSites[topOrigin];
+          return { ...config, embeddedSites };
+        });
+        return saved ? 'saved' : conflict ? 'conflict' : 'failed';
+      },
+      setBrowserSiteBlocked: (origin, blocked) => editBrowserPermissionConfig((config) => {
+        if (!isExactBrowserPermissionOrigin(origin) || typeof blocked !== 'boolean') return null;
+        return { ...config, sites: { ...config.sites, [origin]: { ...emptyBrowserSiteRule(), ...config.sites[origin], blocked } } };
+      }),
+      setBrowserSiteRule: async (origin, nextRule, expectedRule, shouldApply) => {
+        const next = { ...nextRule };
+        const expected = expectedRule ? { ...expectedRule } : null;
+        let conflict = false;
+        const saved = await editBrowserPermissionConfig((config) => {
+          if (shouldApply && !shouldApply()) return null;
+          if (!isExactBrowserPermissionOrigin(origin)) return null;
+          const current = config.sites[origin] ?? null;
+          if (current === null ? expected !== null : expected === null
+            || current.blocked !== expected.blocked || current.browse !== expected.browse
+            || current.upload !== expected.upload || current.script !== expected.script) {
+            conflict = true;
+            return null;
+          }
+          const sites = { ...config.sites, [origin]: next };
+          if (!parseBrowserPermissionConfig({ ...config, sites })) return null;
+          if (!next.blocked && next.browse === 'inherit' && next.upload === 'inherit' && next.script === 'inherit') delete sites[origin];
+          return { ...config, sites };
+        });
+        return saved ? 'saved' : conflict ? 'conflict' : 'failed';
+      },
+      removeBrowserSiteRule: (origin, expectedRule, shouldApply) =>
+        get().setBrowserSiteRule(origin, emptyBrowserSiteRule(), expectedRule, shouldApply).then((result) => result === 'saved'),
       setBrowserSitePermission: (origin, verdict, options) => set((state) => {
         // The scope lives and dies with the verdict it qualifies: a block, or a
         // grant given anywhere the user authorized this origin directly,
@@ -1530,7 +1784,9 @@ export const useSettingsStore = create<SettingsStore>()(
        * newer value another window stored.
        */
       restoreBrowserConfigField: (field, value, revision, companions) => set((state) => ({
-        ...(field === 'browserSitePermissions'
+        ...(field === 'browserPermissionConfigV2'
+          ? { browserPermissionConfigV2: parseBrowserPermissionConfig(value) ?? migrateBrowserPermissionConfig({ browserPermissionConfigV2: value ?? {} }) }
+          : field === 'browserSitePermissions'
           ? {
             browserSitePermissions: mintBrowserSiteVerdicts(
               value as Record<string, 'allowed' | 'denied'>,
@@ -1552,7 +1808,12 @@ export const useSettingsStore = create<SettingsStore>()(
             : { allowUnattendedBrowser: value === true }),
         browserConfigRevisions: { ...state.browserConfigRevisions, [field]: revision },
       })),
-      retryBrowserConfigSave: (field) => set((state) => {
+      retryBrowserConfigSave: (field) => {
+        if (field === 'browserPermissionConfigV2') {
+          if (lastBrowserPermissionEdit) editBrowserPermissionConfig(lastBrowserPermissionEdit);
+          return;
+        }
+        set((state) => {
         const attempted = lastAttemptedBrowserConfig.get(field);
         // Nothing recorded means nothing failed (or it already succeeded on a
         // later attempt). Re-saving the current value would report a success
@@ -1573,7 +1834,14 @@ export const useSettingsStore = create<SettingsStore>()(
               : { allowUnattendedBrowser: attempted.value === true }),
           ...beginBrowserFieldWrite(field, state.browserConfigRevisions),
         };
-      }),
+        });
+      },
+      discardFailedBrowserConfigSave: (field) => {
+        if (field === 'browserPermissionConfigV2') lastBrowserPermissionEdit = null;
+        browserConfigWriteQueue.delete(field);
+        lastAttemptedBrowserConfig.delete(field);
+        useBrowserSaveStatusStore.getState().clearBrowserSaveStatus(field);
+      },
       setComputerUseEnabled: (computerUseEnabled) => {
         set({ computerUseEnabled });
         syncComputerUseGate(computerUseEnabled);
@@ -1637,7 +1905,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 52,
+      version: 53,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -2551,6 +2819,8 @@ export const useSettingsStore = create<SettingsStore>()(
           }
         }
 
+        // V53: one conservative browser permission model, after existing migrations.
+        if (version < 53) state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(state);
         return state;
       },
       partialize: (state) => ({
@@ -2606,6 +2876,7 @@ export const useSettingsStore = create<SettingsStore>()(
         guideShown: state.guideShown,
         behaviorSensorEnabled: state.behaviorSensorEnabled,
         telemetryOptOut: state.telemetryOptOut,
+        browserPermissionConfigV2: state.browserPermissionConfigV2,
         browserSitePermissions: state.browserSitePermissions,
         browserSiteGrantViaEmbed: state.browserSiteGrantViaEmbed,
         browserOperationPolicy: state.browserOperationPolicy,
@@ -2627,8 +2898,14 @@ export const useSettingsStore = create<SettingsStore>()(
         dndMode: state.dndMode,
         petOpen: state.petOpen,
       }),
-      onRehydrateStorage: () => (state) => {
-        if (!state) return;
+      merge: (persisted, current) => ({
+        ...current, ...(persisted as Partial<SettingsState>),
+        browserPermissionConfigV2: persisted && typeof persisted === 'object'
+          ? migrateBrowserPermissionConfig({ ...persisted, browserPermissionConfigV2: (persisted as Partial<SettingsState>).browserPermissionConfigV2 ?? {} })
+          : current.browserPermissionConfigV2,
+      }),
+      onRehydrateStorage: () => (state, error) => {
+        if (error || !state) return;
         // Initialize i18n module with persisted language setting
         if (state.language) {
           initLanguage(state.language);
@@ -2661,6 +2938,7 @@ export const useSettingsStore = create<SettingsStore>()(
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        rememberHydratedBrowserConfig(state);
         // Main owns the runtime gate. Restore it only from persisted user
         // settings; Computer Use tools are never allowed to enable themselves.
         syncComputerUseGate(state.computerUseEnabled);
@@ -2908,4 +3186,19 @@ export async function bootstrapSecrets(): Promise<void> {
   } catch (err) {
     console.warn('[secrets] orphaned imagegen secret sweep failed (non-fatal):', err);
   }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== SETTINGS_STORAGE_KEY) return;
+    if (event.newValue !== null) browserPermissionStorageWasPresent = true;
+    const state = useSettingsStore.getState();
+    if (!state.browserPermissionConfigV2) return;
+    const disk = parsePersistedSettings(event.newValue);
+    if (!disk) return;
+    const revision = readBrowserConfigRevisions(disk.state).browserPermissionConfigV2;
+    if (revision > state.browserConfigRevisions.browserPermissionConfigV2) {
+      state.restoreBrowserConfigField('browserPermissionConfigV2', disk.state.browserPermissionConfigV2 ?? INVALID_BROWSER_PERMISSION_CONFIG, revision);
+    }
+  });
 }

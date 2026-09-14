@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // U7 / G1 + G2 — the browser gate's refusals and the human decisions behind
 // them must leave a trace.
 //
@@ -10,10 +11,11 @@
 // These cases drive the REAL gate, not a model of it: a signal that is only
 // recorded in a helper nobody calls is the same as no signal.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { checkToolApproval } from './registry';
+import { checkToolApproval, executeAnyTool } from './registry';
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { createBrowserDenialTracker } from '../agent/browserDenialTracker';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   __resetBrowserGrantsForTests,
@@ -33,7 +35,8 @@ import {
 // build — but the deny itself lives in this (public) registry, which is where
 // it has to be recorded.
 const policyMocks = vi.hoisted(() => ({
-  checkTool: vi.fn(() => ({ decision: 'allow' as const, reason: undefined as string | undefined })),
+  showPolicyConfirm: vi.fn(async () => true),
+  checkTool: vi.fn(() => ({ decision: 'allow' as 'allow' | 'confirm' | 'deny', reason: undefined as string | undefined })),
 }));
 
 vi.mock('@/core/enterprise/policy/enforcer', () => ({
@@ -78,7 +81,7 @@ describe('browser gate — denial and approval signals', () => {
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserSitePermissions: { [ALLOWED_SITE]: 'allowed', [BLOCKED_SITE]: 'denied' },
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -87,6 +90,7 @@ describe('browser gate — denial and approval signals', () => {
     __resetBrowserGrantsForTests();
     __resetUnattendedConfirmationForTests();
     policyMocks.checkTool.mockReturnValue({ decision: 'allow', reason: undefined });
+    policyMocks.showPolicyConfirm.mockImplementation(async () => true);
   });
 
   afterEach(() => {
@@ -96,9 +100,34 @@ describe('browser gate — denial and approval signals', () => {
     clearBrowserSignals();
   });
 
+
+  it('audit-runtime: default allow must not erase a human refusal streak', async () => {
+    const config = createBrowserPermissionConfig();
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+    const tracker = createBrowserDenialTracker(vi.fn());
+    tracker.reportDenial('other');
+    const decision = await checkToolApproval('abu-browser__navigate', {tabId: 1, url: UNKNOWN_URL}, {
+      conversationId:'audit-run', interactionMode:'background', reportBrowserAllow:(consent) => tracker.reportAllow(consent),
+    });
+    expect(decision.decision).toBe('allow');
+    expect(tracker.consecutiveDenials).toBe(1);
+  });
+  it('audit-runtime: revocation while waiting for enterprise confirmation must stop execution', async () => {
+    setMigratedBrowserSettings({ browserPermissionConfigV2: createBrowserPermissionConfig() });
+    policyMocks.checkTool.mockReturnValue({decision:'confirm',reason:'review'});
+    policyMocks.showPolicyConfirm.mockImplementation(async () => {
+      const denied = createBrowserPermissionConfig();
+      denied.sites[ALLOWED_SITE] = {...emptyBrowserSiteRule(),blocked:true};
+      setMigratedBrowserSettings({browserPermissionConfigV2:denied});
+      return true;
+    });
+    const result = await executeAnyTool('abu-browser__navigate', {tabId:1,url:ALLOWED_URL}, undefined, undefined, {conversationId:'audit-conv'});
+    expect(result).toMatch(/^Error:/);
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
   // ── G1 ──────────────────────────────────────────────────────────────────
   describe('G1: a refusal is recorded', () => {
-    it('records the master switch as the reason, with the run mode and tool', async () => {
+    it('records missing unattended approval after conservative migration', async () => {
       const decision = await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: ALLOWED_URL }, unattended, (async () => true) as never,
       );
@@ -109,22 +138,22 @@ describe('browser gate — denial and approval signals', () => {
         kind: 'gate_denied',
         tool: 'abu-browser__navigate',
         opClass: 'interactive',
-        reason: 'master-switch-off',
+        reason: 'approval-refused',
         runMode: 'unattended',
         conversationId: 'run-1',
         loopId: 'loop-9',
       });
     });
 
-    it('records a read-only refusal too — the switch is the whole surface', async () => {
+    it('records a read-only refusal when the owning page cannot be verified', async () => {
       await checkToolApproval(
         'abu-browser__snapshot', { tabId: 1 }, unattended, (async () => true) as never,
       );
-      expect(denials()[0]).toMatchObject({ opClass: 'read-only', reason: 'master-switch-off' });
+      expect(denials()[0]).toMatchObject({ opClass: 'read-only', reason: 'origin-unverified' });
     });
 
     it('records a blocked site under its own reason, not the master switch', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
       await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: `${BLOCKED_SITE}/x` }, unattended,
         (async () => true) as never,
@@ -132,13 +161,13 @@ describe('browser gate — denial and approval signals', () => {
       expect(denials().map((d) => d.reason)).toEqual(['site-denied']);
     });
 
-    it('records "no standing grant for this site" separately from a block', async () => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+    it('records missing approval separately from a site block', async () => {
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
       await checkToolApproval(
         'abu-browser__navigate', { tabId: 1, url: UNKNOWN_URL }, unattended,
         (async () => true) as never,
       );
-      expect(denials().map((d) => d.reason)).toEqual(['site-not-allowed']);
+      expect(denials().map((d) => d.reason)).toEqual(['approval-refused']);
     });
 
     it('records an attended dialog the user dismissed, as an attended refusal', async () => {
@@ -175,7 +204,7 @@ describe('browser gate — denial and approval signals', () => {
   // ── G2 ──────────────────────────────────────────────────────────────────
   describe('G2: the human decision is recorded', () => {
     beforeEach(() => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, interactive: 'ask' },
       });
@@ -266,7 +295,7 @@ describe('browser gate — denial and approval signals', () => {
    */
   describe('B3: an enterprise policy refusal is recorded too', () => {
     beforeEach(() => {
-      useSettingsStore.setState({ allowUnattendedBrowser: true });
+      setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     });
 
     it('records a hard policy deny under its own reason', async () => {
@@ -321,3 +350,5 @@ describe('browser gate — denial and approval signals', () => {
     });
   });
 });
+
+vi.mock('@/components/enterprise/policyConfirmQueue', () => ({ showPolicyConfirm: () => policyMocks.showPolicyConfirm() }));

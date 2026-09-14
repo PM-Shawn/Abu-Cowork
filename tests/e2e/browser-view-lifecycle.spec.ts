@@ -500,6 +500,16 @@ async function ourNativeViewState(
   return states.find((state) => state.url === fixtureUrl) ?? null;
 }
 
+async function configureBrowserAsking(page: Page) {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(() => {
+    const value = JSON.parse(localStorage.getItem('abu-settings')!);
+    value.state.browserPermissionConfigV2 = { schemaVersion: 2, defaults: { browse: 'ask', upload: 'ask', script: 'ask' }, sites: {}, embeddedSites: {} };
+    localStorage.setItem('abu-settings', JSON.stringify(value));
+    location.reload();
+  })]);
+  await waitForApp(page);
+}
+
 function browserConfirmHeading(page: Page) {
   return page.getByRole('heading', { name: /^(浏览器操作确认|Confirm browser action)$/ });
 }
@@ -519,25 +529,18 @@ function browserUploadHeading(page: Page) {
 /** 「确认上传」 — the upload's own verb, in place of the generic 「确认执行」. */
 function browserUploadConfirmButton(page: Page) {
   return page.getByRole('button', {
-    name: /^(仅本次上传|This upload only|确认上传|Confirm upload)$/,
+    name: /^(仅本次上传|This upload only)$/,
   });
 }
 
-function browserAllowOnceButton(page: Page) {
-  return page.getByRole('button', { name: /^(仅本次对话|This conversation only)$/ });
+function browserAllowSiteButton(page: Page) {
+  return page.getByRole('button', { name: /^(以后允许在此网站浏览|Always allow browsing on this site)$/ });
 }
 
-/**
- * The confirm button, whichever of its two spellings this dialog is showing.
- *
- * `CommandConfirmDialog` renames its primary button 「仅本次对话」 only when it
- * is ALSO offering 「以后都允许该网站」 — the pair reads as a choice. A row set
- * to 「每次询问」 offers no standing grant, so its primary button is the plain
- * 「确认执行」. Both mean "do it once".
- */
+/** Approve just the currently displayed browser action. */
 function browserConfirmButton(page: Page) {
   return page.getByRole('button', {
-    name: /^(仅本次对话|This conversation only|确认执行|Confirm)$/,
+    name: /^(仅允许这次|Allow this time only)$/,
   });
 }
 
@@ -677,7 +680,7 @@ let dataRoot: ElectronDataRoot | undefined;
 let mock: OpenAiMock | undefined;
 let fixture: FixturePage | undefined;
 
-test.describe.serial('Electron browser view lifecycle E2E', () => {
+test.describe('Electron browser view lifecycle E2E', () => {
   test.afterEach(async () => {
     if (app) {
       await closeAbuElectron(app);
@@ -727,6 +730,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
 
     // --- Conversation A: run a browser task that lands on the fixture page ---
     const promptA = `abu-e2e-lc-a-${randomUUID().slice(0, 8)}`;
@@ -734,7 +738,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowOnceButton(page).click();
+    await browserAllowSiteButton(page).click();
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(3);
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -862,6 +866,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
 
     const prompt = `abu-e2e-find-${randomUUID().slice(0, 8)}`;
     await sendComposerMessage(page, mock, prompt);
@@ -871,7 +876,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     // add an ask of its own.
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowOnceButton(page).click();
+    await browserAllowSiteButton(page).click();
 
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
@@ -898,7 +903,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     // The T2 journey end to end, in the real Electron browser against a real
     // page: find the first field, then one `batch` that fills two fields,
     // clicks submit and waits for the page's own confirmation — four page
-    // actions, one tool call, and one approval covering the run.
+    // actions, one tool call, and an explicit saved browse rule.
     const responseA = `abu-e2e-batch-complete-${randomUUID()}`;
     const getTabsCallId = `call-get-tabs-${randomUUID()}`;
     const navigateCallId = `call-navigate-${randomUUID()}`;
@@ -970,6 +975,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
 
     const prompt = `abu-e2e-batch-${randomUUID().slice(0, 8)}`;
     await sendComposerMessage(page, mock, prompt);
@@ -978,7 +984,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     // four page actions inside the batch must not add a second dialog.
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowOnceButton(page).click();
+    await browserAllowSiteButton(page).click();
 
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(5);
@@ -1078,6 +1084,7 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
 
     // Playwright DISMISSES every JavaScript dialog on a page it controls unless
     // that page has a `dialog` listener, and its Electron connection attaches
@@ -1091,21 +1098,14 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const prompt = `abu-e2e-dialog-${randomUUID().slice(0, 8)}`;
     await sendComposerMessage(page, mock, prompt);
 
-    // navigate asks, and that approval covers the click. It does NOT cover the
-    // answer: `handle_dialog` is asked separately (F2, 2026-09-06 review),
-    // because the click that raised the confirm is the same click that minted
-    // the conversation grant — so riding it meant the user was asked once,
-    // about the click, and Abu then pressed the page's own OK button. The
-    // second dialog appearing HERE, in a real Electron run against a real
-    // page, is the end-to-end witness for that.
-    await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
-    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowOnceButton(page).click();
-
-    // get_dialog is free (reading is), so the next thing to ask is the answer.
-    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await expect(page.getByText(/handle_dialog/)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowOnceButton(page).click();
+    // Each action is approved once. In particular, neither navigating nor
+    // pressing Submit authorizes answering the page's own confirm dialog.
+    for (const [requestCount, tool] of [[2, 'navigate'], [3, 'click'], [4, 'get_dialog'], [5, 'handle_dialog']] as const) {
+      await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(requestCount);
+      await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(page.getByText(new RegExp(`abu-browser__${tool}`)).last()).toBeVisible();
+      await browserConfirmButton(page).click();
+    }
 
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(6);
@@ -1164,13 +1164,14 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
 
     const prompt = `abu-e2e-lc-c-${randomUUID().slice(0, 8)}`;
     await sendComposerMessage(page, mock, prompt);
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserAllowOnceButton(page).click();
+    await browserAllowSiteButton(page).click();
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(3);
     await expect(page.getByText(responseA, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
@@ -1277,13 +1278,14 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
       const page = await app.firstWindow({ timeout: READY_TIMEOUT });
       await waitForApp(page);
       await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
 
       await sendComposerMessage(page, mock, `abu-e2e-up-${randomUUID().slice(0, 8)}`);
 
       // navigate asks first.
       await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
       await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-      await browserConfirmButton(page).click();
+      await browserAllowSiteButton(page).click();
 
       // Then the upload asks on its own — and the question NAMES the file, in
       // the spelling the user wrote it, which is the whole point of freezing
@@ -1380,15 +1382,16 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     const page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await waitForApp(page);
     await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
 
     await sendComposerMessage(page, mock, `abu-e2e-dl-${randomUUID().slice(0, 8)}`);
 
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
-    await browserConfirmButton(page).click();
+    await browserAllowSiteButton(page).click();
 
     // `download` is an `interactive` action — it presses a control — so it
-    // rides the conversation grant that confirmation just minted, exactly the
+    // uses the saved browse rule the user just explicitly granted, exactly the
     // way the second click of any two-step form does. No second dialog, and
     // the run reaches its answer on its own.
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
@@ -1423,5 +1426,13 @@ test.describe.serial('Electron browser view lifecycle E2E', () => {
     await expect(
       downloadsCard.getByRole('button', { name: /^(在文件夹中显示|Show in folder)$/ }),
     ).toBeEnabled();
+    await ensureSidebarExpanded(page);
+    await page.getByRole('button', { name: /^(我|Me)$/ }).click();
+    await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
+    await page.getByRole('button', { name: /^(能力|Capabilities)$/ }).click();
+    await page.getByRole('button', { name: /^(阿布内置浏览器|Abu built-in browser)/ }).click();
+    await page.getByRole('button', { name: /^(下载记录|Download history)$/ }).click();
+    await expect(page.getByRole('button', { name: /排班表\.csv/ }).last()).toBeEnabled();
+    await page.screenshot({ path: 'test-results/browser-alpha-real-download-history.png' });
   });
 });

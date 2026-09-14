@@ -23,6 +23,7 @@ vi.mock('@/stores/chatStore', () => ({
 // ── Mock settingsStore ──
 
 vi.mock('@/stores/settingsStore', () => ({
+  readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: { getState: () => ({}) },
   getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined }),
   getActiveApiKey: vi.fn().mockReturnValue('test-api-key'),

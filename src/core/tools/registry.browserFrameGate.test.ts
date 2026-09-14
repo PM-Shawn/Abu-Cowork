@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * T4 — a call that targets an EMBEDDED REGION (iframe) is authorized against
  * that region's own site, not against the page embedding it.
@@ -26,7 +27,6 @@ import { batchInvocationFromExtra, withOwnerFields } from '../../../abu-browser-
 import { checkToolApproval, executeAnyTool } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   __resetBrowserGrantsForTests,
@@ -126,7 +126,7 @@ beforeEach(() => {
     tools: new Map(),
   });
   useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-  useSettingsStore.setState({
+  setMigratedBrowserSettings({
     permissionMode: 'standard',
     browserSitePermissions: { [PAGE]: 'allowed' },
     // Reset explicitly: `setState` MERGES, so a case that marks a grant would
@@ -155,11 +155,11 @@ describe('an embedded region is authorized on its own account', () => {
     expect(decision.decision).toBe('deny');
     // The page's own grant is not the reason it could have run: the region's
     // site is what was judged, and it has no standing grant.
-    expect(decision.reason).toMatch(/vendor\.example\.net|站点|site/i);
+    expect(decision.reason).toBe('Error: This action needs confirmation, and an unattended run has no confirmation channel');
   });
 
   it('allows it once that region\'s own site is allowed too', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
     });
 
@@ -175,7 +175,7 @@ describe('an embedded region is authorized on its own account', () => {
   });
 
   it('refuses even an allowed region when the PAGE embedding it is blocked', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'denied', [VENDOR]: 'allowed' },
     });
 
@@ -254,7 +254,7 @@ describe('a blocked site stays blocked for reading, region included', () => {
    * anything.
    */
   it('refuses an attended read INSIDE a region whose site the user blocked', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
     });
 
@@ -267,7 +267,7 @@ describe('a blocked site stays blocked for reading, region included', () => {
   });
 
   it('refuses an attended read of a blocked PAGE too, region or no region', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { [PAGE]: 'denied' } });
+    setMigratedBrowserSettings({ browserSitePermissions: { [PAGE]: 'denied' } });
 
     const decision = await checkToolApproval(
       'abu-browser__extract_text', { tabId: TAB },
@@ -277,10 +277,10 @@ describe('a blocked site stays blocked for reading, region included', () => {
     expect(decision.decision).toBe('deny');
   });
 
-  it('leaves an ordinary attended read alone, and pays no round trip for it', async () => {
+  it('resolves the origin even for an ordinary attended read', async () => {
     // Nothing blocked anywhere: the answer cannot differ, so the gate must not
     // buy it with a `get_tabs` on every snapshot/extract of every turn.
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
 
     const decision = await checkToolApproval(
       'abu-browser__extract_text', { tabId: TAB },
@@ -288,13 +288,13 @@ describe('a blocked site stays blocked for reading, region included', () => {
     );
 
     expect(decision.decision).toBe('allow');
-    expect(mockCallTool.mock.calls.filter((c) => (c[0] as { name: string }).name === 'get_tabs')).toHaveLength(0);
+    expect(mockCallTool.mock.calls.filter((c) => (c[0] as { name: string }).name === 'get_tabs')).toHaveLength(1);
   });
 
   it('still allows an attended read in a region whose site is merely unauthorized', async () => {
     // 'default' is not 'denied'. Attended read-only has never asked, and this
     // exception is for the blocked answer only.
-    useSettingsStore.setState({ browserSitePermissions: { [BANK]: 'denied' } });
+    setMigratedBrowserSettings({ browserSitePermissions: { [BANK]: 'denied' } });
 
     const decision = await checkToolApproval(
       'abu-browser__extract_text', { tabId: TAB, frameId: 'f4' },
@@ -307,7 +307,7 @@ describe('a blocked site stays blocked for reading, region included', () => {
 
 describe('high-risk applies to each site, not just the outer one', () => {
   it('an unattended action inside a money-movement region is refused, allowed site or not', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [BANK]: 'allowed' },
     });
     servePage(PAGE_URL, [
@@ -324,7 +324,7 @@ describe('high-risk applies to each site, not just the outer one', () => {
   });
 
   it('an attended one still asks, and offers no standing grant', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [BANK]: 'allowed' },
     });
     servePage(PAGE_URL, [
@@ -343,7 +343,7 @@ describe('high-risk applies to each site, not just the outer one', () => {
   });
 
   it('a money-movement PAGE makes its ordinary region high-risk too', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [BANK]: 'allowed', [VENDOR]: 'allowed' },
     });
     servePage(BANK_URL, [
@@ -362,7 +362,7 @@ describe('high-risk applies to each site, not just the outer one', () => {
 
 describe('the merged ask', () => {
   it('names the page\'s other regions before the click that would authorize them', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     const { cb, asks } = recordingConfirm();
 
     await checkToolApproval(
@@ -371,11 +371,12 @@ describe('the merged ask', () => {
     );
 
     expect(asks[0].browserOrigin).toBe(PAGE);
-    expect(asks[0].browserEmbeddedOrigins).toEqual([VENDOR]);
+    expect(asks[0].browserEmbeddedOrigins).toBeUndefined();
+    expect(asks[0].browserPermissionTargets).toEqual([{ origin: PAGE, embeddedIn: null }]);
   });
 
-  it('lists a region only once, however many frames come from it', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+  it('does not grant unrelated regions even when several frames share their origin', async () => {
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     servePage(PAGE_URL, [
       { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
       { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
@@ -388,11 +389,12 @@ describe('the merged ask', () => {
       attended, cb as never,
     );
 
-    expect(asks[0].browserEmbeddedOrigins).toEqual([VENDOR]);
+    expect(asks[0].browserEmbeddedOrigins).toBeUndefined();
+    expect(asks[0].browserPermissionTargets).toEqual([{ origin: PAGE, embeddedIn: null }]);
   });
 
   it('never lists the page\'s own origin, or a region the browser could not confirm', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     servePage(PAGE_URL, [
       { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
       { frameId: 'f1', origin: PAGE, url: `${PAGE}/inner`, sameOriginAsTop: true, accessible: true },
@@ -412,7 +414,7 @@ describe('the merged ask', () => {
     // Round-2 F3: `browserOrigin` is where the action executes — the region.
     // Without the page beside it the user reads a site they never navigated
     // to, with the page in front of them mentioned nowhere.
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     const { cb, asks } = recordingConfirm();
 
     await checkToolApproval(
@@ -425,7 +427,7 @@ describe('the merged ask', () => {
   });
 
   it('leaves the page origin out when the action targets the page itself', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     const { cb, asks } = recordingConfirm();
 
     await checkToolApproval(
@@ -437,7 +439,7 @@ describe('the merged ask', () => {
   });
 
   it('says nothing about regions on a page that has none', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     servePage(PAGE_URL, []);
     const { cb, asks } = recordingConfirm();
 
@@ -481,7 +483,7 @@ describe('the merged ask lists what the call named, before what the page ordered
   }
 
   it('puts the region the action targets at the front', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     pageWithThreeRegions();
     const { cb, asks } = recordingConfirm();
 
@@ -492,11 +494,11 @@ describe('the merged ask lists what the call named, before what the page ordered
 
     // C is last in the DOM and first in the list, because it is the one the
     // call is actually about.
-    expect(asks[0].browserEmbeddedOrigins).toEqual([C, A, B]);
+    expect(asks[0].browserEmbeddedOrigins).toEqual([C]);
   });
 
   it('puts every region a BATCH names at the front, in the order it named them', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     pageWithThreeRegions();
     const { cb, asks } = recordingConfirm();
 
@@ -512,11 +514,11 @@ describe('the merged ask lists what the call named, before what the page ordered
       attended, cb as never,
     );
 
-    expect(asks[0].browserEmbeddedOrigins).toEqual([C, B, A]);
+    expect(asks[0].browserEmbeddedOrigins).toEqual([C, B]);
   });
 
-  it('keeps DOM order for the regions the call did not name', async () => {
-    useSettingsStore.setState({ browserSitePermissions: {} });
+  it('does not add regions the call did not name', async () => {
+    setMigratedBrowserSettings({ browserSitePermissions: {} });
     pageWithThreeRegions();
     const { cb, asks } = recordingConfirm();
 
@@ -525,7 +527,7 @@ describe('the merged ask lists what the call named, before what the page ordered
       attended, cb as never,
     );
 
-    expect(asks[0].browserEmbeddedOrigins).toEqual([A, B, C]);
+    expect(asks[0].browserEmbeddedOrigins).toBeUndefined();
   });
 });
 
@@ -547,7 +549,7 @@ describe('the merged ask lists what the call named, before what the page ordered
  */
 describe('a grant minted through the merged ask is valid only where it was given', () => {
   beforeEach(() => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: {
         [PAGE]: 'allowed', [OTHER_PAGE]: 'allowed', [VENDOR]: 'allowed',
       },
@@ -650,15 +652,15 @@ describe('a grant minted through the merged ask is valid only where it was given
    */
   describe('a pre-v51 grant, whose page was never recorded', () => {
     beforeEach(() => {
-      useSettingsStore.setState({ browserSiteGrantViaEmbed: { [VENDOR]: {} } });
+      setMigratedBrowserSettings({ browserSiteGrantViaEmbed: { [VENDOR]: {} } });
     });
 
-    it('still works as a region — on a page it was never given on', async () => {
+    it('does not promote an unknown legacy scope to a new host', async () => {
       embeddingPage(OTHER_PAGE, OTHER_PAGE_URL);
 
       const decision = await checkToolApproval('abu-browser__fill', fillTheRegion, unattended);
 
-      expect(decision.decision).toBe('allow');
+      expect(decision.decision).toBe('deny');
     });
 
     it('but is still not a grant for that site as a page', async () => {
@@ -680,7 +682,7 @@ describe('a grant minted through the merged ask is valid only where it was given
    * being to make the page pass on its own account.
    */
   it('judges the embedding page AS the page, not as a region of itself', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       // The VENDOR site is now the page, and its only grant is a migrated,
       // page-unknown one. It embeds an ordinary allowed region.
       browserSitePermissions: { [VENDOR]: 'allowed', [OTHER_PAGE]: 'allowed' },
@@ -703,7 +705,7 @@ describe('a grant minted through the merged ask is valid only where it was given
   });
 
   it('leaves an unmarked grant on the same site working everywhere', async () => {
-    useSettingsStore.setState({ browserSiteGrantViaEmbed: {} });
+    setMigratedBrowserSettings({ browserSiteGrantViaEmbed: {} });
     servePage(VENDOR_URL, []);
 
     const decision = await checkToolApproval('abu-browser__fill', fillThePage, unattended);
@@ -718,7 +720,7 @@ describe('a grant minted through the merged ask is valid only where it was given
    * of the block would turn 「一律不操作」 into an ordinary confirmation.
    */
   it('never turns a BLOCK into an ask, not even where the scope does not reach', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
       browserSiteGrantViaEmbed: { [VENDOR]: { [OTHER_PAGE]: true } },
     });
@@ -736,7 +738,7 @@ describe('a grant minted through the merged ask is valid only where it was given
 
   // ④ A scope can only ever take authorization away.
   it('never turns a BLOCK into anything softer, even in the granted context', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'denied' },
       browserSiteGrantViaEmbed: { [VENDOR]: { [PAGE]: true } },
     });
@@ -760,7 +762,7 @@ describe('a grant minted through the merged ask is valid only where it was given
 describe('the unattended ask names the page too, not only the region', () => {
   function askingUnattended(): UnattendedConfirmationRequest[] {
     const seen: UnattendedConfirmationRequest[] = [];
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
       browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, interactive: 'ask' },
     });
@@ -804,7 +806,7 @@ describe('a batch is pinned per region', () => {
   ]);
 
   it('hands the run the origin each region was approved for', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
     });
 
@@ -818,7 +820,7 @@ describe('a batch is pinned per region', () => {
   });
 
   it('carries those origins to the run over _meta, where the model cannot forge them', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
     });
 
@@ -842,7 +844,7 @@ describe('a batch is pinned per region', () => {
    * confirmed on an "unknown site" dialog got a run policing itself against
    * its own observations, which is not a check.
    */
-  it('sends an EMPTY region map rather than none when no region could be confirmed', async () => {
+  it('refuses before dispatch when a targeted region cannot be confirmed', async () => {
     servePage(PAGE_URL, [
       { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
       { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: false },
@@ -854,10 +856,8 @@ describe('a batch is pinned per region', () => {
       attended, cb as never,
     );
 
-    expect(decision.decision).toBe('allow');
-    // Empty, not absent: "the gate judged no region" is a statement the run
-    // can act on, and it reads a missing pin as origin-unverifiable.
-    expect(decision.browserExecution?.expectedFrameOrigins).toEqual({});
+    expect(decision.decision).toBe('deny');
+    expect(decision.browserExecution).toBeUndefined();
   });
 
   it('refuses a batch whose SECOND region was never allowed, even though the first was', async () => {
@@ -870,7 +870,7 @@ describe('a batch is pinned per region', () => {
       { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
       { frameId: 'f5', origin: CDN, url: `${CDN}/widget`, sameOriginAsTop: false, accessible: true },
     ]);
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
     });
 
@@ -896,7 +896,7 @@ describe('a batch is pinned per region', () => {
       { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
       { frameId: 'f5', origin: CDN, url: `${CDN}/widget`, sameOriginAsTop: false, accessible: true },
     ]);
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed', [CDN]: 'allowed' },
     });
 
@@ -922,7 +922,7 @@ describe('a batch is pinned per region', () => {
       { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
       { frameId: 'f3', origin: BANK, url: BANK_URL, sameOriginAsTop: false, accessible: true },
     ]);
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed', [BANK]: 'allowed' },
     });
 
@@ -942,7 +942,7 @@ describe('a batch is pinned per region', () => {
   });
 
   it('refuses the whole batch when one step\'s region was never allowed', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { [PAGE]: 'allowed' } });
+    setMigratedBrowserSettings({ browserSitePermissions: { [PAGE]: 'allowed' } });
 
     const decision = await checkToolApproval(
       'abu-browser__batch', { tabId: TAB, steps },
@@ -1043,7 +1043,7 @@ describe('a cross-origin batch actually runs, end to end', () => {
   }
 
   it('runs every step of a batch that names ONE cross-origin region', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
     });
     const steps = JSON.stringify([
@@ -1083,7 +1083,7 @@ describe('a cross-origin batch actually runs, end to end', () => {
       { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: true },
       { frameId: 'f5', origin: CDN, url: `${CDN}/widget`, sameOriginAsTop: false, accessible: true },
     ]);
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed', [CDN]: 'allowed' },
     });
     const list = [
@@ -1122,13 +1122,13 @@ describe('a cross-origin batch actually runs, end to end', () => {
    * So this walks the same wire the other cases in this describe walk, and
    * ends on the behaviour rather than the intent: nothing is dispatched.
    */
-  it('an EMPTY region map survives the wire, and stops the run instead of self-policing', async () => {
+  it('rejects an unverified region before dispatch; the host also rejects an empty pin', async () => {
     // The region is listed but unconfirmable, so the gate judges no region at all.
     servePage(PAGE_URL, [
       { frameId: 'f0', origin: PAGE, url: PAGE_URL, sameOriginAsTop: true, accessible: true },
       { frameId: 'f4', origin: VENDOR, url: VENDOR_URL, sameOriginAsTop: false, accessible: false },
     ]);
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
     });
     const list = [{ action: 'fill' as const, frameId: 'f4', locator: { css: '#name' }, value: '张三' }];
@@ -1140,12 +1140,9 @@ describe('a cross-origin batch actually runs, end to end', () => {
     );
 
     const meta = metaOf('batch');
-    // On the WIRE, not on the decision object: present, and empty.
-    expect(meta).toHaveProperty('abu/expectedFrameOrigins');
-    expect(meta?.['abu/expectedFrameOrigins']).toEqual({});
-
-    // And the bridge's own extraction keeps it a map rather than an absence.
-    const chain = chainFrom(meta, { f4: VENDOR }, PAGE);
+    expect(meta).toBeUndefined(); // No unauthorized batch reaches the host.
+    // Independently preserve the host's defense for an explicitly empty pin.
+    const chain = chainFrom({ 'abu/expectedOrigin': PAGE, 'abu/expectedFrameOrigins': {} }, { f4: VENDOR }, PAGE);
     expect(chain.approvedFrameOrigins).toEqual({});
 
     const result = await runBatch(chain.deps, TAB, list, chain.approvedOrigin, chain.approvedFrameOrigins);
@@ -1160,7 +1157,7 @@ describe('a cross-origin batch actually runs, end to end', () => {
   it('still stops the run when the TAB itself left the page the batch was approved for', async () => {
     // The page-level pin has not become decorative: it is simply compared
     // against the thing it describes.
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { [PAGE]: 'allowed', [VENDOR]: 'allowed' },
     });
     const list = [{ action: 'fill' as const, frameId: 'f4', locator: { css: '#name' }, value: '张三' }];

@@ -1,10 +1,10 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * AuthGate Tests
  */
 import { afterEach, beforeEach, describe, it, expect } from 'vitest';
 import { resolveCapability, getBlockedToolsForLevel, getAllowedToolsForLevel, getCallbacksForLevel } from './authGate';
 import { matchesToolName } from '../skill/toolFilter';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
 import {
   __resetUnattendedConfirmationForTests,
@@ -174,11 +174,13 @@ describe('getCallbacksForLevel — full tier cannot loosen the browser operation
     reason: 'runs a script in the page',
     kind: 'browser' as const,
     browserOperationClass: 'scripting' as const,
+    browserPermissionResource: 'script' as const,
+    browserPermissionTargets: [{ origin: 'https://allowed.com' }],
     browserOrigin: 'https://allowed.com',
   };
 
   beforeEach(() => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { 'https://allowed.com': 'allowed' },
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
@@ -191,13 +193,13 @@ describe('getCallbacksForLevel — full tier cannot loosen the browser operation
   });
 
   it('still denies execute_js with the unattended master switch ON — the class is denied', async () => {
-    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     const callbacks = getCallbacksForLevel('full');
     await expect(callbacks.commandConfirmCallback(scriptingConfirm)).resolves.toBe(false);
   });
 
   it('denies a browser confirmation that carries no operation class (treated as scripting)', async () => {
-    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     const callbacks = getCallbacksForLevel('full');
     await expect(callbacks.commandConfirmCallback({
       command: 'Browser action: abu-browser__click',
@@ -209,20 +211,23 @@ describe('getCallbacksForLevel — full tier cannot loosen the browser operation
   });
 
   it('approves an interactive action the unattended policy allows', async () => {
-    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     const callbacks = getCallbacksForLevel('full');
     await expect(callbacks.commandConfirmCallback({
       ...scriptingConfirm,
       browserOperationClass: 'interactive',
+      browserPermissionResource: 'browse',
+      browserPermissionTargets: [{ origin: 'https://allowed.com' }],
     })).resolves.toBe(true);
   });
 
   it('answers no to a refusal notice, whatever the tier would otherwise say', async () => {
-    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     const callbacks = getCallbacksForLevel('full');
     await expect(callbacks.commandConfirmCallback({
       ...scriptingConfirm,
       browserOperationClass: 'interactive', // a class the tier WOULD approve
+      browserPermissionResource: 'browse',
       deniedNotice: 'the gate already refused this',
     })).resolves.toBe(false);
   });

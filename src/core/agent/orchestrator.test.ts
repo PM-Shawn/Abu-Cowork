@@ -44,6 +44,7 @@ vi.mock('../../stores/workspaceStore', () => ({
 }));
 
 vi.mock('../../stores/settingsStore', () => ({
+  readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: {
     getState: vi.fn().mockReturnValue({
       computerUseEnabled: false,

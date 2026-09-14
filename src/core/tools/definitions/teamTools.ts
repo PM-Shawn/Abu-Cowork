@@ -2,9 +2,9 @@ import type { ToolDefinition } from '@/types';
 import { agentRegistry } from '@/core/agent/registry';
 import { effectiveRoleId, ensureRoleId } from '@/core/team/roleIdentity';
 import { isValidNewAvatar } from '@/core/tools/definitions/agentTools';
+import { isBuiltinTeam } from '@/core/team/builtinTeams';
 import { useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useSettingsStore } from '@/stores/settingsStore';
 import { getI18n, format } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 
@@ -52,11 +52,16 @@ export const saveTeamTool: ToolDefinition = {
     // guessing. Same text save_agent returns for the same rejection.
     if (typeof input.avatar === 'string' && !isValidNewAvatar(input.avatar.trim())) return getI18n().toolResult.agent.errInvalidAvatar;
 
+    // Built-ins are read-only, and the store's updateTeam would silently drop
+    // this patch — refuse out loud instead of reporting a roster nobody wrote.
+    // Checked before the roster loop so a refusal writes no AGENT.md role ids.
+    const targeted = useTeamStore.getState().teams.find((team) => team.name === name);
+    if (targeted && isBuiltinTeam(targeted)) return format(t.builtinTeamReadOnly, { name: targeted.name });
+
     const names = [...new Set([leaderName, ...input.members.map((member) => member.trim())])];
     const available = new Set(agentRegistry.getAvailableAgents().map((agent) => agent.name));
-    const disabled = new Set(useSettingsStore.getState().disabledAgents);
     const resolved = names.map((agentName) => ({ name: agentName, agent: agentRegistry.getAgent(agentName) }));
-    const missing = resolved.filter(({ name: agentName, agent }) => !available.has(agentName) || !agent || agent.name === 'abu' || agent.managed || disabled.has(agentName));
+    const missing = resolved.filter(({ name: agentName, agent }) => !available.has(agentName) || !agent || agent.name === 'abu' || agent.managed);
     // Validate the ENTIRE roster before ensureRoleId can write any AGENT.md.
     if (missing.length) return format(t.unavailableAgents, { names: missing.map(({ name: agentName }) => JSON.stringify(agentName)).join(', ') });
 

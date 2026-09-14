@@ -62,6 +62,9 @@ async function startTaskIn(page: Page, projectName: string): Promise<void> {
 async function openSkills(page: Page): Promise<void> {
   await page.getByLabel('Main navigation').getByRole('button', { name: '扩展', exact: true }).click();
   await page.getByRole('button', { name: '技能', exact: true }).click();
+  // Both fixtures are user/project files, so they live on the 我的 shelf; the
+  // 市场｜我的 sub-nav opens on 市场.
+  await page.getByTestId('extensions-source-mine').click();
 }
 
 function skillSwitch(page: Page, name: string) {

@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 export const START = '<!-- test-inventory:start -->';
 export const END = '<!-- test-inventory:end -->';
 
-const IGNORED_DIRS = new Set(['node_modules', 'dist', 'dist-electron-spike', 'coverage', 'test-results', '.git', 'target', 'src-tauri', '.next', '.vitest-reports']);
+const IGNORED_DIRS = new Set(['node_modules', '.claude', 'dist', 'dist-electron-spike', 'coverage', 'test-results', '.git', 'target', 'src-tauri', '.next', '.vitest-reports']);
 
 function walk(dir, out = []) {
   let entries;

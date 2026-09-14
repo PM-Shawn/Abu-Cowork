@@ -1865,6 +1865,7 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
+    nameTakenHint: string;
     fieldDescription: string;
     fieldDescriptionPlaceholder: string;
     fieldIntro: string;
@@ -2071,6 +2072,8 @@ export interface TranslationDict {
     pluginsMineEmptyHint: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
+    /** One line under it: they still work, and the detail dialog uninstalls. */
+    pluginsOrphanHint: string;
     /** Title of the installed-plugin detail dialog opened from 「管理」. */
     pluginsManageTitle: string;
     /** Install disclosure — the screen that shows what executable code is coming in. */
@@ -2183,21 +2186,21 @@ export interface TranslationDict {
     disconnect: string;
     add: string;
     install: string;
-    uninstall: string;
+    /** Danger action on items the user owns (their own experts / skills): they are deleted, not uninstalled. */
+    deleteItem: string;
     installed: string;
     installAndConnect: string;
     popularMCPServices: string;
     setupWithAbu: string;
     aiAssistedMCPSetup: string;
     // Source labels
+    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.43: built-ins are the OSS market shelf. */
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;
     sourceUnknown: string;
     // Generic "Description" label used in the agent/skill/MCP detail views
     detailDescription: string;
-    builtinSkills: string;
-    builtinAgents: string;
     noSkillsFound: string;
     noAgentsFound: string;
     systemSkills: string;
@@ -2315,13 +2318,14 @@ export interface TranslationDict {
     categoryAgentEvolvedBadge: string; // small badge e.g. "自进化"
     categoryAgentEvolvedEmpty: string; // placeholder when no drafts + no workspace-auto skills
     categoryBuiltin: string;           // "市场" (ships-with-Abu / catalog, vs "我的")
-    skillSourceBuiltin: string;
     skillSourceUser: string;
     skillSourcePlugin: string;
     skillPluginDisabled: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;
+    skillShadowedBadge: string;
+    skillShadowedHint: string;
     /** Skills 「市场」 hint card — outside skills arrive with plugins. */
     skillsMarketHintTitle: string;
     skillsMarketHintBody: string;
@@ -2336,6 +2340,8 @@ export interface TranslationDict {
     connectorAddLabel: string;
     /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
     connectorsMineEmptyTitle: string;
+    /** Experts 「我的」 empty state — nothing the user created themselves yet. */
+    agentsMineEmpty: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;
@@ -2367,10 +2373,8 @@ export interface TranslationDict {
     agentBackground: string;
     agentSystemPrompt: string;
     agentEdit: string;
-    /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
-    agentFromPlugin: string;
-    agentFromPluginEditDisabled: string;
-    agentFromPluginDeleteDisabled: string;
+    /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
+    agentFromPluginRemoveHint: string;
     /** Deleting an agent that one or more teams reference. */
     agentDeleteInTeamsTitle: string;
     agentDeleteInTeamsMessage: string;
@@ -2378,7 +2382,9 @@ export interface TranslationDict {
     agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;
-    agentEditorTitle: string;
+    /** Dialog titles — 新建专家 / 编辑专家, mirroring the team dialog. */
+    agentEditorTitleNew: string;
+    agentEditorTitleEdit: string;
     agentEditorName: string;
     agentEditorDescription: string;
     agentEditorMetadata: string;
@@ -2398,8 +2404,9 @@ export interface TranslationDict {
     agentExpertisePlaceholder: string;
     agentSamplePromptsPlaceholder: string;
     agentTagsPlaceholder: string;
-    agentEnabled: string;
-    agentDisabled: string;
+    agentAutoDispatch: string;
+    agentAutoDispatchHint: string;
+    agentAutoDispatchOff: string;
     agentCategoryAll: string;
     agentCategoryResearch: string;
     agentCategoryDevelopment: string;
@@ -3849,6 +3856,7 @@ export interface TranslationDict {
     team: {
       invalidInput: string;
       unavailableAgents: string;
+      builtinTeamReadOnly: string;
       saved: string;
       approvalOn: string;
       approvalOff: string;
@@ -4085,8 +4093,6 @@ export interface TranslationDict {
       // delegate_to_agent
       /** Error: agent not found. {agentName}, {available}, {presetList} */
       errAgentNotFound: string;
-      /** Error: agent disabled. {agentName} */
-      errAgentDisabled: string;
       errNotTeamMember: string;
       /** Team run hit its hand-off cap (teamRunBounds). */
       errDispatchCapReached: string;
@@ -4172,8 +4178,6 @@ export interface TranslationDict {
       errTaskEmpty: string;
       /** Error: agent not found in batch task. {i}, {agentName}, {available}, {presetList} */
       errBatchAgentNotFound: string;
-      /** Error: agent disabled in batch task. {i}, {agentName} */
-      errBatchAgentDisabled: string;
       errBatchNotTeamMember: string;
       errBatchDispatchCapReached: string;
       errBatchMemberBlocked: string;

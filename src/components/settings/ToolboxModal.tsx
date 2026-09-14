@@ -16,6 +16,9 @@ import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { useToastStore } from '@/stores/toastStore';
 import { Input } from '@/components/ui/input';
 import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
+import SourceSubNav from '@/components/toolbox/SourceSubNav';
+import { sourceTabId } from '@/components/toolbox/extensionSource';
+import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 // Enterprise plugin/skill/MCP tab implementations are registered by the
 // enterprise-modules entry point (real impls in the enterprise build, no-op in
@@ -23,8 +26,9 @@ import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 // returns a NullComponent fallback when unregistered — so the OSS build never
 // imports enterprise UI directly.
 
-/** The element the source sub-nav switches between — named so the two pills read as tabs over it. */
-const SOURCE_PANEL_ID = 'extensions-source-panel';
+/** The element the source sub-nav switches between — named so the two pills read
+ *  as tabs over it. Per tab, since each tab keeps its own mounted panel. */
+const sourcePanelId = (tab: ExtensionsTab) => `extensions-panel-${tab}`;
 
 /** Plugins add their own market navigation; skills and connectors retain the released toolbox. */
 export default function ExtensionsView() {
@@ -47,6 +51,10 @@ export default function ExtensionsView() {
   const enterpriseMode = useEnterpriseStore(s => s.mode);
   const isEnterprise = enterpriseMode.kind !== 'personal';
 
+  // 市场 | 我的 per tab, remembered across restarts.
+  const sources = useExtensionSourceStore(s => s.sources);
+  const setSource = useExtensionSourceStore(s => s.setSource);
+
   const creatingPlugin = usePluginAuthorStore(s => s.creating);
   const [pluginAddTrigger, setPluginAddTrigger] = useState(0);
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
@@ -57,6 +65,10 @@ export default function ExtensionsView() {
   useEffect(() => {
     if (!pendingExtensionsSource) return;
     setCapabilityScope(pendingExtensionsSource === 'mine' ? 'personal' : 'organization');
+    // …and the same word now also names a shelf inside 个人: a deep link to a
+    // skill the user just accepted must land on the shelf that skill is on,
+    // not on whichever one they last looked at.
+    useExtensionSourceStore.getState().setSource(activeTab, pendingExtensionsSource);
     clearPendingExtensionsSource();
   }, [pendingExtensionsSource, activeTab, clearPendingExtensionsSource]);
 
@@ -119,15 +131,16 @@ export default function ExtensionsView() {
       // Plugins own the install-disclosure flow and, inside 「市场」, the
       // add-marketplace entry; the shared header search box feeds both halves.
       case 'plugins':
-        return <PluginsTab searchQuery={pluginSearchQuery} addTrigger={pluginAddTrigger} />;
+        return <PluginsTab searchQuery={pluginSearchQuery} addTrigger={pluginAddTrigger} source={sources.plugins} />;
       case 'skills':
         return <SkillsSection
           manualCreateTrigger={manualCreateTrigger}
           showUploadModal={skillUploadModalOpen}
           onUploadModalChange={setSkillUploadModalOpen}
+          source={sources.skills}
         />;
       case 'mcp':
-        return <MCPSection showAddForm={mcpAddFormOpen} onAddFormChange={setMcpAddFormOpen} />;
+        return <MCPSection showAddForm={mcpAddFormOpen} onAddFormChange={setMcpAddFormOpen} source={sources.mcp} />;
       default:
         return null;
     }
@@ -166,7 +179,9 @@ export default function ExtensionsView() {
     }
     if (activeTab === 'plugins' && (!isEnterprise || capabilityScope === 'personal')) {
       createControl = <ToolboxCreateMenu triggerTestId="plugin-create-trigger" menuTestId="plugin-create-menu" items={[
-        { label: t.toolbox.pluginsCreate, disabled: creatingPlugin, onSelect: () => { void usePluginAuthorStore.getState().create().catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
+        // The new package lands under 「我的」 — go there, or the create reads
+        // as a create that did nothing.
+        { label: t.toolbox.pluginsCreate, disabled: creatingPlugin, onSelect: () => { void usePluginAuthorStore.getState().create().then(() => setSource('plugins', 'mine')).catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
         { label: t.toolbox.pluginsAddMarketplace, onSelect: () => setPluginAddTrigger(value => value + 1) },
       ]} />;
     }
@@ -197,13 +212,32 @@ export default function ExtensionsView() {
         right={renderHeaderRight()}
       />
 
-      <div
-        id={SOURCE_PANEL_ID}
-        tabIndex={0}
-        className="flex-1 overflow-hidden"
-      >
+      {/* 市场 | 我的 — one row, directly under the tabs and inset to the same
+          grid the cards use. The organization catalog IS the enterprise market,
+          so it carries no shelf of its own. */}
+      {!(isEnterprise && capabilityScope === 'organization') && (
+        <div className="px-8"><div className="max-w-5xl mx-auto">
+          <SourceSubNav
+            value={sources[activeTab]}
+            onChange={(next) => setSource(activeTab, next)}
+            marketLabel={t.toolbox.sourceMarket}
+            mineLabel={t.toolbox.categoryMine}
+            panelId={sourcePanelId(activeTab)}
+          />
+        </div></div>
+      )}
+
+      <div tabIndex={0} className="flex-1 overflow-hidden">
         {capabilityScope === 'organization' ? renderContent() : visitedTabs.map(tab => (
-          <div key={tab} hidden={tab !== activeTab} className="h-full" data-extension-panel={tab}>
+          <div
+            key={tab}
+            id={sourcePanelId(tab)}
+            role="tabpanel"
+            aria-labelledby={sourceTabId(sources[tab])}
+            hidden={tab !== activeTab}
+            className="h-full"
+            data-extension-panel={tab}
+          >
             {renderContent(tab)}
           </div>
         ))}

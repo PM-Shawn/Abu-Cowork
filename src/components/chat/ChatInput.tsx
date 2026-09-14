@@ -4,6 +4,7 @@ import { Plus, ArrowUp, Square, X, ChevronDown, FileText, Paperclip, Users, Spar
 import { ModelSelector } from '@/components/chat/ModelSelector';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import TeamAvatar from '@/components/team/TeamAvatar';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
@@ -155,7 +156,8 @@ interface SuggestionItem {
    *  to the team (its leader runs the loop) instead of becoming an @ prefix. */
   team?: boolean;
   teamId?: string;
-  /** Team emoji avatar (user-set); absent = default group mark. */
+  /** Team or expert avatar (`icon:<icon>/<tint>` preset or a legacy emoji);
+   *  absent = the default mark for that kind. */
   avatar?: string;
   /** True when the agent's AGENT.md was installed by a plugin (provenance tag). */
   fromPlugin?: boolean;
@@ -462,10 +464,16 @@ function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, sug
               )}
             >
               <span className={cn(
-                'w-5 text-center font-mono text-minor shrink-0',
-                suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
+                'w-5 text-center shrink-0',
+                // Type classes belong to the 「/」 mark only — the agent branch
+                // renders an avatar, which no text style reaches.
+                suggestionType !== 'agent' && 'font-mono text-minor text-[var(--abu-text-tertiary)]'
               )}>
-                {suggestionType === 'agent' ? (item.team ? <TeamAvatar avatar={item.avatar} size="xs" round className="mx-auto" /> : '@') : '/'}
+                {suggestionType === 'agent'
+                  ? (item.team
+                      ? <TeamAvatar avatar={item.avatar} size="xs" round className="mx-auto" />
+                      : <AgentAvatar agent={{ name: item.name, avatar: item.avatar }} size="xs" round className="mx-auto" />)
+                  : '/'}
               </span>
               <span className="font-medium text-[var(--abu-text-primary)] truncate">{item.name}</span>
               {item.fromPlugin && (
@@ -591,7 +599,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const agents = useDiscoveryStore((s) => s.agents);
   const enterBehavior = useSettingsStore((s) => s.composerEnterBehavior);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
-  const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
   const providers = useSettingsStore((s) => s.providers);
   const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
@@ -1063,7 +1070,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   const disabledSkillSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
-  const disabledAgentSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
 
   const agentMentionTarget = useMemo((): AgentMentionTarget | null => {
     // An agent chip does not block a fresh `@` — picking again switches the chip.
@@ -1107,7 +1113,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return [
         ...teamItems,
         ...agents
-          .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
+          .filter((a) => a.name !== 'abu')
           .filter((a) => {
             if (!query) return true;
             return a.name.toLowerCase().includes(query) ||
@@ -1116,6 +1122,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           .map((a) => ({
             name: a.name,
             description: a.description,
+            avatar: a.avatar,
             fromPlugin: isPluginOwnedAgent(a),
           })),
       ];
@@ -1140,7 +1147,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         }));
     }
     return [];
-  }, [text, skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, disabledAgentSet, t.team.suggestionTeamHint]);
+  }, [text, skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, t.team.suggestionTeamHint]);
 
   const suggestionKey = useMemo(() => {
     if (suggestionType === 'agent') return agentMentionTarget?.key ?? null;
@@ -1712,14 +1719,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           <X aria-hidden="true" className={chipCloseClass} />
           {/* Last stop of the toolbar's degradation ladder: the avatar alone
               still says which team is pinned, and `aria-label` keeps the name
-              for assistive tech. Only the team chip earns this — `@agent` and
-              `/skill` have no icon, so a nameless mark would say nothing. */}
+              for assistive tech. Only the team chip collapses its name this
+              far — the `@expert` chip carries an avatar too but keeps its name
+              at every width (this batch does not touch narrow behavior). */}
           <span className="truncate @max-[330px]:hidden">{pinnedTeam.name}</span>
         </button>
       )}
       {selectedAgent && (
         <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close} aria-label={`@${selectedAgent.name}`}>
-          <span aria-hidden="true" className={chipMarkClass}>@</span>
+          <span aria-hidden="true" className={chipMarkClass}><AgentAvatar agent={{ name: selectedAgent.name, avatar: selectedAgent.avatar }} size="xs" round /></span>
           <X aria-hidden="true" className={chipCloseClass} />
           <span className="truncate">{selectedAgent.name}</span>
         </button>

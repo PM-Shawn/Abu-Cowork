@@ -39,6 +39,7 @@ import TeamConfirmationsStrip from './TeamConfirmationsStrip';
 import TeamFollowUpChips from './TeamFollowUpChips';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
+import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
 import { useTeamStore } from '@/stores/teamStore';
@@ -57,7 +58,6 @@ import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { windowDragRowProps } from '@/utils/windowDrag';
 import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
@@ -1439,8 +1439,8 @@ export default function ChatView({
 
             {/* Scenario Guide */}
             {pendingAgent || welcomeTeam ? (
-              !!expertPrompts?.length && guideVisible && <div className="flex flex-wrap gap-2 mt-4" data-testid="expert-prompts">
-                {expertPrompts.map((prompt, index) => <Button key={index} variant="subtle" className="h-auto whitespace-normal text-left" onClick={() => handleSelectPrompt(prompt)}>{prompt}</Button>)}
+              !!expertPrompts?.length && guideVisible && <div className={cn(PROMPT_GRID_CLASS, 'mt-4')} data-testid="expert-prompts">
+                {expertPrompts.map((prompt, index) => <button key={index} type="button" className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</button>)}
               </div>
             ) : <ScenarioGuide
               onSelectPrompt={handleSelectPrompt}

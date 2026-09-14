@@ -25,10 +25,10 @@ test.describe('Tab Navigation', () => {
     await expect(panel.getByRole('button', { name: '插件' })).toBeVisible({ timeout: 5000 });
     await expect(panel.getByRole('button', { name: '技能' })).toBeVisible();
     await expect(panel.getByRole('button', { name: '连接器' })).toBeVisible();
-    // Sources are stacked within each panel, not another navigation row.
+    // Each panel opens on its 市场 | 我的 sub-nav with 市场 selected by default.
     // Native plugin data is covered by the real-Electron suite.
-    await expect(page.getByTestId('extensions-source-market')).toHaveCount(0);
-    await expect(page.getByTestId('extensions-source-mine')).toHaveCount(0);
+    await expect(page.getByTestId('extensions-source-market')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('extensions-source-mine')).toHaveAttribute('aria-selected', 'false');
     await panel.getByRole('button', { name: '技能', exact: true }).click();
     await expect(page.getByTestId('skill-create-trigger')).toBeVisible();
   });

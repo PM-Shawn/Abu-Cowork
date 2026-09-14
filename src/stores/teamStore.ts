@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
+import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
+
 /**
  * Team domain store (R1: management surface only — PRD docs/abu-team-prd-v2.md).
  *
@@ -95,10 +97,69 @@ export function migrateTeamState(persisted: unknown): { teams: Team[] } {
   };
 }
 
+/**
+ * What persist writes. Built-ins never touch disk: an older blob and a newer
+ * shipped roster would otherwise disagree with the app forever.
+ *
+ * Exported for the same reason {@link migrateTeamState} is — `useTeamStore.persist`
+ * is not exposed under the test runtime, and reaching into zustand's middleware
+ * options from a test couples the test to zustand's internals.
+ */
+export function partializeTeamState(state: { teams: Team[] }): { teams: Team[] } {
+  return { teams: state.teams.filter((t) => !isBuiltinTeam(t)) };
+}
+
+/**
+ * What persist hands back on hydration: the user's own teams from disk, plus
+ * TODAY's shipped roster — never a built-in copy an older version wrote.
+ */
+export function mergeTeamState(persisted: unknown, current: TeamStore): TeamStore {
+  const stored = (persisted ?? {}) as Partial<{ teams: Team[] }>;
+  const userTeams = (stored.teams ?? []).filter((t) => !isBuiltinTeam(t));
+  return { ...current, teams: [...dedupeNames(userTeams), ...BUILTIN_TEAMS] };
+}
+
+/**
+ * The third door onto a duplicate name, and the only one the user does not
+ * open themselves: the shipped roster grows between versions (v0.43 added
+ * 财务对账专家团 and 招聘专家团), so a team the user named first can collide
+ * with a built-in that did not exist when they created it. Left alone, the two
+ * render identically, `save_team` can only ever reach one of them, and the
+ * user's own team becomes permanently unsavable because every edit trips the
+ * duplicate guard.
+ *
+ * The shipped name wins — it is the one the changelog, the docs and other
+ * teams refer to — and the user's team keeps all of its content under a
+ * numbered name, the way WorkBuddy suffixes a colliding team rather than
+ * dropping it. Renaming settles on the next write: this pass is a fixed point,
+ * so a re-hydration before that write reaches the same names again.
+ *
+ * `taken` is seeded with EVERY name in play, not just the built-ins, so a
+ * rename can never land on a name somebody else already holds: a user who has
+ * both 「X」 and 「X 2」 and then meets a shipped 「X」 gets 「X 3」 for the
+ * collider and keeps 「X 2」 where it was. Renaming the innocent one would be
+ * worse than the collision — `@X 2` and `save_team` resolve by name, so it
+ * would silently start addressing a different team.
+ */
+function dedupeNames(teams: Team[]): Team[] {
+  const builtinNames = BUILTIN_TEAMS.map((team) => team.name);
+  const taken = new Set([...builtinNames, ...teams.map((team) => team.name)]);
+  const claimed = new Set(builtinNames);
+  return teams.map((team) => {
+    if (!claimed.has(team.name)) { claimed.add(team.name); return team; }
+    let suffix = 2;
+    while (taken.has(`${team.name} ${suffix}`)) suffix += 1;
+    const name = `${team.name} ${suffix}`;
+    taken.add(name);
+    claimed.add(name);
+    return { ...team, name };
+  });
+}
+
 export const useTeamStore = create<TeamStore>()(
   persist(
     (set, get) => ({
-      teams: [],
+      teams: [...BUILTIN_TEAMS],
 
       createTeam: (input) => {
         const name = input.name.trim();
@@ -127,24 +188,46 @@ export const useTeamStore = create<TeamStore>()(
         return team;
       },
 
-      updateTeam: (id, patch) =>
+      updateTeam: (id, patch) => {
+        // Same rule `createTeam` enforces, applied to the rename it forgot.
+        // Teams are addressed BY NAME by `save_team` (`teamTools.ts`), so two
+        // teams sharing one name means the second is unreachable to the tool —
+        // and because the store lists user teams before built-ins, a user team
+        // renamed onto a built-in's name also slips past the built-in
+        // read-only guard. Excludes the team being renamed, so re-saving a
+        // dialog without touching the name stays a no-op.
+        const wanted = patch.name?.trim();
+        if (patch.name !== undefined && !wanted) throw new Error('team name required');
+        if (wanted && get().teams.some((t) => t.id !== id && t.name === wanted)) {
+          throw new Error('duplicate team name');
+        }
         set((s) => ({
           teams: s.teams.map((t) => {
             if (t.id !== id) return t;
-            const next = { ...t, ...patch };
+            if (isBuiltinTeam(t)) {
+              // Read-only in the UI; the run may still record its last split.
+              return patch.lastPlan ? { ...t, lastPlan: patch.lastPlan } : t;
+            }
+            // Store what the guard checked: an untrimmed write would slip a
+            // trailing space past the next `createTeam` comparison.
+            const next = { ...t, ...patch, ...(wanted ? { name: wanted } : {}) };
             // The leader is always a member.
             next.memberRoleIds = Array.from(new Set([next.leaderRoleId, ...next.memberRoleIds]));
             return next;
           }),
-        })),
+        }));
+      },
 
-      deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id) })),
+      deleteTeam: (id) => set((s) => ({ teams: s.teams.filter((t) => t.id !== id || isBuiltinTeam(t)) })),
     }),
     {
       name: 'abu-team',
       version: 8,
       migrate: migrateTeamState,
-      partialize: (s) => ({ teams: s.teams }),
+      // Built-ins never touch disk: strip on write, re-attach on read, so an
+      // older persisted blob and a newer roster always agree with the app.
+      partialize: partializeTeamState,
+      merge: mergeTeamState,
     },
   ),
 );

@@ -1865,6 +1865,7 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
+    nameTakenHint: string;
     fieldDescription: string;
     fieldDescriptionPlaceholder: string;
     fieldIntro: string;
@@ -1911,9 +1912,6 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    memberDisabled: string;
-    memberDisabledHint: string;
-    leaderDisabledHint: string;
     /** Follow-up chips under a finished team turn. */
     followUpRedoStep: string;
     followUpMemberRevise: string;
@@ -2074,6 +2072,8 @@ export interface TranslationDict {
     pluginsMineEmptyHint: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
+    /** One line under it: they still work, and the detail dialog uninstalls. */
+    pluginsOrphanHint: string;
     /** Title of the installed-plugin detail dialog opened from 「管理」. */
     pluginsManageTitle: string;
     /** Install disclosure — the screen that shows what executable code is coming in. */
@@ -2382,7 +2382,9 @@ export interface TranslationDict {
     agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;
-    agentEditorTitle: string;
+    /** Dialog titles — 新建专家 / 编辑专家, mirroring the team dialog. */
+    agentEditorTitleNew: string;
+    agentEditorTitleEdit: string;
     agentEditorName: string;
     agentEditorDescription: string;
     agentEditorMetadata: string;
@@ -2402,8 +2404,9 @@ export interface TranslationDict {
     agentExpertisePlaceholder: string;
     agentSamplePromptsPlaceholder: string;
     agentTagsPlaceholder: string;
-    agentEnabled: string;
-    agentDisabled: string;
+    agentAutoDispatch: string;
+    agentAutoDispatchHint: string;
+    agentAutoDispatchOff: string;
     agentCategoryAll: string;
     agentCategoryResearch: string;
     agentCategoryDevelopment: string;
@@ -4090,8 +4093,6 @@ export interface TranslationDict {
       // delegate_to_agent
       /** Error: agent not found. {agentName}, {available}, {presetList} */
       errAgentNotFound: string;
-      /** Error: agent disabled. {agentName} */
-      errAgentDisabled: string;
       errNotTeamMember: string;
       /** Team run hit its hand-off cap (teamRunBounds). */
       errDispatchCapReached: string;
@@ -4177,8 +4178,6 @@ export interface TranslationDict {
       errTaskEmpty: string;
       /** Error: agent not found in batch task. {i}, {agentName}, {available}, {presetList} */
       errBatchAgentNotFound: string;
-      /** Error: agent disabled in batch task. {i}, {agentName} */
-      errBatchAgentDisabled: string;
       errBatchNotTeamMember: string;
       errBatchDispatchCapReached: string;
       errBatchMemberBlocked: string;

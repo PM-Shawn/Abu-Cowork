@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { ArrowLeft, Save, Play } from 'lucide-react';
+import { Save, Play } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { useI18n, format } from '@/i18n';
 import { serializeAgentMd, agentRegistry, getBuiltinAgentNames } from '@/core/agent/registry';
 import { getAllTools } from '@/core/tools/registry';
@@ -194,41 +195,9 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
   const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid;
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      {/* Header */}
-      <div className="shrink-0 flex items-center gap-3 px-4 py-3 border-b border-[var(--abu-border)]">
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-muted)] transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
-        </button>
-        <h2 className="text-body font-semibold text-[var(--abu-text-primary)] flex-1">{t.toolbox.agentEditorTitle}</h2>
-        <div className="flex flex-wrap justify-end gap-x-2 gap-y-1">
-          <button
-            onClick={handleSave}
-            disabled={!isValid || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-minor font-medium bg-[var(--abu-text-primary)] text-[var(--abu-bg-base)] hover:bg-[var(--abu-text-primary)] disabled:opacity-50 transition-colors"
-          >
-            <Save className="h-3.5 w-3.5" />
-            {t.toolbox.agentSave}
-          </button>
-          <button
-            onClick={handleSaveAndTest}
-            disabled={!isValid || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-minor font-medium bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)] disabled:opacity-50 transition-colors"
-          >
-            <Play className="h-3.5 w-3.5" />
-            {t.toolbox.agentSaveAndTest}
-          </button>
-          {saveFailed && (
-            <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
-          )}
-        </div>
-      </div>
-
+    <div className="space-y-4">
       {/* Body */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+      <div className="space-y-4">
         {/* Metadata Section */}
         <div className="space-y-3">
           <h3 className="text-minor font-semibold text-[var(--abu-text-tertiary)] uppercase tracking-wide">
@@ -466,6 +435,22 @@ export default function AgentEditor({ agent, onClose, onSave }: AgentEditorProps
             />
           )}
         </div>
+      </div>
+
+      {/* Footer — same row as the team dialog: cancel, then the actions. */}
+      <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+        {saveFailed && (
+          <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
+        )}
+        <Button variant="ghost" onClick={onClose}>{t.common.cancel}</Button>
+        <Button variant="tint" onClick={handleSaveAndTest} disabled={!isValid || saving}>
+          <Play className="h-3.5 w-3.5" />
+          {t.toolbox.agentSaveAndTest}
+        </Button>
+        <Button onClick={handleSave} disabled={!isValid || saving} data-testid="agent-editor-save">
+          <Save className="h-3.5 w-3.5" />
+          {t.toolbox.agentSave}
+        </Button>
       </div>
     </div>
   );

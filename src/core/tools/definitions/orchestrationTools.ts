@@ -27,7 +27,6 @@ import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expecte
 import { createParentStepResolver } from '../../agent/delegateParentStep';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
-import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
 import { isSubagentResultError, type SubagentResult } from '../../agent/subagentLoop';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
@@ -494,10 +493,6 @@ export const runAgentBatchTool: ToolDefinition = {
             .join(', ');
           const presetList = Object.keys(PRESET_AGENTS).join(', ');
           return format(ot.errBatchAgentNotFound, { i, agentName, available: available || getI18n().toolResult.valueNone, presetList });
-        }
-        const { disabledAgents } = getSettingsReader().getSnapshot();
-        if (disabledAgents.includes(agentName)) {
-          return format(ot.errBatchAgentDisabled, { i, agentName });
         }
       } else {
         // Default to research when neither type nor agent_name provided

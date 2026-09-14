@@ -408,7 +408,7 @@ export default function MarketplaceBrowser({
       description={entry.description}
       testId="plugin-marketplace-entry"
       onClick={() => setManaging(installedRecord)}
-      actions={hasUpdate ? <Button size="sm" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
+      actions={hasUpdate ? <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
     />;
     return (
       <div className="h-full">
@@ -417,7 +417,7 @@ export default function MarketplaceBrowser({
           name={entry.name}
           description={entry.description}
           onClick={() => void handlePlan(entry)}
-          actions={<Button size="sm" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${tb.pluginsInstall}: ${entry.name}`}>{tb.pluginsInstall}</Button>}
+          actions={<Button variant="tint" size="xs" className="h-7 px-2.5" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${tb.pluginsInstall}: ${entry.name}`}>{tb.pluginsInstall}</Button>}
         />
       </div>
     );
@@ -539,19 +539,24 @@ export default function MarketplaceBrowser({
       {orphans.length > 0 && (
         <section
           data-testid="plugin-orphan-group"
-          className="shrink-0 border-t border-[var(--abu-border)] px-8 py-3"
+          className="shrink-0 border-t border-[var(--abu-border)] py-3"
         >
-          <h4 className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsOrphanGroup}</h4>
-          <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
-            {orphans.map((plugin) => (
-              <MarketplaceEntryRow
-                key={plugin.key}
-                testId="plugin-orphan-row"
-                name={plugin.name}
-                description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
-                onClick={() => setManaging(plugin)}
-              />
-            ))}
+          {/* Same centred column as the grid above — padding INSIDE the
+              max-width, as there — or this block sits 32px left of the cards. */}
+          <div className="mx-auto w-full max-w-[1088px] px-8">
+            <h4 className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsOrphanGroup}</h4>
+            <p className="text-minor text-[var(--abu-text-tertiary)]">{tb.pluginsOrphanHint}</p>
+            <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+              {orphans.map((plugin) => (
+                <MarketplaceEntryRow
+                  key={plugin.key}
+                  testId="plugin-orphan-row"
+                  name={plugin.name}
+                  description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
+                  onClick={() => setManaging(plugin)}
+                />
+              ))}
+            </div>
           </div>
         </section>
       )}

@@ -65,24 +65,13 @@ describe('resolveTeamRouteContext', () => {
     expect(resolveTeamRouteContext('t1')!.unresolvedMemberRoleIds).toEqual([]);
   });
 
-  // A member the user switched off under 专家 is unreachable exactly the way a
-  // deleted one is: dropped from the roster the leader may delegate to, and
-  // REPORTED, so the leader is told rather than quietly given a smaller team.
-  it('a member disabled under 专家 is skipped and reported as unresolved', () => {
+  // 停用 only keeps an expert out of Abu's automatic delegation pool; a team
+  // names its members explicitly, so such a member stays a full member here.
+  it('a member off the auto-dispatch pool still resolves as a member', () => {
     teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a', 'r-b'] }];
     disabledNames.push('b');
     const ctx = resolveTeamRouteContext('t1')!;
-    expect(teamRosterNames(ctx)).toEqual(['a']);
-    expect(ctx.unresolvedMemberRoleIds).toEqual(['r-b']);
-  });
-
-  // The leader is resolved before the roster loop, so disabling it must not
-  // read as "a team with one fewer member" — TeamView is what refuses the run.
-  it('still resolves when the LEADER is the disabled one', () => {
-    teamsRef.teams = [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-a'] }];
-    disabledNames.push('lead');
-    const ctx = resolveTeamRouteContext('t1')!;
-    expect(ctx.leader.name).toBe('lead');
+    expect(teamRosterNames(ctx)).toEqual(['a', 'b']);
     expect(ctx.unresolvedMemberRoleIds).toEqual([]);
   });
 });

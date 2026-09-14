@@ -8,7 +8,6 @@ import type { SubagentDefinition } from '@/types';
 import { useTeamStore } from '@/stores/teamStore';
 import { resolveRoleId } from './roleIdentity';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
-import { useSettingsStore } from '@/stores/settingsStore';
 import { agentRegistry } from '@/core/agent/registry';
 import type { TeamRouteContext } from './leaderRoute';
 
@@ -19,14 +18,12 @@ export function resolveTeamRouteContext(teamId: string | undefined): TeamRouteCo
   if (!team) return null;
   const leader = resolveRoleId(team.leaderRoleId);
   if (!leader) return null;
-  const disabled = new Set(useSettingsStore.getState().disabledAgents ?? []);
   const members: SubagentDefinition[] = [];
   const unresolvedMemberRoleIds: string[] = [];
   for (const roleId of team.memberRoleIds) {
     if (roleId === team.leaderRoleId) continue;
     const def = resolveRoleId(roleId);
-    // A member disabled under 专家 is unreachable the same way a deleted one is.
-    if (!def || disabled.has(def.name)) { unresolvedMemberRoleIds.push(roleId); continue; }
+    if (!def) { unresolvedMemberRoleIds.push(roleId); continue; }
     if (def.name !== leader.name && !members.some((m) => m.name === def.name)) members.push(def);
   }
   return {

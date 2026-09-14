@@ -115,7 +115,7 @@ test.describe('team member identity integrity', () => {
       // ---- 2. Editing the expert must not change who it is (brief 场景 A) -----
       await switchTab(page, '专家');
       // Coming back to 专家 after a manual create must not reopen a blank editor.
-      await expect(page.getByText('专家编辑器', { exact: true })).toHaveCount(0);
+      await expect(page.getByText('新建专家', { exact: true })).toHaveCount(0);
       await openAgentDetail(page);
       await expect(page.getByTestId('agent-added-by')).toHaveText('用户');
       await detailMenuButton(page).click();

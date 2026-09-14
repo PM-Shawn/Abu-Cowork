@@ -62,7 +62,9 @@ export default function ToolCard({ item, onClick }: { item: ToolItem; onClick?: 
         'group flex flex-col gap-2 w-full overflow-hidden rounded-xl p-4 text-left',
         item.footer ? 'min-h-[120px] h-full' : 'h-[120px]',
         'bg-[var(--abu-bg-subtle)] border border-[var(--abu-border)]',
-        interactive && 'cursor-pointer hover:border-[var(--abu-clay)] hover:shadow-sm',
+        // A 40% clay border on hover: enough to say "this opens", not so much
+        // that every card the pointer crosses flashes the full brand colour.
+        interactive && 'cursor-pointer hover:border-[var(--abu-clay-40)] hover:shadow-sm',
         !interactive && 'cursor-default',
         'transition-all duration-150'
       )}

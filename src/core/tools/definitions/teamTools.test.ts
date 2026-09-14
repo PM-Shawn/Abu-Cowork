@@ -20,6 +20,9 @@ import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
 import { saveTeamTool } from './teamTools';
 import { getI18n, format } from '@/i18n';
 
+// Looked up by id, not by position: the shelf order is product copy, not a contract.
+const SOFTWARE_RD_TEAM = BUILTIN_TEAMS.find((team) => team.id === 'builtin-team:software-rd')!;
+
 const input = { name: 'Data team', leader: 'Analyst', members: ['Fetcher'] };
 
 describe('save_team', () => {
@@ -136,11 +139,13 @@ describe('save_team', () => {
     expect(useTeamStore.getState().teams).toEqual([]);
   });
 
-  it('rejects disabled members like the manual picker', async () => {
+  // 停用 only removes an expert from Abu's automatic delegation pool — a team
+  // names its members by hand, so save_team must still accept them.
+  it('accepts members off the auto-dispatch pool', async () => {
     disabled.push('Fetcher');
-    const out = await saveTeamTool.execute(input, {});
-    expect(String(out)).toContain('Fetcher');
-    expect(useTeamStore.getState().teams).toEqual([]);
+    await saveTeamTool.execute(input, {});
+    expect(useTeamStore.getState().teams).toHaveLength(1);
+    expect(useTeamStore.getState().teams[0].memberRoleIds).toContain('role-fetch');
   });
 
   // A built-in team is read-only, and `updateTeam` would silently drop the
@@ -148,7 +153,7 @@ describe('save_team', () => {
   // nobody wrote. Refused BEFORE the roster loop, so no AGENT.md role id is
   // written on the way to a rejection.
   it('refuses a built-in team name, before it ever resolves the roster', async () => {
-    const builtin = BUILTIN_TEAMS[0];
+    const builtin = SOFTWARE_RD_TEAM;
     useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
     const before = useTeamStore.getState().teams;
     // An unknown member would normally be the FIRST thing rejected; the
@@ -164,9 +169,9 @@ describe('save_team', () => {
 
   it('still creates a user team whose name merely resembles a built-in one', async () => {
     useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
-    const out = await saveTeamTool.execute({ ...input, name: `${BUILTIN_TEAMS[0].name} 2` }, {});
+    const out = await saveTeamTool.execute({ ...input, name: `${SOFTWARE_RD_TEAM.name} 2` }, {});
     expect(String(out)).not.toContain('Error:');
-    expect(useTeamStore.getState().teams.find((team) => team.name === `${BUILTIN_TEAMS[0].name} 2`)).toBeDefined();
+    expect(useTeamStore.getState().teams.find((team) => team.name === `${SOFTWARE_RD_TEAM.name} 2`)).toBeDefined();
   });
 
   it.each([{ name: ' ' }, { leader: ' ' }, { members: 'Fetcher' }, { members: [42] }, { intro: 42 }, { expertise: ['Queries', 42] }, { requirePlanApproval: 'false' }])('rejects malformed input without changing data: %j', async (invalid) => {

@@ -40,6 +40,7 @@ import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
   const { t, locale } = useI18n();
+  const userNickname = useSettingsStore((s) => s.userNickname);
   const userAvatar = useSettingsStore((s) => s.userAvatar);
   const theme = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -200,20 +201,17 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const UpdateIcon = updateRow.icon;
   const signedIn = accountStatus === 'signed_in' && account !== null;
   const expired = accountStatus === 'expired' && account !== null;
+  const localLabel = userNickname || t.sidebar.defaultNickname;
   const accountLabel = signedIn
     ? account.name || account.email || t.account.title
-    : expired
-      ? t.account.retry
-      : t.account.loginRegister;
+    : localLabel;
   const accountDetail = signedIn
     ? profileStatus === 'loading'
       ? t.account.profileLoading
       : profileStatus === 'error'
         ? t.account.profileUnavailable
         : account.email || t.account.title
-    : expired
-      ? t.account.sessionExpired
-      : t.sidebar.localMode;
+    : t.sidebar.localMode;
 
   return (
     <div ref={rootRef} className="relative">
@@ -274,14 +272,11 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
           {signedIn ? (
-            <>
-              <MenuRow
-                icon={UserRound}
-                label={t.account.accountSettings}
-                onClick={() => run(() => openSystemSettings('account'))}
-              />
-              <MenuRow icon={LogOut} label={t.account.signOut} onClick={() => run(() => void signOut())} />
-            </>
+            <MenuRow
+              icon={UserRound}
+              label={t.account.accountSettings}
+              onClick={() => run(() => openSystemSettings('account'))}
+            />
           ) : (
             <MenuRow
               icon={LogIn}
@@ -372,6 +367,17 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             </span>
             {updateRow.trailing}
           </button>
+
+          {signedIn && (
+            <>
+              <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+              <MenuRow
+                icon={LogOut}
+                label={t.account.signOut}
+                onClick={() => run(() => void signOut())}
+              />
+            </>
+          )}
         </div>
       )}
     </div>

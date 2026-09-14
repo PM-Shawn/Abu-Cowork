@@ -42,6 +42,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { fileReferenceForPath, InvalidAttachmentPathError } from '@/utils/fileReference';
 import type { ImageAttachment } from '@/types';
 import { generateAttachmentId, SUPPORTED_IMAGE_TYPES, sniffImageMediaType, IMAGE_MAGIC_PREFIX_BYTES } from '@/utils/imageUtils';
 import { fitImageToDimension } from '@/utils/imageCompress';
@@ -314,10 +315,10 @@ async function processFilePaths(
   addFiles: (items: FileAttachmentItem[]) => void,
   fileMetadataForPath?: (path: string) => Pick<FileAttachmentItem, 'readScope'>,
 ): Promise<void> {
+  if (paths.some((path) => fileReferenceForPath(path) === null)) throw new InvalidAttachmentPathError();
   const imgPaths: string[] = [];
   const filePaths: string[] = [];
   for (const p of paths) {
-    if (p.toLowerCase().endsWith('.pdf')) continue;
     (isImageFile(p) ? imgPaths : filePaths).push(p);
   }
   if (imgPaths.length > 0) {
@@ -632,10 +633,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
 
-  const showAttachmentAdmissionFailed = useCallback((_error?: unknown) => {
+  const showAttachmentAdmissionFailed = useCallback((error?: unknown) => {
     useToastStore.getState().addToast({
       type: 'error',
-      title: t.chat.attachmentAdmissionFailed,
+      title: error instanceof InvalidAttachmentPathError ? t.chat.attachmentInvalidFileName : t.chat.attachmentAdmissionFailed,
     });
   }, [t]);
 
@@ -747,7 +748,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       // An image already admitted from its bytes must not come back as a badge.
       const badgePaths = paths.filter((p) => {
         const name = getBaseName(p);
-        return !admittedNames.has(name) && !name.toLowerCase().endsWith('.pdf');
+        return !admittedNames.has(name);
       });
       if (badgePaths.length === 0) return;
 
@@ -1392,15 +1393,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return;
     }
 
-    const unsupportedPdf = files.find((file) => (
+    if (files.some((file) => file.path !== undefined && fileReferenceForPath(file.path) === null)) {
+      showAttachmentAdmissionFailed(new InvalidAttachmentPathError());
+      return;
+    }
+
+    const unsupportedToken = files.find((file) => (
       file.token !== undefined
-      || file.name.toLowerCase().endsWith('.pdf')
-      || file.path?.toLowerCase().endsWith('.pdf')
     ));
-    if (unsupportedPdf) {
+    if (unsupportedToken) {
       useToastStore.getState().addToast({
         type: 'error',
-        title: format(t.chat.unsupportedDocumentAttachment, { name: unsupportedPdf.name }),
+        title: format(t.chat.unsupportedDocumentAttachment, { name: unsupportedToken.name }),
       });
       return;
     }
@@ -1409,7 +1413,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // files. These are prompt context only; unlike image attachments, no file
     // bytes cross the provider boundary here.
     const fileContext = files
-      .flatMap((file) => file.path ? [`[Attachment: \`${file.path}\`]`] : [])
+      .flatMap((file) => {
+        const reference = file.path ? fileReferenceForPath(file.path) : null;
+        return reference ? [reference] : [];
+      })
       .join('\n');
     const referenceContext = serializeReferences(references);
 
@@ -1612,9 +1619,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const admissionKey = draftKey;
     const finishAdmission = beginAttachmentAdmission(admissionKey);
     try {
-      const selected = await selectElectronUserAttachments({ mediaTypes: [...ELECTRON_PICKER_MEDIA_TYPES] });
+      const selected = await selectElectronUserAttachments({ mediaTypes: [...ELECTRON_PICKER_MEDIA_TYPES, 'application/pdf'] });
       if (selected.length === 0) return;
-      const imageResults = await Promise.allSettled(selected.map(imageFromToken));
+      const filePaths = selected.flatMap((item) => 'path' in item ? [item.path] : []);
+      const imageTokens = selected.filter((item): item is ElectronUserAttachmentToken => 'token' in item);
+      try {
+        await processFilePaths(
+          filePaths,
+          (imgs) => appendImagesForDraftKey(admissionKey, imgs),
+          (items) => appendFilesForDraftKey(admissionKey, items),
+        );
+      } catch (error) {
+        for (const image of imageTokens) releaseToken(image.token);
+        throw error;
+      }
+      const imageResults = await Promise.allSettled(imageTokens.map(imageFromToken));
       const nextImages = imageResults
         .filter((result): result is PromiseFulfilledResult<ImageAttachment> => result.status === 'fulfilled' && result.value !== null)
         .map((result) => result.value);

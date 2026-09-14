@@ -616,8 +616,16 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     // Connect/disconnect is the authoritative action — clear any stale test result.
     setServerErrors((prev) => { const next = { ...prev }; delete next[name]; return next; });
     try {
-      if (entry.status === 'connected') await disconnectServer(name);
-      else {
+      if (entry.status === 'connected') {
+        // Record the intent, not just the current state: without this the
+        // startup pass (`connectAllEnabled`) reconnects every server the user
+        // switched off, so the switch was only ever good until the next
+        // launch. `provisionFirstPartyMCPServers` deliberately leaves
+        // `enabled` alone when it refreshes the bridge's command, so an off
+        // switch survives upgrades too.
+        await disconnectServer(name);
+        updateServer(name, { enabled: false });
+      } else {
         updateServer(name, { enabled: true });
         await connectServer(name);
       }

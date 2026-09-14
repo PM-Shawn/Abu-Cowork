@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
+import { clearAllComposerDrafts, readComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
@@ -447,7 +447,8 @@ describe('TeamView', () => {
     expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
     expect(chatState.setPendingAgent).toHaveBeenCalledWith(null);
     // Nothing prefilled: the user says what they want in their own words.
-    expect(chatState.setPendingInput).toHaveBeenCalledWith('');
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(null);
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');
   });
 
   it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 专家 detail', () => {
@@ -478,7 +479,7 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId(trigger));
     fireEvent.click(screen.getByText('使用阿布创建'));
     expect(chatState.startNewConversation).toHaveBeenCalledOnce();
-    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt);
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt, { startsTask: true });
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -637,7 +638,8 @@ describe('TeamView', () => {
     expect(chatState.createConversation).not.toHaveBeenCalled();
     expect(chatState.startNewConversation).toHaveBeenCalled();
     expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
-    expect(chatState.setPendingInput).toHaveBeenCalledWith('帮我看上季度销量');
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(null);
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('帮我看上季度销量');
     expect(settingsState.closeTeam).toHaveBeenCalledOnce();
     expect(dispatch).not.toHaveBeenCalled();
     expect(screen.queryByTestId('team-detail-start-chat')).toBeNull();

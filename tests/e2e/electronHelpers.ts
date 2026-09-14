@@ -231,12 +231,6 @@ export async function windowListenerRegistered(
   }, { suffix: urlSuffix, name: event });
 }
 
-async function reloadAndWaitForApp(page: Page): Promise<void> {
-  await page.reload();
-  await page.waitForLoadState('domcontentloaded');
-  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
 /** Persist the common first-run acknowledgements used by Electron E2E journeys. */
 export async function dismissFirstRunOverlays(page: Page): Promise<void> {
   // Settings writes are serialized now. Seed under the same lock and reload
@@ -289,7 +283,8 @@ export async function configureLocalMockProvider(
     supportsTools = false,
   } = options;
 
-  await page.evaluate((configuration) => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
@@ -338,6 +333,8 @@ export async function configureLocalMockProvider(
     // reload below — so a future migrate branch that rewrites one of these
     // fields would silently clobber every spec's provider setup.
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+    window.location.reload();
+    });
   }, {
     apiKey,
     baseUrl,
@@ -350,8 +347,8 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 /**

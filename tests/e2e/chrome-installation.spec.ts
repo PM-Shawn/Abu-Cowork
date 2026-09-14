@@ -19,10 +19,18 @@ test('installation metadata drives Chrome settings independently of live connect
       // resource resolution real, so installation folder checks remain valid.
       for (const method of ['lstat', 'readdir', 'open'] as const) {
         const original = fs.promises[method].bind(fs.promises);
-        fs.promises[method] = ((file: string, ...args: unknown[]) => original(
-          typeof file === 'string' && (file === originalRoot || file.startsWith(originalRoot + path.sep))
-            ? isolatedRoot + file.slice(originalRoot.length) : file, ...args,
-        )) as typeof fs.promises[typeof method];
+        fs.promises[method] = ((file: string, ...args: unknown[]) => {
+          // Hosted runners may have no Google/Chrome parent directories. Keep
+          // ancestor checks isolated too; absence of a local Chrome install is
+          // not the state this synthetic registration test is exercising.
+          if (method === 'lstat' && typeof file === 'string'
+            && file.startsWith(path.join(os.homedir(), 'Library') + path.sep)
+            && originalRoot.startsWith(file + path.sep)) {
+            return original(fs.realpathSync(fixtureRoot), ...args);
+          }
+          return original(typeof file === 'string' && (file === originalRoot || file.startsWith(originalRoot + path.sep))
+            ? isolatedRoot + file.slice(originalRoot.length) : file, ...args);
+        }) as typeof fs.promises[typeof method];
       }
       (globalThis as typeof globalThis & { chromeFixtureRoot: string }).chromeFixtureRoot = isolatedRoot;
     }, launched.rootDir);

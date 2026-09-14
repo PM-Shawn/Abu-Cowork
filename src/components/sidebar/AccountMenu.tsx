@@ -280,7 +280,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           ) : (
             <MenuRow
               icon={LogIn}
-              label={expired ? t.account.retry : t.account.loginRegister}
+              label={expired ? t.account.retry : t.account.signIn}
               onClick={() => run(openAccountLogin)}
             />
           )}

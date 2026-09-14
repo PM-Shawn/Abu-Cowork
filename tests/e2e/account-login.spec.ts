@@ -193,7 +193,7 @@ async function useSystemTheme(page: Page): Promise<void> {
   await expect(settings).toBeHidden();
 }
 
-async function openLoginDialogFromSidebar(page: Page, label: '登录 / 注册' | '重新登录') {
+async function openLoginDialogFromSidebar(page: Page, label: '登录' | '重新登录') {
   await page.getByRole('button', { name: '我', exact: true }).click();
   await page.getByRole('menuitem', { name: label, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '登录 / 注册' });
@@ -237,12 +237,12 @@ test.describe.serial('personal account login UI', () => {
 
     await page.getByRole('button', { name: '我', exact: true }).click();
     await expect(page.getByText('本地模式', { exact: true })).toBeVisible();
-    await expect(page.getByRole('menuitem', { name: '登录 / 注册', exact: true })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: '登录', exact: true })).toBeVisible();
     await captureLightAndDark(page, testInfo, '01-local-menu-signed-out');
     await page.keyboard.press('Escape');
 
     await page.getByRole('button', { name: '我', exact: true }).click();
-    await page.getByRole('menuitem', { name: '登录 / 注册', exact: true }).click();
+    await page.getByRole('menuitem', { name: '登录', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '登录 / 注册' });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole('button', { name: '个人账号登录' })).toBeVisible();
@@ -321,7 +321,7 @@ test.describe.serial('personal account login UI', () => {
     // A 401 from the authenticated profile endpoint expires the stored login.
     serverMode = 'profile-unauthorized';
     let openCount = await openedUrlCount(app);
-    let recoveryDialog = await openLoginDialogFromSidebar(page, '登录 / 注册');
+    let recoveryDialog = await openLoginDialogFromSidebar(page, '登录');
     await recoveryDialog.getByRole('button', { name: '个人账号登录' }).click();
     await emitNextAuthReturn(app, openCount);
     await page.getByRole('button', { name: '我', exact: true }).click();
@@ -339,7 +339,7 @@ test.describe.serial('personal account login UI', () => {
 
     // Reproduce the 401 once more, then recover by completing a fresh login.
     openCount = await openedUrlCount(app);
-    recoveryDialog = await openLoginDialogFromSidebar(page, '登录 / 注册');
+    recoveryDialog = await openLoginDialogFromSidebar(page, '登录');
     await recoveryDialog.getByRole('button', { name: '个人账号登录' }).click();
     await emitNextAuthReturn(app, openCount);
     await page.getByRole('button', { name: '我', exact: true }).click();

@@ -69,7 +69,7 @@ describe('AccountMenu identity', () => {
 
     expect(screen.getAllByText('我')).toHaveLength(2);
     expect(screen.getByText('本地模式')).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: '登录 / 注册' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: '登录' })).toBeInTheDocument();
   });
 
   it('places sign-out last, after update, behind its own divider', () => {

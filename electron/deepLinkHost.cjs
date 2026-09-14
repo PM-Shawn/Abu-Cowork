@@ -49,6 +49,7 @@ let coldStartUrls = []; // URLs that cold-launched the app (get_current path)
 let pendingHotUrls = []; // running-app URLs awaiting a renderer subscriber
 let emitFn = null; // injected tauriHost.emitEvent (returns delivered count)
 let getWindowFn = null; // injected tauriHost.getMainWindow
+let appInstance = null; // Electron app, needed to activate macOS from the browser
 
 function registrationTarget() {
   if (process.defaultApp && process.argv.length >= 2) {
@@ -162,6 +163,7 @@ function getActiveScheme() {
  * @param {{ emitEvent: (event: string, payload: unknown) => number, getMainWindow: () => import('electron').BrowserWindow | null }} deps
  */
 function initDeepLink(app, deps) {
+  appInstance = app;
   emitFn = deps.emitEvent;
   getWindowFn = deps.getMainWindow;
   activeScheme = resolveDeepLinkScheme(app);
@@ -238,6 +240,12 @@ function deliverHotUrl(url) {
       if (win.isMinimized()) win.restore();
       win.show();
       win.focus();
+      // On macOS, focusing a BrowserWindow does not necessarily activate the
+      // application when the URL came from a foreground browser. Explicitly
+      // reclaim app focus so an OAuth callback visibly returns to Abu.
+      if (process.platform === 'darwin' && typeof appInstance?.focus === 'function') {
+        appInstance.focus({ steal: true });
+      }
     }
   } catch {
     /* window may not exist yet — the flush retry covers delivery */
@@ -293,6 +301,7 @@ function __resetForTest() {
   pendingHotUrls = [];
   emitFn = null;
   getWindowFn = null;
+  appInstance = null;
   activeScheme = PROD_SCHEME;
 }
 

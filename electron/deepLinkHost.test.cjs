@@ -170,3 +170,35 @@ test('never logs secrets from malformed OAuth-like URLs', () => {
   const output = logs.join('\n');
   assert.doesNotMatch(output, /AUTH_CODE|AUTH_STATE|LOGIN_CODE|LOGIN_STATE/);
 });
+
+test('activates the macOS app when a running deep link arrives', {
+  skip: process.platform !== 'darwin',
+}, () => {
+  const listeners = new Map();
+  const calls = [];
+  const app = fakeApp(false);
+  app.on = (event, handler) => listeners.set(event, handler);
+  app.focus = options => calls.push(['app.focus', options]);
+
+  deepLinkHost.initDeepLink(app, {
+    emitEvent: () => 1,
+    getMainWindow: () => ({
+      isMinimized: () => true,
+      restore: () => calls.push(['window.restore']),
+      show: () => calls.push(['window.show']),
+      focus: () => calls.push(['window.focus']),
+    }),
+  });
+
+  listeners.get('open-url')(
+    { preventDefault() {} },
+    'abu-dev://login?code=one&state=csrf',
+  );
+
+  assert.deepEqual(calls, [
+    ['window.restore'],
+    ['window.show'],
+    ['window.focus'],
+    ['app.focus', { steal: true }],
+  ]);
+});

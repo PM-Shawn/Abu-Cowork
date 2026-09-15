@@ -836,14 +836,33 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId) ?? null : null
   ));
   const pinTeam = useCallback((teamId: string | undefined) => {
-    if (!activeConvId && teamId) useChatStore.getState().setPendingAgent(null);
+    if (teamId) {
+      setSelectedAgent(null);
+      if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+    }
     if (activeConvId) setConversationTeamId(activeConvId, teamId);
     else setPendingTeamId(teamId);
   }, [activeConvId, setConversationTeamId, setPendingTeamId]);
 
+  // Every explicit picker/prefill uses the same replacement rule. Keep the
+  // conversation pin and draft identity exclusive without changing history.
+  const selectEntry = useCallback((item: SuggestionItem) => {
+    if (item.team) pinTeam(item.teamId);
+    else if (pinnedTeamId) pinTeam(undefined);
+    setSelectedAgent(item.team ? null : item);
+    if (!activeConvId) useChatStore.getState().setPendingAgent(item.team ? null : item.name);
+  }, [activeConvId, pinTeam, pinnedTeamId]);
+
+  // Legacy session drafts may contain both identities. A restored draft must
+  // not silently override the conversation's team; explicit picks clear it first.
   useEffect(() => {
-    if (!activeConvId && selectedAgent) useChatStore.getState().setPendingAgent(selectedAgent.name);
-  }, [activeConvId, selectedAgent]);
+    if (pinnedTeamId && selectedAgent) {
+      setSelectedAgent(null);
+      if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+    } else if (!activeConvId && selectedAgent) {
+      useChatStore.getState().setPendingAgent(selectedAgent.name);
+    }
+  }, [activeConvId, pinnedTeamId, selectedAgent]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -974,7 +993,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         setSelectedAgent(null);
         if (!activeConvId) useChatStore.getState().setPendingAgent(null);
       } else if (agent) {
-        setSelectedAgent({ name: agent.name, description: agent.description, avatar: agent.avatar });
+        selectEntry({ name: agent.name, description: agent.description, avatar: agent.avatar });
         setSelectedSkill(null);
       } else if (command) {
         // Discovery may still be loading: retain the command for later auto-selection.
@@ -997,7 +1016,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       setPendingInput(null);
       textarea?.focus();
     }
-  }, [pendingInput, pendingInputStartsTask, setPendingInput, skills, agents, disabledSkills, activeConvId]);
+  }, [pendingInput, pendingInputStartsTask, setPendingInput, skills, agents, disabledSkills, activeConvId, selectEntry]);
 
   // Consume APPEND pending input (inline-widget window.sendPrompt bridge):
   // append to the current draft with a newline separator instead of
@@ -1287,19 +1306,14 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         suggestions.length === 1 &&
         suggestions[0].name.toLowerCase() === leadingCommand.query
       ) {
-        if (suggestions[0].team) {
-          pinTeam(suggestions[0].teamId);
-          setSelectedAgent(null);
-        } else {
-          setSelectedAgent(suggestions[0]);
-        }
+        selectEntry(suggestions[0]);
         const remainingText = leadingCommand.body;
         setText(remainingText);
         setSelection({ start: remainingText.length, end: remainingText.length });
         setDismissedSuggestionKey(suggestionKey);
       }
     }
-  }, [isComposing, text, suggestionKey, suggestionType, suggestions, selectedSkill, selectedAgent, pinTeam, menuPicker]);
+  }, [isComposing, text, suggestionKey, suggestionType, suggestions, selectedSkill, selectedAgent, selectEntry, menuPicker]);
 
   // Auto-resize textarea
   const maxHeight = isWelcome ? 180 : 160;
@@ -1345,10 +1359,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         if (!activeConvId) useChatStore.getState().setPendingAgent(null);
       } else {
         setSelectedSkill(null);
-        if (item.team) {
-          pinTeam(item.teamId);
-          setSelectedAgent(null);
-        } else setSelectedAgent(item);
+        selectEntry(item);
       }
       setMenuPicker(null);
       setDismissedSuggestionKey(suggestionKey);
@@ -1373,14 +1384,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         textarea.value.slice(bodyStart);
       const nextCaret = replacementRange.start;
       pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
-      if (item.team) {
-        pinTeam(item.teamId);
-        setSelectedAgent(null);
-      } else {
-        // A member chip is a one-off route for the next message; the team pin
-        // (a conversation property) is left alone.
-        setSelectedAgent(item);
-      }
+      selectEntry(item);
       setText(nextText);
       setSelection({ start: nextCaret, end: nextCaret });
       setDismissedSuggestionKey(currentTarget.key);

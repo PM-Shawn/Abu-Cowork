@@ -44,7 +44,8 @@ async function seedTeam(page: Page): Promise<void> {
 }
 
 test.describe('composer team chip journey', () => {
-  test('pick a team from @, keep the chip while typing, reopen the picker from +, clear the chip', async () => {
+  test('expert and team entries replace each other while preserving the draft', async () => {
+    const testInfo = test.info();
     test.setTimeout(180_000);
     const dataRoot = createElectronDataRoot();
     try {
@@ -86,8 +87,27 @@ test.describe('composer team chip journey', () => {
       await expect(page.getByRole('listbox')).toBeVisible();
       await expect(page.getByRole('option', { name: /zz数据小队/ })).toBeVisible();
       await expect(textbox).toHaveValue('出一版周报');
-      await page.keyboard.press('Escape');
-      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await page.getByRole('group', { name: '专家', exact: true }).getByRole('option').first().click();
+      const expertChip = page.getByRole('button', { name: /^@/ });
+      await expect(expertChip).toHaveCount(1);
+      await expect(chip).toHaveCount(0);
+      await expect(textbox).toHaveValue('出一版周报');
+      await page.screenshot({ path: testInfo.outputPath('team-to-expert.png') });
+
+      await page.getByTestId('composer-plus').click();
+      await page.getByTestId('composer-menu-team').click();
+      await page.getByRole('option', { name: /zz数据小队/ }).click();
+      await expect(chip).toBeVisible();
+      await expect(expertChip).toHaveCount(0);
+      await expect(textbox).toHaveValue('出一版周报');
+      await page.screenshot({ path: testInfo.outputPath('expert-to-team.png') });
+
+      // Re-selecting the same entry never adds a second identity.
+      await page.getByTestId('composer-plus').click();
+      await page.getByTestId('composer-menu-team').click();
+      await page.getByRole('option', { name: /zz数据小队/ }).click();
+      await expect(chip).toHaveCount(1);
+      await expect(expertChip).toHaveCount(0);
 
       // Clicking the chip clears the team pin.
       await chip.click();

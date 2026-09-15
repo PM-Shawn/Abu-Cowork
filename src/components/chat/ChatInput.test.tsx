@@ -1059,7 +1059,7 @@ describe('ChatInput inline agent selection', () => {
       }
     });
 
-    it('inside a conversation the pick pins the conversation itself, and an @agent pick keeps the pin', async () => {
+    it('inside a conversation expert and team picks replace each other', async () => {
       const useTeamStore = await seedTeam();
       try {
         const convId = useChatStore.getState().createConversation(null);
@@ -1071,15 +1071,65 @@ describe('ChatInput inline agent selection', () => {
         expect(useChatStore.getState().conversationIndex[convId].teamId).toBe('tm1');
         expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
 
-        // A member chip routes the next message; the team pin (a conversation property) stays.
+        // An explicit expert replaces the team route, including its persisted index.
         fireEvent.change(textarea, { target: { value: '@pub' } });
         fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
-        expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
-        expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
+        expect(useChatStore.getState().conversations[convId].teamId).toBeUndefined();
+        expect(useChatStore.getState().conversationIndex[convId].teamId).toBeUndefined();
+        expect(screen.queryByTestId('composer-team-chip')).toBeNull();
         expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+        fireEvent.change(textarea, { target: { value: '@zz' } });
+        fireEvent.click(screen.getByRole('option', { name: /zz数据小队/ }));
+        expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull();
+        expect(useChatStore.getState().conversations[convId].teamId).toBe('tm1');
       } finally {
         useTeamStore.setState({ teams: []});
       }
+    });
+
+    it.each(['menu', 'automatic', 'prefill'])('replaces a welcome team through %s without losing the body', async (entry) => {
+      const teams = await seedTeam();
+      try {
+        useChatStore.setState({ pendingTeamId: 'tm1', pendingAgentName: null });
+        const onSend = vi.fn();
+        render(<ChatInput variant="welcome" onSend={onSend} />);
+        const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+        if (entry === 'menu') {
+          fireEvent.change(box, { target: { value: 'Keep this body' } });
+          fireEvent.click(screen.getByTestId('composer-plus'));
+          fireEvent.click(await screen.findByTestId('composer-menu-team'));
+          fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+        } else if (entry === 'automatic') {
+          fireEvent.change(box, { target: { value: '@publisher Keep this body' } });
+        } else {
+          act(() => useChatStore.getState().setPendingInput('@publisher Keep this body'));
+        }
+        await waitFor(() => expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy());
+        expect(screen.queryByTestId('composer-team-chip')).toBeNull();
+        expect(useChatStore.getState().pendingTeamId).toBeUndefined();
+        expect(useChatStore.getState().pendingAgentName).toBe('publisher');
+        expect(box.value).toBe('Keep this body');
+        fireEvent.keyDown(box, { key: 'Enter' });
+        expect(onSend.mock.calls[0][0]).toBe('@publisher Keep this body');
+      } finally {
+        teams.setState({ teams: [] });
+        useChatStore.setState({ pendingTeamId: undefined, pendingAgentName: null });
+      }
+    });
+
+    it('restores a team conversation without resurrecting a conflicting expert draft', async () => {
+      const teams = await seedTeam();
+      try {
+        const id = useChatStore.getState().createConversation(null, { teamId: 'tm1' });
+        const key = getComposerDraftKey(id);
+        writeComposerDraft(key, { ...readComposerDraft(key), text: 'Keep this body',
+          selectedAgent: { name: 'publisher', description: 'Publish' } });
+        render(<ChatInput variant="chat" onSend={vi.fn()} />);
+        expect(screen.getByTestId('composer-team-chip')).toBeTruthy();
+        await waitFor(() => expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull());
+        expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep this body');
+        expect(useChatStore.getState().conversations[id].teamId).toBe('tm1');
+      } finally { teams.setState({ teams: [] }); }
     });
 
     it('the + menu offers 添加文件 / 专家·专家团 / 技能 and the team entry opens the grouped @ picker', async () => {

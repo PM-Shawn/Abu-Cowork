@@ -8,6 +8,7 @@ import {
   isVisionUnsupportedError,
   getCapabilityPrompt,
   resolveTools,
+  skillBlockedTools,
   buildVolatileContextTail,
   buildDirectDelegateSubagentOptions,
   buildInterruptedToolCallContext,
@@ -192,6 +193,41 @@ describe('resolveTools · per-run restrictions', () => {
     expect(names).not.toContain('write_file');
     expect(names).not.toContain('notes__read');
     expect(names).not.toContain('notes__write');
+  });
+
+  /// Regression: the document skills declare `computer` in blocked-tools so
+  /// that editing a document never becomes driving its application's UI, but
+  /// the filter read the list off `route.skill`, which only the explicit
+  /// `/name` route fills in. On the path the model actually takes — calling
+  /// use_skill, which records the skill in activeSkills and leaves the route
+  /// 'general' — the declaration filtered nothing at all.
+  it('honours an active skill\'s blocked-tools on the route the model actually takes', () => {
+    const generalRoute = { type: 'general', name: 'abu', cleanInput: 'hello' } as const;
+    const withSkill = {
+      ...prefetch,
+      activeSkills: [{ blockedTools: ['write_file', 'notes__*'] }],
+    } as unknown as typeof prefetch;
+
+    const resolved = resolveTools(roleInvoker, generalRoute, false, undefined, withSkill);
+    const names = [...resolved.tools, ...resolved.deferredTools].map(t => t.name);
+    expect(names).not.toContain('write_file');
+    expect(names).not.toContain('notes__read');
+    expect(names).not.toContain('notes__write');
+    expect(names).toContain('read_file');
+  });
+
+  /// The upstream lookup filters `s !== undefined` while claiming NonNullable,
+  /// and a missing skill resolves to null, so a null reaches this list. Nothing
+  /// dereferenced it until now, which is exactly why it went unnoticed.
+  it("survives a skill name that resolved to nothing", () => {
+    expect(skillBlockedTools(undefined, [null, undefined, { blockedTools: ["x"] }]))
+      .toEqual(["x"]);
+  });
+
+  it('merges the routed skill and the active skills rather than choosing one', () => {
+    expect(skillBlockedTools({ blockedTools: ['a', 'b'] }, [{ blockedTools: ['b', 'c'] }]))
+      .toEqual(['a', 'b', 'c']);
+    expect(skillBlockedTools(undefined, undefined)).toEqual([]);
   });
 
   it('applies an exact empty run snapshot even to the team protocols', () => {

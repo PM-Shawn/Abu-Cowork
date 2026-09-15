@@ -305,6 +305,23 @@ function generateId(): string {
  * Supports advanced allowed-tools patterns (wildcards, constraints).
  * Returns { tools, inputValidators } where inputValidators are used at execution time.
  */
+/**
+ * Every tool pattern the skills in play have declared off-limits, whichever
+ * way those skills were reached. Exported so the execution boundary can apply
+ * the same list the tool roster was filtered by — a visibility filter alone
+ * only hides a tool, and a model that remembers the name can still call it.
+ */
+export function skillBlockedTools(
+  routedSkill: { blockedTools?: string[] } | undefined,
+  activeSkills: readonly ({ blockedTools?: string[] } | null | undefined)[] | undefined,
+): string[] {
+  const patterns = [
+    ...(routedSkill?.blockedTools ?? []),
+    ...(activeSkills ?? []).flatMap((skill) => skill?.blockedTools ?? []),
+  ];
+  return [...new Set(patterns)];
+}
+
 export function resolveTools(
   toolInvoker: ToolInvoker,
   route: RouteResult,
@@ -355,9 +372,19 @@ export function resolveTools(
     // Skills with explicit allowedTools don't use deferred tools
     deferredTools = [];
   }
-  // Skill blocked-tools: blacklist mode (softer than allowedTools whitelist)
-  if (route.type === 'skill' && route.skill?.blockedTools) {
-    const blockedPatterns = route.skill.blockedTools;
+  // Skill blocked-tools: blacklist mode (softer than allowedTools whitelist).
+  // A skill's blocked-tools has to hold however the skill was reached. `/name`
+  // fills route.skill, but the ordinary path — the model calling use_skill —
+  // records the skill in activeSkills instead, and that case filtered nothing:
+  // the list was read off route.skill, which is empty on a 'general' route.
+  // The document skills declare `computer` in blocked-tools precisely so that
+  // editing a document never turns into driving its application's UI, and on
+  // the path the model actually takes, that declaration did nothing.
+  const blockedPatterns = skillBlockedTools(
+    route.type === 'skill' ? route.skill : undefined,
+    prefetchContext?.activeSkills,
+  );
+  if (blockedPatterns.length > 0) {
     tools = tools.filter(t =>
       !blockedPatterns.some(pattern => matchesToolName(t.name, pattern)),
     );
@@ -1763,13 +1790,24 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const conv = getConversationReader().getConversation(conversationId);
       const activeSkillObjects = (conv?.activeSkills ?? [])
         .map(name => skillLoader.getSkill(name))
-        .filter((s): s is NonNullable<typeof s> => s !== undefined);
+        .filter((s): s is NonNullable<typeof s> => s != null);
       const prefetchCtx = {
         userInput: userMessage,
         computerUseEnabled: freshSettings.computerUseEnabled ?? false,
         activeSkills: activeSkillObjects,
         turnCount,
       };
+
+      // What the roster was filtered by, carried to the execution boundary so
+      // the restriction is authoritative and not merely out of sight. Rebuilt
+      // each iteration because a skill activated mid-run changes it.
+      const iterationBlockedTools = [
+        ...(effectiveBlockedTools ?? []),
+        ...skillBlockedTools(
+          route.type === "skill" ? route.skill : undefined,
+          activeSkillObjects,
+        ),
+      ];
       const { tools: rawTools, deferredTools: rawDeferredTools, inputValidators } = resolveTools(
         toolInvoker,
         route,
@@ -2654,7 +2692,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           executionId: execution.id,
           inputValidators,
           agentToolPolicy: agentToolPolicyForRoute(route),
-          blockedTools: effectiveBlockedTools,
+          blockedTools: iterationBlockedTools,
           allowedTools: options?.allowedTools,
           imContext: options?.imContext,
           unattendedApproval: options?.unattendedApproval,

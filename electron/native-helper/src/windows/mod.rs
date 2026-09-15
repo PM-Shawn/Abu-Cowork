@@ -19,7 +19,7 @@ pub use uia::{
     ax_set_value_impl, ax_snapshot_impl,
 };
 
-pub use app_catalog::{launch_app_impl, list_apps_impl};
+pub use app_catalog::{launch_app_impl, list_apps_impl, resolve_launch_target_impl};
 pub use dpi::{dpi_awareness, initialize_dpi_awareness};
 pub use session::boundaries as session_boundaries;
 pub use input::{

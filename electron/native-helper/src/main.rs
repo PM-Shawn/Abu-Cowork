@@ -118,6 +118,7 @@ fn supported_commands() -> Vec<&'static str> {
         "activate_app",
         "list_apps",
         "launch_app",
+        "resolve_launch_target",
         "list_windows",
         "get_window",
         "get_window_graph",
@@ -584,12 +585,26 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
             #[cfg(target_os = "windows")]
             {
                 let query = require_str(params, "app_name")?;
-                let app = windows_backend::launch_app_impl(query)?;
+                let expected_launch_target = opt_str(params, "expected_launch_target");
+                let app = windows_backend::launch_app_impl(query, expected_launch_target)?;
                 serde_json::to_value(app).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
             #[cfg(not(target_os = "windows"))]
             {
                 Err(HelperError::not_executed("unsupported-platform", "Application launch is Windows-only"))
+            }
+        }
+
+        "resolve_launch_target" => {
+            #[cfg(target_os = "windows")]
+            {
+                let query = require_str(params, "app_name")?;
+                let resolution = windows_backend::resolve_launch_target_impl(query)?;
+                serde_json::to_value(resolution).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(HelperError::not_executed("unsupported-platform", "Launch target resolution is Windows-only"))
             }
         }
 

@@ -636,8 +636,12 @@ async function main() {
   assert.ok(apps.some((app) => app.app_id === calculator.app_id && app.running));
   const launchedCalculator = await call('launch_app', { app_name: calculator.app_id });
   assert.equal(launchedCalculator.app_id, calculator.app_id);
-  if (!windowsBeforeCalculator.has(launchedCalculator.window_id)) {
-    rememberOwnedWindow(launchedCalculator);
+  // The launched window is reported under `window`. The catalog entry itself
+  // never carried window_id/process_id, so this cleanup used to see undefined
+  // and never register the calculator it had just started.
+  const launchedWindow = launchedCalculator.window;
+  if (launchedWindow && !windowsBeforeCalculator.has(launchedWindow.window_id)) {
+    rememberOwnedWindow(launchedWindow);
   }
   calculator = await activate(calculator);
   currentStage = 'calculator-golden';

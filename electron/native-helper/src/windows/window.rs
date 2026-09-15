@@ -234,7 +234,7 @@ fn hosted_process(hwnd: HWND, owner_process_id: u32, owner_path: &str) -> Option
     })
 }
 
-fn app_name_from_path(path: &str) -> String {
+pub(crate) fn app_name_from_path(path: &str) -> String {
     Path::new(path)
         .file_stem()
         .and_then(|value| value.to_str())
@@ -242,7 +242,7 @@ fn app_name_from_path(path: &str) -> String {
         .to_string()
 }
 
-fn stable_app_id(aumid: Option<String>, executable_path: &str) -> String {
+pub(crate) fn stable_app_id(aumid: Option<String>, executable_path: &str) -> String {
     aumid
         .map(|value| format!("aumid:{}", value.to_lowercase()))
         .unwrap_or_else(|| executable_path.to_lowercase())
@@ -584,7 +584,7 @@ pub fn get_window_impl(window_id: String) -> Result<WindowRef, HelperError> {
     inspect_window(parse_hwnd(&window_id)?)
 }
 
-fn identity(window: &WindowRef) -> AppIdentity {
+pub(crate) fn identity(window: &WindowRef) -> AppIdentity {
     AppIdentity {
         app_name: window.app_name.clone(),
         bundle_id: window.app_id.clone(),
@@ -646,7 +646,7 @@ fn normalized_candidates(window: &WindowRef) -> [String; 3] {
     ]
 }
 
-fn canonical_app_query(name: &str) -> String {
+pub(crate) fn canonical_app_query(name: &str) -> String {
     let normalized = name.trim().to_lowercase();
     match normalized.as_str() {
         "记事本" | "windows 记事本" | "微软记事本" => "notepad".to_string(),

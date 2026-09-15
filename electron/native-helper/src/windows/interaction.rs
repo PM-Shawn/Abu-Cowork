@@ -49,6 +49,12 @@ struct InputLease {
     resume_phase: LeasePhase,
     consent_owner_process_id: Option<u32>,
     dirty: bool,
+    /// Set when a consent pause resumes. The user has just taken their hand
+    /// off Abu's own dialog and the pointer is still travelling away from it;
+    /// that movement is the tail of the gesture that authorized the action,
+    /// not someone grabbing the wheel. Cleared by the first thing they
+    /// actually press, and by every phase change that starts fresh.
+    pointer_settling_after_consent: bool,
 }
 
 impl Default for InputLease {
@@ -59,6 +65,7 @@ impl Default for InputLease {
             resume_phase: LeasePhase::Idle,
             consent_owner_process_id: None,
             dirty: false,
+            pointer_settling_after_consent: false,
         }
     }
 }
@@ -104,7 +111,13 @@ impl InputLease {
             LeasePhase::Idle => PhysicalInputDecision::Ignore,
             LeasePhase::Observing if moved_only => PhysicalInputDecision::Ignore,
             LeasePhase::Observing => dirty_or_stop(self),
-            LeasePhase::Running => PhysicalInputDecision::Publish,
+            LeasePhase::Running if moved_only && self.pointer_settling_after_consent => {
+                PhysicalInputDecision::Ignore
+            }
+            LeasePhase::Running => {
+                self.pointer_settling_after_consent = false;
+                PhysicalInputDecision::Publish
+            }
             LeasePhase::PausedForConsent => {
                 let owner = self.consent_owner_process_id;
                 let answers_the_dialog = owner.is_some()
@@ -163,6 +176,7 @@ pub fn begin_input_lease(lease_id: &str) -> Result<u64, HelperError> {
     lease.resume_phase = LeasePhase::Observing;
     lease.consent_owner_process_id = None;
     lease.dirty = false;
+    lease.pointer_settling_after_consent = false;
     Ok(input_epoch())
 }
 
@@ -264,6 +278,7 @@ pub fn resume_input_lease(lease_id: &str) -> Result<(bool, u64), HelperError> {
     };
     lease.consent_owner_process_id = None;
     lease.dirty = false;
+    lease.pointer_settling_after_consent = true;
     Ok((dirty, input_epoch()))
 }
 
@@ -473,6 +488,7 @@ mod tests {
             resume_phase: LeasePhase::Observing,
             consent_owner_process_id: None,
             dirty: false,
+            pointer_settling_after_consent: false,
         };
         assert!(require_lease(&lease, "lease-a").is_ok());
         assert!(require_lease(&lease, "lease-b").is_err());
@@ -492,6 +508,7 @@ mod tests {
             resume_phase: LeasePhase::Running,
             consent_owner_process_id: Some(42),
             dirty: false,
+            pointer_settling_after_consent: false,
         };
         assert_eq!(
             lease.classify_physical_input(Some(99), Some(42), PhysicalInputKind::StateChanging, false),
@@ -517,6 +534,7 @@ mod tests {
             resume_phase: LeasePhase::Running,
             consent_owner_process_id: None,
             dirty: false,
+            pointer_settling_after_consent: false,
         };
         assert_eq!(
             lease.classify_physical_input(None, None, PhysicalInputKind::StateChanging, false),
@@ -533,6 +551,7 @@ mod tests {
             resume_phase: LeasePhase::Running,
             consent_owner_process_id: Some(42),
             dirty: false,
+            pointer_settling_after_consent: false,
         };
         assert_eq!(
             lease.classify_physical_input(Some(42), Some(42), PhysicalInputKind::StateChanging, false),
@@ -553,6 +572,7 @@ mod tests {
             resume_phase: phase,
             consent_owner_process_id: None,
             dirty: false,
+            pointer_settling_after_consent: false,
         }
     }
 
@@ -608,6 +628,56 @@ mod tests {
         assert!(lease.dirty);
     }
 
+    /// Measured 2026-09-15: approving a QQ send killed the send. The click on
+    /// the dialog is ignored, but the lease then activates and the hand still
+    /// travelling away from the dialog lands in `Running`, where every kind of
+    /// input — movement included — published a takeover. So a consequential
+    /// action approved with the mouse could not complete at all.
+    #[test]
+    fn the_hand_leaving_the_consent_dialog_does_not_abort_the_action_it_approved() {
+        let mut lease = lease_in(LeasePhase::Running);
+        lease.pointer_settling_after_consent = true;
+        assert_eq!(
+            lease.classify_physical_input(None, None, PhysicalInputKind::PointerMove, false),
+            PhysicalInputDecision::Ignore,
+        );
+        // Still travelling: the exemption is not spent by one event.
+        assert_eq!(
+            lease.classify_physical_input(None, None, PhysicalInputKind::PointerMove, false),
+            PhysicalInputDecision::Ignore,
+        );
+    }
+
+    /// The exemption covers movement only. Anything the user actually presses
+    /// while Abu is mid-action is still a takeover, which is what the safety
+    /// case tests.
+    #[test]
+    fn pressing_something_after_consent_still_hands_control_back() {
+        let mut lease = lease_in(LeasePhase::Running);
+        lease.pointer_settling_after_consent = true;
+        assert_eq!(
+            lease.classify_physical_input(None, None, PhysicalInputKind::StateChanging, false),
+            PhysicalInputDecision::Publish,
+        );
+        assert!(!lease.pointer_settling_after_consent, "spent by the first press");
+        // And once spent, movement is a takeover again.
+        assert_eq!(
+            lease.classify_physical_input(None, None, PhysicalInputKind::PointerMove, false),
+            PhysicalInputDecision::Publish,
+        );
+    }
+
+    /// ESC is state changing, so it stops even while the pointer is settling.
+    #[test]
+    fn escape_still_stops_while_the_pointer_is_settling() {
+        let mut lease = lease_in(LeasePhase::Running);
+        lease.pointer_settling_after_consent = true;
+        assert_eq!(
+            lease.classify_physical_input(None, None, PhysicalInputKind::StateChanging, true),
+            PhysicalInputDecision::Publish,
+        );
+    }
+
     #[test]
     fn moving_the_mouse_still_hands_control_back_while_abu_is_typing() {
         let mut lease = lease_in(LeasePhase::Running);
@@ -656,6 +726,7 @@ mod tests {
             resume_phase: LeasePhase::Observing,
             consent_owner_process_id: None,
             dirty: false,
+            pointer_settling_after_consent: false,
         };
         assert_eq!(
             lease.classify_physical_input(Some(99), Some(99), PhysicalInputKind::StateChanging, false),

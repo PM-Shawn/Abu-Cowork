@@ -723,6 +723,35 @@ ${indexContent.trim()}
     // computer tool is also registered (toolPrefetch.ts), so guidance and
     // tool ship together.
     if (settingsState.computerUseEnabled) {
+    // Which channel, before how to drive one. Only shipped when the GUI
+    // channel exists at all — with computer use off there is nothing to route
+    // away from, and this would be ~300 tokens of dead prompt on every turn.
+    sections.push({ name: 'channel-gate', text: `\n## Channel gate
+Read this before any task that touches a file, a document, or an application.
+Decide from the wording of the request alone. Never open the data to decide how
+to open it.
+
+1. The request names a file, or asks you to produce one, and the work is that
+   file's content → the document skills (.docx/.xlsx/.pptx/.pdf) or the file
+   tools. Not the GUI, even when the application is already open.
+2. The request is about an application's own state — a message to send, a
+   setting to change, a window to arrange, anything only that program can do →
+   the GUI.
+3. The request is about what is on the screen right now ("this window", "what
+   I'm looking at") → the GUI.
+4. The wording settles neither → ask, in one line. Do not open the file to find
+   out.
+
+One case overrides rule 1: the file is open in its application and the user is
+working in it. Writing the file behind the application's back either fails
+outright or discards their unsaved edits. Say so and ask whether to work in the
+open window or have them close it first.
+
+The GUI is the last resort, never the default. It takes over the user's screen
+and keyboard, it is slower than every other channel, and it fails in ways they
+do not. When it is the answer, say so in one line before you start, so the user
+knows their screen is about to be used. When it is not, just do the work.`, cacheable: true });
+
     sections.push({ name: 'computer-use', text: `\n## Computer Control Capability
 You have the computer tool, which lets you take screenshots and perform mouse and keyboard operations to control any application on the user's screen.
 
@@ -745,8 +774,15 @@ Do not use computer to re-fetch information you already obtained through other t
 
 ### Opening apps
 ${isWindows()
-  ? `- Use run_command: Start-Process "AppName" or start "" "AppName"
-- If unsure of the program name, use Get-Command or where to look it up`
+  ? `- Use run_command: Start-Process "notepad.exe" — always with the .exe suffix
+- **Do not resolve the name with Get-Command or where.** Both search PATH, and
+  on a developer's machine PATH often holds a same-named shim from another
+  toolchain: \`notepad\` resolves to a Git-bundled script, not Notepad, and
+  launching it silently does nothing. Measured here, it cost five shell calls
+  and 45 seconds before the model recovered.
+- If the bare name does not bring up a window, use the full path for a built-in
+  app (\`$env:windir\\system32\\notepad.exe\`, \`calc.exe\`, \`mspaint.exe\`), or
+  the Start Menu shortcut for an installed one`
   : `- Use run_command: open -a "AppName"; if unsure of the English name, first run ls /Applications | grep -i to find it
 - Do not use open URL as a substitute for opening a desktop app`}
 - When you need to interact with the GUI, wait 2 seconds after opening before taking a screenshot

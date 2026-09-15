@@ -4579,8 +4579,9 @@ export interface TranslationDict {
     file: {
       /** Non-vision model image skip note. {path}, {mediaType} */
       imageSkipNoVision: string;
-      /** File locked by another agent. {path} */
+      /** File held open by another program, so the write could not land. {path} */
       errFileHeldByAnotherApp: string;
+      /** File locked by another agent. {path} */
       errFileLocked: string;
       /** delete_file succeeded — moved to OS Trash. {path} */
       movedToTrash: string;
@@ -4802,7 +4803,6 @@ export interface TranslationDict {
       errPermissionRelaunch: string;
       errModelUnsupported: string;
       errModelUnknown: string;
-      /** Foreground target identity probe failed. {msg} */
       /** A specifically requested app has no visible target window. {app} */
       errTargetUnavailable: string;
       /** No target selector was supplied for a window operation. */

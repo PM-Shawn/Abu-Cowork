@@ -292,8 +292,18 @@ export const writeFileTool: ToolDefinition = {
  * happen inside the application instead.
  */
 function fileBusyMessage(error: unknown, path: string): string | null {
+  // EBUSY only. A Windows sharing violation is what an open document produces;
+  // EPERM and EACCES are a real permission problem — a protected directory, an
+  // ACL — and telling the user to close an application they do not have open
+  // would send them after the wrong thing.
+  //
+  // Matched on the message as well as the code: the errno survives the sidecar
+  // transport, but the local plugin-fs path crosses Electron IPC, which
+  // serializes only name/message/stack. Node's own text is `EBUSY: resource
+  // busy or locked, ...`.
   const code = (error as { code?: unknown } | null)?.code;
-  if (code !== 'EBUSY' && code !== 'EPERM' && code !== 'EACCES') return null;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  if (code !== 'EBUSY' && !/^EBUSY\b/.test(message)) return null;
   return format(getI18n().toolResult.file.errFileHeldByAnotherApp, { path });
 }
 

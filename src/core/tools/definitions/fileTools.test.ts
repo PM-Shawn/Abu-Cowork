@@ -314,12 +314,35 @@ describe('write/edit — a file another program holds open', () => {
     vi.mocked(writeTextFile).mockResolvedValue(undefined);
   });
 
-  it.each(['EBUSY', 'EPERM', 'EACCES'])('explains a %s write instead of inviting a retry', async (code) => {
-    vi.mocked(writeTextFile).mockRejectedValueOnce(busy(code));
+  it('explains an EBUSY write instead of inviting a retry', async () => {
+    vi.mocked(writeTextFile).mockRejectedValueOnce(busy('EBUSY'));
     const result = String(await writeFileTool.execute({ path: 'C:/table.csv', content: 'x' }));
     expect(result).toMatch(/open and locked by another program/);
     expect(result).toMatch(/retry will not clear it/);
-    expect(result).not.toMatch(new RegExp(code));
+    expect(result).not.toMatch(/EBUSY/);
+  });
+
+  /// The local plugin-fs path crosses Electron IPC, which serializes only
+  /// name/message/stack — the errno never arrives. Matching the code alone
+  /// made this whole branch dead on that transport while the tests, which
+  /// attach `.code` by hand below the transport, stayed green.
+  it('explains it from the message alone when the errno did not survive', async () => {
+    const stripped = new Error("EBUSY: resource busy or locked, open 'C:/table.csv'");
+    vi.mocked(writeTextFile).mockRejectedValueOnce(stripped);
+    const result = String(await writeFileTool.execute({ path: 'C:/table.csv', content: 'x' }));
+    expect(result).toMatch(/open and locked by another program/);
+  });
+
+  /// A protected directory is not an open document, and telling the user to
+  /// close an application they do not have open sends them after the wrong
+  /// thing.
+  it.each(['EPERM', 'EACCES'])('leaves a %s permission error as it was', async (code) => {
+    const denied = new Error(`${code}: operation not permitted, open 'C:/Program Files/x.txt'`) as NodeJS.ErrnoException;
+    denied.code = code;
+    vi.mocked(writeTextFile).mockRejectedValueOnce(denied);
+    const result = String(await writeFileTool.execute({ path: 'C:/Program Files/x.txt', content: 'x' }));
+    expect(result).not.toMatch(/open and locked by another program/);
+    expect(result).toMatch(new RegExp(code));
   });
 
   it('explains the same for an edit', async () => {

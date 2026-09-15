@@ -794,7 +794,11 @@ fn paste_via_clipboard(
     // Two different losses, and the user is owed the distinction: the text
     // went back but its formatting or image did not, versus nothing went
     // back at all.
-    let clipboard_note = if dropped_unrecordable {
+    let clipboard_note = if dropped_unrecordable && !restored {
+        // Claiming it was cleared when the clear itself failed points the user
+        // at the wrong clipboard: Abu's pasted text is the thing sitting there.
+        " (the clipboard had held content its source marked as not to be recorded, such as a password; it was deliberately not put back, and clearing it afterwards failed — the text Abu pasted is still on the clipboard)"
+    } else if dropped_unrecordable {
         " (the clipboard had held content its source marked as not to be recorded, such as a password; it was cleared rather than put back unmarked)"
     } else if !restored {
         " (previous clipboard content could not be restored)"

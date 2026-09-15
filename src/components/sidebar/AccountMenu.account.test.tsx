@@ -56,6 +56,7 @@ describe('AccountMenu identity', () => {
   });
 
   it('keeps the local identity head separate from the signed-out login action', () => {
+    const onEditProfile = vi.fn();
     mocks.settings = { ...mocks.settings, userNickname: '' };
     mocks.account = {
       ...mocks.account,
@@ -64,12 +65,20 @@ describe('AccountMenu identity', () => {
       profileStatus: 'idle',
     };
 
-    render(<AccountMenu onEditProfile={() => {}} />);
+    render(<AccountMenu onEditProfile={onEditProfile} />);
     fireEvent.click(screen.getByRole('button', { name: '我' }));
 
     expect(screen.getAllByText('我')).toHaveLength(2);
     expect(screen.getByText('本地模式')).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: '登录' })).toBeInTheDocument();
+    const menuItems = within(screen.getByRole('menu')).getAllByRole('menuitem');
+    expect(menuItems.at(-1)).toHaveAccessibleName('登录');
+    expect(screen.queryByRole('menuitem', { name: '编辑资料' })).toBeNull();
+
+    const editProfile = screen.getByRole('button', { name: '编辑资料' });
+    expect(editProfile).toHaveClass('group-hover:opacity-100', 'focus-visible:opacity-100');
+    fireEvent.click(editProfile);
+    expect(onEditProfile).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('places sign-out last, after update, behind its own divider', () => {

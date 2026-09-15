@@ -1,4 +1,4 @@
-import { expect, test, type TestInfo } from '@playwright/test';
+import { expect, test, type Locator, type TestInfo } from '@playwright/test';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -176,6 +176,25 @@ async function captureLightAndDark(page: Page, testInfo: TestInfo, name: string)
   await page.screenshot({ path: screenshotPath(testInfo, `${name}-dark`), animations: 'disabled' });
 }
 
+async function captureHoveredLightAndDark(
+  page: Page,
+  testInfo: TestInfo,
+  name: string,
+  hoverTarget: Locator,
+  revealedTarget: Locator,
+): Promise<void> {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await hoverTarget.hover();
+  await expect(page.locator('html')).not.toHaveClass(/(^|\s)dark(\s|$)/);
+  await expect(revealedTarget).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: screenshotPath(testInfo, `${name}-light`), animations: 'disabled' });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await hoverTarget.hover();
+  await expect(page.locator('html')).toHaveClass(/(^|\s)dark(\s|$)/);
+  await expect(revealedTarget).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: screenshotPath(testInfo, `${name}-dark`), animations: 'disabled' });
+}
+
 async function useSystemTheme(page: Page): Promise<void> {
   await page.getByRole('button', { name: '我', exact: true }).click();
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
@@ -236,10 +255,25 @@ test.describe.serial('personal account login UI', () => {
     await useSystemTheme(page);
 
     await page.getByRole('button', { name: '我', exact: true }).click();
-    await expect(page.getByText('本地模式', { exact: true })).toBeVisible();
-    await expect(page.getByRole('menuitem', { name: '登录', exact: true })).toBeVisible();
+    const localMenu = page.getByRole('menu');
+    await expect(localMenu.getByText('本地模式', { exact: true })).toBeVisible();
+    await expect(localMenu.getByRole('menuitem').last()).toHaveAccessibleName('登录');
+    await expect(localMenu.getByRole('menuitem', { name: '编辑资料', exact: true })).toHaveCount(0);
+    const editProfileButton = localMenu.getByTitle('编辑资料');
     await captureLightAndDark(page, testInfo, '01-local-menu-signed-out');
-    await page.keyboard.press('Escape');
+    await captureHoveredLightAndDark(
+      page,
+      testInfo,
+      '01b-profile-edit-hover',
+      editProfileButton.locator('..'),
+      editProfileButton,
+    );
+    await editProfileButton.click();
+    const editProfileHeading = page.getByRole('heading', { name: '编辑资料', exact: true });
+    await expect(editProfileHeading).toBeVisible();
+    await captureLightAndDark(page, testInfo, '01c-profile-editor');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(editProfileHeading).toBeHidden();
 
     await page.getByRole('button', { name: '我', exact: true }).click();
     await page.getByRole('menuitem', { name: '登录', exact: true }).click();

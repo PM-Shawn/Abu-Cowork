@@ -253,7 +253,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           className="absolute bottom-full left-0 right-0 mb-2 z-50 p-1.5 rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-[0_12px_34px_-8px_rgba(20,20,19,0.22),0_2px_8px_-2px_rgba(20,20,19,0.10)]"
         >
           {/* Authenticated identity, or the local-mode account entry. */}
-          <div className="flex w-full items-center gap-2.5 px-2 py-2">
+          <div className="group flex w-full items-center gap-2.5 px-2 py-2">
             <span className="w-9 h-9 rounded-full overflow-hidden shrink-0">
               {userAvatar ? (
                 <img src={userAvatar} alt="" className="w-full h-full object-cover" />
@@ -267,27 +267,27 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
               </div>
               <div className="text-caption text-[var(--abu-text-muted)] truncate">{accountDetail}</div>
             </div>
+            <button
+              onClick={() => run(onEditProfile)}
+              title={t.sidebar.editProfile}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
+            >
+              <Pencil className="h-[15px] w-[15px]" strokeWidth={1.7} />
+            </button>
           </div>
 
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
-          {signedIn ? (
-            <MenuRow
-              icon={UserRound}
-              label={t.account.accountSettings}
-              onClick={() => run(() => openSystemSettings('account'))}
-            />
-          ) : (
-            <MenuRow
-              icon={LogIn}
-              label={expired ? t.account.retry : t.account.signIn}
-              onClick={() => run(openAccountLogin)}
-            />
+          {signedIn && (
+            <>
+              <MenuRow
+                icon={UserRound}
+                label={t.account.accountSettings}
+                onClick={() => run(() => openSystemSettings('account'))}
+              />
+              <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+            </>
           )}
-
-          <MenuRow icon={Pencil} label={t.sidebar.editProfile} onClick={() => run(onEditProfile)} />
-
-          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
           {/* Settings */}
           <MenuRow icon={Settings} label={t.settings.title} onClick={() => run(() => openSystemSettings())} />
@@ -368,15 +368,19 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             {updateRow.trailing}
           </button>
 
-          {signedIn && (
-            <>
-              <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
-              <MenuRow
-                icon={LogOut}
-                label={t.account.signOut}
-                onClick={() => run(() => void signOut())}
-              />
-            </>
+          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+          {signedIn ? (
+            <MenuRow
+              icon={LogOut}
+              label={t.account.signOut}
+              onClick={() => run(() => void signOut())}
+            />
+          ) : (
+            <MenuRow
+              icon={LogIn}
+              label={expired ? t.account.retry : t.account.signIn}
+              onClick={() => run(openAccountLogin)}
+            />
           )}
         </div>
       )}

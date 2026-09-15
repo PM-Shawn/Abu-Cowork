@@ -14,10 +14,12 @@ use ::windows::Win32::System::Threading::{
     PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use ::windows::Win32::UI::Input::KeyboardAndMouse::{SetActiveWindow, SetFocus};
+use ::windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use ::windows::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumChildWindows, EnumWindows, GetForegroundWindow, GetWindow, GetWindowRect,
-    GetWindowTextW, GetWindowThreadProcessId, IsChild, IsIconic, IsWindowVisible,
-    SetForegroundWindow, ShowWindowAsync, SwitchToThisWindow, GW_HWNDPREV, GW_OWNER, SW_RESTORE,
+    BringWindowToTop, EnumChildWindows, EnumWindows, GetForegroundWindow, GetWindow,
+    GetWindowDisplayAffinity, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsChild,
+    IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindowAsync, SwitchToThisWindow,
+    GW_HWNDPREV, GW_OWNER, SW_RESTORE, WDA_NONE,
 };
 
 use super::signature::executable_signature;
@@ -52,6 +54,14 @@ pub struct WindowRef {
     pub signer_subject: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub package_full_name: Option<String>,
+    /// True when this window cannot appear in a screen capture at all: it is
+    /// either content-protected (`SetWindowDisplayAffinity` — what Electron's
+    /// `setContentProtection` sets) or DWM-cloaked (another virtual desktop, a
+    /// suspended UWP app). Such a window is on no frame, so it can occlude
+    /// nothing in one. Internal: the Host has no use for it, so the wire shape
+    /// stays as it was.
+    #[serde(skip)]
+    pub absent_from_capture: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -281,7 +291,34 @@ pub(crate) fn inspect_window(hwnd: HWND) -> Result<WindowRef, HelperError> {
         signature_status: signature.signature_status,
         signer_subject: signature.signer_subject,
         package_full_name,
+        absent_from_capture: absent_from_capture(hwnd),
     })
+}
+
+/// Whether this window is on no captured frame. Two independent reasons, both
+/// of which leave a window in `EnumWindows` with real bounds while putting
+/// none of its pixels on screen:
+///
+/// * a display affinity other than `WDA_NONE` — `SetWindowDisplayAffinity`,
+///   which is what Electron's `setContentProtection` sets, is honoured by the
+///   capture stack by design;
+/// * DWM cloaking — a window on another virtual desktop or a suspended UWP
+///   app is `IsWindowVisible` and not `IsIconic`, yet is nowhere on screen.
+fn absent_from_capture(hwnd: HWND) -> bool {
+    let mut affinity = 0u32;
+    if unsafe { GetWindowDisplayAffinity(hwnd, &mut affinity) }.is_ok() && affinity != WDA_NONE.0 {
+        return true;
+    }
+    let mut cloaked = 0u32;
+    let queried = unsafe {
+        DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            (&mut cloaked as *mut u32).cast(),
+            size_of::<u32>() as u32,
+        )
+    };
+    queried.is_ok() && cloaked != 0
 }
 
 unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -771,6 +808,7 @@ mod tests {
             signature_status: "valid".to_string(),
             signer_subject: Some("Microsoft Corporation".to_string()),
             package_full_name: None,
+            absent_from_capture: false,
         }
     }
 
@@ -831,3 +869,4 @@ pub fn activate_app_impl(name: String) -> Result<String, HelperError> {
     let activated = activate_window_impl(window.window_id)?;
     Ok(activated.app_name)
 }
+

@@ -101,7 +101,16 @@ fn occluding_rects(
     z_order
         .iter()
         .take(target_catalog_index)
-        .filter(|window| window.process_id != target.process_id && !window.minimized)
+        .filter(|window| {
+            window.process_id != target.process_id
+                && !window.minimized
+                // A window that is on no frame cannot be hiding anything in
+                // one. Abu's own Computer Use chrome is the case that forced
+                // this: full-display, always-on-top, content-protected, and
+                // owned by another process than the target, so the rule above
+                // matched it and painted every capture flat.
+                && !window.absent_from_capture
+        })
         .map(|window| {
             [
                 window.bounds[0].saturating_sub(monitor_x),
@@ -515,7 +524,28 @@ mod tests {
             signature_status: "unknown".to_string(),
             signer_subject: None,
             package_full_name: None,
+            absent_from_capture: false,
         }
+    }
+
+    /// Regression: Abu's own Computer Use chrome is a full-display, always-on-top
+    /// window owned by the Electron main process, so the "different process,
+    /// above the target" rule matched it and painted the entire frame flat —
+    /// every window capture during a session returned a solid rectangle. It is
+    /// also content-protected, so its pixels were never in the frame to begin
+    /// with: masking it destroyed the target's pixels to hide nothing.
+    #[test]
+    fn a_window_that_cannot_appear_in_the_frame_never_masks_the_target() {
+        let target = window(100, [200, 200, 400, 300], false);
+        let mut chrome = window(4242, [0, 0, 2560, 1440], false);
+        chrome.absent_from_capture = true;
+        let z_order = vec![chrome, target.clone()];
+        let rects = occluding_rects(&z_order, &target, 1, 0, 0);
+        assert!(rects.is_empty(), "content-protected chrome must not mask: {rects:?}");
+
+        let mut image = RgbaImage::from_pixel(2560, 1440, image::Rgba([9, 9, 9, 255]));
+        assert_eq!(apply_mask(&mut image, &rects), 0);
+        assert_ne!(image.get_pixel(600, 500).0, MASK_FILL, "target pixels survived");
     }
 
     #[test]

@@ -45,6 +45,7 @@ const COMPUTER_USE_HOST_COMMANDS = new Set([
   'computer_use_set_enabled',
   'computer_use_capture_turn_target',
   'computer_use_list_windows',
+  'computer_use_launch_app',
   'computer_use_begin_session',
   'computer_use_end_session',
   'computer_use_end_task',

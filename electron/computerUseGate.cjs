@@ -1299,6 +1299,101 @@ function createComputerUseGate(options) {
     return { status: 'candidates', candidates };
   }
 
+  /**
+   * Launch an application by name, or bring it forward if it is already
+   * running — one verb, as Claude's open_application and TRAE's app.launch
+   * are. It exists so that opening an app is not a job for the shell: with no
+   * launch action the model resolved names on PATH itself, where this machine's
+   * `notepad` is an extensionless Git shim, and spent five calls finding out.
+   *
+   * The app is judged before it runs, not after. Launching is the moment an
+   * unknown program executes code, so the executable is resolved without
+   * starting it, classified against the same policy as a window, and put
+   * through the same app authorization — a hard-denied app is refused without
+   * ever starting, and an app needing approval asks once. The grant is keyed
+   * on the executable's identity, which is also how its window is keyed once
+   * it appears, so the user is not asked a second time to operate what they
+   * just agreed to open.
+   */
+  async function launchAppForTask(sender, args) {
+    if (platform !== 'win32') {
+      return protocolTargetError('target-not-found', 'select-target');
+    }
+    const appName = typeof args?.app === 'string' ? args.app.trim() : '';
+    if (!appName) return protocolTargetError('target-required', 'select-target');
+
+    const reservation = reserveTaskAuthorization(sender, args);
+    const { authorization } = reservation;
+    const releaseUnusedReservation = () => {
+      if (activeTask === authorization && !taskLeases.has(authorization.key)) {
+        activeTask = null;
+      }
+    };
+    let probe;
+    try {
+      probe = await nativeDispatch('resolve_launch_target', { appName });
+    } catch (error) {
+      releaseUnusedReservation();
+      const code = error?.helper?.code;
+      if (code === 'app-not-found') return protocolTargetError('target-not-found', 'select-target');
+      if (code === 'app-ambiguous') return protocolTargetError('target-ambiguous', 'select-target');
+      throw error;
+    }
+    try {
+      if (typeof probe?.launch_target !== 'string' || !probe.launch_target) {
+        throw new Error('Computer Use could not resolve what this application would launch');
+      }
+      const identity = normalizeIdentity({
+        ...probe.identity,
+        // A program that is not running has no process yet; 0 is the helper's
+        // placeholder, not a process id to pin anything to.
+        process_id: Number.isInteger(probe.identity?.process_id) && probe.identity.process_id > 0
+          ? probe.identity.process_id
+          : null,
+      });
+      const launchArgs = { ...args, scope: 'ui-control' };
+      const classification = assertIdentityAllowed(identity);
+      await assertOsPermissions('ui-control', 'activate_app');
+      assertTaskAuthorizationLive(authorization);
+      const { mode } = await authorizeTask(sender, launchArgs, identity, classification, reservation);
+      await authorizeTarget(sender, launchArgs, identity, classification, mode, authorization);
+      assertTaskAuthorizationLive(authorization);
+      chargeTaskBudget(taskKey(args));
+
+      // Hand back the exact target that was classified. The helper refuses if
+      // resolution now picks something else, so what was approved is what
+      // runs.
+      const launched = await nativeDispatch('launch_app', {
+        appName,
+        expectedLaunchTarget: probe.launch_target,
+      });
+
+      if (!launched?.window || typeof launched.window.window_id !== 'string') {
+        return { status: 'launched', launched: launched?.running !== true, candidates: [] };
+      }
+      // Judge the window that actually appeared on its own identity. A stub can
+      // hand off to a different process — Windows 11 Notepad does — and a
+      // refusal the launch did not trip must still apply to what is now on
+      // screen, so a hard-denied result is never given a window_ref.
+      const windowIdentity = normalizeListedWindow({
+        ...launched.window,
+        bundle_id: launched.window.bundle_id || launched.window.app_id,
+      });
+      assertIdentityAllowed(windowIdentity);
+      const candidate = windowRegistry.issue({
+        sender,
+        taskKey: taskKey(args),
+        identity: windowIdentity,
+        relation: 'root',
+        includeTitle: false,
+      });
+      return { status: 'launched', launched: launched.running !== true, candidates: [candidate] };
+    } catch (error) {
+      releaseUnusedReservation();
+      throw error;
+    }
+  }
+
   async function resolveVisibleAppWindows(appName) {
     const resolved = await resolveTarget(appName);
     assertIdentityAllowed(resolved);
@@ -2330,6 +2425,20 @@ function createComputerUseGate(options) {
       }
       assertTurnNotStopped(taskKey(args));
       return listWindowsForApp(sender, args);
+    }
+
+    if (cmd === 'computer_use_launch_app') {
+      if (!enabledSenders.has(sender)) throw new Error('Computer Use is disabled');
+      pruneExpired();
+      assertShortId(args?.conversationId, 'conversationId');
+      assertShortId(args?.toolCallId, 'toolCallId');
+      assertShortId(args?.loopId, 'loopId');
+      if (args?.interactionMode !== 'foreground') {
+        throw new Error('Background tasks cannot launch applications');
+      }
+      assertTurnNotStopped(taskKey(args));
+      assertTaskBudgetAvailable(taskKey(args));
+      return launchAppForTask(sender, args);
     }
 
     if (cmd === 'computer_use_begin_session') {

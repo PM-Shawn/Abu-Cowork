@@ -4805,6 +4805,14 @@ export interface TranslationDict {
       errModelUnknown: string;
       /** A specifically requested app has no visible target window. {app} */
       errTargetUnavailable: string;
+      /** launch_app: no installed application by that name. {app} */
+      launchAppNotInstalled: string;
+      /** launch_app: started, but its window has not appeared yet. {app} */
+      launchAppNoWindowYet: string;
+      /** launch_app: started; window candidates follow. {app} */
+      launchAppLaunched: string;
+      /** launch_app: was already running and brought forward; window candidates follow. {app} */
+      launchAppActivated: string;
       /** No target selector was supplied for a window operation. */
       errTargetRequired: string;
       /** No visible window matched the supplied selector. */

@@ -274,6 +274,90 @@ describe('computerTool — accessibility permission branch', () => {
     expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'computer_use_begin_session')).toBe(false);
   });
 
+describe('launch_app', () => {
+    const launchContext = {
+      conversationId: 'active-conversation',
+      loopId: 'loop-launch',
+      toolCallId: 'tool-launch',
+      interactionMode: 'foreground' as const,
+    };
+
+    function mockLaunch(response: unknown) {
+      setElectronHost(true);
+      vi.mocked(isWindows).mockReturnValue(true);
+      vi.mocked(isMacOS).mockReturnValue(false);
+      vi.mocked(invoke).mockImplementation((cmd: string) => (
+        cmd === 'computer_use_launch_app'
+          ? Promise.resolve(response)
+          : Promise.resolve(null)
+      ));
+    }
+
+    it('launches by name through the host and hands back the window to observe', async () => {
+      mockLaunch({
+        status: 'launched',
+        launched: true,
+        candidates: [{ window_ref: 'wr-notepad', app_name: 'Notepad', relation: 'root' }],
+      });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: '记事本', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toContain('window_ref: wr-notepad');
+      expect(result).toMatch(/Launched "记事本"/);
+      expect(vi.mocked(invoke).mock.calls).toContainEqual(['computer_use_launch_app',
+        expect.objectContaining({ app: '记事本', toolCallId: 'tool-launch', interactionMode: 'foreground' })]);
+      // Launching is authorized by the host command itself, not by opening an
+      // action session against a window that does not exist yet.
+      expect(vi.mocked(invoke).mock.calls.some(([cmd]) => cmd === 'computer_use_begin_session')).toBe(false);
+    });
+
+    it('says it brought a running app forward rather than opening a second copy', async () => {
+      mockLaunch({
+        status: 'launched',
+        launched: false,
+        candidates: [{ window_ref: 'wr-qq', app_name: 'QQ', relation: 'root' }],
+      });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: 'QQ', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toMatch(/already running/);
+      expect(result).toContain('window_ref: wr-qq');
+    });
+
+    it('tells the model the app is not installed and not to go around it', async () => {
+      mockLaunch({
+        status: 'target-error',
+        error: { code: 'target-not-found', recoverable: true, next_action: 'select-target' },
+      });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: 'nope', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toMatch(/No installed application named "nope"/);
+      expect(result).toMatch(/do not launch it through run_command/);
+    });
+
+    it('treats a window that has not appeared yet as wait-and-look, not a failure', async () => {
+      mockLaunch({ status: 'launched', launched: true, candidates: [] });
+
+      const result = String(await computerTool.execute(
+        { action: 'launch_app', app: 'WINWORD', consequence: 'none' },
+        launchContext,
+      ));
+
+      expect(result).toMatch(/has not appeared yet/);
+      expect(result).toMatch(/do not launch it again/);
+    });
+  });
+
   it('suspends the same tool call until the user explicitly completes setup', async () => {
     useSettingsStore.setState({ computerUseEnabled: false });
 

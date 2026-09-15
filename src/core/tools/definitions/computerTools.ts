@@ -11,6 +11,7 @@ import {
 } from '@/core/computer-use/computerSession';
 import {
   ComputerProtocolFailure,
+  launchComputerUseApp,
   listComputerUseWindows,
   parseComputerUseSessionResponse,
   type ComputerDriverCapabilities,
@@ -107,7 +108,7 @@ function computerUseExecutionPath(
   action: string,
   input: Record<string, unknown>,
 ): 'ax' | 'screen-read' | 'pixel-control' | null {
-  if (action === 'wait' || action === 'list_windows') return null;
+  if (action === 'wait' || action === 'list_windows' || action === 'launch_app') return null;
   if (action === 'screenshot' || action === 'get_screen_state') return 'screen-read';
   const axAction = [
     'get_window_state',
@@ -1137,7 +1138,7 @@ export const computerTool: ToolDefinition = {
 COORDINATE CONTRACT: AX element bounds are screen coordinates. x/y action coordinates are relative to the referenced screenshot and must carry that screenshot's screenshot_id. Never copy screen-coordinate bounds into x/y.
 
 For a named app, never call standalone screenshot before get_window_state: window state already includes the image and establishes one target-bound grant. Only fall back to screenshot + click(x,y) when the AX tree cannot retrieve elements (canvas/custom-drawn apps); later screenshots reuse that observed target and grant. Never fall back to the whole screen. Use get_screen_state only when the user explicitly asks to inspect the whole screen; it is authorized separately and must not establish a write target.
-If a named app is unavailable or has no visible window, do not omit/change the app and do not inspect or operate another foreground app. Stop and ask the user to open a visible window for that exact app. When several windows match, select only from the returned window_ref candidates.
+If a named app is unavailable or has no visible window, do not omit/change the app and do not inspect or operate another foreground app. On Windows, when the user asked you to use that app, open it with launch_app — never with run_command, Start-Process, a script or a shortcut path. Otherwise stop and ask the user to open a visible window for that exact app. When several windows match, select only from the returned window_ref candidates.
 When the user names an application—even with a localized name such as “记事本”—you MUST pass that name in app on the first get_app_state call. Omit app only when the user truly did not identify an application. Never use run_command, a shell, or another tool to launch a missing app when the user asked to operate only the current/already-open app.
 
 THIS TOOL IS THE ONLY WAY TO OPERATE THE DESKTOP. When an action here is refused, blocked, or stopped, that refusal is the answer — do not reach for another tool to accomplish the same thing. Never use run_command, a shell, a script you write, AppleScript, or any other mechanism to send clicks or keystrokes, move or focus a window, or drive an application's UI. Writing the clipboard through another tool in order to paste here counts as the same workaround. Re-observe with get_app_state and choose differently, or tell the user what is blocking you and stop.
@@ -1170,6 +1171,7 @@ Two cases that read as harmless and are not:
 • get_window_state Reads one exact window's AX tree + screenshot. Parameter: window_ref (preferred), or app/target_selector for first selection.
 • get_app_state   Compatibility alias for get_window_state.
 • activate_app    Brings an app to the foreground only (does not read the tree). Parameter: app. Native switch, no AppleScript permission needed.
+• launch_app      Windows: opens an app by name, or brings it forward if it is already running (no second copy). Parameter: app (a name such as "记事本" or "QQ", never a path). Returns window_ref candidates; observe one with get_window_state before acting. The app is authorized before it starts, so the user may be asked once.
 • screenshot      Take a standalone screenshot only as a fallback after get_app_state. Reuses the latest observed app when available. Optional crop: x, y, width, height.
 • get_screen_state Separately authorized whole-screen screenshot. Read-only; never use its coordinates for a window write.
 
@@ -1191,7 +1193,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
     properties: {
       action: {
         type: 'string',
-        description: 'Action: list_windows, get_window_state, get_app_state, get_screen_state, activate_app, screenshot, click, type, perform_action, scroll, move, drag, key, wait',
+        description: 'Action: list_windows, get_window_state, get_app_state, get_screen_state, activate_app, launch_app, screenshot, click, type, perform_action, scroll, move, drag, key, wait',
       },
       // App targeting (for get_app_state / get_ui)
       app: { type: 'string', description: 'Target app name (e.g. "Notes", "Safari"). App does NOT need to be in foreground. Used with get_app_state.' },
@@ -1442,6 +1444,44 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         return protocolErrorText(response.error, t);
       }
       return formatWindowCandidates(response.candidates);
+    }
+
+    if (action === 'launch_app') {
+      if (!runKey || !electronHost || !isWindows() || !context?.toolCallId) {
+        return t.errTargetRequired;
+      }
+      const app = explicitTargetApp(input);
+      if (!app) return t.errTargetRequired;
+      const permissionMode = (context.conversationId
+        ? useChatStore.getState().conversations[context.conversationId]?.permissionMode
+        : undefined)
+        ?? context.permissionMode
+        ?? getSettingsReader().getSnapshot().permissionMode;
+      const consentPause = beginComputerUseConsentPause(context?.conversationId ?? null);
+      let response;
+      try {
+        response = await launchComputerUseApp({
+          conversationId: runKey.conversationId,
+          loopId: runKey.loopId,
+          toolCallId: context.toolCallId,
+          app,
+          permissionMode,
+        });
+      } finally {
+        consentPause.resume();
+      }
+      if (response.status === 'target-error') {
+        if (response.error.code === 'target-not-found') {
+          return format(t.launchAppNotInstalled, { app });
+        }
+        return protocolErrorText(response.error, t);
+      }
+      traceComputerUse('launched', context, { stage: action });
+      if (response.candidates.length === 0) {
+        return format(t.launchAppNoWindowYet, { app });
+      }
+      return `${format(response.launched ? t.launchAppLaunched : t.launchAppActivated, { app })}\n`
+        + formatWindowCandidates(response.candidates);
     }
 
     // AX / native actions — no pixel capture, no cursor movement, no window hide.
@@ -2167,7 +2207,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         }
 
         default:
-          return `Unknown action: ${action}. Valid: get_app_state, activate_app, screenshot, click, type, perform_action, scroll, move, drag, key, wait (legacy: get_ui, ax_click, ax_type)`;
+          return `Unknown action: ${action}. Valid: get_app_state, activate_app, launch_app, screenshot, click, type, perform_action, scroll, move, drag, key, wait (legacy: get_ui, ax_click, ax_type)`;
       }
 
       let resultText = actionResult;

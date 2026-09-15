@@ -329,3 +329,42 @@ export async function listComputerUseWindows(
     candidates: response.candidates.map(parseWindowTarget),
   };
 }
+
+export type ComputerLaunchAppResponse =
+  | {
+    status: 'launched';
+    /** False when the app was already running and was only brought forward. */
+    launched: boolean;
+    /** Empty when no window appeared in time; observe again rather than retry. */
+    candidates: ComputerWindowTarget[];
+  }
+  | { status: 'target-error'; error: ComputerProtocolError };
+
+export async function launchComputerUseApp(request: {
+  conversationId: string;
+  loopId: string;
+  toolCallId: string;
+  app: string;
+  permissionMode: string | undefined;
+}): Promise<ComputerLaunchAppResponse> {
+  const response = await invoke<unknown>('computer_use_launch_app', {
+    conversationId: request.conversationId,
+    loopId: request.loopId,
+    toolCallId: request.toolCallId,
+    interactionMode: 'foreground',
+    app: request.app,
+    permissionMode: request.permissionMode,
+  });
+  if (!isRecord(response)) throw new Error('Computer Use launch response is invalid');
+  if (response.status === 'target-error') {
+    return { status: 'target-error', error: parseProtocolError(response.error) };
+  }
+  if (response.status !== 'launched' || !Array.isArray(response.candidates)) {
+    throw new Error('Computer Use launch response is invalid');
+  }
+  return {
+    status: 'launched',
+    launched: response.launched === true,
+    candidates: response.candidates.map(parseWindowTarget),
+  };
+}

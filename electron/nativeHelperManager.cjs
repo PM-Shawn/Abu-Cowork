@@ -82,6 +82,7 @@ const HELPER_CMDS = new Set([
   'frontmost_matches_target',
   'activate_window',
   'launch_app',
+  'resolve_launch_target',
 ]);
 
 // Built (release) helper binary.

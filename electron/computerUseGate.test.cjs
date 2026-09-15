@@ -4289,3 +4289,154 @@ test('a named target is observable and writable while the foreground window is u
   assert.equal(activeWindowCalls, 0);
   h.gate.teardown();
 });
+
+// ── computer_use_launch_app ──────────────────────────────────────────────
+
+function launchIdentity(stem, dir, signer) {
+  const path = `${dir}/${stem}.exe`.toLowerCase();
+  return {
+    app_name: stem,
+    bundle_id: path,
+    app_id: path,
+    executable_path: path,
+    process_id: 0,
+    window_id: '',
+    signature_status: 'valid',
+    signer_subject: signer,
+  };
+}
+
+function launchHarness({ probe, launched, approve = true } = {}) {
+  const dispatched = [];
+  const h = harness({
+    platform: 'win32',
+    requestAppApproval: async () => approve,
+    nativeDispatch: async (cmd, args) => {
+      dispatched.push({ cmd, args });
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_launch_target') {
+        if (probe instanceof Error) throw probe;
+        return probe;
+      }
+      if (cmd === 'launch_app') return launched;
+      return { ok: true };
+    },
+  });
+  return { h, dispatched };
+}
+
+async function launch(h, extra = {}) {
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_set_enabled', { enabled: true });
+  return h.gate.dispatch(h.record, h.sender, 'computer_use_launch_app', {
+    conversationId: 'conversation-1',
+    toolCallId: 'tool-launch',
+    loopId: 'loop-1',
+    interactionMode: 'foreground',
+    permissionMode: 'smart',
+    app: 'app',
+    ...extra,
+  });
+}
+
+test('a hard-denied program is refused before it is ever started', async () => {
+  const { h, dispatched } = launchHarness({
+    probe: {
+      running: false,
+      launch_target: 'c:/windows/system32/cmd.exe',
+      identity: launchIdentity('cmd', 'c:/windows/system32', 'Microsoft Windows'),
+    },
+  });
+  await assert.rejects(launch(h, { app: 'cmd' }), /blocked for sensitive app "cmd"/);
+  assert.equal(dispatched.some(({ cmd }) => cmd === 'launch_app'), false, 'nothing was launched');
+});
+
+test('an app that needs approval asks once, then launches exactly what was approved', async () => {
+  let asked = 0;
+  const probeIdentity = launchIdentity('qq', 'd:/qqnt', 'Tencent Technology (Shenzhen) Company Limited');
+  const dispatched = [];
+  const h = harness({
+    platform: 'win32',
+    requestAppApproval: async (request) => {
+      asked += 1;
+      assert.equal(request.target.app_name, 'qq');
+      return true;
+    },
+    nativeDispatch: async (cmd, args) => {
+      dispatched.push({ cmd, args });
+      if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+      if (cmd === 'resolve_launch_target') {
+        return { running: false, launch_target: 'd:/qqnt/qq.lnk', identity: probeIdentity };
+      }
+      if (cmd === 'launch_app') {
+        return {
+          running: false,
+          window: { ...probeIdentity, process_id: 4242, window_id: 'hwnd:0x4242', title: 'QQ' },
+        };
+      }
+      return { ok: true };
+    },
+  });
+  const result = await launch(h, { app: 'QQ' });
+  assert.equal(asked, 1);
+  const call = dispatched.find(({ cmd }) => cmd === 'launch_app');
+  assert.equal(call.args.expectedLaunchTarget, 'd:/qqnt/qq.lnk', 'the classified target is pinned');
+  assert.equal(result.status, 'launched');
+  assert.equal(result.launched, true);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].window_ref.startsWith('wr-'), true);
+});
+
+test('declining the dialog launches nothing', async () => {
+  const { h, dispatched } = launchHarness({
+    approve: false,
+    probe: {
+      running: false,
+      launch_target: 'd:/qqnt/qq.lnk',
+      identity: launchIdentity('qq', 'd:/qqnt', 'Tencent Technology (Shenzhen) Company Limited'),
+    },
+  });
+  await assert.rejects(launch(h, { app: 'QQ' }), /approval was not granted/);
+  assert.equal(dispatched.some(({ cmd }) => cmd === 'launch_app'), false);
+});
+
+test('an app that is not installed comes back as target-not-found, not a crash', async () => {
+  const notFound = Object.assign(new Error("no installed application named 'nope'"), {
+    helper: { code: 'app-not-found', execution: 'not-executed', retryable: false },
+  });
+  const { h, dispatched } = launchHarness({ probe: notFound });
+  const result = await launch(h, { app: 'nope' });
+  assert.equal(result.status, 'target-error');
+  assert.equal(result.error.code, 'target-not-found');
+  assert.equal(dispatched.some(({ cmd }) => cmd === 'launch_app'), false);
+  // The reservation taken for the failed launch must not block the task.
+  const again = await launch(h, { app: 'nope', toolCallId: 'tool-launch-2' });
+  assert.equal(again.status, 'target-error');
+});
+
+test('a launch that hands off to a hard-denied process gets no window_ref', async () => {
+  const { h } = launchHarness({
+    probe: {
+      running: false,
+      launch_target: 'c:/tools/helper.exe',
+      identity: launchIdentity('helper', 'c:/tools', 'Some Vendor'),
+    },
+    launched: {
+      running: false,
+      window: {
+        ...launchIdentity('powershell', 'c:/windows/system32/windowspowershell/v1.0', 'Microsoft Windows'),
+        process_id: 77,
+        window_id: 'hwnd:0x77',
+      },
+    },
+  });
+  await assert.rejects(launch(h, { app: 'helper' }), /blocked for sensitive app "powershell"/);
+});
+
+test('a background task cannot launch applications', async () => {
+  const { h, dispatched } = launchHarness({ probe: { running: false } });
+  await assert.rejects(
+    launch(h, { app: 'notepad', interactionMode: 'background' }),
+    /Background tasks cannot launch applications/,
+  );
+  assert.equal(dispatched.length, 0);
+});

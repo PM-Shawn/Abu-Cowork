@@ -167,6 +167,7 @@ const enUS: TranslationDict = {
     personalLogin: 'Personal account sign-in',
     enterpriseLogin: 'Enterprise account sign-in',
     localWithoutLogin: 'You can keep using local models and your own API key without signing in',
+    signIn: 'Sign in',
     loginRegister: 'Sign in / Sign up',
     accountSettings: 'Account settings',
     waitingBrowser: 'Complete sign-in in your browser',

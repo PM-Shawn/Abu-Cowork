@@ -26,7 +26,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 use super::signature::executable_signature;
 use super::window::{
     activate_window_impl, app_name_from_path, canonical_app_query, frontmost_app_identity_impl,
-    identity, list_windows_impl, resolve_window, stable_app_id, AppIdentity, WindowRef,
+    identity, list_windows_impl, stable_app_id, AppIdentity, WindowRef,
 };
 
 const MAX_CATALOG_ENTRIES: usize = 10_000;
@@ -338,7 +338,17 @@ pub(crate) fn resolve_fallback_executable(query: &str) -> Option<AppCatalogEntry
 /// Resolves a `.lnk` shortcut's real target via `IShellLinkW` + `IPersistFile`
 /// COM. Returns `None` on any COM failure — the caller treats an
 /// unresolvable shortcut the same as one with no executable path.
-fn resolve_shortcut_target(lnk_path: &Path) -> Option<String> {
+/// What a shortcut would actually run. `arguments` matters as much as the
+/// path: a shortcut to a signed, allow-listed executable can still carry a
+/// command line of someone else's choosing, and nothing downstream classifies
+/// a command line — only the executable's identity. A shortcut carrying
+/// arguments is therefore not a launch candidate at all.
+struct ShortcutTarget {
+    path: String,
+    has_arguments: bool,
+}
+
+fn resolve_shortcut_target(lnk_path: &Path) -> Option<ShortcutTarget> {
     // Tolerate "already initialized": CoInitializeEx's S_FALSE is still `Ok`
     // in windows-rs, the same tolerance the UIA worker thread relies on. This
     // can run on a thread COM was never touched on yet, or one that already
@@ -352,12 +362,26 @@ fn resolve_shortcut_target(lnk_path: &Path) -> Option<String> {
     let mut buffer = vec![0u16; 32_768];
     let mut find_data = WIN32_FIND_DATAW::default();
     unsafe { shell_link.GetPath(&mut buffer, &mut find_data, SLGP_RAWPATH.0 as u32) }.ok()?;
+    let resolved = string_from_wide(&buffer);
+    if resolved.is_empty() {
+        return None;
+    }
+    let mut argument_buffer = vec![0u16; 4_096];
+    // A failure to read the arguments is treated as "there may be arguments":
+    // the safe answer when we cannot tell is to refuse the shortcut.
+    let has_arguments = match unsafe { shell_link.GetArguments(&mut argument_buffer) } {
+        Ok(()) => !string_from_wide(&argument_buffer).is_empty(),
+        Err(_) => true,
+    };
+    Some(ShortcutTarget { path: resolved, has_arguments })
+}
+
+fn string_from_wide(buffer: &[u16]) -> String {
     let end = buffer
         .iter()
         .position(|&value| value == 0)
         .unwrap_or(buffer.len());
-    let resolved = String::from_utf16_lossy(&buffer[..end]).trim().to_string();
-    (!resolved.is_empty()).then_some(resolved)
+    String::from_utf16_lossy(&buffer[..end]).trim().to_string()
 }
 
 /// The executable path actually behind a resolved launch target: itself for
@@ -372,9 +396,12 @@ fn executable_path_for_target(launch_target: &str) -> Option<String> {
         .map(str::to_ascii_lowercase);
     match extension.as_deref() {
         Some("exe") => Some(launch_target.to_string()),
-        Some("lnk") => resolve_shortcut_target(path).filter(|resolved| {
-            resolved.to_ascii_lowercase().ends_with(".exe") && Path::new(resolved).is_file()
-        }),
+        Some("lnk") => resolve_shortcut_target(path)
+            .filter(|shortcut| !shortcut.has_arguments)
+            .map(|shortcut| shortcut.path)
+            .filter(|resolved| {
+                resolved.to_ascii_lowercase().ends_with(".exe") && Path::new(resolved).is_file()
+            }),
         _ => None,
     }
 }
@@ -479,7 +506,16 @@ fn resolve_launch_candidate(query: &str) -> Result<LaunchTarget, HelperError> {
                 .join(", ");
             return Err(HelperError::not_executed("app-ambiguous", format!("application '{query}' is ambiguous: {choices}")));
         }
-        return Ok(LaunchTarget::Catalog(matches.remove(0)));
+        let entry = matches.remove(0);
+        let Some(executable_path) = executable_path_for_target(&entry.launch_target) else {
+            return Err(HelperError::not_executed("launch-identity-unavailable", format!(
+                "the Start Menu entry for '{query}' does not resolve to a plain executable"
+            )));
+        };
+        return Ok(LaunchTarget::Catalog(AppCatalogEntry {
+            launch_target: executable_path,
+            ..entry
+        }));
     }
 
     if let Some(entry) = resolve_fallback_executable(query) {
@@ -506,20 +542,35 @@ pub(crate) fn launch_target_changed(expected: &str, actual: &str) -> bool {
 /// or any visible window whose executable path matches the one resolved for
 /// the launch. A window not appearing within the budget is not an error —
 /// callers get `None` back, never a `HelperError`.
+/// Whether this window is the app that was just launched. Deliberately strict:
+/// the caller hands the result to a host that has authorized one specific
+/// application, so a near miss is worse than no window at all. `resolve_window`
+/// is not used here — it falls back to substring matching, where `notepad`
+/// answers with a running `notepad++`.
+fn is_launched_window(window: &WindowRef, canonical_name: &str, executable_path: Option<&str>) -> bool {
+    if let Some(target_path) = executable_path {
+        if window.executable_path.eq_ignore_ascii_case(target_path) {
+            return true;
+        }
+    }
+    // A packaged app runs as a different executable than the stub that started
+    // it, so the name is the only link left — but it has to match exactly.
+    let name = normalize(&window.app_name);
+    let stem = name.strip_suffix(".exe").unwrap_or(&name);
+    stem == canonical_name || name == canonical_name
+}
+
 fn wait_for_launched_window(canonical_name: &str, executable_path: Option<&str>) -> Option<WindowRef> {
     let deadline = Instant::now() + LAUNCH_WINDOW_POLL_TIMEOUT;
+    let canonical_name = normalize(canonical_name);
     loop {
-        if let Ok(window) = resolve_window(canonical_name) {
-            return Some(window);
-        }
-        if let Some(target_path) = executable_path {
-            if let Ok(windows) = list_windows_impl(None) {
-                if let Some(window) = windows
-                    .into_iter()
-                    .find(|window| window.executable_path.eq_ignore_ascii_case(target_path))
-                {
-                    return Some(window);
-                }
+        if let Ok(windows) = list_windows_impl(None) {
+            if let Some(window) = windows
+                .into_iter()
+                .filter(|window| !window.minimized)
+                .find(|window| is_launched_window(window, &canonical_name, executable_path))
+            {
+                return Some(window);
             }
         }
         if Instant::now() >= deadline {
@@ -607,9 +658,9 @@ pub fn resolve_launch_target_impl(query: String) -> Result<LaunchTargetResolutio
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_needles, fallback_exe_name, launch_target_changed, looks_like_path,
-        normalize, resolve_fallback_executable, resolve_launch_candidate, shortcut_name,
-        stable_path_id,
+        candidate_needles, fallback_exe_name, is_launched_window, launch_target_changed,
+        looks_like_path, normalize, resolve_fallback_executable, resolve_launch_candidate,
+        shortcut_name, stable_path_id, WindowRef,
     };
     use std::path::Path;
 
@@ -685,5 +736,50 @@ mod tests {
             r"C:\Windows\notepad.exe",
             r"C:\Windows\System32\notepad.exe"
         ));
+    }
+
+    /// A shortcut can point at a signed, allow-listed executable and still
+    /// carry a command line of someone else's choosing, and nothing downstream
+    /// classifies a command line. The launched window has to be the app that
+    /// was approved, not a neighbour whose name merely contains it.
+    #[test]
+    fn a_launched_window_matches_by_exact_name_or_path_never_by_substring() {
+        let target = WindowRef {
+            app_id: r"c:\program files\notepad\notepad.exe".to_string(),
+            app_name: "Notepad".to_string(),
+            window_id: "hwnd:0x1".to_string(),
+            process_id: 10,
+            title: String::new(),
+            bounds: [0, 0, 800, 600],
+            executable_path: r"C:\Program Files\Notepad\notepad.exe".to_string(),
+            minimized: false,
+            signature_status: "valid".to_string(),
+            signer_subject: None,
+            package_full_name: None,
+            absent_from_capture: false,
+        };
+        let neighbour = WindowRef {
+            app_id: r"c:\program files\notepad++\notepad++.exe".to_string(),
+            app_name: "notepad++".to_string(),
+            window_id: "hwnd:0x2".to_string(),
+            executable_path: r"C:\Program Files\Notepad++\notepad++.exe".to_string(),
+            ..target.clone()
+        };
+
+        assert!(is_launched_window(&target, "notepad", None), "exact name matches");
+        assert!(
+            !is_launched_window(&neighbour, "notepad", None),
+            "notepad++ must not answer for notepad",
+        );
+        // The packaged app that a stub hands off to has a different path, so
+        // the path match must not be the only way in.
+        assert!(
+            is_launched_window(&target, "notepad", Some(r"C:\PROGRAM FILES\NOTEPAD\NOTEPAD.EXE")),
+            "path match is case-insensitive",
+        );
+        assert!(
+            !is_launched_window(&neighbour, "something-else", Some(r"C:\other\app.exe")),
+            "neither name nor path matches",
+        );
     }
 }

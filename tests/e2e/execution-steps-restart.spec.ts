@@ -11,6 +11,14 @@
  * for that snapshot on the dispatching message (where the batch tool call
  * lives) instead of the loop's last message (where the snapshot lives).
  *
+ * A third gap (same day): the shell applies the batch step's addStep frame
+ * behind an awaited ledger write, while member progress arrives on its own
+ * channel; a member that finished first had its tool calls dropped, so the
+ * persisted batch step had no children and the restored member view read
+ * "0 tool calls · unverified". The member's web_search must be on disk and in
+ * the restored view. That race is timing-dependent here; the deterministic
+ * check lives in orchestrationTools.test.ts.
+ *
  * Deterministic: a loopback mock provider scripts the loop
  * (tool_search → run_agent_batch → final text) and the batch member
  * (web_search, which fails fast without a search key → text).
@@ -46,7 +54,8 @@ function toolCall(id: string, name: string, args: unknown): string[] {
     chunk({}, 'tool_calls'),
   ];
 }
-type LedgerRow = { id?: string; role?: string; content?: unknown; executionSteps?: Array<{ toolName?: string }> };
+type LedgerStep = { toolName?: string; childSteps?: Array<{ toolName?: string; batchTask?: { index?: number } }> };
+type LedgerRow = { id?: string; role?: string; content?: unknown; executionSteps?: LedgerStep[] };
 
 function chunk(delta: Record<string, unknown>, finish: string | null): string {
   return `data: ${JSON.stringify({ id: 'steps-restart', object: 'chat.completion.chunk', created: 0, model: 'mock', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
@@ -122,6 +131,12 @@ function persistedToolNames(rootDir: string): string[] | 'final message not on d
 }
 
 
+/** The member's child steps recorded under the persisted run_agent_batch step. */
+function persistedMemberSteps(rootDir: string): Array<[string | undefined, number | undefined]> {
+  const batchStep = lastFinalRevision(rootDir)?.executionSteps?.find((step) => step.toolName === 'run_agent_batch');
+  return (batchStep?.childSteps ?? []).map((child) => [child.toolName, child.batchTask?.index]);
+}
+
 /** The finished turn's work process is collapsed; expand it and return the member row. */
 async function openMemberRow(page: Page) {
   const row = page.getByRole('button', { name: new RegExp(`^打开 ${MEMBER_TASK}.*已成功`) });
@@ -159,6 +174,9 @@ test('a finished batch turn keeps its work-process steps and member process acro
     // for the final message must be a revision that carries the snapshot.
     await closeAbuElectron(launched.app);
     expect(persistedToolNames(dataRoot.rootDir)).toEqual(['tool_search', 'run_agent_batch']);
+    // The member's web_search is recorded under the batch step even when the
+    // member finished before the shell applied that step's addStep frame.
+    expect(persistedMemberSteps(dataRoot.rootDir)).toEqual([['web_search', 0]]);
 
     launched = await launchAbuElectron(dataRoot);
     page = await launched.app.firstWindow();
@@ -172,6 +190,10 @@ test('a finished batch turn keeps its work-process steps and member process acro
     // "only retained during this app run" notice.
     await (await openMemberRow(page)).click();
     await expect(page.getByText('已结束 · 过程记录')).toBeVisible();
+    await expect(page.getByTestId('subagent-persisted-steps')).toBeVisible();
+    await expect(page.getByTestId('subagent-persisted-steps').getByRole('button')).toHaveCount(1);
+    await expect(page.getByText('1 次工具调用')).toBeVisible();
+    await expect(page.getByTestId('dispatch-unverified')).toHaveCount(0);
     await page.screenshot({ path: test.info().outputPath('steps-restored.png') });
   } finally {
     await closeAbuElectron(launched.app);

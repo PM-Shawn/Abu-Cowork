@@ -52,6 +52,7 @@ import {
   getComposerDraftScopeForEnterpriseMode,
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
+import { useSettingsStore } from './settingsStore';
 import { useWorkProcessFoldStore } from './workProcessFoldStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
@@ -916,6 +917,18 @@ export const useChatStore = create<ChatStore>()(
         // project click) pass skipActivate and must neither inherit nor clear it.
         const consumePendingTeam = !options?.skipActivate;
         const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
+        // Pin the new-conversation default at creation (issue #545) so an empty
+        // conversation never drifts with later picks elsewhere. Enterprise mode
+        // skips this, mirroring agentLoop's first-run pin (gateway-scoped models).
+        // An uninitialized enterprise store also skips: enterprise builds start
+        // as 'personal' until async init() resolves, and background creators may
+        // run before that; agentLoop's first-run pin covers those conversations.
+        const ent = useEnterpriseStore.getState();
+        const isPersonal = ent.initialized && ent.mode.kind === 'personal';
+        const defaultModel = useSettingsStore.getState().activeModel;
+        const initialModel = isPersonal && defaultModel?.modelId
+          ? { providerId: defaultModel.providerId, modelId: defaultModel.modelId }
+          : undefined;
         const meta: ConversationMeta = {
           id,
           title: getDefaultConvTitle(),
@@ -928,6 +941,7 @@ export const useChatStore = create<ChatStore>()(
           ...(initialTeamId ? { teamId: initialTeamId } : {}),
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
+          ...(initialModel ? { model: initialModel } : {}),
         };
         set((state) => {
           const initialPermissionMode = state.pendingPermissionMode;

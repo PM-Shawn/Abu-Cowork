@@ -28,6 +28,9 @@ import { useBatchProgressStore } from './batchProgressStore';
 import { subagentTabId, usePreviewStore } from './previewStore';
 import { makeBatchKey } from '@/types';
 import { createMaxTurnsNoticeMessage, MAX_TURNS_NOTICE_ID_PREFIX } from '../core/agent/maxTurnsNotice';
+import { useSettingsStore } from './settingsStore';
+import { useEnterpriseStore } from './enterpriseStore';
+import type { EnterpriseBinding } from '@/core/enterprise/types';
 
 // Stable workspace store mock — Task #34 regression tests need to assert
 // that clearWorkspace is NOT called on start/switch flows, so the fn
@@ -75,6 +78,23 @@ vi.mock('../core/agent/sidecarRunPredicate', () => ({
 // (no test in this file compares timestamps for ordering/recency).
 const FIXED_TIMESTAMP = 1_700_000_000_000;
 
+// Minimal valid binding for the enterprise-mode createConversation case.
+const TEST_BINDING: EnterpriseBinding = {
+  serverUrl: 'https://example.test',
+  orgId: 'org',
+  orgName: 'Example',
+  userId: 'user',
+  userName: 'User',
+  userEmail: 'user@example.test',
+  deptId: null,
+  roleId: null,
+  accessToken: 'test-token',
+  boundAt: '2026-08-04T00:00:00.000Z',
+  llmEndpoint: null,
+  llmVirtualKey: null,
+  llmKeyExpiresAt: null,
+};
+
 describe('chatStore', () => {
   beforeEach(() => {
     usePreviewStore.getState().closeAllTabs();
@@ -105,6 +125,50 @@ describe('chatStore', () => {
 
   // ── createConversation ──
   describe('createConversation', () => {
+    const initialActiveModel = useSettingsStore.getState().activeModel;
+    afterEach(() => {
+      useSettingsStore.setState({ activeModel: initialActiveModel });
+    });
+
+    it('pins the current new-conversation default model at creation (personal mode)', () => {
+      useSettingsStore.setState({ activeModel: { providerId: 'p1', modelId: 'm1' } });
+      const id = useChatStore.getState().createConversation();
+      const state = useChatStore.getState();
+      expect(state.conversations[id].model).toEqual({ providerId: 'p1', modelId: 'm1' });
+      expect(state.conversationIndex[id].model).toEqual({ providerId: 'p1', modelId: 'm1' });
+    });
+
+    it('keeps the pin when the default changes afterwards', () => {
+      useSettingsStore.setState({ activeModel: { providerId: 'p1', modelId: 'm1' } });
+      const id = useChatStore.getState().createConversation(null, { skipActivate: true });
+      useSettingsStore.setState({ activeModel: { providerId: 'p2', modelId: 'm2' } });
+      expect(useChatStore.getState().conversations[id].model).toEqual({ providerId: 'p1', modelId: 'm1' });
+    });
+
+    it('does not pin before the enterprise store is initialized (startup race)', () => {
+      const prev = useEnterpriseStore.getState();
+      useEnterpriseStore.setState({ initialized: false, mode: { kind: 'personal' } });
+      try {
+        useSettingsStore.setState({ activeModel: { providerId: 'p1', modelId: 'm1' } });
+        const id = useChatStore.getState().createConversation();
+        expect(useChatStore.getState().conversations[id].model).toBeUndefined();
+      } finally {
+        useEnterpriseStore.setState({ initialized: prev.initialized, mode: prev.mode });
+      }
+    });
+
+    it('does not pin in enterprise mode (gateway-scoped models)', () => {
+      const prevMode = useEnterpriseStore.getState().mode;
+      useEnterpriseStore.setState({ mode: { kind: 'offline', binding: TEST_BINDING, lastConfig: null, reason: 'test' } });
+      try {
+        useSettingsStore.setState({ activeModel: { providerId: 'p1', modelId: 'm1' } });
+        const id = useChatStore.getState().createConversation();
+        expect(useChatStore.getState().conversations[id].model).toBeUndefined();
+      } finally {
+        useEnterpriseStore.setState({ mode: prevMode });
+      }
+    });
+
     it('creates a conversation and sets it active', () => {
       const id = useChatStore.getState().createConversation();
       const state = useChatStore.getState();

@@ -511,7 +511,7 @@ export interface Conversation {
   activeSkills?: string[];  // Skill names active in this conversation
   activeSkillArgs?: Record<string, string>;  // Per-skill invocation arguments
   workspacePath?: string | null;  // Workspace bound to this conversation
-  model?: { providerId: string; modelId: string };  // Model pinned to this conversation (undefined = inherit global activeModel; pinned on first run)
+  model?: { providerId: string; modelId: string };  // Model pinned to this conversation (set at creation in personal mode; undefined = legacy/enterprise → inherit global activeModel, pinned on first run)
   permissionMode?: import('../core/permissions/permissionMode').PermissionMode;  // Per-conversation override (undefined = inherit global permissionMode)
   enabledMCPServers?: string[];  // Per-session MCP server filter (undefined = all enabled)
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task

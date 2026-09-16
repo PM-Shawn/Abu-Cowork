@@ -2265,7 +2265,7 @@ export interface TranslationDict {
     setupWithAbu: string;
     aiAssistedMCPSetup: string;
     // Source labels
-    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.43: built-ins are the OSS market shelf. */
+    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.50: built-ins are the OSS market shelf. */
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;

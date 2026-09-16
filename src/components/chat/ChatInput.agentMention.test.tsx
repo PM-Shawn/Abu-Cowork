@@ -128,7 +128,7 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(screen.getByRole('option', { name: /planner/ })).toBeTruthy();
   });
 
-  // Experts carry an AgentAvatar since v0.43, so the @ rows and the chip show it
+  // Experts carry an AgentAvatar since v0.50, so the @ rows and the chip show it
   // the way team rows already do — the literal `@` mark is gone from both.
   it('renders every expert candidate row with its avatar instead of an @ mark', () => {
     useDiscoveryStore.setState({

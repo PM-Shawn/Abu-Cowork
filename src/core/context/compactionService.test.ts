@@ -121,6 +121,12 @@ beforeEach(() => {
   mockAddMessage.mockReset();
   mockClearContextCache.mockReset();
   mockSetIsCompressing.mockReset();
+  // The model-scope tests read `mock.calls.at(-1)` on these selectors; clear
+  // them so a call recorded by an earlier test can never satisfy a later one.
+  // mockClear (not mockReset) keeps the return values pinned in the vi.mock.
+  vi.mocked(settingsStore.getEffectiveModel).mockClear();
+  vi.mocked(settingsStore.getActiveProvider).mockClear();
+  vi.mocked(settingsStore.getActiveApiKey).mockClear();
   for (const key of Object.keys(mockConversations)) {
     delete mockConversations[key];
   }
@@ -206,7 +212,9 @@ describe('compactConversationManually', () => {
         model: { providerId: 'p', modelId: 'conv-model' },
       };
       mockSummarize.mockResolvedValue('summary');
-      await compactConversationManually('conv-m');
+      const result = await compactConversationManually('conv-m');
+      expect(result.compacted).toBe(true);
+      expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
       const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
       expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'conv-model' });
       // Provider identity (credentials + adapter) must follow the same model.
@@ -220,7 +228,9 @@ describe('compactConversationManually', () => {
       mockConversations[CONV_ID] = { messages: buildRounds(6) };
       mockConversationIndex[CONV_ID] = { model: { providerId: 'p', modelId: 'index-model' } };
       mockSummarize.mockResolvedValue('summary');
-      await compactConversationManually(CONV_ID);
+      const result = await compactConversationManually(CONV_ID);
+      expect(result.compacted).toBe(true);
+      expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
       const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
       expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'index-model' });
     });
@@ -228,7 +238,9 @@ describe('compactConversationManually', () => {
     it('falls back to the global default when the conversation has no pinned model', async () => {
       mockConversations[CONV_ID] = { messages: buildRounds(6) };
       mockSummarize.mockResolvedValue('summary');
-      await compactConversationManually(CONV_ID);
+      const result = await compactConversationManually(CONV_ID);
+      expect(result.compacted).toBe(true);
+      expect(settingsStore.getEffectiveModel).toHaveBeenCalledTimes(1);
       const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
       expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'global-model' });
     });

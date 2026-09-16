@@ -571,6 +571,9 @@ function createComputerUseGate(options) {
   // rephrased retry cannot re-open the same dialog (L2 §2.3 step 6).
   const taskDenials = new Map();
   const taskLeases = new Map();
+  // Autonomous mode's task consent, held for the conversation rather than for
+  // the one agent loop that asked for it. Keyed by conversation id.
+  const conversationTaskConsents = new Map();
   const turnTargetSnapshots = new Map();
   const windowRegistry = createComputerUseWindowRegistry({
     getHelperGeneration: getNativeHelperGeneration,
@@ -639,6 +642,9 @@ function createComputerUseGate(options) {
         revoked = true;
       }
     }
+    for (const [key, consent] of conversationTaskConsents) {
+      if (consent.sender === sender) conversationTaskConsents.delete(key);
+    }
     for (const [key, snapshot] of turnTargetSnapshots) {
       if (snapshot.sender === sender) {
         turnTargetSnapshots.delete(key);
@@ -666,6 +672,9 @@ function createComputerUseGate(options) {
     }
     for (const [key, denial] of taskDenials) {
       if (denial.expiresAt <= current) taskDenials.delete(key);
+    }
+    for (const [key, consent] of conversationTaskConsents) {
+      if (consent.expiresAt <= current) conversationTaskConsents.delete(key);
     }
     for (const [key, lease] of taskLeases) {
       if (lease.expiresAt <= current) {
@@ -1965,6 +1974,19 @@ function createComputerUseGate(options) {
     return { authorization, existingMode: null };
   }
 
+  /** Has this renderer already answered the task dialog in this conversation? */
+  function conversationConsentHeld(sender, conversationId) {
+    const consent = conversationTaskConsents.get(conversationId);
+    if (!consent) return false;
+    // Bound to the renderer that answered and to the same TTL as a task
+    // grant, so it dies with the window and does not outlive a sitting.
+    if (consent.sender !== sender || consent.expiresAt <= now()) {
+      conversationTaskConsents.delete(conversationId);
+      return false;
+    }
+    return true;
+  }
+
   async function authorizeTask(sender, args, target, classification, reservation) {
     const { authorization, existingMode } = reservation;
     assertTaskAuthorizationLive(authorization);
@@ -1975,7 +1997,26 @@ function createComputerUseGate(options) {
       ? args.permissionMode
       : 'standard';
     try {
-      if (mode !== 'standard') {
+      // Smart asks once per task; autonomous asks once per conversation.
+      //
+      // This dialog is the price of admission for a mode that stops asking
+      // per app — standard mode never shows it and confirms every ordinary
+      // app instead. But a task is one agent loop, so it reappeared on every
+      // turn: the more autonomous the mode, the more often the user was
+      // interrupted, which is backwards, and neither competitor works that
+      // way (Claude's request_access is a per-session allowlist; TRAE has no
+      // per-turn consent at all). It had been carried forward untouched from
+      // before the permission modes existed rather than weighed against them.
+      //
+      // It does not go away entirely, because `permissionMode` arrives from
+      // the renderer. This dialog is the one checkpoint a renderer claiming a
+      // relaxed mode cannot talk its way past, and in autonomous mode —
+      // where ordinary apps are already `allow` — it would be the only one.
+      // Holding the answer for the conversation keeps that checkpoint while
+      // costing the user one dialog instead of one per turn.
+      const heldForConversation = mode === 'autonomous'
+        && conversationConsentHeld(sender, args.conversationId);
+      if (mode !== 'standard' && !heldForConversation) {
         const approved = await withApprovalPaused(authorization, 'task', () => requestTaskApproval({
           sender,
           target,
@@ -1986,6 +2027,12 @@ function createComputerUseGate(options) {
         }));
         if (!approved) {
           throw new Error('Computer Use was not approved for this task');
+        }
+        if (mode === 'autonomous') {
+          conversationTaskConsents.set(args.conversationId, {
+            sender,
+            expiresAt: now() + TASK_GRANT_TTL_MS,
+          });
         }
       }
       assertTaskAuthorizationLive(authorization);
@@ -3011,6 +3058,7 @@ function createComputerUseGate(options) {
     taskGrants.clear();
     taskDenials.clear();
     taskLeases.clear();
+    conversationTaskConsents.clear();
     taskBudgets.clear();
     turnTargetSnapshots.clear();
     windowRegistry.clear();

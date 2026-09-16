@@ -1861,7 +1861,10 @@ test('a late task approval cannot revive a stopped task with reused IDs', async 
     },
   });
 
-  const staleBegin = begin(h, { permissionMode: 'autonomous' });
+  // Smart mode, because this test needs a task dialog on every loop to hold
+  // one pending — autonomous answers once per conversation, so the second
+  // begin below would not raise a second dialog to count.
+  const staleBegin = begin(h, { permissionMode: 'smart' });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(approvalCount, 1);
 
@@ -1872,7 +1875,7 @@ test('a late task approval cannot revive a stopped task with reused IDs', async 
 
   const freshSession = await begin(h, {
     toolCallId: 'tool-2',
-    permissionMode: 'autonomous',
+    permissionMode: 'smart',
   });
   assert.equal(approvalCount, 2);
 
@@ -4439,4 +4442,91 @@ test('a background task cannot launch applications', async () => {
     /Background tasks cannot launch applications/,
   );
   assert.equal(dispatched.length, 0);
+});
+
+/// One agent loop, start to finish. The Gate refuses a second task while one
+/// is still open, so a test that wants a genuinely new task — a new turn —
+/// has to end the previous one, exactly as the agent loop does.
+async function turn(h, loopId, extra = {}) {
+  const session = await begin(h, { loopId, toolCallId: `tool-${loopId}`, ...extra });
+  await h.gate.dispatch(h.record, h.sender, 'computer_use_end_task', {
+    conversationId: extra.conversationId ?? 'conversation-1',
+    loopId,
+  });
+  return session;
+}
+
+// A task is one agent loop, so the task dialog reappeared on every turn — the
+// more autonomous the mode, the more often the user was interrupted. It is
+// held for the conversation instead of dropped, because `permissionMode` comes
+// from the renderer and in autonomous mode this is the only checkpoint a
+// renderer claiming a relaxed mode cannot talk its way past.
+test('autonomous mode asks once per conversation, not once per turn', async () => {
+  const ordinary = harness();
+  await turn(ordinary, 'loop-1', { permissionMode: 'autonomous' });
+  assert.equal(ordinary.taskApprovalRequests.length, 1, 'asked on the first turn');
+  await turn(ordinary, 'loop-2', { permissionMode: 'autonomous' });
+  await turn(ordinary, 'loop-3', { permissionMode: 'autonomous' });
+  assert.equal(ordinary.taskApprovalRequests.length, 1, 'and not again in this conversation');
+  assert.equal(ordinary.approvalRequests.length, 0, 'an ordinary app is allowed by the mode');
+
+  // A different conversation is a different sitting, and is asked again.
+  await turn(ordinary, 'loop-4', { conversationId: 'conversation-2', permissionMode: 'autonomous' });
+  assert.equal(ordinary.taskApprovalRequests.length, 2);
+
+  // Smart mode keeps asking per task. That is now the only thing separating
+  // the two modes, whose modePolicy entries are identical.
+  const smart = harness();
+  await turn(smart, 'loop-1', { permissionMode: 'smart' });
+  await turn(smart, 'loop-2', { permissionMode: 'smart' });
+  assert.equal(smart.taskApprovalRequests.length, 2);
+});
+
+// What holding the answer must NOT carry with it.
+test('a held conversation consent does not stand in for any other approval', async () => {
+  // Messaging apps are approval-required, so they keep their own dialog on
+  // every task even after the task dialog has been answered once.
+  const messaging = harness();
+  await turn(messaging, 'loop-1', { targetApp: 'Slack', permissionMode: 'autonomous' });
+  await turn(messaging, 'loop-2', { targetApp: 'Slack', permissionMode: 'autonomous' });
+  assert.equal(messaging.taskApprovalRequests.length, 1, 'the task dialog is held');
+  assert.equal(messaging.approvalRequests.length, 2, 'the app dialog is not');
+
+  // Hard-denied apps are refused before any of this runs, and are never put
+  // to the user at all.
+  const forbidden = harness();
+  forbidden.setIdentity({ app_name: 'Terminal', bundle_id: 'com.apple.Terminal', process_id: 900 });
+  await assert.rejects(begin(forbidden, { permissionMode: 'autonomous' }));
+  assert.equal(forbidden.approvalRequests.length, 0);
+
+  // Refusing the dialog holds nothing, so the next turn asks again rather
+  // than inheriting a "yes" that was never given.
+  // Counted here rather than through `refused.taskApprovalRequests`: that
+  // array is filled by the harness's own default, which this override
+  // replaces, so it would stay empty however many times the dialog ran.
+  let asked = 0;
+  const refused = harness({
+    requestTaskApproval: async () => {
+      asked += 1;
+      return false;
+    },
+  });
+  await assert.rejects(
+    turn(refused, 'loop-1', { permissionMode: 'autonomous' }),
+    /not approved for this task/,
+  );
+  await assert.rejects(
+    turn(refused, 'loop-2', { permissionMode: 'autonomous' }),
+    /not approved for this task/,
+  );
+  assert.equal(asked, 2, 'a refusal holds nothing for the next turn');
+
+  // The consent belongs to the renderer that gave it, so it dies with the
+  // window rather than surviving into whatever opens next.
+  const reloaded = harness();
+  await turn(reloaded, 'loop-1', { permissionMode: 'autonomous' });
+  assert.equal(reloaded.taskApprovalRequests.length, 1);
+  reloaded.gate.revokeSender(reloaded.sender);
+  await turn(reloaded, 'loop-2', { permissionMode: 'autonomous' });
+  assert.equal(reloaded.taskApprovalRequests.length, 2, 'asked again after the window went away');
 });

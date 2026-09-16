@@ -443,6 +443,7 @@ export function registerRunSession(runId: string, session: RunSession): void {
   registerRunResourceSettlement(runId, session.resourceSettlement);
   sessions.set(runId, session);
   installPushEmitters();
+  pushSettingsNow();
 }
 
 /** The live session for a conversationId, or undefined — P1-3B-3B's concurrency guard (`runAgentLoopDispatched`) and the `state.execPatch` emitter both need this conversationId→runId lookup. Linear scan — the sessions map is bounded by concurrently-running conversations (small in practice, same discipline as `pushConvPatchesForActiveSessions` below). */
@@ -1985,6 +1986,23 @@ function scheduleSettingsPush(): void {
       revision: settingsPushRevision++,
     });
   }, SETTINGS_DEBOUNCE_MS);
+}
+
+/**
+ * Push the current snapshot right now, cancelling any pending debounced push.
+ * Called on every run registration, before agent.start goes out on the same
+ * ordered mcp_write channel, so the sidecar mirror never starts a run on
+ * settings from a previous run.
+ */
+function pushSettingsNow(): void {
+  if (settingsDebounceTimer) {
+    clearTimeout(settingsDebounceTimer);
+    settingsDebounceTimer = undefined;
+  }
+  notifySidecar('state.settings', {
+    settings: getSettingsReader().getSnapshot(),
+    revision: settingsPushRevision++,
+  });
 }
 
 /** The 4 scalar fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */

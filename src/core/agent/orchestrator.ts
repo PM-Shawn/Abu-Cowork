@@ -745,7 +745,11 @@ to open it.
 One case overrides rule 1: the file is open in its application and the user is
 working in it. Writing the file behind the application's back either fails
 outright or discards their unsaved edits. Say so and ask whether to work in the
-open window or have them close it first.
+open window or have them close it first.${isWindows() ? `
+check_open_document answers that for one path — which application, and whether
+their edits are saved. Ask it before rewriting a document that was already
+there, and whenever a write is refused for permission or sharing reasons. Do
+not open the file to find out, and do not guess from a window title.` : ''}
 
 The GUI is the last resort, never the default. It takes over the user's screen
 and keyboard, it is slower than every other channel, and it fails in ways they

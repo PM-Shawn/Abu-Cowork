@@ -304,7 +304,12 @@ function fileBusyMessage(error: unknown, path: string): string | null {
   const code = (error as { code?: unknown } | null)?.code;
   const message = error instanceof Error ? error.message : String(error ?? '');
   if (code !== 'EBUSY' && !/^EBUSY\b/.test(message)) return null;
-  return format(getI18n().toolResult.file.errFileHeldByAnotherApp, { path });
+  const t = getI18n().toolResult.file;
+  // Naming the tool here, rather than only in a prompt section, is what
+  // reaches a user who has Computer Use switched off: the channel-gate
+  // section ships with it, this message ships with the failure.
+  return format(t.errFileHeldByAnotherApp, { path })
+    + (isWindows() ? t.errFileHeldCheckHint : '');
 }
 
 export const editFileTool: ToolDefinition = {
@@ -610,6 +615,89 @@ export const findFilesTool: ToolDefinition = {
     } catch (err) {
       return `Error finding files: ${err instanceof Error ? err.message : String(err)}`;
     }
+  },
+  isConcurrencySafe: true,
+};
+
+/** What the Host reports about one document a running Office/WPS has open. */
+interface OpenDocumentMatch {
+  app: string;
+  name: string;
+  path: string;
+  unsaved: boolean;
+  samePath: boolean;
+}
+
+interface OpenDocumentReport {
+  supported: boolean;
+  complete: boolean;
+  documents: OpenDocumentMatch[];
+}
+
+/**
+ * Is the user sitting in this document right now?
+ *
+ * The write itself already fails when they are — Office holds a share-mode
+ * lock — but finding out that way is too late to be useful: the failure lands
+ * mid-task, says nothing about which application or whether their edits are
+ * saved, and the only honest thing left to say is "something went wrong".
+ *
+ * Asking first turns that into a question the user can answer. The unsaved
+ * flag is the part no other channel can supply, and it is the part that
+ * decides the answer: "close it and I'll edit the file" is fine when their
+ * work is on disk and destroys it when it is not.
+ */
+export const checkOpenDocumentTool: ToolDefinition = {
+  name: TOOL_NAMES.CHECK_OPEN_DOCUMENT,
+  description: 'Windows only. Ask whether one file is currently open in Excel, Word, PowerPoint or WPS, and whether it has unsaved edits. Use it before rewriting a document the user may be working in, and whenever writing one fails with a permission or sharing error. It reads nothing else about the file and never opens an application.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'Absolute path of the document to ask about' },
+    },
+    required: ['path'],
+  },
+  execute: async (input) => {
+    const path = input.path as string;
+    const t = getI18n().toolResult.file;
+    let report: OpenDocumentReport;
+    try {
+      report = await invoke<OpenDocumentReport>('office_open_documents', { path });
+    } catch (err) {
+      // An unreachable helper is "could not tell", not "not open" — the two
+      // lead the user to opposite places.
+      return format(t.docCheckUnknown, { path }) + `\n(${err instanceof Error ? err.message : String(err)})`;
+    }
+
+    if (!report.supported) return t.docCheckUnsupported;
+
+    // The Host reports a stable token (`wps-spreadsheets`); what the user
+    // reads is their own name for it. An unknown token falls through as
+    // itself rather than becoming a blank in the sentence.
+    const displayName = (token: string): string => t.docCheckApps[token] ?? token;
+
+    const open = report.documents.find((document) => document.samePath);
+    if (open) {
+      return format(open.unsaved ? t.docCheckOpenUnsaved : t.docCheckOpenSaved, {
+        name: open.name,
+        app: displayName(open.app),
+      });
+    }
+
+    // Nothing at this path. A same-named document open from somewhere else is
+    // worth one line: without it the model has no way to explain why a window
+    // titled with this file name is on screen and the write still succeeded.
+    const elsewhere = report.documents[0];
+    if (elsewhere) {
+      const namesake = format(t.docCheckSameNameElsewhere, {
+        name: elsewhere.name,
+        app: displayName(elsewhere.app),
+        otherPath: elsewhere.path,
+      });
+      return report.complete ? namesake : `${format(t.docCheckUnknown, { path })}\n${namesake}`;
+    }
+
+    return report.complete ? format(t.docCheckNotOpen, { path }) : format(t.docCheckUnknown, { path });
   },
   isConcurrencySafe: true,
 };

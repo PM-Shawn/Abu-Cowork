@@ -4581,6 +4581,15 @@ export interface TranslationDict {
       imageSkipNoVision: string;
       /** File held open by another program, so the write could not land. {path} */
       errFileHeldByAnotherApp: string;
+      errFileHeldCheckHint: string;
+      /** Display names for the application tokens the Host reports. */
+      docCheckApps: Record<string, string>;
+      docCheckUnsupported: string;
+      docCheckUnknown: string;
+      docCheckNotOpen: string;
+      docCheckOpenUnsaved: string;
+      docCheckOpenSaved: string;
+      docCheckSameNameElsewhere: string;
       /** File locked by another agent. {path} */
       errFileLocked: string;
       /** delete_file succeeded — moved to OS Trash. {path} */

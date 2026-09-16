@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { writeTextFile, readTextFile, exists } from '@tauri-apps/plugin-fs';
-import { readFileTool, writeFileTool, deleteFileTool, editFileTool, searchFilesTool, findFilesTool } from './fileTools';
+import { readFileTool, writeFileTool, deleteFileTool, editFileTool, searchFilesTool, findFilesTool, checkOpenDocumentTool } from './fileTools';
 import { registerBuiltinTools } from '../builtins';
 import { toolRegistry } from '../registry';
+import { platform } from '@tauri-apps/plugin-os';
+import { initPlatform } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
@@ -684,5 +686,116 @@ describe('editFileTool — whitespace-tolerant fallback', () => {
 
     expect(String(result)).toContain('Error: old_content not found');
     expect(vi.mocked(writeTextFile)).not.toHaveBeenCalled();
+  });
+});
+
+// The routing rule this serves: a file open in its application must not be
+// written behind that application's back. The check is what makes the rule
+// enforceable — before it, the assistant found out from a PermissionError
+// halfway through, with no idea which app or whether work would be lost.
+describe('check_open_document', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  async function check(report: unknown) {
+    vi.mocked(invoke).mockResolvedValueOnce(report);
+    return (await checkOpenDocumentTool.execute({ path: 'F:\\work\\book.xlsx' }, undefined)) as string;
+  }
+
+  it('says it is safe to write when nothing has the file open', async () => {
+    const result = await check({ supported: true, complete: true, documents: [] });
+    expect(result).toMatch(/没有开在|is not open/);
+  });
+
+  // The distinction the COM leg exists for. Both cases block the write, but
+  // only one of them destroys work, and the user has to be told which.
+  it('separates unsaved edits from a merely locked file', async () => {
+    const saved = await check({
+      supported: true,
+      complete: true,
+      documents: [{ app: 'wps-spreadsheets', name: 'book.xlsx', path: 'F:\\work\\book.xlsx', unsaved: false, samePath: true }],
+    });
+    const unsaved = await check({
+      supported: true,
+      complete: true,
+      documents: [{ app: 'wps-spreadsheets', name: 'book.xlsx', path: 'F:\\work\\book.xlsx', unsaved: true, samePath: true }],
+    });
+    expect(unsaved).not.toEqual(saved);
+    expect(unsaved).toMatch(/没有保存|not saved/);
+    expect(saved).toMatch(/WPS 表格|WPS Spreadsheets/);
+  });
+
+  it('does not report a same-named file from elsewhere as this file being open', async () => {
+    const result = await check({
+      supported: true,
+      complete: true,
+      documents: [{ app: 'excel', name: 'book.xlsx', path: 'D:\\archive\\book.xlsx', unsaved: true, samePath: false }],
+    });
+    expect(result).toMatch(/D:\\archive/);
+    expect(result).not.toMatch(/没有保存|not saved/);
+  });
+
+  // "Could not tell" must never be flattened into "nothing is open" — that
+  // turns a question for the user into a silent overwrite.
+  it('treats an unanswerable check as possibly open', async () => {
+    const result = await check({ supported: true, complete: false, documents: [] });
+    expect(result).toMatch(/无法确定|Could not tell/);
+  });
+
+  it('treats an unreachable host as possibly open rather than as not open', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('helper is down'));
+    const result = (await checkOpenDocumentTool.execute({ path: 'F:\\work\\book.xlsx' }, undefined)) as string;
+    expect(result).toMatch(/无法确定|Could not tell/);
+    expect(result).not.toMatch(/没有开在|is not open/);
+  });
+
+  it('answers instead of failing where there is no attach surface', async () => {
+    const result = await check({ supported: false, complete: false, documents: [] });
+    expect(result).toMatch(/Windows/);
+  });
+
+  it('is registered, so a document skill can reach it', () => {
+    registerBuiltinTools();
+    expect(toolRegistry.get(TOOL_NAMES.CHECK_OPEN_DOCUMENT)).toBeDefined();
+  });
+});
+
+/// The EBUSY message is the delivery path that reaches a user who has Computer
+/// Use switched off: the channel-gate prompt section ships with that setting,
+/// this string ships with the failure. Left untested, the hint would be a
+/// dead branch — `isWindows()` is false by default in this suite, so every
+/// other test in this file exercises the macOS side of it.
+describe('the locked-file message points at the check, on Windows', () => {
+  afterEach(async () => {
+    // `cached` starts as null and has no public reset. Landing on macOS keeps
+    // isWindows() false, which is what every other test in this file assumes.
+    vi.mocked(platform).mockResolvedValue('macos');
+    await initPlatform();
+  });
+
+  it('names check_open_document so the model asks who holds the file', async () => {
+    vi.mocked(platform).mockResolvedValue('windows');
+    await initPlatform();
+
+    vi.mocked(writeTextFile).mockRejectedValueOnce(
+      Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }),
+    );
+    const result = String(await writeFileTool.execute({ path: 'C:/table.csv', content: 'x' }));
+
+    expect(result).toMatch(/check_open_document/);
+    expect(result).toMatch(/open and locked by another program/);
+  });
+
+  it('leaves the message alone where the check does not exist', async () => {
+    vi.mocked(platform).mockResolvedValue('macos');
+    await initPlatform();
+
+    vi.mocked(writeTextFile).mockRejectedValueOnce(
+      Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }),
+    );
+    const result = String(await writeFileTool.execute({ path: '/tmp/table.csv', content: 'x' }));
+
+    expect(result).not.toMatch(/check_open_document/);
   });
 });

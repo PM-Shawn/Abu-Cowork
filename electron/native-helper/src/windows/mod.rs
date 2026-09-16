@@ -8,6 +8,7 @@ mod clipboard;
 mod dpi;
 mod input;
 mod interaction;
+mod office;
 mod screenshot;
 mod session;
 mod signature;
@@ -20,6 +21,7 @@ pub use uia::{
 };
 
 pub use app_catalog::{launch_app_impl, list_apps_impl, resolve_launch_target_impl};
+pub use office::office_documents_impl;
 pub use dpi::{dpi_awareness, initialize_dpi_awareness};
 pub use session::boundaries as session_boundaries;
 pub use input::{

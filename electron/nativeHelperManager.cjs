@@ -83,6 +83,7 @@ const HELPER_CMDS = new Set([
   'activate_window',
   'launch_app',
   'resolve_launch_target',
+  'office_documents',
 ]);
 
 // Built (release) helper binary.

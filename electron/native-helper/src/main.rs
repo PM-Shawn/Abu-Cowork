@@ -119,6 +119,7 @@ fn supported_commands() -> Vec<&'static str> {
         "list_apps",
         "launch_app",
         "resolve_launch_target",
+        "office_documents",
         "list_windows",
         "get_window",
         "get_window_graph",
@@ -592,6 +593,22 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
             #[cfg(not(target_os = "windows"))]
             {
                 Err(HelperError::not_executed("unsupported-platform", "Application launch is Windows-only"))
+            }
+        }
+
+        "office_documents" => {
+            #[cfg(target_os = "windows")]
+            {
+                let report = windows_backend::office_documents_impl()?;
+                serde_json::to_value(report)
+                    .map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                Err(HelperError::not_executed(
+                    "unsupported-platform",
+                    "Office document inspection is Windows-only",
+                ))
             }
         }
 

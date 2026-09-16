@@ -2893,6 +2893,12 @@ export interface TranslationDict {
       reload: string;
       openExternal: string;
       addressPlaceholder: string;
+      takeControl: string;
+      handBack: string;
+      yielding: string;
+      humanControl: string;
+      controlFailed: string;
+      popupBlocked: string;
       startPrompt: string;
       framingHint: string;
       dismissHint: string;

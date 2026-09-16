@@ -103,6 +103,38 @@ describe('U5 execution-time controls through executeAnyTool', () => {
     __resetBrowserGrantsForTests();
   });
 
+  it.each(['execute_js', 'snapshot', 'navigate', 'upload_file'])('does not promote %s approval into a popup lease', async (tool) => {
+    const decision = await checkToolApproval(`abu-browser__${tool}`, {
+      tabId: OWNED_TAB_ID, code: 'true', url: ALLOWED_URL, popupOrigin: ALLOWED_SITE,
+    }, attendedOwner);
+    expect(decision.browserExecution?.popupOrigin).toBeUndefined();
+  });
+
+  it('filters blocked website metadata from the built-in list tool', async () => {
+    const config = createBrowserPermissionConfig();
+    config.sites[BLOCKED_SITE] = { ...emptyBrowserSiteRule(), blocked: true };
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+    serveTabs(ALLOWED_URL, JSON.stringify({ windows: [{ tabs: [
+      { tabId: 1, url: ALLOWED_URL, title: 'public report' },
+      { tabId: 2, url: BLOCKED_SITE, title: 'private report' },
+    ] }] }));
+    const result = await executeAnyTool('abu-browser__list_tabs', {}, attendedOwner);
+    expect(result).toContain('public report');
+    expect(result).not.toContain('private report');
+    expect(result).not.toContain(BLOCKED_SITE);
+  });
+
+  it('checks the destination of create_tab instead of the existing allowed tab', async () => {
+    const config = createBrowserPermissionConfig();
+    config.sites[BLOCKED_SITE] = { ...emptyBrowserSiteRule(), blocked: true };
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+    const decision = await checkToolApproval('abu-browser__create_tab', {
+      url: BLOCKED_SITE,
+    }, attendedOwner);
+    expect(decision.decision).toBe('deny');
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
     __resetBrowserGrantsForTests();
@@ -117,6 +149,7 @@ describe('U5 execution-time controls through executeAnyTool', () => {
 
       const meta = metaOf('click');
       expect(meta?.['abu/expectedOrigin']).toBe(ALLOWED_SITE);
+      expect(meta?.['abu/popupOrigin']).toBe(ALLOWED_SITE);
       expect(meta?.['abu/unattended']).toBe(true);
     });
 

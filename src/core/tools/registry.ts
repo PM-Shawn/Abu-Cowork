@@ -448,6 +448,8 @@ export interface BrowserExecutionPin {
    * refusal at the host, since the gate never lets one of those through.
    */
   expectedOrigin?: string;
+  /** One native popup during this approved top-level built-in browse action. */
+  popupOrigin?: string;
   /**
    * `batch` only: the origin the gate approved for each embedded region the
    * batch's steps target, keyed by frame handle. The run re-checks each
@@ -607,12 +609,12 @@ async function resolveBrowserActionTarget(
   if (parsed === null) return { origin: null, url: null, authState: null };
   const { serverName, toolName } = parsed;
 
-  if (toolName === 'navigate') {
+  if (toolName === 'navigate' || (serverName === 'abu-browser' && toolName === 'create_tab')) {
     // Only `goto` actually navigates to `input.url`. For back/forward/reload
     // the executor ignores `url` entirely, so trusting it here would let a
     // decoy url ride an allowed-site verdict while the browser goes somewhere
     // else (history/reload). Destination is unknowable → null → ask.
-    const action = typeof input.action === 'string' ? input.action : 'goto';
+    const action = toolName === 'create_tab' ? 'goto' : (typeof input.action === 'string' ? input.action : 'goto');
     if (action !== 'goto') return { origin: null, url: null, authState: null };
     const url = typeof input.url === 'string' ? input.url : undefined;
     const origin = url ? normalizeBrowserOrigin(url) : null;
@@ -2181,8 +2183,14 @@ export async function checkToolApproval(
       // read-only and attended ones: the host decides what to enforce, and a
       // pin that is only attached sometimes is a pin whose absence means
       // nothing.
+      const popupTool = parseNamespacedToolName(name);
+      const permitsPopup = popupTool?.serverName === 'abu-browser'
+        && ['click', 'keyboard'].includes(popupTool.toolName)
+        && permissionResource === 'browse' && target.topOrigin === undefined
+        && !input.frameId && !target.frameOrigins && origin !== null;
       browserExecutionPin = {
         runMode,
+        ...(permitsPopup ? { popupOrigin: origin } : {}),
         ...(origin !== null ? { expectedOrigin: origin } : {}),
         // T5 — the files the user just confirmed, on their way to the runtime
         // (which uses this list and nothing else). Set only for an upload;
@@ -2558,6 +2566,9 @@ export async function executeAnyTool(
           ...(approval.browserExecution?.expectedOrigin !== undefined
             ? { expectedOrigin: approval.browserExecution.expectedOrigin }
             : {}),
+          ...(approval.browserExecution?.popupOrigin !== undefined
+            ? { popupOrigin: approval.browserExecution.popupOrigin }
+            : {}),
           ...(approval.browserExecution?.expectedFrameOrigins !== undefined
             ? { expectedFrameOrigins: approval.browserExecution.expectedFrameOrigins }
             : {}),
@@ -2601,7 +2612,7 @@ export async function executeAnyTool(
       // same fail-safe runMode default as the downloads filter above — and
       // deliberately AFTER the call, so the gate's own origin probe (which
       // calls mcpManager directly) still sees the unredacted truth.
-      if (toolName === 'get_tabs' && isBrowserTool) {
+      if ((toolName === 'get_tabs' || toolName === 'list_tabs') && isBrowserTool) {
         const snapshot = getSettingsReader().getSnapshot();
         result = filterTabsBySitePermissions(
           result,

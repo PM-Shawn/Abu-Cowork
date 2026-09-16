@@ -800,14 +800,20 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     if (previewableFile) {
       // Resolve through outputSnapshots so we never hand a non-absolute / missing
       // path to openPreview (which would trigger a Tauri capability error).
+      const ownerId = conversationId ?? activeConv?.id;
       import('@/core/session/outputSnapshots').then(({ resolveFileSource }) => {
-        resolveFileSource(activeConv?.id, previewableFile.path).then((r) => {
-          if (r.status === 'available') openPreview(r.path);
+        resolveFileSource(ownerId, previewableFile.path).then((r) => {
+          // Resolution can outlive this conversation's UI. Never open A's
+          // output in B or revive the preview of a deleted conversation.
+          const chat = useChatStore.getState();
+          if (r.status === 'available' && ownerId && chat.conversations[ownerId]
+            && chat.activeConversationId === ownerId
+            && usePreviewStore.getState().currentConversationId === ownerId) openPreview(r.path);
         }).catch(() => {});
       }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
-  }, [isAgentDone, fileOutputs, openPreview, activeConv?.id]);
+  }, [isAgentDone, fileOutputs, openPreview, activeConv?.id, conversationId]);
 
   // Rewind confirm state: handleRetry's deleteMessagesFrom truncates from
   // this loop's first assistant message onward, discarding anything after —

@@ -174,3 +174,24 @@ test('a request that completes normally never aborts its own action signal', asy
   assert.ok(capturedSignal, 'performBrowserAutomation must have been called with a signal');
   assert.equal(capturedSignal.aborted, false, 'a normal completion must not misfire the abort signal');
 });
+
+test('shared transport credentials cannot revive a child after trusted unregistration', async () => {
+  const { browserRunRegistry } = require('./browserRunRegistry.cjs');
+  const { endpoint, token } = await ensureBrowserAutomationServer();
+  const send = () => fetch(endpoint, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'get_tabs', payload: { ownerId: 'lifecycle-test', runId: 'child', createIfEmpty: false } }),
+  }).then((response) => response.json());
+  try {
+    const unknown = await send();
+    assert.equal(unknown.success, false);
+    assert.equal(calls.length, 0);
+    browserRunRegistry.register('lifecycle-test', 'child');
+    assert.equal((await send()).success, true);
+    assert.equal(calls.length, 1);
+    browserRunRegistry.unregister('lifecycle-test', 'child');
+    assert.equal((await send()).success, false);
+    assert.equal(calls.length, 1, 'an ended child never reaches page operations');
+  } finally { browserRunRegistry.clear(); }
+});

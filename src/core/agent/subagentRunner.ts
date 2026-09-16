@@ -163,6 +163,7 @@ import {
   scopeSubagentProgressEvent,
 } from './subagentProgressIdentity';
 import { disposeRunBrowserViews } from '../browser/browserViewLifecycle';
+import { startBrowserRun } from '../browser/browserRunLifecycle';
 import { releaseRunBrowserTabClaims } from '../browser/bridgeTabClaims';
 import {
   materializeSidecarMediaRefsForShell,
@@ -815,14 +816,16 @@ async function runAdmittedSubagent(options: SubagentLoopOptions): Promise<Subage
  * returns is the moment nothing can reach them again.
  */
 async function runLocalSubagentLoop(options: SubagentLoopOptions): Promise<SubagentResult> {
+  startBrowserRun(options.parentConversationId, options.agentRunId);
   try {
     assertPluginAgentEnabled(options.agent);
     return await runSubagentLoop(options);
   } finally {
-    disposeRunBrowserViews(options.parentConversationId, options.agentRunId);
+    const browserCleanup = disposeRunBrowserViews(options.parentConversationId, options.agentRunId);
     // Same seal, the other browser channel: the extension drives the user's
     // own Chrome, so this run's claim on a real page has to end here too.
     releaseRunBrowserTabClaims(options.parentConversationId, options.agentRunId);
+    await browserCleanup;
   }
 }
 
@@ -913,6 +916,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       () => { session.firstToolInvokeArrived = true; },
     ),
   };
+  startBrowserRun(options.parentConversationId, runId);
   sessions.set(runId, session);
   registerRunResourceSettlement(runId, session.resourceSettlement);
 
@@ -997,20 +1001,21 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       stopReason: 'error',
     });
   } finally {
-    await session.progressApplyTail;
+    // Withdraw browser authority synchronously, before asynchronous progress
+    // draining. The returned cleanup waits for any in-flight registration.
+    const browserCleanup = disposeRunBrowserViews(options.parentConversationId, runId);
+    void browserCleanup?.catch(() => {});
     session.resourceSettlement.seal();
-    // A2 — the seal is the point after which this run can no longer start
-    // another tool, so it is the point at which its per-run resources are
-    // nobody's any more. Its browser tabs are invisible to every other run, so
-    // nothing else could ever list or close them.
-    disposeRunBrowserViews(options.parentConversationId, runId);
-    releaseRunBrowserTabClaims(options.parentConversationId, runId);
-    if (options.authorizationScopeId !== undefined) {
-      await session.resourceSettlement.settlement;
+    try {
+      await session.progressApplyTail;
+      releaseRunBrowserTabClaims(options.parentConversationId, runId);
+      if (options.authorizationScopeId !== undefined) await session.resourceSettlement.settlement;
+    } finally {
+      sessions.delete(runId);
+      unregisterRunResourceSettlement(runId, session.resourceSettlement);
+      if (graceTimer) clearTimeout(graceTimer);
+      signal?.removeEventListener('abort', onAbort);
+      await browserCleanup;
     }
-    sessions.delete(runId);
-    unregisterRunResourceSettlement(runId, session.resourceSettlement);
-    if (graceTimer) clearTimeout(graceTimer);
-    signal?.removeEventListener('abort', onAbort);
   }
 }

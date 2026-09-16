@@ -66,16 +66,15 @@ function expandRightPanel(): void {
  * placeholders (bodies land in later passes — see
  * `docs/2026-07-17-workspace-tabs-design.md`).
  */
-export type WorkspaceTab =
+export type WorkspaceTab = (
   | { id: string; kind: 'summary' }
   | { id: string; kind: 'preview'; filePath: string }
-  // `ownerConversationId` is the conversation an agent adopted this view for
-  // (main's `ownerKey`, threaded through `browser://automation-open`). Absent =
-  // user-opened / legacy, which every conversation may see.
-  | { id: string; kind: 'browser'; url: string; ownerConversationId?: string }
+  // Agent views carry main's ownerKey; user-created tabs inherit the current conversation.
+  | { id: string; kind: 'browser'; url: string }
   | { id: string; kind: 'terminal' }
   | { id: string; kind: 'subagent'; identity: BatchIdentity; taskIndex: number; title: string }
-  | { id: string; kind: 'team'; conversationId: string };
+  | { id: string; kind: 'team'; conversationId: string }
+) & { ownerConversationId?: string };
 
 export function teamTabId(conversationId: string): string {
   return `team:${conversationId}`;
@@ -84,13 +83,13 @@ export function teamTabId(conversationId: string): string {
 /**
  * Whether `conversationId`'s panel may list/activate `tab`.
  *
- * Only an OWNED browser tab is scoped: its native view keeps running for its
+ * Every owned workspace tab is scoped: its native view keeps running for its
  * owner conversation (C1 keep-alive), but showing it to another conversation
  * would open that conversation's panel on someone else's live page — and,
  * because the native layer paints over React, leave it painted there.
  */
 export function isTabVisibleFor(tab: WorkspaceTab, conversationId: string | null): boolean {
-  if (tab.kind !== 'browser' || !tab.ownerConversationId) return true;
+  if (!tab.ownerConversationId) return true;
   return tab.ownerConversationId === conversationId;
 }
 
@@ -167,6 +166,8 @@ interface PreviewState {
   // conversation id -> the tab it was last looking at, so switching back
   // restores that tab rather than always the leftmost survivor. Ephemeral.
   lastActiveTabByConversation: Record<string, string>;
+  // Session-only layout snapshots; never persist live terminal/browser identities.
+  panelStateByConversation: Record<string, { collapsed: boolean; chatWidth: number | null }>;
   // Currently active tab id, or null when there are no tabs. ALWAYS a tab this
   // conversation can see (or null) — commitTabs enforces it.
   activeTabId: string | null;
@@ -210,7 +211,7 @@ interface PreviewState {
   // Open (or activate an existing) browser tab for `url` (default ''). Main
   // may supply an id when adopting an agent-created Electron browser view, plus
   // the conversation that view belongs to (omitted for the legacy shared pool).
-  openBrowser: (url?: string, requestedId?: string, ownerConversationId?: string) => string;
+  openBrowser: (url?: string, requestedId?: string, ownerConversationId?: string, sourceViewId?: string) => string;
   // Open a new terminal tab (terminals are never deduped — each is its own session).
   openTerminal: () => void;
   openSubagent: (identity: BatchIdentity, taskIndex: number, title: string) => string;
@@ -227,20 +228,12 @@ interface PreviewState {
   closeOtherTabs: (id: string) => void;
   // Close every tab.
   closeAllTabs: () => void;
-  // Reset the panel for a switch to `conversationId`: closes every
-  // conversation-scoped tab (summary / preview / terminal / subagent) but KEEPS
-  // browser tabs, whose native views belong to a running agent rather than to
-  // the panel. Browser tabs owned by another conversation become invisible
-  // here; the new conversation's own tabs (if any) come back visible.
-  closeTabsForConversationSwitch: (conversationId?: string | null) => void;
+  // Restore this conversation’s layout and selection; keep other tab bodies alive but hidden.
+  closeTabsForConversationSwitch: (conversationId?: string | null, defaultCollapsed?: boolean) => void;
   // Close subagent tabs owned by one conversation. Other workspace tabs stay
   // open; used by chatStore's synchronous delete cascade.
   closeSubagentTabsForConversation: (conversationId: string) => void;
-  // Close the browser tabs an agent adopted for one conversation, wherever they
-  // sit in the strip — including while another conversation is on screen (they
-  // are invisible there, so no UI path could ever close them). Removing the
-  // record is what destroys the native view, so this is the renderer's half of
-  // the delete cascade's browser cleanup. Legacy/user-opened tabs are untouched.
+  // Delete all tabs and remembered layout belonging to a deleted conversation.
   closeOwnedTabsForConversation: (conversationId: string) => void;
   // Drop one adopted browser tab because MAIN withdrew it
   // (`browser://automation-cancel`: the run was stopped, or the conversation
@@ -359,10 +352,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     return visibleTabsFor(tabs, currentConversationId);
   };
 
+  const ownerScope = (): { ownerConversationId?: string } => {
+    const id = get().currentConversationId;
+    return id ? { ownerConversationId: id } : {};
+  };
+
   return ({
   tabs: [],
   currentConversationId: null,
   lastActiveTabByConversation: {},
+  panelStateByConversation: {},
   activeTabId: null,
   focusTabId: null,
   menuOpen: false,
@@ -374,32 +373,32 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
 
   openSummary: () => {
     const { tabs } = get();
-    const existing = tabs.find((t) => t.kind === 'summary');
+    const existing = visibleNow().find((t) => t.kind === 'summary');
     if (existing) {
       commitTabs(tabs, existing.id);
       return;
     }
     const id = genId();
     // Summary is the default tab — put it first so it stays leftmost.
-    const nextTabs: WorkspaceTab[] = [{ id, kind: 'summary' }, ...tabs];
+    const nextTabs: WorkspaceTab[] = [{ id, kind: 'summary', ...ownerScope() }, ...tabs];
     commitTabs(nextTabs, id);
   },
 
   openPreview: (filePath) => {
     const { tabs } = get();
-    const existing = tabs.find((t) => t.kind === 'preview' && t.filePath === filePath);
+    const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
       commitTabs(tabs, existing.id);
       expandRightPanel();
       return;
     }
     const id = genId();
-    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'preview', filePath }];
+    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'preview', filePath, ...ownerScope() }];
     commitTabs(nextTabs, id);
     expandRightPanel();
   },
 
-  openBrowser: (url = '', requestedId, ownerConversationId) => {
+  openBrowser: (url = '', requestedId, ownerConversationId, sourceViewId) => {
     const { tabs, activeTabId, currentConversationId } = get();
     if (requestedId) {
       const requested = tabs.find((t) => t.id === requestedId);
@@ -412,11 +411,18 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
         commitTabs(tabs, visibleHere ? requested.id : activeTabId);
         return requested.id;
       }
+      const source = sourceViewId ? tabs.find(tab => tab.id === sourceViewId && tab.kind === 'browser') : undefined;
+      // A delayed native popup follows its source, never the foreground chat.
+      // If the source was closed/deleted before publication, discard the child.
+      if (sourceViewId && !source) {
+        closeBrowserViews([requestedId]);
+        return requestedId;
+      }
       const adopted: WorkspaceTab = {
         id: requestedId,
         kind: 'browser',
         url,
-        ...(ownerConversationId ? { ownerConversationId } : {}),
+        ...(ownerConversationId ? { ownerConversationId } : sourceViewId ? { ownerConversationId: source?.ownerConversationId } : ownerScope()),
       };
       const nextTabs: WorkspaceTab[] = [...tabs, adopted];
       // Adopting a brand-new agent-created tab must not steal focus from a
@@ -449,7 +455,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
       return existing.id;
     }
     const id = genId();
-    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'browser', url }];
+    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'browser', url, ...ownerScope() }];
     commitTabs(nextTabs, id);
     // User-invoked only: the `requestedId` branch above (agent browser-view
     // adoption) intentionally keeps the current collapse state.
@@ -460,7 +466,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   openTerminal: () => {
     const { tabs } = get();
     const id = genId();
-    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'terminal' }];
+    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'terminal', ...ownerScope() }];
     commitTabs(nextTabs, id);
     expandRightPanel();
   },
@@ -477,7 +483,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     // Right after the summary tab (both are conversation-level views).
     const summaryIdx = tabs.findIndex((tab) => tab.kind === 'summary');
     const nextTabs: WorkspaceTab[] = [...tabs];
-    nextTabs.splice(summaryIdx + 1, 0, { id, kind: 'team', conversationId });
+    nextTabs.splice(summaryIdx + 1, 0, { id, kind: 'team', conversationId, ownerConversationId: conversationId });
     commitTabs(nextTabs, activate ? id : activeTabId ?? id, activate ? { focusTabId: id } : {});
     if (activate) expandRightPanel();
     return id;
@@ -492,7 +498,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
       expandRightPanel();
       return id;
     }
-    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'subagent', identity, taskIndex, title }];
+    const nextTabs: WorkspaceTab[] = [...tabs, { id, kind: 'subagent', identity, taskIndex, title, ...ownerScope() }];
     commitTabs(nextTabs, id, { focusTabId: id });
     expandRightPanel();
     return id;
@@ -538,7 +544,7 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   // here nor closable from here.
   closeOtherTabs: (id) => {
     const { tabs, currentConversationId } = get();
-    if (!tabs.some((t) => t.id === id)) return;
+    if (!tabs.some((t) => t.id === id && isTabVisibleFor(t, currentConversationId))) return;
     const nextTabs = tabs.filter((t) => t.id === id || !isTabVisibleFor(t, currentConversationId));
     commitTabs(nextTabs, id, { closeReason: 'user_close' });
   },
@@ -552,21 +558,25 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     );
   },
 
-  closeTabsForConversationSwitch: (conversationId = null) => {
-    const { tabs, lastActiveTabByConversation } = get();
-    // Everything except a browser tab is scoped to the conversation that
-    // opened it. A browser tab is a live native view an agent may still be
-    // driving — closing it here used to kill the page mid-task (and, on the
-    // agent's next action, hand back a brand-new tab id).
-    const nextTabs = tabs.filter((tab) => tab.kind === 'browser');
-    // Land on what this conversation was last looking at; otherwise its
-    // leftmost visible tab; otherwise nothing (the summary effect takes over).
-    const visible = visibleTabsFor(nextTabs, conversationId);
-    const remembered = conversationId ? lastActiveTabByConversation[conversationId] : undefined;
-    const nextActiveId = (remembered && visible.some((tab) => tab.id === remembered)
-      ? remembered
-      : visible[0]?.id) ?? null;
-    commitTabs(nextTabs, nextActiveId, { conversationId });
+  closeTabsForConversationSwitch: (conversationId = null, defaultCollapsed = true) => {
+    const prev = get();
+    if (prev.currentConversationId === conversationId) return;
+    const snapshots = { ...prev.panelStateByConversation };
+    if (prev.currentConversationId) {
+      snapshots[prev.currentConversationId] = {
+        collapsed: useSettingsStore.getState().rightPanelCollapsed,
+        chatWidth: prev.chatWidth,
+      };
+    }
+    const saved = conversationId ? snapshots[conversationId] : undefined;
+    const visible = visibleTabsFor(prev.tabs, conversationId);
+    const remembered = conversationId ? prev.lastActiveTabByConversation[conversationId] : undefined;
+    const nextActiveId = (remembered && visible.some(tab => tab.id === remembered)
+      ? remembered : visible[0]?.id) ?? null;
+    // Switch visibility, never destroy background documents or terminal sessions.
+    commitTabs(prev.tabs, nextActiveId, { conversationId });
+    set({ panelStateByConversation: snapshots, chatWidth: saved?.chatWidth ?? null, menuOpen: false });
+    useSettingsStore.getState().setRightPanelCollapsed(saved?.collapsed ?? (visible.length === 0 && defaultCollapsed));
   },
 
   closeSubagentTabsForConversation: (conversationId) => {
@@ -576,7 +586,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
   },
 
   closeOwnedTabsForConversation: (conversationId) => {
-    removeTabsWhere((tab) => tab.kind === 'browser' && tab.ownerConversationId === conversationId);
+    removeTabsWhere((tab) => tab.ownerConversationId === conversationId);
+    set(state => {
+      const panelStateByConversation = { ...state.panelStateByConversation };
+      const lastActiveTabByConversation = { ...state.lastActiveTabByConversation };
+      delete panelStateByConversation[conversationId];
+      delete lastActiveTabByConversation[conversationId];
+      return { panelStateByConversation, lastActiveTabByConversation,
+        ...(state.currentConversationId === conversationId ? { currentConversationId: null } : {}),
+      };
+    });
   },
 
   closeAdoptedBrowserTab: (id) => {

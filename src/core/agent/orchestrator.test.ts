@@ -246,8 +246,9 @@ describe('buildSystemPrompt - structure', () => {
   it('routes web interaction to the built-in Electron browser instead of Computer Use', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).toContain('Abu-Browser and Abu-Chrome-Bridge are different capabilities');
-    expect(prompt).toContain('continue immediately with `abu-browser__get_tabs`');
-    expect(prompt).toContain('creates a visible tab in Abu');
+    expect(prompt).toContain('continue immediately with `abu-browser__list_tabs`');
+    expect(prompt).toContain('abu-browser__create_tab');
+    expect(prompt).toContain('each page that should remain separately visible');
     expect(prompt).toContain('existing Chrome tabs, cookies, extensions, or signed-in state');
     expect(prompt).toContain('Do not substitute the `computer` tool or launch a system browser');
   });

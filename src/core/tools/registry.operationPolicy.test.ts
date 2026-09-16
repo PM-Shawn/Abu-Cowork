@@ -1189,7 +1189,7 @@ describe('browser gate — operation-class policy', () => {
       expect(decision.browserExecution?.loginRequired).toBe(true);
     });
 
-    it('carries no loginRequired flag when the site is healthy (byte-compat)', async () => {
+    it('carries no loginRequired flag when the site is healthy', async () => {
       withTabOrigin(ALLOWED_URL);
 
       const decision = await checkToolApproval(
@@ -1198,7 +1198,7 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('allow');
-      expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE });
+      expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE, popupOrigin: ALLOWED_SITE });
     });
 
     describe('page-derived state can refuse, never authorize (anti-injection)', () => {
@@ -2230,6 +2230,7 @@ describe('browser gate — operation-class policy', () => {
       expect(decision.browserExecution).toEqual({
         runMode: 'unattended',
         expectedOrigin: ALLOWED_SITE,
+        popupOrigin: ALLOWED_SITE,
       });
     });
 

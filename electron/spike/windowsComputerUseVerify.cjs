@@ -455,7 +455,14 @@ async function verifyUserTakeover(window, timeoutMs = 10_000) {
     await call('input_lease_observe', { lease_id: inputLeaseId });
   };
 
-  const moveWindowMs = Math.max(4_000, Math.round(timeoutMs / 2));
+  // Capped, and deliberately not half the timeout. The two halves of this
+  // check want opposite things from the clock: "touch nothing but the mouse"
+  // has to be over before a person at their desk reaches for the keyboard,
+  // while "click when you are ready" can wait all day. Half of the
+  // five-minute `--physical-input-only` budget asked for 150 seconds of
+  // pure mouse movement, which nobody can deliver — and the failure it
+  // produced was indistinguishable from the exemption being broken.
+  const moveWindowMs = Math.min(10_000, Math.max(4_000, Math.round(timeoutMs / 2)));
   const eventCount = events.length;
   console.error(`[windows-cu] Move the physical mouse WITHOUT clicking for the next ${Math.round(moveWindowMs / 1000)} seconds`);
   await delay(moveWindowMs);
@@ -465,15 +472,28 @@ async function verifyUserTakeover(window, timeoutMs = 10_000) {
     'pointer movement between actions was published as a takeover',
   );
   // A real guarded action, not just the lease, still dispatches after the move.
-  await withGuardedInput(state.input_epoch, () => call('mouse_move', {
-    x: Math.round(window.bounds[0] + window.bounds[2] / 2),
-    y: Math.round(window.bounds[1] + window.bounds[3] / 2),
-    screenshot_id: capture.screenshot_id,
-    expected_bundle_id: window.app_id,
-    expected_process_id: window.process_id,
-    expected_window_id: window.window_id,
-    expected_input_epoch: state.input_epoch,
-  }));
+  // Only `WM_MOUSEMOVE` is exempt, so a click, a key or a wheel tick during
+  // the window above lands here as a stale-epoch refusal — the same refusal a
+  // broken exemption would produce. Say which, or the next person reads a
+  // mistyped test as a product defect.
+  try {
+    await withGuardedInput(state.input_epoch, () => call('mouse_move', {
+      x: Math.round(window.bounds[0] + window.bounds[2] / 2),
+      y: Math.round(window.bounds[1] + window.bounds[3] / 2),
+      screenshot_id: capture.screenshot_id,
+      expected_bundle_id: window.app_id,
+      expected_process_id: window.process_id,
+      expected_window_id: window.window_id,
+      expected_input_epoch: state.input_epoch,
+    }));
+  } catch (error) {
+    throw new Error(
+      'the observation was invalidated during the pointer-move window. A pointer move alone must not do '
+      + 'that, but a click, a key press or a wheel tick will — so if you touched anything but the mouse, '
+      + `re-run and only move it. If you moved only the mouse, the exemption is broken. (${
+        error instanceof Error ? error.message : String(error)})`,
+    );
+  }
 
   console.error(`[windows-cu] Now CLICK once on the target window (${Math.round(timeoutMs / 1000)} seconds)`);
   const deadline = Date.now() + timeoutMs;

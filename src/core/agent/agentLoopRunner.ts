@@ -1744,9 +1744,16 @@ function assertRunToolAllowed(
   // wildcards (`abu-browser__*`, the read_tools trigger tier's browser
   // ceiling). resolveTools (agentLoop.ts) and executeToolBatch
   // (toolExecutor.ts) already match these as patterns; this shell-boundary
-  // check is the third enforcement point and has to cover the same set, or a
-  // reverse `tool.invoke` for a wildcard-blocked tool would sail through the
-  // one gate that is supposed to be authoritative.
+  // check is the third enforcement point, or a reverse `tool.invoke` for a
+  // wildcard-blocked tool would sail through the one gate that is supposed to
+  // be authoritative.
+  //
+  // It covers the run's own restrictions, not the per-iteration list the other
+  // two build: a skill the model activates mid-run adds `computer` there, and
+  // that addition does not reach here. Not a hole today — the sidecar's own
+  // executeToolBatch applies the merged list first, and every skill that
+  // blocks `computer` blocks `delegate_to_agent` with it — but the three
+  // points are no longer the same set, so do not read this as one.
   if (session.options.blockedTools?.some((pattern) => matchesToolName(toolName, pattern))) {
     throw new SidecarRequestError(-32602, `Tool is blocked for this agent run: ${toolName}`);
   }

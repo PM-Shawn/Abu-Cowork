@@ -145,6 +145,18 @@ describe('chatStore', () => {
       expect(useChatStore.getState().conversations[id].model).toEqual({ providerId: 'p1', modelId: 'm1' });
     });
 
+    it('does not pin before the enterprise store is initialized (startup race)', () => {
+      const prev = useEnterpriseStore.getState();
+      useEnterpriseStore.setState({ initialized: false, mode: { kind: 'personal' } });
+      try {
+        useSettingsStore.setState({ activeModel: { providerId: 'p1', modelId: 'm1' } });
+        const id = useChatStore.getState().createConversation();
+        expect(useChatStore.getState().conversations[id].model).toBeUndefined();
+      } finally {
+        useEnterpriseStore.setState({ initialized: prev.initialized, mode: prev.mode });
+      }
+    });
+
     it('does not pin in enterprise mode (gateway-scoped models)', () => {
       const prevMode = useEnterpriseStore.getState().mode;
       useEnterpriseStore.setState({ mode: { kind: 'offline', binding: TEST_BINDING, lastConfig: null, reason: 'test' } });

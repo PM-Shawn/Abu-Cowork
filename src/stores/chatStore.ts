@@ -903,7 +903,11 @@ export const useChatStore = create<ChatStore>()(
         // Pin the new-conversation default at creation (issue #545) so an empty
         // conversation never drifts with later picks elsewhere. Enterprise mode
         // skips this, mirroring agentLoop's first-run pin (gateway-scoped models).
-        const isPersonal = useEnterpriseStore.getState().mode.kind === 'personal';
+        // An uninitialized enterprise store also skips: enterprise builds start
+        // as 'personal' until async init() resolves, and background creators may
+        // run before that; agentLoop's first-run pin covers those conversations.
+        const ent = useEnterpriseStore.getState();
+        const isPersonal = ent.initialized && ent.mode.kind === 'personal';
         const defaultModel = useSettingsStore.getState().activeModel;
         const initialModel = isPersonal && defaultModel?.modelId
           ? { providerId: defaultModel.providerId, modelId: defaultModel.modelId }

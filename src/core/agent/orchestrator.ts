@@ -757,7 +757,7 @@ You have the computer tool, which lets you take screenshots and perform mouse an
 
 ### Core principle: commands first, GUI as fallback
 If something can be done with run_command or another tool, do not use computer to click the GUI.
-1. **run_command handles it directly** → file operations, system settings, etc.${isWindows() ? '' : ', opening apps'}
+1. **run_command handles it directly** → ${isWindows() ? 'file operations, system settings, etc.' : 'file operations, system settings, opening apps, etc.'}
 2. **Open, then GUI** → ${isWindows() ? 'open the app with computer(action="launch_app")' : 'use a command to open the app'}, then use computer to interact with the GUI inside it
 3. **Pure GUI** → only when interactive operation is required and there is no command-line alternative
 

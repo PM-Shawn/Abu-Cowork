@@ -306,10 +306,26 @@ function generateId(): string {
  * Returns { tools, inputValidators } where inputValidators are used at execution time.
  */
 /**
- * Every tool pattern the skills in play have declared off-limits, whichever
- * way those skills were reached. Exported so the execution boundary can apply
- * the same list the tool roster was filtered by — a visibility filter alone
- * only hides a tool, and a model that remembers the name can still call it.
+ * Blocking `computer` is what makes "documents do not go through the GUI"
+ * true rather than merely stated: it is a decision about which channel the
+ * work belongs in, not housekeeping for one skill's own run.
+ */
+const CHANNEL_GOVERNED_TOOLS: readonly string[] = [TOOL_NAMES.COMPUTER];
+
+/**
+ * Every tool pattern the skills in play have declared off-limits. Exported so
+ * the execution boundary can apply the same list the tool roster was filtered
+ * by — a visibility filter alone only hides a tool, and a model that
+ * remembers the name can still call it.
+ *
+ * How the skill was reached decides how much of its list applies. `/docx` is
+ * the user asking for that skill and nothing else, so the whole declaration
+ * holds. A skill the model activated mid-turn is a channel choice, not a mode
+ * the user asked for, and the document skills each block fifteen tools —
+ * `update_memory`, `todo_write`, `delegate_to_agent` among them. Enforcing all
+ * of those meant "read this .docx and remember the date" lost the ability to
+ * remember, for the rest of the turn, over work the skill has no opinion
+ * about. Only the channel-governed ones carry over.
  */
 export function skillBlockedTools(
   routedSkill: { blockedTools?: string[] } | undefined,
@@ -317,7 +333,8 @@ export function skillBlockedTools(
 ): string[] {
   const patterns = [
     ...(routedSkill?.blockedTools ?? []),
-    ...(activeSkills ?? []).flatMap((skill) => skill?.blockedTools ?? []),
+    ...(activeSkills ?? []).flatMap((skill) => (skill?.blockedTools ?? [])
+      .filter((pattern) => CHANNEL_GOVERNED_TOOLS.includes(pattern))),
   ];
   return [...new Set(patterns)];
 }

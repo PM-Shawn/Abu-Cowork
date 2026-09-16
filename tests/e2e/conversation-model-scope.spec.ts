@@ -45,6 +45,7 @@ const SUBAGENT_DONE_PREFIX = 'cms subagent finished via';
 type RequestKind = 'task' | 'delegate-start' | 'subagent' | 'parent-after-tool' | 'aux';
 
 interface RecordedRequest {
+  hasTools: boolean;
   kind: RequestKind;
   marker: string | null;
   model: unknown;
@@ -65,19 +66,34 @@ function messageText(message: ChatMessage): string {
   return typeof message.content === 'string' ? message.content : JSON.stringify(message.content ?? '');
 }
 
+// The memory extractor quotes the whole transcript (markers included) in one
+// user message, so it must be recognized before any marker-based branch.
+const MEMORY_EXTRACTOR_PROMPT = '记忆提取助手';
+
 function classify(body: Record<string, unknown>): { kind: RequestKind; marker: string | null } {
   const messages = Array.isArray(body.messages) ? (body.messages as ChatMessage[]) : [];
+  const system = messages.filter((m) => m.role === 'system').map(messageText).join('\n');
+  if (system.includes(MEMORY_EXTRACTOR_PROMPT)) return { kind: 'aux', marker: null };
   const userTexts = messages.filter((m) => m.role === 'user').map(messageText);
   if (messages.some((m) => m.role === 'tool')) return { kind: 'parent-after-tool', marker: null };
   if (userTexts.some((text) => text.includes(SUBTASK_MARKER))) return { kind: 'subagent', marker: null };
   const lastUser = userTexts.at(-1) ?? '';
   if (lastUser.includes(DELEGATE_TRIGGER)) return { kind: 'delegate-start', marker: DELEGATE_TRIGGER };
-  // A task prompt is exactly `cms-<letter><digits>`; the memory extractor
-  // quotes the conversation too, so it is excluded by its system prompt.
+  // A task prompt is exactly `cms-<letter><digits>`.
   const marker = /(?:^|\s)(cms-[a-z]\d+)(?:\s|$)/.exec(lastUser)?.[1] ?? null;
-  const system = messages.filter((m) => m.role === 'system').map(messageText).join('\n');
-  if (marker && !system.includes('记忆提取助手')) return { kind: 'task', marker };
+  if (marker) return { kind: 'task', marker };
   return { kind: 'aux', marker: null };
+}
+
+/**
+ * Every agent / delegate request this spec counts carries a tool list (the
+ * provider declares tool support); the memory extractor sends none. A
+ * tool-less request classified as non-aux means the extractor prompt drifted
+ * and a background request is being miscounted — fail loudly instead.
+ */
+function expectOnlyAgentRequestsCounted(mock: ModelMock): void {
+  const miscounted = mock.requests.filter((r) => r.kind !== 'aux' && !r.hasTools);
+  expect(miscounted, 'tool-less request counted as an agent turn (extractor prompt drift?)').toEqual([]);
 }
 
 function replyFor(marker: string, modelId: string): string {
@@ -117,7 +133,8 @@ async function startModelMock(): Promise<ModelMock> {
     }
     const modelId = typeof body.model === 'string' ? body.model : 'unknown-model';
     const { kind, marker } = classify(body);
-    requests.push({ kind, marker, model: body.model });
+    const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
+    requests.push({ hasTools, kind, marker, model: body.model });
 
     let content: string | null;
     let toolCall: Record<string, unknown> | null = null;
@@ -370,10 +387,15 @@ test.describe('per-conversation model scope (#545)', () => {
     // Only task requests matter here; no request of any kind ever used an unknown model.
     const knownModels = [MODEL_X.id, MODEL_Y.id, MODEL_Z.id];
     for (const request of mock.requests) expect(knownModels).toContain(request.model);
+    expectOnlyAgentRequestsCounted(mock);
 
     // 5. Restart with the same data root: each conversation keeps its model.
     // UI visibility can precede the ledger write; quit only once both last
-    // replies are on disk so the relaunch proves a fresh load.
+    // replies are on disk so the relaunch proves a fresh load. The model pins
+    // are persisted by a separate fire-and-forget index write
+    // (chatStore setConversationModel); this wait covers them only because
+    // every final pick above is followed by a full send/reply round-trip in
+    // that conversation. Keep that ordering if these steps change.
     for (const reply of [replyFor('cms-a4', MODEL_Z.id), replyFor('cms-b3', MODEL_Y.id)]) {
       await expect.poll(() => diskContains(dataRoot!.appDataDir, reply), { timeout: READY_TIMEOUT }).toBe(true);
     }
@@ -400,6 +422,7 @@ test.describe('per-conversation model scope (#545)', () => {
 
     await openNewTask(page);
     await expectComposerModel(page, MODEL_X.label);
+    expectOnlyAgentRequestsCounted(mock);
   });
 
   test('a delegate launched from a Y conversation runs on Y while the default is X', async () => {
@@ -430,5 +453,6 @@ test.describe('per-conversation model scope (#545)', () => {
     // The default for new conversations is still X.
     await openNewTask(page);
     await expectComposerModel(page, MODEL_X.label);
+    expectOnlyAgentRequestsCounted(mock!);
   });
 });

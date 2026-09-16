@@ -31,6 +31,8 @@ import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
+import { getModelUnavailableReason, hasAnyEnabledProvider, getModelDisplayLabel } from '@/utils/settingsSelectors';
+import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
@@ -835,10 +837,22 @@ export default function ChatView({
     // Block sending if API key is not configured (Ollama doesn't need one).
     // Returning false hands the text back to the composer — opening settings
     // used to swallow whatever the user had typed.
+    // Check the model THIS conversation will run on (its pin), not the global
+    // default: a pinned provider that was deleted/turned off must never be sent to.
     const currentState = useSettingsStore.getState();
-    if (!isEnterprise && providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
-      currentState.openSystemSettings('ai-services');
-      return false;
+    if (!isEnterprise) {
+      const effModel = activeConv?.model ?? currentState.activeModel;
+      const effState = { ...currentState, activeModel: effModel };
+      const modelIssue = getModelUnavailableReason(currentState, effModel);
+      if (modelIssue && hasAnyEnabledProvider(currentState)) {
+        const copy = describeModelUnavailable(t.chat, modelIssue, getModelDisplayLabel(currentState, effModel));
+        useToastStore.getState().addToast({ type: 'error', title: copy.toast });
+        return false;
+      }
+      if (modelIssue || (providerRequiresApiKey(effState) && !getActiveApiKey(effState)?.trim())) {
+        currentState.openSystemSettings('ai-services');
+        return false;
+      }
     }
 
     if (text.trim() === '/compact') {

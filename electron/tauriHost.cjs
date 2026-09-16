@@ -130,6 +130,10 @@ const {
   teardownComputerUsePermissionGuide,
 } = require('./computerUsePermissionGuide.cjs');
 const {
+  officeDocumentsDispatch,
+  OFFICE_DOCUMENTS_MISS,
+} = require('./officeDocumentsHost.cjs');
+const {
   computerUsePermissionHostDispatch,
   COMPUTER_USE_PERMISSION_HOST_MISS,
 } = require('./computerUsePermissionHost.cjs');
@@ -1485,6 +1489,12 @@ function registerTauriHost(app, options = {}) {
       // NATIVE_HELPER_MISS for anything it doesn't own.
       const computerUseResult = await computerUseGate.dispatch(senderRecord, e.sender, cmd, a);
       if (computerUseResult !== COMPUTER_USE_GATE_MISS) return computerUseResult;
+      // "Is this file open in Office/WPS right now" — deliberately outside the
+      // Computer Use Gate. It touches no screen and no input, and the document
+      // skills that need it are exactly the ones that block the `computer`
+      // tool. See officeDocumentsHost.cjs for the full reasoning.
+      const officeDocumentsResult = await officeDocumentsDispatch(cmd, a);
+      if (officeDocumentsResult !== OFFICE_DOCUMENTS_MISS) return officeDocumentsResult;
       // Computer Use permission onboarding is a separate Electron-owned
       // utility window. The show command intentionally remains pending until
       // the user completes or cancels setup, while close can arrive through a

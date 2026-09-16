@@ -484,6 +484,8 @@ interface SettingsActions {
 
   // ── Model selection (V2) ──
   selectModel: (providerId: string, modelId: string) => void;
+  /** Bump a model to the front of recents WITHOUT changing the new-conversation default (activeModel). */
+  touchRecentModel: (providerId: string, modelId: string) => void;
   toggleFavorite: (providerId: string, modelId: string) => void;
 
   // ── Provider model management ──
@@ -1209,6 +1211,14 @@ function beginBrowserFieldWrite(
 
 const defaultProviders = createDefaultProviders();
 
+/** Move `next` to the front of the recents list (deduped, capped at 5). */
+function bumpRecentModels(recent: ActiveModel[], next: ActiveModel): ActiveModel[] {
+  return [
+    next,
+    ...recent.filter((r) => !(r.providerId === next.providerId && r.modelId === next.modelId)),
+  ].slice(0, 5);
+}
+
 /**
  * The Extensions search words for one tab — the active tab when none is named.
  *
@@ -1419,15 +1429,12 @@ export const useSettingsStore = create<SettingsStore>()(
 
       selectModel: (providerId, modelId) => set((s) => {
         const newActive = { providerId, modelId };
-        // Update recent models
-        const recent = [
-          newActive,
-          ...s.recentModels.filter(
-            r => !(r.providerId === providerId && r.modelId === modelId)
-          ),
-        ].slice(0, 5);
-        return { activeModel: newActive, recentModels: recent };
+        return { activeModel: newActive, recentModels: bumpRecentModels(s.recentModels, newActive) };
       }),
+
+      touchRecentModel: (providerId, modelId) => set((s) => ({
+        recentModels: bumpRecentModels(s.recentModels, { providerId, modelId }),
+      })),
 
       toggleFavorite: (providerId, modelId) => set((s) => {
         const exists = s.favoriteModels.some(

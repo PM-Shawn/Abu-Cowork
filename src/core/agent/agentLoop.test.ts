@@ -1061,4 +1061,37 @@ describe('runAgentLoop pinned-model availability guard', () => {
       restore();
     }
   });
+
+  const run = (conversationId: string) =>
+    runAgentLoop(conversationId, 'hello', { orchestration: { route: { type: 'general', name: 'abu', cleanInput: 'hello' }, systemPromptSections: [] } });
+
+  it('keeps the configure-key path for an enterprise-gateway pin when the gateway is unavailable', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'enterprise-gateway', modelId: 'gw-model' });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'API Key not configured', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+    } finally {
+      restore();
+    }
+  });
+
+  it('falls back to the configure-key copy when the pinned model is unusable and no provider is enabled', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup(() => null);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.setState({ providers: useSettingsStore.getState().providers.map((p) => ({ ...p, enabled: false })) });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(last?.role).toBe('assistant');
+      expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+    } finally {
+      restore();
+    }
+  });
 });

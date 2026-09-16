@@ -915,9 +915,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // no longer lists, must never reach an adapter: a missing provider leaves the
   // base URL empty and the adapter would fall back to a public default endpoint.
   // With no usable provider at all, keep the long-standing "configure a key" copy.
-  const pinnedModelIssue = isEnterpriseGatewayMode
-    ? null
-    : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
+  // Enterprise-gateway pins are virtual (never in `providers`), so they are never
+  // checked here — even when the gateway resolver is unavailable.
+  const pinnedModelIssue =
+    isEnterpriseGatewayMode || settingsForModel.activeModel.providerId === 'enterprise-gateway'
+      ? null
+      : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
   const blockText = isEnterpriseGatewayMode
     ? null
     : pinnedModelIssue && hasAnyEnabledProvider(settingsForModel)

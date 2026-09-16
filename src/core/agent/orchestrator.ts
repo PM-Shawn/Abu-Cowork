@@ -777,8 +777,8 @@ ${isWindows()
 
     if (electronHost && builtinBrowserConnected) {
       browserNote += `
-- For ordinary web-page tasks, call use_skill("Abu-Browser"), then continue immediately with \`abu-browser__get_tabs\`; do not stop after merely saying a browser skill is needed
-- \`abu-browser__get_tabs\` creates a visible tab in Abu when needed. Use the returned tabId with navigate, snapshot, interaction, and screenshot tools`;
+- For ordinary web-page tasks, call use_skill("Abu-Browser"), then continue immediately with \`abu-browser__list_tabs\`; do not stop after merely saying a browser skill is needed
+- Use \`abu-browser__create_tab\` to open each page that should remain separately visible, especially when comparing pages. Use navigate only to continue within a selected existing tab. Use returned tabIds with snapshot, interaction, and screenshot tools`;
     } else if (electronHost) {
       browserNote += `
 - Abu's bundled in-app browser is currently unavailable. Say so clearly and do not silently launch Chrome, Computer Use, Playwright, or a system browser`;

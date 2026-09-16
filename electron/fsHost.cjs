@@ -439,8 +439,9 @@ function msecOrNull(ms) {
  * from that same attribute, so ONE expression serves both; this used to
  * hardcode `false` on Windows, i.e. "no file is ever readonly".
  * `electron/fsHost.readonly.test.ts` pins it on both platforms (it runs on the
- * `test-windows` job too). The per-field `unix` guard stays for the numeric
- * POSIX fields below, which Windows genuinely does not report.
+ * `test-windows` job too). Device/inode identity comes from Node on both
+ * platforms; do not discard Windows file identities used by upload approval.
+ * POSIX ownership/mode fields retain the existing platform behavior.
  */
 function toFileInfo(info) {
   const unix = process.platform !== 'win32';
@@ -454,8 +455,8 @@ function toFileInfo(info) {
     birthtime: msecOrNull(info.birthtimeMs),
     readonly: (info.mode & 0o222) === 0,
     fileAttributes: null,
-    dev: unix ? info.dev : null,
-    ino: unix ? info.ino : null,
+    dev: Number.isSafeInteger(info.dev) && info.dev >= 0 ? info.dev : null,
+    ino: Number.isSafeInteger(info.ino) && info.ino > 0 ? info.ino : null,
     mode: unix ? info.mode : null,
     nlink: unix ? info.nlink : null,
     uid: unix ? info.uid : null,

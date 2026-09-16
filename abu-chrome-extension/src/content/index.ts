@@ -41,7 +41,10 @@ const MAX_SNAPSHOT_ELEMENTS = 200;
 const MAX_SNAPSHOT_CHARS = 30_000;
 
 interface ElectronBrowserRuntime {
+  referenceBase?: number;
+  nativeFrames?: boolean;
   handleAction?: (action: string, payload: Record<string, unknown>) => Promise<unknown>;
+  cancelAction?: (operationId: string) => void;
 }
 
 const electronBrowserRuntime = (
@@ -56,7 +59,17 @@ const electronBrowserRuntime = (
 // The Electron marker exists only in that isolated world; arbitrary pages
 // cannot see it and still receive no Node/preload privileges.
 if (electronBrowserRuntime) {
-  electronBrowserRuntime.handleAction = handleAction;
+  const activeActions = new Map<string, AbortController>();
+  electronBrowserRuntime.cancelAction = (id) => activeActions.get(id)?.abort();
+  electronBrowserRuntime.handleAction = async (action, payload) => {
+    const id = payload.__abuOperationId;
+    if (typeof id !== 'string') return handleAction(action, payload);
+    if (activeActions.has(id)) throw new Error('Browser operation identity was reused');
+    const controller = new AbortController();
+    activeActions.set(id, controller);
+    try { return await handleAction(action, payload, controller.signal); }
+    finally { activeActions.delete(id); }
+  };
 } else {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const { action, payload } = message;
@@ -83,7 +96,9 @@ if (electronBrowserRuntime) {
 // bookkeeping must not be the thing that keeps detached nodes alive.
 const refByElement = new WeakMap<Element, string>();
 const elementByRef = new Map<string, WeakRef<Element>>();
-let refCounter = 0;
+const referenceBase = electronBrowserRuntime?.referenceBase ?? 0;
+const referenceLimit = electronBrowserRuntime?.referenceBase === undefined ? Number.MAX_SAFE_INTEGER : referenceBase + 1_000_000;
+let refCounter = referenceBase;
 
 /**
  * Stable ref for an element — same element, same ref, for as long as it lives.
@@ -98,6 +113,7 @@ function refFor(el: Element): string {
   const frameId = frameIdOfElement(el);
   const existing = refByElement.get(el);
   if (existing && elementByRef.get(existing)?.deref() === el) return qualifyRef(frameId, existing);
+  if (refCounter + 1 >= referenceLimit) throw new Error('Page reference capacity reached. Reload and observe the page again.');
   const ref = `e${++refCounter}`;
   refByElement.set(el, ref);
   elementByRef.set(ref, new WeakRef(el));
@@ -188,7 +204,7 @@ const MAX_SHADOW_DEPTH = 10;
  * this runtime must NOT mint frame ids of its own — they would collide with
  * Chrome's, which are what the worker routes on.
  */
-const LOCAL_FRAME_WALK = !!electronBrowserRuntime;
+const LOCAL_FRAME_WALK = !!electronBrowserRuntime && !electronBrowserRuntime.nativeFrames;
 
 /**
  * The frame id of THIS runtime's own document.
@@ -227,12 +243,13 @@ const frameIdByFrameEl = new WeakMap<Element, FrameRef>();
 const frameElByFrameId = new Map<FrameRef, WeakRef<Element>>();
 /** What the last walk learned about each frame, for the refusal messages. */
 const frameNodeById = new Map<FrameRef, FrameNode>();
-let frameCounter = 0;
+let frameCounter = referenceBase;
 
 function frameIdForDoc(doc: Document): FrameRef {
   if (doc === document) return hostFrameId;
   const existing = frameIdByDoc.get(doc);
   if (existing && docByFrameId.get(existing)?.deref() === doc) return existing;
+  if (frameCounter + 1 >= referenceLimit) throw new Error('Page frame capacity reached. Reload and observe again.');
   const id: FrameRef = `f${++frameCounter}`;
   frameIdByDoc.set(doc, id);
   docByFrameId.set(id, new WeakRef(doc));
@@ -242,6 +259,7 @@ function frameIdForDoc(doc: Document): FrameRef {
 function frameIdForCrossOriginEl(el: Element): FrameRef {
   const existing = frameIdByFrameEl.get(el);
   if (existing && frameElByFrameId.get(existing)?.deref() === el) return existing;
+  if (frameCounter + 1 >= referenceLimit) throw new Error('Page frame capacity reached. Reload and observe again.');
   const id: FrameRef = `f${++frameCounter}`;
   frameIdByFrameEl.set(el, id);
   frameElByFrameId.set(id, new WeakRef(el));
@@ -864,7 +882,7 @@ const FRAME_SCOPED_ACTIONS = new Set([
   'upload_file',
 ]);
 
-async function handleAction(action: string, payload: Record<string, unknown>): Promise<unknown> {
+async function handleAction(action: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
   // Which frame this copy of the runtime IS. Stamped by the extension worker
   // on every message it routes (`__abuFrameId`), so it is reachable only from
   // the extension's isolated world — a page cannot author it, and the model
@@ -898,13 +916,14 @@ async function handleAction(action: string, payload: Record<string, unknown>): P
   // U6 — advisory annotation runs AFTER the action and AFTER the pin, so a
   // page-derived detection can never reorder, skip, or excuse the pin. See
   // `annotateAdvisory`'s "advisory only" note.
-  return annotateAdvisory(action, await dispatchAction(action, payload, scope));
+  return annotateAdvisory(action, await dispatchAction(action, payload, scope, signal));
 }
 
 async function dispatchAction(
   action: string,
   payload: Record<string, unknown>,
   scope: DomScope,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   switch (action) {
     case 'snapshot': return takeSnapshot(
@@ -919,7 +938,7 @@ async function dispatchAction(
     case 'fill': return fillElement(scope, payload.locator as ElementLocator, payload.value as string);
     case 'select': return selectOption(scope, payload.locator as ElementLocator, payload.value as string);
     case 'upload_file': return uploadFiles(scope, payload.locator as ElementLocator, payload.files);
-    case 'wait_for': return waitFor(scope, payload.condition as Record<string, unknown>, payload.timeout as number | undefined);
+    case 'wait_for': return waitFor(scope, payload.condition as Record<string, unknown>, payload.timeout as number | undefined, signal);
     case 'get_html': return getHtml(payload.selector as string | undefined);
     case 'extract_text': return extractText(scope, payload.selector as string | undefined);
     case 'extract_table': return extractTable(scope, payload.selector as string | undefined);
@@ -3293,7 +3312,8 @@ async function selectOption(
 async function waitFor(
   scope: DomScope,
   condition: Record<string, unknown>,
-  timeout: number = 30000
+  timeout: number = 30000,
+  signal?: AbortSignal
 ): Promise<{ success: boolean; message: string; timedOut: boolean; elapsed: number; observed?: string }> {
   const start = Date.now();
   const condType = condition.type as string;
@@ -3391,6 +3411,8 @@ async function waitFor(
    */
   const frameGone = (): boolean => scope.doc.defaultView === null;
 
+  if (signal?.aborted) return { success: false, message: 'Browser wait cancelled.', timedOut: false, elapsed: 0 };
+
   // Fast check first
   try {
     if (check()) {
@@ -3415,6 +3437,7 @@ async function waitFor(
       observer.disconnect();
       clearInterval(pollTimer);
       clearTimeout(timeoutTimer);
+      signal?.removeEventListener('abort', onAbort);
       const elapsed = Date.now() - start;
       resolve({
         success: !timedOut && failure === undefined,
@@ -3476,11 +3499,15 @@ async function waitFor(
       });
     }
 
+    const onAbort = () => complete(false, 'Browser wait cancelled.');
+
     // Interval fallback (for URL changes, computed styles, etc.)
     const pollTimer = setInterval(tryCheck, 500);
 
     // Timeout
     const timeoutTimer = setTimeout(() => complete(true), timeout);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 

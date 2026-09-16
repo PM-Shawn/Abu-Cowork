@@ -82,7 +82,7 @@ type MockReplyPlan =
  * `get_tabs` result (already appended to this request's message history) is
  * on the wire.
  */
-type MockReplyPlanEntry = MockReplyPlan | ((body: unknown) => MockReplyPlan);
+type MockReplyPlanEntry = MockReplyPlan | ((body: unknown) => MockReplyPlan | Promise<MockReplyPlan>);
 
 interface OpenAiMock {
   baseUrl: string;
@@ -213,7 +213,7 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlanEntry[]): Promi
       res.end(JSON.stringify({ error: 'unexpected extra local E2E mock request' }));
       return;
     }
-    const replyPlan = typeof rawPlan === 'function' ? rawPlan(body) : rawPlan;
+    const replyPlan = typeof rawPlan === 'function' ? await rawPlan(body) : rawPlan;
 
     res.writeHead(200, {
       'cache-control': 'no-cache',
@@ -700,6 +700,437 @@ test.describe('Electron browser view lifecycle E2E', () => {
     }
   });
 
+  test('keeps two explicitly created article tabs available for comparison', async () => {
+    fixture = await startFixturePage('two-articles');
+    dataRoot = createElectronDataRoot();
+    const firstUrl = `${fixture.url}?article=one`;
+    const secondUrl = `${fixture.url}?article=two`;
+    const finished = 'two-article-comparison-complete';
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: { url: firstUrl }, toolCallId: 'article-one', toolName: 'abu-browser__create_tab' },
+      { kind: 'tool-call', arguments: { url: secondUrl }, toolCallId: 'article-two', toolName: 'abu-browser__create_tab' },
+      { kind: 'complete', responseText: finished },
+    ]);
+    app = (await launchAbuElectron(dataRoot)).app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
+    await sendComposerMessage(page, mock, '打开两篇网页，分别保留标签供我比较');
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowSiteButton(page).click();
+    await expect(page.getByText(finished, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    const lastRequest = taskRequests(mock).at(-1)?.body as { messages?: Array<{ role?: string; content?: unknown }> };
+    const toolResults = lastRequest.messages?.filter((message) => message.role === 'tool') ?? [];
+    expect(toolResults).toHaveLength(2);
+    for (const result of toolResults) expect(JSON.stringify(result.content)).toContain('tabId');
+    const tabs = browserTabRow(page, fixture.host);
+    await expect(tabs).toHaveCount(2, { timeout: READY_TIMEOUT });
+    await expect.poll(async () => (await ourNativeViewState(app!, firstUrl)) !== null).toBe(true);
+    // Creating another tab need not steal focus from the current page. Both
+    // native views must exist, and selecting either must reveal that page.
+    await expect.poll(async () => (await ourNativeViewState(app!, secondUrl)) !== null).toBe(true);
+    await tabs.nth(0).click();
+    await expect.poll(async () => (await ourNativeViewState(app!, firstUrl))?.visible ?? false).toBe(true);
+    await tabs.nth(1).click();
+    await expect.poll(async () => (await ourNativeViewState(app!, secondUrl))?.visible ?? false).toBe(true);
+  });
+
+  for (const mode of ['post', 'opener', 'keyboard', 'manual', '307', '308', 'slow'] as const) {
+  test(`native POST popup preserves boundaries: ${mode}`, async () => {
+    const requests: Array<{ method?: string; url?: string; body: string; referrer?: string; cookie?: string }> = [];
+    let redirectedRequests = 0;
+    const other = createServer((_req, res) => { redirectedRequests += 1; res.end('unapproved'); });
+    await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+    const otherUrl = `http://127.0.0.1:${(other.address() as AddressInfo).port}/receive`;
+    const server = createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      req.on('end', () => {
+        requests.push({ method: req.method, url: req.url, body, referrer: req.headers.referer, cookie: req.headers.cookie });
+        if (req.url === '/result' && mode === 'slow') return; // no response: CDP initialization must remain cancellable
+        if (req.url === '/result' && (mode === '307' || mode === '308')) {
+          res.writeHead(Number(mode), { location: otherUrl });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/html', 'set-cookie': 'popupSession=retained; Path=/' });
+        res.end(`<html><title>native-popup-fixture</title><body><form method="POST" action="/result" target="_blank" ${mode === 'opener' ? 'rel="opener"' : ''}><input name="message" value="retained body" ${mode === 'keyboard' ? 'autofocus' : ''}><button type="submit" ${mode !== 'keyboard' ? 'autofocus' : ''}>Open result</button></form></body></html>`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+    fixture = { url, host: new URL(url).host, close: async () => { await new Promise<void>((resolve) => server.close(() => resolve())); await new Promise<void>((resolve) => other.close(() => resolve())); } };
+    dataRoot = createElectronDataRoot();
+    const finished = 'native-popup-post-complete';
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: { url }, toolCallId: 'popup-source', toolName: 'abu-browser__create_tab' },
+      { kind: 'tool-call', arguments: {}, toolCallId: 'popup-tabs', toolName: 'abu-browser__list_tabs' },
+      ...(mode === 'keyboard' ? [
+        { key: 'a', modifiers: [process.platform === 'darwin' ? 'meta' : 'ctrl'] },
+        { key: 'x', modifiers: ['shift'] },
+        { key: 'Tab', modifiers: [] },
+      ].map((keys, index): Parameters<typeof startOpenAiMock>[0][number] => (body) => ({
+        kind: 'tool-call', arguments: { tabId: extractCurrentTabId(body), ...keys },
+        toolCallId: `popup-edit-${index}`, toolName: 'abu-browser__keyboard',
+      })) : []),
+      ...(mode === 'manual' ? [] : [(body: unknown): MockReplyPlan => ({ kind: 'tool-call', arguments: { tabId: extractCurrentTabId(body), ...(mode === 'keyboard' ? { key: 'Enter' } : { locator: JSON.stringify({ css: 'button' }) }) }, toolCallId: 'popup-click', toolName: mode === 'keyboard' ? 'abu-browser__keyboard' : 'abu-browser__click' })]),
+      { kind: 'tool-call', arguments: {}, toolCallId: 'popup-after', toolName: 'abu-browser__list_tabs' },
+      { kind: 'complete', responseText: finished },
+    ]);
+    app = (await launchAbuElectron(dataRoot)).app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
+    await sendComposerMessage(page, mock, '打开网页，点击按钮并保留提交结果的新标签');
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowSiteButton(page).click();
+    await expect(page.getByText(finished, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    if (mode === 'manual') {
+      await page.getByRole('button', { name: '接管', exact: true }).click();
+      await expect(page.getByRole('button', { name: '交回阿布', exact: true })).toBeEnabled();
+      const draft = await app!.evaluate(async ({ webContents }, target) => {
+        const source = webContents.getAllWebContents().find((wc) => wc.getURL() === target)!;
+        return source.executeJavaScript('document.querySelector("input").value');
+      }, url);
+      expect(draft).toBe('retained body');
+      await app!.evaluate(({ webContents, dialog }, target) => {
+        const original = dialog.showMessageBoxSync;
+        dialog.showMessageBoxSync = ((...args: unknown[]) => {
+          dialog.showMessageBoxSync = original;
+          const options = args[1] as { detail: string; defaultId: number; cancelId: number };
+          if (!options.detail.includes(`${target}result`) || options.defaultId !== 0 || options.cancelId !== 0) throw new Error('Unsafe popup confirmation');
+          return 1; // deterministic human confirmation, native POST remains real
+        }) as typeof dialog.showMessageBoxSync;
+        const source = webContents.getAllWebContents().find((wc) => wc.getURL() === target)!;
+        void source.executeJavaScript('document.querySelector("form").requestSubmit()');
+      }, url);
+    }
+    const history = taskRequests(mock).at(-1)?.body as { messages?: Array<{ role?: string; content?: unknown }> };
+    const results = history.messages?.filter((message) => message.role === 'tool') ?? [];
+    await expect.poll(() => requests.filter((entry) => entry.url === '/result'), { message: JSON.stringify(results) }).toHaveLength(1);
+    expect(requests.find((entry) => entry.url === '/result')).toMatchObject({ method: 'POST', body: mode === 'keyboard' ? 'message=X' : 'message=retained+body', referrer: url, cookie: 'popupSession=retained' });
+    if (mode === '307' || mode === '308') {
+      // No document was delivered before the refused redirect. Remove the
+      // unpublished empty child; explain the refusal on the preserved source.
+      await expect(page.getByRole('status').filter({ hasText: '新窗口已阻止' })).toBeVisible();
+      await expect(browserTabRow(page, fixture.host)).toHaveCount(1);
+      expect(redirectedRequests).toBe(0);
+      expect(await ourNativeViewState(app!, url)).toMatchObject({ visible: true });
+      return;
+    }
+    if (mode === 'slow') {
+      // The source remains usable for trusted takeover even while its hidden
+      // native child has no response and cannot ACK renderer CDP commands.
+      await expect(browserTabRow(page, fixture.host)).toHaveCount(1);
+      await page.getByRole('button', { name: '接管', exact: true }).click();
+      await expect(page.getByRole('button', { name: '交回阿布', exact: true })).toBeEnabled();
+      expect(requests.filter((entry) => entry.url === '/result')).toHaveLength(1);
+      expect(await ourNativeViewState(app!, url)).toMatchObject({ visible: true });
+      return;
+    }
+    await expect(browserTabRow(page, fixture.host)).toHaveCount(2, { timeout: READY_TIMEOUT });
+    expect(await ourNativeViewState(app!, url)).not.toBeNull();
+    expect(await ourNativeViewState(app!, url)).toMatchObject({ visible: true });
+    await expect.poll(async () => (await ourNativeViewState(app!, `${url}result`)) !== null).toBe(true);
+    const nativeSemantics = await app!.evaluate(async ({ webContents }, target) => {
+      const child = webContents.getAllWebContents().find((wc) => wc.getURL() === target);
+      if (!child) throw new Error('Missing native popup');
+      return { opener: await child.executeJavaScript('window.opener !== null'), partition: child.session.getStoragePath() };
+    }, `${url}result`);
+    expect(nativeSemantics.opener).toBe(mode === 'opener');
+    expect(nativeSemantics.partition).toContain('abu-browser');
+
+    await browserTabRow(page, fixture.host).nth(1).click();
+    await expect.poll(async () => (await ourNativeViewState(app!, `${url}result`))?.visible).toBe(true);
+    expect(requests.filter((entry) => entry.url === '/result')).toHaveLength(1);
+    if (mode === 'manual') {
+      await expect(page.getByRole('button', { name: '交回阿布', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: '交回阿布', exact: true }).click();
+      await expect(page.getByRole('button', { name: '接管', exact: true })).toBeEnabled();
+    }
+    if (mode === 'post') {
+      await app!.evaluate(({ webContents }, target) => {
+        const child = webContents.getAllWebContents().find((wc) => wc.getURL() === target);
+        if (!child) throw new Error('Missing self-closing popup');
+        void child.executeJavaScript('window.close()').catch(() => {});
+      }, `${url}result`);
+      await expect(browserTabRow(page, fixture.host)).toHaveCount(1);
+      expect(await ourNativeViewState(app!, url)).not.toBeNull();
+    }
+  });
+  }
+
+  for (const veto of [false, true]) {
+    test(`safe close ${veto ? 'preserves a native beforeunload veto' : 'removes only an unused background tab'}`, async () => {
+      fixture = await startFixturePage('safe-close');
+      dataRoot = createElectronDataRoot();
+      const firstUrl = `${fixture.url}?page=retained`;
+      const secondUrl = `${fixture.url}?page=unused`;
+      const finished = 'safe-close-complete';
+      mock = await startOpenAiMock([
+        { kind: 'tool-call', arguments: { url: firstUrl }, toolCallId: 'retained', toolName: 'abu-browser__create_tab' },
+        { kind: 'tool-call', arguments: { url: secondUrl }, toolCallId: 'unused', toolName: 'abu-browser__create_tab' },
+        async (body) => {
+          const messages = (body as { messages: OpenAiRequestMessage[] }).messages;
+          const created = messages.filter((message) => message.role === 'tool').at(-1);
+          const match = /"tabId":\s*(\d+)/.exec(String(created?.content));
+          if (!match) throw new Error('Missing created tab id');
+          if (veto) {
+            // Install a real page veto with native user activation, without
+            // showing the tab or going through the AI's execute_js tool.
+            await app!.evaluate(async ({ webContents }, id) => {
+              const wc = webContents.fromId(id);
+              if (!wc) throw new Error('Missing native background tab');
+              await wc.executeJavaScript('window.onbeforeunload = () => false; true', true);
+            }, Number(match[1]));
+          }
+          return { kind: 'tool-call', arguments: { tabId: Number(match[1]) }, toolCallId: 'close-unused', toolName: 'abu-browser__close_tab' };
+        },
+        { kind: 'complete', responseText: finished },
+      ]);
+      app = (await launchAbuElectron(dataRoot)).app;
+      const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+      await waitForApp(page);
+      await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+      await configureBrowserAsking(page);
+      // Observe dialogs without Playwright auto-dismissing the native veto.
+      const observeDialogs = (target: Page) => target.on('dialog', () => {});
+      app.on('window', observeDialogs);
+      for (const known of app.windows()) observeDialogs(known);
+      await sendComposerMessage(page, mock, '保留第一篇网页，关闭后台未使用的第二篇');
+      await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+      await browserAllowSiteButton(page).click();
+      await expect(page.getByText(finished, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      const last = taskRequests(mock).at(-1)?.body as { messages: OpenAiRequestMessage[] };
+      const result = last.messages.filter((message) => message.role === 'tool').at(-1);
+      expect(String(result?.content)).toContain(veto ? 'requires_user_action' : 'closed');
+      if (veto) expect(String(result?.content)).toContain('page prevented closing');
+      await expect(browserTabRow(page, fixture.host)).toHaveCount(veto ? 2 : 1);
+      expect(await ourNativeViewState(app, firstUrl)).not.toBeNull();
+      expect((await ourNativeViewState(app, secondUrl)) !== null).toBe(veto);
+    });
+  }
+
+  test('stopping a browser task cancels its unfinished native page load', async () => {
+    fixture = await startFixturePage('navigation-cancellation');
+    dataRoot = createElectronDataRoot(); app = (await launchAbuElectron(dataRoot)).app;
+    const page = await app.firstWindow({timeout:READY_TIMEOUT}); await waitForApp(page);
+    const result = await app.evaluate(async ({app,webContents},url) => {
+      const require = process.getBuiltinModule('module').createRequire(`${app.getAppPath()}/main.cjs`);
+      const host = require('./browserHost.cjs');
+      const before = new Set(webContents.getAllWebContents().map(contents=>contents.id));
+      host.browserDispatch(null,'browser_create',{id:'cancel-navigation',url,x:400,y:60,width:600,height:500});
+      const contents = webContents.getAllWebContents().find(contents=>!before.has(contents.id))!;
+      await new Promise<void>(resolve=>contents.once('did-finish-load',()=>resolve()));
+      let arrived!:()=>void;
+      const requested = new Promise<void>(resolve=>{arrived=resolve;});
+      const server = require('node:http').createServer((_request: unknown,response: import('node:http').ServerResponse)=>{
+        response.writeHead(200,{'content-type':'text/html'}); response.flushHeaders();
+        response.write('<script>history.pushState(null, "", "#loading")</script>' + ' '.repeat(2048)); arrived();
+      });
+      await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));
+      try {
+        const controller = new AbortController();
+        const inPage = new Promise<void>(resolve=>contents.once('did-navigate-in-page',()=>resolve()));
+        const pending = host.performBrowserAutomation('navigate',{ownerId:'cancel-native-load',tabId:contents.id,url:`http://127.0.0.1:${server.address().port}/slow`},{signal:controller.signal})
+          .then(()=>false,()=>true);
+        await requested; await inPage; controller.abort();
+        const rejected = await pending;
+        return {rejected,loading:contents.isLoading(),destroyed:contents.isDestroyed()};
+      } finally { server.closeAllConnections(); await new Promise<void>(resolve=>server.close(resolve)); }
+    },fixture.url);
+    expect(result).toEqual({rejected:true,loading:false,destroyed:false});
+  });
+
+  test('cross-origin form approval names its region and permits the real embedded input', async () => {
+    fixture = await startFixturePage('cross-origin-approval', '<iframe id="form"></iframe><script>const u = new URL("/form", location.href); u.hostname = "localhost"; document.querySelector("iframe").src = u.href;</script>', {
+      '/form': {headers:{'content-type':'text/html'},body:'<input id="name" aria-label="Name">'},
+    });
+    dataRoot = createElectronDataRoot();
+    const regionFrom = (body: unknown): string => {
+      const messages = (body as {messages:OpenAiRequestMessage[]}).messages;
+      for (const message of [...messages].reverse()) {
+        if (message.role !== 'tool' || typeof message.content !== 'string') continue;
+        const match = /"frameId":\s*"(f\d+)"[^}]*"origin":\s*"http:\/\/localhost/.exec(message.content);
+        if (match) return match[1];
+      }
+      throw new Error('Expected a native cross-origin region in the snapshot result');
+    };
+    mock = await startOpenAiMock([
+      {kind:'tool-call',arguments:{},toolCallId:'region-list',toolName:'abu-browser__get_tabs'},
+      (body) => ({kind:'tool-call',arguments:{tabId:extractCurrentTabId(body),url:fixture!.url},toolCallId:'region-open',toolName:'abu-browser__navigate'}),
+      (body) => ({kind:'tool-call',arguments:{tabId:extractCurrentTabId(body)},toolCallId:'region-observe-page',toolName:'abu-browser__snapshot'}),
+      (body) => ({kind:'tool-call',arguments:{tabId:extractCurrentTabId(body),frameId:regionFrom(body)},toolCallId:'region-observe-form',toolName:'abu-browser__snapshot'}),
+      (body) => ({kind:'tool-call',arguments:{tabId:extractCurrentTabId(body),frameId:regionFrom(body),locator:JSON.stringify({css:'#name'}),value:'Approved through UI'},toolCallId:'region-fill',toolName:'abu-browser__fill'}),
+      {kind:'complete',responseText:'cross-origin-form-complete'},
+    ]);
+    app = (await launchAbuElectron(dataRoot)).app;
+    const page = await app.firstWindow({timeout:READY_TIMEOUT}); await waitForApp(page);
+    await configureLocalMockProvider(page,mock.baseUrl,LOCAL_MOCK_PROVIDER_OPTIONS); await configureBrowserAsking(page);
+    await sendComposerMessage(page,mock,'填写嵌入表单里的姓名');
+    await expect(browserConfirmHeading(page)).toBeVisible({timeout:READY_TIMEOUT});
+    await browserAllowSiteButton(page).click();
+    await expect(browserConfirmHeading(page)).toBeVisible({timeout:READY_TIMEOUT});
+    await expect(page.locator('code').filter({hasText:'abu-browser__snapshot (http://localhost:'})).toContainText('localhost');
+    await browserAllowSiteButton(page).click();
+    await expect(page.getByText('cross-origin-form-complete',{exact:true})).toBeVisible({timeout:READY_TIMEOUT});
+    const value = await app.evaluate(async ({webContents}, url) => {
+      const contents = webContents.getAllWebContents().find(contents => contents.getURL() === url)!;
+      const frame = contents.mainFrame.frames.find(frame => frame.origin.includes('localhost'))!;
+      return frame.executeJavaScript('document.querySelector("#name").value');
+    },fixture.url);
+    expect(value).toBe('Approved through UI');
+  });
+
+  test('native picker cancellation lasts between actions and manual takeover restores control', async () => {
+    fixture = await startFixturePage('native-picker-guard', '<input id="file" type="file"><button id="arm">Arm</button>', {
+      '/frame': { headers: { 'content-type': 'text/html' }, body: '<input id="file" type="file"><input id="name" aria-label="Name">' },
+    });
+    dataRoot = createElectronDataRoot();
+    app = (await launchAbuElectron(dataRoot)).app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    const result = await app.evaluate(async ({ app, webContents, BrowserWindow }, url) => {
+      const require = process.getBuiltinModule('module').createRequire(`${app.getAppPath()}/main.cjs`);
+      const host = require('./browserHost.cjs');
+      const id = 'acceptance-picker-page';
+      const before = new Set(webContents.getAllWebContents().map(contents => contents.id));
+      host.browserDispatch(null, 'browser_create', { id, url, x: 400, y: 60, width: 600, height: 500 });
+      const tabId = webContents.getAllWebContents().find(contents => !before.has(contents.id))!.id;
+      const contents = webContents.fromId(tabId)!;
+      await new Promise<void>(resolve => contents.once('did-finish-load', () => resolve()));
+      BrowserWindow.getAllWindows()[0].show();
+      BrowserWindow.getAllWindows()[0].focus();
+      contents.focus();
+      await host.performBrowserAutomation('click', { ownerId: 'picker-acceptance', tabId, locator: { css: '#arm' } }).catch((error: Error) => { throw new Error('picker arm stage: ' + error.message); });
+      const attachedAfterAction = contents.debugger.isAttached();
+      // Each call has real user activation in a visible native view. A positive
+      // interception error, not a timeout or hidden-window refusal, is required.
+      const errors: string[] = [];
+      for (const method of ['showOpenFilePicker', 'showSaveFilePicker', 'showDirectoryPicker']) {
+        errors.push(await contents.executeJavaScript(`window.${method}().then(() => 'RESOLVED', e => e.name + ':' + e.message)`, true));
+      }
+      const inputCancelled = await contents.executeJavaScript(`new Promise(resolve => {
+        const input = document.querySelector('#file');
+        input.addEventListener('cancel', () => resolve(true), {once:true});
+        input.click();
+      })`, true);
+      // Attach both same-process and cross-site regions AFTER the tool ends.
+      await contents.executeJavaScript(`Promise.all(['127.0.0.1', 'localhost'].map(host => new Promise(resolve => {
+        const frame = document.createElement('iframe');
+        const target = new URL('/frame', location.href); target.hostname = host;
+        frame.onload = () => resolve(true); frame.src = target.href; document.body.append(frame);
+      })))`);
+      const frameChecks = [];
+      for (const frame of contents.mainFrame.frames) {
+        const cancelled = await frame.executeJavaScript(`new Promise(resolve => {
+          const input = document.querySelector('#file');
+          input.addEventListener('cancel', () => resolve(true), {once:true}); input.click();
+        })`, true);
+        frameChecks.push({cancelled, origin: frame.origin, processId: frame.processId});
+      }
+      const regions = await host.performBrowserAutomation('get_tabs', {ownerId:'picker-acceptance', framesForTabId:tabId});
+      const cross = regions.windows[0].tabs.find((tab: {tabId:number}) => tab.tabId === tabId).frames.find((frame: {origin:string}) => frame.origin?.includes('localhost'));
+      if (!cross) throw new Error('Native region discovery: ' + JSON.stringify({regions, tree: await contents.debugger.sendCommand('Page.getFrameTree'), targets: await contents.debugger.sendCommand('Target.getTargets')}));
+      let unapprovedRegionRejected = false;
+      try { await host.performBrowserAutomation('fill', {ownerId:'picker-acceptance', tabId, frameId:cross.frameId, expectedOrigin:new URL(url).origin, locator:{css:'#name'}, value:'WRONG'}); }
+      catch (error) { unapprovedRegionRejected = String(error).includes('approved'); }
+      const crossShot = await host.performBrowserAutomation('snapshot', {ownerId:'picker-acceptance', tabId, frameId:cross.frameId, expectedOrigin:cross.origin});
+      await host.performBrowserAutomation('fill', {ownerId:'picker-acceptance', tabId, frameId:cross.frameId, expectedOrigin:cross.origin, locator:{css:'#name'}, value:'Approved region'});
+      const crossFrame = contents.mainFrame.frames.find(frame => frame.origin.includes('localhost'))!;
+      const crossValue = await crossFrame.executeJavaScript('document.querySelector("#name").value');
+      // Start a 30-second native wait, then take over after its CDP command
+      // is dispatched into the isolated world. The wait must actually clean
+      // up; a renderer-side Promise.race would leave takeover draining it.
+      let waiting!: () => void;
+      const armedWait = new Promise<void>(resolve => { waiting = resolve; });
+      const originalSend = contents.debugger.sendCommand.bind(contents.debugger);
+      contents.debugger.sendCommand = ((method: string, params?: Record<string, unknown>, session?: string) => {
+        const result = originalSend(method, params, session);
+        if (method === 'Runtime.evaluate' && String(params?.expression).includes('"wait_for"')) waiting();
+        return result;
+      }) as typeof contents.debugger.sendCommand;
+      const pendingWait = host.performBrowserAutomation('wait_for', {ownerId:'picker-acceptance', tabId, frameId:cross.frameId, expectedOrigin:cross.origin,
+        condition:{type:'appear', locator:{css:'#not-created'}}, timeout:30000}).then(() => 'unexpected-success', (error: Error) => error.message);
+      await armedWait;
+      const take = await host.browserDispatch(null, 'browser_control', { id, action: 'take' });
+      const waitOutcome = await pendingWait;
+      contents.debugger.sendCommand = originalSend;
+      const detachedOnTake = !contents.debugger.isAttached();
+      const handedBack = host.browserDispatch(null, 'browser_control', { id, action: 'release' });
+      let refusedWrite = false;
+      try { await host.performBrowserAutomation('click', { ownerId: 'picker-acceptance', tabId, locator: { css: '#arm' } }); }
+      catch (error) { refusedWrite = String(error).includes('Observe'); }
+      await host.performBrowserAutomation('snapshot', { ownerId: 'picker-acceptance', tabId }).catch((error: Error) => { throw new Error('handback observe stage: ' + error.message); });
+      await host.performBrowserAutomation('click', { ownerId: 'picker-acceptance', tabId, locator: { css: '#arm' } }).catch((error: Error) => { throw new Error('handback write stage: ' + error.message); });
+      return { waitOutcome, errors, inputCancelled, unapprovedRegionRejected, crossValue, crossShot, frameChecks, mainProcessId: contents.mainFrame.processId, attachedAfterAction, take, detachedOnTake, handedBack, refusedWrite, rearmed: contents.debugger.isAttached() };
+    }, fixture.url);
+    expect(result.attachedAfterAction).toBe(true);
+    for (const error of result.errors) expect(error).toMatch(/AbortError:.*Intercepted by Page.setInterceptFileChooserDialog/);
+    expect(result.inputCancelled).toBe(true);
+    expect(result.unapprovedRegionRejected).toBe(true);
+    expect(result.crossValue).toBe('Approved region');
+    expect(result.crossShot).toHaveProperty('elements');
+    expect(result.frameChecks).toHaveLength(2);
+    for (const frame of result.frameChecks) expect(frame.cancelled).toBe(true);
+    expect(result.frameChecks.find(frame => frame.origin.includes('localhost'))?.processId).not.toBe(result.mainProcessId);
+    expect(result.waitOutcome).toMatch(/control|cancelled/);
+    expect(result.take).toBe('human');
+    expect(result.detachedOnTake).toBe(true);
+    expect(result.handedBack).toBe('ai');
+    expect(result.refusedWrite).toBe(true);
+    expect(result.rearmed).toBe(true);
+  });
+
+  test('a finished child keeps its result page but cannot issue late browser work', async () => {
+    fixture = await startFixturePage('child-deliverable');
+    dataRoot = createElectronDataRoot();
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: { url: fixture.url }, toolCallId: 'main-page', toolName: 'abu-browser__create_tab' },
+      { kind: 'complete', responseText: 'child-lifecycle-ready' },
+    ]);
+    app = (await launchAbuElectron(dataRoot)).app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+    await configureBrowserAsking(page);
+    await sendComposerMessage(page, mock, '打开网页并保留子任务结果');
+    await expect(browserConfirmHeading(page)).toBeVisible({ timeout: READY_TIMEOUT });
+    await browserAllowSiteButton(page).click();
+    await expect(page.getByText('child-lifecycle-ready', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    const childUrl = `${fixture.url}?child=result`;
+    const result = await app.evaluate(async ({ app }, url) => {
+      // Real Electron host/transport/native view; deterministic scheduler only.
+      const require = process.getBuiltinModule('module').createRequire(`${app.getAppPath()}/main.cjs`);
+      const host = require('./browserHost.cjs');
+      const transport = await require('./browserAutomationHost.cjs').ensureBrowserAutomationServer();
+      const ownerId = 'acceptance-native-child';
+      const runId = 'acceptance-child';
+      host.browserDispatch(null, 'browser_register_run', { conversationId: ownerId, runKey: runId });
+      const send = async (action: string, payload: Record<string, unknown>) => {
+        const response = await fetch(transport.endpoint, {
+          method: 'POST', headers: { Authorization: `Bearer ${transport.token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action, payload }),
+        });
+        return response.json();
+      };
+      const created = await send('create_tab', { ownerId, runId, url });
+      if (!created.success) throw new Error(JSON.stringify(created));
+      const tabId = created.data.tabId;
+      const kept = await send('retain_tab', { ownerId, runId, tabId });
+      if (!kept.success) throw new Error(JSON.stringify(kept));
+      await host.browserDispatch(null, 'browser_dispose_owner', { conversationId: ownerId, runKey: runId });
+      const late = await send('get_tabs', { ownerId, runId, createIfEmpty: false });
+      const main = await send('get_tabs', { ownerId, createIfEmpty: false });
+      return { rejected: !late.success, listed: JSON.stringify(main).includes(url), tabId };
+    }, childUrl);
+    expect(result.rejected).toBe(true);
+    expect(result.listed).toBe(true);
+    expect(await ourNativeViewState(app, childUrl)).not.toBeNull();
+  });
+
   test('keeps the same browser tab and page alive across a conversation switch and back', async () => {
     const responseA = `abu-e2e-lifecycle-a-complete-${randomUUID()}`;
     const responseB = `abu-e2e-lifecycle-b-complete-${randomUUID()}`;
@@ -760,6 +1191,33 @@ test.describe('Electron browser view lifecycle E2E', () => {
     await stampLivePageMarker(app, fixture.url, liveMarker);
     expect(await readLivePageMarker(app, fixture.url)).toBe(liveMarker);
 
+    // Observe real PTY lifetime without replacing its behavior.
+    await app.evaluate(({ app }) => {
+      const require = process.getBuiltinModule('module').createRequire(`${app.getAppPath()}/main.cjs`);
+      const pty = require('node-pty');
+      const original = pty.spawn;
+      const records: { pid: number; exited: boolean }[] = [];
+      (globalThis as unknown as { panelPtys: typeof records }).panelPtys = records;
+      pty.spawn = (...args: unknown[]) => {
+        const terminal = original(...args);
+        const record = { pid: terminal.pid as number, exited: false };
+        records.push(record);
+        terminal.onExit(() => { record.exited = true; });
+        return terminal;
+      };
+    });
+    await page.getByRole('button', { name: /^(新建标签页|New tab)$/ }).click();
+    await page.getByRole('button', { name: /^(新建终端|New Terminal)$/ }).click();
+    const terminalTab = page.getByRole('tab', { name: /^(终端|Terminal)$/ });
+    await expect(terminalTab).toHaveAttribute('aria-selected', 'true');
+    const terminalId = await terminalTab.locator('..').getAttribute('data-tab-id');
+    await expect.poll(() => app!.evaluate(() =>
+      (globalThis as unknown as { panelPtys: { pid: number; exited: boolean }[] }).panelPtys.length,
+    )).toBe(1);
+    const terminalBefore = await app.evaluate(() =>
+      (globalThis as unknown as { panelPtys: { pid: number; exited: boolean }[] }).panelPtys,
+    );
+
     // --- Switch to a brand-new conversation B ---
     await clickNewTask(page);
     const promptB = `abu-e2e-lc-b-${randomUUID().slice(0, 8)}`;
@@ -768,6 +1226,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(4);
     await expect(page.getByText(responseB, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
 
+    await expect(page.getByRole('tab', { name: /^(终端|Terminal)$/ })).toHaveCount(0);
     // B must never see A's tab...
     await expect(browserTabRow(page, fixture.host)).toHaveCount(0);
     await expect(page.locator(`[data-abu-workspace-tabs] [data-tab-id="${tabId}"]`)).toHaveCount(0);
@@ -788,12 +1247,15 @@ test.describe('Electron browser view lifecycle E2E', () => {
     // and not the generic "new tab" placeholder a rebuilt tab would show.
     await expect(tabInAAgain).toContainText(fixture.host);
 
-    // The right panel may have auto-collapsed on the switch away (this
-    // conversation has no workspace); reveal it if so, then confirm the SAME
-    // native view resumes showing the SAME page.
-    if (await showPanelToggle(page).isVisible().catch(() => false)) {
-      await showPanelToggle(page).click();
-    }
+    // Returning restores the expanded panel without another toggle click.
+    await expect(page.locator('[data-abu-right-panel]')).toBeVisible();
+    const returnedTerminal = page.locator(`[data-abu-workspace-tabs] [data-tab-id="${terminalId}"]`).getByRole('tab');
+    await expect(returnedTerminal).toHaveAttribute('aria-selected', 'true');
+    expect(await app.evaluate(() =>
+      (globalThis as unknown as { panelPtys: { pid: number; exited: boolean }[] }).panelPtys,
+    )).toEqual(terminalBefore);
+    expect(terminalBefore[0].exited).toBe(false);
+    await tabInAAgain.getByRole('tab').click();
     await expect.poll(
       async () => (await ourNativeViewState(app!, fixture!.url))?.visible ?? null,
       { timeout: READY_TIMEOUT },
@@ -804,6 +1266,15 @@ test.describe('Electron browser view lifecycle E2E', () => {
     expect(finalStates.filter((state) => state.url === fixture!.url)).toHaveLength(1);
     // ...and it is the SAME DOCUMENT: a silent reload would have wiped this.
     expect(await readLivePageMarker(app!, fixture.url)).toBe(liveMarker);
+    // Explicit collapse is remembered as well, rather than force-opening A.
+    await page.getByRole('button', { name: /^(隐藏面板|Hide panel)$/ }).click();
+    await ensureSidebarExpanded(page);
+    await page.getByText(promptB, { exact: true }).click();
+    await page.getByText(promptA, { exact: true }).click();
+    await expect(page.locator('[data-abu-right-panel]')).toBeHidden();
+    await showPanelToggle(page).click();
+    await expect(tabInAAgain.getByRole('tab')).toHaveAttribute('aria-selected', 'true');
+
   });
 
   test('finds a plain HTML button by role and name, then clicks the ref it handed back', async () => {
@@ -1123,7 +1594,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
 
     // 2. get_dialog read it, and labelled the page's words as the page's.
     const readResult = toolResults.find((text) => text.includes('"pending": true'));
-    expect(readResult).toBeTruthy();
+    expect(readResult, JSON.stringify(toolResults)).toBeTruthy();
     expect(readResult).toContain('"type": "confirm"');
     expect(readResult).toContain('确定要提交吗');
     expect(readResult).toContain('written by the web page, not by the user');

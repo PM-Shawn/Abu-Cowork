@@ -297,7 +297,6 @@ describe('chatStore', () => {
 
         expect(usePreviewStore.getState().tabs.map((tab) => tab.id)).toEqual([
           'agent-survivor',
-          paneTab,
         ]);
         expect(invokeMock).toHaveBeenCalledWith('browser_close', {
           id: 'agent-deleted',
@@ -308,10 +307,10 @@ describe('chatStore', () => {
           'browser_close',
           expect.objectContaining({ id: 'agent-survivor' }),
         );
-        expect(invokeMock).not.toHaveBeenCalledWith(
-          'browser_close',
-          expect.objectContaining({ id: paneTab }),
-        );
+        // User-opened tabs now belong to the conversation too.
+        expect(invokeMock).toHaveBeenCalledWith('browser_close', {
+          id: paneTab, reason: 'lifecycle',
+        });
         expect(invokeMock).toHaveBeenCalledWith('browser_dispose_owner', {
           conversationId: deletedId,
         });

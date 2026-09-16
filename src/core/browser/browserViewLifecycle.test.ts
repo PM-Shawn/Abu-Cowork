@@ -45,8 +45,8 @@ describe('disposeRunBrowserViews', () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it('asks the host to reap exactly one run of one conversation', () => {
-    disposeRunBrowserViews('conv-1', 'sar-abc');
+  it('asks the host to settle exactly one run of one conversation', async () => {
+    await disposeRunBrowserViews('conv-1', 'sar-abc');
 
     expect(invokeMock).toHaveBeenCalledWith('browser_dispose_owner', {
       conversationId: 'conv-1',
@@ -67,11 +67,10 @@ describe('disposeRunBrowserViews', () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it('never rejects when the host command fails — cleanup must not fail a run', async () => {
+  it('surfaces failed authority revocation instead of claiming cleanup succeeded', async () => {
     invokeMock.mockRejectedValue(new Error('host is gone'));
 
-    expect(() => disposeRunBrowserViews('conv-1', 'sar-abc')).not.toThrow();
-    await Promise.resolve();
+    await expect(disposeRunBrowserViews('conv-1', 'sar-abc')).rejects.toThrow('host is gone');
   });
 
   it('leaves the conversation-wide command untouched (no runKey on the delete cascade)', () => {

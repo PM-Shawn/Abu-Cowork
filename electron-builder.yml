@@ -56,6 +56,8 @@ afterPack: scripts/electron-sign-nested.cjs
 files:
   - "!**/*"
   - "electron/**/*"
+  # The main host and bundled renderer use the same URL-only risk classifier.
+  - "abu-browser-shared/highRiskSites.mjs"
   - "!electron/**/*.test.cjs"        # development-only security/unit tests
   - "!electron/native-helper/**"   # Rust source + target/ (huge) — binary ships via extraResources
   - "!electron/sandbox-launcher/**" # Rust source + target/ (huge) — binary ships via extraResources

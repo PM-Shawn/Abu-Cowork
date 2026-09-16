@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SettingsState } from '@/stores/settingsStore';
-import { resolveAgentModel } from './settingsSelectors';
+import {
+  getModelDisplayLabel,
+  getModelUnavailableReason,
+  hasAnyEnabledProvider,
+  resolveAgentModel,
+} from './settingsSelectors';
 
 function makeSettings({
   activeProviderId = 'deepseek',
@@ -58,5 +63,53 @@ describe('resolveAgentModel', () => {
 
     expect(resolveAgentModel('inherit', settings)).toBe('deepseek-v4-flash');
     expect(resolveAgentModel('missing-model', settings)).toBe('deepseek-v4-flash');
+  });
+});
+
+describe('getModelUnavailableReason', () => {
+  const base = makeSettings();
+  const deepseek = base.providers[0];
+
+  it('returns null for an enabled provider that still lists the model', () => {
+    expect(getModelUnavailableReason(base, { providerId: 'deepseek', modelId: 'deepseek-v4-flash' })).toBeNull();
+  });
+
+  it('reports provider-removed when the provider id is gone', () => {
+    expect(getModelUnavailableReason(base, { providerId: 'gone', modelId: 'x' })).toBe('provider-removed');
+  });
+
+  it('reports provider-removed for a builtin the user deleted (hidden: not userAdded, disabled, no key)', () => {
+    const state = { providers: [{ ...deepseek, enabled: false, apiKey: '', userAdded: false }] };
+    expect(getModelUnavailableReason(state, { providerId: 'deepseek', modelId: 'deepseek-v4-flash' })).toBe('provider-removed');
+  });
+
+  it('reports provider-disabled when the toggle is off but the card is still visible', () => {
+    const state = { providers: [{ ...deepseek, enabled: false }] };
+    expect(getModelUnavailableReason(state, { providerId: 'deepseek', modelId: 'deepseek-v4-flash' })).toBe('provider-disabled');
+  });
+
+  it('reports model-removed when the enabled provider no longer lists the model', () => {
+    expect(getModelUnavailableReason(base, { providerId: 'deepseek', modelId: 'retired-model' })).toBe('model-removed');
+  });
+});
+
+describe('hasAnyEnabledProvider', () => {
+  it('is false when every provider is off', () => {
+    const s = makeSettings();
+    expect(hasAnyEnabledProvider({ providers: s.providers.map((p) => ({ ...p, enabled: false })) })).toBe(false);
+  });
+  it('is true when one provider is on', () => {
+    expect(hasAnyEnabledProvider(makeSettings())).toBe(true);
+  });
+});
+
+describe('getModelDisplayLabel', () => {
+  it('uses the model label when the provider still lists it', () => {
+    const s = makeSettings();
+    s.providers[0].models[0] = { ...s.providers[0].models[0], label: 'DS Flash' };
+    expect(getModelDisplayLabel(s, { providerId: 'deepseek', modelId: 'deepseek-v4-flash' })).toBe('DS Flash');
+  });
+  it('falls back to the raw model id when the provider is gone', () => {
+    expect(getModelDisplayLabel(makeSettings(), { providerId: 'gone', modelId: 'model-a' })).toBe('model-a');
   });
 });

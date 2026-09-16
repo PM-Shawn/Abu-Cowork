@@ -47,6 +47,36 @@ export function getActiveApiKey(state: SettingsState): string {
   return p?.apiKey ?? '';
 }
 
+export type ModelUnavailableReason = 'provider-removed' | 'provider-disabled' | 'model-removed';
+export interface ModelRef { providerId: string; modelId: string }
+
+/**
+ * Whether a conversation's pinned model can still be used. Mirrors the
+ * settings page's own visibility rule (AIServicesSection `visibleProviders`):
+ * a builtin the user trashed stays in the array but is hidden, so it reads as
+ * removed, not merely switched off. Callers skip enterprise-gateway models.
+ */
+export function getModelUnavailableReason(
+  state: Pick<SettingsState, 'providers'>,
+  ref: ModelRef,
+): ModelUnavailableReason | null {
+  const p = state.providers.find((x) => x.id === ref.providerId);
+  const visible = !!p && (p.userAdded || p.enabled || p.apiKey.trim().length > 0);
+  if (!p || !visible) return 'provider-removed';
+  if (!p.enabled) return 'provider-disabled';
+  if (!p.models.some((m) => m.id === ref.modelId)) return 'model-removed';
+  return null;
+}
+
+export function hasAnyEnabledProvider(state: Pick<SettingsState, 'providers'>): boolean {
+  return state.providers.some((p) => p.enabled);
+}
+
+export function getModelDisplayLabel(state: Pick<SettingsState, 'providers'>, ref: ModelRef): string {
+  const p = state.providers.find((x) => x.id === ref.providerId);
+  return p?.models.find((m) => m.id === ref.modelId)?.label || ref.modelId;
+}
+
 /** Resolve an agent's model field into the actual model ID */
 export function resolveAgentModel(agentModel: string | undefined, state: SettingsState): string {
   const globalModel = state.activeModel.modelId;

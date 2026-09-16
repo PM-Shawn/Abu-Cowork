@@ -47,7 +47,7 @@ export default function SkillDetailModal({
   // Derive display data from either installed skill or template
   const name = skill?.name ?? template?.name ?? '';
   const description = skill?.description ?? template?.description ?? '';
-  const addedBy = skill?.filePath?.includes('builtin-skills') ? 'Anthropic' : 'User';
+  const addedBy = skill?.filePath?.includes('builtin-skills') ? 'Anthropic' : t.toolbox.sourceUser;
 
   // For templates, try to parse the SKILL.md content for metadata
   let trigger: string | undefined;
@@ -70,7 +70,7 @@ export default function SkillDetailModal({
     license = skill.license;
   } else if (template?.content) {
     // Parse the template SKILL.md to extract metadata
-    const parsedSkill = skillLoader.getSkill(template.name);
+    const parsedSkill = skillLoader.getSkill(template.name, { includeDisabledPlugins: true });
     if (parsedSkill) {
       trigger = parsedSkill.trigger;
       doNotTrigger = parsedSkill.doNotTrigger;

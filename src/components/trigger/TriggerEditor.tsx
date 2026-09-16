@@ -805,6 +805,18 @@ export default function TriggerEditor() {
                           {t.trigger.imNoChannels}
                         </p>
                       )}
+                      {/*
+                        This channel is also where the run ASKS. `triggerEngine`
+                        builds the approval target from this same output config
+                        (`core/im/approvalTarget.ts`), so a confirmation lands
+                        where the results land — and with no channel chosen it
+                        has nowhere to go and is refused. Said here rather than
+                        left for the user to discover as a run that quietly
+                        achieved nothing.
+                      */}
+                      <p className="text-caption text-[var(--abu-text-muted)] mt-1">
+                        {t.trigger.outputChannelApprovalHint}
+                      </p>
                     </div>
                     <div>
                       <label className="block text-minor text-[var(--abu-text-tertiary)] mb-1">{t.trigger.outputToGroup}</label>

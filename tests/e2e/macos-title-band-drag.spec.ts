@@ -96,10 +96,10 @@ test.describe.serial('Electron macOS title band', () => {
 
     // A second view, reached through its own layout path (TopTabNav), so the
     // fix is not silently welcome-screen-only.
-    await page.getByRole('button', { name: /^(工具箱|Toolbox)$/ }).click();
-    await expect(page.getByRole('button', { name: /^(工具箱|Toolbox)$/ })).toBeVisible();
+    await page.getByRole('button', { name: /^(扩展|Extensions)$/ }).click();
+    await expect(page.getByRole('button', { name: /^(扩展|Extensions)$/ })).toBeVisible();
     for (const x of cardXs) {
-      expect(await appRegionAt(page, x, BAND_Y), `toolbox view at x=${x}`).toBe('drag');
+      expect(await appRegionAt(page, x, BAND_Y), `extensions view at x=${x}`).toBe('drag');
     }
   });
 });

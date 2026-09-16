@@ -1,22 +1,31 @@
 // @vitest-environment happy-dom
 import { useEffect } from 'react'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, fireEvent, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, fireEvent, screen, act } from '@testing-library/react'
 import { usePetDrag } from './usePetDrag'
+import { useSettingsStore } from '@/stores/settingsStore'
+import { PET_POSITION_EVENT } from '@/core/pet/petPositionSync'
 
-const { startDragging } = vi.hoisted(() => ({
+const { startDragging, movedHandlers, emit } = vi.hoisted(() => ({
   startDragging: vi.fn(() => Promise.resolve()),
+  movedHandlers: [] as Array<(e: { payload: { x: number; y: number } }) => void>,
+  emit: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: vi.fn(() => ({
     startDragging,
     setPosition: vi.fn(() => Promise.resolve()),
-    onMoved: vi.fn(() => Promise.resolve(() => {})),
+    onMoved: vi.fn((handler: (e: { payload: { x: number; y: number } }) => void) => {
+      movedHandlers.push(handler)
+      return Promise.resolve(() => {})
+    }),
   })),
   primaryMonitor: vi.fn(() => Promise.resolve(null)),
   PhysicalPosition: vi.fn(),
 }))
+
+vi.mock('@tauri-apps/api/event', () => ({ emit }))
 
 function Harness({ onReady }: { onReady: (consumeDrag: () => boolean) => void }) {
   const { ref, consumeDrag } = usePetDrag<HTMLDivElement>()
@@ -86,5 +95,48 @@ describe('usePetDrag click/drag disambiguation', () => {
     fireEvent.mouseDown(el, { button: 2, screenX: 100, screenY: 100 })
     fireEvent.mouseMove(document, { screenX: 200, screenY: 200 })
     expect(startDragging).not.toHaveBeenCalled()
+  })
+})
+
+describe('usePetDrag position persistence', () => {
+  beforeEach(() => {
+    movedHandlers.length = 0
+    emit.mockClear()
+    localStorage.clear()
+    useSettingsStore.setState({ petPosition: null })
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('reports the settled position to the main window instead of writing its own settings copy', async () => {
+    const setPetPosition = vi.spyOn(useSettingsStore.getState(), 'setPetPosition')
+    renderHarness()
+    expect(movedHandlers).toHaveLength(1)
+
+    // A drag streams many moves; only the settled one is reported.
+    act(() => {
+      movedHandlers[0]({ payload: { x: 300, y: 300 } })
+      movedHandlers[0]({ payload: { x: 480, y: 360 } })
+    })
+    expect(emit).not.toHaveBeenCalled()
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+    })
+
+    expect(emit).toHaveBeenCalledTimes(1)
+    expect(emit).toHaveBeenCalledWith(PET_POSITION_EVENT, { x: 480, y: 360 })
+    expect(setPetPosition).not.toHaveBeenCalled()
+    expect(useSettingsStore.getState().petPosition).toBeNull()
+    setPetPosition.mockRestore()
+  })
+
+  it('hands a legacy localStorage position to the main window and drops the old key', () => {
+    localStorage.setItem('abu-pet-position', JSON.stringify({ x: 10, y: 20 }))
+    renderHarness()
+    expect(emit).toHaveBeenCalledWith(PET_POSITION_EVENT, { x: 10, y: 20 })
+    expect(localStorage.getItem('abu-pet-position')).toBeNull()
   })
 })

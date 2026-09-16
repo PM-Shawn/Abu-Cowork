@@ -1,10 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   normalizeSeparators,
   getBaseName,
   getParentDir,
   joinPath,
   extractUsername,
+  ensureParentDir,
 } from './pathUtils';
 
 describe('pathUtils', () => {
@@ -117,5 +118,23 @@ describe('pathUtils', () => {
     it('returns "user" for empty input', () => {
       expect(extractUsername('')).toBe('user');
     });
+  });
+});
+
+describe('ensureParentDir under concurrency', () => {
+  // Regression (TESTING.md §3 "Mocked modules must not be `await import()`ed
+  // concurrently"): two parallel callers from this one module used to race a
+  // dynamic `import('@tauri-apps/plugin-fs')`; vitest served the second one the
+  // REAL plugin, which threw `window is not defined` from Tauri's invoke().
+  it('routes every concurrent call through the setup.ts plugin-fs mock', async () => {
+    const { mkdir } = await import('@tauri-apps/plugin-fs');
+    vi.mocked(mkdir).mockClear();
+
+    await Promise.all([
+      ensureParentDir('/tmp/abu-a/one.txt'),
+      ensureParentDir('/tmp/abu-b/two.txt'),
+    ]);
+
+    expect(vi.mocked(mkdir).mock.calls.map(([dir]) => dir).sort()).toEqual(['/tmp/abu-a', '/tmp/abu-b']);
   });
 });

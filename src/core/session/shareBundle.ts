@@ -24,6 +24,9 @@ import { normalizeSeparators } from '@/utils/pathUtils';
 import { listSnapshots, readSnapshotBytes, type SnapshotEntry, type SnapshotSource } from './outputSnapshots';
 import { redactText, redactDeep, type RedactionSample } from './shareRedactor';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
+import { isBrowserRunReportMessage } from '@/core/observability/browserRunReport';
+import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
+import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '@/core/llm/adapter';
 
 export const SHARE_SCHEMA_VERSION = 1 as const;
 
@@ -99,7 +102,20 @@ export async function buildShareBundle(
   // is a summary of the whole conversation that redactText would NOT scrub (it
   // only scrubs `content`) — dropping them avoids leaking an un-redacted
   // summary. The summarized messages themselves are still present and redacted.
-  const visible = conv.messages.filter((m) => !m.isSystem && !isCompactBoundary(m));
+  // Unattended run report cards (U7) are dropped for the SAME reason: they
+  // render as a card rather than a message, carry empty `content`, and their
+  // payload holds the origins the run visited — internal hostnames that
+  // `redactText` never sees, because it only scrubs `content`. Sharing a
+  // conversation must not leak an intranet host list.
+  // Turn-cap notices are dropped for the first half of that reason only: they
+  // render as a card and carry empty `content`, so exporting one would put a
+  // blank bubble in the bundle. Their payload is two numbers — nothing to leak.
+  const visible = conv.messages.filter(
+    (m) => !m.isSystem
+      && !isCompactBoundary(m)
+      && !isBrowserRunReportMessage(m)
+      && !isMaxTurnsNoticeMessage(m),
+  );
   const cleanedMessages: Message[] = [];
   let done = 0;
   for (const src of visible) {
@@ -204,6 +220,37 @@ async function prepareMessage(
     const r = redactText(clone.thinking);
     onRedaction(r);
     clone.thinking = r.text;
+  }
+  if (clone.runState !== 'failed' && clone.runState !== 'connection-failed') {
+    delete clone.runError;
+    delete clone.runErrorDetails;
+  }
+  if (clone.runError) {
+    const r = redactText(clone.runError);
+    onRedaction(r);
+    clone.runError = sanitizeUntrustedLlmErrorText(r.text, 'Provider request failed');
+  }
+  const runErrorDetails = normalizeUpstreamErrorDetails(clone.runErrorDetails);
+  if (!runErrorDetails) {
+    delete clone.runErrorDetails;
+  } else {
+    const redactOptionalField = (value: string | undefined): string | undefined => {
+      if (!value) return undefined;
+      const redacted = redactText(value);
+      onRedaction(redacted);
+      return redacted.text;
+    };
+    // Every provider-controlled string can echo credentials, including fields
+    // normally used as identifiers. Re-normalize after redaction so a replaced
+    // value can never escape the bounded share-contract projection.
+    const redactedDetails = normalizeUpstreamErrorDetails({
+      status: runErrorDetails.status,
+      error_type: redactOptionalField(runErrorDetails.error_type),
+      traceId: redactOptionalField(runErrorDetails.traceId),
+      summary: redactOptionalField(runErrorDetails.summary),
+    });
+    if (redactedDetails) clone.runErrorDetails = redactedDetails;
+    else delete clone.runErrorDetails;
   }
   return clone;
 }

@@ -4,7 +4,7 @@
  * Falls back to system Python if embedded runtime is not available (dev mode).
  */
 
-import { resolveResource } from '@tauri-apps/api/path';
+import { resolveResource, resolve } from '@tauri-apps/api/path';
 import { exists } from '@tauri-apps/plugin-fs';
 import { hasElectronCommandHost } from './electronHost';
 import { isWindows } from './platform';
@@ -44,7 +44,6 @@ export async function getEmbeddedPythonPath(): Promise<string | null> {
       ];
   for (const candidate of devCandidates) {
     try {
-      const { resolve } = await import('@tauri-apps/api/path');
       const path = await resolve(candidate);
       if (path && await exists(path)) {
         cachedPath = path;

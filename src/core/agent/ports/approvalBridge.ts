@@ -466,6 +466,35 @@ export function drainByConversationId(kind: 'user-question', conversationId: str
   notify(kind);
 }
 
+/**
+ * Cancel ONE pending entry by id — whether it is the active one or still
+ * sitting in the FIFO queue — resolving it to the kind's `cancelledResult`.
+ *
+ * `resolve()` deliberately cannot touch a queued entry (a queued command has no
+ * dialog, so "the user answered it" is meaningless), but a CANCEL is different:
+ * the requester itself went away. An MCP App interface teardown
+ * (`McpAppBlock`'s bridge effect cleanup) is the first such requester — its
+ * approval must not outlive the iframe that asked for it, or it would surface
+ * as a dialog for an app the user already dismissed and, worse, hold the
+ * single-active slot that every later confirmation queues behind.
+ *
+ * Silent for a queued entry (no notify — nothing was on screen for it), exactly
+ * like `drainAll`'s queue loop. Unknown ids are a no-op.
+ */
+export function cancelById(kind: ApprovalKind, id: string): void {
+  const config = KIND_CONFIGS[kind];
+  const state = kindStates[kind];
+  if (config.mode === 'multi' || state.active?.id === id) {
+    settle(kind, id, config.cancelledResult);
+    return;
+  }
+  const index = state.queue.findIndex((e) => e.id === id);
+  if (index === -1) return;
+  const [entry] = state.queue.splice(index, 1);
+  if (entry.timer) clearTimeout(entry.timer);
+  entry.resolveFn(config.cancelledResult);
+}
+
 // `drainByLoopId` (drain every kind's entries for one loopId — the design
 // doc's §3.3 sketch for a future out-of-process runtime's abort handling)
 // was cut in the F3 API sweep: it had zero call sites across all four

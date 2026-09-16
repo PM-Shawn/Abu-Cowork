@@ -1,13 +1,37 @@
+import { grantBrowserPermissionTargets, type BrowserPermissionTarget, createBrowserPermissionConfig, migrateBrowserPermissionConfig, emptyBrowserSiteRule, isBrowserDefaultDecision, isExactBrowserPermissionOrigin, parseBrowserPermissionConfig, type BrowserPermissionConfig, type BrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import type { BrowserDefaultDecision, BrowserPermissionResource, BrowserSiteOverride } from '@/core/permissions/browserPermissionDefaults';
 import type { ComposerEnterBehavior } from '@/components/chat/composerKeys';
+import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import type { LLMProvider, ApiFormat, CustomService } from '../types';
 import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
 import { deriveUiCaps } from '../core/llm/modelCapabilities';
 import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
+import {
+  DEFAULT_BROWSER_OPERATION_POLICY,
+  normalizeBrowserOperationPolicy,
+  normalizeBrowserSiteGrantScopes,
+  type BrowserOperationPolicy,
+  type BrowserSiteGrantScopes,
+  type BrowserSiteVerdicts,
+} from '../core/permissions/browserToolPolicy';
 import type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
+import {
+  BROWSER_CONFIG_FIELDS,
+  INITIAL_BROWSER_CONFIG_REVISIONS,
+  browserConfigWasStored,
+  browserConfigCompanionsOf,
+  mergeBrowserConfigForWrite,
+  nextBrowserConfigRevision,
+  parsePersistedSettings,
+  readBrowserConfigRevisions,
+  type BrowserConfigField,
+  type BrowserConfigRevisions,
+} from './browserConfigPersistence';
+import { browserSaveStatus, useBrowserSaveStatusStore } from './browserSaveStatus';
 import { hasElectronCommandHost } from '../utils/electronHost';
 import type { WebSearchProviderType } from '../core/search/providers';
 import { setLanguage, initLanguage, type LanguageSetting } from '@/i18n';
@@ -156,10 +180,18 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'toolbox' | 'settings' | 'todos' | 'inbox';
+export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'feedback' | 'sponsor' | 'enterprise' | 'labs';
-export type ToolboxTab = 'skills' | 'agents' | 'mcp';
+export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
+/** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
+export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
+
+/** A fresh, empty per-tab search map — a factory, so no two states share one object. */
+function emptyExtensionsSearchQueries(): Record<ExtensionsTab, string> {
+  return { plugins: '', skills: '', mcp: '' };
+}
+/** Tabs of the 团队 view. 队员 (agents) live here, not in Extensions. */
+export type TeamTab = 'members' | 'teams';
 export type { CapabilitySetupTarget } from '../core/capabilityPlugins/types';
 
 // ============================================================
@@ -204,8 +236,25 @@ export interface SettingsState {
   labs: Record<string, boolean>;
   activeSystemTab: SystemSettingsTab;
   activeAutomationTab: AutomationTab;
-  activeToolboxTab: ToolboxTab;
-  toolboxSearchQuery: string;
+  activeExtensionsTab: ExtensionsTab;
+  /**
+   * The Extensions header search box, remembered **per tab**. Typing in 插件
+   * and stepping over to 技能 used to clear the box (a single shared string,
+   * reset on every tab/source change); each tab now keeps its own words, the
+   * way VS Code's extension views and the Chrome Web Store do, so coming back
+   * resumes where the user left off.
+   *
+   * Session-scoped: not persisted (deliberately absent from `partialize`) and
+   * reset on rehydrate, so a fresh launch always opens on an unfiltered list.
+   *  Do NOT add to partialize. */
+  extensionsSearchQueries: Record<ExtensionsTab, string>;
+  /** Which half of the landing tab (市场 | 我的) a deep link is aiming at, when
+   *  it knows — `openExtensions('skills', 'mine')` for a jump to a skill the
+   *  user authored, which the 市场 panel structurally cannot list. The
+   *  Extensions view seeds that tab's source from it once and then clears it,
+   *  so it can never hijack a later open. Ephemeral, one-shot.
+   *  Do NOT add to partialize. */
+  pendingExtensionsSource: ExtensionSource | null;
   installingItem: string | null;
   viewMode: ViewMode;
   /** System settings render as an overlay dialog on top of the current view,
@@ -258,8 +307,85 @@ export interface SettingsState {
    * converge on: `denied` beats `allowed` beats absent-(ask-every-time).
    * Written from the browser confirmation dialog's "always allow this site"
    * action; revocable from Settings › Capabilities.
+   *
+   * The type is BRANDED (`BrowserSiteVerdicts`) so that `setBrowserSitePermission`
+   * / `removeBrowserSitePermission` are the only things that can produce one:
+   * `setState({ browserSitePermissions: { ... } })` from anywhere else does not
+   * typecheck. See `BROWSER_SITE_VERDICTS_BRAND` and
+   * `src/__tests__/browserSiteGrantWriters.test.ts`, its runtime counterpart.
    */
-  browserSitePermissions: Record<string, 'allowed' | 'denied'>;
+  browserPermissionConfigV2: BrowserPermissionConfig;
+  browserSitePermissions: BrowserSiteVerdicts;
+  /**
+   * Which of those `'allowed'` verdicts were minted through the MERGED prompt
+   * that a page's embedded regions get — and, since v51, WHERE.
+   *
+   * A page decides what it embeds and in what order, so the regions a merged
+   * "always allow this site and its N embedded regions" click covers are
+   * chosen by the page, not by the user. What the user read was "the page I am
+   * on also contains regions from X", and what they agreed to was letting Abu
+   * work on those regions HERE — not "go to X whenever you like". So the grant
+   * is SCOPED to the page it was given on, and is not a standing grant for
+   * visiting that site directly or for meeting it inside some other page.
+   *
+   * The scope is the whole of the qualification: WHO IS WATCHING does not
+   * enter into it (2026-09-07 ruling). Until v51 this map held a bare `true`
+   * and `getSiteVerdict` withheld the grant from unattended runs only — the
+   * right instinct expressed on the one axis the ruling forbids. See
+   * {@link BrowserSiteGrantScopes} for the two shapes and
+   * `viaEmbedScopeCovers` for the single reader of both.
+   *
+   * Kept as a sibling map rather than a richer verdict value so
+   * `getSiteVerdict`'s two-value precedence — the thing every gate path reads
+   * — stays exactly what it was. The two cannot drift because every write goes
+   * through `setBrowserSitePermission` / `removeBrowserSitePermission`, and
+   * `browserSiteGrantWriters.test.ts` pins that the writers can be enumerated.
+   * Any later write of the same origin without `viaEmbedPage` (Settings ›
+   * 网站授权, or a dialog on the page itself) CLEARS the scope: that write is
+   * the direct authorization the scope was recording the absence of.
+   */
+  browserSiteGrantViaEmbed: BrowserSiteGrantScopes;
+  /**
+   * Operation-class three-state policy: one allow/deny/ask row per operation
+   * class (read-only / interactive / scripting). Consumed by
+   * `decideBrowserOperation` in `browserToolPolicy.ts`.
+   *
+   * ONE row per class, not one per run mode: the 2026-09-04 ruling
+   * («不应该分在不在场，只要得到了用户允许，都能做») collapsed the original
+   * attended/unattended columns into a single setting that both execution
+   * contexts read. The v47 migration keeps the attended column's values —
+   * see `normalizeBrowserOperationPolicy`, which accepts either shape.
+   */
+  browserOperationPolicy: BrowserOperationPolicy;
+  /**
+   * Global master switch: unattended runs (scheduled tasks, triggers, IM)
+   * may use the browser at all only when this is true. Defaults to false —
+   * fail-safe: adding this field must not silently grant scheduled tasks
+   * browser access they did not have before this batch shipped.
+   */
+  allowUnattendedBrowser: boolean;
+  /** IM channel security settings. */
+  imChannel: {
+    /**
+     * Opt-in only. When true, an IM plugin that needs LAN callbacks may ask
+     * the trigger server to listen on 0.0.0.0 instead of loopback. Installing
+     * such a plugin must not widen the listener by itself: the callback
+     * endpoint accepts inbound messages, so exposing it to the network is the
+     * user's decision, not a side effect of a plugin install.
+     *
+     * Takes effect on the next full restart — the trigger server binds once,
+     * at startup.
+     */
+    allowLanWebhook: boolean;
+  };
+  /**
+   * One monotonic counter per browser authorization field, so a write from a
+   * second window keeps whichever side of each field is newer instead of
+   * overwriting the lot (S18). Not a user setting — see
+   * `browserConfigPersistence.ts` for why it exists and why it is a counter
+   * rather than a timestamp.
+   */
+  browserConfigRevisions: BrowserConfigRevisions;
   preventSleep: boolean;
   allowSkillCommands: boolean;
   soulInitialized: boolean;
@@ -396,14 +522,22 @@ interface SettingsActions {
   openAutomation: (tab?: AutomationTab) => void;
   closeAutomation: () => void;
   setActiveAutomationTab: (tab: AutomationTab) => void;
-  openToolbox: (tab?: ToolboxTab) => void;
-  closeToolbox: () => void;
-  setActiveToolboxTab: (tab: ToolboxTab) => void;
-  setToolboxSearchQuery: (query: string) => void;
+  /** Open the Extensions view. `source` names the half of `tab` to land on —
+   *  omit it to land on 「市场」, the default for every tab. */
+  openExtensions: (tab?: ExtensionsTab, source?: ExtensionSource) => void;
+  closeExtensions: () => void;
+  /** Spend the one-shot `pendingExtensionsSource` once the view has applied it. */
+  clearPendingExtensionsSource: () => void;
+  setActiveExtensionsTab: (tab: ExtensionsTab) => void;
+  /** Set one tab's remembered query; the other tabs keep theirs. */
+  setExtensionsSearchQuery: (tab: ExtensionsTab, query: string) => void;
+  activeTeamTab: TeamTab;
+  openTeam: (tab?: TeamTab) => void;
+  closeTeam: () => void;
+  setActiveTeamTab: (tab: TeamTab) => void;
   setInstallingItem: (itemId: string | null) => void;
   setViewMode: (mode: ViewMode) => void;
   toggleSkillEnabled: (skillName: string) => void;
-  autoDisableProjectSkills: (skillNames: string[]) => void;
   toggleAgentEnabled: (agentName: string) => void;
   setSandboxEnabled: (enabled: boolean) => void;
   setNetworkIsolationEnabled: (enabled: boolean) => void;
@@ -425,8 +559,52 @@ interface SettingsActions {
   setBehaviorSensorEnabled: (enabled: boolean) => void;
   setTelemetryOptOut: (optOut: boolean) => void;
   setComputerUseEnabled: (enabled: boolean) => void;
-  setBrowserSitePermission: (origin: string, verdict: 'allowed' | 'denied') => void;
+  grantBrowserPermissionTargets: (resource: BrowserPermissionResource, targets: readonly BrowserPermissionTarget[], shouldApply: () => boolean) => Promise<boolean>;
+  setBrowserPermissionDefault: (resource: BrowserPermissionResource, decision: BrowserDefaultDecision) => Promise<boolean>;
+  setBrowserSiteResourcePermission: (origin: string, resource: BrowserPermissionResource, decision: BrowserSiteOverride, shouldApply?: () => boolean, embeddedIn?: string) => Promise<boolean>;
+  setBrowserEmbeddedRule: (topOrigin: string, origin: string, rule: Omit<BrowserSiteRule, 'blocked'> | null, expected: Omit<BrowserSiteRule, 'blocked'> | null, shouldApply?: () => boolean) => Promise<'saved' | 'conflict' | 'failed'>;
+  setBrowserSiteBlocked: (origin: string, blocked: boolean) => Promise<boolean>;
+  setBrowserSiteRule: (origin: string, nextRule: BrowserSiteRule, expectedRule: BrowserSiteRule | null, shouldApply?: () => boolean) => Promise<'saved' | 'conflict' | 'failed'>;
+  removeBrowserSiteRule: (origin: string, expectedRule: BrowserSiteRule, shouldApply?: () => boolean) => Promise<boolean>;
+  setBrowserSitePermission: (
+    origin: string,
+    verdict: 'allowed' | 'denied',
+    /**
+     * The grant came from the merged embedded-region prompt, given while
+     * THIS top-level page was in front of the user — see
+     * `browserSiteGrantViaEmbed`. Omitted everywhere a user authorized the
+     * origin directly, which is what CLEARS an existing scope.
+     */
+    options?: { viaEmbedPage?: string },
+  ) => void;
   removeBrowserSitePermission: (origin: string) => void;
+  /** Set one operation-class row of `browserOperationPolicy`. */
+  setBrowserOperationState: (
+    opClass: keyof BrowserOperationPolicy,
+    verdict: BrowserOperationPolicy['readOnly'],
+  ) => void;
+  setAllowUnattendedBrowser: (allow: boolean) => void;
+  setIMAllowLanWebhook: (allow: boolean) => void;
+  /** Write the last CONFIRMED value of one browser field back into memory —
+   *  after a failed save, or after another window turned out to hold a newer
+   *  one. See `installBrowserConfigSaveReporting`. */
+  restoreBrowserConfigField: (
+    field: BrowserConfigField,
+    value: unknown,
+    revision: number,
+    /**
+     * The values that qualify `value` and have no revision of their own — see
+     * `BROWSER_CONFIG_COMPANION_FIELDS`. Restored WITH it, because a mark left
+     * behind while its grant is replaced is a grant that reads wider than what
+     * is stored.
+     */
+    companions?: Record<string, unknown>,
+  ) => void;
+  /** Try the failed write again, with the value it was trying to store. */
+  retryBrowserConfigSave: (field: BrowserConfigField) => void;
+  /** Discard a failed write so a later generic Retry cannot restore an edit
+   *  the user explicitly abandoned. Does not write settings. */
+  discardFailedBrowserConfigSave: (field: BrowserConfigField) => void;
   setPreventSleep: (enabled: boolean) => void;
   setSoulInitialized: (initialized: boolean) => void;
   setProactivity: (level: 'shy' | 'companion' | 'butler') => void;
@@ -606,11 +784,445 @@ export function getAllEnabledModels(state: SettingsState): Array<{
 
 export type SettingsStore = SettingsState & SettingsActions;
 
+/**
+ * The ONLY place a `BrowserSiteVerdicts` comes into existence.
+ *
+ * Deliberately module-private and never exported: the brand on
+ * `BrowserSiteVerdicts` makes this function the single door into the field, so
+ * exporting it would put the door back in the wall. Everything outside this
+ * file reads the map (a branded value is assignable to the plain
+ * `Record<string, 'allowed' | 'denied'>`) and writes it only through
+ * `setBrowserSitePermission` / `removeBrowserSitePermission`.
+ *
+ * Runtime is a plain identity — the brand exists only in the type system, so
+ * nothing is added to what gets persisted.
+ */
+function mintBrowserSiteVerdicts(
+  entries: Record<string, 'allowed' | 'denied'>,
+): BrowserSiteVerdicts {
+  return entries as BrowserSiteVerdicts;
+}
+
+/** The key zustand persists this store under. Named once, used by the storage
+ *  adapter and by the revision probe. */
+const SETTINGS_STORAGE_KEY = 'abu-settings';
+
+/**
+ * `localStorage`, or nothing.
+ *
+ * Some environments throw on the ACCESSOR itself (a browser set to block site
+ * data, a sandboxed frame), not only on the call, so the property read is
+ * inside the try.
+ */
+function safeLocalStorage(): Storage | undefined {
+  try {
+    return typeof localStorage === 'undefined' ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+const INVALID_BROWSER_PERMISSION_CONFIG = migrateBrowserPermissionConfig(null);
+let browserPermissionStorageWasPresent = false;
+function permissionConfigFromStoredBlob(blob: NonNullable<ReturnType<typeof parsePersistedSettings>>): BrowserPermissionConfig {
+  return parseBrowserPermissionConfig(blob.state.browserPermissionConfigV2)
+    ?? migrateBrowserPermissionConfig(typeof blob.version === 'number' && blob.version < 53
+      ? blob.state
+      : { ...blob.state, browserPermissionConfigV2: blob.state.browserPermissionConfigV2 ?? {} });
+}
+/** Only a confirmed absence of storage is a fresh install. */
+export function initialBrowserPermissionConfig(): BrowserPermissionConfig {
+  try {
+    const raw = safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY);
+    if (raw === null) return createBrowserPermissionConfig();
+    if (raw !== undefined) browserPermissionStorageWasPresent = true;
+    const blob = parsePersistedSettings(raw ?? null);
+    return blob ? permissionConfigFromStoredBlob(blob) : INVALID_BROWSER_PERMISSION_CONFIG;
+  } catch { return INVALID_BROWSER_PERMISSION_CONFIG; }
+}
+/** A running window must observe confirmed revocations, never an optimistic grant. */
+export function readConfirmedBrowserPermissionConfig(state: Readonly<SettingsState>): BrowserPermissionConfig {
+  void state;
+  try {
+    const storage = safeLocalStorage();
+    if (!storage) return INVALID_BROWSER_PERMISSION_CONFIG;
+    const raw = storage.getItem(SETTINGS_STORAGE_KEY);
+    if (raw === null) return browserPermissionStorageWasPresent ? INVALID_BROWSER_PERMISSION_CONFIG
+      : (lastConfirmedBrowserConfig.get('browserPermissionConfigV2')?.value as BrowserPermissionConfig | undefined) ?? INVALID_BROWSER_PERMISSION_CONFIG;
+    browserPermissionStorageWasPresent = true;
+    const blob = parsePersistedSettings(raw);
+    if (!blob) return INVALID_BROWSER_PERMISSION_CONFIG;
+    return permissionConfigFromStoredBlob(blob);
+  } catch { return INVALID_BROWSER_PERMISSION_CONFIG; }
+}
+
+/**
+ * Browser fields edited since the last write landed. The storage adapter
+ * settles exactly these, because `persist` writes the whole blob on EVERY
+ * state change — reporting "saved" for a field nobody touched would put a
+ * confirmation next to a control the user never used.
+ */
+const browserConfigWriteQueue = new Set<BrowserConfigField>();
+
+/**
+ * The last known effective value of each browser field: either produced by a
+ * successful hydration (including fresh-install defaults), or read back after
+ * a successful write.
+ *
+ * This is what a failed write rolls back to. Not the previous in-memory value:
+ * that one may itself never have been stored, and rolling back to an
+ * unconfirmed edit would be the same lie one step removed.
+ */
+const lastConfirmedBrowserConfig = new Map<
+  BrowserConfigField,
+  { value: unknown; revision: number; companions: Record<string, unknown> }
+>();
+
+/**
+ * What a FAILED write was trying to store.
+ *
+ * Retry has to re-apply this, not whatever is in memory: memory was rolled back
+ * to the last confirmed value the moment the write failed, so a retry built
+ * from it would cheerfully re-save the setting the user was trying to change
+ * away from and report success.
+ */
+const lastAttemptedBrowserConfig = new Map<
+  BrowserConfigField,
+  { value: unknown; companions: Record<string, unknown> }
+>();
+
+/**
+ * True while the store is being corrected FROM the storage layer (a rollback
+ * or an adoption). Those corrections are themselves writes, and without this
+ * flag a storage that keeps failing would roll back, write, fail, roll back
+ * forever.
+ */
+let repairingBrowserConfig = false;
+
+/**
+ * The storage zustand persists through: `localStorage`, plus a per-field merge
+ * and a read-back confirmation for the three browser authorization fields.
+ *
+ * Every blob write participates in the same lock; ordinary settings must not
+ * overwrite a newer browser restriction. Unreadable permission data stops the
+ * write rather than falling back to an unmerged snapshot.
+ */
+const BROWSER_PERMISSION_LOCK = 'abu-browser-permission-config-v2';
+let browserPermissionLockHeld = false;
+const settingsStateStorage: StateStorage = {
+  getItem: (name) => {
+    const raw = safeLocalStorage()?.getItem(name) ?? null;
+    if (name === SETTINGS_STORAGE_KEY && raw !== null) browserPermissionStorageWasPresent = true;
+    return raw;
+  },
+  removeItem: (name) => { safeLocalStorage()?.removeItem(name); },
+  setItem: (name, value) => {
+    const storage = safeLocalStorage();
+    const pending = [...browserConfigWriteQueue];
+    browserConfigWriteQueue.clear();
+    const performWrite = () => {
+
+      if (!storage) {
+        // No storage at all: nothing was saved, and saying so is the point.
+        for (const field of pending) browserSaveStatus.settle(field, 'failed');
+        if (pending.length > 0) repairBrowserConfig(pending, null);
+        return;
+      }
+
+      let intended = parsePersistedSettings(value);
+      let confirmedBeforeWrite: ReturnType<typeof parsePersistedSettings>;
+      let adopted: BrowserConfigField[] = [];
+      let toWrite = value;
+      try {
+        // Keep the value successfully read immediately before this attempt. A
+        // cold-start process may not have completed any writes of its own yet,
+        // but this disk snapshot is still the authoritative rollback target.
+        const rawDisk = storage.getItem(name);
+        if (rawDisk !== null) browserPermissionStorageWasPresent = true;
+        if (rawDisk === null && browserPermissionStorageWasPresent) {
+          for (const field of pending) browserSaveStatus.settle(field, 'failed');
+          return;
+        }
+        const diskBeforeWrite = parsePersistedSettings(rawDisk);
+        if (diskBeforeWrite && typeof diskBeforeWrite.version === 'number' && diskBeforeWrite.version < 53) {
+          diskBeforeWrite.state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(diskBeforeWrite.state);
+        }
+        if (rawDisk !== null && (!diskBeforeWrite || !parseBrowserPermissionConfig(diskBeforeWrite.state.browserPermissionConfigV2))) {
+          for (const field of pending) browserSaveStatus.settle(field, 'failed');
+          if (pending.length) repairBrowserConfig(pending, diskBeforeWrite);
+          return;
+        }
+        // A current-version blob already has the shape restore expects. Older
+        // blobs must fall back to the migrated baseline recorded at hydration;
+        // restoring their raw pre-migration fields would reintroduce invalid or
+        // absent values after a failed save.
+        confirmedBeforeWrite = diskBeforeWrite?.version === 53 ? diskBeforeWrite : null;
+        if (intended !== null) {
+          // A counter orders cooperative writers, not authority. An ordinary
+          // blob save must keep the valid permissions read under this lock,
+          // even when that copy's counter was lost or rolled back.
+          const adoptPermissions = diskBeforeWrite !== null && !pending.includes('browserPermissionConfigV2');
+          const permissionValueChanged = adoptPermissions
+            && JSON.stringify(intended.state.browserPermissionConfigV2) !== JSON.stringify(diskBeforeWrite.state.browserPermissionConfigV2);
+          if (adoptPermissions) {
+            intended = { ...intended, state: { ...intended.state, browserPermissionConfigV2: diskBeforeWrite.state.browserPermissionConfigV2 } };
+          }
+          const merge = mergeBrowserConfigForWrite(
+            intended,
+            diskBeforeWrite,
+          );
+          intended = merge.merged;
+          adopted = merge.adopted;
+          if (permissionValueChanged && !adopted.includes('browserPermissionConfigV2')) adopted.push('browserPermissionConfigV2');
+          toWrite = JSON.stringify(merge.merged);
+        }
+      } catch {
+        for (const field of pending) browserSaveStatus.settle(field, 'failed');
+        if (pending.length) repairBrowserConfig(pending, null);
+        return;
+      }
+
+      let stored: boolean;
+      try {
+        storage.setItem(name, toWrite);
+        // A `setItem` that returns without throwing is not evidence: a
+        // quota-exceeded write can be partially applied, and some engines
+        // swallow the write entirely. Read it back.
+        const readback = storage.getItem(name);
+        if (readback !== null) browserPermissionStorageWasPresent = true;
+        stored = intended !== null && browserConfigWasStored(intended, readback);
+      } catch {
+        stored = false;
+      }
+
+      if (stored && intended !== null) {
+        browserPermissionStorageWasPresent = true;
+        const revisions = readBrowserConfigRevisions(intended.state);
+        for (const field of BROWSER_CONFIG_FIELDS) {
+          lastConfirmedBrowserConfig.set(field, {
+            value: intended.state[field],
+            revision: revisions[field],
+            companions: companionValues(field, intended.state),
+          });
+        }
+      }
+      for (const field of pending) browserSaveStatus.settle(field, stored ? 'saved' : 'failed');
+      if (stored) {
+        // A later ordinary save of the same field supersedes its failed intent.
+        // Leave other fields alone: their Retry still represents unsaved work.
+        for (const field of pending) lastAttemptedBrowserConfig.delete(field);
+      }
+      if (!stored) {
+        for (const field of pending) {
+          if (intended !== null) {
+            lastAttemptedBrowserConfig.set(field, {
+              value: intended.state[field],
+              companions: companionValues(field, intended.state),
+            });
+          }
+        }
+        if (pending.length > 0) repairBrowserConfig(pending, confirmedBeforeWrite);
+      }
+      if (stored && adopted.length > 0 && intended !== null) repairBrowserConfig(adopted, intended);
+    };
+    if (browserPermissionLockHeld) return performWrite();
+    if (typeof navigator === 'undefined' || !navigator.locks) {
+      for (const field of pending) browserSaveStatus.settle(field, 'failed');
+      if (pending.length) repairBrowserConfig(pending, null);
+      return;
+    }
+    // All current-version blob writes participate, including ordinary settings
+    // and hydration writes. Otherwise a stale ordinary save could erase a ban.
+    return navigator.locks.request(BROWSER_PERMISSION_LOCK, () => {
+      browserPermissionLockHeld = true;
+      try { performWrite(); } finally { browserPermissionLockHeld = false; }
+    }).catch(() => {
+      for (const field of pending) browserSaveStatus.settle(field, 'failed');
+      if (pending.length) repairBrowserConfig(pending, null);
+    });
+  },
+};
+
+/**
+ * Bring memory back in line with what is actually stored, for named fields
+ * only.
+ *
+ * Two callers, one job. After a FAILED write the pane is showing a permission
+ * that does not exist, and after an ADOPTED merge it is showing one the other
+ * window replaced; both are the same lie, and both are fixed by displaying what
+ * storage holds. Scoped per field on purpose: a failure while saving the
+ * operation policy must not undo the site verdict that saved a moment earlier.
+ */
+function repairBrowserConfig(
+  fields: readonly BrowserConfigField[],
+  source: { state: Record<string, unknown> } | null,
+): void {
+  if (repairingBrowserConfig) return;
+  repairingBrowserConfig = true;
+  try {
+    const revisions = source === null ? null : readBrowserConfigRevisions(source.state);
+    for (const field of fields) {
+      const confirmed = source !== null && revisions !== null
+        ? {
+          value: source.state[field],
+          revision: revisions[field],
+          companions: companionValues(field, source.state),
+        }
+        : lastConfirmedBrowserConfig.get(field);
+      // Hydration failed before any effective baseline could be established,
+      // and no later write was confirmed. Leave the status as the signal
+      // rather than inventing a value after an unreadable store.
+      if (confirmed === undefined) continue;
+      useSettingsStore.getState()
+        .restoreBrowserConfigField(field, confirmed.value, confirmed.revision, confirmed.companions);
+    }
+  } finally {
+    repairingBrowserConfig = false;
+  }
+}
+
+/**
+ * The companion values a field carries, read out of a persisted state blob.
+ * Absent means "this store has none", which is a value in its own right — the
+ * restore below writes an empty map rather than leaving a stale one standing.
+ */
+function companionValues(
+  field: BrowserConfigField,
+  state: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const companion of browserConfigCompanionsOf(field)) out[companion] = state[companion];
+  return out;
+}
+
+/** Record the effective browser configuration produced by a successful
+ * hydration, after migrations and fail-safe normalization. A fresh install's
+ * defaults are also its known effective baseline. Hydration errors never call
+ * this helper, so an unreadable store is not presented as confirmed. */
+function rememberHydratedBrowserConfig(state: SettingsStore): void {
+  const revisions = readBrowserConfigRevisions(state);
+  const snapshot = state as unknown as Record<string, unknown>;
+  for (const field of BROWSER_CONFIG_FIELDS) {
+    lastConfirmedBrowserConfig.set(field, {
+      value: state[field],
+      revision: revisions[field],
+      companions: companionValues(field, snapshot),
+    });
+  }
+}
+
+type BrowserPermissionEdit = (config: BrowserPermissionConfig) => BrowserPermissionConfig | null;
+let lastBrowserPermissionEdit: BrowserPermissionEdit | null = null;
+/** Single-item edits start from the freshest stored configuration, so unrelated
+ * changes from another window survive. This is not a whole-draft CAS API. */
+async function editBrowserPermissionConfig(edit: BrowserPermissionEdit): Promise<boolean> {
+  lastBrowserPermissionEdit = edit;
+  browserSaveStatus.begin('browserPermissionConfigV2');
+  if (typeof navigator === 'undefined' || !navigator.locks) {
+    browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+    return false;
+  }
+  try {
+    return await navigator.locks.request(BROWSER_PERMISSION_LOCK, () => {
+      browserPermissionLockHeld = true;
+      try {
+        const state = useSettingsStore.getState();
+        let current = parseBrowserPermissionConfig(state.browserPermissionConfigV2);
+        const rawDisk = safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null;
+        if (rawDisk !== null) browserPermissionStorageWasPresent = true;
+        if (rawDisk === null && browserPermissionStorageWasPresent) {
+          browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+          return false;
+        }
+        const disk = parsePersistedSettings(rawDisk);
+        if (disk && typeof disk.version === 'number' && disk.version < 53) disk.state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(disk.state);
+        if (rawDisk !== null && (!disk || !parseBrowserPermissionConfig(disk.state.browserPermissionConfigV2))) {
+          browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+          return false;
+        }
+        if (disk) {
+          current = parseBrowserPermissionConfig(disk.state.browserPermissionConfigV2);
+        }
+        if (!current) { browserSaveStatus.settle('browserPermissionConfigV2', 'failed'); return false; }
+        lastBrowserPermissionEdit = edit;
+        const next = edit(current);
+        if (!next || !parseBrowserPermissionConfig(next)) { browserSaveStatus.settle('browserPermissionConfigV2', 'failed'); return false; }
+        useSettingsStore.setState({ browserPermissionConfigV2: next, ...beginBrowserFieldWrite('browserPermissionConfigV2', state.browserConfigRevisions) });
+        const saved = useBrowserSaveStatusStore.getState().status.browserPermissionConfigV2 === 'saved';
+        if (saved) lastBrowserPermissionEdit = null;
+        return saved;
+      } finally { browserPermissionLockHeld = false; }
+    });
+  } catch {
+    browserSaveStatus.settle('browserPermissionConfigV2', 'failed');
+    return false;
+  }
+}
+
+/** Test-only — module-level bookkeeping shared across a test file. */
+export function __resetBrowserConfigPersistenceForTests(): void {
+  browserPermissionStorageWasPresent = false;
+  browserConfigWriteQueue.clear();
+  lastConfirmedBrowserConfig.clear();
+  lastAttemptedBrowserConfig.clear();
+  repairingBrowserConfig = false;
+  lastBrowserPermissionEdit = null;
+}
+
+/**
+ * The revision map currently on disk, read fresh.
+ *
+ * Bumping only the in-memory counter would leave a window that has been open a
+ * while permanently behind the other one, and every edit it made would then be
+ * discarded by the merge as "older news". Reading disk at the moment of the
+ * edit is what makes the writer win for the field it actually touched, while
+ * still losing to a newer value of a field it did not.
+ */
+function diskBrowserConfigRevisions(): BrowserConfigRevisions {
+  try {
+    const raw = safeLocalStorage()?.getItem(SETTINGS_STORAGE_KEY) ?? null;
+    if (raw !== null) browserPermissionStorageWasPresent = true;
+    const stored = parsePersistedSettings(raw);
+    return readBrowserConfigRevisions(stored?.state);
+  } catch {
+    return INITIAL_BROWSER_CONFIG_REVISIONS;
+  }
+}
+
+/**
+ * Mark one browser field as being written and stamp it with a revision past
+ * both copies. Returns the patch the setter merges into its own `set`.
+ */
+function beginBrowserFieldWrite(
+  field: BrowserConfigField,
+  current: BrowserConfigRevisions,
+): { browserConfigRevisions: BrowserConfigRevisions } {
+  browserSaveStatus.begin(field);
+  browserConfigWriteQueue.add(field);
+  return {
+    browserConfigRevisions: {
+      ...current,
+      [field]: nextBrowserConfigRevision(field, current, diskBrowserConfigRevisions()),
+    },
+  };
+}
+
 const defaultProviders = createDefaultProviders();
+
+/**
+ * The Extensions search words for one tab — the active tab when none is named.
+ *
+ * A hook rather than a raw `s.extensionsSearchQueries[tab]` at each call site
+ * so consumers subscribe to their own string and re-render only when it
+ * changes, not on every keystroke in a sibling tab.
+ */
+export function useExtensionsSearchQuery(tab?: ExtensionsTab): string {
+  return useSettingsStore((s) => s.extensionsSearchQueries[tab ?? s.activeExtensionsTab] ?? '');
+}
 
 export const useSettingsStore = create<SettingsStore>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       // ── Provider & Model defaults ──
       providers: defaultProviders,
       // Must name a model that exists in PROVIDER_CONFIGS.anthropic.models —
@@ -635,10 +1247,12 @@ export const useSettingsStore = create<SettingsStore>()(
       labs: {},
       activeSystemTab: 'usage' as SystemSettingsTab,
       activeAutomationTab: 'schedule' as AutomationTab,
-      activeToolboxTab: 'skills' as ToolboxTab,
-      toolboxSearchQuery: '',
+      activeExtensionsTab: 'plugins' as ExtensionsTab,
+      extensionsSearchQueries: emptyExtensionsSearchQueries(),
+      pendingExtensionsSource: null,
       installingItem: null,
       viewMode: 'chat' as ViewMode,
+      activeTeamTab: 'members' as TeamTab,
       systemSettingsOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [
@@ -668,7 +1282,13 @@ export const useSettingsStore = create<SettingsStore>()(
       behaviorSensorEnabled: false,
       telemetryOptOut: false,
       computerUseEnabled: false,
-      browserSitePermissions: {},
+      browserPermissionConfigV2: initialBrowserPermissionConfig(),
+      browserSitePermissions: mintBrowserSiteVerdicts({}),
+      browserSiteGrantViaEmbed: {} as BrowserSiteGrantScopes,
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: false,
+      imChannel: { allowLanWebhook: false },
+      browserConfigRevisions: INITIAL_BROWSER_CONFIG_REVISIONS,
       preventSleep: false,
       allowSkillCommands: true,
       soulInitialized: false,
@@ -963,20 +1583,33 @@ export const useSettingsStore = create<SettingsStore>()(
       closeAutomation: () =>
         set({ viewMode: 'chat' as ViewMode }),
       setActiveAutomationTab: (tab) => set({ activeAutomationTab: tab }),
-      openToolbox: (tab) =>
+      // Neither opening nor closing the view clears the search words: they are
+      // remembered per tab for the whole session, so re-entering Extensions
+      // resumes the list the user had narrowed to.
+      openExtensions: (tab, source) =>
         set(() => ({
-          viewMode: 'toolbox' as ViewMode,
-          activeToolboxTab: tab ?? 'skills',
-          toolboxSearchQuery: '',
+          viewMode: 'extensions' as ViewMode,
+          activeExtensionsTab: tab ?? 'plugins',
+          // Always written, so a source left over from an unconsumed open
+          // cannot leak into this one.
+          pendingExtensionsSource: source ?? null,
         })),
-      closeToolbox: () =>
+      closeExtensions: () =>
         set({
           viewMode: 'chat' as ViewMode,
           installingItem: null,
-          toolboxSearchQuery: '',
+          pendingExtensionsSource: null,
         }),
-      setActiveToolboxTab: (tab) => set({ activeToolboxTab: tab, toolboxSearchQuery: '' }),
-      setToolboxSearchQuery: (query) => set({ toolboxSearchQuery: query }),
+      clearPendingExtensionsSource: () => set({ pendingExtensionsSource: null }),
+      setActiveExtensionsTab: (tab) => set({ activeExtensionsTab: tab }),
+      setExtensionsSearchQuery: (tab, query) =>
+        set((state) => ({
+          extensionsSearchQueries: { ...state.extensionsSearchQueries, [tab]: query },
+        })),
+      openTeam: (tab) =>
+        set((s) => ({ viewMode: 'team' as ViewMode, activeTeamTab: tab ?? s.activeTeamTab })),
+      closeTeam: () => set({ viewMode: 'chat' as ViewMode }),
+      setActiveTeamTab: (tab) => set({ activeTeamTab: tab }),
       setInstallingItem: (itemId) => set({ installingItem: itemId }),
       setViewMode: (viewMode) => set({ viewMode }),
       openTodos: () => set({ viewMode: 'todos' as ViewMode }),
@@ -987,11 +1620,6 @@ export const useSettingsStore = create<SettingsStore>()(
           ? s.disabledSkills.filter((n) => n !== skillName)
           : [...s.disabledSkills, skillName],
       })),
-      autoDisableProjectSkills: (skillNames) => set((s) => {
-        const newNames = skillNames.filter((n) => !s.disabledSkills.includes(n));
-        if (newNames.length === 0) return s;
-        return { disabledSkills: [...s.disabledSkills, ...newNames] };
-      }),
       toggleAgentEnabled: (agentName) => set((s) => ({
         disabledAgents: s.disabledAgents.includes(agentName)
           ? s.disabledAgents.filter((n) => n !== agentName)
@@ -1017,14 +1645,203 @@ export const useSettingsStore = create<SettingsStore>()(
       closeGuide: () => set({ guideOpen: false, guideShown: true }),
       setBehaviorSensorEnabled: (behaviorSensorEnabled) => set({ behaviorSensorEnabled }),
       setTelemetryOptOut: (telemetryOptOut) => set({ telemetryOptOut }),
-      setBrowserSitePermission: (origin, verdict) => set((state) => ({
-        browserSitePermissions: { ...state.browserSitePermissions, [origin]: verdict },
-      })),
-      removeBrowserSitePermission: (origin) => set((state) => {
-        const next = { ...state.browserSitePermissions };
-        delete next[origin];
-        return { browserSitePermissions: next };
+      grantBrowserPermissionTargets: (resource, targets, shouldApply) => {
+        // Capture the exact prompt scope before waiting for another window's lock.
+        const captured = targets.map(({ origin, embeddedIn }) => ({ origin, embeddedIn }));
+        return editBrowserPermissionConfig((config) => shouldApply()
+          ? grantBrowserPermissionTargets(config, resource, captured) : null);
+      },
+      setBrowserPermissionDefault: (resource, decision) => editBrowserPermissionConfig((config) => {
+        if (!isBrowserDefaultDecision(decision) || !['browse', 'upload', 'script'].includes(resource)) return null;
+        return { ...config, defaults: { ...config.defaults, [resource]: decision } };
       }),
+      setBrowserSiteResourcePermission: (origin, resource, decision, shouldApply, embeddedIn) => editBrowserPermissionConfig((config) => {
+        if (shouldApply && !shouldApply()) return null;
+        if (!isExactBrowserPermissionOrigin(origin) || !['browse', 'upload', 'script'].includes(resource)
+          || (decision !== 'inherit' && !isBrowserDefaultDecision(decision))) return null;
+        if (embeddedIn !== undefined) {
+          if (!isExactBrowserPermissionOrigin(embeddedIn)) return null;
+          const sites = config.embeddedSites[embeddedIn] ?? {};
+          return { ...config, embeddedSites: { ...config.embeddedSites, [embeddedIn]: {
+            ...sites, [origin]: { ...(sites[origin] ?? { browse: 'inherit', upload: 'inherit', script: 'inherit' }), [resource]: decision },
+          } } };
+        }
+        return { ...config, sites: { ...config.sites, [origin]: { ...emptyBrowserSiteRule(), ...config.sites[origin], [resource]: decision } } };
+      }),
+      setBrowserEmbeddedRule: async (topOrigin, origin, rule, expectedRule, shouldApply) => {
+        const next = rule ? { ...rule } : null;
+        const expected = expectedRule ? { ...expectedRule } : null;
+        let conflict = false;
+        const saved = await editBrowserPermissionConfig((config) => {
+          if (shouldApply && !shouldApply()) return null;
+          if (!isExactBrowserPermissionOrigin(topOrigin) || !isExactBrowserPermissionOrigin(origin)) return null;
+          const current = config.embeddedSites[topOrigin]?.[origin] ?? null;
+          if (current === null ? expected !== null : expected === null
+            || current.browse !== expected.browse || current.upload !== expected.upload || current.script !== expected.script) {
+            conflict = true;
+            return null;
+          }
+          const sites = { ...config.embeddedSites[topOrigin] };
+          if (next && !parseBrowserPermissionConfig({ ...config, embeddedSites: { ...config.embeddedSites, [topOrigin]: { ...sites, [origin]: next } } })) return null;
+          if (!next || Object.values(next).every((value) => value === 'inherit')) delete sites[origin];
+          else sites[origin] = next;
+          const embeddedSites = { ...config.embeddedSites, [topOrigin]: sites };
+          if (!Object.keys(sites).length) delete embeddedSites[topOrigin];
+          return { ...config, embeddedSites };
+        });
+        return saved ? 'saved' : conflict ? 'conflict' : 'failed';
+      },
+      setBrowserSiteBlocked: (origin, blocked) => editBrowserPermissionConfig((config) => {
+        if (!isExactBrowserPermissionOrigin(origin) || typeof blocked !== 'boolean') return null;
+        return { ...config, sites: { ...config.sites, [origin]: { ...emptyBrowserSiteRule(), ...config.sites[origin], blocked } } };
+      }),
+      setBrowserSiteRule: async (origin, nextRule, expectedRule, shouldApply) => {
+        const next = { ...nextRule };
+        const expected = expectedRule ? { ...expectedRule } : null;
+        let conflict = false;
+        const saved = await editBrowserPermissionConfig((config) => {
+          if (shouldApply && !shouldApply()) return null;
+          if (!isExactBrowserPermissionOrigin(origin)) return null;
+          const current = config.sites[origin] ?? null;
+          if (current === null ? expected !== null : expected === null
+            || current.blocked !== expected.blocked || current.browse !== expected.browse
+            || current.upload !== expected.upload || current.script !== expected.script) {
+            conflict = true;
+            return null;
+          }
+          const sites = { ...config.sites, [origin]: next };
+          if (!parseBrowserPermissionConfig({ ...config, sites })) return null;
+          if (!next.blocked && next.browse === 'inherit' && next.upload === 'inherit' && next.script === 'inherit') delete sites[origin];
+          return { ...config, sites };
+        });
+        return saved ? 'saved' : conflict ? 'conflict' : 'failed';
+      },
+      removeBrowserSiteRule: (origin, expectedRule, shouldApply) =>
+        get().setBrowserSiteRule(origin, emptyBrowserSiteRule(), expectedRule, shouldApply).then((result) => result === 'saved'),
+      setBrowserSitePermission: (origin, verdict, options) => set((state) => {
+        // The scope lives and dies with the verdict it qualifies: a block, or a
+        // grant given anywhere the user authorized this origin directly,
+        // leaves nothing scoped behind.
+        const viaEmbed = { ...state.browserSiteGrantViaEmbed };
+        const page = verdict === 'allowed' ? options?.viaEmbedPage : undefined;
+        if (page !== undefined) {
+          const previous = viaEmbed[origin];
+          // Granting the same region on a SECOND page adds that page rather
+          // than replacing the first: each click was its own human act, and
+          // dropping the earlier one would revoke a grant nobody took back.
+          // A legacy scope (`{}` — "any page, page unknown") already covers
+          // this one, so naming a page there would NARROW it; left alone.
+          viaEmbed[origin] = previous !== undefined && Object.keys(previous).length === 0
+            ? {}
+            : { ...(previous ?? {}), [page]: true };
+        } else delete viaEmbed[origin];
+        return {
+          browserSitePermissions: mintBrowserSiteVerdicts({
+            ...state.browserSitePermissions,
+            [origin]: verdict,
+          }),
+          browserSiteGrantViaEmbed: viaEmbed,
+          ...beginBrowserFieldWrite('browserSitePermissions', state.browserConfigRevisions),
+        };
+      }),
+      removeBrowserSitePermission: (origin) => set((state) => {
+        const next: Record<string, 'allowed' | 'denied'> = { ...state.browserSitePermissions };
+        delete next[origin];
+        const viaEmbed = { ...state.browserSiteGrantViaEmbed };
+        delete viaEmbed[origin];
+        return {
+          browserSitePermissions: mintBrowserSiteVerdicts(next),
+          browserSiteGrantViaEmbed: viaEmbed,
+          ...beginBrowserFieldWrite('browserSitePermissions', state.browserConfigRevisions),
+        };
+      }),
+      // Normalized on write, not just on read: the persisted policy must never
+      // say something the gate will not honor — a setting that lies about what
+      // it does. What the normalizer enforces is SHAPE, not product policy: a
+      // malformed row clamps to the strictest state.
+      //
+      // `scripting: 'allow'` IS storable and passes through untouched. What it
+      // buys an automatic run is decided at the gate, not here: the master
+      // switch must be on, the site must carry a standing 'allowed' verdict,
+      // and the page must not be high-risk (`decideBrowserOperation`).
+      setBrowserOperationState: (opClass, verdict) => set((state) => ({
+        browserOperationPolicy: normalizeBrowserOperationPolicy({
+          ...state.browserOperationPolicy,
+          [opClass]: verdict,
+        }),
+        ...beginBrowserFieldWrite('browserOperationPolicy', state.browserConfigRevisions),
+      })),
+      setAllowUnattendedBrowser: (allowUnattendedBrowser) => set((state) => ({
+        allowUnattendedBrowser,
+        ...beginBrowserFieldWrite('allowUnattendedBrowser', state.browserConfigRevisions),
+      })),
+      setIMAllowLanWebhook: (allowLanWebhook) =>
+        set((state) => ({ imChannel: { ...state.imChannel, allowLanWebhook } })),
+      /**
+       * Put a confirmed value back, without treating it as a new edit: no
+       * status, no queue entry, and the revision is the one that value already
+       * carries. Used for a rollback after a failed write, and for adopting a
+       * newer value another window stored.
+       */
+      restoreBrowserConfigField: (field, value, revision, companions) => set((state) => ({
+        ...(field === 'browserPermissionConfigV2'
+          ? { browserPermissionConfigV2: parseBrowserPermissionConfig(value) ?? migrateBrowserPermissionConfig({ browserPermissionConfigV2: value ?? {} }) }
+          : field === 'browserSitePermissions'
+          ? {
+            browserSitePermissions: mintBrowserSiteVerdicts(
+              value as Record<string, 'allowed' | 'denied'>,
+            ),
+            // An absent companion is not a reason to keep this window's copy:
+            // the adopted value is taken WHOLE, companions included, so one
+            // store wins rather than a splice of two. The cost of that (a mark
+            // dropped by an older build that never knew about marks widens the
+            // grant) is stated where the rule lives —
+            // `BROWSER_CONFIG_COMPANION_FIELDS` in browserConfigPersistence.ts.
+            // Normalized, not cast: an adopted blob can come from a build
+            // that wrote the pre-v51 shape (a bare `true`), and that path
+            // never passes through `migrate`.
+            browserSiteGrantViaEmbed:
+              normalizeBrowserSiteGrantScopes(companions?.browserSiteGrantViaEmbed),
+          }
+          : field === 'browserOperationPolicy'
+            ? { browserOperationPolicy: normalizeBrowserOperationPolicy(value) }
+            : { allowUnattendedBrowser: value === true }),
+        browserConfigRevisions: { ...state.browserConfigRevisions, [field]: revision },
+      })),
+      retryBrowserConfigSave: (field) => {
+        if (field === 'browserPermissionConfigV2') {
+          if (lastBrowserPermissionEdit) editBrowserPermissionConfig(lastBrowserPermissionEdit);
+          return;
+        }
+        set((state) => {
+        const attempted = lastAttemptedBrowserConfig.get(field);
+        // Nothing recorded means nothing failed (or it already succeeded on a
+        // later attempt). Re-saving the current value would report a success
+        // that answers no question.
+        if (attempted === undefined) return {};
+        lastAttemptedBrowserConfig.delete(field);
+        return {
+          ...(field === 'browserSitePermissions'
+            ? {
+              browserSitePermissions: mintBrowserSiteVerdicts(
+                attempted.value as Record<string, 'allowed' | 'denied'>,
+              ),
+              browserSiteGrantViaEmbed:
+                normalizeBrowserSiteGrantScopes(attempted.companions.browserSiteGrantViaEmbed),
+            }
+            : field === 'browserOperationPolicy'
+              ? { browserOperationPolicy: normalizeBrowserOperationPolicy(attempted.value) }
+              : { allowUnattendedBrowser: attempted.value === true }),
+          ...beginBrowserFieldWrite(field, state.browserConfigRevisions),
+        };
+        });
+      },
+      discardFailedBrowserConfigSave: (field) => {
+        if (field === 'browserPermissionConfigV2') lastBrowserPermissionEdit = null;
+        browserConfigWriteQueue.delete(field);
+        lastAttemptedBrowserConfig.delete(field);
+        useBrowserSaveStatusStore.getState().clearBrowserSaveStatus(field);
+      },
       setComputerUseEnabled: (computerUseEnabled) => {
         set({ computerUseEnabled });
         syncComputerUseGate(computerUseEnabled);
@@ -1083,15 +1900,145 @@ export const useSettingsStore = create<SettingsStore>()(
       setPetOpen: (open) => set({ petOpen: open }),
     }),
     {
+      // Literal, not `SETTINGS_STORAGE_KEY`: `tests/e2e/storeVersions.ts` reads
+      // this store's persisted version by matching `name: '<key>', version: N`
+      // in this source file, so that a seeded localStorage entry can never
+      // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 45,
+      version: 53,
+      // The default is `createJSONStorage(() => localStorage)`; this is the
+      // same thing with a per-field merge and a read-back confirmation for the
+      // browser authorization fields (S18). See `settingsStateStorage`.
+      //
+      // Declared AFTER `version` on purpose: `tests/e2e/storeVersions.ts`
+      // matches `name: '<key>', version: N` with only whitespace and comments
+      // allowed between the two, so anything else in that gap silently breaks
+      // the probe that keeps e2e seeds from drifting.
+      storage: createJSONStorage(() => settingsStateStorage),
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
+
+        // ════════════════════════════════════════════════
+        // V52: `imChannel.allowLanWebhook` — the LAN callback opt-in. False
+        // for every existing store, which is the whole point: an install that
+        // already carries a heartbeat plugin was binding 0.0.0.0 without ever
+        // being asked, and the upgrade closes that listener rather than
+        // grandfathering it.
+        // ════════════════════════════════════════════════
+        if (version < 52) {
+          const current = state.imChannel;
+          const record = current && typeof current === 'object' && !Array.isArray(current)
+            ? current as Record<string, unknown>
+            : {};
+          state.imChannel = { ...record, allowLanWebhook: record.allowLanWebhook === true };
+        }
+
+        // ════════════════════════════════════════════════
+        // V50: `browserOperationPolicy.upload` — the fourth operation class
+        // (batch-三 T5). Sending a local file into a page used to have no row
+        // of its own because there was no tool that did it; `upload_file` is
+        // that tool, and under the 2026-09-07 ruling its row is an ORDINARY
+        // one: 允许 / 每次询问 / 拒绝, default 每次询问, read the same way a
+        // click's row is. (An earlier draft of this row had no 「允许」 tier
+        // and refused every automatic run outright; that 口径 is gone —
+        // 「不区分有人无人值守，只要用户授权就算自动，不授权就要申请」.)
+        //
+        // `normalizeBrowserOperationPolicy` writes the row: a missing key
+        // clamps to `STRICTEST_OPERATION_STATE` (`'ask'`), which is also the
+        // reviewed default here, so the upgrade and corruption paths agree
+        // without a second literal. Nobody gains a capability by upgrading:
+        // an upgraded store lands on 每次询问, and the site still has to be
+        // authorized before anything runs without a dialog.
+        // ════════════════════════════════════════════════
+        if (version < 50) {
+          state.browserOperationPolicy = state.browserOperationPolicy === undefined
+            ? DEFAULT_BROWSER_OPERATION_POLICY
+            : normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+        }
+
+        // ════════════════════════════════════════════════
+        // V48: `browserConfigRevisions` — one monotonic counter per browser
+        // authorization field, so a write from a second window keeps whichever
+        // side of each field is newer instead of overwriting the lot (S18).
+        //
+        // Starting every counter at 0 is correct rather than merely
+        // convenient: an upgraded store has exactly one writer, so there is no
+        // ordering to reconstruct, and 0 is the value a missing counter is
+        // read as anyway (`readBrowserConfigRevisions`). The first edit after
+        // the upgrade bumps past whatever it finds on disk, which is what makes
+        // a second window that upgrades later still able to win its own field.
+        // ════════════════════════════════════════════════
+        if (version < 48) {
+          state.browserConfigRevisions = { ...INITIAL_BROWSER_CONFIG_REVISIONS };
+        }
+
+        // ════════════════════════════════════════════════
+        // V47: `browserOperationPolicy` collapses its two run-mode columns
+        // into ONE row per operation class (2026-09-04 product ruling —
+        // «不应该分在不在场，只要得到了用户允许，都能做»). The surviving values
+        // are the ATTENDED column's: that is where the user said what Abu may
+        // do, and what an automatic run may additionally do is decided by the
+        // master switch, the standing site grant and the high-risk rule —
+        // none of which moved. `normalizeBrowserOperationPolicy` reads either
+        // shape, so this branch is the same one-liner for a v46 store
+        // carrying the old shape and for anything older.
+        //
+        // No released build ever persisted 46 (`dev`, `main` and v0.42.0 all
+        // write 45), so the two-column shape exists only on this branch's
+        // development machines and in its e2e stores — a real install steps
+        // 45 → 47 and the legacy sniff never fires for it.
+        // ════════════════════════════════════════════════
+        if (version < 47) {
+          state.browserOperationPolicy = state.browserOperationPolicy === undefined
+            ? DEFAULT_BROWSER_OPERATION_POLICY
+            : normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+        }
+
+        // ════════════════════════════════════════════════
+        // V46: unattended browser master switch (batch-二「无人值守授权闭环」
+        // T1). Fail-safe by construction: it defaults to false, so no existing
+        // scheduled task / trigger / IM run gains browser access it didn't
+        // already have.
+        //
+        // Its `browserOperationPolicy` line is gone: V47 above rewrites that
+        // field for every store older than 47 — which is every store this
+        // branch can see — using the same absent/normalize rule, so a second
+        // copy here could only drift from it.
+        // ════════════════════════════════════════════════
+        if (version < 46) {
+          state.allowUnattendedBrowser = state.allowUnattendedBrowser === true;
+        }
 
         if (version < 44) {
           // Browser site permissions start empty: every site keeps asking until
           // the user explicitly settles it from the confirmation dialog.
           if (state.browserSitePermissions === undefined) state.browserSitePermissions = {};
+        }
+
+        // ════════════════════════════════════════════════
+        // V51: `browserSiteGrantViaEmbed` gains a SCOPE. Until v50 a mark was
+        // a bare `true` and the gate withheld it from unattended runs; the
+        // 2026-09-07 ruling replaced that with "valid inside the page it was
+        // given on". Old marks do not say which page that was, so they migrate
+        // to the empty scope — "only as an embedded region, page unknown".
+        // That neither widens what the user gave (it never becomes a standing
+        // grant for visiting the site directly) nor silently revokes it, and
+        // `viaEmbedScopeCovers` reads both shapes, so there is one rule and
+        // not two. `normalizeBrowserSiteGrantScopes` does the conversion.
+        // ════════════════════════════════════════════════
+        if (version < 51) {
+          state.browserSiteGrantViaEmbed =
+            normalizeBrowserSiteGrantScopes(state.browserSiteGrantViaEmbed);
+        }
+
+        // ════════════════════════════════════════════════
+        // V49: `browserSiteGrantViaEmbed`. Every grant that already exists was
+        // minted before the merged embedded-region prompt could mark one, so
+        // an empty map is the truthful answer: nothing stored so far is known
+        // to have come in that way, and an unmarked grant is a full one.
+        // ════════════════════════════════════════════════
+        if (version < 49) {
+          if (state.browserSiteGrantViaEmbed === undefined) state.browserSiteGrantViaEmbed = {};
         }
 
         // ════════════════════════════════════════════════
@@ -1872,6 +2819,8 @@ export const useSettingsStore = create<SettingsStore>()(
           }
         }
 
+        // V53: one conservative browser permission model, after existing migrations.
+        if (version < 53) state.browserPermissionConfigV2 = migrateBrowserPermissionConfig(state);
         return state;
       },
       partialize: (state) => ({
@@ -1927,7 +2876,13 @@ export const useSettingsStore = create<SettingsStore>()(
         guideShown: state.guideShown,
         behaviorSensorEnabled: state.behaviorSensorEnabled,
         telemetryOptOut: state.telemetryOptOut,
+        browserPermissionConfigV2: state.browserPermissionConfigV2,
         browserSitePermissions: state.browserSitePermissions,
+        browserSiteGrantViaEmbed: state.browserSiteGrantViaEmbed,
+        browserOperationPolicy: state.browserOperationPolicy,
+        allowUnattendedBrowser: state.allowUnattendedBrowser,
+        imChannel: state.imChannel,
+        browserConfigRevisions: state.browserConfigRevisions,
         computerUseEnabled: state.computerUseEnabled,
         preventSleep: state.preventSleep,
         allowSkillCommands: state.allowSkillCommands,
@@ -1943,24 +2898,47 @@ export const useSettingsStore = create<SettingsStore>()(
         dndMode: state.dndMode,
         petOpen: state.petOpen,
       }),
-      onRehydrateStorage: () => (state) => {
-        if (!state) return;
+      merge: (persisted, current) => ({
+        ...current, ...(persisted as Partial<SettingsState>),
+        browserPermissionConfigV2: persisted && typeof persisted === 'object'
+          ? migrateBrowserPermissionConfig({ ...persisted, browserPermissionConfigV2: (persisted as Partial<SettingsState>).browserPermissionConfigV2 ?? {} })
+          : current.browserPermissionConfigV2,
+      }),
+      onRehydrateStorage: () => (state, error) => {
+        if (error || !state) return;
         // Initialize i18n module with persisted language setting
         if (state.language) {
           initLanguage(state.language);
         }
         // Validate active model points to a usable provider
         reconcileActiveProvider(state);
+        // Defense in depth against a malformed browserOperationPolicy that
+        // reached storage without going through `migrate` (hand-edited
+        // localStorage, a future bug writing a partial object, ...) — the
+        // `migrate` branch above only runs when crossing the v47 boundary,
+        // so an already-v47 store with a corrupted policy would otherwise
+        // never get fixed up. Clamps any missing/invalid row to the
+        // strictest state, and reads the pre-v47 two-column shape as well
+        // (see `normalizeBrowserOperationPolicy`'s doc comment); a
+        // well-formed policy passes through unchanged.
+        state.browserOperationPolicy = normalizeBrowserOperationPolicy(state.browserOperationPolicy);
+        state.allowUnattendedBrowser = state.allowUnattendedBrowser === true;
+        // Same defense in depth for the counters that order those two fields:
+        // a hand-edited or partially-written map must not freeze a field by
+        // claiming a revision nothing can beat.
+        state.browserConfigRevisions = readBrowserConfigRevisions(state);
         // Force reset ephemeral UI state
         state.showSettings = false;
         state.activeSystemTab = 'usage';
         state.activeAutomationTab = 'schedule';
-        state.activeToolboxTab = 'skills';
-        state.toolboxSearchQuery = '';
+        state.activeExtensionsTab = 'plugins';
+        state.extensionsSearchQueries = emptyExtensionsSearchQueries();
+        state.pendingExtensionsSource = null;
         state.installingItem = null;
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        rememberHydratedBrowserConfig(state);
         // Main owns the runtime gate. Restore it only from persisted user
         // settings; Computer Use tools are never allowed to enable themselves.
         syncComputerUseGate(state.computerUseEnabled);
@@ -2208,4 +3186,19 @@ export async function bootstrapSecrets(): Promise<void> {
   } catch (err) {
     console.warn('[secrets] orphaned imagegen secret sweep failed (non-fatal):', err);
   }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== SETTINGS_STORAGE_KEY) return;
+    if (event.newValue !== null) browserPermissionStorageWasPresent = true;
+    const state = useSettingsStore.getState();
+    if (!state.browserPermissionConfigV2) return;
+    const disk = parsePersistedSettings(event.newValue);
+    if (!disk) return;
+    const revision = readBrowserConfigRevisions(disk.state).browserPermissionConfigV2;
+    if (revision > state.browserConfigRevisions.browserPermissionConfigV2) {
+      state.restoreBrowserConfigField('browserPermissionConfigV2', disk.state.browserPermissionConfigV2 ?? INVALID_BROWSER_PERMISSION_CONFIG, revision);
+    }
+  });
 }

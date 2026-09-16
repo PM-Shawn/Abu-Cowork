@@ -137,6 +137,8 @@ export interface PlanGateParams {
   /** From ToolDefinition.readOnly — undefined if not declared on the tool. */
   toolReadOnly: boolean | undefined;
   planMode: PlanModeState;
+  /** A strict team remains gated even after a stale entry reset. */
+  requirePlanApproval?: boolean;
 }
 
 export interface PlanGateResult {
@@ -154,7 +156,7 @@ export interface PlanGateResult {
 export function evaluatePlanGate(params: PlanGateParams): PlanGateResult {
   const { toolName, toolReadOnly, planMode } = params;
 
-  if (planMode === 'off' || planMode === 'approved') {
+  if ((planMode === 'off' && !params.requirePlanApproval) || planMode === 'approved') {
     return { allow: true };
   }
 

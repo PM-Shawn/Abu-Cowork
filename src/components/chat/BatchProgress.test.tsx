@@ -153,8 +153,7 @@ describe('BatchProgress', () => {
           version: 1,
           batch: identity,
           taskCount: 9_999,
-          counts: { succeeded: 0, failed: 0, stopped: 0, incomplete: 0 },
-          tasks: [],
+          counts: { succeeded: 0, failed: 0, stopped: 0, incomplete: 0 }
         } as ToolCall['batchTerminalSummary'],
       })}
     />);

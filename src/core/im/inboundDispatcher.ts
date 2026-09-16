@@ -12,6 +12,8 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { parseInboundMessage } from './inboundRouter';
 import { triggerEngine } from '../trigger/triggerEngine';
 import { imChannelRouter } from './channelRouter';
+import { tryConsumeApprovalReply } from './pendingApprovals';
+import { useIMChannelStore } from '../../stores/imChannelStore';
 import { isTauriEnv } from '../../utils/tauriEnv';
 import type { ImageAttachment } from '../../types';
 
@@ -23,6 +25,19 @@ export async function startInboundDispatcher(): Promise<void> {
     'im-inbound-event',
     (event) => {
       const { platform, payload } = event.payload;
+      // Refuse before parsing. This endpoint is reachable by anything that can
+      // reach the port, so a platform the user never enabled (or has since
+      // disabled) must not get its payload parsed, matched against triggers or
+      // handed to a channel: turning a channel off is meant to stop it, and the
+      // parser is the widest surface here.
+      //
+      // Webhook ingress only. `dispatchDirect` carries messages a polling
+      // adapter already authenticated and pulled itself (WeChat iLink), which
+      // is not untrusted ingress and must keep working.
+      if (!hasEnabledChannelForPlatform(platform)) {
+        console.warn(`[InboundDispatcher] Dropped webhook message for a platform with no enabled channel: ${platform}`);
+        return;
+      }
       dispatch(platform, payload);
     }
   );
@@ -40,6 +55,14 @@ export function dispatchDirect(
   text?: string,
 ): void {
   dispatch(platform, payload, images, text);
+}
+
+/** Does the user have at least one enabled channel on this platform? */
+function hasEnabledChannelForPlatform(platform: string): boolean {
+  return useIMChannelStore
+    .getState()
+    .getChannelsByPlatform(platform as Parameters<ReturnType<typeof useIMChannelStore.getState>['getChannelsByPlatform']>[0])
+    .some((channel) => channel.enabled === true);
 }
 
 export function stopInboundDispatcher(): void {
@@ -67,6 +90,17 @@ function dispatch(
   // "[文件: name]", which silently dropped the one thing the agent needs to open
   // the attachment it was just sent.
   if (text !== undefined) message.text = text;
+
+  // Approval answers first, and they never go further. An unattended run may
+  // be blocked on a "同意 / 拒绝" question pushed into this chat; that one word
+  // is an ANSWER, not a new instruction, and forwarding it would both leave
+  // the run hanging and hand the model a meaningless prompt. Anything that is
+  // not a bare answer is untouched and routes normally — a message that merely
+  // mentions 同意 is an ordinary message (see `classifyApprovalReply`).
+  if (tryConsumeApprovalReply(message)) {
+    console.log('[InboundDispatcher] Message consumed as a pending approval answer');
+    return;
+  }
 
   // Trigger first: check if any IM trigger matches this message
   const matched = triggerEngine.tryMatchIMTriggers(message);

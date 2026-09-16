@@ -37,6 +37,10 @@ export interface ScheduledTask {
   outputUserIds?: string;
   /** Project this task belongs to */
   projectId?: string;
+  /** When set, this schedule hands `prompt` to that team as a task goal
+   *  (labs 团队) instead of running a plain conversation. A goal this team
+   *  already ran to acceptance reuses the accepted split without replanning. */
+  teamId?: string;
   /**
    * The permission mode this task runs under while unattended. Reuses chat's
    * own three-tier autonomy axis (`standard`/`smart`/`autonomous`,

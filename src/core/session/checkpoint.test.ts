@@ -5,9 +5,9 @@
  * conversation, so an unconditional clear would strip the live turn of its
  * crash recovery. These tests pin the loop-scoped variant that closes that.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { exists, readTextFile, remove } from '@tauri-apps/plugin-fs';
-import { clearCheckpointForLoop, type Checkpoint } from './checkpoint';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { exists, readTextFile, readDir, remove } from '@tauri-apps/plugin-fs';
+import { findOrphanedCheckpoints, clearCheckpointForLoop, type Checkpoint } from './checkpoint';
 
 const existsMock = vi.mocked(exists);
 const readTextFileMock = vi.mocked(readTextFile);
@@ -60,6 +60,32 @@ describe('clearCheckpointForLoop', () => {
     readTextFileMock.mockResolvedValue('{ not json');
 
     await expect(clearCheckpointForLoop('conv-1', 'loop-1')).resolves.toBeUndefined();
+    expect(removeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('checkpoint recovery validation (F8)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers(); vi.setSystemTime(10_000_000);
+    existsMock.mockReset().mockResolvedValue(true);
+    removeMock.mockReset().mockResolvedValue(undefined);
+    vi.mocked(readDir).mockResolvedValue([{ name: 'conv-1', isDirectory: true, isFile: false, isSymlink: false }]);
+  });
+  afterEach(() => vi.useRealTimers());
+  it.each([
+    { conversationId: 'conv-2' }, { conversationId: '../conv-2' },
+    { timestamp: 10_000_001 }, { timestamp: '9999999' }, { timestamp: null },
+    { timestamp: -1 }, { timestamp: 1 }, { loopId: '' }, { turnCount: -1 }, { status: 'corrupt' },
+  ])('cleans the actual scanned path and never resumes malformed state: %j', async (override) => {
+    readTextFileMock.mockResolvedValue(JSON.stringify({ ...checkpoint('loop-1'), timestamp: 9_999_999, ...override }));
+    expect(await findOrphanedCheckpoints()).toEqual([]);
+    expect(removeMock).toHaveBeenCalledWith(expect.stringMatching(/\/conv-1\/checkpoint\.json$/));
+    expect(removeMock).not.toHaveBeenCalledWith(expect.stringMatching(/\/conv-2\/checkpoint\.json$/));
+  });
+  it('keeps a recent valid checkpoint owned by the scanned conversation', async () => {
+    const cp = { ...checkpoint('loop-1'), timestamp: 9_999_999 };
+    readTextFileMock.mockResolvedValue(JSON.stringify(cp));
+    expect(await findOrphanedCheckpoints()).toEqual([cp]);
     expect(removeMock).not.toHaveBeenCalled();
   });
 });

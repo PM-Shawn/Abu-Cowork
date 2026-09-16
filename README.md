@@ -18,8 +18,6 @@ Tell Abu what you need — it reads files, runs commands, writes docs, and build
 
 </div>
 
-> 🚧 **Multi-Harness integration in progress:** Abu is evolving toward pluggable agent runtimes, with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) among the first integration targets. Stable releases currently use Abu's native harness.
-
 ---
 
 ## Why Abu?
@@ -377,7 +375,6 @@ src/
 └── utils/            # Utility functions
 
 builtin-skills/       # 29 built-in skills (one directory each)
-builtin-agents/       # Built-in agent definitions (placeholder)
 abu-browser-bridge/   # Browser bridge MCP Server
 abu-chrome-extension/ # Chrome extension (used by the Abu-Chrome-Bridge skill)
 electron/             # Electron main process, preload bridge, native hosts

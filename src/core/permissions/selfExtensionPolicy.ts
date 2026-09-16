@@ -18,6 +18,7 @@
  */
 
 import { TOOL_NAMES } from '../tools/toolNames';
+import { getI18n } from '../../i18n';
 
 /** manage_mcp_server actions that add a server (and therefore spawn processes or reach a URL). */
 const MCP_INSTALLING_ACTIONS = new Set(['install', 'add_custom', 'ensure']);
@@ -32,6 +33,21 @@ export interface SelfExtensionAction {
   summary: string;
 }
 
+/** What the caller read from disk about the call, for summaries that depend on it. */
+export interface SelfExtensionFacts {
+  /**
+   * save_agent: an AGENT.md already exists where this call would write
+   * (`saveAgentWouldReplace`). Anything but an explicit `false` reads as a
+   * replace — never the model's `overwrite` flag.
+   */
+  saveAgentReplaces?: boolean;
+  /**
+   * save_team: a team of this name already exists (`saveTeamWouldReplace`).
+   * Anything but an explicit `false` reads as a replace.
+   */
+  saveTeamReplaces?: boolean;
+}
+
 /**
  * Classify a tool call that would extend the agent's own capabilities.
  * Returns null when the call does not write durable capability state.
@@ -39,10 +55,24 @@ export interface SelfExtensionAction {
 export function classifySelfExtension(
   name: string,
   input: Record<string, unknown>,
+  facts: SelfExtensionFacts = {},
 ): SelfExtensionAction | null {
   if (name === TOOL_NAMES.SAVE_AGENT) {
+    // The user approving this is the one check on the model's claim that they
+    // asked to change an existing expert, so the summary says which it is.
+    const t = getI18n().commandConfirm;
+    const mode = facts.saveAgentReplaces === false ? t.selfExtensionSaveAgentNew : t.selfExtensionSaveAgentReplace;
     const agentName = typeof input.name === 'string' ? input.name : '';
-    return { summary: agentName ? `save_agent: ${agentName}` : 'save_agent' };
+    return { summary: agentName ? `save_agent (${mode}): ${agentName}` : `save_agent (${mode})` };
+  }
+
+  if (name === TOOL_NAMES.SAVE_TEAM) {
+    // Same durable foothold as an expert: the team is overwritten by name, and
+    // `leaderNote` is free text handed to the leader on every later run of it.
+    const t = getI18n().commandConfirm;
+    const mode = facts.saveTeamReplaces === false ? t.selfExtensionSaveTeamNew : t.selfExtensionSaveTeamReplace;
+    const teamName = typeof input.name === 'string' ? input.name.trim() : '';
+    return { summary: teamName ? `save_team (${mode}): ${teamName}` : `save_team (${mode})` };
   }
 
   if (name === TOOL_NAMES.UPDATE_SOUL) {

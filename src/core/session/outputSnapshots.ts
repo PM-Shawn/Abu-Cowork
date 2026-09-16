@@ -233,8 +233,11 @@ async function readManifestFromDisk(convId: string): Promise<OutputManifest> {
         manifest = parsed;
       }
     }
-  } catch (e) {
-    logger.warn('manifest load failed, falling back to empty', { convId, err: e });
+  } catch (error) {
+    logger.warn('manifest load failed, falling back to empty', {
+      convId,
+      errorKind: error instanceof Error ? error.name : 'unknown',
+    });
   }
 
   return manifest;
@@ -779,10 +782,13 @@ export async function readSnapshotBytes(convId: string, snapshotRelPath: string)
   const outputsDir = await getOutputsDir(convId);
   const fullPath = joinPath(outputsDir, snapshotRelPath);
   // Defense-in-depth: ensure the resolved path stays inside outputsDir
-  if (!normalizePath(fullPath).startsWith(normalizePath(outputsDir))) return null;
+  const normalizedOutputsDir = `${normalizePath(outputsDir)}/`;
+  const normalizedFullPath = normalizePath(fullPath);
+  if (normalizedFullPath !== normalizePath(outputsDir) && !normalizedFullPath.startsWith(normalizedOutputsDir)) return null;
   try {
     if (!(await exists(fullPath))) return null;
-    return await readFile(fullPath);
+    const bytes = await readFile(fullPath);
+    return bytes;
   } catch {
     return null;
   }

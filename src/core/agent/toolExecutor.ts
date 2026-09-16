@@ -35,9 +35,11 @@ import type { EventRouter } from './eventRouter';
 import type { IMContext } from './orchestrator';
 import { createLogger } from '../logging/logger';
 import { startToolSpan } from '../observability/langfuse';
+import { checkAgentToolCall, type AgentToolPolicy } from './agentToolPolicy';
 import { matchesToolPattern, matchesToolName } from '../skill/toolFilter';
 import { groupToolCallsByConcurrency, resolveToolConcurrencySafety } from './toolConcurrency';
 import { batchSummaryHasNonSuccess } from './batchTerminalSummary';
+import { getExecutionPort } from './ports/executionPort';
 import { firstImageContent } from '../tools/toolResultContent';
 import { snapshotResultImage } from '../session/outputSnapshots';
 
@@ -79,6 +81,8 @@ export interface ToolBatchParams {
   eventRouter: EventRouter;
   executionId: string;
   inputValidators: Map<string, (input: Record<string, unknown>) => boolean>;
+  /** Trusted root role policy; never inherited as a task-global member ceiling. */
+  agentToolPolicy?: AgentToolPolicy;
   /** Per-run execution denylist. This is an enforcement boundary, not only a
    * model-visible tool filter: hallucinated or malformed tool calls fail closed. */
   blockedTools?: string[];
@@ -87,6 +91,21 @@ export interface ToolBatchParams {
   allowedTools?: string[];
   /** Headless IM context to pass through delegate tools into subagent runs. */
   imContext?: IMContext;
+  /**
+   * F1 — where an unattended run may ask, published on the loop context so
+   * gates that build their own approval request (the browser gate) can reach
+   * the automation's own chat instead of refusing with `no_binding`.
+   *
+   * REQUIRED, `| undefined` rather than `?:`, and deliberately so (batch-8
+   * review F8-6). The two end-to-end pins for this field install their own
+   * `LoopContext`, so deleting the production hand-off at `agentLoop.ts`'s
+   * `executeToolBatch` call left `tsc` and all 8000+ tests green while every
+   * unattended browser 「每次询问」 in the real app fell back to `no_binding`.
+   * A caller that has no target must now say so out loud; a caller that
+   * forgets fails typecheck. Cheaper than the harness the alternative needed,
+   * and `npm run verify` covers it for free.
+   */
+  unattendedApproval: import('../permissions/unattendedConfirmation').UnattendedApprovalContext | undefined;
   confirmCb: (info: ConfirmationInfo) => Promise<boolean>;
   filePermCb: FilePermissionCallback;
   toolContext: ToolExecutionContext;
@@ -178,32 +197,34 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
     blockedTools: params.blockedTools,
     allowedTools: params.allowedTools,
     imContext: params.imContext,
+    unattendedApproval: params.unattendedApproval,
     authorizationScopeId: params.toolContext.authorizationScopeId,
     runPermissionCeiling: params.toolContext.runPermissionCeiling,
+    initiatedBy: params.toolContext.initiatedBy,
+    reportBrowserDenial: params.toolContext.reportBrowserDenial,
+    reportBrowserAllow: params.toolContext.reportBrowserAllow,
     imReplyTarget: params.toolContext.imReplyTarget,
   });
 
   let completedCount = 0;
   const totalCount = collectedToolCalls.length;
 
-  const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
-    if (allowedTools.length > 0 && !allowedTools.some((pattern) => matchesToolPattern(tc.name, pattern, tc.input))) {
-      return {
-        id: tc.id,
-        result: `Error: tool "${tc.name}" is not allowed for this agent run`,
-        resultContent: undefined,
-        error: true,
-        duration: 0,
-      };
+  const checkToolBoundary = (name: string, input: Record<string, unknown>): string | null => {
+    const roleError = params.agentToolPolicy && checkAgentToolCall(params.agentToolPolicy, name, input);
+    if (roleError) return roleError;
+    if (allowedTools.length > 0 && !allowedTools.some((pattern) => matchesToolPattern(name, pattern, input))) {
+      return `Error: tool "${name}" is not allowed for this agent run`;
     }
-    if (blockedTools.some((pattern) => matchesToolName(tc.name, pattern))) {
-      return {
-        id: tc.id,
-        result: `Error: tool "${tc.name}" is blocked for this agent run`,
-        resultContent: undefined,
-        error: true,
-        duration: 0,
-      };
+    if (blockedTools.some((pattern) => matchesToolName(name, pattern))) {
+      return `Error: tool "${name}" is blocked for this agent run`;
+    }
+    return null;
+  };
+
+  const executeSingleTool = async (tc: typeof collectedToolCalls[number]): Promise<ToolExecResult> => {
+    const boundaryError = checkToolBoundary(tc.name, tc.input);
+    if (boundaryError) {
+      return { id: tc.id, result: boundaryError, resultContent: undefined, error: true, duration: 0 };
     }
 
     // Check if cancelled before executing
@@ -242,12 +263,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       toolName: tc.name,
       toolReadOnly: undefined,
       planMode: getPlanMode(conversationId),
+      requirePlanApproval: toolContext?.teamRequirePlanApproval && toolContext.interactionMode !== 'background',
     });
     if (!planGate.allow) {
       return { id: tc.id, result: planGate.reason ?? '计划模式:已拦截写操作', resultContent: undefined, error: true, duration: 0 };
     }
 
     const effectiveInput = preEvent.modifiedInput ?? tc.input;
+    const effectiveBoundaryError = checkToolBoundary(tc.name, effectiveInput);
+    if (effectiveBoundaryError) {
+      return { id: tc.id, result: effectiveBoundaryError, resultContent: undefined, error: true, duration: 0 };
+    }
 
     // Enforce allowed-tools input constraints (e.g., run_command(npm *))
     const validator = inputValidators.get(tc.name);
@@ -270,6 +296,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
       const invokeTool = () => toolInvoker.executeAnyTool(tc.name, effectiveInput, confirmCb, filePermCb, {
         ...toolContext,
         toolCallId: tc.id,
+        executionStepId: params.toolCallToStepId.get(tc.id)
+          ?? getExecutionPort().getExecutionByLoopId(loopId)?.steps.find((step) => step.toolCallId === tc.id)?.id,
         assistantMessageId: assistantMsgId,
         abortSignal: abortController.signal,
         reportMetadata: checkpointMetadata,

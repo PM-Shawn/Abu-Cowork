@@ -33,9 +33,8 @@
  * a later global selection. Only legacy callers fall back to the shared
  * mirror.
  *
- * ── `runSubagentLoop` called DIRECTLY, in-process — no reverse RPC ───────
- * We're already inside the sidecar process; there is no shell round trip to
- * make. `@/core/agent/subagentLoop`'s `runSubagentLoop` is REAL, bundled
+ * ── Admission checked by shell; loop runs in-process ───────────────────
+ * The shell rechecks the plugin gate before a nested loop is admitted. `@/core/agent/subagentLoop`'s `runSubagentLoop` is REAL, bundled
  * code (not shimmed) — this shim just constructs its options correctly and
  * calls it, returning the real `SubagentResult` instance unchanged (no
  * serialize/deserialize needed, unlike `subagentHost.ts`'s top-level
@@ -69,9 +68,15 @@ import { runSubagentLoop, type SubagentLoopOptions, type SubagentResult } from '
 import { scopeSubagentLoopProgress } from '@/core/agent/subagentProgressIdentity';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getSettingsMirrorReader } from '../settingsMirror';
+import { sendRequest } from '../rpcClient';
 
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
   const ctx = getCurrentAgentRunContext();
+  // The shell retains the original route ownership and checks its live gate.
+  const admission = await sendRequest('agent.assertDirectDelegateEnabled', { runId: ctx.runId });
+  if (!admission || typeof admission !== 'object' || (admission as { allowed?: unknown }).allowed !== true) {
+    throw new Error('Direct delegate admission denied');
+  }
 
   const fullOptions: SubagentLoopOptions = {
     ...options,

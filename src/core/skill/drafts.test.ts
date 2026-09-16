@@ -25,8 +25,15 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
   };
 });
 
+// The organization's skill blacklist hook: allows everything but one name.
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkSkill: vi.fn((_policy: unknown, name: string) =>
+    name === 'blocked-skill' ? { decision: 'deny', reason: 'blocked by policy' } : { decision: 'allow' }),
+}));
+
 // Pull rename out after the mock is registered (can't import it at top).
 import * as fs from '@tauri-apps/plugin-fs';
+import { SkillPolicyDeniedError } from './skillPolicy';
 const renameMock = vi.mocked(fs.rename);
 
 import {
@@ -97,7 +104,9 @@ function makeVfs() {
         isSymlink: false,
       })) as Awaited<ReturnType<typeof readDir>>;
     });
-    mockMkdir.mockImplementation(async (p: string) => {
+    // Like the host's `mkdirSync`: without `recursive`, an existing path throws.
+    mockMkdir.mockImplementation(async (p: string, options?: { recursive?: boolean }) => {
+      if (!options?.recursive && entries.has(p)) throw new Error(`EEXIST: file already exists, mkdir '${p}'`);
       entries.set(p, { kind: 'dir' });
     });
     mockRemove.mockImplementation(async (p: string) => {
@@ -201,10 +210,10 @@ describe('drafts · writeSkillDirect', () => {
       WS,
     );
 
-    expect(result.skillMdPath).toBe(`${SKILLS}/daily-report/SKILL.md`);
-    expect(result.skillDir).toBe(`${SKILLS}/daily-report`);
+    expect(result?.skillMdPath).toBe(`${SKILLS}/daily-report/SKILL.md`);
+    expect(result?.skillDir).toBe(`${SKILLS}/daily-report`);
     // Crucially, path must NOT contain /drafts/
-    expect(result.skillMdPath).not.toContain('/drafts/');
+    expect(result?.skillMdPath).not.toContain('/drafts/');
   });
 
   it('writes SKILL.md without creating a sidecar', async () => {
@@ -218,17 +227,39 @@ describe('drafts · writeSkillDirect', () => {
     expect((writes[0][1] as { path: string }).path).toMatch(/SKILL\.md$/);
   });
 
-  it('creates parent skill directory recursively', async () => {
+  it('creates the skills dir as needed, and the skill folder only while it is absent', async () => {
     const vfs = makeVfs();
     vfs.install();
 
     await writeSkillDirect('deep-skill', '---\n---\n', WS);
 
-    // mkdir should have been called to establish the skill dir.
-    expect(mockMkdir).toHaveBeenCalledWith(
-      `${SKILLS}/deep-skill`,
-      { recursive: true },
-    );
+    expect(mockMkdir).toHaveBeenCalledWith(SKILLS, { recursive: true });
+    // Not `recursive`: that would succeed on a folder that is already there.
+    expect(mockMkdir).toHaveBeenCalledWith(`${SKILLS}/deep-skill`);
+  });
+
+  it('writes nothing into a skill folder that is already there', async () => {
+    // The caller checked the name first; this covers a folder made since
+    // (another loop creating the same name) — or one the check never saw.
+    const vfs = makeVfs();
+    vfs.seed(`${SKILLS}/taken`);
+    vfs.seed(`${SKILLS}/taken/SKILL.md`, '---\nname: other\n---\nmine');
+    vfs.install();
+
+    const result = await writeSkillDirect('taken', '---\nname: taken\n---\nnew', WS);
+
+    expect(result).toBeNull();
+    expect(mockInvoke.mock.calls.filter(([c]) => c === 'atomic_write_text')).toHaveLength(0);
+  });
+
+  it('still reports a failure that is not an existing folder', async () => {
+    const vfs = makeVfs();
+    vfs.install();
+    mockMkdir.mockImplementation(async (_p: string, options?: { recursive?: boolean }) => {
+      if (!options?.recursive) throw new Error('EACCES: permission denied');
+    });
+
+    await expect(writeSkillDirect('locked', '---\n---\n', WS)).rejects.toThrow('EACCES');
   });
 });
 
@@ -354,6 +385,21 @@ describe('drafts · acceptDraft', () => {
     const vfs = makeVfs();
     vfs.install();
     await expect(acceptDraft('ghost', WS)).rejects.toThrow(/not found/);
+  });
+
+  it("refuses a draft whose name the organization's policy blocks, leaving it in drafts", async () => {
+    const vfs = makeVfs();
+    vfs.seed(`${DRAFTS}/blocked-skill`);
+    vfs.seed(`${DRAFTS}/blocked-skill/SKILL.md`, '---\nname: blocked-skill\n---\nbody');
+    vfs.seed(`${DRAFTS}/blocked-skill/.abu-draft-meta.json`, '{}');
+    vfs.install();
+
+    const err = await acceptDraft('blocked-skill', WS).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SkillPolicyDeniedError);
+    expect((err as SkillPolicyDeniedError).skillName).toBe('blocked-skill');
+    expect(renameMock).not.toHaveBeenCalled();
+    expect(mockRemove).not.toHaveBeenCalled();
   });
 });
 

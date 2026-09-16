@@ -18,8 +18,6 @@
 
 </div>
 
-> 🚧 **多 Harness 改造进行中**：Abu 正在演进为可插拔的 Agent Runtime，并把 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 作为首批适配目标。当前稳定版仍使用 Abu 原生 Harness。
-
 ---
 
 ## 为什么选择 Abu？
@@ -365,7 +363,6 @@ src/
 └── utils/            # 工具函数
 
 builtin-skills/       # 29 个内置技能（每个为独立目录）
-builtin-agents/       # 内置 Agent 定义（预留）
 abu-browser-bridge/   # 浏览器桥接 MCP Server
 abu-chrome-extension/ # Chrome 扩展（Abu-Chrome-Bridge 技能依赖）
 electron/             # Electron 主进程、preload 桥和原生 host

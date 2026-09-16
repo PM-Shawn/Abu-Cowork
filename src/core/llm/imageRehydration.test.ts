@@ -85,6 +85,33 @@ describe('rehydrateImageData', () => {
     expect(img!.source.data).not.toBe('');
   });
 
+  it('rehydrates every stripped image when several are read concurrently', async () => {
+    // Regression (TESTING.md §3): the fan-out over messages/blocks is Promise.all,
+    // so several disk reads race. Each read used to `await import('@tauri-apps/plugin-fs')`
+    // from this one module; vitest served the second concurrent importer the REAL
+    // plugin (throws `window is not defined`), which the catch turned into a
+    // "could not be loaded" placeholder — a silent wrong result, not a crash.
+    mockResolveFileSource.mockImplementation(async (_conv: unknown, filePath: string) => ({
+      status: 'available', path: filePath, isFromSnapshot: false,
+    }));
+    mockReadFile.mockResolvedValue(new Uint8Array([137, 80, 78, 71]));
+    const multi = strippedImageMessage('D:/abu/one.png');
+    multi.content = [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' }, filePath: 'D:/abu/one.png' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' }, filePath: 'D:/abu/two.png' },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' }, filePath: 'D:/abu/three.png' },
+    ] as Message['content'];
+
+    const out = await rehydrateImageData([multi, strippedImageMessage('D:/abu/four.png')], 'conv1', null);
+
+    const blocks = out.flatMap((m) => (Array.isArray(m.content) ? m.content : []));
+    const images = blocks.filter((b) => b.type === 'image');
+    expect(images).toHaveLength(4);
+    for (const b of images) if (b.type === 'image') expect(b.source.data).toBe('iVBORw==');
+    expect(blocks.some((b) => b.type === 'text' && b.text.includes('could not be loaded'))).toBe(false);
+    expect(mockReadFile).toHaveBeenCalledTimes(4);
+  });
+
   it('degrades an unrecoverable image to a text placeholder — never an empty image', async () => {
     mockResolveFileSource.mockResolvedValue({ status: 'missing', basename: 'shot.png', originalPath: 'D:/abu/shot.png' });
 

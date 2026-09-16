@@ -9,6 +9,9 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 - All release work is merged into `dev`; the release worktree is clean.
 - `dev` is up to date and CI is green. Resolve feature/main conflicts before
   promotion; do not repair them directly on `main`.
+- The `E2E Tests` workflow is green on **both** jobs: `e2e` (browser suite) and
+  `e2e-electron` (real Electron shell, macos-14). `e2e-electron` is not a
+  required status check, so a PR can merge with it red — open the run and look.
 - `git rev-list --right-only --count origin/dev...origin/main` returns `0`:
   `main` must never contain a commit that is absent from `dev`.
 - The release commit contains no `.env.local`, signing material, private module,
@@ -16,8 +19,10 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 
 ## 1. Prepare (on `dev`)
 
-- [ ] Bump the version in **all four** files to `X.Y.Z`:
+- [ ] Bump the version in **all five** files to `X.Y.Z`:
   - `package.json`
+  - `package-lock.json` (both version fields — run `npm install --package-lock-only`
+    after bumping `package.json`; expect a 2-line diff and no dependency changes)
   - `src-tauri/tauri.conf.json`
   - `src-tauri/Cargo.toml`
   - `src-tauri/Cargo.lock` (the `name = "abu"` entry)
@@ -29,7 +34,7 @@ convention in [`RELEASING.md`](./RELEASING.md). This page is the actionable sour
 ## 2. Verify — fail here, not after tagging
 
 ```bash
-npm run release:check      # version match across 4 files + both changelog sections in the right language
+npm run release:check      # version match across 5 files + both changelog sections in the right language
 npm run build              # gen:models:check + tsc + vite build
 npm run lint
 npm test

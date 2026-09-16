@@ -1,9 +1,72 @@
 import { create } from 'zustand';
+import { homeDir } from '@tauri-apps/api/path';
 import type { SkillMetadata, SubagentMetadata } from '../types';
 import { skillLoader } from '../core/skill/loader';
 import { agentRegistry } from '../core/agent/registry';
-import { useSettingsStore } from './settingsStore';
+import { readInstalled, readInstalledResult, type InstalledPlugin } from '../core/plugin/installedStore';
 import { useWorkspaceStore } from './workspaceStore';
+import { useEnterpriseStore } from './enterpriseStore';
+
+/**
+ * Resolve every agent's plugin provenance against `installed.json`.
+ *
+ * `installed.json`'s `contributed.agents` — the same list uninstall trusts — is
+ * the SOLE authority on which agents belong to a plugin. A `source:` parsed off
+ * an AGENT.md is only a cache of it:
+ *
+ *  - a name a record claims is labelled with THAT record's key, whatever the
+ *    file said (a fresh install stamps the file, but the file can also be stale,
+ *    hand-edited, or written by the `save_agent` tool);
+ *  - a name no record claims loses any `source` it carried in, so a user's own
+ *    agent cannot lock itself behind the plugin read-only gates (delete/save
+ *    disabled in `AgentsSection`/`AgentEditor`) just because the string
+ *    `source: plugin:x` reached its frontmatter — nor can an orphan left behind
+ *    by a refused `removeContributedAgent`.
+ *
+ * Backfill is the same rule seen from the other side: an agent installed before
+ * the `source:` key existed has no provenance on disk, and rewriting its
+ * AGENT.md would edit a file that now lives in the user's `~/.abu/agents`, so
+ * the label is restored here, in memory.
+ *
+ * Lives in the store, not in `core/agent/registry`, on purpose: the registry
+ * must not learn about `core/plugin` (the plugin installer already depends on
+ * the registry, and the reverse edge would close the cycle).
+ */
+export function applyPluginAgentSources(
+  agents: SubagentMetadata[],
+  installed: readonly InstalledPlugin[],
+): SubagentMetadata[] {
+  const owner = new Map<string, string>();
+  for (const record of installed) {
+    for (const name of record.contributed?.agents ?? []) {
+      if (!owner.has(name)) owner.set(name, record.key);
+    }
+  }
+
+  return agents.map((agent) => {
+    const plugin = owner.get(agent.name);
+    if (plugin) {
+      if (agent.source?.plugin === plugin) return agent;
+      return { ...agent, source: { kind: 'plugin' as const, plugin } };
+    }
+    if (!agent.source) return agent;
+    const { source: _unclaimed, ...withoutSource } = agent;
+    return withoutSource;
+  });
+}
+
+/**
+ * `installed.json`, or `[]`. Discovery must not fail because the plugin
+ * manifest could not be read — the agents themselves are already on disk and
+ * usable; only the provenance label is lost.
+ */
+async function readInstalledPluginsSafely(): Promise<InstalledPlugin[]> {
+  try {
+    return await readInstalled(await homeDir());
+  } catch {
+    return [];
+  }
+}
 
 interface DiscoveryState {
   skills: SkillMetadata[];
@@ -25,7 +88,7 @@ interface DiscoveryActions {
    *   - pass `null` explicitly → scan with no workspace (global scan)
    *   - pass a string → scan that workspace
    */
-  refresh: (workspaceOverride?: string | null) => Promise<void>;
+  refresh: (workspaceOverride?: string | null, options?: { strict?: boolean }) => Promise<void>;
 }
 
 export type DiscoveryStore = DiscoveryState & DiscoveryActions;
@@ -35,8 +98,70 @@ export type DiscoveryStore = DiscoveryState & DiscoveryActions;
 // just after that install already ran an explicit refresh(), so re-scanning again
 // would be redundant. Module-level (not store state) to avoid extra re-renders.
 let lastRefreshAt = 0;
+
+/**
+ * The scanned skill names the organization's skill blacklist hides, as one
+ * comparable string. The loader filters at lookup time, so a policy change
+ * applies to every live lookup at once; `skills` above is the one cached
+ * projection, and it is refreshed when this set changes.
+ */
+function blockedSkillSignature(): string {
+  const names = new Set(skillLoader.getNameClaims().map((claim) => claim.name));
+  return [...names].filter((name) => skillLoader.isBlockedByPolicy(name)).sort().join('\n');
+}
+let lastBlockedSkills = '';
+/**
+ * The enterprise store changed while a scan was running. The loader resets
+ * its claims when a scan starts, so no signature can be taken mid-scan, and
+ * the scan in flight may have filtered with the policy from before the change.
+ */
+let policyChangedMidScan = false;
+function rescanIfPolicyChangedMidScan(): void {
+  if (!policyChangedMidScan) return;
+  policyChangedMidScan = false;
+  void useDiscoveryStore.getState().refresh();
+}
 export function getLastDiscoveryRefreshAt(): number {
   return lastRefreshAt;
+}
+
+/**
+ * Re-discover when the organization's skill blacklist changes.
+ *
+ * The policy arrives with the enterprise heartbeat, so the store changes far
+ * more often than the policy does; only a change in which scanned skills are
+ * hidden rescans. Registered once per process — but from the first scan, NOT
+ * at module scope the way the workspace subscription below is.
+ *
+ * `enterpriseStore` is a bare re-export of `@enterprise-modules`, which in an
+ * enterprise build is the private overlay: its entrypoint side-effect-imports
+ * the mount-point components, and those reach back into this graph
+ * (`core/tools/builtins` → `definitions/agentTools` → this module). So this
+ * module can be evaluated *inside* `enterpriseStore`'s own evaluation, with
+ * the re-exported binding not yet initialized — reading it at module scope
+ * then throws `Cannot read properties of undefined`. OSS resolves the alias to
+ * a stub with no edge back into `src/`, so the cycle — and the crash — exists
+ * only in enterprise builds and under `vitest.enterprise.config.ts`.
+ *
+ * Deferring the read to the first scan is enough: the cycle has long settled
+ * by the time anything discovers. Same shape as `sidecarManager`'s
+ * `ensureEnterpriseEntitlementSync`, which shares the cycle and is safe for
+ * exactly this reason.
+ */
+let enterprisePolicyUnsub: (() => void) | undefined;
+function ensureEnterprisePolicySubscription(): void {
+  enterprisePolicyUnsub ??= useEnterpriseStore.subscribe(() => {
+    // Look again once the running scan lands, rather than start a second one
+    // on the same loader.
+    if (useDiscoveryStore.getState().isLoading) {
+      policyChangedMidScan = true;
+      return;
+    }
+    const next = blockedSkillSignature();
+    if (next === lastBlockedSkills) return;
+    lastBlockedSkills = next;
+    void useDiscoveryStore.getState().refresh();
+  });
 }
 
 export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
@@ -44,7 +169,8 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
   agents: [],
   isLoading: false,
 
-  refresh: async (workspaceOverride) => {
+  refresh: async (workspaceOverride, options) => {
+    ensureEnterprisePolicySubscription();
     lastRefreshAt = Date.now();
     set({ isLoading: true });
     try {
@@ -54,24 +180,31 @@ export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
         workspaceOverride !== undefined
           ? workspaceOverride
           : useWorkspaceStore.getState().currentPath;
-      const [skills, agents] = await Promise.all([
+      const [skills, agents, installedPlugins] = await Promise.all([
         skillLoader.discoverSkills(wp),
         agentRegistry.discoverAgents(),
+        options?.strict ? homeDir().then(async home => {
+          const result = await readInstalledResult(home);
+          if (!result.ok) throw result.error;
+          return result.plugins;
+        }) : readInstalledPluginsSafely(),
       ]);
 
-      // Auto-disable project-level skills on first discovery (opt-in model).
-      // Users must explicitly enable them in the Skills panel.
-      const projectSkillNames = skills
-        .filter((s) => s.source === 'project' || s.source === 'project-standard')
-        .map((s) => s.name);
-      if (projectSkillNames.length > 0) {
-        useSettingsStore.getState().autoDisableProjectSkills(projectSkillNames);
-      }
+      // Discovery never writes `disabledSkills`: it holds only the user's own
+      // switches, and this runs on every boot, workspace switch and skills
+      // folder change. Project skills are on by default like every other
+      // source (2026-09-12 ruling) — the former auto-disable here undid each
+      // opt-in on the next refresh and, the list being keyed by name, switched
+      // off the user's same-named skill in every workspace.
 
-      set({ skills, agents, isLoading: false });
+      set({ skills, agents: applyPluginAgentSources(agents, installedPlugins), isLoading: false });
+      lastBlockedSkills = blockedSkillSignature();
     } catch (err) {
       console.warn('Discovery refresh failed:', err);
       set({ isLoading: false });
+      if (options?.strict) throw err;
+    } finally {
+      rescanIfPolicyChangedMidScan();
     }
   },
 }));

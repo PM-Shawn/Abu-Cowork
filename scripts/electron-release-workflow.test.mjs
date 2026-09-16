@@ -550,6 +550,52 @@ test('Electron build uses native runners for all three release targets', () => {
   );
 });
 
+test('Electron build provisions the browser automation runtime before the host-ui gate', () => {
+  // browserHost.cjs loads abu-chrome-extension/dist/content.js and deliberately
+  // has no fallback to the committed src-tauri/browser-extension/ copy
+  // (b2cc8e34): a DOM action on a missing build fails loudly instead of running
+  // a bundle of unknown vintage. The DOM-action tests in electron:host-ui-test
+  // (dialogs, `find` routing, U5 origin pin) go through that loader, so the
+  // gate is only meaningful once the extension is built — and dist/ is
+  // gitignored. This workflow is the ONLY CI surface that runs the gate
+  // (ci.yml's check job never does), and its install step used to provision
+  // root + abu-browser-bridge only: 17 of 18 build-windows runs on
+  // 2026-09-05/06 went red with "browser automation runtime is missing" as
+  // soon as the batch-3 browser PRs added the first tests that reach it.
+  //
+  // Pin: both jobs build the extension in the install step, before the gate.
+  // The install step must run under bash — the Windows default is pwsh, where
+  // `(cd X && …)` is a grouping expression, not a subshell, so a second
+  // sub-package line would run from inside the first package's directory.
+  const build = workflow('electron-build.yml');
+  const gateOf = {
+    'build-mac': (step) => step.name === 'Gates',
+    'build-windows': (step) => step.id === 'windows_host_security_gates',
+  };
+  for (const [jobName, isGate] of Object.entries(gateOf)) {
+    const steps = build.jobs[jobName].steps;
+    const install = steps.find((step) => step.name === 'Install dependencies');
+    assert.ok(install, `${jobName}: install step is missing`);
+    assert.equal(install.shell, 'bash', `${jobName}: install step must run under bash`);
+    assert.match(
+      install.run,
+      /\(cd abu-browser-bridge && npm ci\)/,
+      `${jobName}: install step must still install the bridge's own deps`
+    );
+    assert.match(
+      install.run,
+      /\(cd abu-chrome-extension && npm ci && npm run build\)/,
+      `${jobName}: install step must build the browser extension`
+    );
+    const gate = steps.find(isGate);
+    assert.match(gate.run, /npm run electron:host-ui-test/);
+    assert.ok(
+      steps.indexOf(install) < steps.indexOf(gate),
+      `${jobName}: the extension build must precede the host-ui gate`
+    );
+  }
+});
+
 test('release publishes only after all Electron targets and switches root pointer transactionally', () => {
   const release = workflow('release.yml');
   const manualRelease = release.on.workflow_dispatch.inputs;

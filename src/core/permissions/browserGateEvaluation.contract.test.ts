@@ -1,0 +1,534 @@
+/** V2 contract: pure resource decisions match the real registry and approval channel.
+ * Both legacy switch positions remain in the matrix to prove they no longer control execution. */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { lstat } from '@tauri-apps/plugin-fs';
+import { checkToolApproval } from '../tools/registry';
+import { mcpManager } from '../mcp/client';
+import { useChatStore } from '../../stores/chatStore';
+import { useSettingsStore } from '../../stores/settingsStore';
+import { testSiteVerdicts } from '../../test/browserSiteVerdicts';
+import {
+  __resetBrowserGrantsForTests,
+  DEFAULT_BROWSER_OPERATION_POLICY,
+  type BrowserOperationClass,
+  type BrowserOperationPolicy,
+  type BrowserOperationState,
+  type DecideBrowserOperationSiteVerdict,
+} from './browserToolPolicy';
+import {
+  __resetUnattendedConfirmationForTests,
+  setUnattendedConfirmationResolver,
+} from './unattendedConfirmation';
+import { browserGatePreviewVerdict } from './browserGateEvaluation';
+import { evaluateBrowserPermissionGate } from './browserPermissionGate';
+import { createBrowserPermissionConfig, emptyBrowserSiteRule, resolveBrowserPermissionConfig } from './browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
+
+/**
+ * T5 — the upload row is in the matrix, so the gate has to be able to RESOLVE
+ * a file when it decides an upload may proceed. Both dependencies of that
+ * resolution are faked to "yes, an ordinary 4-byte file inside an authorized
+ * workspace", because what this file measures is the SITE decision and the ask
+ * channel; the file-side refusals (outside the workspace, symlink, too large)
+ * are `browserUploadFiles.test.ts`'s subject and are proved against the real
+ * gate in `registry.browserUploadGate.test.ts`.
+ *
+ * Only `checkReadPath` is replaced — the rest of `pathSafety` stays real, so a
+ * future browser tool that grows a filesystem dependency does not silently get
+ * a stub.
+ */
+vi.mock('../tools/pathSafety', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../tools/pathSafety')>()),
+  checkReadPath: vi.fn(async (candidate: string) => ({
+    allowed: true,
+    resolvedPath: candidate,
+  })),
+}));
+
+vi.mock('@/core/enterprise/policy/enforcer', () => ({
+  getCurrentPolicy: () => ({ mode: 'test-policy' }),
+}));
+vi.mock('@/core/enterprise/policy/matcher', () => ({
+  checkTool: () => ({ decision: 'allow' as const }),
+}));
+
+const OWNER = 'contract-owner';
+const OWNED_TAB_ID = 91;
+
+/** The four site states the preview offers, and the URL that produces each. */
+const SITE_STATES = {
+  default: { url: 'https://unknown.example.com/page', stored: undefined },
+  allowed: { url: 'https://allowed.example.com/page', stored: 'allowed' as const },
+  denied: { url: 'https://blocked.example.com/page', stored: 'denied' as const },
+  // Stored 'allowed' AND money-movement: the gate replaces the verdict with
+  // 'high-risk', which is the state a preview has to be able to show.
+  'high-risk': { url: 'https://www.paypal.com/pay', stored: 'allowed' as const },
+} satisfies Record<string, { url: string; stored?: 'allowed' | 'denied' }>;
+
+type SiteState = keyof typeof SITE_STATES;
+
+/** One representative tool per operation class. */
+const OP_CLASS_TOOLS: Record<BrowserOperationClass, { tool: string; input: Record<string, unknown> }> = {
+  'read-only': { tool: 'abu-browser__snapshot', input: { tabId: OWNED_TAB_ID } },
+  interactive: { tool: 'abu-browser__click', input: { tabId: OWNED_TAB_ID, ref: 'ref_1' } },
+  scripting: { tool: 'abu-browser__execute_js', input: { tabId: OWNED_TAB_ID, code: '1' } },
+  upload: {
+    tool: 'abu-browser__upload_file',
+    input: {
+      tabId: OWNED_TAB_ID,
+      target: '{"css":"input[type=file]"}',
+      files: '[{"path":"/ws/report.xlsx"}]',
+    },
+  },
+};
+
+const POLICY_KEY: Record<BrowserOperationClass, keyof BrowserOperationPolicy> = {
+  'read-only': 'readOnly',
+  interactive: 'interactive',
+  scripting: 'scripting',
+  upload: 'upload',
+};
+
+let mockCallTool: ReturnType<typeof vi.fn>;
+
+function withTabOrigin(url: string) {
+  mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
+    Promise.resolve(
+      params._meta?.['abu/conversationId'] === OWNER
+        ? {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                windows: [{ windowId: 1, tabs: [{ tabId: OWNED_TAB_ID, url }] }],
+              }),
+            }],
+          }
+        : { content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }] },
+    ),
+  );
+}
+
+/** What the gate actually did, in the vocabulary the pure function speaks. */
+interface ObservedGate {
+  outcome: 'allow' | 'deny';
+  askChannel: 'dialog' | 'im' | null;
+}
+
+async function observeRealGate(
+  opClass: BrowserOperationClass,
+  site: SiteState,
+  runMode: 'attended' | 'unattended',
+): Promise<ObservedGate> {
+  const { tool, input } = OP_CLASS_TOOLS[opClass];
+  withTabOrigin(SITE_STATES[site].url);
+
+  let askChannel: 'dialog' | 'im' | null = null;
+  setUnattendedConfirmationResolver(async () => {
+    askChannel = 'im';
+    return { approved: true, reason: 'approved in chat' };
+  });
+  const onRequireConfirmation = vi.fn(async (info: { deniedNotice?: string }) => {
+    // A DENIAL NOTICE is not a question: the unattended paths hand the callback
+    // their decision so a run can report it, and counting that as an ask would
+    // make every refusal look like a prompt.
+    if (info.deniedNotice === undefined) askChannel = 'dialog';
+    return true;
+  });
+
+  const context = runMode === 'unattended'
+    ? { conversationId: OWNER, interactionMode: 'background' }
+    : { conversationId: OWNER };
+
+  const decision = await checkToolApproval(
+    tool,
+    input,
+    context as never,
+    onRequireConfirmation as never,
+  );
+
+  return { outcome: decision.decision === 'allow' ? 'allow' : 'deny', askChannel };
+}
+
+function predictedGate(
+  opClass: BrowserOperationClass,
+  site: SiteState,
+  runMode: 'attended' | 'unattended',
+  policy: BrowserOperationPolicy,
+  masterSwitchUnattended: boolean,
+): ObservedGate {
+  const resource = opClass === 'upload' ? 'upload' : opClass === 'scripting' ? 'script' : 'browse';
+  void policy; void masterSwitchUnattended;
+  const evaluation = evaluateBrowserPermissionGate({
+    opClass, runMode,
+    configured: resolveBrowserPermissionConfig(useSettingsStore.getState().browserPermissionConfigV2, resource, [{ origin: new URL(SITE_STATES[site].url).origin }]),
+    highRisk: site === 'high-risk',
+    permissionMode: 'standard', runPermissionCeiling: null,
+    toolTargetsPage: true, originResolved: true, answersPageDialog: false,
+    loginRequired: false, confirmationChannelAvailable: true, originKnown: true,
+  });
+
+  return { outcome: evaluation.outcome, askChannel: evaluation.ask?.channel ?? null };
+}
+
+describe('browser gate — preview and the real gate agree', () => {
+  beforeEach(() => {
+    // The gate lstat's a path it was told about twice (as written, and
+    // canonical). One ordinary 4-byte file answers both.
+    vi.mocked(lstat).mockResolvedValue(
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
+    );
+    mockCallTool = vi.fn(() => Promise.resolve({
+      content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
+    }));
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.set('abu-browser', {
+      config: { name: 'abu-browser' },
+      client: { callTool: mockCallTool },
+      transport: {},
+      appTools: new Map(),
+      tools: new Map(),
+    });
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    __resetBrowserGrantsForTests();
+    __resetUnattendedConfirmationForTests();
+  });
+
+  afterEach(() => {
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
+    __resetBrowserGrantsForTests();
+    __resetUnattendedConfirmationForTests();
+  });
+
+  // T5 — `upload` is a full member here rather than a special case. The whole
+  // point of the 2026-09-07 ruling is that its row means what the other rows
+  // mean, and «means the same thing» is exactly what an exhaustive agreement
+  // sweep can prove: 48 more rows, none of them hand-written.
+  const opClasses: BrowserOperationClass[] = ['read-only', 'interactive', 'scripting', 'upload'];
+  const states: BrowserOperationState[] = ['allow', 'ask', 'deny'];
+  const sites = Object.keys(SITE_STATES) as SiteState[];
+  const runModes: Array<'attended' | 'unattended'> = ['attended', 'unattended'];
+  const masterSwitches = [true, false];
+
+  const matrix: Array<[BrowserOperationClass, BrowserOperationState, SiteState, 'attended' | 'unattended', boolean]> = [];
+  for (const opClass of opClasses) {
+    for (const state of states) {
+      for (const site of sites) {
+        for (const runMode of runModes) {
+          for (const masterSwitch of masterSwitches) {
+            matrix.push([opClass, state, site, runMode, masterSwitch]);
+          }
+        }
+      }
+    }
+  }
+
+  it('covers the whole declared matrix (4 classes x 3 states x 4 site states x 2 contexts x 2 switch positions)', () => {
+    expect(matrix).toHaveLength(4 * 3 * 4 * 2 * 2);
+  });
+
+  it.each(matrix)(
+    '%s row=%s site=%s %s masterSwitch=%s',
+    async (opClass, state, site, runMode, masterSwitch) => {
+      const policy: BrowserOperationPolicy = {
+        ...DEFAULT_BROWSER_OPERATION_POLICY,
+        [POLICY_KEY[opClass]]: state,
+      };
+      const stored = SITE_STATES[site].stored;
+      const config = createBrowserPermissionConfig();
+      const resource = opClass === 'upload' ? 'upload' : opClass === 'scripting' ? 'script' : 'browse';
+      config.defaults[resource] = state;
+      if (stored) config.sites[new URL(SITE_STATES[site].url).origin] = { ...emptyBrowserSiteRule(), blocked: stored === 'denied', [resource]: stored === 'allowed' ? 'allow' : 'inherit' };
+      setMigratedBrowserSettings({
+        browserPermissionConfigV2: config,
+        permissionMode: 'standard',
+        browserOperationPolicy: policy,
+        allowUnattendedBrowser: masterSwitch,
+        browserSitePermissions: testSiteVerdicts(
+          stored === undefined ? {} : { [new URL(SITE_STATES[site].url).origin]: stored },
+        ),
+      });
+
+      const observed = await observeRealGate(opClass, site, runMode);
+      const predicted = predictedGate(opClass, site, runMode, policy, masterSwitch);
+
+      expect(observed).toEqual(predicted);
+    },
+  );
+});
+
+/** Region cases pin host-specific grants and strictest-target behavior. */
+describe('browser gate — a call that names a region agrees too', () => {
+  // Its own setup: a sibling describe does not inherit the other one's.
+  beforeEach(() => {
+    // The gate lstat's a path it was told about twice (as written, and
+    // canonical). One ordinary 4-byte file answers both.
+    vi.mocked(lstat).mockResolvedValue(
+      // `mtime`/`ino` are the identity pin the gate freezes (review F1); an
+      // lstat without them makes every upload 'unidentifiable' and the whole
+      // matrix would predict allow while the gate denies.
+      {
+        isFile: true, isSymlink: false, size: 4,
+        mtime: new Date(1_757_000_000_123), ino: 4242, dev: 66,
+      } as unknown as Awaited<ReturnType<typeof lstat>>,
+    );
+    mockCallTool = vi.fn(() => Promise.resolve({
+      content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }],
+    }));
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.set('abu-browser', {
+      config: { name: 'abu-browser' },
+      client: { callTool: mockCallTool },
+      transport: {},
+      appTools: new Map(),
+      tools: new Map(),
+    });
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    __resetBrowserGrantsForTests();
+    __resetUnattendedConfirmationForTests();
+  });
+
+  afterEach(() => {
+    (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
+    __resetBrowserGrantsForTests();
+    __resetUnattendedConfirmationForTests();
+  });
+
+  const PAGE = 'https://page.example.com';
+  const PAGE_URL = `${PAGE}/apply`;
+  const REGION = 'https://region.example.net';
+  const REGION_URL = `${REGION}/widget`;
+
+  /** A page the grant was NOT given on — the "somewhere else" scope. */
+  const ELSEWHERE = 'https://elsewhere.example.com';
+
+  /**
+   * What the user's settings say about the region's own site.
+   *
+   * `scope` is the via-embed qualification, and replaces the old boolean
+   * `marked` (2026-09-08): the axis a scoped grant varies on is WHICH PAGE it
+   * was given on, not who is watching. `undefined` = no via-embed grant at all.
+   */
+  const REGION_STATES = {
+    none: { stored: undefined, scope: undefined, present: false },
+    default: { stored: undefined, scope: undefined, present: true },
+    allowed: { stored: 'allowed' as const, scope: undefined, present: true },
+    // Given on THIS page — the grant covers exactly this situation.
+    'via-embed-here': { stored: 'allowed' as const, scope: { [PAGE]: true }, present: true },
+    // Given on some other page — no authorization here.
+    'via-embed-elsewhere': {
+      stored: 'allowed' as const, scope: { [ELSEWHERE]: true }, present: true,
+    },
+    // Unknown legacy host must not become an unscoped authorization.
+    'via-embed-legacy': { stored: 'allowed' as const, scope: {}, present: true },
+    denied: { stored: 'denied' as const, scope: undefined, present: true },
+  } satisfies Record<string, {
+    stored?: 'allowed' | 'denied';
+    scope?: Record<string, true>;
+    present: boolean;
+  }>;
+
+  type RegionState = keyof typeof REGION_STATES;
+
+  /** What the user's settings say about the PAGE. */
+  const PAGE_STATES = {
+    default: undefined,
+    allowed: 'allowed' as const,
+    denied: 'denied' as const,
+  } satisfies Record<string, 'allowed' | 'denied' | undefined>;
+
+  type PageState = keyof typeof PAGE_STATES;
+
+  function servePageWithRegion(present: boolean): void {
+    mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
+      Promise.resolve(
+        params._meta?.['abu/conversationId'] === OWNER
+          ? {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                windows: [{
+                  windowId: 1,
+                  tabs: [{
+                    tabId: OWNED_TAB_ID,
+                    url: PAGE_URL,
+                    frames: [
+                      {
+                        frameId: 'f0',
+                        origin: PAGE,
+                        url: PAGE_URL,
+                        sameOriginAsTop: true,
+                        accessible: true,
+                      },
+                      ...(present
+                        ? [{
+                          frameId: 'f4',
+                          origin: REGION,
+                          url: REGION_URL,
+                          sameOriginAsTop: false,
+                          accessible: true,
+                        }]
+                        : []),
+                    ],
+                  }],
+                }],
+              }),
+            }],
+          }
+          : { content: [{ type: 'text', text: JSON.stringify({ windows: [] }) }] },
+      ),
+    );
+  }
+
+  /**
+   * The strictest of the sites this call touches — what the gate folds to.
+   *
+   * No `runMode` parameter, and that absence is the assertion: the stored
+   * verdict is the same for both contexts, so the matrix below runs every row
+   * against BOTH and the real gate has to agree each time.
+   */
+  function foldedVerdict(
+    page: PageState,
+    region: RegionState,
+  ): DecideBrowserOperationSiteVerdict {
+    const each: Array<'allowed' | 'denied' | 'default'> = [
+      // The page is judged AS the page, so no via-embed scope reaches it.
+      PAGE_STATES[page] ?? 'default',
+    ];
+    const spec = REGION_STATES[region];
+    if (spec.present) {
+      const regionVerdict = spec.stored === undefined
+        ? 'default'
+        : spec.stored === 'denied'
+          ? 'denied'
+          // A scoped grant reaches this call only if it was given on THIS
+          // page (or predates pages being recorded at all).
+          : spec.scope === undefined
+            || spec.scope[PAGE] === true
+            ? 'allowed'
+            : 'default';
+      each.push(regionVerdict);
+    }
+    if (each.includes('denied')) return 'denied';
+    return each.every((v) => v === 'allowed') ? 'allowed' : 'default';
+  }
+
+  const pageStates = Object.keys(PAGE_STATES) as PageState[];
+  const regionStates = Object.keys(REGION_STATES) as RegionState[];
+  const runModes: Array<'attended' | 'unattended'> = ['attended', 'unattended'];
+
+  const matrix: Array<[PageState, RegionState, 'attended' | 'unattended']> = [];
+  for (const page of pageStates) {
+    for (const region of regionStates) {
+      for (const runMode of runModes) matrix.push([page, region, runMode]);
+    }
+  }
+
+  it('covers the whole region matrix (3 page states x 7 region states x 2 contexts)', () => {
+    expect(matrix).toHaveLength(3 * 7 * 2);
+  });
+
+  it.each(matrix)('page=%s region=%s %s', async (page, region, runMode) => {
+    const spec = REGION_STATES[region];
+    servePageWithRegion(spec.present);
+    const config = createBrowserPermissionConfig();
+    config.defaults.browse = 'ask';
+    if (PAGE_STATES[page]) config.sites[PAGE] = { ...emptyBrowserSiteRule(), blocked: page === 'denied', browse: page === 'allowed' ? 'allow' : 'inherit' };
+    if (spec.present && spec.stored) {
+      if (spec.scope !== undefined && spec.stored === 'allowed') {
+        for (const host of Object.keys(spec.scope)) config.embeddedSites[host] = { [REGION]: { browse: 'allow', upload: 'inherit', script: 'inherit' } };
+      } else config.sites[REGION] = { ...emptyBrowserSiteRule(), blocked: spec.stored === 'denied', browse: spec.stored === 'allowed' ? 'allow' : 'inherit' };
+    }
+    setMigratedBrowserSettings({
+      browserPermissionConfigV2: config,
+      permissionMode: 'standard',
+      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
+      allowUnattendedBrowser: true,
+      browserSitePermissions: testSiteVerdicts({
+        ...(PAGE_STATES[page] !== undefined ? { [PAGE]: PAGE_STATES[page] } : {}),
+        ...(spec.present && spec.stored !== undefined ? { [REGION]: spec.stored } : {}),
+      }),
+      browserSiteGrantViaEmbed: spec.scope !== undefined ? { [REGION]: spec.scope } : {},
+    });
+
+    let askChannel: 'dialog' | 'im' | null = null;
+    setUnattendedConfirmationResolver(async () => {
+      askChannel = 'im';
+      return { approved: true, reason: 'approved in chat' };
+    });
+    const onRequireConfirmation = vi.fn(async (info: { deniedNotice?: string }) => {
+      if (info.deniedNotice === undefined) askChannel = 'dialog';
+      return true;
+    });
+    const context = runMode === 'unattended'
+      ? { conversationId: OWNER, interactionMode: 'background' }
+      : { conversationId: OWNER };
+
+    const decision = await checkToolApproval(
+      'abu-browser__click',
+      // Naming the region is what puts it into the fold at all: a call that
+      // names none is judged on the page alone, which is the `none` row.
+      {
+        tabId: OWNED_TAB_ID,
+        ...(spec.present ? { frameId: 'f4' } : {}),
+        locator: '{"css":"#go"}',
+      },
+      context as never,
+      onRequireConfirmation as never,
+    );
+
+    const folded = foldedVerdict(page, region);
+    const evaluation = {
+      outcome: folded === 'denied' ? 'deny' : 'allow',
+      ask: folded === 'default' ? { channel: runMode === 'attended' ? 'dialog' : 'im' } : null,
+    };
+
+    expect({
+      outcome: decision.decision === 'allow' ? 'allow' : 'deny',
+      askChannel,
+    }).toEqual({
+      outcome: evaluation.outcome,
+      askChannel: evaluation.ask?.channel ?? null,
+    });
+  });
+});
+
+describe('browserGatePreviewVerdict', () => {
+  const base = {
+    outcome: 'allow' as const,
+    denialReason: null,
+    ceilingDecision: null,
+    intermediates: {
+      scriptAllowedByPolicy: false,
+      dialogAnswerAllowedByPolicy: false,
+      asksEveryTime: false,
+      granted: false,
+    },
+  };
+
+  it('reads a silent allow as allow', () => {
+    expect(browserGatePreviewVerdict({ ...base, ask: null })).toBe('allow');
+  });
+
+  it('reads an allow behind a confirmation as ask', () => {
+    expect(browserGatePreviewVerdict({
+      ...base,
+      ask: { channel: 'dialog', offersPersistentGrant: true, refusedReason: 'user-cancelled' },
+    })).toBe('ask');
+  });
+
+  // The unattended 「每次询问」 on a site with no standing grant: the gate asks a
+  // human and refuses anyway. Reporting 「会询问」 would promise a road that
+  // dead-ends, so the refusal wins.
+  it('reads an ask that is refused anyway as deny', () => {
+    expect(browserGatePreviewVerdict({
+      ...base,
+      outcome: 'deny',
+      denialReason: 'site-not-allowed',
+      ask: { channel: 'im', offersPersistentGrant: false, refusedReason: 'approval-refused' },
+    })).toBe('deny');
+  });
+});

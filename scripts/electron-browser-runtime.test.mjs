@@ -99,11 +99,9 @@ function createMockHost() {
       return;
     }
 
-    response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({
-      id: parsed?.id,
-      success: true,
-      data: {
+    const data = parsed?.action === 'get_html'
+      ? '<html><body><main><h1>Runtime query fixture</h1><ul><li data-id="a">Alpha</li><li data-id="b">Beta</li></ul></main></body></html>'
+      : {
         currentTabId: 7,
         windows: [{
           windowId: 1,
@@ -115,8 +113,9 @@ function createMockHost() {
             active: true,
           }],
         }],
-      },
-    }));
+      };
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ id: parsed?.id, success: true, data }));
   });
   return { server, requests };
 }
@@ -207,7 +206,7 @@ function createMcpClient(endpoint) {
   return { send, notify, close };
 }
 
-test('electron browser runtime bundle serves MCP over stdio and proxies get_tabs over authenticated HTTP POST', async () => {
+test('electron browser runtime bundle proxies get_tabs and sandboxed query_js over authenticated HTTP', async () => {
   await runNode([buildScriptPath]);
 
   const legacyPorts = await Promise.all([reservePort(9875), reservePort(9876)]);
@@ -232,6 +231,9 @@ test('electron browser runtime bundle serves MCP over stdio and proxies get_tabs
     const getTabs = tools.find(tool => tool.name === 'get_tabs');
     assert(getTabs);
     assert.equal(/Chrome/i.test(getTabs.description), false);
+    const queryJs = tools.find(tool => tool.name === 'query_js');
+    assert(queryJs);
+    assert.match(queryJs.description, /detached, inert copy/i);
 
     const callTool = await client.send('tools/call', {
       name: 'get_tabs',
@@ -247,6 +249,25 @@ test('electron browser runtime bundle serves MCP over stdio and proxies get_tabs
     assert.equal(mock.requests[0].authorization, `Bearer ${runtimeToken}`);
     assert.equal(mock.requests[0].parsed.action, 'get_tabs');
     assert.deepEqual(mock.requests[0].parsed.payload, {});
+
+    const queryResult = await client.send('tools/call', {
+      name: 'query_js',
+      arguments: {
+        tabId: 7,
+        selector: 'main',
+        code: '({ heading: document.querySelector("h1").textContent, ids: [...document.querySelectorAll("li")].map((node) => node.dataset.id) })',
+      },
+    });
+    assert.equal(queryResult.error, undefined);
+    assert.match(queryResult.result.content[0].text, /"heading": "Runtime query fixture"/);
+    assert.match(queryResult.result.content[0].text, /"a"/);
+    assert.match(queryResult.result.content[0].text, /"b"/);
+    assert.match(queryResult.result.content[0].text, /read-only copy/);
+
+    assert.equal(mock.requests.length, 2);
+    assert.equal(mock.requests[1].parsed.action, 'get_html');
+    assert.deepEqual(mock.requests[1].parsed.payload, { tabId: 7, selector: 'main' });
+    assert.equal(JSON.stringify(mock.requests[1]).includes('querySelector'), false);
 
     const stderr = await client.close();
     assert.equal(stderr.includes(runtimeToken), false);

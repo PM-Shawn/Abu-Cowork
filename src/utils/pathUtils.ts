@@ -5,6 +5,7 @@
  */
 
 import { IMAGE_MIME_MAP } from '@/utils/imageMediaTypes';
+import { mkdir, readFile } from '@tauri-apps/plugin-fs';
 
 export { IMAGE_MIME_MAP } from '@/utils/imageMediaTypes';
 
@@ -65,7 +66,6 @@ export function extractUsername(homePath: string): string {
  * Uses mkdir(recursive:true) directly — no need to check exists() first.
  */
 export async function ensureParentDir(filePath: string): Promise<void> {
-  const { mkdir } = await import('@tauri-apps/plugin-fs');
   const parent = getParentDir(filePath);
   if (parent && parent !== '/') {
     await mkdir(parent, { recursive: true });
@@ -89,7 +89,6 @@ export function isLocalFilePath(s: string): boolean {
  * instead of reopening a path that may have changed in the meantime.
  */
 export async function loadLocalImageBlob(filePath: string): Promise<Blob> {
-  const { readFile } = await import('@tauri-apps/plugin-fs');
   const data = await readFile(filePath);
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
   return new Blob([data], { type: IMAGE_MIME_MAP[ext] || 'image/png' });

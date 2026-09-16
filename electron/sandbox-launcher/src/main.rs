@@ -84,6 +84,33 @@ fn quote_windows_arg(arg: &str) -> String {
     quoted
 }
 
+/// Describe an NTSTATUS-style exit code so a native loader crash (which the OS
+/// reports only as a huge exit code plus, at best, a dialog box) leaves a
+/// diagnosable line on stderr. Only error-severity values (0xC…) qualify;
+/// ordinary exit codes and warning-severity NTSTATUS values return None.
+#[cfg(any(windows, test))]
+fn ntstatus_exit_hint(code: u32) -> Option<String> {
+    if code < 0xC000_0000 {
+        return None;
+    }
+    let name = match code {
+        0xC000_0005 => Some("STATUS_ACCESS_VIOLATION"),
+        0xC000_0017 => Some("STATUS_NO_MEMORY"),
+        0xC000_007B => Some("STATUS_INVALID_IMAGE_FORMAT"),
+        0xC000_0135 => Some("STATUS_DLL_NOT_FOUND"),
+        0xC000_0139 => Some("STATUS_ENTRYPOINT_NOT_FOUND"),
+        0xC000_013A => Some("STATUS_CONTROL_C_EXIT"),
+        0xC000_0142 => Some("STATUS_DLL_INIT_FAILED"),
+        0xC000_0374 => Some("STATUS_HEAP_CORRUPTION"),
+        0xC000_0409 => Some("STATUS_STACK_BUFFER_OVERRUN"),
+        _ => None,
+    };
+    Some(match name {
+        Some(name) => format!("[launcher] child exited with NTSTATUS 0x{code:08X} ({name})"),
+        None => format!("[launcher] child exited with NTSTATUS 0x{code:08X}"),
+    })
+}
+
 #[cfg(any(windows, test))]
 fn build_windows_command_line(cfg: &LaunchConfig) -> String {
     let mut parts = Vec::with_capacity(cfg.args.len() + 1);
@@ -684,6 +711,12 @@ mod windows {
             }));
         }
 
+        // A loader/init crash (e.g. 0xC0000142) produces no stderr of its own;
+        // this line is the only in-band evidence the child never ran.
+        if let Some(hint) = super::ntstatus_exit_hint(exit_code) {
+            eprintln!("{hint}");
+        }
+
         // Keep the last Job handle alive after the direct target exits. Shells
         // such as PowerShell can launch a background child and return
         // immediately; closing KILL_ON_JOB_CLOSE here would kill a successfully
@@ -708,7 +741,41 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_windows_command_line, quote_windows_arg, LaunchConfig};
+    use super::{build_windows_command_line, ntstatus_exit_hint, quote_windows_arg, LaunchConfig};
+
+    #[test]
+    fn maps_known_ntstatus_exit_codes_to_structured_hints() {
+        assert_eq!(
+            ntstatus_exit_hint(0xC0000142).as_deref(),
+            Some("[launcher] child exited with NTSTATUS 0xC0000142 (STATUS_DLL_INIT_FAILED)")
+        );
+        assert_eq!(
+            ntstatus_exit_hint(0xC0000135).as_deref(),
+            Some("[launcher] child exited with NTSTATUS 0xC0000135 (STATUS_DLL_NOT_FOUND)")
+        );
+        assert_eq!(
+            ntstatus_exit_hint(0xC0000005).as_deref(),
+            Some("[launcher] child exited with NTSTATUS 0xC0000005 (STATUS_ACCESS_VIOLATION)")
+        );
+    }
+
+    #[test]
+    fn unknown_ntstatus_error_codes_still_get_a_hex_hint() {
+        assert_eq!(
+            ntstatus_exit_hint(0xC0FFEE00).as_deref(),
+            Some("[launcher] child exited with NTSTATUS 0xC0FFEE00")
+        );
+    }
+
+    #[test]
+    fn ordinary_exit_codes_get_no_ntstatus_hint() {
+        assert_eq!(ntstatus_exit_hint(0), None);
+        assert_eq!(ntstatus_exit_hint(1), None);
+        assert_eq!(ntstatus_exit_hint(127), None);
+        assert_eq!(ntstatus_exit_hint(137), None);
+        // Warning-severity NTSTATUS values are not crash exits.
+        assert_eq!(ntstatus_exit_hint(0x8000_0003), None);
+    }
 
     #[test]
     fn parses_camel_case_sandbox_flag() {

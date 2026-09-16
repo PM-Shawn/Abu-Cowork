@@ -1,18 +1,35 @@
-import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from 'react';
-import { Plus, ArrowUp, Square, X, ChevronDown, FileText } from 'lucide-react';
+import { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback, useId } from 'react';
+import { createPortal } from 'react-dom';
+import { Plus, ArrowUp, Square, X, ChevronDown, FileText, Paperclip, Users, Sparkles } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
+import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
-// AgentSelector hidden from UI; import kept for easy restore
-// import AgentSelector from '@/components/chat/AgentSelector';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import TeamAvatar from '@/components/team/TeamAvatar';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { useFileDragDrop } from '@/hooks/useFileDragDrop';
 import { uint8ArrayToBase64 } from '@/utils/base64';
+import {
+  hasElectronUserAttachmentReleaseHost,
+  hasElectronUserAttachmentSelectHost,
+  readElectronUserAttachment,
+  releaseElectronUserAttachment,
+  selectElectronUserAttachments,
+  type ElectronUserAttachmentToken,
+} from '@/utils/electronHost';
 import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
+import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
-import { isImeComposing, insertNewlineAtCursor, resolveEnterAction } from '@/components/chat/composerKeys';
+import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { requestDispatchInput } from '@/core/agent/dispatchCancel';
+import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import { collectMemberDispatches, findRunningDispatch, parseMemberAddress } from '@/components/team/teamDispatches';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
@@ -21,11 +38,14 @@ import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
+import { mergeFileAttachments } from '@/components/chat/composerFileAttachments';
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
+import { useTeamStore } from '@/stores/teamStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { fileReferenceForPath, InvalidAttachmentPathError } from '@/utils/fileReference';
 import type { ImageAttachment } from '@/types';
 import { generateAttachmentId, SUPPORTED_IMAGE_TYPES, sniffImageMediaType, IMAGE_MAGIC_PREFIX_BYTES } from '@/utils/imageUtils';
 import { fitImageToDimension } from '@/utils/imageCompress';
@@ -38,19 +58,39 @@ import { serializeReferences } from '@/utils/referenceSerializer';
 import { highlightRegistry } from '@/features/reference/highlightRegistry';
 import type { ChatReference } from '@/types/chatReference';
 import {
+  findAgentMentionTarget,
+  parseLeadingAgentCommand,
+  resolveAgentMentionReplacementRange,
+  type AgentMentionTarget,
+  type ComposerSelection,
+} from '@/components/chat/composerAgentMention';
+import {
   clearComposerDraft,
   COMPOSER_DRAFT_SAVE_DELAY_MS,
+  beginComposerDraftAdmission,
   getComposerDraftKey,
+  getComposerDraftRuntimeState,
   getComposerDraftScopeForEnterpriseMode,
+  registerComposerDraftResourceDisposer,
   readComposerDraft,
+  subscribeComposerDraft,
+  subscribeComposerDraftRuntime,
+  tryBeginComposerDraftSend,
+  updateComposerDraft,
   writeComposerDraft,
   writePersistedComposerText,
   type ComposerDraft,
+  type ComposerDraftRuntimeState,
 } from '@/stores/composerDraftStore';
 
 /** Max reference chips per message — guards against prompt bloat. */
 const MAX_REFERENCES = 20;
-
+const ELECTRON_PICKER_MEDIA_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+] as const;
 /** Merge a widget-provided follow-up (window.sendPrompt) into the current
  *  composer draft: append with a newline separator when the draft is
  *  non-empty, else use the addition verbatim. Pure so the append-vs-empty
@@ -93,12 +133,17 @@ interface ChatInputProps {
   /**
    * Deliver the composed message. Resolving to `false` means the send was not
    * accepted (no API key, conversation busy) and the composer restores the
-   * draft it optimistically cleared.
+   * draft it optimistically cleared. `onAccepted` fires as soon as the message
+   * is durably taken (its transcript row exists) — the composer releases its
+   * pending-send lock there instead of holding it for the whole run, so a new
+   * draft under the same key (welcome composer, post-run follow-up) can send
+   * while the previous run is still executing.
    */
   onSend: (
     message: string,
     images?: ImageAttachment[],
     workspacePath?: string | null,
+    onAccepted?: () => void,
   ) => void | Promise<boolean | void>;
   disabled?: boolean;
   /** Custom placeholder from scenario guide (welcome variant only) */
@@ -108,15 +153,110 @@ interface ChatInputProps {
 }
 
 interface SuggestionItem {
+  offset?: number;
   name: string;
   description: string;
   trigger?: string;
+  /** True for team entries in the @ list — picking one pins the conversation
+   *  to the team (its leader runs the loop) instead of becoming an @ prefix. */
+  team?: boolean;
+  teamId?: string;
+  /** Team or expert avatar (`icon:<icon>/<tint>` preset or a legacy emoji);
+   *  absent = the default mark for that kind. */
+  avatar?: string;
+  /** True when the agent's AGENT.md was installed by a plugin (provenance tag). */
+  fromPlugin?: boolean;
 }
 
 interface FileAttachmentItem {
   id: string;
-  path: string;
+  path?: string;
+  token?: string;
   name: string;
+  expiresAt?: number;
+  readScope?: 'workspace';
+}
+
+function hasComposerContent(draft: ComposerDraft): boolean {
+  return draft.text.length > 0
+    || draft.images.length > 0
+    || draft.files.length > 0
+    || draft.references.length > 0
+    || draft.selectedSkill !== null
+    || draft.selectedAgent !== null;
+}
+
+function mergeDraftTextForRestore(currentText: string, sentText: string): string {
+  if (currentText.length === 0) return sentText;
+  if (sentText.length === 0 || currentText === sentText || currentText.endsWith(`\n${sentText}`)) return currentText;
+  return `${currentText}\n${sentText}`;
+}
+
+function stripExpiredTokenFiles(files: FileAttachmentItem[], now = Date.now()): {
+  files: FileAttachmentItem[];
+  removedFiles: FileAttachmentItem[];
+} {
+  const kept: FileAttachmentItem[] = [];
+  const removedFiles: FileAttachmentItem[] = [];
+  for (const file of files) {
+    if (file.token && typeof file.expiresAt === 'number' && file.expiresAt <= now) {
+      removedFiles.push(file);
+      continue;
+    }
+    kept.push(file);
+  }
+  return { files: kept, removedFiles };
+}
+
+function dedupeReferencesForRestore(references: ChatReference[]): ChatReference[] {
+  const seen = new Set<string>();
+  const deduped: ChatReference[] = [];
+  for (const reference of references) {
+    const key = referenceDedupeKey(reference);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(reference);
+  }
+  return deduped;
+}
+
+function mergeDraftForRejectedSend(currentDraft: ComposerDraft, sentDraft: ComposerDraft): {
+  draft: ComposerDraft;
+  expiredFiles: FileAttachmentItem[];
+} {
+  const sentExpiry = stripExpiredTokenFiles(sentDraft.files);
+  const cleanSentDraft: ComposerDraft = {
+    ...sentDraft,
+    files: sentExpiry.files,
+  };
+  if (!hasComposerContent(currentDraft)) {
+    return { draft: cleanSentDraft, expiredFiles: sentExpiry.removedFiles };
+  }
+
+  const currentExpiry = stripExpiredTokenFiles(currentDraft.files);
+  const currentWithoutExpiredTokens = {
+    ...currentDraft,
+    files: currentExpiry.files,
+  };
+  const mergedText = mergeDraftTextForRestore(currentWithoutExpiredTokens.text, cleanSentDraft.text);
+  const currentSkill = currentWithoutExpiredTokens.text.length === 0 && currentWithoutExpiredTokens.selectedSkill?.name === cleanSentDraft.selectedSkill?.name
+    ? null : currentWithoutExpiredTokens.selectedSkill;
+  const restoredSkill = currentSkill ?? (cleanSentDraft.selectedSkill ? {
+    ...cleanSentDraft.selectedSkill,
+    offset: Math.max(0, mergedText.lastIndexOf(cleanSentDraft.text)) + (cleanSentDraft.selectedSkill.offset ?? 0),
+  } : null);
+  const mergedFiles = mergeFileAttachments(currentWithoutExpiredTokens.files, cleanSentDraft.files).files;
+  return {
+    draft: {
+      text: mergedText,
+      images: [...currentWithoutExpiredTokens.images, ...cleanSentDraft.images],
+      files: mergedFiles,
+      references: dedupeReferencesForRestore([...currentWithoutExpiredTokens.references, ...cleanSentDraft.references]),
+      selectedSkill: restoredSkill,
+      selectedAgent: currentWithoutExpiredTokens.selectedAgent ?? cleanSentDraft.selectedAgent,
+    },
+    expiredFiles: [...currentExpiry.removedFiles, ...sentExpiry.removedFiles],
+  };
 }
 
 /**
@@ -184,7 +324,9 @@ async function processFilePaths(
   paths: string[],
   addImages: (imgs: ImageAttachment[]) => void,
   addFiles: (items: FileAttachmentItem[]) => void,
+  fileMetadataForPath?: (path: string) => Pick<FileAttachmentItem, 'readScope'>,
 ): Promise<void> {
+  if (paths.some((path) => fileReferenceForPath(path) === null)) throw new InvalidAttachmentPathError();
   const imgPaths: string[] = [];
   const filePaths: string[] = [];
   for (const p of paths) {
@@ -203,8 +345,184 @@ async function processFilePaths(
     if (newImages.length > 0) addImages(newImages);
   }
   if (filePaths.length > 0) {
-    addFiles(filePaths.map((p) => ({ id: generateAttachmentId(), path: p, name: getBaseName(p) })));
+    addFiles(filePaths.map((p) => ({
+      id: generateAttachmentId(),
+      path: p,
+      name: getBaseName(p),
+      ...fileMetadataForPath?.(p),
+    })));
   }
+}
+
+function releaseToken(token: string | undefined): void {
+  if (!token || !hasElectronUserAttachmentReleaseHost()) return;
+  void releaseElectronUserAttachment({ token }).catch(() => {});
+}
+
+function releaseTokenFiles(files: FileAttachmentItem[]): void {
+  const tokens = new Set(files.flatMap((file) => file.token ? [file.token] : []));
+  for (const token of tokens) releaseToken(token);
+}
+
+registerComposerDraftResourceDisposer((resource) => {
+  if (resource.kind === 'file-token') releaseToken(resource.token);
+});
+
+async function imageFromToken(attachment: ElectronUserAttachmentToken): Promise<ImageAttachment | null> {
+  if (!SUPPORTED_IMAGE_TYPES.includes(attachment.mediaType)) return null;
+  try {
+    const bytes = await readElectronUserAttachment({ token: attachment.token });
+    return await admitImage(bytes, attachment.mediaType as ImageAttachment['mediaType']);
+  } finally {
+    releaseToken(attachment.token);
+  }
+}
+
+/**
+ * Composer suggestion popup — grouped like Codex's composer (user feedback
+ * 2026-09-01): small section headers (团队 / 队员 / 技能), names only (no
+ * descriptions — too long), one scrollable list whose height is clamped to
+ * the space above the composer so the top can never be clipped by the window.
+ */
+const SUGGESTION_MAX_HEIGHT = 320;
+const SUGGESTION_TOP_MARGIN = 16;
+
+function SuggestionPopup({ listboxId, ariaLabel, suggestions, selectedIndex, suggestionType, sectionLabels, pluginTagLabel, optionId, onApply, anchorRef, search }: {
+  search?: { query: string; label: string; closeLabel: string; onChange: (query: string) => void; onClose: () => void; onKeyDown: (event: React.KeyboardEvent<HTMLInputElement>) => void };
+  listboxId: string;
+  ariaLabel: string;
+  suggestions: SuggestionItem[];
+  selectedIndex: number;
+  suggestionType: 'skill' | 'agent' | null;
+  sectionLabels: { teams: string; agents: string; skills: string };
+  /** Provenance tag shown on an agent installed by a plugin. */
+  pluginTagLabel: string;
+  optionId: (index: number) => string;
+  onApply: (item: SuggestionItem) => void;
+  /** The composer card the popup opens above. */
+  anchorRef: React.RefObject<HTMLElement | null>;
+}) {
+  // Rendered in a portal with FIXED positioning, anchored above the composer.
+  // As an absolutely-positioned child it was clipped by an overflow ancestor
+  // whenever it grew past the chat area's top edge — the top ~40px (padding +
+  // the first group header) simply were not painted, which read as "the card
+  // is cut off" (real-machine reports 2026-09-01 and 09-03). Same remedy as
+  // ui/search-select: escape the clipping tree, measure the anchor, re-measure
+  // on capture-phase scroll (dialog/chat bodies scroll, not the window) and on
+  // resize. Height is clamped to the space above the anchor so the popup never
+  // leaves the window either.
+  const popupRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!search) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !popupRef.current?.contains(event.target)) search.onClose();
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [search]);
+  const [style, setStyle] = useState<React.CSSProperties | null>(null);
+  // useEffect, not useLayoutEffect: when the popup is already open on the
+  // composer's FIRST render (a restored draft ending in `@`), it mounts in the
+  // same commit as the anchor div, and React runs a child's layout effects
+  // before it attaches the parent's ref — the anchor would measure as null and
+  // nothing would be rendered until a scroll/resize. Passive effects run after
+  // every ref in the commit is attached. Nothing paints until `style` is set,
+  // so there is no mispositioned first frame either.
+  useEffect(() => {
+    const update = () => {
+      const rect = anchorRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setStyle({
+        position: 'fixed',
+        left: rect.left,
+        width: rect.width,
+        bottom: window.innerHeight - rect.top + 8,
+        maxHeight: Math.max(120, Math.min(SUGGESTION_MAX_HEIGHT, rect.top - SUGGESTION_TOP_MARGIN)),
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    // The textarea auto-grows without any scroll/resize event; follow the anchor.
+    const observer = typeof ResizeObserver === 'function' && anchorRef.current ? new ResizeObserver(update) : null;
+    if (observer && anchorRef.current) observer.observe(anchorRef.current);
+    return () => { window.removeEventListener('scroll', update, true); window.removeEventListener('resize', update); observer?.disconnect(); };
+  }, [anchorRef]);
+
+  const teamCount = suggestions.filter((item) => item.team).length;
+  const sections: Array<{ label: string; items: Array<{ item: SuggestionItem; idx: number }> }> = suggestionType === 'agent'
+    ? [
+        { label: sectionLabels.teams, items: suggestions.slice(0, teamCount).map((item, i) => ({ item, idx: i })) },
+        { label: sectionLabels.agents, items: suggestions.slice(teamCount).map((item, i) => ({ item, idx: teamCount + i })) },
+      ]
+    : [{ label: sectionLabels.skills, items: suggestions.map((item, i) => ({ item, idx: i })) }];
+
+  if (!style) return null;
+  return createPortal(
+    <div
+      ref={popupRef}
+      role={search ? "dialog" : undefined}
+      aria-label={search ? ariaLabel : undefined}
+      style={style}
+      // Overlays painted above the window chrome must carve themselves out of
+      // the drag lane (src/styles/index.css) — this one can now overlap it.
+      data-electron-no-drag
+      data-composer-suggestions
+      className="bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto py-1.5 z-[10001]"
+    >
+      {search && <div className="flex items-center gap-2 px-3 py-2">
+        <Input autoFocus value={search.query} aria-label={search.label} placeholder={search.label}
+          aria-controls={listboxId} aria-autocomplete="list"
+          aria-activedescendant={suggestions[selectedIndex] ? optionId(selectedIndex) : undefined}
+          onChange={(event) => search.onChange(event.target.value)} onKeyDown={search.onKeyDown} />
+        <button type="button" onClick={search.onClose} aria-label={search.closeLabel} className="btn-ghost p-1"><X className="h-4 w-4" /></button>
+      </div>}
+      <div id={listboxId} role="listbox" aria-label={ariaLabel}>
+      {sections.filter((section) => section.items.length > 0).map((section) => (
+        <div key={section.label} role="group" aria-label={section.label}>
+          <div className="px-4 pt-2 pb-1 text-minor text-[var(--abu-text-tertiary)] select-none">{section.label}</div>
+          {section.items.map(({ item, idx }) => (
+            <button
+              key={item.name}
+              id={optionId(idx)}
+              role="option"
+              aria-selected={idx === selectedIndex}
+              onClick={() => onApply(item)}
+              onMouseDown={(event) => event.preventDefault()}
+              className={cn(
+                'btn-ghost w-full flex items-center gap-3 px-4 py-2 text-body text-left',
+                idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
+              )}
+            >
+              <span className={cn(
+                'w-5 text-center shrink-0',
+                // Type classes belong to the 「/」 mark only — the agent branch
+                // renders an avatar, which no text style reaches.
+                suggestionType !== 'agent' && 'font-mono text-minor text-[var(--abu-text-tertiary)]'
+              )}>
+                {suggestionType === 'agent'
+                  ? (item.team
+                      ? <TeamAvatar avatar={item.avatar} size="xs" round className="mx-auto" />
+                      : <AgentAvatar agent={{ name: item.name, avatar: item.avatar }} size="xs" round className="mx-auto" />)
+                  : '/'}
+              </span>
+              <span className="font-medium text-[var(--abu-text-primary)] truncate">{item.name}</span>
+              {item.fromPlugin && (
+                <span
+                  data-testid="agent-source-plugin"
+                  className="shrink-0 rounded-full bg-[var(--abu-bg-active)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
+                >
+                  {pluginTagLabel}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      ))}
+      </div>
+    </div>,
+    document.body,
+  );
 }
 
 export default function ChatInput({ variant, onSend, disabled, scenarioPlaceholder, onInputChange }: ChatInputProps) {
@@ -214,20 +532,39 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // An empty, already-created conversation still renders the welcome variant;
   // it must keep its own key rather than sharing the top-level welcome draft.
   const draftKey = getComposerDraftKey(activeConv?.id, draftScope);
+  const suggestionListboxId = useId();
+  const suggestionOptionId = useCallback(
+    (index: number) => `${suggestionListboxId}-option-${index}`,
+    [suggestionListboxId],
+  );
   const [initialDraft] = useState(() => readComposerDraft(draftKey));
   // Context usage indicator shows only in chat variant once a conversation exists.
   const activeConvIdForIndicator = useChatStore((s) => (isWelcome ? null : s.activeConversationId));
 
+  const [editorHistoryKey, setEditorHistoryKey] = useState(draftKey);
   const [text, setText] = useState(initialDraft.text);
   const [images, setImages] = useState<ImageAttachment[]>(initialDraft.images);
   const [files, setFiles] = useState<FileAttachmentItem[]>(initialDraft.files);
   const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
   const [selectedSkill, setSelectedSkill] = useState<SuggestionItem | null>(initialDraft.selectedSkill);
   const [selectedAgent, setSelectedAgent] = useState<SuggestionItem | null>(initialDraft.selectedAgent);
-  const [suggestionsDismissed, setSuggestionsDismissed] = useState(false);
+  const allTeams = useTeamStore((store) => store.teams);
+  const activeTeams = allTeams;
+  const [dismissedSuggestionKey, setDismissedSuggestionKey] = useState<string | null>(null);
+  const [menuPicker, setMenuPicker] = useState<{ type: 'skill' | 'agent'; query: string } | null>(null);
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [selection, setSelection] = useState<ComposerSelection>({
+    start: initialDraft.text.length,
+    end: initialDraft.text.length,
+  });
+  const [isComposing, setIsComposing] = useState(false);
+  const textareaRef = useRef<InlineSkillInputHandle>(null);
+  const composerAnchorRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
+  const isMountedRef = useRef(false);
+  const compositionResetTimerRef = useRef<number | null>(null);
+  const pendingSelectionRef = useRef<ComposerSelection | null>(null);
 
   const currentDraftRef = useRef<ComposerDraft>(initialDraft);
   const currentDraftKeyRef = useRef(draftKey);
@@ -247,6 +584,27 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     };
   }, [files, images, references, selectedAgent, selectedSkill, text]);
 
+  useLayoutEffect(() => {
+    const pendingSelection = pendingSelectionRef.current;
+    if (!pendingSelection) return;
+
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      pendingSelectionRef.current = null;
+      return;
+    }
+
+    const start = Math.max(0, Math.min(pendingSelection.start, textarea.value.length));
+    const end = Math.max(0, Math.min(pendingSelection.end, textarea.value.length));
+    if (textarea.selectionStart !== start || textarea.selectionEnd !== end) {
+      textarea.setSelectionRange(start, end);
+    }
+    pendingSelectionRef.current = null;
+    setSelection((prev) => (
+      prev.start === start && prev.end === end ? prev : { start, end }
+    ));
+  }, [text, selectedSkill]);
+
   // Welcome-only state (always declared for hook stability).
   // `localWorkspace` defaults to the active conv's bound workspace (set
   // by project "+") or the current global workspace. Without this, the
@@ -264,18 +622,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // Store hooks (always called)
   const cancelStreaming = useChatStore((s) => s.cancelStreaming);
   const pendingInput = useChatStore((s) => s.pendingInput);
+  const pendingInputStartsTask = useChatStore((s) => s.pendingInputStartsTask);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const pendingInputAppend = useChatStore((s) => s.pendingInputAppend);
   const appendPendingInput = useChatStore((s) => s.appendPendingInput);
   const pendingReferences = useChatStore((s) => s.pendingReferences);
   const clearPendingReferences = useChatStore((s) => s.clearPendingReferences);
-  const pendingAttachmentPaths = useChatStore((s) => s.pendingAttachmentPaths);
+  const pendingAttachmentRequests = useChatStore((s) => s.pendingAttachmentRequests);
   const clearPendingAttachments = useChatStore((s) => s.clearPendingAttachments);
   const skills = useDiscoveryStore((s) => s.skills);
   const agents = useDiscoveryStore((s) => s.agents);
   const enterBehavior = useSettingsStore((s) => s.composerEnterBehavior);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
-  const disabledAgents = useSettingsStore((s) => s.disabledAgents);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
   const providers = useSettingsStore((s) => s.providers);
   const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
@@ -289,9 +647,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const grantPermission = usePermissionStore((s) => s.grantPermission);
   const hasPermission = usePermissionStore((s) => s.hasPermission);
   const { t } = useI18n();
+  const [draftRuntimeState, setDraftRuntimeState] = useState<ComposerDraftRuntimeState>(
+    () => getComposerDraftRuntimeState(draftKey),
+  );
 
   // Chat-only derived state
   const isRunning = activeConv?.status === 'running';
+  const isAdmissionPendingForDraft = draftRuntimeState.pendingAdmissions > 0;
   const isStreaming = !isWelcome && isRunning;
   const isEnterpriseGatewayModel = isEnterprise && effModel.providerId === 'enterprise-gateway' && currentModel.length > 0;
   const hasActiveProvider = isEnterpriseGatewayModel || (!!effProvider && effProvider.enabled);
@@ -304,6 +666,29 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+
+  const showAttachmentAdmissionFailed = useCallback((error?: unknown) => {
+    useToastStore.getState().addToast({
+      type: 'error',
+      title: error instanceof InvalidAttachmentPathError ? t.chat.attachmentInvalidFileName : t.chat.attachmentAdmissionFailed,
+    });
+  }, [t]);
+
+  const beginAttachmentAdmission = useCallback((key: string) => beginComposerDraftAdmission(key), []);
+
+  const appendImagesForDraftKey = useCallback((key: string, nextImages: ImageAttachment[]) => {
+    if (nextImages.length === 0) return;
+    updateComposerDraft(key, (draft) => ({ ...draft, images: [...draft.images, ...nextImages] }));
+  }, []);
+
+  const appendFilesForDraftKey = useCallback((key: string, nextFiles: FileAttachmentItem[]) => {
+    if (nextFiles.length === 0) return;
+    updateComposerDraft(key, (draft) => {
+      const result = mergeFileAttachments(draft.files, nextFiles);
+      releaseTokenFiles(result.dropped);
+      return { ...draft, files: result.files };
+    });
+  }, []);
 
   // Close model picker on click outside
   useEffect(() => {
@@ -348,75 +733,143 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (!hasFileItem) return; // plain text / html → let textarea handle it
 
     e.preventDefault();
+    const admissionKey = draftKey;
+    const finishAdmission = beginAttachmentAdmission(admissionKey);
 
-    // Pre-extract File objects synchronously before the first await.
-    // getAsFile() returns null on any DataTransferItem touched after an await.
-    //
-    // EVERY file item is captured, not just ones already labelled with a
-    // supported image type: when an app copies an image, macOS puts a
-    // pasteboard temp item on the clipboard whose name carries no usable
-    // extension (`…/id=6571367.107158211`), and Chromium hands that to the
-    // renderer as a File with an EMPTY `type`. Filtering on `type` here threw
-    // the real image bytes away before anything could look at them.
-    const pastedFiles: File[] = Array.from(items)
-      .filter((it) => it.kind === 'file')
-      .map((it) => it.getAsFile())
-      .filter((f): f is File => f !== null);
-
-    // (a) The bytes the event handed us decide what is an image — names and
-    // mime labels both lie for pasteboard temp items. This also pins down the
-    // media type exactly, instead of guessing it from a file extension.
-    const admitted: ImageAttachment[] = [];
-    const admittedNames = new Set<string>();
-    const nonImageFiles: File[] = [];
-    for (const file of pastedFiles) {
-      const image = await admitPastedImage(file);
-      if (image) {
-        admitted.push(image);
-        admittedNames.add(file.name);
-      } else {
-        nonImageFiles.push(file);
-      }
-    }
-    if (admitted.length > 0) setImages((prev) => [...prev, ...admitted]);
-
-    // (b) Whatever was NOT an image still wants its real absolute path so the
-    // badge can open/reference the actual file — that is what the OS pasteboard
-    // lookup is for, and it keeps full parity with drag-drop.
-    if (nonImageFiles.length === 0) return;
-
-    let paths: string[] = [];
     try {
-      paths = await invoke<string[]>('read_clipboard_file_paths');
-    } catch {
-      // Native command unavailable or failed — nothing more we can do here.
-    }
-    // An image already admitted from its bytes must not come back as a badge.
-    const badgePaths = paths.filter((p) => !admittedNames.has(getBaseName(p)));
-    if (badgePaths.length === 0) return;
+      // Pre-extract File objects synchronously before the first await.
+      // getAsFile() returns null on any DataTransferItem touched after an await.
+      //
+      // EVERY file item is captured, not just ones already labelled with a
+      // supported image type: when an app copies an image, macOS puts a
+      // pasteboard temp item on the clipboard whose name carries no usable
+      // extension (`…/id=6571367.107158211`), and Chromium hands that to the
+      // renderer as a File with an EMPTY `type`. Filtering on `type` here threw
+      // the real image bytes away before anything could look at them.
+      const pastedFiles: File[] = Array.from(items)
+        .filter((it) => it.kind === 'file')
+        .map((it) => it.getAsFile())
+        .filter((f): f is File => f !== null);
 
-    await processFilePaths(
-      badgePaths,
-      (imgs) => setImages((prev) => [...prev, ...imgs]),
-      (newFiles) => setFiles((prev) => {
-        const existing = new Set(prev.map((f) => f.path));
-        const deduped = newFiles.filter((f) => !existing.has(f.path));
-        return deduped.length > 0 ? [...prev, ...deduped] : prev;
-      }),
-    );
-  }, []);
+      // (a) The bytes the event handed us decide what is an image — names and
+      // mime labels both lie for pasteboard temp items. This also pins down the
+      // media type exactly, instead of guessing it from a file extension.
+      const admitted: ImageAttachment[] = [];
+      const admittedNames = new Set<string>();
+      const nonImageFiles: File[] = [];
+      for (const file of pastedFiles) {
+        const image = await admitPastedImage(file);
+        if (image) {
+          admitted.push(image);
+          admittedNames.add(file.name);
+        } else {
+          nonImageFiles.push(file);
+        }
+      }
+      appendImagesForDraftKey(admissionKey, admitted);
+
+      // (b) Whatever was NOT an image still wants its real absolute path so the
+      // badge can open/reference the actual file — that is what the OS pasteboard
+      // lookup is for, and it keeps full parity with drag-drop.
+      if (nonImageFiles.length === 0) return;
+
+      let paths: string[] = [];
+      try {
+        paths = await invoke<string[]>('read_clipboard_file_paths');
+      } catch {
+        // Native command unavailable or failed — nothing more we can do here.
+      }
+      // An image already admitted from its bytes must not come back as a badge.
+      const badgePaths = paths.filter((p) => {
+        const name = getBaseName(p);
+        return !admittedNames.has(name);
+      });
+      if (badgePaths.length === 0) return;
+
+      await processFilePaths(
+        badgePaths,
+        (imgs) => appendImagesForDraftKey(admissionKey, imgs),
+        (newFiles) => appendFilesForDraftKey(admissionKey, newFiles),
+      );
+    } catch (error) {
+      showAttachmentAdmissionFailed(error);
+    } finally {
+      finishAdmission();
+    }
+  }, [
+    appendFilesForDraftKey,
+    appendImagesForDraftKey,
+    beginAttachmentAdmission,
+    draftKey,
+    showAttachmentAdmissionFailed,
+  ]);
 
   const removeImage = useCallback((id: string) => {
     setImages((prev) => prev.filter((img) => img.id !== id));
   }, []);
 
   const removeFile = useCallback((id: string) => {
-    setFiles((prev) => prev.filter((f) => f.id !== id));
-  }, []);
+    setFiles((prev) => {
+      const removed = prev.find((file) => file.id === id);
+      releaseToken(removed?.token);
+      const next = prev.filter((f) => f.id !== id);
+      currentDraftRef.current = { ...currentDraftRef.current, files: next };
+      writeComposerDraft(draftKey, currentDraftRef.current);
+      return next;
+    });
+  }, [draftKey]);
 
   // Save draft & restore on conversation switch. Rich content stays in the
   // module-level session cache; plain text is also persisted for app reloads.
   const activeConvId = activeConv?.id ?? null;
+
+  // Team chip = the conversation's team pin (welcome: the pending pin that
+  // createConversation consumes). Store-derived on purpose — it survives the
+  // welcome→conversation draft-key switch that resets composer-local chips.
+  const pendingTeamId = useChatStore((s) => s.pendingTeamId);
+  const setConversationTeamId = useChatStore((s) => s.setConversationTeamId);
+  const setPendingTeamId = useChatStore((s) => s.setPendingTeamId);
+  const pinnedTeamId = activeConvId ? activeConv?.teamId : pendingTeamId;
+  // Selector rather than `activeTeams.find` on the per-render filtered array:
+  // that form makes the React Compiler drop the component's memoization.
+  const pinnedTeam = useTeamStore((store) => (
+    pinnedTeamId ? store.teams.find((team) => team.id === pinnedTeamId) ?? null : null
+  ));
+  const pinTeam = useCallback((teamId: string | undefined) => {
+    if (teamId) {
+      setSelectedAgent(null);
+      if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+    }
+    if (activeConvId) setConversationTeamId(activeConvId, teamId);
+    else setPendingTeamId(teamId);
+  }, [activeConvId, setConversationTeamId, setPendingTeamId]);
+
+  // Every explicit picker/prefill uses the same replacement rule. Keep the
+  // conversation pin and draft identity exclusive without changing history.
+  const selectEntry = useCallback((item: SuggestionItem) => {
+    if (item.team) pinTeam(item.teamId);
+    else if (pinnedTeamId) pinTeam(undefined);
+    setSelectedAgent(item.team ? null : item);
+    if (!activeConvId) useChatStore.getState().setPendingAgent(item.team ? null : item.name);
+  }, [activeConvId, pinTeam, pinnedTeamId]);
+
+  // Legacy session drafts may contain both identities. A restored draft must
+  // not silently override the conversation's team; explicit picks clear it first.
+  useEffect(() => {
+    if (pinnedTeamId && selectedAgent) {
+      setSelectedAgent(null);
+      if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+    } else if (!activeConvId && selectedAgent) {
+      useChatStore.getState().setPendingAgent(selectedAgent.name);
+    }
+  }, [activeConvId, pinnedTeamId, selectedAgent]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Welcome-only: re-sync FolderSelector to the active conv's workspace
   // whenever the conv (or its bound workspace) changes. Covers "user on
@@ -455,16 +908,40 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     currentDraftKeyRef.current = draftKey;
     restoringDraftRef.current = true;
     setText(draft.text);
+    setEditorHistoryKey(draftKey);
     setImages(draft.images);
     setFiles(draft.files);
     setReferences(draft.references);
     setSelectedSkill(draft.selectedSkill);
     setSelectedAgent(draft.selectedAgent);
-    setSuggestionsDismissed(false);
+    setSelection({ start: draft.text.length, end: draft.text.length });
+    setDismissedSuggestionKey(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
 
+    setMenuPicker(null);
     prevDraftKeyRef.current = draftKey;
   }, [draftKey]);
+
+  useEffect(() => {
+    setDraftRuntimeState(getComposerDraftRuntimeState(draftKey));
+    return subscribeComposerDraftRuntime(draftKey, () => {
+      if (isMountedRef.current) setDraftRuntimeState(getComposerDraftRuntimeState(draftKey));
+    });
+  }, [draftKey]);
+
+  useEffect(() => subscribeComposerDraft(draftKey, () => {
+    if (!isMountedRef.current) return;
+    const draft = readComposerDraft(draftKey);
+    currentDraftRef.current = draft;
+    restoringDraftRef.current = true;
+    setText(draft.text);
+    setSelection({ start: draft.text.length, end: draft.text.length });
+    setImages(draft.images);
+    setFiles(draft.files);
+    setReferences(draft.references);
+    setSelectedSkill(draft.selectedSkill);
+    setSelectedAgent(draft.selectedAgent);
+  }), [draftKey]);
 
   // Persist text after a short quiet period. A key switch is handled above:
   // the old draft is flushed synchronously and the first render containing
@@ -484,6 +961,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // layouts. Flush through refs so the latest keystroke is never stranded in
   // a cancelled debounce timer.
   useEffect(() => () => {
+    if (compositionResetTimerRef.current !== null) {
+      window.clearTimeout(compositionResetTimerRef.current);
+      compositionResetTimerRef.current = null;
+    }
     writeComposerDraft(currentDraftKeyRef.current, currentDraftRef.current);
   }, []);
 
@@ -491,14 +972,51 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     if (isWelcome) onInputChange?.(text.trim().length > 0);
   }, [isWelcome, onInputChange, text]);
 
-  // Consume pending input (just set text; auto-selection handled in a later effect)
+  // Prefills supplement the target draft; explicit commands select a route without replacing its body.
   useEffect(() => {
-    if (pendingInput) {
-      setText(pendingInput);
+    if (pendingInput !== null) {
+      if (pendingInputStartsTask) {
+        setSelectedAgent(null);
+        setSelectedSkill(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      }
+      const command = splitInputCommand(pendingInput);
+      const skill = command?.prefix === '/' ? skills.find((item) => item.name === command.name && item.userInvocable !== false && !disabledSkills.includes(item.name)) : undefined;
+      const agent = command?.prefix === '@' ? agents.find((item) => item.name === command.name && item.name !== 'abu') : undefined;
+      const currentText = currentDraftRef.current.text;
+      const body = command ? mergeDraftPrefill(currentText === pendingInput ? '' : currentText, command.body) : '';
+      const nextText = command
+        ? (skill || agent ? body : `${command.prefix}${command.name}${body ? ' ' + body : ''}`)
+        : mergeDraftPrefill(currentText, pendingInput);
+      if (skill) {
+        setSelectedSkill({ name: skill.name, description: skill.description, trigger: skill.trigger });
+        setSelectedAgent(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      } else if (agent) {
+        selectEntry({ name: agent.name, description: agent.description, avatar: agent.avatar });
+        setSelectedSkill(null);
+      } else if (command) {
+        // Discovery may still be loading: retain the command for later auto-selection.
+        setSelectedAgent(null);
+        setSelectedSkill(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      }
+      const pendingSelection = { start: nextText.length, end: nextText.length };
+      pendingSelectionRef.current = pendingSelection;
+      setText(nextText);
+      setSelection(pendingSelection);
+      // React does not schedule a render when the store value equals the
+      // current draft. Keep the real DOM caret in sync in that case too.
+      const textarea = textareaRef.current;
+      if (textarea) {
+        const alreadyRendered = textarea.value === nextText;
+        textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
+        if (alreadyRendered) pendingSelectionRef.current = null;
+      }
       setPendingInput(null);
-      textareaRef.current?.focus();
+      textarea?.focus();
     }
-  }, [pendingInput, setPendingInput]);
+  }, [pendingInput, pendingInputStartsTask, setPendingInput, skills, agents, disabledSkills, activeConvId, selectEntry]);
 
   // Consume APPEND pending input (inline-widget window.sendPrompt bridge):
   // append to the current draft with a newline separator instead of
@@ -506,11 +1024,13 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // typing. Empty draft → no leading newline.
   useEffect(() => {
     if (pendingInputAppend) {
-      setText((prev) => mergeComposerAppend(prev, pendingInputAppend));
+      const nextText = mergeComposerAppend(text, pendingInputAppend);
+      setText(nextText);
+      setSelection({ start: nextText.length, end: nextText.length });
       appendPendingInput(null);
       textareaRef.current?.focus();
     }
-  }, [pendingInputAppend, appendPendingInput]);
+  }, [pendingInputAppend, appendPendingInput, text]);
 
   // Drain references injected by the doc preview selection toolbar into local
   // state, then clear the store buffer (mirrors pendingInput consumption).
@@ -551,19 +1071,34 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   // (image vs. file-badge routing) and the same path-based dedup used by
   // the clipboard-paste path.
   useEffect(() => {
-    if (pendingAttachmentPaths.length === 0) return;
-    const paths = pendingAttachmentPaths;
-    clearPendingAttachments();
-    void processFilePaths(
-      paths,
-      (imgs) => setImages((prev) => [...prev, ...imgs]),
-      (newFiles) => setFiles((prev) => {
-        const existing = new Set(prev.map((f) => f.path));
-        const deduped = newFiles.filter((f) => !existing.has(f.path));
-        return deduped.length > 0 ? [...prev, ...deduped] : prev;
-      }),
-    );
-  }, [pendingAttachmentPaths, clearPendingAttachments]);
+    const requests = pendingAttachmentRequests.filter((request) => request.draftKey === draftKey);
+    if (requests.length === 0) return;
+    const admissionKey = draftKey;
+    const finishAdmission = beginAttachmentAdmission(admissionKey);
+    clearPendingAttachments(admissionKey);
+    void (async () => {
+      try {
+        await processFilePaths(
+          requests.map((request) => request.path),
+          (imgs) => appendImagesForDraftKey(admissionKey, imgs),
+          (newFiles) => appendFilesForDraftKey(admissionKey, newFiles),
+          (path) => ({ readScope: requests.find((request) => request.path === path)?.readScope }),
+        );
+      } catch (error) {
+        showAttachmentAdmissionFailed(error);
+      } finally {
+        finishAdmission();
+      }
+    })();
+  }, [
+    appendFilesForDraftKey,
+    appendImagesForDraftKey,
+    beginAttachmentAdmission,
+    clearPendingAttachments,
+    draftKey,
+    pendingAttachmentRequests,
+    showAttachmentAdmissionFailed,
+  ]);
 
   const handleStop = () => {
     if (activeConv?.id) {
@@ -572,17 +1107,23 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   };
 
   // File drag & drop (always called; works for both variants)
-  const { isDragging, dropTargetProps } = useFileDragDrop(async (paths) => {
+  const handleFileDrop = useCallback(async (paths: string[]) => {
+    const admissionKey = draftKey;
     await processFilePaths(
       paths,
-      (imgs) => setImages((prev) => [...prev, ...imgs]),
-      (items) => setFiles((prev) => {
-        const existingPaths = new Set(prev.map((f) => f.path));
-        const deduped = items.filter((f) => !existingPaths.has(f.path));
-        return deduped.length > 0 ? [...prev, ...deduped] : prev;
-      }),
+      (imgs) => appendImagesForDraftKey(admissionKey, imgs),
+      (items) => appendFilesForDraftKey(admissionKey, items),
     );
-    textareaRef.current?.focus();
+    if (admissionKey === currentDraftKeyRef.current) textareaRef.current?.focus();
+  }, [
+    appendFilesForDraftKey,
+    appendImagesForDraftKey,
+    draftKey,
+  ]);
+
+  const { isDragging, dropTargetProps } = useFileDragDrop(handleFileDrop, {
+    onAdmissionStart: () => beginAttachmentAdmission(draftKey),
+    onAdmissionError: showAttachmentAdmissionFailed,
   });
 
   // Welcome-only: folder & permission handlers
@@ -610,42 +1151,76 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setPendingFolder(null);
   };
 
+  const skillTarget = useMemo(() => {
+    if (isComposing || selection.start !== selection.end) return null;
+    const head = text.slice(0, selection.start);
+    const match = /(?:^|[\s（(，。；：！？、\p{Script=Han}])\/([^\s/]*)$/u.exec(head);
+    if (match) return { start: head.length - match[1].length - 1, end: head.length, query: match[1].toLowerCase() };
+    // Preserve pasted leading commands with a body until explicitly selected.
+    const command = !selectedSkill ? /^\s*\/([^\s]+)[ \t]/.exec(text) : null;
+    return command ? { start: text.indexOf('/'), end: text.indexOf('/') + command[1].length + 1, query: command[1].toLowerCase() } : null;
+  }, [isComposing, selection.start, selection.end, text, selectedSkill]);
+
   const disabledSkillSet = useMemo(() => new Set(disabledSkills), [disabledSkills]);
-  const disabledAgentSet = useMemo(() => new Set(disabledAgents), [disabledAgents]);
+
+  const agentMentionTarget = useMemo((): AgentMentionTarget | null => {
+    // An agent chip does not block a fresh `@` — picking again switches the chip.
+    if (selectedSkill || isComposing) return null;
+    // A leading slash command owns the composer suggestion surface even if
+    // the command body happens to contain an inline @ token.
+    if (/^\s*\/\S*/.test(text)) return null;
+    if (selection.start !== selection.end) return null;
+
+    // Treat a leading @ token as one command from the moment it is typed.
+    // Its dismissal key must remain independent of later body/caret changes.
+    const leadingCommand = parseLeadingAgentCommand(text);
+    if (leadingCommand && selection.start > leadingCommand.range.start) return leadingCommand;
+
+    const inlineTarget = findAgentMentionTarget(text, selection.start, selection.end);
+    if (inlineTarget) return inlineTarget;
+    return null;
+  }, [isComposing, selectedSkill, selection.end, selection.start, text]);
 
   // Suggestion type tracking: 'skill' for / prefix, 'agent' for @ prefix
   const suggestionType = useMemo((): 'skill' | 'agent' | null => {
-    const trimmed = text.trim();
-    if (!selectedSkill && !selectedAgent) {
-      if (trimmed.startsWith('@')) return 'agent';
-      if (trimmed.startsWith('/')) return 'skill';
-    }
+    // `@` keeps working with an agent chip set — picking again switches the
+    // chip (user report 2026-09-04: "已选择 Agent 后再输入 @ 没反应").
+    if (menuPicker) return menuPicker.type;
+    if (agentMentionTarget) return 'agent';
+    if (skillTarget) return 'skill';
     return null;
-  }, [text, selectedSkill, selectedAgent]);
+  }, [agentMentionTarget, skillTarget, menuPicker]);
 
   // Skill/Agent suggestions
   const suggestions = useMemo((): SuggestionItem[] => {
-    const trimmed = text.trim();
-
-    // Agent suggestions when typing @
+    // Agent + team suggestions when typing @. Teams come first with a kind
+    // badge so 用户 can tell 团队 from 单个队员 at a glance (feedback 2026-08-31).
     if (suggestionType === 'agent') {
-      const query = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
-      return agents
-        .filter((a) => a.name !== 'abu' && !disabledAgentSet.has(a.name))
-        .filter((a) => {
-          if (!query) return true;
-          return a.name.toLowerCase().includes(query) ||
-            a.description.toLowerCase().includes(query);
-        })
-        .map((a) => ({
-          name: a.name,
-          description: a.description,
-        }));
+      const query = menuPicker?.query.toLowerCase() ?? agentMentionTarget?.query ?? '';
+      const teamItems: SuggestionItem[] = activeTeams
+        .filter((team) => !query || team.name.toLowerCase().includes(query))
+        .map((team) => ({ name: team.name, description: t.team.suggestionTeamHint, team: true, teamId: team.id, avatar: team.avatar }));
+      return [
+        ...teamItems,
+        ...agents
+          .filter((a) => a.name !== 'abu')
+          .filter((a) => {
+            if (!query) return true;
+            return a.name.toLowerCase().includes(query) ||
+              a.description.toLowerCase().includes(query);
+          })
+          .map((a) => ({
+            name: a.name,
+            description: a.description,
+            avatar: a.avatar,
+            fromPlugin: isPluginOwnedAgent(a),
+          })),
+      ];
     }
 
     // Skill suggestions when typing /
     if (suggestionType === 'skill') {
-      const query = trimmed.slice(1).split(/\s+/)[0].toLowerCase();
+      const query = menuPicker?.query.toLowerCase() ?? skillTarget?.query ?? '';
       return skills
         .filter((s) => s.userInvocable !== false && !disabledSkillSet.has(s.name))
         .filter((s) => {
@@ -662,38 +1237,83 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         }));
     }
     return [];
-  }, [text, skills, agents, suggestionType, disabledSkillSet, disabledAgentSet]);
+  }, [skills, agents, activeTeams, suggestionType, agentMentionTarget, disabledSkillSet, t.team.suggestionTeamHint, menuPicker, skillTarget]);
 
-  // Reset dismissed state when suggestions change
+  const suggestionKey = useMemo(() => {
+    if (menuPicker) return `menu:${menuPicker.type}:${menuPicker.query}`;
+    if (suggestionType === 'agent') return agentMentionTarget?.key ?? null;
+    if (suggestionType === 'skill') {
+      return skillTarget ? `skill:${skillTarget.start}:${skillTarget.query}` : null;
+    }
+    return null;
+  }, [agentMentionTarget, suggestionType, menuPicker, skillTarget]);
+
+  // Reset highlighted suggestion when the active token changes.
   useEffect(() => {
-    setSuggestionsDismissed(false);
     if (suggestionType !== null && suggestions.length > 0) setSelectedIndex(0);
-  }, [suggestionType, suggestions.length]);
+  }, [suggestionKey, suggestionType, suggestions.length]);
+
+  // Escape (and picking an item) suppress the popup for the token that was
+  // showing, so it does not spring back while the user keeps typing that same
+  // token. That suppression must end with the token: once the `@`/`/` is
+  // deleted there is nothing being suppressed any more, and typing it again is
+  // a fresh open (real-machine bug 2026-09-03: "删掉再打 @ 没有面板了").
+  useEffect(() => {
+    if (suggestionKey === null) setDismissedSuggestionKey(null);
+  }, [suggestionKey]);
 
   // Derived: show suggestions when there are matches and not dismissed
-  const showSuggestions = !suggestionsDismissed && suggestionType !== null && suggestions.length > 0;
+  const showSuggestions = suggestionKey !== null &&
+    dismissedSuggestionKey !== suggestionKey &&
+    suggestionType !== null &&
+    (menuPicker !== null || suggestions.length > 0);
+
+  useLayoutEffect(() => {
+    if (!showSuggestions) return;
+    const option = document.getElementById(suggestionOptionId(selectedIndex));
+    if (!option) return;
+    if (selectedIndex === 0) {
+      // The first option sits under its group header. scrollIntoView(nearest)
+      // would pin the option's own top edge to the container and leave the
+      // header scrolled out — which is exactly what happened when a stale
+      // non-zero index from a previous open scrolled the list first (real-
+      // machine report 2026-09-03: "卡片上面被截断"). Show the list top instead.
+      const listbox = option.closest<HTMLElement>('[data-composer-suggestions]');
+      if (listbox) listbox.scrollTop = 0;
+      return;
+    }
+    option.scrollIntoView({ block: 'nearest' });
+    // suggestionKey: when the query changes the LIST changes while selectedIndex
+    // often stays 0 — without this dep the popup keeps its old scrollTop and the
+    // top rows (teams) sit out of view (real-machine bug 2026-08-31).
+  }, [selectedIndex, showSuggestions, suggestionKey, suggestionOptionId]);
 
   // Auto-select skill/agent when text exactly matches "/name " or "@name " (e.g. from "Try in chat")
   useEffect(() => {
-    if (!suggestionType || selectedSkill || selectedAgent) return;
-    const trimmed = text.trim();
+    if (menuPicker || !suggestionType || selectedSkill || selectedAgent || isComposing) return;
+    const command = splitInputCommand(text);
 
     if (suggestionType === 'skill') {
-      const skillMatch = /^\/([a-z0-9-]+)(?:\s+(.*))?$/.exec(trimmed);
-      if (skillMatch && suggestions.length === 1 && suggestions[0].name === skillMatch[1]) {
-        setSelectedSkill(suggestions[0]);
-        setText(skillMatch[2] ?? '');
-        setSuggestionsDismissed(true);
+      if (command?.prefix === '/' && /^\s*\/\S+\s/.test(text) && suggestions.length === 1 && suggestions[0].name === command.name) {
+        setSelectedSkill({ ...suggestions[0], offset: 0 });
+        setText(command.body);
+        setSelection({ start: (command.body).length, end: (command.body).length });
+        setDismissedSuggestionKey(suggestionKey);
       }
     } else if (suggestionType === 'agent') {
-      const agentMatch = /^@(\S+)(?:\s+([\s\S]*))?$/.exec(trimmed);
-      if (agentMatch && suggestions.length === 1 && suggestions[0].name === agentMatch[1]) {
-        setSelectedAgent(suggestions[0]);
-        setText(agentMatch[2] ?? '');
-        setSuggestionsDismissed(true);
+      const leadingCommand = parseLeadingAgentCommand(text);
+      if (leadingCommand && /\s/.test(text[leadingCommand.range.end] ?? '') &&
+        suggestions.length === 1 &&
+        suggestions[0].name.toLowerCase() === leadingCommand.query
+      ) {
+        selectEntry(suggestions[0]);
+        const remainingText = leadingCommand.body;
+        setText(remainingText);
+        setSelection({ start: remainingText.length, end: remainingText.length });
+        setDismissedSuggestionKey(suggestionKey);
       }
     }
-  }, [text, suggestionType, suggestions, selectedSkill, selectedAgent]);
+  }, [isComposing, text, suggestionKey, suggestionType, suggestions, selectedSkill, selectedAgent, selectEntry, menuPicker]);
 
   // Auto-resize textarea
   const maxHeight = isWelcome ? 180 : 160;
@@ -705,14 +1325,83 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     }
   }, [text, maxHeight]);
 
+  const syncSelectionFromTextarea = useCallback((textarea: InlineSkillInputHandle) => {
+    if (pendingSelectionRef.current) return;
+
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? start;
+    setSelection((prev) => (
+      prev.start === start && prev.end === end ? prev : { start, end }
+    ));
+  }, []);
+
+  const resolveDomAgentMentionTarget = useCallback((textarea: InlineSkillInputHandle): AgentMentionTarget | null => {
+    if (/^\s*\/\S*/.test(textarea.value)) return null;
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? start;
+    if (start !== end) return null;
+
+    const leadingCommand = parseLeadingAgentCommand(textarea.value);
+    if (leadingCommand && start > leadingCommand.range.start) return leadingCommand;
+
+    const inlineTarget = findAgentMentionTarget(textarea.value, start, end);
+    if (inlineTarget) return inlineTarget;
+    return null;
+  }, []);
+
   const applySuggestion = (item: SuggestionItem) => {
-    if (suggestionType === 'agent') {
-      setSelectedAgent(item);
-    } else {
-      setSelectedSkill(item);
+    if (menuPicker) {
+      if (menuPicker.type === 'skill') {
+        const point = Math.min(selection.start, text.length);
+        setSelectedSkill({ ...item, offset: point });
+        pendingSelectionRef.current = { start: point, end: point };
+        setSelectedAgent(null);
+        if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+      } else {
+        setSelectedSkill(null);
+        selectEntry(item);
+      }
+      setMenuPicker(null);
+      setDismissedSuggestionKey(suggestionKey);
+      textareaRef.current?.focus();
+      return;
     }
-    setText('');
-    setSuggestionsDismissed(true);
+    if (suggestionType === 'agent') {
+      const textarea = textareaRef.current;
+      const currentTarget = textarea ? resolveDomAgentMentionTarget(textarea) : null;
+      if (!textarea || !agentMentionTarget || currentTarget?.key !== agentMentionTarget.key) {
+        if (textarea) {
+          setText(textarea.value);
+          syncSelectionFromTextarea(textarea);
+          textarea.focus();
+        }
+        return;
+      }
+
+      const replacementRange = resolveAgentMentionReplacementRange(currentTarget, item.name, textarea.value);
+      const bodyStart = replacementRange.end + (currentTarget.source === 'leading-command' && /[ \t]/.test(textarea.value[replacementRange.end] ?? '') ? 1 : 0);
+      const nextText = textarea.value.slice(0, replacementRange.start) +
+        textarea.value.slice(bodyStart);
+      const nextCaret = replacementRange.start;
+      pendingSelectionRef.current = { start: nextCaret, end: nextCaret };
+      selectEntry(item);
+      setText(nextText);
+      setSelection({ start: nextCaret, end: nextCaret });
+      setDismissedSuggestionKey(currentTarget.key);
+    } else {
+      if (!skillTarget) return;
+      const current = textareaRef.current?.value ?? text;
+      const suffix = item.name.toLowerCase().startsWith(skillTarget.query) ? item.name.slice(skillTarget.query.length) : '';
+      const triggerEnd = skillTarget.end + (suffix && current.slice(skillTarget.end, skillTarget.end + suffix.length).toLowerCase() === suffix.toLowerCase() ? suffix.length : 0);
+      const end = triggerEnd + (skillTarget.start === 0 && /[ \t]/.test(current[triggerEnd] ?? '') ? 1 : 0);
+      const body = current.slice(0, skillTarget.start) + current.slice(end);
+      setSelectedSkill({ ...item, offset: skillTarget.start });
+      setSelectedAgent(null);
+      setText(body);
+      pendingSelectionRef.current = { start: skillTarget.start, end: skillTarget.start };
+      setSelection({ start: skillTarget.start, end: skillTarget.start });
+      setDismissedSuggestionKey(suggestionKey);
+    }
     textareaRef.current?.focus();
   };
 
@@ -723,6 +1412,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const removeAgent = () => {
     setSelectedAgent(null);
+    if (!activeConvId) useChatStore.getState().setPendingAgent(null);
     textareaRef.current?.focus();
   };
 
@@ -733,11 +1423,20 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       images: [],
       files: [],
       references: [],
-      selectedSkill: keepSelectors ? selectedSkill : null,
+      selectedSkill: keepSelectors && selectedSkill ? { ...selectedSkill, offset: 0 } : null,
       selectedAgent: keepSelectors ? selectedAgent : null,
     };
-    clearComposerDraft(draftKey);
+    if (keepSelectors) {
+      // Do not publish an empty draft first: this component subscribes to the
+      // store and that transient notification would erase the selectors we
+      // intentionally retain for an existing conversation.
+      writeComposerDraft(draftKey, currentDraftRef.current);
+    } else {
+      clearComposerDraft(draftKey, { disposeResources: false });
+    }
     setText('');
+    if (keepSelectors && selectedSkill) setSelectedSkill({ ...selectedSkill, offset: 0 });
+    setSelection({ start: 0, end: 0 });
     setImages([]);
     setFiles([]);
     setReferences([]);
@@ -749,7 +1448,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       setSelectedSkill(null);
       setSelectedAgent(null);
     }
-    setSuggestionsDismissed(false);
+    setDismissedSuggestionKey(null);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   };
 
@@ -766,15 +1465,21 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // conversations in the meantime. Putting the text back on screen then would
     // show conversation A's message inside conversation B. Persist it under the
     // key it was typed for and leave the visible composer alone.
-    writeComposerDraft(sentDraftKey, draft);
-    if (sentDraftKey !== draftKey) return;
-    currentDraftRef.current = draft;
-    setText(draft.text);
-    setImages(draft.images);
-    setFiles(draft.files);
-    setReferences(draft.references);
-    setSelectedSkill(draft.selectedSkill);
-    setSelectedAgent(draft.selectedAgent);
+    const existingDraft = sentDraftKey === currentDraftKeyRef.current
+      ? currentDraftRef.current
+      : readComposerDraft(sentDraftKey);
+    const { draft: nextDraft, expiredFiles } = mergeDraftForRejectedSend(existingDraft, draft);
+    releaseTokenFiles(expiredFiles);
+    writeComposerDraft(sentDraftKey, nextDraft);
+    if (sentDraftKey !== currentDraftKeyRef.current) return;
+    currentDraftRef.current = nextDraft;
+    setText(nextDraft.text);
+    setSelection({ start: nextDraft.text.length, end: nextDraft.text.length });
+    setImages(nextDraft.images);
+    setFiles(nextDraft.files);
+    setReferences(nextDraft.references);
+    setSelectedSkill(nextDraft.selectedSkill);
+    setSelectedAgent(nextDraft.selectedAgent);
     textareaRef.current?.focus();
   };
 
@@ -782,15 +1487,43 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     const trimmed = text.trim();
     if ((!trimmed && !selectedSkill && !selectedAgent && images.length === 0 && files.length === 0 && references.length === 0) || disabled) return;
 
-    // Build file context prefix
-    const fileContext = files.length > 0
-      ? files.map((f) => `[Attachment: \`${f.path}\`]`).join('\n')
-      : '';
+    if (isAdmissionPendingForDraft || getComposerDraftRuntimeState(draftKey).pendingAdmissions > 0) {
+      useToastStore.getState().addToast({
+        type: 'info',
+        title: t.chat.attachmentAdmissionPending,
+      });
+      return;
+    }
 
+    if (files.some((file) => file.path !== undefined && fileReferenceForPath(file.path) === null)) {
+      showAttachmentAdmissionFailed(new InvalidAttachmentPathError());
+      return;
+    }
+
+    const unsupportedToken = files.find((file) => (
+      file.token !== undefined
+    ));
+    if (unsupportedToken) {
+      useToastStore.getState().addToast({
+        type: 'error',
+        title: format(t.chat.unsupportedDocumentAttachment, { name: unsupportedToken.name }),
+      });
+      return;
+    }
+
+    // Preserve the established path-reference contract for ordinary workspace
+    // files. These are prompt context only; unlike image attachments, no file
+    // bytes cross the provider boundary here.
+    const fileContext = files
+      .flatMap((file) => {
+        const reference = file.path ? fileReferenceForPath(file.path) : null;
+        return reference ? [reference] : [];
+      })
+      .join('\n');
     const referenceContext = serializeReferences(references);
 
     // Compose parts, then join with newline
-    const bodyParts = [fileContext, referenceContext, trimmed].filter(Boolean).join('\n\n');
+    const bodyParts = [fileContext, referenceContext, trimmed ? text : ''].filter(Boolean).join('\n\n');
 
     let message: string;
     if (selectedAgent) {
@@ -804,7 +1537,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     // Mid-task input: if agent is running, stage the message in the queue
     // strip above the composer (cancellable) instead of starting a new loop.
     // It becomes a transcript bubble only when the loop drains it.
-    if (isRunning && images.length > 0) {
+    const hasRuntimeAttachments = images.length > 0;
+    if (isRunning && hasRuntimeAttachments) {
       useToastStore.getState().addToast({
         type: 'warning',
         title: t.chat.attachmentDuringRun,
@@ -812,8 +1546,45 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       return;
     }
     if (isRunning && activeConv?.id && message) {
+      // `@队员 …` while that member is working goes straight to it (block M);
+      // anything else waits in the queue strip for the leader as before.
+      const address = parseMemberAddress(message, selectedAgent?.name);
+      const running = address
+        ? findRunningDispatch(
+          collectMemberDispatches({ conversationId: activeConv.id, executions: Object.values(useTaskExecutionStore.getState().executions), messages: activeConv.messages }),
+          address.member,
+        )
+        : null;
+      if (address && running && requestDispatchInput(running.key, address.body)) {
+        useToastStore.getState().addToast({ type: 'success', title: format(t.chat.memberInstructionSent, { member: running.agent }) });
+        resetInput();
+        return;
+      }
       enqueueUserInput(activeConv.id, message);
       resetInput();
+      return;
+    }
+
+    const sentDraftKey = draftKey;
+    const finishPendingSend = tryBeginComposerDraftSend(sentDraftKey);
+    if (!finishPendingSend) {
+      // The guard is released only when the previous dispatch PROMISE settles,
+      // which happens after the run's visible terminal (reply rendered,
+      // status no longer 'running', send button back). An Enter in that
+      // settling window misses the isRunning staging branch above, so stage it
+      // here instead of dropping it: a held guard proves the previous dispatch
+      // chain is still live, and that chain's final queue drain runs in the
+      // same microtask turn as the guard release — a keydown can never land
+      // between them, so a message staged now is always picked up.
+      if (activeConv?.id && message && !hasRuntimeAttachments) {
+        enqueueUserInput(activeConv.id, message);
+        resetInput();
+        return;
+      }
+      useToastStore.getState().addToast({
+        type: 'info',
+        title: t.chat.sendAlreadyPending,
+      });
       return;
     }
 
@@ -827,42 +1598,68 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       selectedSkill,
       selectedAgent,
     };
-    const sendResult = onSend(
-      message,
-      images.length > 0 ? images : undefined,
-      isWelcome ? localWorkspace : undefined,
-    );
+    let sendResult: void | Promise<boolean | void>;
+    try {
+      sendResult = onSend(
+        message,
+        images.length > 0 ? images : undefined,
+        isWelcome ? localWorkspace : undefined,
+        // Release the lock at acceptance: once the message is in the
+        // transcript it can never be handed back (see
+        // shouldRestoreComposerAfterDispatch), so double-send protection is no
+        // longer needed and holding on would drop sends made while the run is
+        // still executing. finishPendingSend is idempotent — the .finally
+        // below stays as the release path for never-accepted sends.
+        () => finishPendingSend(),
+      );
+    } catch (error) {
+      finishPendingSend();
+      restoreInput(sentDraft, sentDraftKey);
+      throw error;
+    }
     resetInput();
     if (sendResult && typeof sendResult.then === 'function') {
-      const sentDraftKey = draftKey;
       void sendResult.then(
-        (accepted) => { if (accepted === false) restoreInput(sentDraft, sentDraftKey); },
+        (accepted) => {
+          if (accepted === false) {
+            restoreInput(sentDraft, sentDraftKey);
+          } else {
+            releaseTokenFiles(sentDraft.files);
+          }
+        },
         // A send that throws definitely did not take the message.
         () => restoreInput(sentDraft, sentDraftKey),
-      );
+      ).finally(() => {
+        finishPendingSend();
+      });
+    } else {
+      releaseTokenFiles(sentDraft.files);
+      finishPendingSend();
     }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (isImeComposing(e, composingRef.current)) return;
+
     if (showSuggestions && suggestions.length > 0) {
       if (e.key === 'ArrowUp') {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev - 1 + suggestions.length) % suggestions.length);
+        setSelectedIndex((prev) => Math.max(0, prev - 1));
         return;
       }
       if (e.key === 'ArrowDown') {
         e.preventDefault();
-        setSelectedIndex((prev) => (prev + 1) % suggestions.length);
+        setSelectedIndex((prev) => Math.min(suggestions.length - 1, prev + 1));
         return;
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey && !isImeComposing(e, composingRef.current))) {
+      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && !e.altKey)) {
         e.preventDefault();
         applySuggestion(suggestions[selectedIndex]);
         return;
       }
       if (e.key === 'Escape') {
         e.preventDefault();
-        setSuggestionsDismissed(true);
+        setDismissedSuggestionKey(suggestionKey);
         return;
       }
     }
@@ -879,7 +1676,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         return;
       }
     }
-    if (e.key === 'Enter' && !isImeComposing(e, composingRef.current)) {
+    if (e.key === 'Enter') {
       const action = resolveEnterAction(e, { behavior: enterBehavior, isMac: isMacOS() });
       // 'native' means the textarea inserts the newline itself — leaving the
       // default action alone preserves the browser's caret handling and undo
@@ -890,23 +1687,150 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       } else if (action === 'insert') {
         e.preventDefault();
         const textarea = textareaRef.current;
-        if (textarea) setText(insertNewlineAtCursor(textarea));
+        if (textarea) {
+          const insertionPoint = textarea.selectionStart ?? text.length;
+          textarea.insertText('\n');
+          setSelection({ start: insertionPoint + 1, end: insertionPoint + 1 });
+        }
       }
     }
   };
 
   const handleAttach = async () => {
-    const selected = await open({ multiple: true, directory: false });
-    if (selected) {
-      const paths = Array.isArray(selected) ? selected : [selected];
-      await processFilePaths(
-        paths,
-        (imgs) => setImages((prev) => [...prev, ...imgs]),
-        (items) => setFiles((prev) => [...prev, ...items]),
-      );
-      textareaRef.current?.focus();
+    const admissionKey = draftKey;
+    const finishAdmission = beginAttachmentAdmission(admissionKey);
+    try {
+      const selected = await open({ multiple: true, directory: false });
+      if (selected) {
+        const paths = Array.isArray(selected) ? selected : [selected];
+        await processFilePaths(
+          paths,
+          (imgs) => appendImagesForDraftKey(admissionKey, imgs),
+          (items) => appendFilesForDraftKey(admissionKey, items),
+        );
+        if (admissionKey === currentDraftKeyRef.current) textareaRef.current?.focus();
+      }
+    } catch (error) {
+      showAttachmentAdmissionFailed(error);
+    } finally {
+      finishAdmission();
     }
   };
+
+  const handleAttachElectron = async () => {
+    const admissionKey = draftKey;
+    const finishAdmission = beginAttachmentAdmission(admissionKey);
+    try {
+      const selected = await selectElectronUserAttachments({ mediaTypes: [...ELECTRON_PICKER_MEDIA_TYPES, 'application/pdf'] });
+      if (selected.length === 0) return;
+      const filePaths = selected.flatMap((item) => 'path' in item ? [item.path] : []);
+      const imageTokens = selected.filter((item): item is ElectronUserAttachmentToken => 'token' in item);
+      try {
+        await processFilePaths(
+          filePaths,
+          (imgs) => appendImagesForDraftKey(admissionKey, imgs),
+          (items) => appendFilesForDraftKey(admissionKey, items),
+        );
+      } catch (error) {
+        for (const image of imageTokens) releaseToken(image.token);
+        throw error;
+      }
+      const imageResults = await Promise.allSettled(imageTokens.map(imageFromToken));
+      const nextImages = imageResults
+        .filter((result): result is PromiseFulfilledResult<ImageAttachment> => result.status === 'fulfilled' && result.value !== null)
+        .map((result) => result.value);
+      appendImagesForDraftKey(admissionKey, nextImages);
+      if (imageResults.some((result) => result.status === 'rejected')) showAttachmentAdmissionFailed();
+      if (admissionKey === currentDraftKeyRef.current) textareaRef.current?.focus();
+    } catch (error) {
+      showAttachmentAdmissionFailed(error);
+    } finally {
+      finishAdmission();
+    }
+  };
+
+  const handleAttachClick = hasElectronUserAttachmentSelectHost() ? handleAttachElectron : handleAttach;
+
+  // Opening a picker is a read-only action on the draft. Commit only on selection.
+  const openMentionPicker = () => setMenuPicker({ type: 'agent', query: '' });
+  const openSkillPicker = () => setMenuPicker({ type: 'skill', query: '' });
+  const closeMenuPicker = () => {
+    setMenuPicker(null);
+    textareaRef.current?.focus();
+  };
+
+  // Explicit handlers (not a mapped handler table): the React Compiler must
+  // see that the ref-reading pickers are only called from event handlers.
+  const pickAddFile = () => { setShowPlusMenu(false); handleAttachClick(); };
+  const pickTeamOrMember = () => { setShowPlusMenu(false); openMentionPicker(); };
+  const pickSkill = () => { setShowPlusMenu(false); openSkillPicker(); };
+  const clearTeamPin = () => { pinTeam(undefined); textareaRef.current?.focus(); };
+  const plusMenuItemClass = 'flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-body text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] focus-visible:outline-none focus-visible:bg-[var(--abu-bg-hover)]';
+  const plusMenuIconClass = 'h-4 w-4 shrink-0 text-[var(--abu-text-tertiary)]';
+
+  // WorkBuddy-style `+` menu (design §2.1): 添加文件 / 队员·团队 / 技能.
+  const plusMenu = (
+    <Popover open={showPlusMenu} onOpenChange={setShowPlusMenu}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={t.chat.composerMenu.open}
+          aria-haspopup="menu"
+          data-testid="composer-plus"
+          className="btn-ghost h-7 w-7 shrink-0 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
+        >
+          <Plus className="h-4 w-4" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent onCloseAutoFocus={(event) => { if (menuPicker) event.preventDefault(); }} side="top" align="start" className="w-48 p-1.5" role="menu" aria-label={t.chat.composerMenu.open} data-electron-no-drag>
+        <button type="button" role="menuitem" data-testid="composer-menu-add-file" onClick={pickAddFile} className={plusMenuItemClass}>
+          <Paperclip className={plusMenuIconClass} />
+          <span className="truncate">{t.chat.composerMenu.addFile}</span>
+        </button>
+        <button type="button" role="menuitem" data-testid="composer-menu-team" onClick={pickTeamOrMember} className={plusMenuItemClass}>
+          <Users className={plusMenuIconClass} />
+          <span className="truncate">{t.chat.composerMenu.teamOrMember}</span>
+        </button>
+        <button type="button" role="menuitem" data-testid="composer-menu-skill" onClick={pickSkill} className={plusMenuItemClass}>
+          <Sparkles className={plusMenuIconClass} />
+          <span className="truncate">{t.chat.composerMenu.skill}</span>
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+
+  // Who takes the next message: the team pin, an @agent, or a /skill. Lives in
+  // the bottom row next to `+` (WorkBuddy chip bar): neutral pill with an ✕,
+  // click = clear.
+  const chipClass = 'group inline-flex min-w-0 max-w-[220px] shrink items-center gap-1 rounded-full px-2 py-0.5 text-minor font-medium text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors cursor-pointer';
+  // Rest: kind mark + name. Hover: the mark becomes ✕ and the pill gets a background (WorkBuddy).
+  const chipMarkClass = 'shrink-0 text-[var(--abu-text-tertiary)] group-hover:hidden';
+  const chipCloseClass = 'hidden h-3.5 w-3.5 shrink-0 text-[var(--abu-text-tertiary)] group-hover:block';
+  const composerChips = (
+    <>
+      {pinnedTeam && (
+        <button type="button" onClick={clearTeamPin} data-testid="composer-team-chip" className={chipClass} title={t.common.close} aria-label={`👥${pinnedTeam.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}><TeamAvatar avatar={pinnedTeam.avatar} size="xs" round /></span>
+          <X aria-hidden="true" className={chipCloseClass} />
+          {/* Last stop of the toolbar's degradation ladder: the avatar alone
+              still says which team is pinned, and `aria-label` keeps the name
+              for assistive tech. Only the team chip collapses its name this
+              far — the `@expert` chip carries an avatar too but keeps its name
+              at every width (this batch does not touch narrow behavior). */}
+          <span className="truncate @max-[330px]:hidden">{pinnedTeam.name}</span>
+        </button>
+      )}
+      {selectedAgent && (
+        <button type="button" onClick={removeAgent} className={chipClass} title={t.common.close} aria-label={`@${selectedAgent.name}`}>
+          <span aria-hidden="true" className={chipMarkClass}><AgentAvatar agent={{ name: selectedAgent.name, avatar: selectedAgent.avatar }} size="xs" round /></span>
+          <X aria-hidden="true" className={chipCloseClass} />
+          <span className="truncate">{selectedAgent.name}</span>
+        </button>
+      )}
+
+    </>
+  );
 
   const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
   const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
@@ -942,37 +1866,35 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         />
       )}
 
-      <div className="relative">
-        {/* Suggestions Popup (Skills / Agents) */}
-        {showSuggestions && suggestions.length > 0 && (
-          <div className="absolute bottom-full left-0 right-0 mb-2 bg-[var(--abu-bg-base)] rounded-xl border border-[var(--abu-border)] shadow-lg overflow-x-hidden overflow-y-auto max-h-[320px] z-20">
-            {suggestions.map((item, idx) => (
-              <button
-                key={item.name}
-                onClick={() => applySuggestion(item)}
-                className={cn(
-                  'btn-ghost w-full flex flex-col gap-0.5 px-4 py-2.5 text-body text-left',
-                  idx === selectedIndex ? 'bg-[var(--abu-bg-hover)]' : 'hover:bg-[var(--abu-bg-muted)]'
-                )}
-              >
-                <div className="flex items-center gap-3">
-                  <span className={cn(
-                    'w-5 text-center font-mono text-minor shrink-0',
-                    suggestionType === 'agent' ? 'text-[var(--abu-info)]' : 'text-[var(--abu-text-tertiary)]'
-                  )}>
-                    {suggestionType === 'agent' ? '@' : '/'}
-                  </span>
-                  <span className="font-medium text-[var(--abu-text-primary)] text-body">{item.name}</span>
-                  <span className="text-minor text-[var(--abu-text-tertiary)] truncate">{item.description}</span>
-                </div>
-                {item.trigger && (
-                  <div className="pl-8 text-caption text-[var(--abu-text-muted)] truncate">
-                    TRIGGER: {item.trigger}
-                  </div>
-                )}
-              </button>
-            ))}
-          </div>
+      <div className="relative" ref={composerAnchorRef}>
+        {/* Suggestions Popup (Skills / Agents) — portaled, anchored above this card */}
+        {showSuggestions && (
+          <SuggestionPopup
+            anchorRef={composerAnchorRef}
+            listboxId={suggestionListboxId}
+            ariaLabel={t.chat.composerSuggestions}
+            suggestions={suggestions}
+            selectedIndex={selectedIndex}
+            suggestionType={suggestionType}
+            sectionLabels={{ teams: t.chat.suggestionSectionTeams, agents: t.chat.suggestionSectionAgents, skills: t.chat.suggestionSectionSkills }}
+            pluginTagLabel={t.chat.pickAgentPluginTag}
+            optionId={suggestionOptionId}
+            onApply={applySuggestion}
+            search={menuPicker ? {
+              query: menuPicker.query,
+              label: t.common.search,
+              closeLabel: t.common.close,
+              onChange: (query) => setMenuPicker({ ...menuPicker, query }),
+              onClose: closeMenuPicker,
+              onKeyDown: (event) => {
+                if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+                if (event.key === 'Escape') { event.preventDefault(); closeMenuPicker(); }
+                else if (event.key === 'ArrowDown') { event.preventDefault(); setSelectedIndex((index) => Math.max(0, Math.min(suggestions.length - 1, index + 1))); }
+                else if (event.key === 'ArrowUp') { event.preventDefault(); setSelectedIndex((index) => Math.max(0, index - 1)); }
+                else if (event.key === 'Enter' && suggestions[selectedIndex]) { event.preventDefault(); applySuggestion(suggestions[selectedIndex]); }
+              },
+            } : undefined}
+          />
         )}
 
         {/* Input Card */}
@@ -1086,36 +2008,51 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               ? hasAttachments ? 'px-5 pt-1 pb-1' : 'px-5 pt-4 pb-1'
               : hasAttachments ? 'px-4 pt-1 pb-1' : 'px-4 pt-3.5 pb-1'
           )}>
-            {/* Inline command prefix (unified for both variants) */}
-            {selectedAgent && (
-              <button
-                onClick={removeAgent}
-                className="shrink-0 mt-[3px] mr-1.5 text-body font-medium text-[var(--abu-link)] hover:text-[var(--abu-link-hover)] hover:line-through transition-colors cursor-pointer"
-                title={t.common.close}
-              >
-                @{selectedAgent.name}
-              </button>
-            )}
-            {selectedSkill && (
-              <button
-                onClick={removeSkill}
-                className="shrink-0 mt-[3px] mr-1.5 text-body font-medium text-purple-600 hover:text-purple-800 hover:line-through transition-colors cursor-pointer"
-                title={t.common.close}
-              >
-                /{selectedSkill.name}
-              </button>
-            )}
-            <textarea
+            <InlineSkillInput
+              historyKey={editorHistoryKey}
+              imeActive={isComposing}
+              skill={selectedSkill}
+              removeLabel={t.common.close}
               ref={textareaRef}
-              data-chat-composer
+              aria-autocomplete="list"
+              aria-expanded={showSuggestions && suggestions.length > 0}
+              aria-controls={showSuggestions && suggestions.length > 0 ? suggestionListboxId : undefined}
+              aria-activedescendant={
+                showSuggestions && suggestions.length > 0
+                  ? suggestionOptionId(selectedIndex)
+                  : undefined
+              }
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(value, skill) => {
+                setText(value);
+                setSelectedSkill(skill);
+                if (skill) {
+                  setSelectedAgent(null);
+                  if (!activeConvId) useChatStore.getState().setPendingAgent(null);
+                }
+                if (textareaRef.current) syncSelectionFromTextarea(textareaRef.current);
+              }}
               onKeyDown={handleKeyDown}
-              onCompositionStart={() => { composingRef.current = true; }}
+              onSelect={() => { if (textareaRef.current) syncSelectionFromTextarea(textareaRef.current); }}
+              onCompositionStart={() => {
+                if (compositionResetTimerRef.current !== null) {
+                  window.clearTimeout(compositionResetTimerRef.current);
+                  compositionResetTimerRef.current = null;
+                }
+                composingRef.current = true;
+                setIsComposing(true);
+              }}
               onCompositionEnd={() => {
                 // Safari/WebKit fires compositionEnd BEFORE keydown,
                 // so delay reset to let the Enter keydown still see composingRef=true
-                setTimeout(() => { composingRef.current = false; }, 0);
+                if (compositionResetTimerRef.current !== null) {
+                  window.clearTimeout(compositionResetTimerRef.current);
+                }
+                compositionResetTimerRef.current = window.setTimeout(() => {
+                  composingRef.current = false;
+                  setIsComposing(false);
+                  compositionResetTimerRef.current = null;
+                }, 0);
               }}
               onPaste={handlePaste}
               placeholder={placeholder}
@@ -1133,29 +2070,17 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           {/* Bottom Toolbar */}
           {isWelcome ? (
             /* Workspace context lives below the input card. The send toolbar
-               stays a single, calm row even in a narrow center pane. */
-            <div className="flex items-center gap-2 px-5 pb-3.5">
-              {/* AgentSelector entry hidden from UI; multi-agent logic remains intact */}
-              {/* <AgentSelector
-                agents={agents}
-                selectedName={selectedAgent?.name ?? null}
-                onSelect={setSelectedAgent}
-                disabledAgentSet={disabledAgentSet}
-              /> */}
-              <div className="flex flex-1 items-center">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleAttach}
-                  aria-label={t.chat.addAttachment}
-                  className="btn-ghost h-7 w-7 shrink-0 rounded-lg text-[var(--abu-text-tertiary)] hover:bg-[var(--abu-bg-hover)] hover:text-[var(--abu-text-primary)]"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+               stays a single, calm row even in a narrow center pane — same
+               degradation ladder as the chat variant below, minus the context
+               ring (there is no conversation yet to measure). */
+            <div data-testid="composer-toolbar" className="@container flex items-center gap-2 px-5 pb-3.5">
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                {plusMenu}
+                {composerChips}
               </div>
 
               {/* Model picker — right-aligned, before Start button */}
-              <div className="ml-auto flex min-w-0 max-w-full items-center gap-1">
+              <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={null} />
                 <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
                   <button
@@ -1196,31 +2121,38 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               </div>
             </div>
           ) : (
-            /* Chat variant: [+] --- [Model ∨] [Stop/Send] */
-            <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-4 pb-2.5 pt-0.5">
-              {/* Left Actions */}
-              <div className="flex items-center gap-0.5">
-                {/* AgentSelector entry hidden from UI; multi-agent logic remains intact */}
-                {/* <AgentSelector
-                  agents={agents}
-                  selectedName={selectedAgent?.name ?? null}
-                  onSelect={setSelectedAgent}
-                  disabledAgentSet={disabledAgentSet}
-                /> */}
+            /* Chat variant: [+] [chips] --- [Perm] [Model ∨] [◯] [Stop/Send]
+               One row at every width. This row used to be `flex-wrap` with two
+               content-sized groups, and CSS resolves wrapping against content
+               size *before* it shrinks anything: once the workspace panel
+               starved the chat column, the whole right half went to a second,
+               `ml-auto`-aligned line instead of the model name truncating the
+               way the code below intends (measured 72px tall at a ~300px
+               toolbar; the guard for it is tests/e2e/composer-narrow-toolbar).
 
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={handleAttach}
-                  aria-label={t.chat.addAttachment}
-                  className="btn-ghost h-7 w-7 text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] rounded-lg"
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+               What actually holds the row together is `flex-1` on the left
+               group below — a zero basis means it can only ever take leftover
+               space, so it yields continuously instead of forcing a break.
+               Dropping `flex-wrap` on top of that is belt and braces: with the
+               zero basis in place the row no longer wraps even if `flex-wrap`
+               comes back, so don't read its absence as the fix.
+
+               Space is then given up in a fixed order: chip names truncate →
+               the permission label collapses to its icon → the context ring
+               hides → the chip goes avatar-only. `+` and send/stop never move.
+               Widths are queried on this toolbar (`@container`), not the
+               window: this pane narrows while the window itself stays wide. */
+            <div data-testid="composer-toolbar" className="@container flex items-center gap-x-2 px-4 pb-2.5 pt-0.5">
+              {/* Left Actions — `flex-1` on a zero basis, so the chips absorb
+                  every bit of slack and give it back first. Load-bearing: see
+                  the note above before "simplifying" it back to `flex`. */}
+              <div className="flex min-w-0 flex-1 items-center gap-1">
+                {plusMenu}
+                {composerChips}
               </div>
 
               {/* Right Actions: Model picker + Context indicator + Send / Stop */}
-              <div className="ml-auto flex min-w-0 max-w-full items-center gap-1">
+              <div className="flex min-w-0 items-center gap-1">
                 <PermissionModeChip conversationId={activeConvIdForIndicator} />
                 {/* Model picker */}
                 <div className="relative min-w-0 max-w-[180px]" ref={modelPickerRef}>
@@ -1244,9 +2176,12 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
                   />
                 </div>
 
-                {/* Context usage ring — between model picker and send button */}
+                {/* Context usage ring — between model picker and send button.
+                    Third rung of the ladder: at the narrowest widths its 30px
+                    buy back a readable model name, and the same number is one
+                    click away in the usage chip under the composer. */}
                 {activeConvIdForIndicator && (
-                  <div className="flex items-center justify-center h-7 px-1">
+                  <div className="flex items-center justify-center h-7 px-1 @max-[360px]:hidden">
                     <ContextIndicator conversationId={activeConvIdForIndicator} />
                   </div>
                 )}

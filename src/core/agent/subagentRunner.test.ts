@@ -42,11 +42,105 @@ vi.mock('../sidecar/sidecarManager', () => ({
 }));
 
 const runSubagentLoopMock = vi.fn();
-vi.mock('./subagentLoop', async () => {
-  const actual = await vi.importActual<typeof import('./subagentLoop')>('./subagentLoop');
+vi.mock('./subagentLoop', () => {
+  class SubagentResult {
+    readonly text: string;
+    readonly toolCallCount: number;
+    readonly turnCount: number;
+    readonly tokenUsage: { input: number; output: number };
+    readonly duration: number;
+    readonly stopReason: string;
+    readonly upstream?: {
+      status: number;
+      error_type?: string;
+      traceId?: string;
+      summary?: string;
+    };
+
+    constructor(params: {
+      text: string;
+      toolCallCount: number;
+      turnCount: number;
+      tokenUsage: { input: number; output: number };
+      duration: number;
+      stopReason: string;
+      upstream?: {
+        status: number;
+        error_type?: string;
+        traceId?: string;
+        summary?: string;
+      };
+    }) {
+      this.text = params.text;
+      this.toolCallCount = params.toolCallCount;
+      this.turnCount = params.turnCount;
+      this.tokenUsage = params.tokenUsage;
+      this.duration = params.duration;
+      this.stopReason = params.stopReason;
+      this.upstream = params.upstream;
+    }
+
+    toString(): string {
+      return this.text;
+    }
+  }
+
+  const failure = (text: string) => new SubagentResult({
+    text,
+    toolCallCount: 0,
+    turnCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+    stopReason: 'error',
+  });
+
+  const malformedListFailure = (
+    agentName: string,
+    field: 'tools' | 'disallowed-tools',
+    value: unknown,
+  ): SubagentResult | null => {
+    if (value === undefined) return null;
+    if (!Array.isArray(value)) return failure(`${agentName}: ${field} must be a list`);
+    const invalidPositions = value.flatMap((entry, index) => typeof entry === 'string' ? [] : [index + 1]);
+    if (invalidPositions.length > 0) return failure(`${agentName}: invalid ${field} entries at ${invalidPositions.join(', ')}`);
+    const emptyPositions = (value as string[]).flatMap((entry, index) => entry.trim() ? [] : [index + 1]);
+    return emptyPositions.length > 0
+      ? failure(`${agentName}: empty ${field} entries at ${emptyPositions.join(', ')}`)
+      : null;
+  };
+
   return {
-    ...actual,
     runSubagentLoop: (...a: unknown[]) => runSubagentLoopMock(...a),
+    SubagentResult,
+    resolveSubagentInteractionMode: (options: Record<string, unknown>) => [
+      'authorizationScopeId',
+      'runPermissionCeiling',
+      'imContext',
+      'triggerId',
+      'scheduledTaskId',
+    ].some((field) => options[field] !== undefined) ? 'background' : 'foreground',
+    buildSubagentMcpPreflightFailure: (
+      agentDefinition: { name: string; tools?: unknown; disallowedTools?: unknown },
+      availableTools: Array<{ name: string }>,
+    ) => {
+      const malformedTools = malformedListFailure(agentDefinition.name, 'tools', agentDefinition.tools);
+      if (malformedTools) return malformedTools;
+      const malformedDisallowedTools = malformedListFailure(
+        agentDefinition.name,
+        'disallowed-tools',
+        agentDefinition.disallowedTools,
+      );
+      if (malformedDisallowedTools) return malformedDisallowedTools;
+
+      const missing = (agentDefinition.tools as string[] | undefined)?.filter((pattern) =>
+        pattern.includes('__')
+        && !pattern.includes('*')
+        && !availableTools.some((tool) => tool.name === pattern),
+      ) ?? [];
+      if (missing.length === 0) return null;
+      const servers = [...new Set(missing.map((pattern) => pattern.split('__', 1)[0]))];
+      return failure(`${agentDefinition.name}: missing ${missing.join(', ')} from ${servers.join(', ')}`);
+    },
   };
 });
 
@@ -63,6 +157,27 @@ vi.mock('./ports/toolInvoker', () => ({
 const checkToolApprovalMock = vi.fn().mockResolvedValue({ decision: 'allow' });
 vi.mock('../tools/registry', () => ({
   checkToolApproval: (...a: unknown[]) => checkToolApprovalMock(...a),
+}));
+
+const resolvePreloadedSkillsMock = vi.fn();
+vi.mock('./prompts/preloadedSkills', () => ({
+  resolvePreloadedSkills: (...a: unknown[]) => resolvePreloadedSkillsMock(...a),
+}));
+
+const PRELOADED_SECTION = {
+  text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nbody',
+  resolved: ['weekly-report'],
+  missing: [],
+  truncated: [],
+};
+
+const delegatedMediaStoreMocks = vi.hoisted(() => ({
+  persistDelegatedMedia: vi.fn(),
+  readDelegatedMedia: vi.fn(),
+}));
+vi.mock('../subagent/delegatedMediaStore', () => ({
+  persistDelegatedMedia: (...a: unknown[]) => delegatedMediaStoreMocks.persistDelegatedMedia(...a),
+  readDelegatedMedia: (...a: unknown[]) => delegatedMediaStoreMocks.readDelegatedMedia(...a),
 }));
 
 const getSettingsSnapshotMock = vi.fn().mockReturnValue({ agentMaxTurns: 200 });
@@ -87,6 +202,18 @@ vi.mock('../enterprise/llm-resolver', () => ({
   resolveEffectiveLlmCreds: (...a: unknown[]) => resolveEffectiveLlmCredsMock(...a),
 }));
 
+const disposeRunBrowserViewsMock = vi.fn();
+vi.mock('../browser/browserViewLifecycle', () => ({
+  disposeRunBrowserViews: (...a: unknown[]) => disposeRunBrowserViewsMock(...a),
+  disposeOwnedBrowserViews: vi.fn(),
+  closeBrowserViews: vi.fn(),
+}));
+
+const releaseRunBrowserTabClaimsMock = vi.fn();
+vi.mock('../browser/bridgeTabClaims', () => ({
+  releaseRunBrowserTabClaims: (...a: unknown[]) => releaseRunBrowserTabClaimsMock(...a),
+}));
+
 const emitHookMock = vi.fn((event: unknown) => event);
 vi.mock('./lifecycleHooks', () => ({
   emitHook: (...a: unknown[]) => emitHookMock(...a),
@@ -103,13 +230,13 @@ vi.mock('../../i18n', () => ({
         cancelled: '已取消',
         hookBlocked: '被拦截',
         noContent: '无内容',
-        mcpRequiredUnavailable: 'Error: 无法启动代理“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
-        invalidToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
-        invalidToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
-        invalidEmptyToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
-        invalidDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
-        invalidDisallowedToolsField: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
-        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动代理“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        mcpRequiredUnavailable: 'Error: 无法启动专家“{agentName}”：所需 MCP 工具当前不可用：{requirements}。请连接对应服务器（{servers}）并确认它提供这些工具后再委派。',
+        invalidToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidToolsField: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
+        invalidDisallowedToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项不是字符串。请修正工具配置后重试。',
+        invalidDisallowedToolsField: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 必须是字符串列表，不能写成单个值或对象。请修正工具配置后重试。',
+        invalidEmptyDisallowedToolDeclarations: 'Error: 无法启动专家“{agentName}”：AGENT.md 的 disallowed-tools 列表中第 {positions} 项为空。请删除或补全这些条目后重试。',
       },
       errorEmptyBody: '空响应',
     },
@@ -124,6 +251,13 @@ const agent: SubagentDefinition = {
   systemPrompt: 'sys',
   filePath: '__preset__',
 };
+
+const TEST_MEDIA_REF = {
+  id: 'media_reverse_test',
+  sha256: 'a'.repeat(64),
+  mediaType: 'image/png',
+  bytes: 8,
+} as const;
 
 /** Deferred promise helper — lets a test control exactly when sidecarRequest() settles. */
 function deferred<T>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
@@ -161,6 +295,11 @@ describe('subagentRunner', () => {
     executeAnyToolMock.mockResolvedValue('tool result');
     checkToolApprovalMock.mockReset();
     checkToolApprovalMock.mockResolvedValue({ decision: 'allow' });
+    resolvePreloadedSkillsMock.mockReset();
+    resolvePreloadedSkillsMock.mockResolvedValue(null);
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockResolvedValue(TEST_MEDIA_REF);
+    delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
     getAllToolsMock.mockReset();
     getAllToolsMock.mockReturnValue([
       { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
@@ -172,6 +311,8 @@ describe('subagentRunner', () => {
     resolveEffectiveLlmCredsMock.mockReset();
     resolveEffectiveLlmCredsMock.mockReturnValue({ apiKey: 'sk-test', baseUrl: undefined, forceOpenAiCompatible: false });
     emitHookMock.mockClear();
+    disposeRunBrowserViewsMock.mockReset();
+    releaseRunBrowserTabClaimsMock.mockReset();
   });
 
   describe('wire projection contract', () => {
@@ -191,7 +332,11 @@ describe('subagentRunner', () => {
         | 'task'
         | 'context'
         | 'parentConversationSummary'
+        | 'delegatedUserTurn'
+        | 'delegatedMediaFallback'
         | 'parentConversationId'
+        | 'parentLoopId'
+        | 'parentUserMessageId'
         | 'persistParentToolImages'
         | 'imContext'
         | 'allowedTools'
@@ -199,7 +344,10 @@ describe('subagentRunner', () => {
         | 'authorizationScopeId'
         | 'runPermissionCeiling'
         | 'triggerId'
-        | 'scheduledTaskId';
+        | 'scheduledTaskId'
+        | 'preloadedSkills'
+        | 'initiatedBy'
+        | 'dispatchKey';
       type CoveredOptionField = WireOptionField | LocalOnlyField;
       type MissingLoopOption = Exclude<keyof SubagentLoopOptions, CoveredOptionField>;
       expectTypeOf<MissingLoopOption>().toEqualTypeOf<never>();
@@ -210,7 +358,11 @@ describe('subagentRunner', () => {
         'task',
         'context',
         'parentConversationSummary',
+        'delegatedUserTurn',
+        'delegatedMediaFallback',
         'parentConversationId',
+        'parentLoopId',
+        'parentUserMessageId',
         'persistParentToolImages',
         'imContext',
         'allowedTools',
@@ -219,6 +371,9 @@ describe('subagentRunner', () => {
         'runPermissionCeiling',
         'triggerId',
         'scheduledTaskId',
+        'preloadedSkills',
+        'initiatedBy',
+        'dispatchKey',
         'locale',
         'uiStrings',
         'settingsSnapshot',
@@ -236,7 +391,14 @@ describe('subagentRunner', () => {
         'capsPort',
         'workspaceReader',
         'skillCommandApprovalFactory',
-        'parentLoopId',
+        // U4: the parent run's browser-denial seam is a pair of functions —
+        // shell-stamped into the trusted tool context, never serialized.
+        'reportBrowserDenial',
+        'reportBrowserAllow',
+        // N6: run identity is shell-stamped into the trusted tool context, so
+        // sending it would create a second, forgeable source of the same fact.
+        'agentRunId',
+        'teamApprovalDispatch',
       ]);
     });
 
@@ -288,6 +450,84 @@ describe('subagentRunner', () => {
       for (const localField of SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS) {
         expect(wireParams).not.toHaveProperty(localField);
       }
+    });
+
+    it('resolves declared skills shell-side and hands the section to the in-process loop', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      resolvePreloadedSkillsMock.mockResolvedValue(PRELOADED_SECTION);
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent: { ...agent, skills: ['weekly-report'] }, task: 'preload me' });
+
+      expect(resolvePreloadedSkillsMock).toHaveBeenCalledTimes(1);
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+    });
+
+    it('carries the resolved section across the sidecar wire', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      resolvePreloadedSkillsMock.mockResolvedValue(PRELOADED_SECTION);
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed',
+      });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent: { ...agent, skills: ['weekly-report'] }, task: 'preload me' });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(wireParams.preloadedSkills).toEqual(PRELOADED_SECTION);
+    });
+
+    it('keeps a caller-supplied section instead of resolving a second time', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({
+        agent: { ...agent, skills: ['weekly-report'] },
+        task: 'preload me',
+        preloadedSkills: PRELOADED_SECTION,
+      });
+
+      expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+    });
+
+    it('sends only opaque delegated image metadata across the sidecar boundary', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed',
+      });
+      const { runSubagent } = await importFresh();
+      const delegatedUserTurn = {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-1' },
+        content: [
+          { type: 'text', text: 'Inspect this image.' },
+          { type: 'image', attachment: { id: 'attachment_opaque_1', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } },
+        ],
+      };
+
+      await runSubagent({ agent, task: 'Describe the image.', delegatedUserTurn } as never);
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(wireParams.delegatedUserTurn).toEqual(delegatedUserTurn);
+      const payload = JSON.stringify(wireParams);
+      expect(payload).not.toContain('data:image/');
+      expect(payload).not.toMatch(/(?:\/Users\/|[A-Za-z]:\\\\Users\\\\)/);
+    });
+
+    it('preserves the trusted text-only fallback across the sidecar boundary', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed',
+      });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'Describe the image.', delegatedMediaFallback: 'text-only' });
+
+      const wireParams = sidecarRequestMock.mock.calls[0][1] as Record<string, unknown>;
+      expect(wireParams.delegatedMediaFallback).toBe('text-only');
     });
   });
 
@@ -372,6 +612,9 @@ describe('subagentRunner', () => {
         agent,
         task: 'do the thing',
         skillCommandApprovalFactory: expect.any(Function),
+        // The in-process loop reads its run identity straight off the options
+        // (there is no shell/sidecar boundary to stamp it at).
+        agentRunId: expect.stringMatching(/^sar-/),
       });
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(result.text).toBe('in-process result');
@@ -455,6 +698,98 @@ describe('subagentRunner', () => {
       expect(result.stopReason).toBe('completed');
     });
 
+    it('reconstructs a strict bounded upstream projection from a failed sidecar subagent', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const upstream = {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'subagent-runner-trace-403',
+        summary: 'provider rejected the request',
+      } as const;
+      sidecarRequestMock.mockResolvedValue({
+        text: 'Error: content policy rejected',
+        toolCallCount: 0,
+        turnCount: 0,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'error',
+        upstream,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(result.stopReason).toBe('error');
+      expect(result.upstream).toEqual(upstream);
+    });
+
+    it('rejects a subagent upstream projection with privacy-unsafe extra fields', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'Error: content policy rejected',
+        toolCallCount: 0,
+        turnCount: 0,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'error',
+        upstream: { status: 403, rawBody: 'private prompt text' },
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result.text).toBe('in-process result');
+      expect(result.upstream).toBeUndefined();
+    });
+
+    it.each([
+      ['missing tokenUsage', { tokenUsage: undefined }],
+      ['string token count', { tokenUsage: { input: '10', output: 2 } }],
+      ['missing output token count', { tokenUsage: { input: 1 } }],
+      ['negative tool count', { toolCallCount: -1 }],
+      ['fractional turn count', { turnCount: 1.5 }],
+      ['non-finite duration', { duration: Number.POSITIVE_INFINITY }],
+      ['unknown top-level key', { rawBody: 'private prompt text' }],
+    ])('rejects malformed sidecar result metrics/shape: %s', async (_label, override) => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'sidecar result',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 2 },
+        duration: 1,
+        stopReason: 'completed',
+        ...override,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result.text).toBe('in-process result');
+    });
+
+    it('rejects a completed sidecar result carrying failure-only upstream details', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'completed text',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 1, output: 2 },
+        duration: 1,
+        stopReason: 'completed',
+        upstream: { status: 403 },
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      expect(result.text).toBe('in-process result');
+      expect(result.upstream).toBeUndefined();
+    });
+
     it('defaults a legacy sidecar result with no stopReason to completed', async () => {
       getSidecarStatus.mockReturnValue('running');
       sidecarRequestMock.mockResolvedValue({
@@ -470,6 +805,64 @@ describe('subagentRunner', () => {
 
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result.text).toBe('legacy sidecar result');
+      expect(result.stopReason).toBe('completed');
+    });
+
+    it.each([
+      'Error: {"private":"legacy delegated provider body"}',
+      'Error: <html><body>legacy delegated proxy page</body></html>',
+    ])('sanitizes a legacy failed subagent response before returning it: %s', async (text) => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text,
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+        stopReason: 'error',
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toBe('Error: 空响应');
+      expect(result.text).not.toContain('legacy delegated');
+      expect(result.stopReason).toBe('error');
+    });
+
+    it('sanitizes an Error-prefixed legacy result with no stopReason', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: 'Error: {"private":"legacy no-stop provider body"}',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(result.text).toBe('Error: 空响应');
+      expect(result.text).not.toContain('legacy no-stop provider body');
+      expect(result.stopReason).toBe('error');
+    });
+
+    it('infers a missing legacy stopReason only for an Error-prefixed result', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({
+        text: '{"normal":"successful JSON output"}',
+        toolCallCount: 0,
+        turnCount: 1,
+        tokenUsage: { input: 0, output: 0 },
+        duration: 1,
+      });
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({ agent, task: 'do the thing' });
+
+      expect(result.text).toBe('{"normal":"successful JSON output"}');
       expect(result.stopReason).toBe('completed');
     });
 
@@ -621,6 +1014,28 @@ describe('subagentRunner', () => {
         scheduledTaskId: 'task-1',
       }));
 
+      // A subagent inherits WHO started the parent run: a human-typed turn in
+      // a scheduled conversation keeps its dialogs across delegation, and an
+      // automation-started one stays unattended.
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-user-parent',
+        conversationId: 'conv-user-parent',
+        scheduledTaskId: 'task-1',
+        initiatedBy: 'user',
+      } as never)).toEqual(expect.objectContaining({
+        scheduledTaskId: 'task-1',
+        initiatedBy: 'user',
+      }));
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-auto-parent',
+        conversationId: 'conv-auto-parent',
+        initiatedBy: 'automation',
+      } as never)).toEqual(expect.objectContaining({ initiatedBy: 'automation' }));
+      expect(getSubagentRunInheritance({
+        loopId: 'loop-plain-parent',
+        conversationId: 'conv-plain-parent',
+      } as never)).not.toHaveProperty('initiatedBy');
+
       expect(getSubagentRunInheritance({
         loopId: 'loop-im-parent',
         conversationId: 'conv-im-parent',
@@ -709,6 +1124,41 @@ describe('subagentRunner', () => {
       await runPromise;
     });
 
+    it('keeps image tool results opaque and media paths redacted on the shell-to-sidecar reverse channel', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const imageData = 'iVBORw0KGgo=';
+      executeAnyToolMock.mockResolvedValueOnce([
+        { type: 'text', text: 'Image: /private/customer/shot.png' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: imageData } },
+      ]);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'inspect screenshot',
+        parentConversationId: 'conv-1',
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      const wireResult = await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+      const serialized = JSON.stringify(wireResult);
+
+      expect(serialized).not.toContain(imageData);
+      expect(serialized).not.toContain('/private/customer/shot.png');
+      expect(serialized).toContain('[REDACTED:path]');
+      expect(wireResult).toEqual([
+        { type: 'text', text: 'Image: [REDACTED:path]' },
+        { type: 'delegated_media_ref', originConversationId: 'conv-1', attachment: TEST_MEDIA_REF },
+      ]);
+      expect(delegatedMediaStoreMocks.persistDelegatedMedia).toHaveBeenCalledTimes(1);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
     it('overwrites a forged sidecar ceiling with the parent-owned subagent ceiling', async () => {
       getSidecarStatus.mockReturnValue('running');
       const d = deferred<unknown>();
@@ -734,6 +1184,82 @@ describe('subagentRunner', () => {
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(
         expect.objectContaining({ runPermissionCeiling: ceiling }),
       );
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    // The parent run's consecutive-browser-denial guard has to survive the
+    // delegation boundary: the reporters are functions, so the sidecar's
+    // context cannot carry them and the shell must re-stamp them from the
+    // session. Without this a run that delegates its browser work could be
+    // refused indefinitely and never trip the guard.
+    it('two browser refusals inside a delegated run trip the PARENT run\'s abort', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const { createBrowserDenialTracker } = await import('./browserDenialTracker');
+
+      const onThreshold = vi.fn();
+      const parentTracker = createBrowserDenialTracker(onThreshold);
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'browse something',
+        reportBrowserDenial: () => parentTracker.reportDenial(),
+        reportBrowserAllow: () => parentTracker.reportAllow(),
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: {} });
+      const first = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        reportBrowserDenial?: () => void; reportBrowserAllow?: () => void;
+      };
+      first.reportBrowserDenial!();
+      expect(onThreshold).not.toHaveBeenCalled();
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'y.txt' }, context: {} });
+      const second = executeAnyToolMock.mock.calls.at(-1)?.[4] as { reportBrowserDenial?: () => void };
+      second.reportBrowserDenial!();
+
+      expect(onThreshold).toHaveBeenCalledTimes(1);
+      expect(parentTracker.tripped).toBe(true);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+
+    it('a consented allow inside a delegated run resets the PARENT run\'s streak', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const { createBrowserDenialTracker } = await import('./browserDenialTracker');
+
+      const onThreshold = vi.fn();
+      const parentTracker = createBrowserDenialTracker(onThreshold);
+
+      const runPromise = runSubagent({
+        agent,
+        task: 'browse something',
+        reportBrowserDenial: () => parentTracker.reportDenial(),
+        reportBrowserAllow: () => parentTracker.reportAllow(),
+      });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: { path: 'x.txt' }, context: {} });
+      const ctx = executeAnyToolMock.mock.calls.at(-1)?.[4] as {
+        reportBrowserDenial?: () => void; reportBrowserAllow?: () => void;
+      };
+      ctx.reportBrowserDenial!();
+      ctx.reportBrowserAllow!();
+      ctx.reportBrowserDenial!();
+
+      expect(onThreshold).not.toHaveBeenCalled();
+      expect(parentTracker.consecutiveDenials).toBe(1);
+
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
       await runPromise;
     });
@@ -950,12 +1476,16 @@ describe('subagentRunner', () => {
       ['agent allowlist', { tools: ['read_file'] }, 'write_file'],
       ['agent denylist', { disallowedTools: ['write_file'] }, 'write_file'],
       ['always-blocked orchestration roster', {}, 'run_agent_batch'],
+      ['explicitly allowed nested delegation', { tools: ['delegate_to_agent'] }, 'delegate_to_agent'],
+      ['forged leader protocol tool', { tools: ['read_file'] }, 'report_plan'],
     ])('refuses a reverse tool.invoke outside the frozen %s', async (_label, boundary, toolName) => {
       getSidecarStatus.mockReturnValue('running');
       getAllToolsMock.mockReturnValue([
         { name: 'read_file', description: 'read', inputSchema: { type: 'object', properties: {} }, execute: async () => 'read' },
         { name: 'write_file', description: 'write', inputSchema: { type: 'object', properties: {} }, execute: async () => 'write' },
         { name: 'run_agent_batch', description: 'batch', inputSchema: { type: 'object', properties: {} }, execute: async () => 'batch' },
+        { name: 'delegate_to_agent', description: 'delegate', inputSchema: { type: 'object', properties: {} }, execute: async () => 'delegate' },
+        { name: 'report_plan', description: 'plan', inputSchema: { type: 'object', properties: {} }, execute: async () => 'plan' },
       ]);
       const d = deferred<unknown>();
       sidecarRequestMock.mockReturnValue(d.promise);
@@ -969,6 +1499,51 @@ describe('subagentRunner', () => {
       ).rejects.toThrow(/fixed tool boundary/);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
 
+      d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['role', { tools: ['run_command(npm run *)'] }, undefined],
+      ['task', { tools: [] }, ['run_command(npm run *)']],
+    ])('rechecks %s command inputs on reverse tool.invoke even when the schema was offered', async (_label, boundary, allowedTools) => {
+      getSidecarStatus.mockReturnValue('running');
+      getAllToolsMock.mockReturnValue([
+        { name: 'run_command', description: 'run', inputSchema: { type: 'object', properties: {} }, execute: async () => 'run' },
+      ]);
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const runPromise = runSubagent({ agent: { ...agent, ...boundary }, task: 'run a command', allowedTools });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.findLast((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await expect(toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'rm -rf /tmp/forbidden' } })).rejects.toThrow();
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
+      await expect(toolInvokeHandler({ runId, toolName: 'run_command', input: { command: 'npm run test' } })).resolves.toBe('tool result');
+      expect(executeAnyToolMock).toHaveBeenCalledTimes(1);
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+    });
+
+    it.each([
+      ['role deny', { disallowedTools: ['read_file'] }],
+      ['invalid allow metadata', { tools: 'read_file' }],
+      ['invalid deny metadata', { disallowedTools: [''] }],
+    ])('fails closed for %s that changed after the host roster was frozen', async (_label, changedMetadata) => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const activeAgent = { ...agent, tools: [] };
+      const runPromise = runSubagent({ agent: activeAgent, task: 'read a file' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.findLast((call) => call[0] === 'tool.invoke')![1] as (params: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      Object.assign(activeAgent, changedMetadata);
+
+      await expect(toolInvokeHandler({ runId, toolName: 'read_file', input: { path: '/tmp/x' } })).rejects.toThrow(/fixed tool boundary/);
+      expect(executeAnyToolMock).not.toHaveBeenCalled();
       d.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
     });
@@ -1028,9 +1603,139 @@ describe('subagentRunner', () => {
 
       await expect(toolInvokeHandler({ runId, toolName: 'read_file', input: {} })).rejects.toThrow(/unknown runId/);
     });
+
+    // N6: browser tab ownership is the pair {conversationId, runKey}, so every
+    // tool call has to carry the run that issued it. Like workspacePath and the
+    // abort signal, it is stamped from the SHELL's session — never taken from
+    // the sidecar's `context`, which decides nothing about which run's tabs a
+    // call may see and reclaim.
+    it('stamps the shell-owned run id into the trusted tool context, overriding any sidecar-supplied value', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      await toolInvokeHandler({
+        runId,
+        toolName: 'read_file',
+        input: {},
+        context: { agentRunId: 'sar-forged-by-sidecar' },
+      });
+
+      expect(runId).toMatch(/^sar-/);
+      expect(executeAnyToolMock).toHaveBeenCalledWith(
+        'read_file',
+        {},
+        undefined,
+        undefined,
+        expect.objectContaining({ conversationId: 'conv-1', agentRunId: runId }),
+      );
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1 });
+      await runPromise;
+    });
+  });
+
+  // A2 — a finished run's browser tabs are visible to nobody else, so nothing
+  // but the run's own settlement can ever release them. The seal is the point
+  // after which the run can no longer start another tool.
+  describe('per-run browser view release', () => {
+    it('releases exactly this run of this conversation when the sidecar run settles', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      expect(disposeRunBrowserViewsMock).toHaveBeenCalledWith('conv-1', runId);
+    });
+
+    it('releases the run even when it fails', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockRejectedValue(new Error('transport died'));
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+
+      expect(disposeRunBrowserViewsMock).toHaveBeenCalled();
+      for (const call of disposeRunBrowserViewsMock.mock.calls) {
+        expect(call[0]).toBe('conv-1');
+        expect(call[1]).toMatch(/^sar-/);
+      }
+    });
+
+    it('releases an in-process run too — it owns tabs the same way', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+
+      expect(disposeRunBrowserViewsMock).toHaveBeenCalledTimes(1);
+      const [conversationId, runKey] = disposeRunBrowserViewsMock.mock.calls[0];
+      expect(conversationId).toBe('conv-1');
+      // The same id the in-process loop stamped into its tool contexts.
+      expect(runKey).toBe((runSubagentLoopMock.mock.calls[0][0] as { agentRunId?: string }).agentRunId);
+      expect(runKey).toMatch(/^sar-/);
+    });
+
+    it('releases the run\'s Chrome-extension tab claims at the same seal', async () => {
+      getSidecarStatus.mockReturnValue('stopped');
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+
+      // The extension channel drives the user's REAL Chrome, so an unreleased
+      // claim outlives the run on a page the user can see. Same seal, same
+      // {conversationId, runKey} owner, different transport (MCP notification
+      // rather than IPC — the bridge is a separate stdio process).
+      expect(releaseRunBrowserTabClaimsMock).toHaveBeenCalledTimes(1);
+      const [conversationId, runKey] = releaseRunBrowserTabClaimsMock.mock.calls[0];
+      expect(conversationId).toBe('conv-1');
+      expect(runKey).toBe(disposeRunBrowserViewsMock.mock.calls[0][1]);
+      // Never the conversation-wide form: that scope belongs to conversation
+      // deletion and would strip sibling runs still driving their tabs.
+      expect(runKey).toMatch(/^sar-/);
+    });
+
+    it('releases the tab claims of a sidecar-hosted run too', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockResolvedValue({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({ agent, task: 'browse', parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+
+      expect(releaseRunBrowserTabClaimsMock).toHaveBeenCalledWith('conv-1', runId);
+    });
   });
 
   describe('subagent.progress reverse-channel handler', () => {
+    it('acknowledges only issued instruction ids for the owning sidecar dispatch (F5)', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const done = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(done.promise);
+      const { runSubagent } = await importFresh();
+      const { notePendingInstruction, takeDeliveredInstructions, takeUnconfirmedInstructions } = await import('./dispatchInput');
+      notePendingInstruction('wire-receipt:0', 'issued-a', 'user instruction A');
+      notePendingInstruction('wire-receipt:0', 'issued-b', 'user instruction B');
+      const run = runSubagent({ agent, task: 'task', dispatchKey: 'wire-receipt:0', parentConversationId: 'conv-1', parentLoopId: 'loop-1' });
+      await vi.waitFor(() => expect(sidecarRequestMock).toHaveBeenCalled());
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      progressHandler({ runId: 'unknown-run', event: { type: 'instruction-consumed', instructionId: 'issued-b' } });
+      progressHandler({ runId, event: { type: 'instruction-consumed', instructionId: 'unknown-id' } });
+      progressHandler({ runId, event: { type: 'instruction-consumed', instructionId: 'issued-a' } });
+      done.resolve({ text: 'done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await run;
+      expect(takeDeliveredInstructions('wire-receipt:0')).toEqual(['user instruction A']);
+      expect(takeUnconfirmedInstructions('wire-receipt:0')).toEqual(['user instruction B']);
+    });
+
     it('gives parallel runs distinct parent-visible ids when providers both emit call_1', async () => {
       getSidecarStatus.mockReturnValue('running');
       const firstDone = deferred<unknown>();
@@ -1074,7 +1779,7 @@ describe('subagentRunner', () => {
       const { runSubagent } = await importFresh();
       const onProgress = vi.fn();
 
-      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
       const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
       const progressHandler = onSidecarNotification.mock.calls.find((call) => call[0] === 'subagent.progress')![1] as (p: unknown) => void;
       const toolInvokeHandler = onSidecarRequest.mock.calls.find((call) => call[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
@@ -1100,7 +1805,7 @@ describe('subagentRunner', () => {
       const { runSubagent } = await importFresh();
 
       const onProgress = vi.fn();
-      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
 
       expect(onSidecarNotification).toHaveBeenCalledWith('subagent.progress', expect.any(Function));
       const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
@@ -1117,16 +1822,28 @@ describe('subagentRunner', () => {
         id: `subagent-v1:${encodeURIComponent(runId)}:t1`,
       });
 
-      // tool-end may now carry resultContent (subagent image rendering) —
-      // the handler must forward it verbatim, not project it away.
+      // Media-bearing progress crosses the sidecar boundary as an opaque ref
+      // and becomes renderer-safe base64 only after the shell reads it.
+      const imageBytes = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      delegatedMediaStoreMocks.readDelegatedMedia.mockResolvedValueOnce(imageBytes);
       const richEvent = {
         type: 'tool-end', id: 't2', toolName: 'computer', result: 'shot', error: false,
-        resultContent: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } }],
+        resultContent: [{
+          type: 'delegated_media_ref',
+          originConversationId: 'conv-1',
+          attachment: TEST_MEDIA_REF,
+        }],
       };
       progressHandler({ runId, event: richEvent });
-      expect(onProgress).toHaveBeenLastCalledWith({
-        ...richEvent,
-        id: `subagent-v1:${encodeURIComponent(runId)}:t2`,
+      await vi.waitFor(() => {
+        expect(onProgress).toHaveBeenLastCalledWith({
+          ...richEvent,
+          id: `subagent-v1:${encodeURIComponent(runId)}:t2`,
+          resultContent: [{
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' },
+          }],
+        });
       });
 
       const usageEvent = {
@@ -1140,6 +1857,151 @@ describe('subagentRunner', () => {
 
       d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
       await runPromise;
+    });
+
+    it('queues later non-media progress behind pending image materialization', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const readGate = deferred<Uint8Array>();
+      delegatedMediaStoreMocks.readDelegatedMedia.mockReturnValueOnce(readGate.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+
+      progressHandler({
+        runId,
+        event: {
+          type: 'tool-end',
+          id: 't-image',
+          toolName: 'read_file',
+          result: 'Image: [REDACTED:path]',
+          error: false,
+          resultContent: [{
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-1',
+            attachment: TEST_MEDIA_REF,
+          }],
+        },
+      });
+      progressHandler({
+        runId,
+        event: {
+          type: 'turn-complete',
+          turn: 1,
+          totalTurns: 200,
+          usage: { inputTokens: 1, outputTokens: 2 },
+        },
+      });
+      expect(onProgress).not.toHaveBeenCalled();
+
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      let runSettled = false;
+      void runPromise.then(() => { runSettled = true; });
+      await Promise.resolve();
+      expect(runSettled).toBe(false);
+
+      readGate.resolve(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]));
+      await runPromise;
+
+      expect(onProgress.mock.calls.map((call) => call[0].type)).toEqual(['tool-end', 'turn-complete']);
+      expect(onProgress.mock.calls[0][0].resultContent[0]).toEqual({
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' },
+      });
+      expect(onProgress.mock.calls[0][0].result).toBe('Image: [REDACTED:path]');
+    });
+
+    it('fails closed then preserves order when progress image materialization fails', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      delegatedMediaStoreMocks.readDelegatedMedia.mockRejectedValueOnce(new Error('missing media'));
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress, parentConversationId: 'conv-1' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+
+      progressHandler({
+        runId,
+        event: {
+          type: 'tool-end',
+          id: 't-image',
+          toolName: 'read_file',
+          result: 'Image: [REDACTED:path]',
+          error: false,
+          resultContent: [{
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-1',
+            attachment: TEST_MEDIA_REF,
+          }],
+        },
+      });
+      progressHandler({ runId, event: { type: 'turn-complete', turn: 1, totalTurns: 200 } });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+
+      expect(onProgress.mock.calls.map((call) => call[0].type)).toEqual(['tool-end', 'turn-complete']);
+      expect(onProgress.mock.calls[0][0]).toMatchObject({
+        type: 'tool-end',
+        id: `subagent-v1:${encodeURIComponent(runId)}:t-image`,
+        toolName: 'read_file',
+        result: 'Error: Could not prepare sidecar progress media for display.',
+        error: true,
+      });
+      expect(onProgress.mock.calls[0][0].resultContent).toBeUndefined();
+    });
+
+    it('fails closed instead of publishing opaque progress when parentConversationId is missing', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+      const onProgress = vi.fn();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing', onProgress });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const progressHandler = onSidecarNotification.mock.calls.find((c) => c[0] === 'subagent.progress')![1] as (p: unknown) => void;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+
+      progressHandler({
+        runId,
+        event: {
+          type: 'tool-end',
+          id: 't-image',
+          toolName: 'read_file',
+          result: 'Image: [REDACTED:path]',
+          error: false,
+          resultContent: [{
+            type: 'delegated_media_ref',
+            originConversationId: 'conv-1',
+            attachment: TEST_MEDIA_REF,
+          }],
+        },
+      });
+      d.resolve({ text: 'done', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
+      await runPromise;
+
+      expect(delegatedMediaStoreMocks.readDelegatedMedia).not.toHaveBeenCalled();
+      expect(onProgress).toHaveBeenCalledTimes(1);
+      expect(onProgress.mock.calls[0][0]).toMatchObject({
+        type: 'tool-end',
+        id: `subagent-v1:${encodeURIComponent(runId)}:t-image`,
+        toolName: 'read_file',
+        result: 'Error: Could not prepare sidecar progress media for display.',
+        error: true,
+      });
+      expect(onProgress.mock.calls[0][0].resultContent).toBeUndefined();
     });
 
     it('an unknown runId is silently dropped — no throw, no callback invocation', async () => {
@@ -1183,6 +2045,49 @@ describe('subagentRunner', () => {
 
       expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
       expect(result.text).toBe('in-process result');
+    });
+
+    // The transport-failure fallback re-runs the WHOLE agent in-process, so it
+    // must re-run it with the same prompt — including the section resolved
+    // shell-side before dispatch. This path is live in dev: `electron:dev`
+    // does not rebuild the sidecar, and a stale sidecar rejects the
+    // `preloadedSkills` wire field through its unknown-key guard, which lands
+    // exactly here. Dropping the section here silently runs the agent without
+    // its declared skills.
+    it('re-runs the transport fallback WITH the shell-resolved preloaded skills', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      resolvePreloadedSkillsMock.mockResolvedValue(PRELOADED_SECTION);
+      sidecarRequestMock.mockRejectedValue(new Error('unknown key: preloadedSkills'));
+      const { runSubagent } = await importFresh();
+
+      const result = await runSubagent({
+        agent: { ...agent, skills: ['weekly-report'] },
+        task: 'preload me',
+      });
+
+      expect(result.text).toBe('in-process result');
+      expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+      // Resolved once, before dispatch — the fallback reuses that section
+      // rather than paying for a second resolution.
+      expect(resolvePreloadedSkillsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps a caller-supplied section on the transport fallback', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+      const { runSubagent } = await importFresh();
+
+      await runSubagent({
+        agent: { ...agent, skills: ['weekly-report'] },
+        task: 'preload me',
+        preloadedSkills: PRELOADED_SECTION,
+      });
+
+      const loopOptions = runSubagentLoopMock.mock.calls[0][0] as SubagentLoopOptions;
+      expect(loopOptions.preloadedSkills).toEqual(PRELOADED_SECTION);
+      expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
     });
 
     it('drops pre-invoke sidecar progress and gives the local fallback a fresh scope', async () => {
@@ -1273,6 +2178,26 @@ describe('subagentRunner', () => {
       expect(result.stopReason).toBe('error');
       expect(result.toolCallCount).toBe(0);
       expect(result.turnCount).toBe(0);
+    });
+
+    it('sanitizes a structured transport error after tool execution without rerunning', async () => {
+      getSidecarStatus.mockReturnValue('running');
+      const d = deferred<unknown>();
+      sidecarRequestMock.mockReturnValue(d.promise);
+      const { runSubagent } = await importFresh();
+
+      const runPromise = runSubagent({ agent, task: 'do the thing' });
+      const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+      const toolInvokeHandler = onSidecarRequest.mock.calls.find((c) => c[0] === 'tool.invoke')![1] as (p: unknown) => Promise<unknown>;
+      await toolInvokeHandler({ runId, toolName: 'read_file', input: {} });
+      d.reject(new Error('{"private":"committed provider body"}'));
+
+      const result = await runPromise;
+
+      expect(runSubagentLoopMock).not.toHaveBeenCalled();
+      expect(result.text).toBe('Error: 空响应');
+      expect(result.text).not.toContain('committed provider body');
+      expect(result.stopReason).toBe('error');
     });
   });
 

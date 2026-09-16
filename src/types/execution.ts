@@ -144,6 +144,12 @@ export interface ExecutionStep {
   // Delegate (subagent) support
   agentName?: string;         // When type is 'delegate'
   childSteps?: ExecutionStep[];  // Nested steps from subagent
+  /**
+   * Set on a child step recorded under a run_agent_batch step: which batch
+   * task (member) produced it. Lets the member tab replay the persisted
+   * process after the live batch store is gone (in-conversation team).
+   */
+  batchTask?: BatchTaskRef;
 
   // Timing
   startTime?: number;
@@ -162,6 +168,8 @@ export interface PlannedStep {
   index: number;
   description: string;
   status: 'pending' | 'in_progress' | 'completed';
+  /** Who does this step — a team member's exact agent name (in-conversation team). Optional for ordinary plans. */
+  owner?: string;
 }
 
 /**
@@ -223,6 +231,16 @@ export interface StepStartPayload {
   source?: StepSource;
   skillName?: string;
   mcpServer?: string;
+  /** Child of a run_agent_batch step: the batch task (member) that produced it. */
+  batchTask?: BatchTaskRef;
+}
+
+/** Which task of a run_agent_batch call a child step belongs to. */
+export interface BatchTaskRef {
+  index: number;
+  label: string;
+  /** Exact agent name that ran the task (team member); absent for preset types. */
+  agent?: string;
 }
 
 // --- Execution Step Snapshot (for persistence on Message) ---
@@ -246,6 +264,7 @@ export interface ExecutionStepSnapshot {
   // Delegate support
   agentName?: string;
   childSteps?: ExecutionStepSnapshot[];
+  batchTask?: BatchTaskRef;
   // Detail block stubs (with truncated content for post-eviction display)
   detailBlocks?: { id: string; title: string; type: DetailBlockType; content?: string }[];
 }

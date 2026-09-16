@@ -32,7 +32,7 @@ function trimRange(range: Range): Range {
 }
 
 /** 包裹文档预览内容：选区 → 工具条 → 生成引用 → 注入 chatStore + 高亮留痕。 */
-export function DocSelectionLayer({ filePath, children }: { filePath: string; children: React.ReactNode }) {
+export function DocSelectionLayer({ filePath, children, active = true }: { filePath: string; children: React.ReactNode; active?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [sel, setSel] = useState<TextSelectionResult | null>(null);
   const [editing, setEditing] = useState(false);
@@ -40,14 +40,19 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
   const { t } = useI18n();
 
   const onSelect = useCallback((r: TextSelectionResult | null) => {
-    setSel(r);
+    setSel(active ? r : null);
     if (r) setEditing(false); // a fresh doc selection cancels any open comment editor (switch to new sentence)
-  }, []);
+  }, [active]);
   // `enabled` only pauses the selectionchange-collapse dismissal (which would
   // otherwise fire when the comment textarea steals focus). A fresh mouseup in
   // the document still switches the selection, so the user can move to another
   // sentence while an editor is open.
   useTextSelection({ containerRef, onSelect, enabled: !editing });
+
+  // Keep the document/editor mounted, but disarm a hidden tab's global shortcuts.
+  useEffect(() => {
+    if (!active) { setSel(null); setEditing(false); }
+  }, [active]);
 
   // Reset editing when the selection clears (toolbar unmounts).
   useEffect(() => { if (!sel) setEditing(false); }, [sel]);
@@ -57,10 +62,10 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
   // on the target sentence. Before editing, the native ::selection already shows
   // it — painting then would just double the fill and darken it.
   useEffect(() => {
-    if (!sel || !editing) return;
+    if (!active || !sel || !editing) return;
     highlightRegistry.add('__active__', trimRange(sel.range));
     return () => highlightRegistry.remove('__active__');
-  }, [sel, editing]);
+  }, [sel, editing, active]);
 
   // Clear reference highlights when the previewed file changes / on unmount:
   // cloned ranges point into this file's DOM and would dangle otherwise.
@@ -85,7 +90,7 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
   }, [sel, editing]);
 
   const commit = useCallback((comment?: string) => {
-    if (!sel) return;
+    if (!active || !sel) return;
     // Use the range captured at selection time, not the live selection: opening
     // the comment editor moves focus into a textarea and collapses the live
     // window selection, so re-reading window.getSelection() here would yield nothing.
@@ -100,7 +105,7 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
     }
     window.getSelection()?.removeAllRanges();
     setSel(null);
-  }, [sel, filePath, addPendingReference]);
+  }, [sel, filePath, addPendingReference, active]);
 
   return (
     <div
@@ -110,7 +115,7 @@ export function DocSelectionLayer({ filePath, children }: { filePath: string; ch
       className="h-full min-h-0 select-text"
     >
       {children}
-      {sel && (
+      {active && sel && (
         <SelectionToolbar
           rect={sel.rect}
           editing={editing}

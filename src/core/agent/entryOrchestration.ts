@@ -64,10 +64,14 @@
  * green after this change (see P1-3B-3A-REPORT.md).
  */
 import type { ToolExecutionContext } from '../../types';
+import { getConversationReader } from './ports/conversationReader';
+import { applyTeamLeaderRoute } from '../team/leaderRoute';
+import { resolveTeamRouteContextAsync } from '../team/teamRouteResolver';
 import type { RouteResult, IMContext } from './orchestrator';
 import { routeInput, buildSystemPromptSections } from './orchestrator';
 import type { PromptSection } from '../llm/promptSections';
 import { skillLoader } from '../skill/loader';
+import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getCapabilityPrompt } from './prompts/capabilityPrompt';
 import type { SettingsState } from '@/stores/settingsStore';
@@ -95,7 +99,14 @@ export async function precomputeOrchestration(
   abortSignal?: AbortSignal,
   toolContext?: ToolExecutionContext,
 ): Promise<PrecomputedOrchestration> {
-  const route = routeInput(userMessage);
+  // In-conversation team: a conversation pinned to a team runs its leader as
+  // the root agent (general → agent route rewrite; prompt + roster are derived
+  // from route.team by the orchestrator and the loop).
+  const team = await resolveTeamRouteContextAsync(getConversationReader().getConversation(conversationId)?.teamId);
+  const route = applyTeamLeaderRoute(routeInput(userMessage), team);
+  // Explicit /skill and @member routing keeps its meaning, but never drops
+  // the pinned team's execution constraints.
+  if (team) route.team = team;
 
   // Refresh skill content from disk to ensure latest version.
   if (route.type === 'skill' && route.skill?.filePath) {
@@ -104,6 +115,18 @@ export async function precomputeOrchestration(
       route.skill = fresh;
       route.skillContent = fresh.content;
     }
+  }
+
+  // Resolve the delegate agent's `skills:` preload HERE, while we are still
+  // shell-side: `agentLoop.ts`'s `@agent` route runs in the sidecar whenever
+  // the main loop does, and the sidecar's skill loader has no index. The
+  // route is what both venues receive (a sidecar-run loop gets this exact
+  // object as `AgentLoopOptions.orchestration.route`), so it is the one place
+  // that covers them together. Unresolvable names are named inside the
+  // rendered section and warned about by the loop that receives it.
+  const delegateAgent = route.type === 'delegate' ? route.delegateAgent : undefined;
+  if (delegateAgent && (delegateAgent.skills?.length ?? 0) > 0) {
+    route.delegatePreloadedSkills = (await resolvePreloadedSkills(delegateAgent)) ?? undefined;
   }
 
   // Pure duplicate of the loop's own effectiveModelId/entryModelDeclared

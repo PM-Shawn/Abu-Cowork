@@ -2,14 +2,25 @@ import { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Play, ChevronDown, ChevronRight, Folder, File } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { serializeSkillMd, skillLoader } from '@/core/skill/loader';
+import { skillPolicyDenial } from '@/core/skill/skillPolicy';
 import { navigateToChatWithInput } from '@/utils/navigation';
-import { useItemName } from '@/hooks/useItemName';
-import { saveItemToAbuDir } from '@/utils/itemStorage';
+import { useItemName, isItemNameTaken } from '@/hooks/useItemName';
+import { saveItemToAbuDir, ITEM_EXISTS_CODE, ITEM_NAME_INVALID_CODE } from '@/utils/itemStorage';
 import { cn } from '@/lib/utils';
 import { Toggle } from '@/components/ui/toggle';
 import { Select } from '@/components/ui/select';
 import type { Skill, SkillMetadata } from '@/types';
 import MarkdownRenderer from '@/components/chat/MarkdownRenderer';
+
+/**
+ * Every name a skill already answers to — user, project, drafts, builtin and
+ * plugin skills including those of disabled plugins. A new or renamed skill
+ * saved under one of these would overwrite the user's own SKILL.md, or be
+ * shadowed by (or shadow) the skill the loader already resolves that name to.
+ */
+function skillNamesInUse(): string[] {
+  return skillLoader.getAvailableSkills({ includeDrafts: true, includeDisabledPlugins: true }).map((s) => s.name);
+}
 
 interface SkillEditorProps {
   skill: Skill | null;  // null = creating new skill
@@ -24,7 +35,26 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Name validation via shared hook
-  const { name, setName, nameValid, nameChanged } = useItemName(skill?.name ?? null);
+  const { name, setName, nameValid, nameTaken, nameChanged } = useItemName(skill?.name ?? null, {
+    takenNames: skillNamesInUse(),
+  });
+  // The name refused at save time (it became taken after the last render, or a
+  // SKILL.md is already on disk there): shown with the same hint.
+  const [refusedName, setRefusedName] = useState<string | null>(null);
+  const nameConflict = nameValid && (nameTaken || refusedName === name.trim());
+  // The name the disk refused as not one plain folder name. The format check
+  // blocks such names first, but an unchanged name is never re-checked — a
+  // hand-edited frontmatter `name:` reaches the save as it is.
+  const [invalidName, setInvalidName] = useState<string | null>(null);
+  const nameRefusedAsInvalid = invalidName === name.trim();
+  // The organization's policy blocks the name — renamed-to or kept: no save may
+  // leave a skill answering to it. Asked on every render, so the hint follows
+  // the name as it is typed; the name refused at save time stays flagged too.
+  const [policyRefusedName, setPolicyRefusedName] = useState<string | null>(null);
+  const namePolicyDenied = nameValid
+    && (policyRefusedName === name.trim() || skillPolicyDenial(name.trim()) !== null);
+  // Any other save failure: shown under the Save button, cleared on retry.
+  const [saveFailed, setSaveFailed] = useState(false);
   const [description, setDescription] = useState(skill?.description ?? '');
   const [license, setLicense] = useState(skill?.license ?? '');
   const [trigger, setTrigger] = useState(skill?.trigger ?? '');
@@ -67,16 +97,47 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
 
   const handleSave = async (): Promise<boolean> => {
     if (!name.trim()) return false;
+    const trimmed = name.trim();
+    const creatingOrRenaming = !skill || nameChanged;
+    if (creatingOrRenaming && isItemNameTaken(trimmed, skill?.name ?? null, skillNamesInUse())) {
+      setRefusedName(trimmed);
+      return false;
+    }
+    if (skillPolicyDenial(trimmed)) {
+      setPolicyRefusedName(trimmed);
+      return false;
+    }
     setSaving(true);
+    setSaveFailed(false);
     try {
       const metadata = buildMetadata();
       const md = serializeSkillMd(metadata, content);
-      const oldPath = (skill?.filePath && nameChanged) ? skill.filePath : undefined;
-      await saveItemToAbuDir('skills', 'SKILL.md', name.trim(), md, oldPath);
+      // Always the file being edited, renamed or not: its folder need not be
+      // named after the skill, so an unchanged name could still point at another
+      // skill's folder. saveItemToAbuDir writes this skill's own file in place,
+      // wherever it lives (a project skill stays in its project), and on a
+      // rename — and only a rename — moves its folder to the name within the
+      // same parent (a move onto an occupied folder fails instead of
+      // overwriting).
+      const oldPath = skill?.filePath;
+      // A letter-case-only rename moves this skill's own folder: on the
+      // case-insensitive file systems the manifest already "at" the target is
+      // its own, so the must-be-new probe would wrongly refuse it.
+      const mustBeNew = !skill || (nameChanged && trimmed.toLowerCase() !== skill.name.toLowerCase());
+      await saveItemToAbuDir('skills', 'SKILL.md', trimmed, md, oldPath, { mustBeNew, renaming: !!skill && nameChanged });
       await onSave();
       return true;
     } catch (err) {
+      if ((err as { code?: unknown })?.code === ITEM_EXISTS_CODE) {
+        setRefusedName(trimmed);
+        return false;
+      }
+      if ((err as { code?: unknown })?.code === ITEM_NAME_INVALID_CODE) {
+        setInvalidName(trimmed);
+        return false;
+      }
       console.error('[SkillEditor] Save failed:', err);
+      setSaveFailed(true);
       return false;
     } finally {
       setSaving(false);
@@ -89,7 +150,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
     navigateToChatWithInput(`/${name.trim()} `);
   };
 
-  const isValid = nameValid;
+  const isValid = nameValid && !nameConflict && !nameRefusedAsInvalid && !namePolicyDenied;
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -102,7 +163,7 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
           <ArrowLeft className="h-4 w-4" />
         </button>
         <h2 className="text-body font-semibold text-[var(--abu-text-primary)] flex-1">{t.toolbox.skillEditorTitle}</h2>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-x-2 gap-y-1">
           <button
             onClick={handleSave}
             disabled={!isValid || saving}
@@ -119,6 +180,9 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
             <Play className="h-3.5 w-3.5" />
             {t.toolbox.skillSaveAndTest}
           </button>
+          {saveFailed && (
+            <p role="alert" className="basis-full text-right text-caption text-[var(--abu-danger)]">{t.toolbox.itemSaveFailed}</p>
+          )}
         </div>
       </div>
 
@@ -136,11 +200,17 @@ export default function SkillEditor({ skill, onClose, onSave }: SkillEditorProps
               placeholder="my-skill"
               className={cn(
                 'w-full px-3 py-1.5 rounded-lg border text-body text-[var(--abu-text-primary)] bg-[var(--abu-bg-base)] focus:outline-none focus:ring-2 focus:ring-[var(--abu-clay-ring)] focus:border-[var(--abu-clay)] transition-all',
-                name.trim() && !nameValid ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
+                name.trim() && (!nameValid || nameConflict || nameRefusedAsInvalid || namePolicyDenied) ? 'border-[var(--abu-danger)]' : 'border-[var(--abu-border)]',
               )}
             />
-            {name.trim() && !nameValid && (
+            {name.trim() && (!nameValid || nameRefusedAsInvalid) && (
               <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.nameFormatHint}</p>
+            )}
+            {nameConflict && (
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.skillNameTakenHint}</p>
+            )}
+            {namePolicyDenied && (
+              <p className="text-caption text-[var(--abu-danger)] mt-1">{t.toolbox.skillNamePolicyHint}</p>
             )}
           </div>
 

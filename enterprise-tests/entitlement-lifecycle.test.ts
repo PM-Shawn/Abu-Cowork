@@ -7,6 +7,7 @@ const calls = vi.hoisted(() => ({
   startMcp: vi.fn(), stopMcp: vi.fn(),
   startKb: vi.fn(), stopKb: vi.fn(),
   startAgents: vi.fn(), stopAgents: vi.fn(),
+  startPlugins: vi.fn(), stopPlugins: vi.fn(),
   reloadMcp: vi.fn(async () => undefined), disconnectMcp: vi.fn(async () => undefined),
   registerKb: vi.fn(async () => undefined), unregisterKb: vi.fn(),
 }))
@@ -15,6 +16,7 @@ vi.mock('@enterprise-modules/components/KbBrowser', () => ({}))
 vi.mock('@enterprise-modules/components/PersonalKbView', () => ({}))
 vi.mock('@enterprise-modules/components/EnterpriseSkillTab', () => ({}))
 vi.mock('@enterprise-modules/components/EnterpriseMcpTab', () => ({}))
+vi.mock('@enterprise-modules/components/EnterprisePluginTab', () => ({}))
 vi.mock('@enterprise-modules/components/EnterpriseAgentTab', () => ({}))
 vi.mock('@enterprise-modules/components/MeTransparencyView', () => ({}))
 vi.mock('@enterprise-modules/components/MigrationWizard', () => ({}))
@@ -42,6 +44,9 @@ vi.mock('@enterprise-modules/core/kb/catalog-sync', () => ({
 vi.mock('@enterprise-modules/core/agent/catalog-sync', () => ({
   startAgentCatalogSync: calls.startAgents, stopAgentCatalogSync: calls.stopAgents,
 }))
+vi.mock('@enterprise-modules/core/plugin/catalog-sync', () => ({
+  startPluginCatalogSync: calls.startPlugins, stopPluginCatalogSync: calls.stopPlugins,
+}))
 vi.mock('@enterprise-modules/core/mcp/loader', () => ({
   reloadEnterpriseMcpConnections: calls.reloadMcp,
   disconnectEnterpriseMcpConnections: calls.disconnectMcp,
@@ -67,6 +72,8 @@ describe('enterprise entitlement lifecycle', () => {
     expect(calls.startKb).toHaveBeenCalled()
     expect(calls.registerKb).toHaveBeenCalled()
     expect(calls.startAgents).toHaveBeenCalled()
+    // Organization plugins ride the Skill entitlement.
+    expect(calls.startPlugins).toHaveBeenCalled()
 
     moduleFlags.skills = false
     moduleFlags.mcp = false
@@ -76,6 +83,7 @@ describe('enterprise entitlement lifecycle', () => {
 
     await vi.waitFor(() => {
       expect(calls.stopSkills).toHaveBeenCalled()
+      expect(calls.stopPlugins).toHaveBeenCalled()
       expect(calls.stopMcp).toHaveBeenCalled()
       expect(calls.disconnectMcp).toHaveBeenCalled()
       expect(calls.stopKb).toHaveBeenCalled()

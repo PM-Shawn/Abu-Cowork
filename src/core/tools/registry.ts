@@ -1,5 +1,10 @@
+import { browserPermissionResourceFor, resolveBrowserPermissionConfig, type BrowserPermissionTarget } from '@/core/permissions/browserPermissionConfig';
+import { evaluateBrowserPermissionGate } from '@/core/permissions/browserPermissionGate';
+import { evaluatePlanGate, getPlanMode } from '../agent/planMode';
+import { buildTeamConfirmationIdentity } from '../agent/teamConfirmationIdentity';
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
+import { parseNamespacedToolName } from '../mcp/toolName';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import {
   checkReadPath,
@@ -7,24 +12,55 @@ import {
   checkListPath,
   authorizeWorkspace,
   scopedAuthorizeWorkspace,
+  createAuthorizationScope,
+  disposeAuthorizationScope,
   hasFullShellAuthorizationScope,
   isInScopedAuthorizedWorkspace,
   type AuthorizationScopeId,
 } from './pathSafety';
-import { getI18n } from '../../i18n';
+import { getI18n, format } from '../../i18n';
+import { useMCPStore } from '@/stores/mcpStore';
+import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidate, type InventoryReason } from './toolInventory';
 import { truncateToolResult } from '../context/truncation';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import {
+  answersPageDialog,
+  browserToolTargetsPage,
   classifyBrowserTool,
-  grantBrowserAutomation,
-  hasBrowserGrant,
-  getSiteVerdict,
   isScriptingBrowserTool,
   normalizeBrowserOrigin,
+  refuseBrowserBatch,
+  summarizeBrowserBatch,
+  toLegacyBrowserToolConsequence,
+  uploadsFile,
+  type BrowserDenialReasonCode,
 } from '../permissions/browserToolPolicy';
+import {
+  classifyPluginTool,
+  hasPluginGrant,
+  grantPluginServer,
+  pluginServerOf,
+} from '../permissions/pluginToolPolicy';
+import {
+  browserDenialReasonText as sharedBrowserDenialReasonText,
+  browserUploadRefusalText,
+} from '../permissions/browserDenialReasonText';
+import {
+  resolveUploadFiles,
+  summarizeUploadFiles,
+  type ApprovedUploadFile,
+} from '../permissions/browserUploadFiles';
+import { isHighRiskUrl } from '../permissions/highRiskSites';
+import {
+  notifyUnattendedDenial,
+  resolveUnattendedConfirmation,
+} from '../permissions/unattendedConfirmation';
+import { deriveRunInteractionMode } from '../agent/runInteractionMode';
 import { classifySelfExtension } from '../permissions/selfExtensionPolicy';
+import { saveAgentWouldReplace } from './helpers/abuItemPaths';
+import { saveTeamWouldReplace } from '../team/teamLookup';
 import {
   analyzeCommandBoundary,
   resolveFullNoWorkspaceCommandWriteTargets,
@@ -34,6 +70,7 @@ import { commandWritableDirectories, isInsideWorkingDirs } from '../permissions/
 import { reviewAction } from '../safety/reviewer';
 import { getLoopContext } from '../agent/permissionBridge';
 import { homeDir } from '@tauri-apps/api/path';
+import { lstat } from '@tauri-apps/plugin-fs';
 import { TOOL_NAMES } from './toolNames';
 import { applyOSPermissionGuideIfNeeded } from './osPermissionGuide';
 import { isLabsFlagOn } from '../labs/resolve';
@@ -46,6 +83,23 @@ import {
   getRunPermissionCeilingFromContext,
 } from '../permissions/runPermissionCeiling';
 import { getLargeWriteBlockReason } from '../agent/hooks/largeWriteGuard';
+import {
+  browserChannelForTool,
+  buildBrowserSignalContext,
+  buildBrowserSignalRecord,
+  classifyBlockedPage,
+  classifyBrowserToolError,
+  deriveTargetKey,
+  detectFrameHint,
+  getCachedTabOrigin,
+  isBrowserToolResultError,
+  jsDialogSignals,
+  noteBrowserToolOutcome,
+  noteTabOrigin,
+  safeRecordBrowserSignal,
+  type BrowserSignalEvent,
+} from '../observability/browserSignals';
+import { toolResultToString as browserSignalToolResultToString } from './toolResultToString';
 
 /**
  * Builtin tools whose availability is gated on a Labs experiment. A gated-off
@@ -58,9 +112,7 @@ const LABS_GATED_TOOLS: Record<string, string> = {
   [TOOL_NAMES.CREATE_TODO]: LABS_TODOS_INBOX,
 };
 
-/** Exported so capabilitySnapshot.ts (see `getAllTools` doc above) can report
- *  the real gate decision instead of re-deriving it from a second copy of
- *  `LABS_GATED_TOOLS`. */
+/** Shared by inventory and execution; never duplicate the experiment gate map. */
 export function isToolGatedOff(name: string): boolean {
   const experimentId = LABS_GATED_TOOLS[name];
   return experimentId !== undefined && !isLabsFlagOn(experimentId);
@@ -68,7 +120,7 @@ export function isToolGatedOff(name: string): boolean {
 
 /** The Labs experiment id gating `name`, or undefined if `name` isn't
  *  Labs-gated at all. Single source of truth alongside `isToolGatedOff` —
- *  used by capabilitySnapshot.ts to explain *why* a tool is gated off. */
+ *  used by the shared inventory to explain why a tool is gated off. */
 export function getToolLabsGateId(name: string): string | undefined {
   return LABS_GATED_TOOLS[name];
 }
@@ -197,8 +249,7 @@ export const toolRegistry = new ToolRegistry();
  * When either Abu browser runtime is connected, these are filtered out to avoid
  * the LLM accidentally launching a separate Chromium instance.
  *
- * Exported so capabilitySnapshot.ts can report the real "filtered as duplicate"
- * reason instead of re-typing this list.
+ * The shared inventory uses this list for both schema and diagnostic views.
  */
 export const PLAYWRIGHT_BROWSER_TOOLS = new Set([
   'playwright__browser_tabs',
@@ -220,40 +271,95 @@ export const PLAYWRIGHT_BROWSER_TOOLS = new Set([
   'playwright__browser_file_upload',
 ]);
 
-/**
- * Get all available tools: builtin tools + MCP tools
- * Deduplicates by tool name — builtin tools take priority over MCP tools
- * Filters out conflicting playwright browser tools when an Abu browser is connected
- */
-export function getAllTools(): ToolDefinition[] {
-  const builtinTools = toolRegistry.getAll();
-  const mcpTools = mcpManager.listTools();
-  const toolMap = new Map<string, ToolDefinition>();
+/** Explicitly disabled configuration wins even while its old connection remains. */
+function isMcpServerDisabled(serverName: string): boolean {
+  return useMCPStore.getState().servers[serverName]?.config.enabled === false;
+}
 
-  const hasAbuBrowser =
-    mcpManager.isConnected('abu-browser') ||
-    mcpManager.isConnected('abu-browser-bridge');
+function disabledMcpToolReason(name: string): string | undefined {
+  // A builtin with a namespaced name is still a builtin, not that MCP server.
+  if (toolRegistry.has(name) && !isToolGatedOff(name)) return undefined;
+  const parsed = parseNamespacedToolName(name);
+  if (!parsed || !isMcpServerDisabled(parsed.serverName)) return undefined;
+  return `Error: ${format(getI18n().toolResult.capabilitySnapshot.reasonMcpDisabled, { server: parsed.serverName })}`;
+}
 
-  // Computer use tools are always registered — the tool itself handles
-  // auto-enabling and permission checks when first called.
+function browserRunMode(toolContext?: ToolExecutionContext): 'attended' | 'unattended' {
+  const conversation = toolContext?.conversationId
+    ? useChatStore.getState().conversations[toolContext.conversationId] : undefined;
+  const runPermissionCeiling = getRunPermissionCeilingFromContext(toolContext);
+  const derivedMode = deriveRunInteractionMode({
+    ...(toolContext?.authorizationScopeId !== undefined
+      ? { authorizationScopeId: toolContext.authorizationScopeId } : {}),
+    ...(runPermissionCeiling !== null ? { runPermissionCeiling } : {}),
+    ...(conversation?.triggerId !== undefined ? { triggerId: conversation.triggerId } : {}),
+    ...(conversation?.scheduledTaskId !== undefined ? { scheduledTaskId: conversation.scheduledTaskId } : {}),
+    ...(toolContext?.initiatedBy !== undefined ? { initiatedBy: toolContext.initiatedBy } : {}),
+  });
+  return toolContext?.interactionMode === 'background' || derivedMode === 'background' ? 'unattended' : 'attended';
+}
 
-  // Builtin tools first (higher priority). Labs-gated tools whose experiment
-  // is off are withheld from the advertised schema (see LABS_GATED_TOOLS).
-  for (const tool of builtinTools) {
-    if (isToolGatedOff(tool.name)) continue;
-    toolMap.set(tool.name, tool);
-  }
-  // MCP tools — only add if no name conflict
-  for (const tool of mcpTools) {
-    if (!toolMap.has(tool.name)) {
-      // Skip Playwright browser tools when an Abu-owned browser path is active.
-      if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(tool.name)) {
-        continue;
+/** Disabled services must leave a refusal trace without contacting their browser. */
+function recordDisabledBrowserDenial(name: string, input: Record<string, unknown>, context?: ToolExecutionContext): void {
+  const opClass = classifyBrowserTool(name, input);
+  if (opClass === null) return;
+  safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+    { kind: 'gate_denied', tool: name, opClass, reason: 'server-disabled', runMode: browserRunMode(context) },
+    buildBrowserSignalContext(browserChannelForTool(name) ?? 'builtin', context?.conversationId, Date.now(), context?.loopId),
+  ));
+}
+
+/** Shared host inventory: live schemas plus known unavailable capabilities. */
+export function getToolInventory(): InventoryCandidate[] {
+  const candidates: InventoryCandidate[] = toolRegistry.getAll().map((tool) => {
+    const experimentId = getToolLabsGateId(tool.name);
+    return {
+      name: tool.name, source: { kind: 'builtin' }, definition: tool,
+      unavailableReasons: experimentId !== undefined && isToolGatedOff(tool.name)
+        ? [{ kind: 'labs-gated', experimentId }] : [],
+    };
+  });
+  const configured = useMCPStore.getState().servers;
+  const connected = new Set(mcpManager.getConnectedServers());
+  const hasAbuBrowser = ['abu-browser', 'abu-browser-bridge'].some(
+    name => connected.has(name) && !isMcpServerDisabled(name),
+  );
+  const serverNames = new Set([...connected, ...Object.keys(configured)]);
+  for (const server of serverNames) {
+    const entry = configured[server];
+    // getServerTools applies enterprise visibility and excludes app-only tools.
+    const live = new Map((connected.has(server) ? mcpManager.getServerTools(server) : []).map(tool => [tool.name, tool]));
+    // Connected runtimes own their current model-visible names. Cached names
+    // may have been removed or hidden by visibility policy; do not relabel
+    // those as a disconnected server or expose them through diagnostics.
+    const knownOfflineNames = !connected.has(server) || entry?.config.enabled === false
+      ? (entry?.tools ?? []).map(tool => `${server}__${tool.name}`) : [];
+    const names = new Set([...live.keys(), ...knownOfflineNames]);
+    for (const name of names) {
+      const definition = live.get(name);
+      const unavailableReasons: InventoryReason[] = [];
+      if (entry?.config.enabled === false) {
+        unavailableReasons.push({ kind: 'mcp-disabled', server });
+      } else if (!definition) {
+        unavailableReasons.push({
+          kind: 'mcp-not-connected', server,
+          status: entry && entry.status !== 'connected' ? entry.status : 'disconnected',
+          error: summarizeMcpConnectionError(entry?.error),
+        });
+      } else if (hasAbuBrowser && PLAYWRIGHT_BROWSER_TOOLS.has(name)) {
+        unavailableReasons.push({ kind: 'duplicate-browser-tool', server });
       }
-      toolMap.set(tool.name, tool);
+      candidates.push({ name, source: { kind: 'mcp', server }, definition, unavailableReasons });
     }
   }
-  return Array.from(toolMap.values());
+  return mergeToolInventory(candidates);
+}
+
+/** Model-visible schemas never include disconnected or gated capabilities. */
+export function getAllTools(): ToolDefinition[] {
+  return getToolInventory().flatMap(entry =>
+    entry.definition && entry.unavailableReasons.length === 0 ? [entry.definition] : [],
+  );
 }
 
 /**
@@ -272,9 +378,14 @@ export type CommandConfirmCallback = (info: ConfirmationInfo, loopId?: string) =
  * Callback type for file permission requests
  */
 export type FilePermissionCallback = (request: {
+  teamIdentity?: import('../agent/teamConfirmationIdentity').TeamConfirmationIdentity;
+  teamAuthorizationScopeId?: string;
+  additionalCapabilities?: Array<'read' | 'write'>;
   path: string;
   capability: 'read' | 'write';
   toolName: string;
+  /** Sub-agent stamped by the trusted executor, when known. */
+  agentName?: string;
 }, loopId?: string) => Promise<boolean>;
 
 /**
@@ -304,11 +415,79 @@ export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>)
  * directly before this function was extracted (P1-3d-3) — callers that
  * short-circuit on `'deny'` return `reason` verbatim to preserve behavior.
  */
+/**
+ * What the browser gate learned at APPROVAL time and the executor must carry
+ * down to the browser host — the fix for the TOCTOU gap U5 closes.
+ *
+ * The gate resolves which page an action targets, then approves it. Between
+ * that approval and the action landing, the page can move: a server redirect,
+ * `window.location`, a meta refresh. Until now nothing rechecked, so a click
+ * approved for `https://shop.example.com` could execute on whatever the tab
+ * had drifted to. `expectedOrigin` travels with the call (over `_meta`, never
+ * the model-visible tool schema) so the host can compare it against the view's
+ * actual URL immediately before acting.
+ *
+ * `runMode` rides along because ONE of the host's two rules is scoped by run
+ * mode, not both. The COMPARISON runs in both modes (review ruling I3): the
+ * refusal only ever fires when the page genuinely drifted cross-origin between
+ * approval and execution, which is a bug whoever is watching, and nobody
+ * perceives a sub-second redirect landing before their approved click. What
+ * stays unattended-only is the MISSING-value rule — a pinned action that
+ * carried no `expectedOrigin` is refused when unattended (the gate never
+ * approves one, so absence means the chain broke) while an attended call with
+ * no pin keeps its exact pre-U5 path. See `assertOriginPin` in
+ * `electron/browserHost.cjs`. `runMode` is also what `get_downloads` filtering
+ * needs shell-side.
+ */
+export interface BrowserExecutionPin {
+  runMode: 'attended' | 'unattended';
+  /**
+   * The origin the gate approved. Absent when the action targets no resolvable
+   * page (`get_tabs`, `connection_status`, `get_downloads`, a history
+   * navigation) — which for an UNATTENDED state-changing action is itself a
+   * refusal at the host, since the gate never lets one of those through.
+   */
+  expectedOrigin?: string;
+  /** One native popup during this approved top-level built-in browse action. */
+  popupOrigin?: string;
+  /**
+   * `batch` only: the origin the gate approved for each embedded region the
+   * batch's steps target, keyed by frame handle. The run re-checks each
+   * frame-targeted step against its own entry — the page-level
+   * `expectedOrigin` cannot stand in, because a third-party region navigating
+   * away does not change the tab's address at all.
+   */
+  expectedFrameOrigins?: Record<string, string>;
+  /**
+   * U6 / F2.4 — the gate saw `authState: 'login_required'` for this action's
+   * tab. Set only when true, and consumed SHELL-SIDE (an unattended run never
+   * gets here — it was already refused), so an attended result can carry the
+   * "sign in first" note the model needs. It is deliberately NOT forwarded to
+   * the host: the host is where the fact came from, and re-sending it would
+   * make a page-observable field look like an instruction to the host.
+   */
+  loginRequired?: true;
+  /**
+   * T5 — the files the gate resolved and the user confirmed for an
+   * `upload_file` call: canonical path, base name, size.
+   *
+   * It travels for the same reason `expectedOrigin` does, one step further
+   * along the same argument. The origin pin stops an approved action landing
+   * on a page that moved; this stops an approved upload sending a FILE other
+   * than the one the confirmation named. Both are facts the gate learned and
+   * the model must not be able to restate: the runtime reads only this list,
+   * and refuses outright when it is absent (`abu-browser-bridge/src/tools.ts`).
+   */
+  approvedUploadFiles?: ApprovedUploadFile[];
+}
+
 export interface ToolApprovalDecision {
   decision: 'allow' | 'deny';
   reason?: string;
   /** Canonical file path that the executor must use for an approved file tool. */
   executionPath?: string;
+  /** Browser-only: approval-time facts the executor must carry to the host. */
+  browserExecution?: BrowserExecutionPin;
 }
 
 /**
@@ -335,58 +514,564 @@ export interface ToolApprovalDecision {
  * stays exactly as it was — this function still runs shell-side only.
  */
 /**
- * Resolve which site a browser action targets, as an exact origin.
+ * Resolve which page a browser action targets: both the exact `origin` (the
+ * key every site verdict is stored under) and the FULL `url`.
+ *
+ * The full URL is what `highRiskSites.ts` needs — `/transfer`, `/checkout`
+ * and their kin live in the path, which an origin throws away — and it is
+ * deliberately kept alongside the origin rather than replacing it, so the
+ * site-verdict lookup keeps its exact pre-U5 key.
  *
  * `navigate` carries the destination in its input; every other action only
  * carries a `tabId`, so we ask the same browser server for its tab list
  * (`get_tabs` returns each tab's URL) and match the id. Best-effort: any
- * failure resolves to null, which the gate treats as "unknown site" — the
+ * failure resolves to nulls, which the gate treats as "unknown site" — the
  * action can still be approved, but only one conversation at a time, never
  * persistently.
+ *
+ * The same listing also carries `authState` (U6 / F2.4) when the browser host
+ * has seen that origin ask for a login, so the login-expiry check costs no
+ * extra round trip. A `navigate` resolves no `authState`: its destination has
+ * not been visited yet, and the flag is about where a tab IS.
  */
-async function resolveBrowserActionOrigin(
+interface BrowserActionTarget {
+  /**
+   * The origin the action will actually RUN at — the FRAME's origin when the
+   * call names an embedded region, the tab's otherwise. This is the key every
+   * site verdict is looked up under and the origin the execution pin carries,
+   * so a frame-targeted action is authorized against the site whose document
+   * it will touch, not against the page that embeds it.
+   */
+  origin: string | null;
+  url: string | null;
+  /**
+   * `'login_required'` when the host flagged this tab's origin. ADVISORY: read
+   * only on the deny side of the gate (see the U6 block below). A page cannot
+   * author it — the built-in host derives it from HTTP status and navigation
+   * URL, and the extension channel reports no `authState` at all — but even if
+   * one could, widening is structurally impossible: nothing downstream turns
+   * this value into an allow.
+   */
+  authState: 'login_required' | null;
+  /**
+   * The TAB's own origin, when the action targets a region inside it.
+   *
+   * Both have to pass: a region is authorized on its own account, and a page
+   * the user blocked must not become operable through an iframe it embeds.
+   * Absent when the action targets the main document, where the two are the
+   * same thing.
+   */
+  topOrigin?: string | null;
+  /** The tab's top-level URL, for the high-risk check when a frame is named. */
+  topUrl?: string | null;
+  /**
+   * Distinct origins of the page's addressable embedded regions.
+   *
+   * Only regions the browser could confirm (`accessible`) are listed: the
+   * shared type is explicit that an inaccessible region's origin is a hint the
+   * embedding page could author, and this list is what a merged grant would be
+   * written against. The user is asked about the page and its regions ONCE,
+   * rather than region by region, which is how per-origin authorization stays
+   * correct without becoming a wall of prompts.
+   */
+  embeddedOrigins?: string[];
+  /** For a `batch`: the origin each region its steps target is showing now. */
+  frameOrigins?: Record<string, string>;
+  /** The URL of each named region, for the high-risk check. */
+  frameUrls?: string[];
+  /**
+   * A region was named but the browser could not confirm what it is showing —
+   * it is gone, unreachable on this channel, or not an ordinary web page.
+   * `origin` is null in that case, which is what makes the call ask (attended)
+   * or refuse (unattended) instead of falling back to the embedding page's
+   * authorization.
+   */
+  frameUnverified?: true;
+}
+
+/** Only the one value the gate acts on; anything else is treated as absent. */
+function parseTabAuthState(value: unknown): 'login_required' | null {
+  return value === 'login_required' ? 'login_required' : null;
+}
+
+async function resolveBrowserActionTarget(
   namespacedName: string,
   input: Record<string, unknown>,
-): Promise<string | null> {
-  const separator = namespacedName.indexOf('__');
-  const serverName = namespacedName.slice(0, separator);
-  const toolName = namespacedName.slice(separator + 2);
+  conversationId?: string,
+  agentRunId?: string,
+): Promise<BrowserActionTarget> {
+  // Same shared parse as the gate that called us and the dispatcher that will
+  // run this (U9 / C1) — never a second, local split. Callers only reach here
+  // for a name `classifyBrowserTool` already accepted, so the null branch is
+  // unreachable defense: an unresolvable target is "unknown origin", which
+  // asks (attended) or refuses (unattended).
+  const parsed = parseNamespacedToolName(namespacedName);
+  if (parsed === null) return { origin: null, url: null, authState: null };
+  const { serverName, toolName } = parsed;
 
-  if (toolName === 'navigate') {
+  if (toolName === 'navigate' || (serverName === 'abu-browser' && toolName === 'create_tab')) {
     // Only `goto` actually navigates to `input.url`. For back/forward/reload
     // the executor ignores `url` entirely, so trusting it here would let a
     // decoy url ride an allowed-site verdict while the browser goes somewhere
     // else (history/reload). Destination is unknowable → null → ask.
-    const action = typeof input.action === 'string' ? input.action : 'goto';
-    if (action !== 'goto') return null;
+    const action = toolName === 'create_tab' ? 'goto' : (typeof input.action === 'string' ? input.action : 'goto');
+    if (action !== 'goto') return { origin: null, url: null, authState: null };
     const url = typeof input.url === 'string' ? input.url : undefined;
-    return url ? normalizeBrowserOrigin(url) : null;
+    const origin = url ? normalizeBrowserOrigin(url) : null;
+    // The url is reported only when it resolved to a real http(s) origin, so a
+    // `javascript:`/`about:` string never reaches the high-risk classifier as
+    // if it were a page address.
+    return { origin, url: origin !== null ? (url ?? null) : null, authState: null };
   }
 
   const tabId = Number(input.tabId);
-  if (!Number.isFinite(tabId)) return null;
+  if (!Number.isFinite(tabId)) return { origin: null, url: null, authState: null };
+  // Which embedded regions this call names — one for a single action, possibly
+  // several for a batch. Read here and not later because it decides whether
+  // the listing has to carry the tab's frame tree at all.
+  const namedFrames = framesNamedBy(toolName, input);
   try {
     // Approval must never hang on a wedged browser server: the MCP browser
     // timeout is 120s, so race a short deadline and fall back to "unknown
-    // origin" (which just asks). Known residual: the builtin server's
-    // get_tabs provisions an automation view when none exists — acceptable
-    // here because an approved action would do the same a moment later.
+    // origin" (which just asks).
+    //
+    // The conversation id is REQUIRED here, not optional: every agent tab is
+    // owned by the conversation that opened it, and a caller that sends none
+    // is a legacy caller that can only see legacy tabs. Without it the gate
+    // resolves null for every owned tab — the site the user explicitly
+    // blocked stops being denied, persistent site grants stop applying, and
+    // unattended runs deny everything.
+    //
+    // `createIfEmpty: false` keeps this probe read-only: the host's get_tabs
+    // provisions an automation view when the caller owns none, and a *gate*
+    // query must never be the thing that opens a tab (the action it is gating
+    // may well be denied).
     const result = await Promise.race([
-      mcpManager.callTool(serverName, 'get_tabs', {}),
+      mcpManager.callTool(serverName, 'get_tabs', {}, {
+        conversationId,
+        // The run id is as REQUIRED as the conversation id, and for the same
+        // reason: the host owns tabs by the pair, so a probe that sent only the
+        // conversation would list the MAIN loop's tabs and resolve null for
+        // every tab a subagent opened — silently re-opening the exact fail-open
+        // (blocked sites stop being denied, unattended runs deny everything)
+        // that threading the conversation id closed.
+        agentRunId,
+        createBrowserTabIfEmpty: false,
+        // The gate's ONLY probe. A frame-targeted action is authorized against
+        // the frame's own origin, and the merged ask needs to know which
+        // regions the page embeds, so the tree has to ride this listing rather
+        // than cost a second round trip.
+        framesForTabId: tabId,
+      }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
-    if (result === null || typeof result !== 'string') return null;
+    if (result === null || typeof result !== 'string') return { origin: null, url: null, authState: null };
     const parsed = JSON.parse(result) as {
-      windows?: Array<{ tabs?: Array<{ tabId?: number; url?: string }> }>;
+      windows?: Array<{
+        tabs?: Array<{
+          tabId?: number;
+          url?: string;
+          authState?: unknown;
+          frames?: unknown;
+        }>;
+      }>;
     };
     for (const win of parsed.windows ?? []) {
       for (const tab of win.tabs ?? []) {
-        if (tab.tabId === tabId) return normalizeBrowserOrigin(tab.url);
+        if (tab.tabId !== tabId) continue;
+        const topOrigin = normalizeBrowserOrigin(tab.url);
+        const topUrl = topOrigin !== null ? (tab.url ?? null) : null;
+        const authState = parseTabAuthState(tab.authState);
+        const regions = readFrameNodes(tab.frames);
+        const embeddedOrigins = embeddedOriginsOf(regions, topOrigin, namedFrames);
+        if (namedFrames.length === 0) {
+          return {
+            origin: topOrigin,
+            url: topUrl,
+            authState,
+            ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
+          };
+        }
+        // Every named region has to resolve to an origin the BROWSER confirmed.
+        // One that does not leaves `origin` null, which asks (attended) or
+        // refuses (unattended) — never falls back to the embedding page's
+        // authorization, which is the whole point of authorizing per region.
+        const frameOrigins: Record<string, string> = {};
+        let unverified = false;
+        for (const frameId of namedFrames) {
+          const node = regions.find((region) => region.frameId === frameId);
+          if (!node || node.accessible !== true || !node.origin) {
+            unverified = true;
+            continue;
+          }
+          frameOrigins[frameId] = node.origin;
+        }
+        // A SINGLE action names one region, and that region is where it
+        // executes — so it is the origin the pin has to carry.
+        //
+        // A `batch` is different, and getting this wrong is what made every
+        // cross-region batch stop before step 0 (round-2 F1). Its page-level
+        // pin is the PAGE's: the run compares it against the tab's own address
+        // (`driftedBeforeStart` in `abu-browser-bridge/src/batch.ts`), which a
+        // third-party region's origin can never equal, and every step's
+        // payload inherited it and was refused by the target frame's own
+        // `assertOriginPin`. The regions are already carried, per frame, in
+        // `frameOrigins`, and the gate folds all of them into its verdict —
+        // so the batch's authorized set is "the page + each named region",
+        // and the pin set the run receives is exactly that same set.
+        const forBatch = toolName === 'batch';
+        const primary = !forBatch && namedFrames.length === 1
+          ? frameOrigins[namedFrames[0]]
+          : undefined;
+        const frameUrl = !forBatch && namedFrames.length === 1
+          ? regions.find((region) => region.frameId === namedFrames[0])?.url ?? null
+          : null;
+        const frameUrls = namedFrames
+          .map((frameId) => regions.find((region) => region.frameId === frameId)?.url)
+          .filter((url): url is string => typeof url === 'string');
+        return {
+          // ANY named region the browser could not confirm makes the whole call
+          // origin-unknown, batch included: a run that fell back to the page's
+          // origin would be judged against a site none of its steps touch.
+          origin: unverified ? null : (primary ?? topOrigin),
+          url: primary ? (frameUrl ?? null) : topUrl,
+          authState,
+          topOrigin,
+          topUrl,
+          ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
+          // Present whenever the call NAMED a region, even when not one of them
+          // could be confirmed (round-2 R2-G). Omitting the empty map let the
+          // run fall back to `opening.frameOrigins` — the origins it observed
+          // for itself — so a batch the user approved on an "unknown site"
+          // dialog would then police itself against its own observations. An
+          // empty map is the honest statement "the gate judged no region", and
+          // the run reads a missing pin as `origin-unverifiable`.
+          frameOrigins,
+          ...(frameUrls.length > 0 ? { frameUrls } : {}),
+          ...(unverified ? { frameUnverified: true as const } : {}),
+        };
       }
     }
-    return null;
+    return { origin: null, url: null, authState: null };
+  } catch {
+    return { origin: null, url: null, authState: null };
+  }
+}
+
+/** The shape of one frame row in a `get_tabs` listing, as far as the gate reads it. */
+interface GateFrameNode {
+  frameId: string;
+  origin: string | null;
+  url?: string;
+  sameOriginAsTop?: boolean;
+  accessible?: boolean;
+}
+
+/** A frame handle, and nothing else. Mirrors `isFrameRef` in the shared types. */
+function isFrameHandle(value: unknown): value is string {
+  return typeof value === 'string' && /^f\d+$/.test(value);
+}
+
+/**
+ * Which embedded regions a call names — `input.frameId` for a single action,
+ * and every step's `frameId` for a `batch`.
+ *
+ * Reads the batch's steps as the model wrote them (a JSON string), the same
+ * way `summarizeBrowserBatch` and `classifyBrowserTool` do: a step list this
+ * function cannot parse yields no frames, which leaves the call judged against
+ * the page — and the bridge refuses an unparseable step list outright, so
+ * nothing reaches a region on the strength of a list the gate could not read.
+ */
+function framesNamedBy(toolName: string, input: Record<string, unknown>): string[] {
+  const named = new Set<string>();
+  if (isFrameHandle(input.frameId)) named.add(input.frameId);
+  if (toolName === 'batch') {
+    const raw = input.steps;
+    let steps: unknown = raw;
+    if (typeof raw === 'string') {
+      try {
+        steps = JSON.parse(raw);
+      } catch {
+        steps = null;
+      }
+    }
+    if (Array.isArray(steps)) {
+      for (const step of steps) {
+        const frameId = (step as { frameId?: unknown } | null)?.frameId;
+        if (isFrameHandle(frameId)) named.add(frameId);
+      }
+    }
+  }
+  return [...named];
+}
+
+/** The frame rows of a tab listing, ignoring anything that is not one. */
+function readFrameNodes(value: unknown): GateFrameNode[] {
+  if (!Array.isArray(value)) return [];
+  const out: GateFrameNode[] = [];
+  for (const row of value) {
+    if (typeof row !== 'object' || row === null) continue;
+    const node = row as Record<string, unknown>;
+    if (!isFrameHandle(node.frameId)) continue;
+    out.push({
+      frameId: node.frameId,
+      // Re-normalized here rather than trusted as sent: this is the key a site
+      // verdict is looked up under, and one spelling has to win everywhere.
+      origin: typeof node.origin === 'string' ? normalizeBrowserOrigin(node.origin) : null,
+      ...(typeof node.url === 'string' ? { url: node.url } : {}),
+      ...(typeof node.sameOriginAsTop === 'boolean' ? { sameOriginAsTop: node.sameOriginAsTop } : {}),
+      ...(typeof node.accessible === 'boolean' ? { accessible: node.accessible } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * The distinct third-party origins this page embeds — what a merged ask lists
+ * and a merged grant is written against.
+ *
+ * Confirmed regions only, and never the page's own origin: a same-origin
+ * region is already covered by the page's grant, and listing it would make the
+ * prompt say "this page also contains content from itself".
+ */
+function embeddedOriginsOf(
+  regions: GateFrameNode[],
+  topOrigin: string | null,
+  /**
+   * The regions THIS call names, in the order it named them. They are listed
+   * first (R2-C-①).
+   *
+   * The dialog lists at most five and grants exactly what it listed, and the
+   * enumeration order is the page's DOM order — which the page's author
+   * chooses. Left alone, a page could put whichever origin it wanted into the
+   * five slots that a merged "always allow" covers. Ordering by what the call
+   * actually addressed puts the sites the user is really about to act on at
+   * the front, and leaves the page in charge only of the tail.
+   */
+  namedFrames: string[] = [],
+): string[] {
+  const out: string[] = [];
+  const push = (region: GateFrameNode | undefined): void => {
+    if (!region || region.accessible !== true || !region.origin) return;
+    if (region.origin === topOrigin) return;
+    if (!out.includes(region.origin)) out.push(region.origin);
+  };
+  for (const frameId of namedFrames) push(regions.find((region) => region.frameId === frameId));
+  for (const region of regions) push(region);
+  return out;
+}
+
+/**
+ * Records the tool_call signal (+ any derived fallback_to_script/
+ * repeat_action/blocked_page signals) for one browser MCP tool invocation,
+ * at the execution boundary in `executeAnyTool` — after the approval gate,
+ * around the actual `mcpManager.callTool` call. Never throws: every
+ * `safeRecordBrowserSignal` call already swallows its own errors, and this
+ * function performs no I/O of its own.
+ *
+ * `origin` is best-effort and NEVER does its own `get_tabs` round trip
+ * (unlike `resolveBrowserActionOrigin` above, which the approval gate can
+ * afford once per state-changing call) — resolving a bare `tabId` to an
+ * origin for every read-only call too would double this app's browser
+ * traffic just for telemetry. Instead: a successful `navigate` resolves its
+ * own origin for free (its `url` input is right there), which is cached by
+ * tabId (`noteTabOrigin`) so every LATER call against that same tab —
+ * click, fill, extract_text, ... — can reuse it via `getCachedTabOrigin`
+ * with zero additional round trips, giving `bySiteAndPlatform` real
+ * per-site coverage beyond navigate calls alone.
+ *
+ * `frameHint`/`blockedClass` are only computed when the call FAILED (`!ok`):
+ * a SUCCESSFUL result's content can legitimately contain "iframe" (a
+ * snapshot's DOM tree), "429" (a price/item count), or "cloudflare" (a page
+ * footer) without any of that meaning the page blocked the agent — see
+ * `browserSignals.ts`'s `classifyBlockedPage`/`detectFrameHint` docs.
+ */
+/**
+ * One `tool_call` event per step a batch actually ran, from the batch's own
+ * result envelope. Returns null when the result is not a readable batch
+ * envelope (an approval refusal, a transport error, a future shape change), so
+ * the caller can fall back to recording the call itself rather than recording
+ * nothing.
+ *
+ * The step's own name is used as the tool suffix, so a `click` inside a batch
+ * is comparable with a standalone `click`.
+ */
+function batchStepSignals(
+  namespacedName: string,
+  resultText: string,
+): Array<{ kind: 'tool_call'; tool: string; ok: boolean; durationMs: number; errorClass?: string }> | null {
+  const separator = namespacedName.indexOf('__');
+  const serverName = separator === -1 ? namespacedName : namespacedName.slice(0, separator);
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resultText);
   } catch {
     return null;
+  }
+  const { completedSteps, failedStep } = (envelope ?? {}) as {
+    completedSteps?: unknown;
+    failedStep?: unknown;
+  };
+  if (!Array.isArray(completedSteps)) return null;
+  const steps = [...completedSteps, ...(failedStep ? [failedStep] : [])];
+  const events: Array<{ kind: 'tool_call'; tool: string; ok: boolean; durationMs: number; errorClass?: string }> = [];
+  for (const raw of steps) {
+    const step = raw as { action?: unknown; ok?: unknown; durationMs?: unknown; error?: unknown };
+    if (typeof step?.action !== 'string') return null;
+    const stepOk = step.ok === true;
+    events.push({
+      kind: 'tool_call',
+      tool: `${serverName}__${step.action}`,
+      ok: stepOk,
+      durationMs: typeof step.durationMs === 'number' ? step.durationMs : 0,
+      ...(stepOk
+        ? {}
+        : { errorClass: classifyBrowserToolError(typeof step.error === 'string' ? step.error : '') ?? 'unknown_error' }),
+    });
+  }
+  return events.length > 0 ? events : null;
+}
+
+/**
+ * The file a finished `download` left on disk, as a signal — or null.
+ *
+ * Read from the tool's OWN result envelope (the same technique
+ * `batchStepSignals` uses), and only when it says `complete`: a download still
+ * in flight has a path nothing is at yet, and reporting it as a product of the
+ * run would be a link to a file that is not there.
+ */
+function downloadSignal(
+  bareToolName: string,
+  resultText: string,
+): Extract<BrowserSignalEvent, { kind: 'download_saved' }> | null {
+  if (bareToolName !== 'download') return null;
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resultText);
+  } catch {
+    return null;
+  }
+  const { complete, download } = (envelope ?? {}) as { complete?: unknown; download?: unknown };
+  if (complete !== true || typeof download !== 'object' || download === null) return null;
+  const d = download as Record<string, unknown>;
+  const path = typeof d.path === 'string' ? d.path : '';
+  const name = typeof d.filename === 'string' ? d.filename : '';
+  const downloadId = typeof d.downloadId === 'string' ? d.downloadId : '';
+  if (path === '' || name === '' || downloadId === '') return null;
+  return {
+    kind: 'download_saved',
+    downloadId,
+    name,
+    path,
+    bytes: typeof d.size === 'number' && Number.isFinite(d.size) && d.size >= 0 ? d.size : 0,
+    ...(typeof d.mime === 'string' && d.mime !== '' ? { mime: d.mime } : {}),
+  };
+}
+
+function recordBrowserToolCallSignal(
+  namespacedName: string,
+  toolContext: ToolExecutionContext | undefined,
+  input: Record<string, unknown>,
+  startedAt: number,
+  resultText: string,
+): void {
+  // Shared parse (U9 / C1). A name that does not round-trip never reaches
+  // execution, so the fallback here is only for a bare builtin-shaped name.
+  const bareToolName = parseNamespacedToolName(namespacedName)?.toolName ?? namespacedName;
+  const durationMs = Date.now() - startedAt;
+  const ok = !isBrowserToolResultError(resultText);
+  const conversationId = toolContext?.conversationId;
+  const targetKey = deriveTargetKey(bareToolName, input);
+  const { repeat, fallback } = noteBrowserToolOutcome(conversationId, bareToolName, targetKey, ok);
+
+  const tabIdRaw = input.tabId;
+  const tabId = typeof tabIdRaw === 'number'
+    ? tabIdRaw
+    : typeof tabIdRaw === 'string' && tabIdRaw.trim() !== '' && Number.isFinite(Number(tabIdRaw))
+      ? Number(tabIdRaw)
+      : undefined;
+
+  let origin: string | undefined;
+  if (bareToolName === 'navigate' && typeof input.url === 'string') {
+    origin = normalizeBrowserOrigin(input.url) ?? undefined;
+    if (ok && origin && tabId !== undefined) noteTabOrigin(conversationId, tabId, origin);
+  } else if (tabId !== undefined) {
+    origin = getCachedTabOrigin(conversationId, tabId);
+  }
+
+  const context = buildBrowserSignalContext(
+    browserChannelForTool(namespacedName) ?? 'builtin',
+    conversationId,
+    Date.now(),
+    toolContext?.loopId,
+  );
+  // A `batch` is one TOOL CALL but N page ACTIONS. Recording it as a single
+  // opaque `batch` event would blind this stream to exactly what batching
+  // exists to do — an eight-field form would read as one browser interaction —
+  // so a batch emits one event PER STEP instead of one for itself. (The "one
+  // tool call" accounting lives in the conversation transcript, which is
+  // unchanged.) A result that cannot be read falls back to the single event.
+  const stepEvents = bareToolName === 'batch'
+    ? batchStepSignals(namespacedName, resultText)
+    : null;
+  if (stepEvents !== null) {
+    for (const event of stepEvents) {
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+        { ...event, ...(tabId !== undefined ? { tabId } : {}), ...(origin ? { origin } : {}) },
+        context,
+      ));
+    }
+  } else {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      {
+        kind: 'tool_call',
+        tool: namespacedName,
+        ok,
+        durationMs,
+        ...(tabId !== undefined ? { tabId } : {}),
+        ...(origin ? { origin } : {}),
+        ...(!ok && detectFrameHint(resultText) ? { frameHint: true as const } : {}),
+        // The fact, next to the guess: this call named an embedded region.
+        // Read from the input rather than from the gate, so a read-only call
+        // (which never resolves a target) is counted too.
+        ...(isFrameHandle(input.frameId) ? { frameTargeted: true as const } : {}),
+        ...(ok ? {} : { errorClass: classifyBrowserToolError(resultText) ?? 'unknown_error' }),
+      },
+      context,
+    ));
+  }
+
+  // What the run PRODUCED, when it produced a file. Recorded next to the tool
+  // call rather than instead of it: the call is still an action.
+  const downloaded = ok ? downloadSignal(bareToolName, resultText) : null;
+  if (downloaded) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(downloaded, context));
+  }
+
+  // A dialog freezing a tab is its own failure mode: without this it shows up
+  // in the bundle only as a scatter of failed clicks and fills, with nothing
+  // saying they all died behind one confirm box.
+  for (const event of jsDialogSignals(bareToolName, resultText)) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { ...event, ...(tabId !== undefined ? { tabId } : {}) } as typeof event,
+      context,
+    ));
+  }
+
+  if (fallback) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'fallback_to_script' }, context));
+  }
+  if (repeat.shouldEmit) {
+    safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+      { kind: 'repeat_action', tool: bareToolName, targetKey, count: repeat.count },
+      context,
+    ));
+  }
+  if (!ok) {
+    const blockedClass = classifyBlockedPage(resultText);
+    if (blockedClass) {
+      safeRecordBrowserSignal(() => buildBrowserSignalRecord({ kind: 'blocked_page', className: blockedClass }, context));
+    }
   }
 }
 
@@ -451,10 +1136,39 @@ export async function checkToolApproval(
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
 ): Promise<ToolApprovalDecision> {
+  let teamFileScope: string | undefined;
+  try {
   const t = getI18n();
-  const convPermissionMode = toolContext?.conversationId
-    ? useChatStore.getState().conversations[toolContext.conversationId]?.permissionMode
+  const disabledReason = disabledMcpToolReason(name);
+  if (disabledReason) {
+    recordDisabledBrowserDenial(name, input, toolContext);
+    return { decision: 'deny', reason: disabledReason };
+  }
+  const conversation = toolContext?.conversationId
+    ? useChatStore.getState().conversations[toolContext.conversationId]
     : undefined;
+  const isTeam = Boolean(conversation?.teamId || toolContext?.teamRoster);
+  // The shell execution boundary repeats the strict-team gate: a sidecar
+  // reset or a reverse request cannot turn a mandatory plan into prompt text.
+  if (toolContext?.teamRequirePlanApproval && toolContext.interactionMode !== 'background') {
+    const gate = evaluatePlanGate({ toolName: name, toolReadOnly: undefined,
+      planMode: getPlanMode(toolContext.conversationId ?? ''), requirePlanApproval: true });
+    if (!gate.allow) return { decision: 'deny', reason: gate.reason };
+  }
+  // Capture parameters at the execution boundary, after tool hooks have run.
+  // Neither a display label nor sidecar-supplied approval metadata is trusted.
+  if (isTeam && onRequireConfirmation) {
+    const confirm = onRequireConfirmation;
+    onRequireConfirmation = async (info, loopId) => confirm({
+      ...info,
+      agentName: toolContext?.agentName,
+      teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, {
+        origin: info.browserOrigin, pageOrigin: info.browserPageOrigin,
+        embeddedOrigins: info.browserEmbeddedOrigins,
+      }),
+    }, loopId);
+  }
+  const convPermissionMode = conversation?.permissionMode;
   const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
   const strategy = getPermissionStrategy(permissionMode);
   const runPermissionCeiling = getRunPermissionCeilingFromContext(toolContext);
@@ -480,6 +1194,26 @@ export async function checkToolApproval(
   }
   let largeWritePathAfterApproval: string | null = null;
   let approvedExecutionPath: string | undefined;
+  /** Carried out of the browser block to the executor — see `BrowserExecutionPin`. */
+  let browserExecutionPin: BrowserExecutionPin | undefined;
+  /**
+   * The browser block's own `recordGateDenial`, carried out so the LATER
+   * enterprise-policy check can use it (U7 review / B3).
+   *
+   * That check runs after this block and refuses browser actions of its own,
+   * but it sat outside the closure and so recorded nothing: the run result
+   * said "[policy] ...", the report card said nothing, and the "blocked
+   * actions" section under-reported by exactly those calls.
+   *
+   * Reusing the closure rather than rebuilding one keeps the record honest —
+   * same `opClass`, same `runMode` derivation, same resolved origin — and it
+   * scopes the recording for free: it stays `null` for a non-browser tool, so
+   * a file or command refusal can never leak into the browser-domain buffer
+   * the diagnostic bundle and the card read.
+   */
+  let recordBrowserGateDenial: ((reason: BrowserDenialReasonCode) => void) | null = null;
+  let recheckBrowserPermission: (() => Promise<ToolApprovalDecision | null>) | undefined;
+  let reportBrowserConsent: (() => void) | undefined;
 
   // Safety check for run_command tool
   if (name === TOOL_NAMES.RUN_COMMAND) {
@@ -577,9 +1311,10 @@ export async function checkToolApproval(
           command,
           level: analysis.level,
           reason: reviewReason || analysis.reason,
+          agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -634,16 +1369,32 @@ export async function checkToolApproval(
           if (fileDecision === 'confirm') {
             // Needs user permission — ask via callback
             if (onRequireFilePermission) {
+              // The approved path exists only in this call's scope. A run rule
+              // is re-evaluated on the next call; no path grant leaks to another
+              // member, operation or conversation through the global store.
+              if (isTeam) teamFileScope ??= createAuthorizationScope();
+              const additionalCapabilities: Array<'read' | 'write'> = name === TOOL_NAMES.WRITE_FILE && cap === 'write' ? ['read'] : [];
               const granted = await onRequireFilePermission({
-                path: pathCheck.permissionPath,
-                capability: cap,
-                toolName: name,
-              }, toolContext?.loopId);
+                  path: pathCheck.permissionPath,
+                  capability: cap,
+                  toolName: name,
+                  agentName: toolContext?.agentName,
+                  ...(isTeam ? {
+                    teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: pathCheck.permissionPath, capabilities: [cap, ...additionalCapabilities] }),
+                    teamAuthorizationScopeId: teamFileScope,
+                    additionalCapabilities,
+                  } : {}),
+                }, toolContext?.loopId);
+              if (granted) pathCheck = await checkFn(pathInfo.path, teamFileScope ?? scopeId);
               if (!granted) {
-                return { decision: 'deny', reason: `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]` };
+                return {
+                  decision: 'deny',
+                  reason: toolContext?.teamRoster
+                    ? `${t.commandConfirm.teamPendingConfirmation} (${pathCheck.permissionPath})`
+                    : `[${t.toolErrors.userDeniedAccess} ${pathCheck.permissionPath}]`,
+                };
               }
               // Permission granted — re-check (should now pass since authorizeWorkspace was called)
-              pathCheck = await checkFn(pathInfo.path, scopeId);
               if (!pathCheck.allowed) {
                 return { decision: 'deny', reason: `Error: ${pathCheck.reason || t.toolErrors.pathAccessDenied}` };
               }
@@ -695,64 +1446,799 @@ export async function checkToolApproval(
   }
 
   // Browser automation acts inside the user's live, logged-in sessions — the
-  // same consequence Computer Use already gates for browser apps. Gate the
-  // state-changing subset here so the cheaper mechanism is not the ungated one.
-  // Two grant scopes: a persistent per-site verdict (settingsStore, written
-  // from the dialog's "always allow this site" / revocable in Settings) and
-  // the per-conversation TTL grant ("just this once"). Precedence:
-  // denied site > allowed site > conversation grant > ask. Scripting tools
-  // (execute_js) never ride a site grant — each use is its own ask.
+  // same consequence Computer Use already gates for browser apps, so the
+  // cheaper mechanism must not be the ungated one.
+  //
+  // The decision is made per OPERATION CLASS (read-only / interactive /
+  // scripting) and per RUN MODE (attended / unattended), because the two
+  // columns are genuinely different questions: attended, a dialog can ask;
+  // unattended, there is nobody to ask, so the run may act only where the
+  // user pre-authorized it. Order of the checks below, all fail-closed:
+  //   1. unattended master switch off        → deny the whole surface
+  //   2. run-permission ceiling              → deny (routing the policy verdict)
+  //   3. site explicitly blocked             → deny
+  //   4. operation class configured to deny  → deny
+  //   5. unattended: 'ask' → the confirmation seam; then require an
+  //      'allowed' site for anything that changes page state
+  //   6. attended: the shipped per-site + permission-mode gate, unchanged
   {
-    const consequence = classifyBrowserTool(name);
+    // A `batch` carrying a page-script step (or one the gate cannot read as an
+    // ordered list of allowed steps) is refused whole, BEFORE any classifying:
+    // an all-reads batch never reaches the state-changing branch below, so a
+    // script hidden among reads would otherwise sail straight past the gate.
+    const batchRefusal = refuseBrowserBatch(name, input);
+    if (batchRefusal !== null) {
+      const reason = batchRefusal === 'scripting-step'
+        ? t.commandConfirm.browserBatchScriptStep
+        : batchRefusal === 'too-many-steps'
+          ? t.commandConfirm.browserBatchTooManySteps
+          : t.commandConfirm.browserBatchMalformed;
+      return { decision: 'deny', reason: `Error: ${reason}` };
+    }
+    // `input` is read here because a batch's operation class IS its heaviest
+    // step — the only tool whose class is not a property of its name.
+    const opClass = classifyBrowserTool(name, input);
+    if (opClass !== null) {
+      const consequence = toLegacyBrowserToolConsequence(opClass);
+      // Which column of the operation policy applies. `interactionMode` is the
+      // flag the agent loop already derives for exactly this question, but it
+      // is optional on the context, so re-derive from the provenance fields a
+      // background run always carries and take the STRICTER of the two: a
+      // context that lost its `interactionMode` on the way here must not be
+      // read as "a human is watching".
+      //
+      // `initiatedBy` (shell-owned, like `interactionMode`) says WHO started
+      // this run: a human typing into a scheduled task's conversation is
+      // attended even though the conversation record carries the scheduler's
+      // marker; the scheduler's own tick in that same conversation is not.
+      // The derivation applies it with the scope/ceiling markers still
+      // winning, so a stamped initiator can never strip a fenced run's mode.
+      const runMode = browserRunMode(toolContext);
+
+      /**
+       * The run's consecutive-denial guard (browserDenialTracker.ts) measures
+       * ONE thing: a model that keeps asking for browser actions a human keeps
+       * refusing. So only an INTERACTION-shaped refusal is reported here —
+       * an attended dialog answered "no", an IM approval denied or timed out,
+       * and an ask that fail-closes because no channel could carry it (an
+       * unanswerable ask IS the refusal). A standing-configuration refusal is
+       * not an interaction and must NOT count: the master switch (off by
+       * default), a blocked site, a policy 'deny' cell, the run-permission
+       * ceiling and an unverifiable origin all refuse without anyone having
+       * refused anything, and counting them would abort every unattended run
+       * that touched the browser twice.
+       *
+       * Nothing outside this block reports at all — a file or command refusal
+       * is a different conversation with the user.
+       */
+      const refusedByHuman = <T extends ToolApprovalDecision>(decision: T): T => {
+        // The KIND matters to the tracker's R1 rule: a site grant can never
+        // authorize execute_js, so it must not be able to clear a scripting
+        // refusal. `opClass` is the gate's own classification of this call.
+        toolContext?.reportBrowserDenial?.(opClass === 'scripting' ? 'scripting' : 'other');
+        return decision;
+      };
+      /**
+       * The mirror image on the allow side: only an allow the user CONSENTED
+       * to clears the streak — a dialog they confirmed, an IM approval they
+       * approved, or a standing grant they created being applied. A policy
+       * auto-allow must not reset, or the guard is trivially dodged: with
+       * attended read-only at its 'allow' default, a model could alternate
+       * navigate (refused) / screenshot (auto-allowed, streak cleared) and
+       * never trip. Set at the consent sites below, reported once at the end.
+       *
+       * WHICH kind of consent is carried too (R1): a `'grant'` is narrower
+       * than a `'dialog'` — it was minted from approving a click and can never
+       * cover `execute_js`, so the tracker refuses to let one clear a scripting
+       * refusal. `null` means no consent happened.
+       */
+      let consented: 'dialog' | 'grant' | null = null;
+
+      const settingsSnapshot = getSettingsReader().getSnapshot();
+      const permissionResource = browserPermissionResourceFor(opClass);
+      const toolTargetsPage = browserToolTargetsPage(name);
+      // Every page read observes the same configured restrictions as actions.
+      const resolvesTarget = toolTargetsPage;
+      const consultsSiteVerdict = consequence === 'state-changing' || runMode === 'unattended';
+      const target = resolvesTarget
+        ? await resolveBrowserActionTarget(
+          name,
+          input,
+          toolContext?.conversationId,
+          toolContext?.agentRunId,
+        )
+        : { origin: null, url: null, authState: null };
+      const origin = target.origin;
+      /**
+       * U6 / F2.4 — the site is asking for a login (an HTTP auth challenge or
+       * a redirect onto a login page, both observed by the browser host, never
+       * claimed by the page). ADVISORY: read below only to REFUSE or to append
+       * a note; there is no branch anywhere that turns it into an allow.
+       */
+      const loginRequired = target.authState === 'login_required';
+      /**
+       * When a call names an embedded region, TWO sites are involved and both
+       * have to pass: the region, on its own account, and the page embedding
+       * it — a site the user blocked must not become operable through an
+       * iframe it happens to embed, and a region the user has not authorized
+       * must not ride the page's grant. The strictest across all of them is
+       * what the decision is made on, which is why this is a fold and not the
+       * single-origin `getSiteVerdict` the rest of the app reads.
+       *
+       * The fold is the whole of the collapse: `evaluateBrowserGate`'s
+       * `consultsSite` decides what an attended read may READ out of this
+       * value, so the full verdict goes in and the narrowing happens in one
+       * place rather than two.
+       */
+      /**
+       * The page this call happens on, when a region was named. `undefined`
+       * `topOrigin` means the call targets the main document, where the page
+       * and the target are the same site; a null one means the tab's address
+       * did not parse, and an unknown page is no page — a scoped grant does
+       * not reach it, which is the fail-safe direction.
+       */
+      const pageOrigin = target.topOrigin ?? null;
+      /** The page a given origin is a REGION of, or null when it is the page. */
+      const embeddedIn = (site: string | null): string | null =>
+        (pageOrigin !== null && site !== null && site !== pageOrigin ? pageOrigin : null);
+      const permissionTargets: BrowserPermissionTarget[] = [
+        { origin, embeddedIn: embeddedIn(origin) },
+        ...(target.topOrigin !== undefined ? [{ origin: target.topOrigin }] : []),
+        ...Object.values(target.frameOrigins ?? {}).map((frameOrigin) => ({ origin: frameOrigin, embeddedIn: embeddedIn(frameOrigin) })),
+      ];
+      const configuredFor = (config: unknown) => toolTargetsPage
+        ? resolveBrowserPermissionConfig(config, permissionResource, permissionTargets)
+        : { decision: 'allow', source: 'default' } as const;
+      const configuredPermission = configuredFor(settingsSnapshot.browserPermissionConfigV2);
+      const storedVerdict = configuredPermission.source === 'site-block' ? 'denied' : 'default';
+      /**
+       * Money movement / government, decided from the target URL and NOTHING
+       * else (see `highRiskSites.ts`'s URL-ONLY doc — page text claiming "this
+       * is not a payment page" has no path into this).
+       *
+       * It OUTRANKS an 'allowed' grant on purpose: "always allow this bank" is
+       * the exact artifact the control exists to prevent. It does NOT outrank
+       * 'denied' — a site the user blocked stays blocked, and letting the
+       * high-risk verdict replace it could only ever loosen things.
+       */
+      // Every URL this call touches, for the same reason every verdict counts:
+      // a payment page embedded in an ordinary one, and an ordinary region on
+      // a payment page, are both "this call touches money". `consultsSiteVerdict`
+      // stays in front of it so a block on some unrelated site cannot change
+      // the wording of an attended read-only confirmation.
+      const highRisk = consultsSiteVerdict
+        && storedVerdict !== 'denied'
+        && [target.url, target.topUrl ?? null, ...(target.frameUrls ?? [])].some(isHighRiskUrl);
+      /**
+       * The attended read resolved an origin only to fail. The read goes
+       * ahead — a human is watching it, and failing closed on a screenshot
+       * because the browser host was slow would break the path that runs
+       * constantly to protect a block the user may not even have on this site
+       * — but the one thing that must not happen is for that to be silent.
+       * `evaluateBrowserGate` sees `'default'` and cannot tell the difference
+       * between "not blocked" and "could not check", so the difference is
+       * recorded here.
+       */
+      if (
+        !consultsSiteVerdict
+        && origin === null
+        && browserToolTargetsPage(name)
+      ) {
+        safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+          { kind: 'site_check_unresolved', tool: name, opClass },
+          buildBrowserSignalContext(
+            browserChannelForTool(name) ?? 'builtin',
+            toolContext?.conversationId,
+            Date.now(),
+            toolContext?.loopId,
+          ),
+        ));
+      }
+
+      const browserActionLabel = origin
+        ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
+        : `${t.commandConfirm.browserAction}: ${name}`;
+      /**
+       * For a `batch` the user is approving N actions at once, so the dialog
+       * has to say WHICH ones — a bare `…__batch (origin)` asks them to
+       * consent to an unread list. Step KINDS and counts only: no locator, no
+       * value, no page text (`summarizeBrowserBatch` enforces that, the same
+       * rule `deriveTargetKey` follows in the signal collector).
+       *
+       * Only the ASK sites use it. A denial notice keeps the plain label: it
+       * reports what was refused, and the step list adds nothing a user who
+       * cannot approve it can act on.
+       */
+      const batchSummary = summarizeBrowserBatch(name, input);
+      // `let`, because an upload's own summary — the file names and sizes —
+      // can only be added once the gate has decided the call is worth asking
+      // about and the paths have actually been resolved against the disk
+      // (T5, below). A confirmation for an upload is not consent without it.
+      let browserConfirmLabel = batchSummary
+        ? `${browserActionLabel} — ${batchSummary}`
+        : browserActionLabel;
+      /**
+       * WHY this call is being asked about — one sentence, one source, for
+       * every channel that asks.
+       *
+       * R2-1 (2026-09-06 review): this gate has THREE ask sites, not two. Two
+       * are attended (the state-changing one below, and the read-only row a
+       * user set to 「每次询问」); the third is the UNATTENDED round-trip, which
+       * puts the question in front of the reader who can see the least — a
+       * person in a chat window, with no browser in front of them. That site
+       * had grown its own two-way ternary, so it was the one channel that
+       * never got the dialog sentence and was still promised 「允许后……不再
+       * 询问」 — a promise F2 took away from `handle_dialog` (answering a
+       * dialog mints no grant) and F8 took away from 「每次询问」, and one the
+       * unattended path could never keep in the first place: it has no
+       * conversation grant to mint.
+       *
+       * Not derived from `opClass`: `isScriptingBrowserTool` is the same
+       * predicate the grant logic below consults, and a sentence that
+       * disagrees with the rule it describes is worse than a generic one.
+       */
+      const browserAskReason = (): string => {
+        if (isScriptingBrowserTool(name)) return t.commandConfirm.browserScriptReason;
+        // AFTER the high-risk sentence (2026-09-07): an upload to a bank or a
+        // government page is now asked about rather than refused outright, and
+        // when both apply the page is the sharper warning — the file names and
+        // sizes are in `browserConfirmLabel` either way, so nothing about the
+        // file is lost by letting 「资金 / 政务」 have the sentence.
+        if (highRisk) return t.commandConfirm.browserHighRiskReason;
+        if (uploadsFile(name)) return t.commandConfirm.browserUploadReason;
+        if (answersPageDialog(name)) {
+          // Named, because "browser action: …__handle_dialog" tells a user
+          // nothing about what they are agreeing to. The question the dialog
+          // asks was written by the PAGE, so the box says so — but does not
+          // QUOTE it: page text in an approval box is the attack this
+          // branch's own summary rule already bans (TESTING §13,
+          // "审批弹窗里回显页面内容").
+          //
+          // The two channels are not doing the same thing, so they do not get
+          // the same sentence. The built-in browser ANSWERS a dialog it has
+          // already intercepted; the Chrome extension cannot see a native
+          // dialog at all, so it ARMS the next one — a blind signature on a
+          // question nobody has read yet. Same tool name, materially
+          // different consent.
+          return browserChannelForTool(name) === 'chrome'
+            ? t.commandConfirm.browserDialogArmReason
+            : t.commandConfirm.browserDialogAnswerReason;
+        }
+        return t.commandConfirm.browserReason;
+      };
+      /**
+       * U7 / G1 — leave a trace of the refusal.
+       *
+       * Every `return { decision: 'deny' }` in this block goes through here
+       * first. Before U7 a refusal produced NO browser signal at all: the run
+       * result got a sentence and the model got a diagnostic, but the
+       * observability buffer — and therefore the unattended task report —
+       * recorded an action that simply never happened. A morning report whose
+       * "blocked" section is structurally always empty is worse than none.
+       *
+       * Recorded for attended runs too. It changes no behavior (the buffer is
+       * write-only observability), and a gate that only records half its
+       * decisions is a gate whose silence means nothing.
+       */
+      const recordGateDenial = (reason: BrowserDenialReasonCode): void => {
+        safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+          {
+            kind: 'gate_denied',
+            tool: name,
+            opClass,
+            ...(origin !== null ? { origin } : {}),
+            reason,
+            runMode,
+          },
+          buildBrowserSignalContext(
+            browserChannelForTool(name) ?? 'builtin',
+            toolContext?.conversationId,
+            Date.now(),
+            toolContext?.loopId,
+          ),
+        ));
+      };
+      // Hand it to the enterprise-policy check further down (B3) — see the
+      // declaration for why that check cannot build its own.
+      recordBrowserGateDenial = recordGateDenial;
+
+      /**
+       * Refuse, and tell the run's own callback why so it can account for it.
+       * The gate decides; the callback only records (see
+       * `ConfirmationInfo.deniedNotice`). Without this, every unattended
+       * browser refusal below would be invisible in the run result — a
+       * scheduled task would report "failed" and nothing else, which is the
+       * exact failure the scheduler's denial accounting exists to prevent.
+       */
+      const denyUnattendedBrowser = async (
+        reason: BrowserDenialReasonCode,
+        /** The approval channel's own sentence, when it knows something this
+         *  gate's generic copy cannot say ("you declined this in chat" vs
+         *  "nobody answered in five minutes"). The CODE stays the same either
+         *  way — the taxonomy is what aggregates, the sentence is what reads. */
+        userFacingOverride?: string,
+      ): Promise<ToolApprovalDecision> => {
+        const userFacingReason = userFacingOverride ?? browserDenialReasonText(reason);
+        recordGateDenial(reason);
+        await notifyUnattendedDenial(onRequireConfirmation, {
+          command: browserActionLabel,
+          level: 'warn',
+          reason: userFacingReason,
+          kind: 'browser',
+          agentName: toolContext?.agentName,
+          browserOperationClass: opClass,
+            browserPermissionResource: permissionResource,
+            browserPermissionTargets: permissionTargets,
+          ...(origin !== null ? { browserOrigin: origin } : {}),
+          allowPersistentGrant: false,
+          deniedNotice: userFacingReason,
+        }, toolContext?.loopId);
+        return { decision: 'deny', reason: `Error: ${userFacingReason}` };
+      };
+      /** The one place a denial code becomes words. The report card localizes
+       *  the SAME codes through its own namespace, so the run result and the
+       *  morning card can never disagree about why something was blocked.
+       *  Extracted (S12) so Settings' preview answers 「为什么」 with the same
+       *  sentence this gate would. */
+      const browserDenialReasonText = (reason: BrowserDenialReasonCode): string =>
+        sharedBrowserDenialReasonText(t, reason);
+
+      /**
+       * ONE evaluation, shared with Settings' 「生效权限预览」 (S12).
+       *
+       * Everything from here down used to be an inline chain of ifs that mixed
+       * the DECISION with the side effects carrying it out — the signal
+       * records, the approval round-trips, the grant minting. The decision half
+       * now lives in `browserGateEvaluation.ts` and this block does what that
+       * function says. Not for tidiness: a preview that re-derived these rules
+       * would be a second source of truth for the most consequential decision
+       * in this app, and one that silently disagreed would teach the user a
+       * wrong model of their own settings.
+       * `browserGateEvaluation.contract.test.ts` drives THIS function against
+       * that one across the whole matrix to keep them identical.
+       *
+       * An absent policy is the KNOWN-absent case (a store that predates v46),
+       * so it takes the reviewed product default rather than
+       * normalizeBrowserOperationPolicy's strictest-cell clamp, which is for a
+       * present-but-malformed value (decideBrowserOperation applies that one).
+       */
+      const gateFacts = {
+        opClass, runMode, permissionMode, runPermissionCeiling, toolTargetsPage,
+        originResolved: origin !== null, answersPageDialog: answersPageDialog(name), loginRequired,
+        confirmationChannelAvailable: Boolean(onRequireConfirmation), originKnown: origin !== null, highRisk,
+      };
+      const gate = evaluateBrowserPermissionGate({ ...gateFacts, configured: configuredPermission });
+
+      /**
+       * Refuse, with the wording each context has always used.
+       *
+       * The three attended sentences are NOT interchangeable and predate this
+       * extraction: a cancelled dialog says so without an `Error:` prefix, and
+       * "no confirmation channel" attended reads as `browserDenied` rather than
+       * as the unattended channel's own copy.
+       */
+      const refuseBrowser = async (
+        reason: BrowserDenialReasonCode,
+      ): Promise<ToolApprovalDecision> => {
+        if (runMode === 'unattended') return await denyUnattendedBrowser(reason);
+        recordGateDenial(reason);
+        if (reason === 'user-cancelled') {
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+        }
+        const text = reason === 'approval-refused'
+          ? t.commandConfirm.browserDenied
+          : browserDenialReasonText(reason);
+        return { decision: 'deny', reason: `Error: ${text}` };
+      };
+
+      // The run's capability ceiling refused. Returned VERBATIM: its reason is
+      // the technical diagnostic the model and the tool result want, while the
+      // user-facing notice below gets the localized sentence for the same code.
+      if (gate.ceilingDecision !== null) {
+        const ceilingCode = gate.denialReason as BrowserDenialReasonCode;
+        recordGateDenial(ceilingCode);
+        if (runMode === 'unattended') {
+          const noticeReason = browserDenialReasonText(ceilingCode);
+          await notifyUnattendedDenial(onRequireConfirmation, {
+            command: browserActionLabel,
+            level: 'warn',
+            reason: noticeReason,
+            kind: 'browser',
+          agentName: toolContext?.agentName,
+            browserOperationClass: opClass,
+            browserPermissionResource: permissionResource,
+            browserPermissionTargets: permissionTargets,
+            ...(origin !== null ? { browserOrigin: origin } : {}),
+            allowPersistentGrant: false,
+            deniedNotice: noticeReason,
+          }, toolContext?.loopId);
+        }
+        return gate.ceilingDecision;
+      }
+
+      /**
+       * T5 — WHICH files this upload sends, resolved once and frozen.
+       *
+       * Placed here on purpose: after the gate has said an upload may be asked
+       * about at all, and before anybody is asked. Earlier would touch the
+       * filesystem for a call that is going to be refused anyway (unattended,
+       * high-risk, the row set to 拒绝); later would mean asking the user to
+       * approve 「上传文件」 with no idea what.
+       *
+       * The refusals it can produce are NOT `BrowserDenialReasonCode`s and do
+       * not record a `gate_denied` signal: nothing about the SITE was decided
+       * here. A path outside the authorized workspaces, a symlink, a missing
+       * file or one over the ceiling is an argument that could not be honoured
+       * — the same shape as `refuseBrowserBatch` above, which is also silent.
+       */
+      let approvedUploadFiles: ApprovedUploadFile[] | undefined;
+      // The desktop dialog's own body and count — see the F5 note below. Unset
+      // for every non-upload call, which is what keeps the generic dialog
+      // generic.
+      let browserUploadDialogLabel: string | undefined;
+      let browserUploadFileCount: number | undefined;
+      if (uploadsFile(name) && gate.outcome !== 'deny') {
+        const resolved = await resolveUploadFiles(input, {
+          checkReadPath: (candidate) =>
+            checkReadPath(candidate, toolContext?.authorizationScopeId),
+          lstat: async (candidate) => {
+            const info = await lstat(candidate);
+            // `mtime`/`ino`/`dev` are the identity pin (review F1): size alone
+            // does not survive the window between this check and the read the
+            // runtime does after the user has answered.
+            const mtime = info.mtime instanceof Date ? info.mtime.getTime() : NaN;
+            return {
+              isFile: info.isFile === true,
+              isSymlink: info.isSymlink === true,
+              size: typeof info.size === 'number' ? info.size : 0,
+              mtimeMs: Number.isFinite(mtime) ? Math.floor(mtime) : 0,
+              ino: typeof info.ino === 'number' ? info.ino : null,
+              dev: typeof info.dev === 'number' ? info.dev : null,
+            };
+          },
+        });
+        if (!resolved.ok) {
+          return {
+            decision: 'deny',
+            reason: `Error: ${browserUploadRefusalText(t, resolved.code, resolved.detail)}`,
+          };
+        }
+        approvedUploadFiles = resolved.files;
+        // The names and sizes go INTO the question. `summarizeUploadFiles`
+        // carries no directory: the confirmation asks whether to send this
+        // file to this site, and a full path in a dialog is one screenshot
+        // away from being somewhere it should not be.
+        browserConfirmLabel = `${browserActionLabel} — ${summarizeUploadFiles(resolved.files)}`;
+        /**
+         * Acceptance F5 — what the DESKTOP dialog puts in its box.
+         *
+         * The label above still leads with `浏览器操作: abu-browser__upload_file
+         * (origin)`, and in front of a person that reads as a stranger's tool
+         * asking to run: it names an identifier only this codebase uses, and
+         * says nothing about the thing that actually happens, which is that
+         * files leave the machine. The dialog now carries the count and the
+         * host in its TITLE and this list in its body, so the internal name
+         * has no job left and is dropped.
+         *
+         * The IM label is deliberately unchanged: it is one line in a chat
+         * message with no title above it to carry the site, so it still needs
+         * `browserActionLabel`'s origin. Same file list, two carriers.
+         */
+        browserUploadDialogLabel = summarizeUploadFiles(resolved.files);
+        browserUploadFileCount = resolved.files.length;
+      }
+
+      if (gate.ask?.channel === 'im') {
+        // Nobody is in front of the screen: `onRequireConfirmation` here is the
+        // entry point's own auto-deny, never a dialog. Route 'ask' through the
+        // single seam that owns that question instead of the per-entry-point
+        // callback.
+        //
+        // F1 (2026-09-05 review) — WHERE to ask, and what to call the run.
+        //
+        // The scheduler and the trigger engine compute both from the
+        // automation's own IM output binding, but until now they could only
+        // hand them to `createUnattendedConfirmation`, whose closure this
+        // branch deliberately does not go through (it needs `audit.fresh` and
+        // `userFacingReason`; a boolean callback carries neither). The seam
+        // then fell back to "the IM session bound to this conversation", and an
+        // automatic run mints a fresh conversation every time — so every
+        // browser 「每次询问」 in a scheduled or triggered run refused itself as
+        // `no_binding`, with nobody ever asked.
+        //
+        // Read off the RUN, through the same loop-context channel this file
+        // already uses for the run's abort signal: shell-owned, never
+        // serialized, and impossible for a tool input or a sidecar-supplied
+        // context to forge. Absent (an interactive run, or an IM-inbound one
+        // that already has a session binding) keeps the previous fallback
+        // exactly as it was.
+        const unattendedApproval = toolContext?.loopId !== undefined
+          ? getLoopContext(toolContext.loopId)?.unattendedApproval
+          : undefined;
+        const approval = await resolveUnattendedConfirmation({
+          info: {
+            // The step list, for the reader who needs it most. A remote
+            // approver has no browser in front of them, so a bare
+            // `…__batch (origin)` asks them to consent to a list they cannot
+            // read — the exact thing `browserConfirmLabel` exists to prevent
+            // (R2-1). The IM channel's own `sanitizeUntrustedPromptField`
+            // bounds and flattens it, so a 25-step batch cannot push the reply
+            // instructions off a phone screen.
+            command: browserConfirmLabel,
+            level: 'warn',
+            reason: browserAskReason(),
+            kind: 'browser',
+          agentName: toolContext?.agentName,
+            browserOperationClass: opClass,
+            browserPermissionResource: permissionResource,
+            browserPermissionTargets: permissionTargets,
+            ...(origin !== null ? { browserOrigin: origin } : {}),
+            // R2-D — the page this is happening ON, from the SAME source the
+            // desktop dialog reads it from below. The remote approver is the
+            // reader who can see the least: without this, an action inside a
+            // third-party region names only that region, and they are asked
+            // about a site they have never visited.
+            ...(target.topOrigin && target.topOrigin !== origin
+              ? { browserPageOrigin: target.topOrigin }
+              : {}),
+            allowPersistentGrant: gate.ask.offersPersistentGrant,
+          },
+          // Provenance for whoever will deliver the approval. The conversation
+          // carries the scheduler/trigger markers; anything else unattended
+          // came in over a channel, so 'im' is the fallback rather than a
+          // positive identification.
+          source: conversation?.scheduledTaskId !== undefined
+            ? 'scheduler'
+            : conversation?.triggerId !== undefined ? 'trigger' : 'im',
+          ...(toolContext?.conversationId !== undefined
+            ? { conversationId: toolContext.conversationId }
+            : {}),
+          // Scopes the approval channel's coalescing and answer cache to THIS
+          // run. Without it a chatty tool would push one approval message per
+          // call, and an answer would have no boundary to expire at.
+          ...(toolContext?.loopId !== undefined ? { runKey: toolContext.loopId } : {}),
+          // Stop must reach an approval channel that can wait minutes for a
+          // human. Without it, pressing Stop leaves a prompt live in a chat and
+          // a later "同意" would be swallowed as the answer to a run that no
+          // longer exists.
+          ...(toolContext?.abortSignal !== undefined
+            ? { abortSignal: toolContext.abortSignal }
+            : {}),
+          // See the `unattendedApproval` doc above. Spread field-by-field so an
+          // absent target stays absent rather than becoming an explicit
+          // `undefined` the seam would have to special-case.
+          ...(unattendedApproval?.imTarget !== undefined
+            ? { imTarget: unattendedApproval.imTarget }
+            : {}),
+          ...(unattendedApproval?.runLabel !== undefined
+            ? { runLabel: unattendedApproval.runLabel }
+            : {}),
+        });
+        /**
+         * U7 / G2 — record the human decision.
+         *
+         * Gated on `fresh`: the approval channel coalesces a chatty tool's many
+         * calls onto ONE prompt and replays the answer, so counting resolver
+         * returns would report "you approved 14 times" for a single "同意".
+         * Only the call that owned the round-trip reports one.
+         *
+         * `outcome` absent means no approval channel was involved at all (the
+         * fail-closed default resolver never asked anyone) — the gate's own
+         * `gate_denied` signal already covers that refusal, and claiming an IM
+         * decision happened would be a lie.
+         */
+        if (approval.audit.fresh && approval.audit.outcome) {
+          const approvalOutcome = approval.audit.outcome;
+          safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+            {
+              kind: 'approval',
+              via: 'im',
+              outcome: approvalOutcome,
+              opClass,
+              ...(origin !== null ? { origin } : {}),
+            },
+            buildBrowserSignalContext(
+              browserChannelForTool(name) ?? 'builtin',
+              toolContext?.conversationId,
+              Date.now(),
+              toolContext?.loopId,
+            ),
+          ));
+        }
+        if (!approval.approved) {
+          // The channel's own sentence when it has one — "you declined this in
+          // chat" and "nobody answered in 10 minutes" are different events, and
+          // reporting both as "no confirmation channel" would be wrong about
+          // what happened. The generic key stays the fallback for the
+          // fail-closed default resolver, whose reason is an English
+          // diagnostic.
+          // Counted: this is the unattended stand-in for the dialog — a human
+          // said no in chat, nobody answered in time, or there was no channel
+          // to ask through at all.
+          return refusedByHuman(await denyUnattendedBrowser(
+            gate.ask.refusedReason,
+            approval.userFacingReason,
+          ));
+        }
+        // A human (or the channel standing in for one) said yes — an answer to
+        // THIS request, so it is dialog-grade consent.
+        consented = 'dialog';
+      } else if (gate.ask?.channel === 'dialog') {
+        // Only a state-changing ask is a `confirm_prompt` in the signal buffer;
+        // an attended read-only row set to 「每次询问」 never recorded one and
+        // does not start now.
+        if (consequence === 'state-changing') {
+          safeRecordBrowserSignal(() => buildBrowserSignalRecord(
+            { kind: 'confirm_prompt', origin: origin ?? undefined },
+            buildBrowserSignalContext(
+              browserChannelForTool(name) ?? 'builtin',
+              toolContext?.conversationId,
+              Date.now(),
+              toolContext?.loopId,
+            ),
+          ));
+        }
+        // Non-null by construction: `evaluateBrowserGate` refuses instead of
+        // asking when `confirmationChannelAvailable` is false.
+        const confirmed = await onRequireConfirmation?.({
+          // An upload puts only the file list here: its question, its target
+          // site and its verb all live in the dialog's own upload wording
+          // (F5), so the tool name would be the one line on the box that
+          // means nothing to the person reading it.
+          command: browserUploadDialogLabel ?? browserConfirmLabel,
+          level: 'warn',
+          // Same sentence the unattended round-trip sends — see
+          // `browserAskReason`. Two copies of this ternary is how the
+          // unattended channel drifted into promising silence it could not
+          // deliver (R2-1). The read-only row keeps the generic reason: it is
+          // not a script, a page dialog or a bank page.
+          reason: consequence === 'state-changing'
+            ? browserAskReason()
+            : t.commandConfirm.browserReason,
+          // The one browser action whose consequence leaves the machine gets
+          // its own question and its own verb (F5). Everything else about it
+          // stays a browser ask — same origin fields, same site grant, same
+          // block-this-site row.
+          kind: browserUploadFileCount !== undefined ? 'browser-upload' : 'browser',
+          ...(browserUploadFileCount !== undefined
+            ? { browserUploadFileCount }
+            : {}),
+          // Team runs record WHICH member asked; the strip shows it and the
+          // approval key binds it (F1).
+          agentName: toolContext?.agentName,
+          browserOperationClass: opClass,
+            browserPermissionResource: permissionResource,
+            browserPermissionTargets: permissionTargets,
+          ...(toolTargetsPage
+            ? { browserOrigin: origin ?? undefined }
+            : {}),
+          // The page this is happening ON, when it is not the same site as the
+          // action's target — a click inside a third-party region otherwise
+          // names only the region, and the user reads a site they never
+          // navigated to with no mention of the page in front of them. Scoped
+          // to the same branch as `browserOrigin`: a read-only ask names no
+          // site at all, so it has no site to place.
+          ...(toolTargetsPage && target.topOrigin && target.topOrigin !== origin
+            ? { browserPageOrigin: target.topOrigin }
+            : {}),
+          // Named in the SAME ask, and granted in the same click, so
+          // per-origin authorization does not cost one prompt per region.
+          ...(permissionTargets.some((item) => item.embeddedIn)
+            ? { browserEmbeddedOrigins: [...new Set(permissionTargets.filter((item) => item.embeddedIn).map((item) => item.origin!))] }
+            : {}),
+          // No "always allow this site" for a bank or a checkout page — the
+          // standing grant is the artifact this control exists to prevent. Nor
+          // under 「每次询问」 (F8): the grant it would mint is one this row now
+          // ignores, so offering it would promise silence the next call does
+          // not deliver. Decided once, by the shared evaluation.
+          allowPersistentGrant: gate.ask.offersPersistentGrant,
+        }, toolContext?.loopId);
+        if (!confirmed) {
+          return refusedByHuman(await refuseBrowser(gate.ask.refusedReason));
+        }
+        consented = 'dialog';
+      }
+
+      recheckBrowserPermission = async () => {
+        if (toolContext?.abortSignal?.aborted) return refuseBrowser('user-cancelled');
+        const freshGate = evaluateBrowserPermissionGate({ ...gateFacts,
+          configured: configuredFor(getSettingsReader().getSnapshot().browserPermissionConfigV2),
+        });
+        if (freshGate.outcome === 'deny') return refuseBrowser(freshGate.denialReason ?? 'policy-denied');
+        if (freshGate.ask && !consented) return refuseBrowser('approval-refused');
+        return null;
+      };
+
+      if (gate.outcome === 'deny') {
+        /**
+         * Reached either straight away (a standing-configuration refusal) or
+         * AFTER an ask that was approved and still could not pass — the
+         * unattended 「每次询问」 on a site with no standing grant. The gate has
+         * always behaved that way; the extraction reports it rather than
+         * quietly changing it.
+         *
+         * Not counted as a human refusal: the master switch, a blocked site, a
+         * policy 'deny' cell, the ceiling, an unverifiable origin and a missing
+         * standing grant all refuse without anyone having refused anything, and
+         * counting them would abort every unattended run that touched the
+         * browser twice. The two codes that ARE an interaction
+         * (`approval-refused` from a channel that could not carry the question,
+         * `user-cancelled`) are counted at their own sites above; reaching them
+         * here means no ask happened at all, which is the no-channel case.
+         */
+        const reason = gate.denialReason as BrowserDenialReasonCode;
+        const decision = await refuseBrowser(reason);
+        return reason === 'approval-refused' ? refusedByHuman(decision) : decision;
+      }
+
+      // Passing a default policy is not human consent and cannot reset the
+      // refusal streak. Report an actual approval only after every gate passes.
+      reportBrowserConsent = () => {
+        if (consented) toolContext?.reportBrowserAllow?.(consented);
+      };
+
+      // Everything below this line has approved the call. Record what the gate
+      // decided ON so the executor can pin it at the host — see
+      // `BrowserExecutionPin`. Set on EVERY approved browser call, including
+      // read-only and attended ones: the host decides what to enforce, and a
+      // pin that is only attached sometimes is a pin whose absence means
+      // nothing.
+      const popupTool = parseNamespacedToolName(name);
+      const permitsPopup = popupTool?.serverName === 'abu-browser'
+        && ['click', 'keyboard'].includes(popupTool.toolName)
+        && permissionResource === 'browse' && target.topOrigin === undefined
+        && !input.frameId && !target.frameOrigins && origin !== null;
+      browserExecutionPin = {
+        runMode,
+        ...(permitsPopup ? { popupOrigin: origin } : {}),
+        ...(origin !== null ? { expectedOrigin: origin } : {}),
+        // T5 — the files the user just confirmed, on their way to the runtime
+        // (which uses this list and nothing else). Set only for an upload;
+        // every other call's pin keeps its exact shape.
+        ...(approvedUploadFiles !== undefined ? { approvedUploadFiles } : {}),
+        // A batch's steps may each target a different region, and the page's
+        // own pin says nothing about what a third-party region is showing —
+        // so each region's approved origin goes to the run to be re-checked
+        // before the step that targets it.
+        ...(target.frameOrigins ? { expectedFrameOrigins: target.frameOrigins } : {}),
+        ...(loginRequired ? { loginRequired: true as const } : {}),
+      };
+    }
+  }
+
+  // Plugin-contributed MCP tools. Without this block they would fall through
+  // to `decideConsequentialTool(undefined)` → 'allow', i.e. third-party code
+  // installed with one click would execute silently in all three permission
+  // modes. Approval is per (conversation, server) so approving one plugin
+  // never unlocks another.
+  {
+    const consequence = classifyPluginTool(name);
     if (consequence === 'state-changing') {
-      const browserCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
+      const pluginCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
         runPermissionCeiling,
-        'browser',
+        'plugin',
       );
-      if (browserCeilingDecision.decision === 'deny') {
-        return browserCeilingDecision;
+      if (pluginCeilingDecision.decision === 'deny') {
+        return pluginCeilingDecision;
       }
-      const origin = await resolveBrowserActionOrigin(name, input);
-      const siteVerdict = getSiteVerdict(
-        origin,
-        getSettingsReader().getSnapshot().browserSitePermissions ?? {},
-      );
-      if (siteVerdict === 'denied') {
-        return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserSiteDenied}` };
-      }
-      // Scripting (execute_js) is a stronger capability than clicking: the
-      // dialog promises "each run asks separately", so it must neither ride
-      // the conversation grant nor a persistent site grant.
-      const scripting = isScriptingBrowserTool(name);
-      const granted =
-        !scripting &&
-        (hasBrowserGrant(toolContext?.conversationId) || siteVerdict === 'allowed');
+      const serverName = pluginServerOf(name) ?? '';
+      const granted = !isTeam && hasPluginGrant(toolContext?.conversationId, serverName);
       const decision = strategy.decideOtherTool(consequence, granted);
       if (decision !== 'allow') {
         if (!onRequireConfirmation) {
-          // No confirmation channel (headless/background run) — fail closed
-          // rather than silently acting in the user's session. Sites the user
-          // explicitly allowed were already let through above, which is what
-          // makes pre-authorized unattended runs (scheduled tasks) possible.
-          return { decision: 'deny', reason: `Error: ${t.commandConfirm.browserDenied}` };
+          // Fail closed. A headless run must not be the cheap way to execute
+          // plugin code the user never saw.
+          return { decision: 'deny', reason: `Error: ${t.commandConfirm.pluginToolDenied}` };
         }
         const confirmed = await onRequireConfirmation({
-          command: origin
-            ? `${t.commandConfirm.browserAction}: ${name} (${origin})`
-            : `${t.commandConfirm.browserAction}: ${name}`,
+          command: `${t.commandConfirm.pluginToolAction}: ${name}`,
           level: 'warn',
-          reason: scripting ? t.commandConfirm.browserScriptReason : t.commandConfirm.browserReason,
-          kind: 'browser',
-          browserOrigin: origin ?? undefined,
-          allowPersistentGrant: !scripting && origin !== null,
+          reason: t.commandConfirm.pluginToolReason,
         }, toolContext?.loopId);
         if (!confirmed) {
           return { decision: 'deny', reason: t.commandConfirm.userCancelled };
         }
-        // A script approval covers that one run only — minting the
-        // conversation grant from it would silently unlock 30 minutes of
-        // click/fill/navigate the user never approved.
-        if (!scripting) grantBrowserAutomation(toolContext?.conversationId);
+        if (!isTeam) grantPluginServer(toolContext?.conversationId, serverName);
       }
     }
   }
@@ -762,7 +2248,15 @@ export async function checkToolApproval(
   // shapes later turns/runs. No per-conversation grant here — these are rare,
   // deliberate acts, each worth its own ask.
   {
-    const selfExtension = classifySelfExtension(name, input);
+    const selfExtension = classifySelfExtension(
+      name,
+      input,
+      // A call carrying `overwrite: true` may replace an expert created while the
+      // approval waits (e.g. over IM), so it is labelled as a replace too.
+      name === TOOL_NAMES.SAVE_AGENT ? { saveAgentReplaces: input.overwrite === true || await saveAgentWouldReplace(input.name) }
+        : name === TOOL_NAMES.SAVE_TEAM ? { saveTeamReplaces: saveTeamWouldReplace(input.name) }
+        : {},
+    );
     if (selfExtension) {
       const selfExtensionCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
         runPermissionCeiling,
@@ -781,9 +2275,10 @@ export async function checkToolApproval(
           level: 'warn',
           reason: t.commandConfirm.selfExtensionReason,
           kind: 'self-extension',
+          agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {
-          return { decision: 'deny', reason: t.commandConfirm.userCancelled };
+          return { decision: 'deny', reason: toolContext?.teamRoster ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
       }
     }
@@ -797,14 +2292,24 @@ export async function checkToolApproval(
       : String(input).slice(0, 200)
     const policyCheck = checkTool(policy, name, summary)
     if (policyCheck.decision === 'deny') {
+      // A browser action refused here is refused as surely as one the gate
+      // above refused, so it belongs in the same taxonomy (B3). No-op for
+      // every non-browser tool.
+      recordBrowserGateDenial?.('enterprise-policy-denied')
       return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason}` }
     }
     if (policyCheck.decision === 'confirm') {
       if (toolContext?.interactionMode === 'background') {
+        // The policy demanded a confirmation an unattended run cannot give —
+        // the policy is still what stopped it.
+        recordBrowserGateDenial?.('enterprise-policy-denied')
         return { decision: 'deny', reason: `Error: [policy] ${policyCheck.reason ?? 'confirmation unavailable in background run'}` }
       }
       const allowed = await showPolicyConfirm(policyCheck.reason ?? '此操作需要企业策略二次确认')
       if (!allowed) {
+        // Here the human is the one who said no, which is a different fact
+        // from the policy blocking it — same code the attended dialog uses.
+        recordBrowserGateDenial?.('user-cancelled')
         return { decision: 'deny', reason: `Error: [policy] user declined confirmation` }
       }
     }
@@ -818,7 +2323,7 @@ export async function checkToolApproval(
     // closed if the run has only write authority.
     let readCheck = await checkReadPath(
       largeWritePathAfterApproval,
-      toolContext?.authorizationScopeId,
+      teamFileScope ?? toolContext?.authorizationScopeId,
     );
     if (
       !readCheck.allowed
@@ -826,15 +2331,21 @@ export async function checkToolApproval(
       && readCheck.permissionPath
       && onRequireFilePermission
     ) {
+      if (isTeam) teamFileScope ??= createAuthorizationScope();
       const granted = await onRequireFilePermission({
+        ...(isTeam ? {
+          teamAuthorizationScopeId: teamFileScope,
+          teamIdentity: await buildTeamConfirmationIdentity(name, input, toolContext, { path: readCheck.permissionPath, capabilities: ['read'] }),
+        } : {}),
         path: readCheck.permissionPath,
         capability: 'read',
         toolName: TOOL_NAMES.WRITE_FILE,
+        agentName: toolContext?.agentName,
       }, toolContext?.loopId);
       if (granted) {
         readCheck = await checkReadPath(
           largeWritePathAfterApproval,
-          toolContext?.authorizationScopeId,
+          teamFileScope ?? toolContext?.authorizationScopeId,
         );
       }
     }
@@ -850,10 +2361,121 @@ export async function checkToolApproval(
     }
   }
 
+  // Enterprise confirmation may wait while the user revokes browser access.
+  const browserRevocation = await recheckBrowserPermission?.();
+  if (browserRevocation) return browserRevocation;
+  reportBrowserConsent?.();
+
   return {
     decision: 'allow',
     ...(approvedExecutionPath ? { executionPath: approvedExecutionPath } : {}),
+    ...(browserExecutionPin ? { browserExecution: browserExecutionPin } : {}),
   };
+  } finally {
+    if (teamFileScope) disposeAuthorizationScope(teamFileScope);
+  }
+}
+
+/** Pageless listings cannot supply content from a site requiring consent.
+ * Scope-only grants never authorize a top-level listing. Both run modes use
+ * the same confirmed configuration; malformed results fail closed. */
+export function filterDownloadsByOrigin(
+  result: ToolResult,
+  permissionConfig: unknown,
+): ToolResult {
+  if (typeof result !== 'string') return 'Error: invalid browser listing';
+  // An error string ("Error: ...") is not a listing; leave it alone.
+  if (result.startsWith('Error:')) return result;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    // Neither run mode may expose content whose permission cannot be checked.
+    return 'Error: the download list could not be verified against your browser permissions';
+  }
+  if (!Array.isArray(parsed)) return 'Error: invalid download list';
+  const kept = parsed.filter((entry) => {
+    const url = entry && typeof entry === 'object'
+      ? (entry as { url?: unknown }).url
+      : undefined;
+    const origin = normalizeBrowserOrigin(typeof url === 'string' ? url : undefined);
+    return resolveBrowserPermissionConfig(permissionConfig, 'browse', [{ origin }]).decision === 'allow';
+  });
+  if (kept.length === parsed.length) return result;
+  return JSON.stringify(kept, null, 2);
+}
+
+/**
+ * What replaces a blocked tab's `url`/`title`. English, like every other
+ * LLM-facing string the model reads out of a tool result, and deliberately a
+ * SENTENCE rather than an empty string: `''` is what the host itself writes
+ * when Chrome supplies no url, so a silent blank would read as "this tab has
+ * no address" instead of "you are not allowed to see this one".
+ */
+const REDACTED_TAB_FIELD = '[hidden: browser permissions]';
+
+/** Preserve tab handles while hiding URL/title unless browsing is allowed.
+ * A retained handle grants nothing: execution resolves and checks its origin. */
+export function filterTabsBySitePermissions(
+  result: ToolResult,
+  permissionConfig: unknown,
+): ToolResult {
+  if (typeof result !== 'string') return 'Error: invalid browser listing';
+  // An error string is not a listing; leave it alone.
+  if (result.startsWith('Error:')) return result;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    // Same fail-closed reading as an unverifiable download listing: an
+    // unattended run does not get output that could not be checked.
+    return 'Error: the tab list could not be verified against your site permissions, so it was withheld';
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return 'Error: invalid tab list';
+  const doc = parsed as { summary?: unknown; windows?: unknown };
+  if (!Array.isArray(doc.windows)) return 'Error: invalid tab list';
+
+  const record = (value: unknown): value is Record<string, unknown> =>
+    !!value && typeof value === 'object' && !Array.isArray(value);
+  if (doc.summary !== undefined && !record(doc.summary)) return 'Error: invalid tab summary';
+  if (doc.windows.some((win) => !record(win) || !Array.isArray(win.tabs)
+    || win.tabs.some((tab: unknown) => !record(tab)))) return 'Error: invalid tab rows';
+
+  const isDenied = (url: unknown): boolean =>
+    resolveBrowserPermissionConfig(permissionConfig, 'browse', [{ origin: normalizeBrowserOrigin(typeof url === 'string' ? url : undefined) }]).decision !== 'allow';
+  // Keep only typed navigation handles/flags for denied pages. Unknown fields
+  // (including nested frame URLs) cannot smuggle content around the gate.
+  const handles = (value: Record<string, unknown>, numbers: string[], flags: string[]) => {
+    const kept: Record<string, unknown> = {};
+    for (const key of numbers) if (typeof value[key] === 'number' && Number.isFinite(value[key])) kept[key] = value[key];
+    for (const key of flags) if (typeof value[key] === 'boolean') kept[key] = value[key];
+    return kept;
+  };
+  const windows = doc.windows.map((raw) => {
+    const win = raw as Record<string, unknown> & { tabs: Record<string, unknown>[] };
+    return {
+      ...handles(win, ['windowId'], ['isCurrentWindow', 'focused']),
+      tabs: win.tabs.map((entry) => {
+        const safe = handles(entry, ['tabId', 'windowId'], ['active', 'isCurrentTab', 'pinned', 'audible', 'discarded']);
+        if (isDenied(entry.url)) return { ...safe, url: REDACTED_TAB_FIELD, title: REDACTED_TAB_FIELD };
+        // Frames are resolved independently by the action gate, never exposed
+        // through this pageless listing under a top-level grant.
+        const { frames: _frames, ...allowed } = entry;
+        return allowed;
+      }),
+    };
+  });
+  let summary: Record<string, unknown> | undefined;
+  if (record(doc.summary)) {
+    const current = doc.summary;
+    summary = isDenied(current.currentTabUrl)
+      ? { ...handles(current, ['totalWindows', 'totalTabs', 'currentWindowId', 'currentTabId'], []),
+        currentTabUrl: REDACTED_TAB_FIELD, currentTabTitle: REDACTED_TAB_FIELD }
+      : { ...current };
+  }
+  const sanitized = { ...(summary ? { summary } : {}), windows };
+  if (JSON.stringify(sanitized) === JSON.stringify(parsed)) return result;
+  return JSON.stringify(sanitized, null, 2);
 }
 
 /**
@@ -909,11 +2531,102 @@ export async function executeAnyTool(
     return result;
   }
 
-  // Check MCP tools (format: serverName__toolName)
-  if (name.includes('__')) {
-    const [serverName, toolName] = name.split('__', 2);
+  // Check MCP tools (format: serverName__toolName).
+  //
+  // The parse is the SHARED one (U9 / C1) — the same function the browser
+  // authorization layer classifies with. It used to be `split('__', 2)` here,
+  // whose limit-2 TRUNCATION silently discarded everything after the second
+  // separator: `abu-browser__execute_js__x` was gated as the unknown tool
+  // `execute_js__x` (→ the weaker 'interactive' bucket) and then dispatched as
+  // `execute_js`, so the door and the room disagreed about which tool this
+  // was. A name that does not round-trip now falls through to the "Unknown
+  // tool" fail-safe below — the same thing the builtin branch above already
+  // does with a name it does not recognize, instead of the MCP branch's old
+  // "any suffix is fine as long as the server is connected".
+  const parsedName = parseNamespacedToolName(name);
+  if (parsedName !== null) {
+    const { serverName, toolName } = parsedName;
+    // Recheck after an approval await: the user may have disabled the server.
+    const disabledReason = disabledMcpToolReason(name);
+    if (disabledReason) {
+      recordDisabledBrowserDenial(name, executionInput, toolContext);
+      return disabledReason;
+    }
     if (mcpManager.isConnected(serverName)) {
-      const result = await mcpManager.callTool(serverName, toolName, executionInput);
+      const isBrowserTool = classifyBrowserTool(name) !== null;
+      const startedAt = Date.now();
+      let result: ToolResult;
+      try {
+        result = await mcpManager.callTool(serverName, toolName, executionInput, {
+          conversationId: toolContext?.conversationId,
+          agentRunId: toolContext?.agentRunId,
+          signal: toolContext?.abortSignal,
+          // Approval-time origin pin — rides `_meta`, never the tool schema, so
+          // the model can neither read nor forge it. See `BrowserExecutionPin`.
+          ...(approval.browserExecution?.expectedOrigin !== undefined
+            ? { expectedOrigin: approval.browserExecution.expectedOrigin }
+            : {}),
+          ...(approval.browserExecution?.popupOrigin !== undefined
+            ? { popupOrigin: approval.browserExecution.popupOrigin }
+            : {}),
+          ...(approval.browserExecution?.expectedFrameOrigins !== undefined
+            ? { expectedFrameOrigins: approval.browserExecution.expectedFrameOrigins }
+            : {}),
+          // T5 — the approved file list. Absent for every tool but
+          // `upload_file`, and its absence THERE is what makes the bridge
+          // refuse rather than fall back to the model's own paths.
+          ...(approval.browserExecution?.approvedUploadFiles !== undefined
+            ? { approvedUploadFiles: approval.browserExecution.approvedUploadFiles }
+            : {}),
+          ...(approval.browserExecution?.runMode === 'unattended'
+            ? { unattended: true }
+            : {}),
+        });
+      } catch (err) {
+        if (isBrowserTool) {
+          try {
+            const message = err instanceof Error ? err.message : String(err);
+            recordBrowserToolCallSignal(name, toolContext, executionInput, startedAt, `Error: ${message}`);
+          } catch {
+            // Observability must never change product behavior.
+          }
+        }
+        throw err;
+      }
+      if (isBrowserTool) {
+        try {
+          recordBrowserToolCallSignal(name, toolContext, executionInput, startedAt, browserSignalToolResultToString(result));
+        } catch {
+          // Observability must never change product behavior.
+        }
+      }
+      if (toolName === 'get_downloads' && isBrowserTool) {
+        const snapshot = getSettingsReader().getSnapshot();
+        result = filterDownloadsByOrigin(
+          result,
+          snapshot.browserPermissionConfigV2,
+        );
+      }
+      // The sibling leak (U9 / I1): `get_tabs` reports every tab's url and
+      // title, including sites the user blocked. Same shell-side placement and
+      // same fail-safe runMode default as the downloads filter above — and
+      // deliberately AFTER the call, so the gate's own origin probe (which
+      // calls mcpManager directly) still sees the unredacted truth.
+      if ((toolName === 'get_tabs' || toolName === 'list_tabs') && isBrowserTool) {
+        const snapshot = getSettingsReader().getSnapshot();
+        result = filterTabsBySitePermissions(
+          result,
+          snapshot.browserPermissionConfigV2,
+        );
+      }
+      // U6 / F2.4, the ATTENDED half of the login-expiry split. The action was
+      // allowed and ran (a human is here, and they may well be signing in);
+      // what changes is that the result now SAYS the session expired, so the
+      // model asks the user to sign in instead of retrying into the wall.
+      // Unattended never reaches this line — the gate refused above.
+      if (isBrowserTool && approval.browserExecution?.loginRequired && typeof result === 'string') {
+        result = `${result}\n\n${getI18n().commandConfirm.browserLoginRequiredHint}`;
+      }
       // Only truncate string results; rich content (images) passes through
       if (typeof result === 'string') {
         return truncateToolResult(name, result, contextUsagePercent);

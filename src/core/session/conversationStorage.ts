@@ -67,6 +67,7 @@ export interface ConversationMeta {
   imPlatform?: string;
   scheduledTaskId?: string;
   triggerId?: string;
+  teamId?: string;
   projectId?: string;
   totalCost?: number;
   /** Imported share bundle — conversation is read-only. See Conversation.readOnly. */
@@ -1094,6 +1095,8 @@ export function isMessageWrittenToDisk(id: string): boolean {
 /**
  * Prepare a message for disk storage:
  * - Clear image base64 data (filePath preserved for recovery)
+ * - PDF document blocks stay intact; delegated PDF refs are a send-time
+ *   contract, not a restart/rehydration persistence layer in this batch
  * - HTML/Mermaid/code blocks preserved intact
  */
 function cloneToolResultContentForDisk(
@@ -1802,16 +1805,17 @@ export async function updateLastMessage(
  * Load all messages from a conversation JSONL file.
  * Populates the dedup cache so subsequent writes skip already-persisted messages.
  */
-export async function loadMessages(convId: string): Promise<Message[]> {
+export async function loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
   await ensureBase();
   const path = messagesPath(convId);
   if (!(await exists(path))) return [];
 
-  // File-level read failure → empty list (same contract as before).
+  // Display reads keep the tolerant contract; receipt recovery must distinguish a read failure from an empty ledger.
   let raw: string;
   try {
     raw = await readTextFile(path);
   } catch (err) {
+    if (options?.strictRead) throw err;
     console.warn(
       `[conversationStorage] loadMessages(${convId}) readTextFile failed:`,
       err,
@@ -1933,6 +1937,7 @@ export function buildMeta(conv: {
   imPlatform?: string;
   scheduledTaskId?: string;
   triggerId?: string;
+  teamId?: string;
   projectId?: string;
   readOnly?: boolean;
   importedFrom?: { schemaVersion: number; importedAt: number };
@@ -1949,6 +1954,7 @@ export function buildMeta(conv: {
     imPlatform: conv.imPlatform,
     scheduledTaskId: conv.scheduledTaskId,
     triggerId: conv.triggerId,
+    teamId: conv.teamId,
     projectId: conv.projectId,
     readOnly: conv.readOnly,
     importedFrom: conv.importedFrom,

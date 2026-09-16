@@ -1,3 +1,5 @@
+import { acquirePluginUse } from '../plugin/runtimeLease';
+import { isPluginSkillAllowed, pluginOwnerForSkill } from '../plugin/activationPolicy';
 /**
  * Skill Content Preprocessing Pipeline
  *
@@ -147,6 +149,12 @@ export async function executeInlineCommands(
   skillDir: string,
   context?: ToolExecutionContext,
 ): Promise<string> {
+  if (!isPluginSkillAllowed({ skillDir })) return '';
+  const release = acquirePluginUse(pluginOwnerForSkill(skillDir));
+  try { return await executeAdmittedInlineCommands(content, skillDir, context); } finally { release(); }
+}
+
+async function executeAdmittedInlineCommands(content: string, skillDir: string, context?: ToolExecutionContext): Promise<string> {
   const pattern = /!`([^`]+)`/g;
   const matches = [...content.matchAll(pattern)];
   if (matches.length === 0) return content;
@@ -160,6 +168,7 @@ export async function executeInlineCommands(
         if (blockedReason) {
           return `[Command blocked: ${blockedReason}]`;
         }
+        if (!isPluginSkillAllowed({ skillDir })) return '';
         const output = await invokeTaskCommand<CommandOutput>('run_shell_command', {
           command,
           cwd: skillDir,

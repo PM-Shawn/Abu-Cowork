@@ -4,9 +4,9 @@ import { setupAbuSettings, waitForAppReady } from './helpers';
 /**
  * E2E for the simplified skill create menu + merged upload modal.
  *
- * Verifies the Phase-E refactor at the UI layer (the Tauri-native install
- * itself — folder picker / drag-drop / real fs scope — can't be driven
- * headlessly on macOS, so that stays a manual desktop smoke step):
+ * Verifies the Phase-E refactor at the UI layer (the native install itself —
+ * folder picker / drag-drop / real fs scope — can't be driven headlessly, so
+ * that stays a manual desktop smoke step):
  *   - the "+" menu shows exactly 3 entries (AI / manual / import)
  *   - the two removed network-install entries are gone
  *   - the merged "导入技能" entry opens a modal with a drop zone + two pickers
@@ -16,10 +16,12 @@ test.describe('Skill upload menu (Phase E)', () => {
     await setupAbuSettings(page);
     await page.goto('/');
     await waitForAppReady(page);
-    // Enter toolbox → 技能 tab (mirrors tabs.spec.ts).
-    await page.getByRole('button', { name: '工具箱' }).click();
-    await expect(page.getByRole('button', { name: '技能' }).first()).toBeVisible({ timeout: 5000 });
-    await page.getByRole('button', { name: '技能' }).first().click();
+    // Enter 扩展 → 技能. Creation lives in the shared header; My and Market
+    // are stacked sections, so there is no source tab to select first.
+    await page.getByLabel('Main navigation').getByRole('button', { name: '扩展' }).click();
+    const panel = page.getByRole('main');
+    await expect(panel.getByRole('button', { name: '技能' })).toBeVisible({ timeout: 5000 });
+    await panel.getByRole('button', { name: '技能' }).click();
     await page.getByTestId('skill-create-trigger').click();
     await expect(page.getByTestId('skill-create-menu')).toBeVisible();
   });
@@ -43,7 +45,7 @@ test.describe('Skill upload menu (Phase E)', () => {
 
     // The drop zone is itself a clickable button (drag OR click), not just a target.
     await expect(page.getByRole('button', { name: /拖放文件夹到这里/ })).toBeVisible();
-    // Archives are a secondary link (Tauri can't pick folder+file in one dialog).
+    // Archives are a secondary link (the native dialog can't pick folder+file at once).
     await expect(page.getByRole('button', { name: /\.askill/ })).toBeVisible();
   });
 });

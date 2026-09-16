@@ -37,10 +37,14 @@
  *     (`null` if the platform doesn't report a finite value) — JSON has no
  *     `Date` type. The bridge reconstructs `new Date(ms)` client-side to
  *     match plugin-fs's `FileInfo.mtime: Date | null` shape.
- *   - `readonly` is a best-effort POSIX approximation (owner write-bit) —
- *     plugin-fs derives its `FileInfo.readonly` from the platform's actual
- *     ACL/attribute check, which node:fs doesn't expose directly.
- *     `fileTools.ts` never reads this field today.
+ *   - `readonly` is `(mode & 0o222) === 0` — ANY write bit, matching Rust's
+ *     `std::fs::Permissions::readonly()`, which is what plugin-fs returns,
+ *     and matching the other two shims of this contract
+ *     (`shims/pluginFsRun.ts`, `electron/fsHost.cjs`). It was an owner-only
+ *     mask until the shim surface guard's review found the three disagreeing
+ *     on a file only the group or others can write. It is still an
+ *     approximation of a real ACL check on platforms where mode bits do not
+ *     tell the whole story; `fileTools.ts` never reads this field today.
  *
  * ## Error shape
  *
@@ -188,7 +192,7 @@ export async function fsStat(params: unknown): Promise<FsStatResult> {
       mtimeMs: Number.isFinite(s.mtimeMs) ? s.mtimeMs : null,
       atimeMs: Number.isFinite(s.atimeMs) ? s.atimeMs : null,
       birthtimeMs: Number.isFinite(s.birthtimeMs) ? s.birthtimeMs : null,
-      readonly: (s.mode & 0o200) === 0,
+      readonly: (s.mode & 0o222) === 0,
     };
   } catch (err) {
     rethrowFsError(err, path);

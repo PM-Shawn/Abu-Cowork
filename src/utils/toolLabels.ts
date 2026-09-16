@@ -1,4 +1,5 @@
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { MEMBER_INSTRUCTION_STEP } from '@/core/agent/dispatchInput';
 
 /**
  * Shared, locale-aware tool-call label generation.
@@ -189,6 +190,12 @@ export function getToolLabel(
         detail: dirPath,
       };
     }
+
+    case MEMBER_INSTRUCTION_STEP:
+      return {
+        label: isZh ? '你的追加指令' : 'Your instruction',
+        detail: typeof toolInput.text === 'string' ? toolInput.text : undefined,
+      };
 
     default:
       return {

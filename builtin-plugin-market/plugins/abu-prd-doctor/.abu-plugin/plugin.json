@@ -1,0 +1,18 @@
+{
+  "name": "abu-prd-doctor",
+  "version": "1.0.0",
+  "description": "给 PRD 做一次结构化体检：帮模型按固定三条线审查产品需求文档，产出可执行的修改清单",
+  "author": { "name": "Abu", "email": "hello@abu.example" },
+  "license": "MIT",
+  "keywords": ["prd", "review", "product", "productivity"],
+  "skills": ["./skills/prd-doctor"],
+  "interface": {
+    "displayName": "PRD 体检",
+    "shortDescription": "三条线快速审 PRD：流程 / 异常 / 文案",
+    "longDescription": "把一份产品需求文档按「主流程是否闭环 / 异常与边界是否覆盖 / 文案与状态是否一致」三条线过一遍，逐条给出问题定位和改法，而不是笼统夸或笼统批。",
+    "developerName": "Abu",
+    "category": "productivity",
+    "capabilities": ["读取你贴入的 PRD 文本", "产出结构化审查清单"],
+    "brandColor": "#C4633A"
+  }
+}

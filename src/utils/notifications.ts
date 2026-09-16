@@ -72,6 +72,40 @@ export async function notifyScheduledTaskCompleted(taskName: string): Promise<vo
 /**
  * Send a scheduled task error notification.
  */
+/**
+ * A scheduled run pinned to a strict team ("confirm the split first") ran
+ * unattended, so the split was never confirmed. Tell the user to review the
+ * result rather than letting the skip go unnoticed.
+ */
+export async function notifyScheduledTeamRunUnconfirmed(message: string): Promise<void> {
+  publish({
+    type: 'schedule_fired',
+    source: 'scheduler',
+    payload: { title: message, outcome: 'completed' },
+    dedupKey: `schedule_team_unconfirmed:${message}:${Date.now()}`,
+  });
+}
+
+/** A team run refused an action pending the user's confirmation (block O). */
+export async function notifyTeamConfirmationPending(title: string, conversationId: string): Promise<void> {
+  publish({
+    type: 'permission_request',
+    source: 'agent',
+    payload: { title, conversationId },
+    dedupKey: `team_confirm:${conversationId}:${title}`,
+  });
+}
+
+/** The stall watchdog stopped a team hand-off with no new step for a while (block Q). */
+export async function notifyTeamStallStopped(title: string, conversationId: string): Promise<void> {
+  publish({
+    type: 'stuck_detection',
+    source: 'agent',
+    payload: { title, conversationId },
+    dedupKey: `team_stall:${conversationId}:${title}:${Date.now()}`,
+  });
+}
+
 export async function notifyScheduledTaskError(taskName: string): Promise<void> {
   publish({
     type: 'agent_error',

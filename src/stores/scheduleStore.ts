@@ -149,6 +149,8 @@ interface ScheduleActions {
     outputChannelId?: string;
     outputChatIds?: string;
     outputUserIds?: string;
+    /** Hand `prompt` to this team as a task goal (labs 团队 executor). */
+    teamId?: string;
     /** undefined = follow the global settings permission mode (default). */
     permissionMode?: PermissionMode;
   }) => string;
@@ -165,6 +167,7 @@ interface ScheduleActions {
       outputChannelId: string | undefined;
       outputChatIds: string | undefined;
       outputUserIds: string | undefined;
+      teamId: string | undefined;
       /** undefined = follow the global settings permission mode. Distinct
        *  from the key being omitted — see the `'permissionMode' in data`
        *  check in the implementation below, which lets a caller explicitly
@@ -223,6 +226,7 @@ export const useScheduleStore = create<ScheduleStore>()(
           outputChannelId: data.outputChannelId,
           outputChatIds: data.outputChatIds,
           outputUserIds: data.outputUserIds,
+          teamId: data.teamId,
           // undefined = follow the global settings permission mode (default) —
           // NOT the strictest tier. See PermissionMode's doc comment.
           permissionMode: data.permissionMode,
@@ -251,6 +255,7 @@ export const useScheduleStore = create<ScheduleStore>()(
           if (data.outputChannelId !== undefined) task.outputChannelId = data.outputChannelId;
           if (data.outputChatIds !== undefined) task.outputChatIds = data.outputChatIds;
           if (data.outputUserIds !== undefined) task.outputUserIds = data.outputUserIds;
+          if ('teamId' in data) task.teamId = data.teamId;
           // 'permissionMode' in data (not `!== undefined`): a caller must be
           // able to explicitly reset a task back to "follow settings"
           // (undefined) — the key being *provided* is what matters, not
@@ -405,8 +410,11 @@ export const useScheduleStore = create<ScheduleStore>()(
     })),
     {
       name: 'abu-schedule',
-      version: 5,
+      version: 6,
       migrate(persisted: unknown, version: number) {
+        // v5→v6: ScheduledTask.teamId added (optional; a team-pinned scheduled
+        // conversation). No data transform needed.
+        if (version < 6) { /* no transform needed */ }
         if (version < 2) {
           // v1→v2 added optional IM output fields (outputChannelId, outputChatIds, outputUserIds).
           // These default to undefined, so no data transform needed — just pass through.

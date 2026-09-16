@@ -14,6 +14,7 @@ import { Langfuse } from 'langfuse';
 import type { LangfuseTraceClient } from 'langfuse';
 import type { TokenUsage } from '../../types';
 import { getTauriFetch } from '../llm/tauriFetch';
+import { redactSensitiveMediaText } from '../security/redaction';
 
 // Structural match for langfuse-core's LangfuseFetchOptions (not re-exported by
 // the `langfuse` package). Method parameter bivariance lets this override the
@@ -101,6 +102,61 @@ function mapUsage(usage?: TokenUsage, costUsd?: number) {
   };
 }
 
+const LANGFUSE_MAX_STRING_CHARS = 2_000;
+const LANGFUSE_SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/\bBearer\s+[a-zA-Z0-9._\-+/=]{8,}/gi, 'Bearer [REDACTED:bearer]'],
+  [/([?&](?:token|access_token|auth|authorization)=)([^&#\s]{8,})/gi, '$1[REDACTED:url-token]'],
+  [/\b(?:api[_-]?key|password|secret|authorization)\s*[=:]\s*\S+/gi, '[REDACTED:secret]'],
+  [/\btoken\s*[=:]\s*(?!\[REDACTED:url-token\])\S+/gi, '[REDACTED:secret]'],
+  [/\bsk-[a-zA-Z0-9_-]{12,}/g, '[REDACTED:api-key]'],
+  [/\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}/g, '[REDACTED:jwt]'],
+];
+
+function sanitizeLangfuseString(value: string): string {
+  let out = redactSensitiveMediaText(value);
+  for (const [pattern, replacement] of LANGFUSE_SECRET_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out.length > LANGFUSE_MAX_STRING_CHARS
+    ? `${out.slice(0, LANGFUSE_MAX_STRING_CHARS)}...[truncated]`
+    : out;
+}
+
+function looksLikeBase64Payload(value: string): boolean {
+  const normalized = value.replace(/\s/g, '');
+  return normalized.length >= 16
+    && normalized.length % 4 === 0
+    && /^[A-Za-z0-9+/]+={0,2}$/.test(normalized);
+}
+
+function shouldRedactBase64Field(
+  key: string,
+  entry: unknown,
+  typedBase64Source: boolean,
+): entry is string {
+  if (typeof entry !== 'string') return false;
+  const normalizedKey = key.toLowerCase();
+  if (normalizedKey === 'base64' || normalizedKey === 'imagedata') return true;
+  return normalizedKey === 'data' && (typedBase64Source || looksLikeBase64Payload(entry));
+}
+
+export function sanitizeLangfusePayload<T>(value: T): T {
+  if (typeof value === 'string') return sanitizeLangfuseString(value) as T;
+  if (Array.isArray(value)) return value.map((entry) => sanitizeLangfusePayload(entry)) as T;
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    const record = value as Record<string, unknown>;
+    const typedBase64Source = record.type === 'base64';
+    for (const [key, entry] of Object.entries(record)) {
+      out[key] = shouldRedactBase64Field(key, entry, typedBase64Source)
+        ? '[REDACTED:base64]'
+        : sanitizeLangfusePayload(entry);
+    }
+    return out as T;
+  }
+  return value;
+}
+
 /** Open a trace for a conversation run. No-op when observability is disabled. */
 export function startConversationTrace(
   conversationId: string,
@@ -113,8 +169,8 @@ export function startConversationTrace(
     lf.trace({
       name: data.name ?? 'abu',
       sessionId: conversationId,
-      input: data.input,
-      metadata: data.metadata,
+      input: sanitizeLangfusePayload(data.input),
+      metadata: sanitizeLangfusePayload(data.metadata),
     }),
   );
 }
@@ -130,8 +186,8 @@ export function endConversationTrace(
   try {
     trace.update({
       output: data?.error
-        ? { error: data.error, ...(data.output !== undefined ? { result: data.output } : {}) }
-        : data?.output,
+        ? sanitizeLangfusePayload({ error: data.error, ...(data.output !== undefined ? { result: data.output } : {}) })
+        : sanitizeLangfusePayload(data?.output),
     });
   } catch { /* best-effort */ }
   void getLangfuse()?.flushAsync().catch(() => {});
@@ -147,16 +203,16 @@ export function startGeneration(
   const gen = trace.generation({
     name: data.name,
     model: data.model,
-    input: data.input,
+    input: sanitizeLangfusePayload(data.input),
     startTime: data.startTime,
   });
   return {
     end(end) {
       try {
         gen.end({
-          output: end?.output,
+          output: sanitizeLangfusePayload(end?.output),
           usage: mapUsage(end?.usage, end?.costUsd),
-          ...(end?.level === 'ERROR' ? { level: 'ERROR', statusMessage: end?.statusMessage } : {}),
+          ...(end?.level === 'ERROR' ? { level: 'ERROR', statusMessage: sanitizeLangfusePayload(end?.statusMessage) } : {}),
         });
       } catch { /* best-effort */ }
     },
@@ -170,13 +226,13 @@ export function startToolSpan(
 ): EndableSpan {
   const trace = _traces.get(conversationId);
   if (!trace) return NOOP_SPAN;
-  const span = trace.span({ name: data.name, input: data.input });
+  const span = trace.span({ name: data.name, input: sanitizeLangfusePayload(data.input) });
   return {
     end(end) {
       try {
         span.end({
-          output: end?.output,
-          ...(end?.level === 'ERROR' ? { level: 'ERROR', statusMessage: end?.statusMessage } : {}),
+          output: sanitizeLangfusePayload(end?.output),
+          ...(end?.level === 'ERROR' ? { level: 'ERROR', statusMessage: sanitizeLangfusePayload(end?.statusMessage) } : {}),
         });
       } catch { /* best-effort */ }
     },
@@ -210,8 +266,8 @@ export function startSubagentSpan(
   if (!lf) return NOOP_SUBAGENT_SPAN;
 
   try {
-    const spanName = `subagent:${data.agentName}`;
-    const spanInput = { task: data.task };
+    const spanName = sanitizeLangfuseString(`subagent:${data.agentName}`);
+    const spanInput = sanitizeLangfusePayload({ task: data.task });
 
     let span: ReturnType<LangfuseTraceClient['span']>;
     let standaloneTrace: LangfuseTraceClient | null = null;
@@ -228,14 +284,14 @@ export function startSubagentSpan(
       end(end) {
         try {
           span.end({
-            output: end?.output,
+            output: sanitizeLangfusePayload(end?.output),
             metadata: {
               ...(end?.tokenUsage !== undefined ? { tokenUsage: end.tokenUsage } : {}),
               ...(end?.toolCallCount !== undefined ? { toolCallCount: end.toolCallCount } : {}),
               ...(end?.turnCount !== undefined ? { turnCount: end.turnCount } : {}),
               ...(end?.duration !== undefined ? { duration: end.duration } : {}),
             },
-            ...(end?.error ? { level: 'ERROR' as const, statusMessage: end.error } : {}),
+            ...(end?.error ? { level: 'ERROR' as const, statusMessage: sanitizeLangfusePayload(end.error) } : {}),
           });
           if (standaloneTrace) {
             void lf.flushAsync().catch(() => {});

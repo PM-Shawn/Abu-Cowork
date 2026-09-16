@@ -19,6 +19,7 @@ import { _electron as electron, type ElectronApplication, type Page } from 'play
  */
 export const REPO_ROOT = process.cwd();
 export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
+const MAIN_PROCESS_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'mainProcessRecorder.cjs');
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
@@ -34,6 +35,24 @@ export interface ElectronDataRoot {
 
 export interface LaunchedApp extends ElectronDataRoot {
   app: ElectronApplication;
+}
+
+export interface LaunchOptions {
+  /**
+   * Inject tests/e2e/mainProcessRecorder.cjs into the main process ahead of
+   * electron/main.cjs, so `firstShowRecordFor()` can report where a window was
+   * the moment it was first revealed and `windowListenerRegistered()` can read
+   * the host's live event subscriptions. Opt-in: only the specs that assert on
+   * a window's first frame or must sequence a main-process action after a
+   * renderer's `listen()` need it.
+   */
+  recordMainProcess?: boolean;
+}
+
+/** One window's first reveal, as tests/e2e/mainProcessRecorderCore.cjs saw it. */
+export interface WindowShowRecord {
+  id: number;
+  shownBounds: { x: number; y: number; width: number; height: number } | null;
 }
 
 /**
@@ -62,7 +81,46 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
 }
 
 /**
+ * Child env for the Electron launch. Starts from process.env, then strips
+ * every `*_proxy` / `*_PROXY` variable and pins NO_PROXY to loopback, keeping
+ * the launch hermetic against the developer shell's proxy state: the suite
+ * only ever talks to per-test localhost mock servers, so no spec legitimately
+ * needs a proxy, while a shell `http_proxy` (e.g. a local Clash on
+ * 127.0.0.1:7897) was observed on 2026-08-30 to stall the sidecar's loopback
+ * SSE stream until the 90s test timeout. Stripping (rather than only setting
+ * NO_PROXY) also covers HTTP clients that honor `http_proxy` but not
+ * `no_proxy`. CI runners set no proxy vars, so this is a no-op there.
+ */
+function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (/_proxy$/i.test(key)) delete env[key];
+  }
+  env.NO_PROXY = '127.0.0.1,localhost';
+  env.no_proxy = '127.0.0.1,localhost';
+  env[E2E_APP_DATA_ROOT_ENV] = dataRoot.appDataDir;
+  env[E2E_SIDECAR_CRASH_TOKEN_ENV] = dataRoot.sidecarCrashToken;
+  // Native modal dialogs cannot be driven by Playwright. On hosts where
+  // the OS grants Computer Use permissions (hosted CI runners), the CU
+  // approval prompts would block a headless run forever — this makes them
+  // auto-DECLINE (fail-closed; see tauriHost.cjs).
+  env.ABU_E2E_DECLINE_CU_APPROVALS = '1';
+  // Reveal windows with showInactive() (and hide the macOS Dock icon) so a
+  // full suite run — ~40 launches — does not steal focus on a developer
+  // machine. Windows are still real and rendered: drag-region and
+  // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
+  env.ABU_E2E_QUIET_WINDOW = '1';
+  return env;
+}
+
+/**
  * Launch electron/main.cjs with fully isolated Chromium userData and appData.
+ *
+ * `--lang=zh-CN` pins the renderer's `navigator.language` (and therefore the
+ * i18n system's resolved locale — see src/i18n/index.ts detectSystemLocale)
+ * to zh-CN regardless of the host OS language. The suite asserts the zh-CN
+ * UI; without this, an English-locale host (hosted CI runners, contributors'
+ * machines) renders the en-US UI and every Chinese-text locator times out.
  *
  * main.cjs calls `app.requestSingleInstanceLock()`; if a second instance's
  * lock loses the race against an already-running instance sharing the same
@@ -77,17 +135,24 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
  * for non-packaged builds, so the renderer-facing appData subfolder and any
  * Electron service using app.getPath('appData') remain inside this same root.
  */
-export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Promise<LaunchedApp> {
+export async function launchAbuElectron(
+  dataRoot = createElectronDataRoot(),
+  options: LaunchOptions = {},
+): Promise<LaunchedApp> {
   fs.mkdirSync(dataRoot.userDataDir, { recursive: true });
   fs.mkdirSync(dataRoot.appDataDir, { recursive: true });
   const app = await electron.launch({
-    args: [MAIN_ENTRY, `--user-data-dir=${dataRoot.userDataDir}`],
+    args: [
+      // `-r` modules are required BEFORE the entry point, so a recorder
+      // installed here sees every window the app ever creates. Playwright's own
+      // loader is unshifted ahead of these args the same way.
+      ...(options.recordMainProcess ? ['-r', MAIN_PROCESS_RECORDER] : []),
+      MAIN_ENTRY,
+      `--user-data-dir=${dataRoot.userDataDir}`,
+      '--lang=zh-CN',
+    ],
     cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      [E2E_APP_DATA_ROOT_ENV]: dataRoot.appDataDir,
-      [E2E_SIDECAR_CRASH_TOKEN_ENV]: dataRoot.sidecarCrashToken,
-    },
+    env: buildLaunchEnv(dataRoot),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
@@ -98,27 +163,92 @@ export async function launchAbuElectron(dataRoot = createElectronDataRoot()): Pr
   return { ...dataRoot, app };
 }
 
-async function reloadAndWaitForApp(page: Page): Promise<void> {
-  await page.reload();
-  await page.waitForLoadState('domcontentloaded');
-  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+/**
+ * The first-reveal record for the currently-open window whose URL ends with
+ * `urlSuffix` (e.g. '/pet.html'), or null when no such window is open.
+ *
+ * The live window is matched by URL — settled by the time a spec asserts — and
+ * the record is looked up by `BrowserWindow.id`. The record is complete as
+ * soon as the app has called `show()` / `showInactive()` on the window
+ * (mainProcessRecorderCore.cjs captures at the call, not at Electron's
+ * asynchronous macOS `show` event), so a spec may read it the moment
+ * `isVisible()` reports true. Requires
+ * `launchAbuElectron(root, { recordMainProcess: true })`; without it the
+ * recorder is absent and this throws rather than reporting a missing window as
+ * if it were a product regression.
+ */
+export async function firstShowRecordFor(
+  app: ElectronApplication,
+  urlSuffix: string,
+): Promise<WindowShowRecord | null> {
+  return app.evaluate(({ BrowserWindow }, suffix) => {
+    const records = (globalThis as typeof globalThis & {
+      __abuWindowShowRecords?: WindowShowRecord[];
+    }).__abuWindowShowRecords;
+    if (!records) {
+      throw new Error(
+        'mainProcessRecorder.cjs was not injected — launch with { recordMainProcess: true }',
+      );
+    }
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith(suffix));
+    if (!win) return null;
+    return records.find((record) => record.id === win.id) ?? null;
+  }, urlSuffix);
+}
+
+/**
+ * Whether the renderer of the currently-open window whose URL ends with
+ * `urlSuffix` currently holds a `listen(event)` subscription in the Tauri
+ * bridge. Reads electron/tauriHost.cjs's live registry — the same map its
+ * `deliver()` consults, pruned on `unlisten` and on renderer reload — so a
+ * true answer means a main-process emit of `event` reaches this renderer now.
+ *
+ * Main-process window events (`tauri://move`, …) are delivered only to
+ * subscriptions that already exist, so a spec that triggers one right after
+ * the window appears must poll this first: the renderer's `listen()` is an
+ * IPC round-trip issued from a React effect, and under load it can trail the
+ * window's reveal by seconds (electron/guiHost.cjs `showWhenReady` reveals on
+ * a 1.5 s timeout even if the renderer has not painted). Returns false while
+ * no such window is open. Requires `launchAbuElectron(root, { recordMainProcess: true })`.
+ */
+export async function windowListenerRegistered(
+  app: ElectronApplication,
+  urlSuffix: string,
+  event: string,
+): Promise<boolean> {
+  return app.evaluate(({ BrowserWindow }, { suffix, name }) => {
+    const tauriHostForE2E = (globalThis as typeof globalThis & {
+      __abuTauriHostForE2E?: () => { __test: { subscribedEvents: (sender: unknown) => string[] } };
+    }).__abuTauriHostForE2E;
+    if (!tauriHostForE2E) {
+      throw new Error(
+        'mainProcessRecorder.cjs was not injected — launch with { recordMainProcess: true }',
+      );
+    }
+    const win = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().endsWith(suffix));
+    if (!win) return false;
+    return tauriHostForE2E().__test.subscribedEvents(win.webContents).includes(name);
+  }, { suffix: urlSuffix, name: event });
 }
 
 /** Persist the common first-run acknowledgements used by Electron E2E journeys. */
 export async function dismissFirstRunOverlays(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    Object.assign(persisted.state, {
-      guideShown: true,
-      guideOpen: false,
-      hasAcknowledgedDisclaimer: true,
-      hasRunSensitiveAudit_v015: true,
+  // Settings writes are serialized now. Seed under the same lock and reload
+  // before returning control, so a queued pre-seed save cannot restore overlays.
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async () => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
+      const raw = window.localStorage.getItem('abu-settings');
+      if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+      const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+      Object.assign(persisted.state, {
+        guideShown: true, guideOpen: false,
+        hasAcknowledgedDisclaimer: true, hasRunSensitiveAudit_v015: true,
+      });
+      window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+      window.location.reload();
     });
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(/^(想让阿布帮你做点什么？|What can Abu help you with\?)$/)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 export interface LocalMockProviderOptions {
@@ -153,7 +283,8 @@ export async function configureLocalMockProvider(
     supportsTools = false,
   } = options;
 
-  await page.evaluate((configuration) => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
@@ -196,7 +327,14 @@ export async function configureLocalMockProvider(
     if (configuration.contextWindowSize !== undefined) state.contextWindowSize = configuration.contextWindowSize;
     if (configuration.maxOutputTokens !== undefined) state.maxOutputTokens = configuration.maxOutputTokens;
 
-    window.localStorage.setItem('abu-settings', JSON.stringify({ ...persisted, state, version: 42 }));
+    // Write `persisted` back whole, version untouched. Stamping a literal here
+    // (this line carried a stale `version: 42` through four store bumps) makes
+    // zustand replay the migration chain over the state we just injected on the
+    // reload below — so a future migrate branch that rewrites one of these
+    // fields would silently clobber every spec's provider setup.
+    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+    window.location.reload();
+    });
   }, {
     apiKey,
     baseUrl,
@@ -209,8 +347,8 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 /**

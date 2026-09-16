@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useIMChannelStore } from '@/stores/imChannelStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
@@ -10,6 +11,7 @@ import { Select } from '@/components/ui/select';
 import type { IMPlatform } from '@/types/im';
 import type { IMCapabilityLevel, IMResponseMode } from '@/types/imChannel';
 import { getIMPlatformOptions, getPlatformDisplayName } from '@/core/im/platformLabels';
+import { hasHeartbeatPlugin } from '@/core/im/pluginRegistry';
 import WeChatQRPanel from './WeChatQRPanel';
 import type { WeChatCredentials } from '@/core/im/adapters/wechat';
 
@@ -459,11 +461,56 @@ export default function IMChannelSection() {
         </div>
       )}
 
+      <LanWebhookRow />
     </div>
   );
 }
 
 // ── Sub-components ──
+
+/**
+ * Where the callback endpoint listens — a section-wide network option, not a
+ * property of one channel, so it sits below the channel list rather than in a
+ * channel's editor.
+ *
+ * The restart note only appears once the value has actually been changed: at
+ * rest the row is label + one line, and a note about restarting is noise until
+ * there is something waiting for one.
+ */
+function LanWebhookRow() {
+  const { t } = useI18n();
+  const allowLanWebhook = useSettingsStore(s => s.imChannel.allowLanWebhook);
+  const setIMAllowLanWebhook = useSettingsStore(s => s.setIMAllowLanWebhook);
+  const [changed, setChanged] = useState(false);
+  // Read once per render: the registry is a module-level map, not reactive
+  // state, and it only changes when a plugin is installed or removed.
+  const heartbeatWaiting = hasHeartbeatPlugin() && !allowLanWebhook;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between p-4 rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-muted)]">
+        <div className="flex-1 mr-4">
+          <p className="text-body text-[var(--abu-text-primary)]">{t.imChannel.allowLanWebhook}</p>
+          <p className="text-minor text-[var(--abu-text-muted)] mt-0.5">{t.imChannel.allowLanWebhookHint}</p>
+        </div>
+        <Toggle
+          checked={allowLanWebhook}
+          onChange={() => {
+            setIMAllowLanWebhook(!allowLanWebhook);
+            setChanged(true);
+          }}
+          size="lg"
+        />
+      </div>
+      {heartbeatWaiting && (
+        <p className="px-4 text-minor text-[var(--abu-text-muted)]">{t.imChannel.heartbeatRequiresLanWebhook}</p>
+      )}
+      {changed && (
+        <p className="px-4 text-minor text-[var(--abu-text-muted)]">{t.imChannel.allowLanWebhookRestart}</p>
+      )}
+    </div>
+  );
+}
 
 function PlatformBadge({ platform }: { platform: IMPlatform }) {
   return (

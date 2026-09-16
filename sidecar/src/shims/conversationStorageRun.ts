@@ -110,15 +110,19 @@ function dedupMessagesById(messages: Message[]): Message[] {
 }
 
 /** Verbatim-ported (minus `populateWrittenIds`, see module doc) copy of the real `loadMessages`. */
-export async function loadMessages(convId: string): Promise<Message[]> {
+export async function loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
   await ensureBase();
   const path = messagesPath(convId);
 
   let raw: string;
   try {
     raw = await fs.readFile(path, 'utf-8');
-  } catch {
-    return []; // missing file/dir → same empty-list contract as the real module
+  } catch (err) {
+    // A missing file/dir is an empty ledger, same contract as the real module.
+    // Every other read failure stays tolerant unless the caller asked to tell
+    // the two apart (`strictRead`, used by first-contact receipt recovery).
+    if (options?.strictRead && (err as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw err;
+    return [];
   }
 
   const lines = raw.trimEnd().split('\n').filter((l) => l.length > 0);

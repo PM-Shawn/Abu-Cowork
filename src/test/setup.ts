@@ -38,6 +38,7 @@ vi.mock('@tauri-apps/api/window', () => ({
 // ── @tauri-apps plugins ──
 vi.mock('@tauri-apps/plugin-fs', () => ({
   readTextFile: vi.fn().mockResolvedValue(''),
+  readFile: vi.fn().mockResolvedValue(new Uint8Array()),
   writeTextFile: vi.fn().mockResolvedValue(undefined),
   writeFile: vi.fn().mockResolvedValue(undefined),
   copyFile: vi.fn().mockResolvedValue(undefined),
@@ -47,6 +48,7 @@ vi.mock('@tauri-apps/plugin-fs', () => ({
   lstat: vi.fn().mockResolvedValue({ isSymlink: false }),
   mkdir: vi.fn().mockResolvedValue(undefined),
   remove: vi.fn().mockResolvedValue(undefined),
+  rename: vi.fn().mockResolvedValue(undefined),
   watch: vi.fn().mockResolvedValue(() => {}),
   BaseDirectory: { AppData: 0, Home: 1 },
 }));

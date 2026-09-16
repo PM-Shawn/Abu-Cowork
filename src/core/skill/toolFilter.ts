@@ -41,6 +41,17 @@ function parsePattern(pattern: string): ParsedPattern {
 }
 
 /**
+ * The tool-NAME half of an allowed-tools pattern: `run_command(npm run *)` →
+ * `run_command`, `read_file` → `read_file`. Exported so callers that reason
+ * about the name alone (save_agent checking that a role card names a tool that
+ * exists) split a pattern exactly the way matching does, instead of carrying a
+ * second copy of the `name(constraint)` syntax that could drift from it.
+ */
+export function toolPatternName(pattern: string): string {
+  return parsePattern(pattern).toolName;
+}
+
+/**
  * Check if a string matches a glob-like pattern with * wildcards.
  * Only supports * (match any characters) — not full glob.
  * Exported for reuse in skillHooks.ts.

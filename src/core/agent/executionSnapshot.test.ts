@@ -76,6 +76,24 @@ function assistantMessage(id: string, toolCalls: ToolCall[]): Message {
 }
 
 describe('executionSnapshot', () => {
+  it('round-trips batchTask on run_agent_batch child steps', () => {
+    const child: ExecutionStep = {
+      id: 'child-1', executionId: 'exec', toolCallId: 'sub-tool-1', type: 'tool', label: 'read',
+      status: 'completed', toolName: 'read_file', toolInput: {}, source: 'agent', detailBlocks: [],
+      batchTask: { index: 1, label: 'analyst' },
+    };
+    const batchStep: ExecutionStep = {
+      id: 'batch', executionId: 'exec', toolCallId: 'batch-1', type: 'delegate', label: 'batch',
+      status: 'completed', toolName: 'run_agent_batch', toolInput: {}, source: 'agent', detailBlocks: [],
+      childSteps: [child],
+    };
+    const snap = snapshotExecutionSteps([batchStep]);
+    expect(snap[0].childSteps?.[0].batchTask).toEqual({ index: 1, label: 'analyst' });
+    const restored = snapshotToExecutionSteps(snap);
+    expect(restored[0].childSteps?.[0].batchTask).toEqual({ index: 1, label: 'analyst' });
+    expect(restored[0].childSteps?.[0].toolCallId).toBe('sub-tool-1');
+  });
+
   describe('snapshot round-trip', () => {
     it('carries toolCallId through snapshot and restore', () => {
       const steps = [step({ id: 'step-1', toolCallId: 'toolu_1' })];

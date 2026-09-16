@@ -655,8 +655,11 @@ describe('computeWorkProcessFold', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const seg = (kind: string): any => (kind === 'text' ? { kind, text: 'x', message: { id: 't' }, isLastTurn: true } : { kind, executionSteps: [], legacySteps: [], isLastGroup: false, stepsMsgs: [] });
 
-  it('allows running work to be manually folded (streamed text stays visible via the collapsed-render filter)', () => {
-    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBe(2);
+  it('never folds while the run is in progress (header would insert mid-run and say "worked for")', () => {
+    expect(computeWorkProcessFold([seg('steps'), seg('text')], false)).toBeNull();
+    expect(computeWorkProcessFold([seg('steps'), seg('steps')], false)).toBeNull();
+    const batch = { kind: 'batch', toolCall: { id: 'b', name: 'run_agent_batch', input: {} }, message: { id: 'm' } } as Extract<Segment, { kind: 'batch' }>;
+    expect(computeWorkProcessFold([batch], false)).toBeNull();
   });
   it('folds everything before the final text answer', () => {
     // [thinking, plan, tool, text] → foldEnd = 3

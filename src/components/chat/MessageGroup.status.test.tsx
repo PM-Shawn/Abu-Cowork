@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
@@ -10,6 +10,13 @@ import { useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { Conversation, Message } from '@/types';
 import MessageGroup from './MessageGroup';
+import { usePreviewStore } from '@/stores/previewStore';
+import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
+
+vi.mock('@/core/session/outputSnapshots', async importOriginal => ({
+  ...await importOriginal<typeof import('@/core/session/outputSnapshots')>(),
+  resolveFileSource: vi.fn().mockResolvedValue({ status: 'missing', basename: 'report.md', originalPath: '/tmp/report.md' }),
+}));
 
 function setConversationState(
   conversation: Conversation,
@@ -164,7 +171,7 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.getByText('I will inspect the workspace first.')).toBeInTheDocument();
   });
 
-  it('keeps streaming assistant text visible after manually collapsing preceding work', () => {
+  it('renders running work inline without a fold header, keeping streaming text visible', () => {
     const userMessage: Message = {
       id: 'user-streaming-text',
       role: 'user',
@@ -213,9 +220,14 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
 
-    const foldButton = screen.getByRole('button', { name: /1 agents: 1 running/ });
-    fireEvent.click(foldButton);
-    expect(foldButton).toHaveAttribute('aria-expanded', 'false');
+    // In-progress runs render their work inline: no fold wrapper exists yet
+    // (the "Worked for" header is a settled-turn summary — see
+    // computeWorkProcessFold), so the live batch card and the streaming text
+    // are both directly visible, under the non-interactive ticking divider.
+    expect(screen.queryByRole('button', { name: /1 experts: 1 running/ })).toBeNull();
+    expect(screen.queryByText(/Worked for/)).toBeNull();
+    expect(screen.getByText(/Working/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Open inspect live state.*Running/ })).toBeInTheDocument();
     expect(screen.getByText('The first result is already available.')).toBeInTheDocument();
   });
 
@@ -275,7 +287,7 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
 
-    const foldButton = screen.getByRole('button', { name: /1 agents: 1 succeeded/ });
+    const foldButton = screen.getByRole('button', { name: /1 experts: 1 succeeded/ });
     if (foldButton.getAttribute('aria-expanded') === 'true') fireEvent.click(foldButton);
     expect(foldButton).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('Also include the follow-up details.')).toBeInTheDocument();
@@ -325,7 +337,7 @@ describe('MessageGroup stopped terminal', () => {
     render(<MessageGroup conversationId={conversation.id} messages={conversation.messages} isLastGroup />);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
     });
     expect(screen.queryByText('Unknown')).toBeNull();
     expect(screen.getByText('Legacy batch finished.')).toBeInTheDocument();
@@ -506,7 +518,7 @@ describe('MessageGroup stopped terminal', () => {
     // The whole work process (intro + batch) folds behind the header, and the
     // successful batch auto-collapses — but authored text must survive the
     // collapsed state: only the batch card itself hides.
-    const foldHeader = screen.getByRole('button', { name: /1 agents: 1 succeeded/ });
+    const foldHeader = screen.getByRole('button', { name: /1 experts: 1 succeeded/ });
     expect(foldHeader).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('Preparing the batch.')).toBeInTheDocument();
     expect(screen.getByText('Batch finished.')).toBeInTheDocument();
@@ -517,7 +529,7 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.getAllByText('✓ 1 sub-tasks completed')).toHaveLength(1);
   });
 
-  it('keeps process-only running work visible without offering a destructive fold', () => {
+  it('keeps process-only running work visible with no fold header until the run settles', () => {
     const userMessage: Message = {
       id: 'user-running-fold',
       role: 'user',
@@ -557,16 +569,118 @@ describe('MessageGroup stopped terminal', () => {
     useBatchProgressStore.getState().setTaskRunning(identity, 0);
 
     const view = render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    // Running work offers a manual fold but never auto-collapses: the live
-    // batch card must stay visible by default, across remounts.
-    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'true');
+    // Running work renders inline — no fold header exists until the run
+    // settles (only the non-interactive ticking divider), and the live batch
+    // card stays visible, across remounts.
+    expect(screen.queryByRole('button', { name: /1 experts: 1 running/ })).toBeNull();
+    expect(screen.getByText(/Working/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
 
     view.unmount();
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.getByRole('button', { name: /1 agents: 1 running/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('button', { name: /1 experts: 1 running/ })).toBeNull();
     expect(screen.getByRole('button', { name: /Open inspect running/ })).toBeInTheDocument();
   });
+
+  it('never shows the "Worked for" header mid-run; it appears only once the run settles', () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    vi.setSystemTime(5_000);
+    try {
+      runFoldLifecycle();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  function runFoldLifecycle() {
+    const userMessage: Message = {
+      id: 'user-lifecycle',
+      role: 'user',
+      content: 'run the lifecycle batch',
+      timestamp: 1_000,
+      loopId: 'loop-lifecycle',
+      runState: 'running',
+    };
+    const placeholder: Message = {
+      id: 'assistant-lifecycle',
+      role: 'assistant',
+      content: '',
+      timestamp: 1_100,
+      loopId: 'loop-lifecycle',
+      isStreaming: true,
+    };
+    const conversation: Conversation = {
+      id: 'conversation-lifecycle',
+      title: 'Lifecycle',
+      messages: [userMessage, placeholder],
+      createdAt: 1_000,
+      updatedAt: 1_100,
+      status: 'running',
+    };
+    setConversationState(conversation);
+
+    // Phase 1 — fresh placeholder: typing dots only, no divider and no fold
+    // header row yet.
+    const view = render(
+      <MessageGroup conversationId={conversation.id} messages={[userMessage, placeholder]} isLastGroup />,
+    );
+    expect(document.querySelector('.typing-dot')).not.toBeNull();
+    expect(screen.queryByText(/Worked for/)).toBeNull();
+    expect(screen.queryByText(/Working/)).toBeNull();
+
+    // Phase 2 — first process content arrives: the ticking in-run divider
+    // takes the dots' slot (progressive wording, not a button), and the
+    // settled "Worked for" header still does not exist.
+    const batchMessage: Message = {
+      ...placeholder,
+      toolCalls: [{
+        id: 'lifecycle-batch',
+        name: TOOL_NAMES.RUN_AGENT_BATCH,
+        input: { tasks: [{ task: 'inspect lifecycle' }] },
+        isExecuting: true,
+      }],
+    };
+    const identity = {
+      conversationId: conversation.id,
+      assistantMessageId: batchMessage.id,
+      batchToolCallId: 'lifecycle-batch',
+    };
+    useBatchProgressStore.getState().initBatch(identity, ['inspect lifecycle']);
+    useBatchProgressStore.getState().setTaskRunning(identity, 0);
+    view.rerender(
+      <MessageGroup conversationId={conversation.id} messages={[userMessage, batchMessage]} isLastGroup />,
+    );
+    expect(screen.getByRole('button', { name: /Open inspect lifecycle.*Running/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Worked for/)).toBeNull();
+    // Divider: elapsed = now(5s) - workStart(1s) = 4s, ticking every second.
+    expect(screen.getByText('Working for 4s')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Working for/ })).toBeNull();
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByText('Working for 6s')).toBeInTheDocument();
+
+    // Phase 3 — run settles: the ticking divider hands its slot to the fold
+    // header, now truthfully in the past tense, with the completion collapse.
+    useBatchProgressStore.getState().setTaskTerminal(identity, 0, { status: 'succeeded', reason: 'completed' });
+    const settledUser: Message = { ...userMessage, runState: 'completed', runEndedAt: 3_000 };
+    const settledBatch: Message = { ...batchMessage, isStreaming: false };
+    const finalMessage: Message = {
+      id: 'assistant-lifecycle-final',
+      role: 'assistant',
+      content: 'Lifecycle finished.',
+      timestamp: 2_900,
+      loopId: 'loop-lifecycle',
+    };
+    useChatStore.setState({
+      conversations: { [conversation.id]: { ...conversation, status: 'idle' } },
+    });
+    view.rerender(
+      <MessageGroup conversationId={conversation.id} messages={[settledUser, settledBatch, finalMessage]} isLastGroup />,
+    );
+    expect(screen.getByText(/Worked for/)).toBeInTheDocument();
+    expect(screen.queryByText(/Working for/)).toBeNull();
+  }
 
   it('does not re-auto-collapse after the user manually expands a successful fold', async () => {
     const userMessage: Message = {
@@ -617,14 +731,14 @@ describe('MessageGroup stopped terminal', () => {
 
     const view = render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
     });
-    fireEvent.click(screen.getByRole('button', { name: /1 agents: 1 succeeded/ }));
-    expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: /1 experts: 1 succeeded/ }));
+    expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
 
     view.unmount();
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
-    expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('keeps failed batch process open with a perceivable failed aggregate', () => {
@@ -676,7 +790,7 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    expect(screen.getByRole('button', { name: /1 agents: 1 failed/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /1 experts: 1 failed/ })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: /Open inspect failure.*Failed/ })).toBeInTheDocument();
   });
 
@@ -732,7 +846,7 @@ describe('MessageGroup stopped terminal', () => {
 
     render(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    expect(screen.getByRole('button', { name: new RegExp(`1 agents: 1 ${label}`) })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: new RegExp(`1 experts: 1 ${label}`) })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByRole('button', { name: new RegExp(`Open inspect ${label}.*${row}`) })).toBeInTheDocument();
   });
 
@@ -791,11 +905,46 @@ describe('MessageGroup stopped terminal', () => {
     useChatStore.setState({ conversations: { [conversation.id]: { ...conversation, status: 'idle' } } });
     view.rerender(<MessageGroup conversationId={conversation.id} messages={messages} isLastGroup />);
 
-    expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'true');
     taskRow.blur();
     fireEvent.focusOut(taskRow, { relatedTarget: document.body });
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /1 agents: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
     });
+  });
+});
+
+
+describe('automatic preview conversation ownership', () => {
+  const originalOpenPreview = usePreviewStore.getState().openPreview;
+  beforeEach(() => { usePreviewStore.setState({ openPreview: originalOpenPreview }); });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); usePreviewStore.setState({ openPreview: originalOpenPreview }); });
+  it.each([false, true])('does not send a delayed preview to another conversation (switched=%s)', async switched => {
+    initLanguage('en-US');
+    const pending: ((source: ResolvedSource) => void)[] = [];
+    vi.mocked(resolveFileSource).mockImplementation(() => new Promise(resolve => { pending.push(resolve); }));
+    const messages: Message[] = [{
+      id: 'output', role: 'assistant', content: '', timestamp: 1000,
+      toolCalls: [{ id: 'write', name: TOOL_NAMES.WRITE_FILE, input: { path: '/tmp/report.md', content: 'report' }, result: 'ok' }],
+    }];
+    const owner: Conversation = { id: 'preview-owner', title: 'A', messages, createdAt: 1, updatedAt: 1, status: 'running' };
+    setConversationState(owner);
+    usePreviewStore.setState({ tabs: [], currentConversationId: owner.id, activeTabId: null, panelStateByConversation: {}, lastActiveTabByConversation: {} });
+    const open = vi.spyOn(usePreviewStore.getState(), 'openPreview');
+    render(<MessageGroup conversationId={owner.id} messages={messages} isLastGroup />);
+    const before = pending.length;
+    await act(async () => { useChatStore.setState({ conversations: { [owner.id]: { ...owner, status: 'idle' } } }); });
+    await waitFor(() => expect(pending.length).toBeGreaterThan(before));
+    if (switched) {
+      await act(async () => {
+        useChatStore.setState({ activeConversationId: 'other', conversations: { [owner.id]: { ...owner, status: 'idle' }, other: { ...owner, id: 'other', status: 'idle' } } });
+        usePreviewStore.getState().closeTabsForConversationSwitch('other');
+      });
+    }
+    await act(async () => {
+      for (const resolve of pending) resolve({ status: 'available', path: '/tmp/report.md', isFromSnapshot: false });
+    });
+    if (switched) expect(open).not.toHaveBeenCalled();
+    else expect(open).toHaveBeenCalledWith('/tmp/report.md');
   });
 });

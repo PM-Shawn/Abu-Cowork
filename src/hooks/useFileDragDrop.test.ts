@@ -8,6 +8,13 @@ type TestRuntime = typeof globalThis & {
   __ABU_SHELL__?: {
     mainSupervisesSidecar?: boolean;
     getPathForFile?: (file: File) => string;
+    authorizeUserAttachment?: (file: File, request: { mediaType: 'application/pdf'; maxBytes?: number }) => Promise<{
+      token: string;
+      name: string;
+      mediaType: 'application/pdf';
+      expiresAt: number;
+    }>;
+    readUserAttachment?: (request: { token: string }) => Promise<Uint8Array>;
   };
 };
 
@@ -86,5 +93,38 @@ describe('useFileDragDrop', () => {
 
     act(() => result.current.dropTargetProps.onDragLeave?.(dragEvent()));
     expect(result.current.isDragging).toBe(false);
+  });
+
+
+
+  it.each(['brief.pdf', 'brief.PDF'])('delivers native PDF %s as a file reference', async (name) => {
+    const onDrop = vi.fn();
+    const finishAdmission = vi.fn();
+    const onAdmissionError = vi.fn();
+    const { result } = renderHook(() => useFileDragDrop(onDrop, {
+      onAdmissionStart: () => finishAdmission, onAdmissionError,
+    }));
+    await act(async () => {
+      result.current.dropTargetProps.onDrop?.(dragEvent([new File(['pdf'], name, { type: 'application/pdf' })]));
+    });
+    expect(onDrop).toHaveBeenCalledWith([`/native/${name}`]);
+    expect(onAdmissionError).not.toHaveBeenCalled();
+    expect(finishAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a PDF with no native path and closes admission', async () => {
+    runtime.__ABU_SHELL__!.getPathForFile = () => '';
+    const onDrop = vi.fn();
+    const onAdmissionError = vi.fn();
+    const finishAdmission = vi.fn();
+    const { result } = renderHook(() => useFileDragDrop(onDrop, {
+      onAdmissionStart: () => finishAdmission, onAdmissionError,
+    }));
+    await act(async () => {
+      result.current.dropTargetProps.onDrop?.(dragEvent([new File(['pdf'], 'missing.pdf')]));
+    });
+    expect(onDrop).not.toHaveBeenCalled();
+    expect(onAdmissionError).toHaveBeenCalledTimes(1);
+    expect(finishAdmission).toHaveBeenCalledTimes(1);
   });
 });

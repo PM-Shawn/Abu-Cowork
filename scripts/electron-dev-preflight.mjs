@@ -47,8 +47,16 @@ function requiredArtifacts(repoRoot) {
       filePath: path.join(repoRoot, 'electron', 'browser-runtime', 'dist', 'server.mjs'),
     },
     {
+      name: 'Abu-Browser query_js Worker',
+      filePath: path.join(repoRoot, 'electron', 'browser-runtime', 'dist', 'queryJsWorker.mjs'),
+    },
+    {
       name: 'Abu-Chrome-Bridge 运行时',
       filePath: path.join(repoRoot, 'electron', 'chrome-bridge-runtime', 'dist', 'server.mjs'),
+    },
+    {
+      name: 'Abu-Chrome-Bridge query_js Worker',
+      filePath: path.join(repoRoot, 'electron', 'chrome-bridge-runtime', 'dist', 'queryJsWorker.mjs'),
     },
     {
       name: 'Abu-Chrome-Bridge 扩展',
@@ -206,6 +214,27 @@ export function inspectElectronDevArtifacts(repoRoot = DEFAULT_REPO_ROOT) {
     }));
 }
 
+// npm ci 会跑 package.json 的 prepare（husky）生成 .husky/_/，git 的
+// core.hooksPath 指向那里；软链接 node_modules 的 worktree 跳过了 npm ci，
+// .husky/_/ 不存在时 git 静默不跑任何钩子，lint-staged 门禁形同虚设。
+export function inspectGitHooks(repoRoot = DEFAULT_REPO_ROOT) {
+  const hookSource = path.join(repoRoot, '.husky', 'pre-commit');
+  if (!existsSync(hookSource)) {
+    return [];
+  }
+  const installedHook = path.join(repoRoot, '.husky', '_', 'pre-commit');
+  if (existsSync(installedHook)) {
+    return [];
+  }
+  return [
+    {
+      code: 'missing-git-hooks',
+      filePath: installedHook,
+      message: '缺少 git pre-commit 钩子（.husky/_/ 未生成），提交时不会运行 lint-staged；请执行 npx husky。',
+    },
+  ];
+}
+
 export function formatPreflightFailure(result) {
   const lines = [
     '',
@@ -234,6 +263,7 @@ export function runElectronDevPreflight(repoRoot = DEFAULT_REPO_ROOT) {
   if (result.issues.length === 0) {
     result.issues.push(...verifyElectronDevRuntime(repoRoot));
     result.issues.push(...inspectElectronDevArtifacts(repoRoot));
+    result.issues.push(...inspectGitHooks(repoRoot));
   }
 
   if (result.issues.length > 0) {

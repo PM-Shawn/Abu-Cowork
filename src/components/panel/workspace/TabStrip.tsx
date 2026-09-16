@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight, Bot } from 'lucide-react';
+import { FileText, AppWindow, SquareTerminal, ListChecks, X, Plus, PanelRight, Bot, Users } from 'lucide-react';
 import {
   usePreviewStore,
+  useVisibleTabs,
   workspaceTabButtonId,
   workspaceTabPanelId,
   type WorkspaceTab,
@@ -23,6 +24,7 @@ function tabIcon(tab: WorkspaceTab) {
   if (tab.kind === 'preview') return FileText;
   if (tab.kind === 'browser') return AppWindow;
   if (tab.kind === 'subagent') return Bot;
+  if (tab.kind === 'team') return Users;
   return SquareTerminal;
 }
 
@@ -41,12 +43,13 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
     }
   }
   if (tab.kind === 'subagent') return tab.title || t.workspace.agentTitle;
+  if (tab.kind === 'team') return t.workspace.teamTitle;
   return t.workspace.terminalTitle;
 }
 
 /**
  * Horizontal workspace tab bar (TRAE Solo-style): tab kind icon + title +
- * hover close, active-tab styling, trailing `+` new-tab menu, middle-click
+ * always-visible close, active-tab styling, trailing `+` new-tab menu, middle-click
  * close, and lightweight pointer-based drag-to-reorder (no dnd-kit — mirrors
  * TRAE's `swapOpenedTab(i, j)`). See docs/2026-07-17-workspace-tabs-design.md.
  *
@@ -59,7 +62,10 @@ function tabTitle(tab: WorkspaceTab, t: ReturnType<typeof useI18n>['t']): string
 export default function TabStrip() {
   const { t } = useI18n();
   const windowsWorkspaceHeader = isWindows() && hasElectronCommandHost();
-  const tabs = usePreviewStore((s) => s.tabs);
+  // The strip lists only what this conversation owns or shares: a browser tab
+  // adopted for another conversation keeps running (hidden) but is not listed,
+  // not activatable, and not closable from here.
+  const tabs = useVisibleTabs();
   const activeTabId = usePreviewStore((s) => s.activeTabId);
   const activateTab = usePreviewStore((s) => s.activateTab);
   const closeTab = usePreviewStore((s) => s.closeTab);
@@ -331,7 +337,7 @@ export default function TabStrip() {
                   e.stopPropagation();
                   closeTab(tab.id, { focusAfterClose: true });
                 }}
-                className="mr-1 shrink-0 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-[var(--abu-bg-pressed)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
+                className="mr-1 shrink-0 rounded p-0.5 hover:bg-[var(--abu-bg-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-clay)]"
                 aria-label={format(t.workspace.closeTabLabel, { title })}
                 title={t.workspace.closeTab}
               >

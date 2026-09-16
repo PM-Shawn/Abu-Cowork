@@ -20,6 +20,16 @@ import {
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
+/**
+ * The task-local capability dialog keeps the "start setup" wording as its
+ * own accessible name (`settings.capabilityChromeSetupTitle`), but since the
+ * Capabilities rebuild the page it hosts is the ordinary Chrome capability
+ * detail page, headed by the capability itself
+ * (`settings.capabilityMyChrome`) rather than by the setup phrase. Assert
+ * both, so the test still proves it is the Chrome setup that opened.
+ */
+const CAPABILITY_SETUP_DIALOG = /^(连接我的 Chrome|Connect My Chrome)$/;
+const MY_CHROME_HEADING = /^(我的 Chrome|My Chrome)$/;
 const TEST_API_KEY = 'abu-e2e-tool-approval-not-a-real-secret';
 const TEST_MODEL_ID = 'abu-e2e-tool-approval-model';
 const PROVIDER_ID = 'abu-e2e-tool-approval-provider';
@@ -476,8 +486,9 @@ test.describe.serial('Electron run_command approval E2E', () => {
     await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(1);
     const setupDialog = page.getByRole('dialog');
     await expect(setupDialog).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(setupDialog).toHaveAttribute('aria-label', CAPABILITY_SETUP_DIALOG);
     await expect(
-      setupDialog.getByText(/^(连接我的 Chrome|Connect My Chrome)$/),
+      setupDialog.getByRole('heading', { name: MY_CHROME_HEADING }),
     ).toBeVisible();
 
     await setupDialog.getByRole('button', {

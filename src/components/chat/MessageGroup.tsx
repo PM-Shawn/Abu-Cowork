@@ -12,6 +12,8 @@ import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
+import McpAppBlock from './McpAppBlock';
+import { resolveToolCallAppUi } from '@/core/mcp/appHost';
 import SmoothHeight from './SmoothHeight';
 import BatchProgress from './BatchProgress';
 import MarkdownRenderer from './MarkdownRenderer';
@@ -19,6 +21,7 @@ import FileAttachment, { ImagePreviewCard, ImageThumbnail, isImageFile } from '.
 import SourcesSection from './SourcesSection';
 import { getConversationAgentState, useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
@@ -30,10 +33,13 @@ import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, par
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
 import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
+import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
+import AgentAvatar from '@/components/common/AgentAvatar';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import {
@@ -103,6 +109,46 @@ function SkillPatchSummaryRow({ skillName, calls }: { skillName: string; calls: 
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+// Elapsed time for the in-run status divider ("已处理 Ns"), ticking once per
+// second while `active` — the same 1s-interval + wall-clock pattern Codex uses
+// for its "Working for {time}" divider. Inert (0, no interval) when inactive,
+// so settled groups and pure-text runs pay nothing.
+function useRunElapsedMs(startMs: number | undefined, active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  if (!active || startMs == null) return 0;
+  return Math.max(0, now - startMs);
+}
+
+/**
+ * In-run ticking status divider ("处理中" / "已处理 Ns"), Codex-aligned: plain
+ * text, not a button — no fold exists until the run settles, when the fold
+ * header button takes this exact slot as a 1:1 row swap.
+ *
+ * ALWAYS grows in on mount (Codex animates its "Working for" divider the same
+ * way). The dots slot is NOT this row's to take: when the first process
+ * segment lands, TaskBlock's own header row is the dots row's designated
+ * same-slot successor (see ThinkingStatusLine), so at that commit the instant
+ * height budget is already spent (dots out, TaskBlock header in, net zero) —
+ * a non-animated divider on top was measured as the same one-frame +46px jump
+ * as the original bug. Growing in keeps every frame continuous: the thinking
+ * row slides down one row-height over 200ms instead of teleporting.
+ */
+function RunStatusDivider({ label }: { label: string }) {
+  return (
+    <div className="block-expand block-expand-open block-expand-enter">
+      <div className="mb-2 text-body text-[var(--abu-text-muted)] tabular-nums">
+        {label}
+      </div>
     </div>
   );
 }
@@ -425,13 +471,22 @@ export function buildRenderSegments(
 // Index (exclusive) up to which segments fold into the collapsible "工作过程"
 // group. Segments [0, foldEnd) fold; [foldEnd, end) render inline. When the
 // turn is done and ends in a text answer, the fold stops at that answer;
-// otherwise (streaming, text-first with no closing answer, process after the
-// last text) the whole group folds. Authored content is still never hidden:
-// the collapsed render branch filters segments by kind and keeps text/user
-// segments visible unconditionally — the swallow bug this replaced lived in
-// that filter, not in the fold range.
+// otherwise (text-first with no closing answer, process after the last text)
+// the whole group folds. Authored content is still never hidden: the collapsed
+// render branch filters segments by kind and keeps text/user segments visible
+// unconditionally — the swallow bug this replaced lived in that filter, not in
+// the fold range.
+//
+// While the run is still in progress the fold does not exist at all (null):
+// the settled "用时 Xs" header is a completed-turn summary, and mounting the
+// header row mid-run inserted ~28px above the live thinking/step block — under
+// SmoothHeight's 40px threshold, so it landed as a one-frame jump. Deferring
+// the whole wrapper keeps the in-run row structure stable (the typing dots
+// swap 1:1 with TaskBlock's first row) and the header only appears together
+// with the completion collapse, which SmoothHeight bridges.
 // eslint-disable-next-line react-refresh/only-export-components
 export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolean): number | null {
+  if (!isDone) return null;
   const hasProcess = segments.some((segment) =>
     segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
   if (!hasProcess) return null;
@@ -442,7 +497,7 @@ export function computeWorkProcessFold(segments: RenderSegment[], isDone: boolea
   const hasProcessAfterLastText = lastTextIdx >= 0 && segments
     .slice(lastTextIdx + 1)
     .some((segment) => segment.kind === 'steps' || segment.kind === 'plan' || segment.kind === 'batch');
-  if (isDone && lastTextIdx > 0 && !hasProcessAfterLastText) return lastTextIdx;
+  if (lastTextIdx > 0 && !hasProcessAfterLastText) return lastTextIdx;
   return segments.length;
 }
 
@@ -478,6 +533,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
   const activeConv = useActiveConversation();
   const activeConversationId = activeConv?.id ?? null;
+  const teamLeader = useConversationTeamLeader(conversationId);
   const agentStatus = useChatStore((s) => getConversationAgentState(s.agentStates, activeConversationId).status);
   const home = useHomeDir();
 
@@ -655,6 +711,71 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     return files;
   }, [allToolCalls, assistantMsgs, home]);
 
+  /**
+   * Which MCP servers are connected right now, as one stable string.
+   *
+   * A joined key rather than the `servers` object itself: the store hands out a
+   * new object on every status tick (connecting → connected → tools loaded), so
+   * depending on it directly would re-resolve every interface on unrelated
+   * churn, while depending on nothing at all makes a late connection invisible.
+   */
+  const connectedKey = useMCPStore((s) => Object.entries(s.servers)
+    .filter(([, entry]) => entry.status === 'connected')
+    .map(([name]) => name)
+    .sort()
+    .join('|'));
+
+  /**
+   * MCP Apps: steps whose connector declares a `ui://` interface (spec §4.2).
+   *
+   * These are resolved here, alongside the other per-step cards, and NOT inside
+   * the task workflow: the work fold unmounts its contents on auto-collapse, so
+   * an interface rendered in there would be destroyed — iframe, bridge, app
+   * state and all — the moment the turn finished. `ToolCallsGroup` renders the
+   * same block for the surfaces that still go through `MessageBubble` directly;
+   * an assistant turn's steps only ever come through this path.
+   */
+  const mcpAppSteps = useMemo(() => {
+    const ownerByToolCallId = new Map<string, string>();
+    for (const message of assistantMsgs) {
+      for (const toolCall of message.toolCalls ?? []) ownerByToolCallId.set(toolCall.id, message.id);
+    }
+    return allToolCalls.flatMap((toolCall) => {
+      const ui = resolveToolCallAppUi(toolCall);
+      const messageId = ownerByToolCallId.get(toolCall.id);
+      return ui && messageId ? [{ toolCall, ui, messageId }] : [];
+    });
+    // `connectedKey` is in the deps because `resolveToolCallAppUi` reads the
+    // LIVE MCP client, which is not otherwise an input to this memo. Its
+    // subscription (above) is what actually re-renders this group when a
+    // connector finishes connecting after the conversation was opened — without
+    // it the interface stays permanently absent, and the "connect {server}"
+    // placeholder is unreachable too, since the block is what renders it. The
+    // dep keeps that correct if `messages` ever stops being a fresh array per
+    // render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allToolCalls, assistantMsgs, connectedKey]);
+
+  // Persist the resolved `ui` on the step so a reopened conversation can
+  // rebuild the interface without asking the MCP client again (spec §4.4).
+  // `conversationId` (the prop), not the globally active conversation: this
+  // group belongs to ONE conversation, and the app block's approvals, model
+  // context and persisted `ui` must all be filed against that one. The two
+  // agree while the group is on screen; the prop is the one that stays correct
+  // if it ever renders outside the active conversation.
+  useEffect(() => {
+    if (!conversationId) return;
+    for (const step of mcpAppSteps) {
+      if (step.toolCall.ui) continue;
+      useChatStore.getState().setToolCallAppUi(
+        conversationId,
+        step.messageId,
+        step.toolCall.id,
+        step.ui,
+      );
+    }
+  }, [mcpAppSteps, conversationId]);
+
   // Check if any tool is executing
   const isAnyExecuting = allToolCalls.some((tc) => tc.isExecuting);
 
@@ -679,14 +800,20 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     if (previewableFile) {
       // Resolve through outputSnapshots so we never hand a non-absolute / missing
       // path to openPreview (which would trigger a Tauri capability error).
+      const ownerId = conversationId ?? activeConv?.id;
       import('@/core/session/outputSnapshots').then(({ resolveFileSource }) => {
-        resolveFileSource(activeConv?.id, previewableFile.path).then((r) => {
-          if (r.status === 'available') openPreview(r.path);
+        resolveFileSource(ownerId, previewableFile.path).then((r) => {
+          // Resolution can outlive this conversation's UI. Never open A's
+          // output in B or revive the preview of a deleted conversation.
+          const chat = useChatStore.getState();
+          if (r.status === 'available' && ownerId && chat.conversations[ownerId]
+            && chat.activeConversationId === ownerId
+            && usePreviewStore.getState().currentConversationId === ownerId) openPreview(r.path);
         }).catch(() => {});
       }).catch(() => {});
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- isLastGroupProp omitted: adding it would re-trigger preview when a new group demotes this one
-  }, [isAgentDone, fileOutputs, openPreview, activeConv?.id]);
+  }, [isAgentDone, fileOutputs, openPreview, activeConv?.id, conversationId]);
 
   // Rewind confirm state: handleRetry's deleteMessagesFrom truncates from
   // this loop's first assistant message onward, discarding anything after —
@@ -708,7 +835,14 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       if (firstAssistantInLoop) {
         useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
       }
-      await runAgentLoopDispatched(convId, userContent, { images: retryImages });
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
+      // A retry is a human clicking a button, like MessageBubble's own
+      // retry/regenerate/edit-resend — the run is attended even when the
+      // conversation record carries a scheduler/trigger marker.
+      await runAgentLoopDispatched(convId, userContent, {
+        initiatedBy: 'user',
+        ...(retryImages ? { images: retryImages } : {}),
+      });
     };
 
     const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);
@@ -794,7 +928,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // generation isn't captured — its timestamp is set at creation — and the live
   // execution with the accurate endTime is usually evicted by the time this
   // settled fold renders). Floor the total at the sum of visible step durations
-  // so "已处理 X" is never less than the thinking/tool times the user can add up.
+  // so "用时 X" is never less than the thinking/tool times the user can add up.
   const workStepsSec =
     assistantMsgs.reduce((a, m) => a + (m.thinkingDuration ?? 0), 0) +
     activeExecSteps.filter((s) => s.type !== 'thinking').reduce((a, s) => a + (s.duration ?? 0), 0);
@@ -812,6 +946,19 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     })
     : '';
   const foldHeaderLabel = batchAggregateLabel ? `${workLabel} · ${batchAggregateLabel}` : workLabel;
+  // Codex-aligned in-run status divider: appears (animated) with the first
+  // process segment, ticks every second, and is NOT interactive — collapse
+  // only exists once the run settles and the fold header takes this exact
+  // slot ("已处理 Ns" → "用时 Ns" as a 1:1 row swap, no layout change).
+  const hasProcessSegments = segments.some(
+    (seg) => seg.kind === 'steps' || seg.kind === 'plan' || seg.kind === 'batch');
+  const showRunStatusLine = !isGroupDone && !isStopped && hasProcessSegments;
+  const runElapsedMs = useRunElapsedMs(workStart, showRunStatusLine);
+  // Sub-second elapsed shows the plain "处理中" (Codex: "Working") so the very
+  // first paint never reads "已处理 0s".
+  const runStatusLabel = runElapsedMs >= 1000
+    ? format(t.chat.workingFor, { duration: formatWorkDuration(runElapsedMs) })
+    : t.chat.working;
   const foldMode = foldEntry?.mode ?? 'auto';
   const workExpanded = foldMode === 'expanded' || (foldMode === 'auto' && !(foldEntry?.autoCollapseHandled ?? false));
   const hasFinalAnswerOutsideFold = workFoldEnd !== null && workFoldEnd < segments.length && segments[workFoldEnd]?.kind === 'text';
@@ -1038,11 +1185,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       {/* Multiple assistant messages grouped with single avatar */}
       {(assistantMsgs.length > 0 || isStopped) && (
         <div className="flex gap-3 w-full overflow-hidden group">
-          {/* ABU Avatar - only shown once for the group */}
-          <AssistantRowAvatar />
+          {/* ABU Avatar - only shown once for the group (the leader's in a team conversation) */}
+          <AssistantRowAvatar avatar={teamLeader ? <AgentAvatar agent={teamLeader.leader} size="md" round /> : undefined} name={teamLeader?.leaderName} />
 
           {/* Content area */}
           <div className="flex-1 min-w-0 overflow-hidden">
+            {teamLeader && (
+              <div data-testid="team-leader-caption" className="mb-1 text-caption text-[var(--abu-text-tertiary)] truncate">
+                {teamLeader.leaderName} · {teamLeader.teamName}
+              </div>
+            )}
             {/* A stopped run is a turn terminal, not assistant-authored text.
                 Render it even when Stop arrived before the first model token
                 and the empty assistant placeholder was durably deleted. */}
@@ -1054,7 +1206,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
 
             {/* SmoothHeight bridges the layout SWAPS inside this region — most
                 importantly the completion fold: the expanded thinking/step
-                block unmounts and the one-line "已处理 Xs" header takes its
+                block unmounts and the one-line "用时 Xs" header takes its
                 place in the same render, a -100~200px one-frame shrink that
                 (while pinned to the bottom) used to clamp scrollTop and jump
                 the whole view down. Streamed token growth stays instant (it's
@@ -1069,7 +1221,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 itself, so a plan card from an earlier turn in the same group does
                 not suppress the dots for the fresh empty turn that follows. */}
             {isStreaming && !streamingHasContent && (
-              /* mb-2 matches the TaskBlock header / "已处理 Xs" fold header
+              /* mb-2 matches the TaskBlock header / "用时 Xs" fold header
                  buttons that replace this row in later states; the label
                  geometry itself lives in the shared ThinkingStatusLine. */
               <ThinkingStatusLine label={t.status.thinking} className="mb-2" />
@@ -1078,50 +1230,53 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             {/* Render segments: text blocks and merged step groups.
                 When the turn is done and has a final text answer, all
                 intermediate segments (thinking/plan/steps) are folded
-                behind a single collapsible "工作过程" row (Codex-style). */}
-            {workFoldEnd == null ? (
-              <>
-                {segments.map(renderSegment)}
-              </>
-            ) : (
-              <>
-                <div ref={workProcessRef}>
-                  {/* Lightweight fold header — matches the thinking/step block
-                      style (muted text + trailing chevron, no card background). */}
-                  <button
-                    type="button"
-                    aria-expanded={workExpanded}
-                    onClick={() => {
-                      useWorkProcessFoldStore.getState().setMode(
-                        conversationId,
-                        foldKey,
-                        workExpanded ? 'collapsed' : 'expanded',
-                      );
-                    }}
-                    className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm transition-colors mb-2"
-                  >
-                    <span>{foldHeaderLabel}</span>
-                    <ChevronDown
-                      aria-hidden="true"
-                      className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
-                    />
-                  </button>
-                  {workExpanded
-                    ? segments.slice(0, workFoldEnd).map((seg, i) => renderSegment(seg, i))
-                    : segments.slice(0, workFoldEnd)
-                        /* Collapsing hides PROCESS segments only. Assistant text
-                           and mid-loop user messages are authored conversation
-                           content and must survive any fold state — hiding them
-                           here was the "collapse swallows the answer" bug. Keep
-                           the original segment index so keys stay stable across
-                           fold toggles. */
-                        .map((seg, i) => ({ seg, i }))
-                        .filter(({ seg }) => seg.kind === 'widget' || seg.kind === 'text' || seg.kind === 'user')
-                        .map(({ seg, i }) => renderSegment(seg, i))}
-                </div>
-                {segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
-              </>
-            )}
+                behind a single collapsible "工作过程" row (Codex-style).
+                While the run is in progress workFoldEnd is null: everything
+                renders inline and no header row exists yet — but the
+                workProcessRef wrapper stays mounted either way, so the
+                process subtree keeps its DOM parent when the fold appears
+                at completion (no remount = keyboard focus survives, which
+                the focus-deferred auto-collapse below relies on). */}
+            <div ref={workProcessRef}>
+              {showRunStatusLine && (
+                <RunStatusDivider label={runStatusLabel} />
+              )}
+              {workFoldEnd != null && (
+                /* Lightweight fold header — matches the thinking/step block
+                    style (muted text + trailing chevron, no card background). */
+                <button
+                  type="button"
+                  aria-expanded={workExpanded}
+                  onClick={() => {
+                    useWorkProcessFoldStore.getState().setMode(
+                      conversationId,
+                      foldKey,
+                      workExpanded ? 'collapsed' : 'expanded',
+                    );
+                  }}
+                  className="flex items-center gap-1 text-body text-[var(--abu-text-muted)] hover:text-[var(--abu-text-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--abu-focus-ring)] rounded-sm transition-colors mb-2"
+                >
+                  <span>{foldHeaderLabel}</span>
+                  <ChevronDown
+                    aria-hidden="true"
+                    className={cn('h-3.5 w-3.5 transition-transform', !workExpanded && '-rotate-90')}
+                  />
+                </button>
+              )}
+              {workFoldEnd == null || workExpanded
+                ? segments.slice(0, workFoldEnd ?? segments.length).map((seg, i) => renderSegment(seg, i))
+                : segments.slice(0, workFoldEnd)
+                    /* Collapsing hides PROCESS segments only. Assistant text
+                       and mid-loop user messages are authored conversation
+                       content and must survive any fold state — hiding them
+                       here was the "collapse swallows the answer" bug. Keep
+                       the original segment index so keys stay stable across
+                       fold toggles. */
+                    .map((seg, i) => ({ seg, i }))
+                    .filter(({ seg }) => seg.kind === 'widget' || seg.kind === 'text' || seg.kind === 'user')
+                    .map(({ seg, i }) => renderSegment(seg, i))}
+            </div>
+            {workFoldEnd != null && segments.slice(workFoldEnd).map((seg, i) => renderSegment(seg, workFoldEnd + i))}
             </SmoothHeight>
 
             {/* Interactive notice cards (Module I) — skill proposals etc.
@@ -1161,6 +1316,24 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 />
               );
             })}
+
+            {conversationId && mcpAppSteps.map((step) => (
+              <McpAppBlock
+                key={`mcp-app-${step.toolCall.id}`}
+                toolCallId={step.toolCall.id}
+                server={step.ui.server}
+                resourceUri={step.ui.resourceUri}
+                input={step.toolCall.input ?? {}}
+                result={step.toolCall.result}
+                resultContent={step.toolCall.resultContent}
+                isError={step.toolCall.isError}
+                isExecuting={step.toolCall.isExecuting}
+                conversationId={conversationId}
+                toolName={step.toolCall.name}
+                messageId={step.messageId}
+                modelContext={step.toolCall.modelContext}
+              />
+            ))}
 
             {/* Grouped skill-patch summary — one collapsible fold-row per
                 skill, replacing the old per-patch floating pills. */}

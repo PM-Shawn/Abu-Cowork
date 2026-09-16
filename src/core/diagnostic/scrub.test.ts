@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { scrubSecrets, stripBinaryContent, scrubMessage } from './scrub';
-import type { Message, MessageContent } from '@/types';
+import type { Message, MessageContent, ToolCall } from '@/types';
 
 // ─── Secret field detection ─────────────────────────────────────────────
 
@@ -231,5 +231,155 @@ describe('scrubMessage', () => {
     expect(out.role).toBe('assistant');
     expect(out.usage).toEqual({ inputTokens: 100, outputTokens: 50 });
     expect(out.timestamp).toBe(1700000000000);
+  });
+});
+
+// ─── Browser fill values (v0.42.0 diagnostic-bundle leak) ───────────────
+//
+// Incident: bundle abu-diagnostic-mtbq8b20 carried a user's login password in
+// plaintext because the abu-browser fill tool echoed the filled value in its
+// result (`Filled field with "<password>"`) and the tool INPUT carries the
+// same value in `value`. A password is an arbitrary string — no generic
+// secret-shape regex can flag it — so redaction here is STRUCTURAL: the tool
+// name tells us `input.value` is a filled value, and that exact string is
+// erased wherever the same call's result echoes it. Pattern backstops cover
+// conversations recorded before the extension itself stopped echoing.
+
+describe('scrubMessage — browser fill values never reach a bundle', () => {
+  const PASSWORD = 'Szzj#0322?*pass';
+
+  const fillMsg = (toolCall: Partial<ToolCall>): Message =>
+    baseMsg({
+      toolCalls: [{
+        id: 'tc1',
+        name: 'abu-browser__fill',
+        input: { tabId: 3, locator: '{"css":"#pw"}', value: PASSWORD },
+        ...toolCall,
+      }],
+    });
+
+  it('redacts the `value` input of a fill tool call, keeping the locator', () => {
+    const out = scrubMessage(fillMsg({}), { includeRawText: false }) as {
+      toolCalls: Array<{ input: { value: string; locator: string; tabId: number } }>;
+    };
+    expect(out.toolCalls[0].input.value).not.toContain(PASSWORD);
+    expect(out.toolCalls[0].input.locator).toBe('{"css":"#pw"}');
+    expect(out.toolCalls[0].input.tabId).toBe(3);
+  });
+
+  it('matches the bare bridge-local `fill` name and `form_input` too', () => {
+    for (const name of ['fill', 'mcp__browser__form_input']) {
+      const m = baseMsg({
+        toolCalls: [{ id: 't', name, input: { value: PASSWORD } }],
+      });
+      const out = scrubMessage(m, { includeRawText: false }) as {
+        toolCalls: Array<{ input: { value: string } }>;
+      };
+      expect(out.toolCalls[0].input.value).not.toContain(PASSWORD);
+    }
+  });
+
+  it('erases the filled value from the result, JSON-escaped echo included', () => {
+    const result = JSON.stringify(
+      { success: true, message: `Filled field with "${PASSWORD}"` },
+      null,
+      2,
+    );
+    const out = scrubMessage(fillMsg({ result }), { includeRawText: false }) as {
+      toolCalls: Array<{ result: string }>;
+    };
+    expect(out.toolCalls[0].result).not.toContain(PASSWORD);
+  });
+
+  it('erases the filled value from structured resultContent blocks', () => {
+    const out = scrubMessage(
+      fillMsg({
+        resultContent: [{ type: 'text', text: `ok: ${PASSWORD} written` }],
+      }),
+      { includeRawText: false },
+    ) as { toolCalls: Array<{ resultContent: unknown }> };
+    expect(JSON.stringify(out.toolCalls[0].resultContent)).not.toContain(PASSWORD);
+  });
+
+  it('redacts fill-step values inside a browser batch, keeping select steps readable', () => {
+    const steps = JSON.stringify([
+      { action: 'fill', locator: { ref: 'e1' }, value: PASSWORD },
+      { action: 'select', locator: { ref: 'e2' }, value: '运维部' },
+      { action: 'click', locator: { ref: 'e3' } },
+    ]);
+    const m = baseMsg({
+      toolCalls: [{ id: 't', name: 'abu-browser__batch', input: { tabId: 1, steps } }],
+    });
+    const out = scrubMessage(m, { includeRawText: false }) as {
+      toolCalls: Array<{ input: { steps: string } }>;
+    };
+    expect(out.toolCalls[0].input.steps).not.toContain(PASSWORD);
+    expect(out.toolCalls[0].input.steps).toContain('运维部');
+    expect(out.toolCalls[0].input.steps).toContain('click');
+  });
+
+  it('erases batch fill-step values echoed in the batch result', () => {
+    const steps = JSON.stringify([{ action: 'fill', locator: { ref: 'e1' }, value: PASSWORD }]);
+    const result = JSON.stringify({
+      steps: [{ ok: true, message: `Filled field with "${PASSWORD}"` }],
+    });
+    const m = baseMsg({
+      toolCalls: [{ id: 't', name: 'abu-browser__batch', input: { tabId: 1, steps }, result }],
+    });
+    const out = scrubMessage(m, { includeRawText: false }) as {
+      toolCalls: Array<{ result: string }>;
+    };
+    expect(out.toolCalls[0].result).not.toContain(PASSWORD);
+  });
+
+  it('leaves `value` inputs of non-fill tools alone', () => {
+    const m = baseMsg({
+      toolCalls: [{ id: 't', name: 'set_config', input: { value: 'theme-dark' } }],
+    });
+    const out = scrubMessage(m, { includeRawText: false }) as {
+      toolCalls: Array<{ input: { value: string } }>;
+    };
+    expect(out.toolCalls[0].input.value).toBe('theme-dark');
+  });
+
+  it('redacts a legacy fill echo in any string (recorded before the source fix)', () => {
+    expect(scrubSecrets('Filled field with "hunter2#pass!"')).toBe(
+      'Filled field with "[REDACTED]"',
+    );
+    // JSON-escaped form, as it appears inside a stringified tool result.
+    const escaped = JSON.stringify({ message: 'Filled field with "hunter2#pass!"' });
+    expect(scrubSecrets(escaped)).not.toContain('hunter2#pass!');
+  });
+
+  it('redacts previousValue echoes in result strings', () => {
+    expect(scrubSecrets('{"previousValue":"oldpw123!"}')).not.toContain('oldpw123!');
+    const escaped = JSON.stringify({ result: '{"previousValue":"oldpw123!"}' });
+    expect(scrubSecrets(escaped)).not.toContain('oldpw123!');
+  });
+
+  it('does not double-redact the extension\'s own redaction marker', () => {
+    expect(scrubSecrets('Filled field with "[value redacted]"')).toBe(
+      'Filled field with "[value redacted]"',
+    );
+  });
+});
+
+// ─── Credential detector parity with memory hygiene (M1) ────────────────
+//
+// The memory write funnel (memdir/sanitize.ts, reusing shareRedactor's vendor
+// rules) already knows credential shapes this file's own regexes miss. The
+// diagnostic channel reuses that detector so the two never drift: a shape the
+// memory gate redacts must not sail through a diagnostic bundle.
+
+describe('scrubSecrets — reuses the memory-hygiene credential detector', () => {
+  it('redacts vendor tokens the memory sanitizer knows (slack, github fine-grained)', () => {
+    expect(scrubSecrets('slack xoxb-123456789012-abcdefghij done')).not.toContain('xoxb-1234');
+    expect(scrubSecrets('pat ghs_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8')).not.toContain('ghs_a1B2');
+  });
+
+  it('redacts contextual bare credentials behind a Chinese keyword', () => {
+    const out = scrubSecrets('数据库密钥: tp1234567890abcd 已配置') as string;
+    expect(out).not.toContain('tp1234567890abcd');
+    expect(out).toContain('密钥');
   });
 });

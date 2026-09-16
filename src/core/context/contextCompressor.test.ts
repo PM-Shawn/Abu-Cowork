@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { compressContextIfNeeded } from './contextCompressor';
 import type { Message } from '../../types';
-import type { LLMAdapter } from '../llm/adapter';
+import { LLMError, type LLMAdapter } from '../llm/adapter';
 
 /** Build `rounds` user/assistant pairs with enough text to cross the 65% threshold. */
 function makeMessages(rounds: number): Message[] {
@@ -59,4 +59,27 @@ describe('compressContextIfNeeded — independent timeout (Bug 1: 同意后死�
     expect(result.compressed).toBe(false);
     expect(result.failed).toBeFalsy();
   });
+
+  it.each(['content_policy', 'authentication'] as const)(
+    'preserves the %s provider code for the auto-compact breaker',
+    async (code) => {
+      const adapter = {
+        chat: vi.fn().mockRejectedValue(new LLMError('provider rejected summary', code, { retryable: false })),
+      } as unknown as LLMAdapter;
+
+      const result = await compressContextIfNeeded(
+        makeMessages(8),
+        'system',
+        2000,
+        500,
+        { adapter, model: 'm', apiKey: 'k', timeoutMs: 50 },
+      );
+
+      expect(result).toMatchObject({
+        compressed: false,
+        failed: true,
+        failureCode: code,
+      });
+    },
+  );
 });

@@ -40,6 +40,14 @@ describe('retry', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it('does not retry a content-policy rejection', async () => {
+    const err = new LLMError('content rejected', 'content_policy', { retryable: false });
+    const fn = vi.fn().mockRejectedValue(err);
+
+    await expect(withRetry(fn)).rejects.toThrow('content rejected');
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it('does not retry non-LLMError', async () => {
     const fn = vi.fn().mockRejectedValue(new Error('generic error'));
 

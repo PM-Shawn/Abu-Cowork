@@ -1,0 +1,609 @@
+// @vitest-environment happy-dom
+/// <reference types="@testing-library/jest-dom" />
+
+// The morning card. The user story it has to satisfy: a scheduled task ran at
+// 3am; at 8am a person opens the conversation and wants four answers — did it
+// work / where did it go / was anything blocked / what do I do now.
+//
+// The case that matters most is `after a restart` below: it is the exact shape
+// of a defect this repo has already shipped once (tool-result images that
+// displayed during execution and went blank afterwards, because the snapshot
+// dropped a field). The card must be complete with the signal buffer empty.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { initLanguage } from '@/i18n';
+import type { Message } from '@/types';
+import {
+  buildBrowserRunReport,
+  createBrowserRunReportMessage,
+  type BrowserRunReportOutcome,
+  type BrowserRunReportSnapshot,
+} from '@/core/observability/browserRunReport';
+import {
+  buildBrowserSignalContext,
+  buildBrowserSignalRecord,
+  clearBrowserSignals,
+  getBrowserSignalCursor,
+  getRecentBrowserSignals,
+  recordBrowserSignal,
+  type BrowserSignalEvent,
+} from '@/core/observability/browserSignals';
+import { usePreviewStore } from '@/stores/previewStore';
+import BrowserRunReportCard from './BrowserRunReportCard';
+
+// The global setup mock has no `revealItemInDir`, and the card imports it
+// lazily inside a try/catch — so without this the reveal button would
+// "succeed" by swallowing a TypeError and pin nothing.
+vi.mock('@tauri-apps/plugin-opener', () => ({
+  openUrl: vi.fn().mockResolvedValue(undefined),
+  openPath: vi.fn().mockResolvedValue(undefined),
+  revealItemInDir: vi.fn().mockResolvedValue(undefined),
+}));
+
+const T0 = 1_700_000_000_000;
+const CONV = 'conv-report';
+
+function record(event: BrowserSignalEvent, ts = T0): void {
+  recordBrowserSignal(
+    buildBrowserSignalRecord(event, buildBrowserSignalContext('builtin', CONV, ts, 'loop-1')),
+  );
+}
+
+function snapshotOf(
+  emit: () => void,
+  outcome: BrowserRunReportOutcome = 'completed',
+): BrowserRunReportSnapshot {
+  const cursor = getBrowserSignalCursor();
+  emit();
+  const report = buildBrowserRunReport({
+    signals: getRecentBrowserSignals(),
+    conversationId: CONV,
+    sinceSeq: cursor,
+    outcome,
+  });
+  if (!report) throw new Error('expected a report');
+  return report;
+}
+
+function messageFor(report: BrowserRunReportSnapshot): Message {
+  return createBrowserRunReportMessage({ id: 'r1', timestamp: T0, report });
+}
+
+describe('BrowserRunReportCard', () => {
+  beforeEach(() => {
+    initLanguage('en-US');
+    clearBrowserSignals();
+  });
+
+  afterEach(() => {
+    cleanup();
+    clearBrowserSignals();
+  });
+
+  it('shows a successful run: what it did and where', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+      record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 8, origin: 'https://intranet.example' });
+    });
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    expect(screen.getByText('Completed')).toBeInTheDocument();
+    expect(screen.getByText('2 browser actions')).toBeInTheDocument();
+    expect(screen.getByText('https://intranet.example')).toBeInTheDocument();
+    expect(screen.getByText('Sites visited')).toBeInTheDocument();
+    // A clean run has nothing to advise.
+    expect(screen.queryByText('What you can do next')).not.toBeInTheDocument();
+  });
+
+  /**
+   * 2026-09-04 opt-in. A script that ran unattended is the one SUCCESS on this
+   * card worth calling out by name — every other line is about a refusal or a
+   * failure, and without this the execution would sit anonymously inside
+   * "3 browser actions" next to two clicks.
+   */
+  it('says out loud how many page scripts ran, and stays silent when none did', () => {
+    const withScripts = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+      record({ kind: 'tool_call', tool: 'abu-browser__execute_js', ok: true, durationMs: 4, origin: 'https://intranet.example' });
+      record({ kind: 'tool_call', tool: 'abu-browser__execute_js', ok: true, durationMs: 4, origin: 'https://intranet.example' });
+    });
+
+    render(<BrowserRunReportCard message={messageFor(withScripts)} />);
+    expect(screen.getByText('Page scripts run: 2')).toBeInTheDocument();
+
+    cleanup();
+    const withoutScripts = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 8, origin: 'https://intranet.example' });
+    });
+    render(<BrowserRunReportCard message={messageFor(withoutScripts)} />);
+    expect(screen.queryByText(/Page scripts run/)).not.toBeInTheDocument();
+  });
+
+  // A snapshot written before the field existed must render as "no scripts",
+  // not as `NaN` — the persisted-DTO lesson this file's header is about.
+  it('renders an older snapshot that predates the script count', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 8, origin: 'https://intranet.example' });
+    });
+    const legacy = { ...report } as Partial<BrowserRunReportSnapshot>;
+    delete legacy.scriptRuns;
+
+    render(<BrowserRunReportCard message={messageFor(legacy as BrowserRunReportSnapshot)} />);
+
+    expect(screen.getByText('1 browser actions')).toBeInTheDocument();
+    expect(screen.queryByText(/Page scripts run/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).not.toBeInTheDocument();
+  });
+
+  it('shows a failed run WITH an actionable next step, not just "an error"', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__click', ok: false, durationMs: 5, errorClass: 'timeout', origin: 'https://intranet.example' });
+      record({
+        kind: 'gate_denied',
+        tool: 'abu-browser__click',
+        opClass: 'interactive',
+        origin: 'https://intranet.example',
+        reason: 'login-required',
+        runMode: 'unattended',
+      });
+    }, 'error');
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    expect(screen.getByText('Stopped with an error')).toBeInTheDocument();
+    expect(screen.getByText("The site's sign-in has expired")).toBeInTheDocument();
+    expect(screen.getByText('Timed out')).toBeInTheDocument();
+    expect(screen.getByText('What you can do next')).toBeInTheDocument();
+    expect(
+      screen.getByText('Open these sites, sign in again, then run the task once more.'),
+    ).toBeInTheDocument();
+  });
+
+  it('names the reason when the run stopped itself after repeated refusals', () => {
+    const report = snapshotOf(() => {
+      record({
+        kind: 'gate_denied',
+        tool: 'abu-browser__execute_js',
+        opClass: 'scripting',
+        reason: 'approval-refused',
+        runMode: 'unattended',
+      });
+      record({ kind: 'approval', via: 'im', outcome: 'declined', opClass: 'scripting' }, T0 + 60_000);
+    }, 'aborted-denials');
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    expect(screen.getByText('Stopped after repeated refusals')).toBeInTheDocument();
+    expect(screen.getByText('The approval was declined or never answered')).toBeInTheDocument();
+    // G2: the human decision is visible — this is the only moment a person was
+    // involved all night.
+    expect(screen.getByText('Your approvals')).toBeInTheDocument();
+    expect(screen.getByText('0 approved · 1 declined')).toBeInTheDocument();
+  });
+
+  it('says the run was skipped because the master switch is off, never silently', () => {
+    // R1 §1.2. The switch defaults to OFF, so this is the most likely
+    // first-run experience: the task reports success while doing nothing.
+    const report = snapshotOf(() => {
+      record({
+        kind: 'gate_denied',
+        tool: 'abu-browser__navigate',
+        opClass: 'interactive',
+        reason: 'master-switch-off',
+        runMode: 'unattended',
+      });
+    }, 'completed');
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    expect(screen.getByText(/master switch for unattended browser access is off/)).toBeInTheDocument();
+    expect(screen.getByText('No browser action was carried out')).toBeInTheDocument();
+    // The next step names the control the user has to find, and the path is
+    // the one the capability page actually has.
+    expect(
+      screen.getByText(/Turn on the master switch in Settings/),
+    ).toBeInTheDocument();
+    // ...and the path it names is the one the capability page actually has.
+    expect(
+      screen.getAllByText(/Abu built-in browser → Automatic tasks/).length,
+    ).toBeGreaterThan(0);
+  });
+
+  // ── Ruling 1 ────────────────────────────────────────────────────────────
+  it('renders completely after the signal buffer has been cleared (a restart)', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+      record({ kind: 'tool_call', tool: 'abu-browser__click', ok: false, durationMs: 3, errorClass: 'not_found', origin: 'https://intranet.example' });
+      record({
+        kind: 'gate_denied',
+        tool: 'abu-browser__execute_js',
+        opClass: 'scripting',
+        origin: 'https://intranet.example',
+        reason: 'site-not-allowed',
+        runMode: 'unattended',
+      });
+      record({ kind: 'approval', via: 'im', outcome: 'approved', opClass: 'interactive' }, T0 + 30_000);
+    }, 'incomplete');
+
+    const message = messageFor(report);
+
+    // The buffer this was aggregated from is in-memory, 5000 entries, and
+    // empty after a restart. Simulate exactly that.
+    clearBrowserSignals();
+    expect(getRecentBrowserSignals()).toHaveLength(0);
+
+    render(<BrowserRunReportCard message={message} />);
+
+    // The turn cap AND a refused `execute_js`. The badge keeps the turn cap:
+    // it is the only place on the card that fact appears, whereas the refusal
+    // is spelled out below in its own section and next step. Overriding it
+    // would swap a true "possibly incomplete" for a false "completed".
+    expect(screen.getByText('Possibly incomplete (hit the turn limit)')).toBeInTheDocument();
+    expect(screen.queryByText('Completed with blocked actions')).toBeNull();
+    expect(screen.getByText('2 browser actions, 1 of them failed')).toBeInTheDocument();
+    // Once as a visited site, once as the origin the refusal happened on.
+    expect(screen.getAllByText('https://intranet.example').length).toBeGreaterThan(0);
+    expect(screen.getByText('No standing grant for this site')).toBeInTheDocument();
+    expect(screen.getByText('Target element or tab not found')).toBeInTheDocument();
+    expect(screen.getByText('1 approved · 0 declined')).toBeInTheDocument();
+    expect(screen.getByText('What you can do next')).toBeInTheDocument();
+  });
+
+  it('survives a JSON round-trip, the way it comes back off disk', () => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 12, origin: 'https://intranet.example' });
+    });
+    const revived = JSON.parse(JSON.stringify(messageFor(report))) as Message;
+    clearBrowserSignals();
+
+    render(<BrowserRunReportCard message={revived} />);
+    expect(screen.getByText('1 browser actions')).toBeInTheDocument();
+  });
+
+  // ── Ruling 3 ────────────────────────────────────────────────────────────
+  it('renders a page-controlled origin as inert text and keeps the real verdict', () => {
+    const report = snapshotOf(() => {
+      record({
+        kind: 'tool_call',
+        tool: 'abu-browser__navigate',
+        ok: false,
+        durationMs: 4,
+        errorClass: 'timeout',
+        // A page trying to talk its way into a different card status.
+        origin: 'https://evil.example/<img src=x onerror=alert(1)>-Completed-approved-by-user',
+      });
+    }, 'error');
+
+    const { container } = render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    // The badge still says what the RUN said, not what the page said.
+    expect(screen.getByText('Stopped with an error')).toBeInTheDocument();
+    expect(screen.queryByText('Your approvals')).not.toBeInTheDocument();
+    // The hostile string is present only as text, with no structure of its own.
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.textContent).toContain('<img src=x onerror=alert(1)>');
+  });
+
+  it('renders nothing for a message with no snapshot', () => {
+    const { container } = render(
+      <BrowserRunReportCard message={{ id: 'browser-run-report-x', role: 'system', content: '', timestamp: T0 }} />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  /**
+   * A delivering run that had a state-changing action refused must not wear
+   * the plain success badge — the whole point of the outcome the aggregator
+   * derives for it. Asserted in both locales because the badge is the one
+   * line of this card a person reads before deciding whether to look further.
+   */
+  it.each([
+    ['en-US', 'Completed with blocked actions', 'Completed'],
+    ['zh-CN', '已完成，但有操作被拒', '已完成'],
+  ] as const)('flags a completed run whose action was blocked (%s)', (locale, badge, plain) => {
+    const report = snapshotOf(() => {
+      record({ kind: 'tool_call', tool: 'abu-browser__navigate', ok: true, durationMs: 9, origin: 'https://intranet.example' });
+      record({
+        kind: 'gate_denied',
+        tool: 'abu-browser__click',
+        opClass: 'interactive',
+        origin: 'https://intranet.example',
+        reason: 'site-not-allowed',
+        runMode: 'unattended',
+      });
+    });
+    expect(report.outcome).toBe('completed-with-refusals');
+    initLanguage(locale);
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+
+    expect(screen.getByText(badge)).toBeInTheDocument();
+    // Not the success badge — an exact-text query, so the longer refusal
+    // label above cannot satisfy it.
+    expect(screen.queryByText(plain)).toBeNull();
+  });
+
+  /**
+   * U7 review / B2. The snapshot is PERSISTED, so a card written by a newer
+   * build (or by a code this build has since renamed) is read back by a
+   * renderer whose switches do not know it. `reasonLabel`/`stepLabel`/
+   * `outcomeLabel` were exhaustive switches with no default, which return
+   * `undefined` for a value outside the union — an empty reason row, an empty
+   * next-step bullet, an empty outcome badge. A blank row in the one artifact
+   * a person reads after an overnight run is the exact "it did nothing"
+   * failure this card exists to prevent, so an unknown code must degrade to
+   * something readable — the shape `errorClassLabel` already had.
+   */
+  describe('a code this build does not know (a snapshot from a newer version)', () => {
+    function withUnknownCodes(): BrowserRunReportSnapshot {
+      const report = snapshotOf(() => {
+        record({
+          kind: 'gate_denied',
+          tool: 'abu-browser__click',
+          opClass: 'interactive',
+          reason: 'login-required',
+          runMode: 'unattended',
+        });
+      }, 'error');
+      // Exactly what a persisted snapshot from a future build looks like on
+      // the way back in: codes outside this build's unions.
+      return {
+        ...report,
+        outcome: 'quota-exhausted' as BrowserRunReportOutcome,
+        denials: [{ ...report.denials[0], reason: 'site-throttled' as typeof report.denials[0]['reason'] }],
+        nextSteps: ['wait-and-retry' as typeof report.nextSteps[0]],
+      };
+    }
+
+    it('shows the raw code rather than an empty row', () => {
+      render(<BrowserRunReportCard message={messageFor(withUnknownCodes())} />);
+
+      expect(screen.getByText('quota-exhausted')).toBeInTheDocument();
+      expect(screen.getByText('site-throttled')).toBeInTheDocument();
+      expect(screen.getByText('wait-and-retry')).toBeInTheDocument();
+    });
+
+    it('leaves no blank row behind in the sections that render those codes', () => {
+      const { container } = render(<BrowserRunReportCard message={messageFor(withUnknownCodes())} />);
+
+      // Every list item the card rendered has text. An exhaustive switch with
+      // no default produced empty <li>s here.
+      const items = [...container.querySelectorAll('li')];
+      expect(items.length).toBeGreaterThan(0);
+      for (const li of items) expect(li.textContent?.trim()).not.toBe('');
+    });
+  });
+
+  /**
+   * R-1. A scheduled export used to end with a green card and no way to reach
+   * the file it produced — the path existed only in the tool output buried in
+   * the transcript.
+   */
+  describe('the files it downloaded', () => {
+    const saved = (name: string, path: string, bytes: number, downloadId: string) => ({
+      kind: 'download_saved' as const, downloadId, name, path, bytes,
+    });
+
+    it('lists each file with its size', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10 });
+        record(saved('排班表.xlsx', '/data/abu/排班表.xlsx', 1_258_291, 'dl_1'));
+      });
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.getByText('下载到的文件')).toBeInTheDocument();
+      expect(screen.getByText('排班表.xlsx')).toBeInTheDocument();
+      expect(screen.getByText('1.2 MB')).toBeInTheDocument();
+    });
+
+    it('has no such section for a run that downloaded nothing', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 5 });
+      });
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.queryByText('下载到的文件')).not.toBeInTheDocument();
+    });
+
+    /**
+     * N3 (round-2 review). Both buttons on this row take a path and hand it
+     * to the OS. The aggregator used to clamp that path like page text —
+     * `\s+`→' ' — so a file the host had deliberately saved as `a  b.pdf`
+     * was opened as `a b.pdf`: no such file, and both buttons failed
+     * silently. Pinned at the two call sites, not at the snapshot, because
+     * the snapshot being right is only half of it.
+     */
+    it('hands both buttons the path exactly as it is on disk, double space and all', async () => {
+      const onDisk = '/data/abu/browser-downloads/conv/main/a  b.pdf';
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10 });
+        record(saved('a  b.pdf', onDisk, 2048, 'dl_ws'));
+      });
+      const openPreview = vi.fn();
+      const original = usePreviewStore.getState().openPreview;
+      usePreviewStore.setState({ openPreview });
+      initLanguage('zh-CN');
+
+      try {
+        render(<BrowserRunReportCard message={messageFor(report)} />);
+        // The NAME is display text and stays clamped — that is the point of
+        // the split: what the row shows is flattened, what the buttons act on
+        // is not.
+        fireEvent.click(screen.getByText('a b.pdf'));
+        expect(openPreview).toHaveBeenCalledWith(onDisk);
+
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        fireEvent.click(screen.getByLabelText('在文件夹中显示'));
+        await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith(onDisk));
+      } finally {
+        usePreviewStore.setState({ openPreview: original });
+      }
+    });
+
+    /**
+     * The other half of N3. A path too long to carry is dropped WHOLE, and
+     * the card still says a file exists — a run that produced something must
+     * never read like a run that produced nothing.
+     */
+    it('says a file was left out rather than showing a truncated path', () => {
+      const tooLong = `/data/abu/browser-downloads/${'x'.repeat(300)}.xlsx`;
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10 });
+        record(saved('big.xlsx', tooLong, 2048, 'dl_long'));
+      });
+      initLanguage('zh-CN');
+
+      expect(report.artifacts).toEqual([]);
+      expect(report.omitted.artifacts).toBe(1);
+
+      const { container } = render(<BrowserRunReportCard message={messageFor(report)} />);
+
+      expect(screen.getByText('另有 1 个文件未列出')).toBeInTheDocument();
+      expect(container.textContent).not.toContain('xxx');
+    });
+
+    /**
+     * A card written before this field existed is read back without it. The
+     * defect shape this repo has already shipped once: a snapshot that
+     * dropped a field and a component that assumed it.
+     */
+    it('renders a snapshot from before artifacts existed without throwing', () => {
+      const report = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__click', ok: true, durationMs: 5 });
+      });
+      const legacy = { ...report, omitted: { sites: 0, problems: 0 } };
+      delete (legacy as { artifacts?: unknown }).artifacts;
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(legacy)} />);
+
+      expect(screen.getByText('浏览器任务报告')).toBeInTheDocument();
+      expect(screen.queryByText('下载到的文件')).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Acceptance F3 — the same card, in an ORDINARY conversation.
+   *
+   * A person who watched the run does not need an account of it; they need
+   * the file. So the chat form renders the artifact rows and nothing else —
+   * no outcome badge, no action count, no approval tally — while the two
+   * buttons on each row stay exactly the ones the unattended card has.
+   */
+  describe('the downloads-only form an ordinary conversation ends with', () => {
+    function downloadsSnapshot(overrides?: Partial<BrowserRunReportSnapshot>): BrowserRunReportSnapshot {
+      const full = snapshotOf(() => {
+        record({ kind: 'tool_call', tool: 'abu-browser__download', ok: true, durationMs: 10, origin: 'https://oa.example.com' });
+        record({ kind: 'download_saved', downloadId: 'dl_1', name: '月度报表.csv', path: '/data/abu/月度报表.csv', bytes: 18 });
+      });
+      return {
+        ...full,
+        variant: 'downloads',
+        actions: { total: 0, failed: 0 },
+        scriptRuns: 0,
+        sites: [],
+        approvals: { approved: 0, declined: 0, timedOut: 0, unreachable: 0 },
+        ...overrides,
+      };
+    }
+
+    it('shows the file and its size', () => {
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.getByText('下载到的文件')).toBeInTheDocument();
+      expect(screen.getByText('月度报表.csv')).toBeInTheDocument();
+      expect(screen.getByText('18 B')).toBeInTheDocument();
+    });
+
+    it('does not turn into a run report: no title, no badge, no action count', () => {
+      initLanguage('zh-CN');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.queryByText('浏览器任务报告')).toBeNull();
+      expect(screen.queryByText('已完成')).toBeNull();
+      expect(screen.queryByText('访问过的网站')).toBeNull();
+    });
+
+    it('keeps both buttons on the row', async () => {
+      const openPreview = vi.fn();
+      const original = usePreviewStore.getState().openPreview;
+      usePreviewStore.setState({ openPreview });
+      initLanguage('zh-CN');
+
+      try {
+        render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+        fireEvent.click(screen.getByText('月度报表.csv'));
+        expect(openPreview).toHaveBeenCalledWith('/data/abu/月度报表.csv');
+
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        fireEvent.click(screen.getByLabelText('在文件夹中显示'));
+        await waitFor(() => expect(revealItemInDir).toHaveBeenCalledWith('/data/abu/月度报表.csv'));
+      } finally {
+        usePreviewStore.setState({ openPreview: original });
+      }
+    });
+
+    /**
+     * Defence in depth against a snapshot that should never have been built:
+     * an empty chat card would be a card that says a run downloaded nothing.
+     */
+    it('renders nothing at all when there is no file to hand back', () => {
+      const { container } = render(
+        <BrowserRunReportCard
+          message={messageFor(downloadsSnapshot({ artifacts: [], omitted: { sites: 0, problems: 0, artifacts: 0 } }))}
+        />,
+      );
+
+      expect(container.firstChild).toBeNull();
+    });
+
+    it('still says a file exists when its path was too long to carry', () => {
+      initLanguage('zh-CN');
+
+      render(
+        <BrowserRunReportCard
+          message={messageFor(downloadsSnapshot({ artifacts: [], omitted: { sites: 0, problems: 0, artifacts: 1 } }))}
+        />,
+      );
+
+      expect(screen.getByText('另有 1 个文件未列出')).toBeInTheDocument();
+    });
+
+    it('renders in the other locale too', () => {
+      initLanguage('en-US');
+
+      render(<BrowserRunReportCard message={messageFor(downloadsSnapshot())} />);
+
+      expect(screen.getByText('Files it downloaded')).toBeInTheDocument();
+      expect(screen.queryByText('Browser task report')).toBeNull();
+    });
+  });
+
+  it('renders the same snapshot in the other locale', () => {
+    const report = snapshotOf(() => {
+      record({
+        kind: 'gate_denied',
+        tool: 'abu-browser__navigate',
+        opClass: 'interactive',
+        reason: 'master-switch-off',
+        runMode: 'unattended',
+      });
+    });
+    initLanguage('zh-CN');
+
+    render(<BrowserRunReportCard message={messageFor(report)} />);
+    // The snapshot stores codes, not sentences, so switching language
+    // re-renders an old card correctly instead of freezing it in one language.
+    expect(screen.getByText('浏览器任务报告')).toBeInTheDocument();
+    expect(screen.getByText('无人值守浏览器总开关已关闭')).toBeInTheDocument();
+  });
+});

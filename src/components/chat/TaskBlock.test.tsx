@@ -3,7 +3,7 @@
 
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, it, expect } from 'vitest';
-import TaskBlock, { generateSummary, type UnifiedStep } from './TaskBlock';
+import TaskBlock, { convertExecutionStep, generateSummary, type UnifiedStep } from './TaskBlock';
 import { getI18n, getLocale, format } from '@/i18n';
 import type { ExecutionStep } from '@/types/execution';
 
@@ -140,6 +140,27 @@ describe('TaskBlock — thinking pane running → completed', () => {
     expect(toggleSlot(toggle!).classList.contains('block-expand-enter')).toBe(true);
   });
 
+  it('keeps long live thinking inside the max-h-48 scroll pane and follows its internal bottom', () => {
+    const { container, rerender } = render(
+      <TaskBlock executionSteps={[execThinkingStep()]} isActive />,
+    );
+    const pane = container.querySelector<HTMLElement>('.max-h-48.overflow-y-auto');
+    expect(pane).not.toBeNull();
+    Object.defineProperty(pane!, 'scrollHeight', { configurable: true, value: 480 });
+    pane!.scrollTop = 0;
+
+    rerender(
+      <TaskBlock
+        executionSteps={[execThinkingStep({ detail: 'reasoning tokens streaming in\nnext line' })]}
+        isActive
+      />,
+    );
+
+    expect(pane!.classList.contains('max-h-48')).toBe(true);
+    expect(pane!.classList.contains('overflow-y-auto')).toBe(true);
+    expect(pane!.scrollTop).toBe(480);
+  });
+
   it('collapse via the toggle rolls the panel up (closed + inert), not unmounted; history mounts render the button statically', () => {
     const { container } = render(
       <TaskBlock
@@ -170,5 +191,13 @@ describe('TaskBlock — thinking pane running → completed', () => {
     expect(container.querySelector('pre')?.textContent).toContain(
       'reasoning tokens streaming in',
     );
+  });
+});
+
+describe('convertExecutionStep label (persisted snapshots keep their label)', () => {
+  const base = { id: 's', executionId: 'e', type: 'command' as const, status: 'completed' as const, source: 'agent' as const, detailBlocks: [] };
+  it('keeps the stored label when the snapshot has no toolInput, recomputes when it does', () => {
+    expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: {}, label: '执行 sleep 180' } as never, 'zh-CN').label).toBe('执行 sleep 180');
+    expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: { command: 'ls -la' }, label: 'stale' } as never, 'zh-CN').label).not.toBe('stale');
   });
 });

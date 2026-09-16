@@ -30,6 +30,13 @@ describe('labs registry', () => {
     expect(getLabsExperiment('todos-inbox')).toBeUndefined();
   });
 
+  it('no longer registers the retired plugin-system experiment (its IA is the only IA now)', () => {
+    // The Extensions view (插件 / 技能 / 连接器) shipped as the default; the
+    // flag is gone. A stale persisted labs['plugin-system'] must resolve
+    // false like any other unknown id — nothing should read it.
+    expect(getLabsExperiment('plugin-system')).toBeUndefined();
+  });
+
   it('ships the pet experiment (pet is a Labs experiment too)', () => {
     const exp = getLabsExperiment('pet');
     expect(exp).toBeDefined();

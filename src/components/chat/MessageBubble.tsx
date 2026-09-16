@@ -13,6 +13,7 @@ import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { useI18n, format } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
 import { formatRelativeTime } from '@/utils/messageTime';
@@ -20,6 +21,9 @@ import { computeRewindImpact } from '@/utils/rewindImpact';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import abuAvatar from '@/assets/abu-avatar.png';
+import AgentAvatar from '@/components/common/AgentAvatar';
+import TeamAvatar from '@/components/team/TeamAvatar';
+import { isIntroductionMessage } from '@/core/team/expertContact';
 
 // Regex to match [Attachment: `path`] patterns in user messages
 const ATTACHMENT_PATTERN = /\[Attachment:\s*`([^`]+)`\]/g;
@@ -485,7 +489,6 @@ export default function MessageBubble({
 
   const handleSaveEdit = async (newContent: string) => {
     if (!convId) return;
-    // Preserve image blocks from original message content
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
     setIsEditing(false);
 
@@ -496,7 +499,11 @@ export default function MessageBubble({
       // edited resend stays on the same agent / skill — otherwise the message
       // falls back to the default `general` route and the expert is lost.
       const routedContent = reattachRoutingPrefix(newContent, message);
-      await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'edit-resend' });
+      await runAgentLoopDispatched(convId, routedContent, {
+        initiatedBy: 'user',
+        ...(imageAttachments ? { images: imageAttachments } : {}),
+      });
     };
 
     // `message` is a user message and, per the invariant documented on
@@ -529,10 +536,11 @@ export default function MessageBubble({
 
     const proceed = async () => {
       useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
+      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
       await runAgentLoopDispatched(
         convId,
         routedContent,
-        imageAttachments ? { images: imageAttachments } : undefined,
+        { initiatedBy: 'user', ...(imageAttachments ? { images: imageAttachments } : {}) },
       );
     };
 
@@ -581,13 +589,16 @@ export default function MessageBubble({
       // turn stays on the same route — the user message stored content is
       // post-routing cleanInput, so the prefix is otherwise lost.
       const routedContent = reattachRoutingPrefix(userContent, targetUserMsg);
-      // Preserve image blocks from original user message
       const imageAttachments = rebuildImageAttachments(targetUserMsg.content, `regen-${Date.now()}`);
 
       const proceed = async () => {
         // Delete from user message onwards and regenerate
         useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
-        await runAgentLoopDispatched(convId, routedContent, imageAttachments ? { images: imageAttachments } : undefined);
+        announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });
+        await runAgentLoopDispatched(convId, routedContent, {
+          initiatedBy: 'user',
+          ...(imageAttachments ? { images: imageAttachments } : {}),
+        });
       };
 
       const impact = computeRewindImpact(messages, targetUserMsg.loopId, targetUserMsg.id);
@@ -598,6 +609,24 @@ export default function MessageBubble({
       await proceed();
     }
   };
+
+  // Configured welcomes use the existing message layout without run actions.
+  if (isIntroductionMessage(message)) {
+    const identity = message.introduction!;
+    return (
+      <div className="flex gap-3 w-full overflow-hidden group" data-testid="expert-introduction" data-message-id={message.id}>
+        <div className="shrink-0 mt-0.5">
+          {identity.kind === 'team'
+            ? <TeamAvatar avatar={identity.avatar} size="md" round />
+            : <AgentAvatar agent={{ name: identity.agentName ?? identity.name, avatar: identity.avatar }} size="md" round />}
+        </div>
+        <div className="flex-1 min-w-0 overflow-hidden">
+          <div className="text-minor text-[var(--abu-text-muted)] mb-2">{identity.name}</div>
+          <div className="text-[var(--abu-text-primary)] break-words select-text"><MarkdownRenderer content={textContent} /></div>
+        </div>
+      </div>
+    );
+  }
 
   // Actions only mode - just render the action buttons
   if (actionsOnly && !isUser) {
@@ -622,7 +651,7 @@ export default function MessageBubble({
     // Extract file attachments from user message text
     const { cleanText: userCleanText, attachmentPaths } = extractAttachments(textContent);
     return (
-      <div className="flex justify-end w-full group">
+      <div className="flex justify-end w-full group" data-message-id={message.id}>
         {rewindConfirmDialog}
         <div className="flex flex-col items-end gap-1.5 max-w-[85%]">
           {/* Image thumbnails — above the text bubble */}
@@ -712,7 +741,7 @@ export default function MessageBubble({
                   communicates that work is in progress; only actionable failures belong
                   under the user's message. */}
               {hasRunFailure && (
-                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]" title={message.runError}>
+                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
                   <span>
                     {message.runState === 'failed' && t.chat.runFailed}
                     {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
@@ -722,6 +751,31 @@ export default function MessageBubble({
                       <RefreshCw className="h-3 w-3" />
                       {t.chat.runRetry}
                     </Button>
+                  )}
+                </div>
+              )}
+              {hasRunFailure && message.runErrorDetails && (
+                <div
+                  role="alert"
+                  className="max-w-2xl space-y-1.5 rounded-lg border border-[var(--abu-danger)] bg-[var(--abu-danger-bg)] px-3 py-2 text-minor text-[var(--abu-text-primary)]"
+                >
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-caption">
+                    <span>HTTP {message.runErrorDetails.status}</span>
+                    {message.runErrorDetails.error_type && (
+                      <span className="break-all">
+                        error_type: <span>{message.runErrorDetails.error_type}</span>
+                      </span>
+                    )}
+                    {message.runErrorDetails.traceId && (
+                      <span className="break-all">
+                        traceId: <span>{message.runErrorDetails.traceId}</span>
+                      </span>
+                    )}
+                  </div>
+                  {message.runErrorDetails.summary && (
+                    <p className="break-words text-[var(--abu-text-secondary)]">
+                      {message.runErrorDetails.summary}
+                    </p>
                   )}
                 </div>
               )}

@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SubagentLoopOptions } from '@/core/agent/subagentLoop';
 import { agentRunContext, type AgentRunContext } from '../agentRunContext';
 
-const { runSubagentLoopMock } = vi.hoisted(() => ({
+const { runSubagentLoopMock, sendRequestMock } = vi.hoisted(() => ({
+  sendRequestMock: vi.fn(),
   runSubagentLoopMock: vi.fn(),
 }));
+
+vi.mock('../rpcClient', () => ({ sendRequest: sendRequestMock }));
 
 vi.mock('@/core/agent/subagentLoop', () => ({
   runSubagentLoop: (...args: Parameters<typeof import('@/core/agent/subagentLoop').runSubagentLoop>) => runSubagentLoopMock(...args),
@@ -39,6 +42,7 @@ function makeContext(): AgentRunContext {
 
 describe('subagentRunnerRun shim', () => {
   beforeEach(() => {
+    sendRequestMock.mockReset().mockResolvedValue({ allowed: true });
     runSubagentLoopMock.mockReset();
     runSubagentLoopMock.mockImplementation(async (options: SubagentLoopOptions) => {
       options.onProgress?.({
@@ -56,6 +60,29 @@ describe('subagentRunnerRun shim', () => {
         stopReason: 'completed',
       };
     });
+  });
+
+  it.each([undefined, 'scope'])('waits for shell admission before starting a nested agent (%s)', async authorizationScopeId => {
+    let allow!: (value: unknown) => void;
+    sendRequestMock.mockImplementationOnce(() => new Promise(resolve => { allow = resolve; }));
+    const running = agentRunContext.run(makeContext(), () => runSubagent({ agent, task: 'test', authorizationScopeId }));
+    expect(sendRequestMock).toHaveBeenCalledWith('agent.assertDirectDelegateEnabled', { runId: 'parent-run' });
+    expect(runSubagentLoopMock).not.toHaveBeenCalled();
+    allow({ allowed: true });
+    await running;
+    expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([undefined, {}, { allowed: false }])('rejects missing or denied admission without a local fallback', async response => {
+    sendRequestMock.mockResolvedValueOnce(response);
+    await expect(agentRunContext.run(makeContext(), () => runSubagent({ agent, task: 'test' }))).rejects.toThrow();
+    expect(runSubagentLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('does not run when the shell refuses or cannot answer', async () => {
+    sendRequestMock.mockRejectedValueOnce(new Error('disabled plugin'));
+    await expect(agentRunContext.run(makeContext(), () => runSubagent({ agent, task: 'test' }))).rejects.toThrow('disabled plugin');
+    expect(runSubagentLoopMock).not.toHaveBeenCalled();
   });
 
   it('gives two nested runs independent parent-visible ids for the same raw call_1', async () => {
@@ -151,6 +178,7 @@ describe('subagentRunnerRun shim', () => {
         signal: parentController.signal,
         authorizationScopeId: 'scope-abort',
       });
+      await Promise.resolve(); // shell admission resolves before the loop starts
       expect(loopSignal?.aborted).toBe(false);
 
       parentController.abort(parentReason);

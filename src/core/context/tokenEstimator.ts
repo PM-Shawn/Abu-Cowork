@@ -119,7 +119,16 @@ function estimateToolResultContentTokens(content: ToolResultContent[] | undefine
  */
 function countImages(content: string | MessageContent[]): number {
   if (typeof content === 'string') return 0;
-  return content.filter((c) => c.type === 'image').length;
+  return content.filter((c) => {
+    if (c.type === 'image') return true;
+    const maybeDelegated = c as unknown as {
+      type?: unknown;
+      attachment?: { mediaType?: unknown };
+    };
+    return maybeDelegated.type === 'delegated_media_ref'
+      && typeof maybeDelegated.attachment?.mediaType === 'string'
+      && maybeDelegated.attachment.mediaType.startsWith('image/');
+  }).length;
 }
 
 /**

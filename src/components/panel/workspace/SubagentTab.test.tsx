@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import {
@@ -8,6 +8,8 @@ import {
   BATCH_PROGRESS_MAX_RICH_CONTENT_BYTES,
   useBatchProgressStore,
 } from '@/stores/batchProgressStore';
+import { useChatStore } from '@/stores/chatStore';
+import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import SubagentTab from './SubagentTab';
 
@@ -58,6 +60,12 @@ describe('SubagentTab', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    // Conversations and live executions seeded by a test must not leak into
+    // the next one — a failed assertion would otherwise skip the cleanup.
+    useTaskExecutionStore.getState().clearAll();
+    useChatStore.setState((state) => {
+      state.conversations = {};
+    });
   });
 
   it('renders live status, tool detail, token usage, and retained screenshot rich content', () => {
@@ -74,6 +82,78 @@ describe('SubagentTab', () => {
       'src',
       'data:image/png;base64,aW1hZ2U=',
     );
+  });
+
+  it('replays a member process from the message snapshot when the live batch is gone', () => {
+    const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
+    useChatStore.getState().addMessage(convId, {
+      id: 'assistant-1',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 1,
+      executionSteps: [{
+        id: 'batch-step', toolCallId: 'batch-persisted', type: 'delegate', label: 'batch', status: 'completed', toolName: 'run_agent_batch',
+        childSteps: [
+          { id: 'c0', toolCallId: 's0', type: 'tool', label: 'Read a.md', status: 'completed', toolName: 'read_file', batchTask: { index: 0, label: 'analyst' } },
+          { id: 'c1', toolCallId: 's1', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file', batchTask: { index: 1, label: 'writer' } },
+        ],
+      }],
+    } as never);
+    const persistedIdentity: BatchIdentity = { conversationId: convId, assistantMessageId: 'assistant-1', batchToolCallId: 'batch-persisted' };
+
+    render(<SubagentTab identity={persistedIdentity} taskIndex={1} title="writer" />);
+
+    expect(screen.getByText('writer')).toBeInTheDocument();
+    expect(screen.getByText('Finished · recorded process')).toBeInTheDocument();
+    const steps = screen.getByTestId('subagent-persisted-steps');
+    // The stored label survives replay (toolInput is stripped from snapshots, so recomputing would degrade it).
+    expect(steps).toHaveTextContent('Write report.md');
+    expect(steps).not.toHaveTextContent('Read file');
+    expect(screen.queryByText('The full subagent trace is only retained during this app run.')).toBeNull();
+  });
+
+  it('keeps the child steps already shown when the next live update has zero steps', () => {
+    const convId = useChatStore.getState().createConversation(null, { skipActivate: true });
+    useChatStore.getState().addMessage(convId, {
+      id: 'assistant-live-race',
+      role: 'assistant',
+      content: 'done',
+      timestamp: 1,
+      executionSteps: [{
+        id: 'delegate-persisted', toolCallId: 'delegate-live-race', type: 'delegate', label: 'delegate', status: 'completed',
+        toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [{
+          id: 'child-persisted', toolCallId: 'child-call', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file',
+          detailBlocks: [], source: 'agent', executionId: 'delegate-persisted', toolInput: {},
+        }],
+        detailBlocks: [], source: 'agent', executionId: 'exec-live-race', toolInput: {},
+      }],
+    } as never);
+    const exec = useTaskExecutionStore.getState().createExecutionWithId(convId, 'loop-live-race', 'exec-live-race');
+    // First update: the live dispatch still carries the member's child step.
+    useTaskExecutionStore.getState().addStep(exec.id, {
+      id: 'delegate-live', executionId: exec.id, toolCallId: 'delegate-live-race', type: 'delegate', label: 'delegate', status: 'completed',
+      toolName: 'delegate_to_agent', agentName: 'writer', childSteps: [{
+        id: 'child-live', toolCallId: 'child-call', type: 'tool', label: 'Write report.md', status: 'completed', toolName: 'write_file',
+        detailBlocks: [], source: 'agent', executionId: exec.id, toolInput: {},
+      }], detailBlocks: [], source: 'agent', toolInput: {},
+    });
+
+    render(<SubagentTab identity={{ conversationId: convId, assistantMessageId: 'assistant-live-race', batchToolCallId: 'delegate-live-race' }} taskIndex={0} title="writer" />);
+
+    expect(screen.getByText('1 tool calls')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');
+
+    // Second update: the completed execution is re-published with its child
+    // steps already dropped, while the assistant message still holds them.
+    act(() => {
+      useTaskExecutionStore.setState((state) => {
+        const liveStep = state.executions[exec.id]?.steps.find((step) => step.id === 'delegate-live');
+        if (liveStep) liveStep.childSteps = [];
+      });
+    });
+
+    expect(screen.getByText('1 tool calls')).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-persisted-steps')).toHaveTextContent('Write report.md');
   });
 
   it('renders queued status with a static icon instead of a spinner', () => {
@@ -156,6 +236,6 @@ describe('SubagentTab', () => {
     render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
     expect(screen.getByText('Worker A')).toBeInTheDocument();
-    expect(screen.getByText('The full subagent process is only retained during this app run.')).toBeInTheDocument();
+    expect(screen.getByText('The full subagent trace is only retained during this app run.')).toBeInTheDocument();
   });
 });

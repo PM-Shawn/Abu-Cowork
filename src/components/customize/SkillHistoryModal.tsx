@@ -40,9 +40,11 @@ interface Props {
   skillDir: string;
   skillName: string;
   onClose: () => void;
+  /** Package-managed skills allow inspection without changing their installed files. */
+  readOnly?: boolean;
 }
 
-export default function SkillHistoryModal({ skillDir, skillName, onClose }: Props) {
+export default function SkillHistoryModal({ skillDir, skillName, onClose, readOnly = false }: Props) {
   const { t } = useI18n();
   const addToast = useToastStore((s) => s.addToast);
 
@@ -76,6 +78,7 @@ export default function SkillHistoryModal({ skillDir, skillName, onClose }: Prop
   }, [onClose]);
 
   const handleRevert = async (turnId: string) => {
+    if (readOnly) return;
     setRevertingTurnId(turnId);
     try {
       const result = await revertTurn(skillDir, turnId);
@@ -151,6 +154,7 @@ export default function SkillHistoryModal({ skillDir, skillName, onClose }: Prop
                     setExpandedTurnId(expandedTurnId === entry.turnId ? null : entry.turnId)
                   }
                   onRevert={() => handleRevert(entry.turnId)}
+                  readOnly={readOnly}
                   isReverting={revertingTurnId === entry.turnId}
                 />
               ))}
@@ -171,9 +175,10 @@ interface RowProps {
   onToggle: () => void;
   onRevert: () => void;
   isReverting: boolean;
+  readOnly: boolean;
 }
 
-function HistoryRow({ entry, skillDir, expanded, onToggle, onRevert, isReverting }: RowProps) {
+function HistoryRow({ entry, skillDir, expanded, onToggle, onRevert, isReverting, readOnly }: RowProps) {
   const { t } = useI18n();
   const fileCount = entry.files.length;
   const fileNames = entry.files.map((f) => f.relPath).join(', ');
@@ -215,7 +220,7 @@ function HistoryRow({ entry, skillDir, expanded, onToggle, onRevert, isReverting
           {/* Revert button. Hidden for 'revert' entries themselves (no
               point reverting a revert — user can do a fresh action) and
               only shown when the entry still has something actionable. */}
-          {!isRevertEntry && (
+          {!readOnly && !isRevertEntry && (
             <div className="flex justify-end pt-1">
               <button
                 onClick={onRevert}

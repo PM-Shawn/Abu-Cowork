@@ -12,19 +12,24 @@ import { getI18n, format } from '../../../i18n';
 // ── Plan-mode approval (B1) ─────────────────────────────────────────────────
 
 /** Build a single approve/reject question presenting the plan steps for approval. */
-export function buildPlanApprovalPayload(steps: string[]): UserQuestionPayload {
+export function buildPlanApprovalPayload(steps: string[], options?: { team?: boolean }): UserQuestionPayload {
   const t = getI18n().toolResult.memory;
   const stepList = steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+  // Strict team (先确认分工): the card says what it is — the leader's split,
+  // waiting for the go-ahead — instead of the generic plan-approval copy.
+  const team = options?.team === true;
   return {
     // Destructive approval: require the explicit confirm button — a single
     // stray click must not launch the plan.
     confirm: true,
     questions: [
       {
-        header: t.planApprovalHeader,
-        question: `${stepList}\n\n${t.planApprovalQuestion}`,
+        header: team ? t.planApprovalHeaderTeam : t.planApprovalHeader,
+        question: `${stepList}\n\n${team ? t.planApprovalQuestionTeam : t.planApprovalQuestion}`,
         multiSelect: false,
-        options: [{ label: t.planApproveLabel }, { label: t.planRejectLabel }],
+        options: team
+          ? [{ label: t.planApproveLabelTeam }, { label: t.planRejectLabelTeam }]
+          : [{ label: t.planApproveLabel }, { label: t.planRejectLabel }],
       },
     ],
   };
@@ -135,6 +140,7 @@ export const reportPlanTool: ToolDefinition = {
               enum: ['pending', 'in_progress', 'completed'],
               description: 'pending: not started | in_progress: currently working (at most ONE step) | completed: finished',
             },
+            owner: { type: 'string', description: 'Who does this step. When leading a team, the exact name of the team member responsible (set it on every step); omit otherwise.' },
           },
           required: ['content'],
         },
@@ -144,9 +150,12 @@ export const reportPlanTool: ToolDefinition = {
   },
   execute: async (input, context) => {
     const t = getI18n().toolResult.memory;
-    const steps = (input.steps as Array<{ content: string; status?: string }>) ?? [];
+    const steps = (input.steps as Array<{ content: string; status?: string; owner?: string }>) ?? [];
     const hasSteps = Array.isArray(steps) && steps.length > 0;
-    const stepTexts = steps.map((s) => s.content);
+    const stepTexts = steps.map((s) => {
+      const owner = typeof s.owner === 'string' ? s.owner.trim() : '';
+      return owner ? `${s.content} @${owner}` : s.content;
+    });
 
     // Write-side discipline warnings: compare the incoming steps against the
     // PRIOR landed plan and append English self-correction hints to the tool
@@ -181,11 +190,15 @@ export const reportPlanTool: ToolDefinition = {
       const store = useTaskExecutionStore.getState();
       const exec = store.getExecutionByLoopId(loopId);
       if (!exec) return;
-      store.setPlannedSteps(exec.id, steps.map((s, i): PlannedStep => ({
-        index: i + 1,
-        description: s.content,
-        status: (s.status as PlannedStep['status']) ?? 'pending',
-      })));
+      store.setPlannedSteps(exec.id, steps.map((s, i): PlannedStep => {
+        const owner = typeof s.owner === 'string' ? s.owner.trim().slice(0, 80) : '';
+        return {
+          index: i + 1,
+          description: s.content,
+          status: (s.status as PlannedStep['status']) ?? 'pending',
+          ...(owner ? { owner } : {}),
+        };
+      }));
     };
 
     // Plan approval (B1, auto-trigger): when a plan contains high-risk steps
@@ -203,7 +216,14 @@ export const reportPlanTool: ToolDefinition = {
     // Once the user has approved this conversation's plan, subsequent report_plan
     // calls (frequent status updates) must NOT re-trigger approval — otherwise a
     // risky plan re-prompts and re-locks writes on every progress update.
-    const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning');
+    // Strict teams (先确认分工) always go through the approval card — a prompt-only
+    // "wait for the user" rule is not honoured reliably by smaller models.
+    // Unattended runs (scheduled / trigger: interactionMode 'background') have
+    // nobody to click the card — it would only render for the active
+    // conversation and time out after 10 minutes with plan mode locked. The
+    // schedule's own permission tier governs those runs instead.
+    const strictTeam = context?.teamRequirePlanApproval === true && context?.interactionMode !== 'background';
+    const needsApproval = hasSteps && planMode !== 'approved' && (planHasRiskySteps(stepTexts) || planMode === 'planning' || strictTeam);
     // IM channels have no interactive approval card: blocking on the desktop
     // dialog would stall the turn until timeout while the remote user never sees
     // it. Instead, record the plan and instruct the model to present it and ask
@@ -216,7 +236,7 @@ export const reportPlanTool: ToolDefinition = {
     }
     if (convId && context?.toolCallId && needsApproval) {
       setPlanMode(convId, 'planning');
-      const payload = buildPlanApprovalPayload(stepTexts);
+      const payload = buildPlanApprovalPayload(stepTexts, { team: strictTeam });
       // Read the approve label off the payload we just built so the match is
       // immune to a UI-locale switch during the await below (the dock echoes
       // back the payload's own option label, not a freshly-resolved one).
@@ -226,7 +246,7 @@ export const reportPlanTool: ToolDefinition = {
         setPlanMode(convId, 'approved');
         const warnings = buildWarnings();
         landPlannedSteps();
-        return t.planApproved + warnings;
+        return (strictTeam ? t.planApprovedTeam : t.planApproved) + warnings;
       }
       if (result === null) {
         return t.planTimeout;

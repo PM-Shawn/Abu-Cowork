@@ -162,6 +162,31 @@ describe('conversationStorage', () => {
       expect(loaded[2].content).toBe('Third');
     });
 
+    it('keeps PDF document base64 in the JSONL ledger until batch-two document persistence exists', async () => {
+      const pdfBase64 = 'UERGX0xFREdFUl9TRU5USU5FTA==';
+      const msg = makeMsg({
+        id: 'pdf-ref-message',
+        content: [{
+          type: 'document',
+          name: 'plan.pdf',
+          source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 },
+        }],
+      });
+
+      await storage.appendMessage('conv-pdf-ledger', msg);
+      await storage.flushWrites();
+
+      const raw = memFs.files.get('/Users/testuser/.abu/conversations/conv-pdf-ledger/messages.jsonl') ?? '';
+      expect(raw).toContain(pdfBase64);
+      expect(raw).toContain('plan.pdf');
+      const loaded = await storage.loadMessages('conv-pdf-ledger');
+      expect((loaded[0].content as Array<{ type: string; source: { data: string }; name?: string }>)[0]).toMatchObject({
+        type: 'document',
+        name: 'plan.pdf',
+        source: { data: pdfBase64 },
+      });
+    });
+
     it('returns empty array for non-existent conversation', async () => {
       const loaded = await storage.loadMessages('nonexistent');
       expect(loaded).toHaveLength(0);

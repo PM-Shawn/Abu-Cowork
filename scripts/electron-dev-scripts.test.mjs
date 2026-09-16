@@ -39,3 +39,27 @@ test('setup:electron-dev runs copy-resources so every browser-artifact digest ge
     'copy-resources needs sidecar/index.mjs built first',
   );
 });
+
+test('the host-ui gate provisions the browser automation runtime itself', () => {
+  // The DOM-action tests in electron:host-ui-test (dialogs, downloads, frames)
+  // reach browserHost.cjs's loadAutomationRuntime(), which reads
+  // abu-chrome-extension/dist/content.js and deliberately has no fallback to
+  // the committed src-tauri/browser-extension/ copy (b2cc8e34). dist/ is
+  // gitignored, so a fresh clone has nothing to load.
+  //
+  // The build used to live only OUTSIDE this gate — later in the electron:test
+  // chain (electron:command-test / electron:browser-test), in CI's install step
+  // (electron-build.yml), and in setup:electron-dev. All three left
+  // `npm run electron:host-ui-test` unrunnable on its own, and made the chain
+  // pass only on a machine where an earlier run had already left dist/ behind.
+  // Pin the dependency where the gate declares it, so the gate is self-sufficient.
+  assert.equal(
+    packageJson.scripts['preelectron:host-ui-test'],
+    'npm run build:browser-extension',
+  );
+  const chain = packageJson.scripts['electron:test'];
+  assert.ok(
+    chain.includes('npm run electron:host-ui-test'),
+    'electron:test must still run the host-ui gate',
+  );
+});

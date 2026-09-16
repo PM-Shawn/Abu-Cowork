@@ -5,6 +5,8 @@
  * document to composite viewport slices into a single full-page image.
  */
 
+import { canvasLimitRefusal } from './canvasLimits.js';
+
 interface StitchRequest {
   type: 'stitch';
   slices: string[];       // base64 data URLs of each viewport capture
@@ -46,8 +48,19 @@ async function stitchSlices(req: StitchRequest): Promise<string> {
   const scaleY = imgHeight / viewportHeight;
 
   // Resize canvas to actual pixel dimensions
-  canvas.width = imgWidth;
-  canvas.height = Math.round(totalHeight * scaleY);
+  const targetWidth = imgWidth;
+  const targetHeight = Math.round(totalHeight * scaleY);
+
+  // Refuse BEFORE drawing. Past Chrome's ceilings a canvas keeps no pixels but
+  // reports no error either — `toDataURL()` just answers `"data:,"`, which
+  // used to travel all the way back to the model as a successful screenshot.
+  // Failing here turns a silently corrupt image into a sentence the caller can
+  // act on.
+  const refusal = canvasLimitRefusal(targetWidth, targetHeight);
+  if (refusal) throw new Error(refusal);
+
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
 
   for (let i = 0; i < images.length; i++) {
     const img = images[i];
@@ -67,7 +80,18 @@ async function stitchSlices(req: StitchRequest): Promise<string> {
     }
   }
 
-  return canvas.toDataURL('image/png');
+  const dataUrl = canvas.toDataURL('image/png');
+  // Belt and braces: the size check above is the reason this should never
+  // trip, but the failure it guards against is invisible, so the encoded
+  // result is checked rather than assumed. Anything that is not a PNG data URL
+  // is a failure however it arose, and must not be returned as an image.
+  if (!dataUrl.startsWith('data:image/png;base64,')) {
+    throw new Error(
+      `Stitched image failed to encode (${targetWidth}x${targetHeight}); the browser returned no `
+      + 'pixel data. Use screenshot for the visible area instead.',
+    );
+  }
+  return dataUrl;
 }
 
 function loadImage(dataUrl: string): Promise<HTMLImageElement> {

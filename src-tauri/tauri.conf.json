@@ -2,7 +2,7 @@
   "productName": "Abu",
 
 
-  "version": "0.42.0",
+  "version": "0.50.0",
 
   "identifier": "com.abu.app",
   "build": {
@@ -59,7 +59,6 @@
     "targets": ["dmg", "app", "nsis"],
     "resources": [
       "builtin-skills/",
-      "builtin-agents/",
       "python-runtime/",
       "node-runtime/",
       "browser-extension/",

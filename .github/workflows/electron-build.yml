@@ -46,6 +46,13 @@ on:
         type: string
         default: all
   pull_request:
+    # Renderer sources (src/, public/) are deliberately absent: a renderer
+    # change cannot break Windows packaging in a way `check`'s `npm run build`
+    # and the macOS e2e-electron app launch do not already catch, and
+    # release.yml re-runs the full Windows package + install + smoke through
+    # workflow_call before anything reaches users. Keeping them here cost
+    # ~20 minutes on every UI pull request for a job that is not a required
+    # check and does not gate the merge.
     paths:
       - '.github/workflows/electron-build.yml'
       - '.github/workflows/release.yml'
@@ -55,14 +62,18 @@ on:
       - 'electron/**'
       - 'scripts/**'
       - 'sidecar/**'
-      - 'src/**'
-      - 'public/**'
-      - 'builtin-agents/**'
       - 'builtin-skills/**'
       - 'abu-browser-bridge/**'
       - 'abu-chrome-extension/**'
       - 'vite.config.ts'
       - 'tsconfig*.json'
+
+# Cancel a superseded run when the same pull request is pushed again. Keyed on
+# github.sha off pull requests so successive dev pushes never queue behind each
+# other; see ci.yml for the full reasoning.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -70,6 +81,8 @@ permissions:
 jobs:
   validate-target-platform:
     runs-on: ubuntu-latest
+    # Normally seconds; see ci.yml's `check`.
+    timeout-minutes: 10
     steps:
       - name: Require a supported target platform
         shell: bash
@@ -123,7 +136,20 @@ jobs:
         run: test "$(uname -m)" = "$EXPECTED_ARCH"
 
       - name: Install dependencies
-        run: npm ci
+        # Root deps + abu-browser-bridge (own package: query_js worker tests
+        # resolve linkedom/ses from the bridge's local node_modules) +
+        # abu-chrome-extension, built: browserHost.cjs loads
+        # abu-chrome-extension/dist/content.js with no fallback (b2cc8e34), the
+        # DOM-action tests in `electron:host-ui-test` go through that loader,
+        # and dist/ is gitignored — this workflow is the only CI surface that
+        # runs that gate. `shell: bash` on purpose: the Windows default is pwsh,
+        # where `(cd X && …)` is not a subshell, so the third line would run
+        # from inside abu-browser-bridge.
+        shell: bash
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci && npm run build)
 
       - name: Require diagnostic upload target
         if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}
@@ -425,7 +451,20 @@ jobs:
           shared-key: electron-windows-x64
 
       - name: Install dependencies
-        run: npm ci
+        # Root deps + abu-browser-bridge (own package: query_js worker tests
+        # resolve linkedom/ses from the bridge's local node_modules) +
+        # abu-chrome-extension, built: browserHost.cjs loads
+        # abu-chrome-extension/dist/content.js with no fallback (b2cc8e34), the
+        # DOM-action tests in `electron:host-ui-test` go through that loader,
+        # and dist/ is gitignored — this workflow is the only CI surface that
+        # runs that gate. `shell: bash` on purpose: the Windows default is pwsh,
+        # where `(cd X && …)` is not a subshell, so the third line would run
+        # from inside abu-browser-bridge.
+        shell: bash
+        run: |
+          npm ci
+          (cd abu-browser-bridge && npm ci)
+          (cd abu-chrome-extension && npm ci && npm run build)
 
       - name: Require diagnostic upload target
         if: ${{ github.event_name != 'pull_request' && github.repository == 'PM-Shawn/Abu-Cowork' }}

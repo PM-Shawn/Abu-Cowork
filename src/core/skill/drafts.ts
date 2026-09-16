@@ -33,6 +33,7 @@ import { homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators } from '../../utils/pathUtils';
 import { sanitizePath } from '../memdir/paths';
 import { atomicWrite } from '../../utils/atomicFs';
+import { assertSkillNameAllowed } from './skillPolicy';
 import type { ProactivityLevel } from '../agent/prompts/skillsGuidance';
 
 // ── Constants ───────────────────────────────────────────────────────────
@@ -218,16 +219,27 @@ export async function writeDraft(
  *   - collision check against non-draft skills
  *   - best-effort reject of any same-name draft (so the loader's first-win
  *     rule doesn't leave a phantom in the drafts panel)
+ *
+ * Creates only: returns null, writing nothing, when the skill folder is
+ * already there — made since the caller's check (another loop creating the
+ * same name), or holding a SKILL.md the check could not see.
  */
 export async function writeSkillDirect(
   skillName: string,
   skillMdContent: string,
   workspacePath: string,
-): Promise<{ skillDir: string; skillMdPath: string }> {
+): Promise<{ skillDir: string; skillMdPath: string } | null> {
   const skillsRoot = await getProjectSkillsDir(workspacePath);
   const skillDir = joinPath(skillsRoot, skillName);
   const skillMdPath = joinPath(skillDir, 'SKILL.md');
-  await mkdir(skillDir, { recursive: true });
+  await mkdir(skillsRoot, { recursive: true });
+  // Not `recursive`: that succeeds on an existing folder, this fails on one.
+  try {
+    await mkdir(skillDir);
+  } catch (err) {
+    if (await exists(skillDir).catch(() => false)) return null;
+    throw err;
+  }
   await atomicWrite(skillMdPath, skillMdContent);
   return { skillDir, skillMdPath };
 }
@@ -252,6 +264,10 @@ export async function readDraft(
  * Enumerate all drafts for `workspacePath`. Skips the `.trash/` subdir.
  * Entries without a sidecar are surfaced with legacy defaults so the UI
  * can still offer accept / reject on them.
+ *
+ * Every draft on disk, including ones under a name the organization's skill
+ * blacklist blocks. Anything that shows drafts to someone must drop those;
+ * skillDraftsStore does.
  */
 export async function listDrafts(workspacePath: string): Promise<DraftRecord[]> {
   const draftsRoot = await getDraftsRoot(workspacePath);
@@ -292,6 +308,10 @@ export async function acceptDraft(
   skillName: string,
   workspacePath: string,
 ): Promise<{ targetDir: string }> {
+  // A draft may predate the organization's policy, or have been proposed on a
+  // machine that had none — accepting it is what makes the skill live.
+  assertSkillNameAllowed(skillName);
+
   const draftsRoot = await getDraftsRoot(workspacePath);
   const sourceDir = joinPath(draftsRoot, skillName);
   const skillsRoot = await getProjectSkillsDir(workspacePath);

@@ -147,6 +147,20 @@ describe('applyDeltaFrames', () => {
       expect(stored![0].childSteps![0].detailBlocks?.[0]).toMatchObject({ id: 'child-1-image', type: 'image' });
     });
 
+    it('session frames keep the shell-grafted execution steps a sidecar mirror copy lacks (retest G1)', async () => {
+      const convId = useChatStore.getState().createConversation();
+      const grafted = [{ id: 's1', toolCallId: 'call-1', type: 'delegate' as const, label: '委派', status: 'completed' as const, toolName: 'delegate_to_agent',
+        childSteps: [{ id: 'c1', type: 'tool' as const, label: 'sleep', status: 'completed' as const, toolName: 'run_command' }] }];
+      useChatStore.getState().addMessage(convId, { id: 'a1', role: 'assistant', content: '完成', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1', executionSteps: grafted, plannedSteps: [{ index: 1, description: 'x', status: 'completed' }] });
+      const mirrorCopy = { id: 'a1', role: 'assistant' as const, content: '完成', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1', usage: { inputTokens: 1, outputTokens: 1 } };
+      await applyDeltaFrames([
+        { p: 'session', m: 'replaceMessageById', a: [convId, mirrorCopy] },
+        { p: 'session', m: 'snapshotMessageRevision', a: [convId, { ...mirrorCopy, executionSteps: [{ ...grafted[0], childSteps: [] }] }] },
+      ]);
+      expect(replaceMessageByIdMock.mock.calls[0][1]).toMatchObject({ id: 'a1', usage: { inputTokens: 1 }, executionSteps: grafted, plannedSteps: [{ index: 1 }] });
+      expect(snapshotMessageRevisionMock.mock.calls[0][1]).toMatchObject({ executionSteps: grafted });
+    });
+
     it('setExecutionStepsSnapshot frame leaves a snapshot untouched when it already carries child steps', async () => {
       const convId = useChatStore.getState().createConversation();
       useChatStore.getState().addMessage(convId, {

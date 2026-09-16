@@ -113,6 +113,35 @@ describe('fsHost', () => {
   });
 
   describe('fs.stat', () => {
+    // Same contract, same fix as pluginFsRun.ts: plugin-fs's `readonly` is
+    // Rust's std::fs::Permissions::readonly() — on Unix `mode & 0o222 == 0`,
+    // ANY write bit. This host used an owner-only mask and disagreed with
+    // electron/fsHost.cjs on a file only the group or others can write.
+    describe('readonly', () => {
+      async function readonlyOf(mode: number): Promise<boolean> {
+        const file = path.join(tmpDir, `mode-${mode.toString(8)}.txt`);
+        await fs.writeFile(file, 'x');
+        await fs.chmod(file, mode);
+        try {
+          return (await fsStat({ path: file })).readonly;
+        } finally {
+          await fs.chmod(file, 0o644);
+        }
+      }
+
+      it('is true when nobody can write', async () => {
+        expect(await readonlyOf(0o444)).toBe(true);
+      });
+
+      it('is false when the owner can write', async () => {
+        expect(await readonlyOf(0o644)).toBe(false);
+      });
+
+      it.skipIf(process.platform === 'win32')('is false when only the group can write', async () => {
+        expect(await readonlyOf(0o464)).toBe(false);
+      });
+    });
+
     it('reports isFile/size for a regular file', async () => {
       const file = path.join(tmpDir, 'sized.txt');
       await fs.writeFile(file, 'exactly17chars!!!');

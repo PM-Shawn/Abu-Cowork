@@ -25,16 +25,20 @@
   "scripts": {
     "prebuild": "cp ../abu-browser-shared/types.ts src/types.ts",
     "build": "tsc",
+    "postbuild": "node scripts/build-linkedom-worker-iife.mjs",
     "dev": "cp ../abu-browser-shared/types.ts src/types.ts && tsc --watch",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "linkedom": "0.18.13",
+    "ses": "2.3.0",
     "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.0",
+    "esbuild": "0.27.2",
     "typescript": "^5.7.0"
   },
   "overrides": {

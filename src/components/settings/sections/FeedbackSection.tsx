@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import wechatQr from '@/assets/wechat-qr.png';
 import { useI18n } from '@/i18n';
+import { useSettingsStore } from '@/stores/settingsStore';
 import type { ProduceResult } from '@/core/diagnostic/bundle';
 import { useFeedbackDraftStore } from '@/stores/feedbackDraftStore';
 import DiagnosticUpload from './diagnostic/DiagnosticUpload';
@@ -9,6 +9,7 @@ import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 
 export default function FeedbackSection() {
   const { t } = useI18n();
+  const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
   // Description lives in the session draft store so it survives leaving the
   // settings view and returning (e.g. to grab a screenshot).
   const description = useFeedbackDraftStore((s) => s.description);
@@ -35,12 +36,18 @@ export default function FeedbackSection() {
         />
       )}
 
-      {/* WeChat QR */}
-      <div className="pt-2 border-t border-[var(--abu-border)] flex flex-col items-center text-center gap-2">
-        <p className="text-minor font-medium text-[var(--abu-text-secondary)]">{t.about.wechatSectionTitle}</p>
-        <img src={wechatQr} alt="WeChat QR" className="w-36 h-36 rounded-xl shadow-sm" />
-        <p className="text-caption text-[var(--abu-text-tertiary)]">{t.about.feedbackDesc}</p>
-      </div>
+      {/* The author moved to their own page; keep a way there from here, because
+          someone on the feedback page is often someone with a problem. */}
+      <p className="pt-2 border-t border-[var(--abu-border)] text-center text-minor text-[var(--abu-text-muted)]">
+        {t.author.feedbackLink}
+        <button
+          type="button"
+          onClick={() => openSystemSettings('author')}
+          className="ml-1 text-[var(--abu-clay)] font-medium hover:underline"
+        >
+          {t.author.feedbackLinkAction} →
+        </button>
+      </p>
     </div>
   );
 }

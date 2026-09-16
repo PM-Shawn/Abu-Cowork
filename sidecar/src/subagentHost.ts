@@ -7,6 +7,10 @@
  * (P1-3a-pre's port #7 + the new per-run-injectable-options extension —
  * see subagentLoop.ts's `SubagentLoopOptions.settingsReader`/`toolInvoker`).
  *
+ * The `SettingsReader` is the ONE port that is deliberately NOT per-run: it is
+ * the sidecar's shared `settingsMirror`, so a setting the user changes mid-run
+ * reaches subagents already in flight. See `handleSubagentRun`'s comment.
+ *
  * Per-run isolation: each `subagent.run` gets its OWN `AbortController`,
  * `ToolInvoker` (closes over its OWN `runId` for `tool.invoke` routing),
  * and `AsyncLocalStorage` context (`subagentRunContext.ts` — carries the
@@ -19,23 +23,35 @@
  * `createReverseToolInvoker` doc comment for why: correctness over latency,
  * per the design doc's explicit instruction).
  */
-import type { SubagentDefinition, ToolDefinition, ToolExecutionContext, ToolResult } from '@/types';
+import type { SubagentDefinition, ToolDefinition, ToolExecutionContext, ToolResult, UpstreamErrorDetails } from '@/types';
 import type { IMContext } from '@/core/agent/orchestrator';
 import type { SettingsReader } from '@/core/agent/ports/settingsReader';
 import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { SettingsState } from '@/stores/settingsStore';
+import type { DelegatedUserTurn } from '@/core/subagent/delegatedUserTurn';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from '@/core/agent/subagentLoop';
+import { clearDispatchInputs } from '@/core/agent/dispatchInput';
 import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
+import { isDelegatedUserTurn } from '@/core/subagent/delegatedUserTurn';
+import {
+  materializeSidecarMediaRefsForShell,
+  prepareSidecarValueForWire,
+  redactSidecarValueForWireFailure,
+  sidecarValueHasOpaqueMediaRefs,
+  sidecarValueNeedsMediaEncoding,
+} from '@/core/subagent/delegatedUserTurnMaterializer';
 import { toolResultToString } from '@/core/tools/toolResultToString';
 import { RpcError } from './protocol';
 import { sendRequest, sendNotification } from './rpcClient';
 import { findActiveRunDeltaForConversation } from './agentLoopHost';
+import { getSettingsMirrorReader, seedSettingsMirrorIfEmpty } from './settingsMirror';
 import { subagentRunContext, type SubagentRunContext } from './subagentRunContext';
 import { SUBAGENT_RUN_WIRE_FIELDS as SHARED_SUBAGENT_RUN_WIRE_FIELDS } from '@/core/agent/subagentWireContract';
 import { makeSubagentProgressToolCallId } from '@/core/agent/subagentProgressIdentity';
+import { normalizeUpstreamErrorDetails } from '@/core/llm/adapter';
 
 interface SerializableToolDefinition {
   name: string;
@@ -43,9 +59,20 @@ interface SerializableToolDefinition {
   inputSchema: ToolDefinition['inputSchema'];
 }
 
+/**
+ * Strip every LOCAL-ONLY field before a tool context crosses the wire. The two
+ * browser-denial reporters are named for the same reason `agentLoopHost.ts`'s
+ * copy names them: they are a shell-owned authorization seam, and relying on
+ * `JSON.stringify` to drop functions is an incident, not a boundary (R2).
+ */
 function toWireToolContext(context: ToolExecutionContext | undefined): ToolExecutionContext | undefined {
   if (!context) return undefined;
-  const { abortSignal: _abortSignal, ...wireContext } = context;
+  const {
+    abortSignal: _abortSignal,
+    reportBrowserDenial: _reportBrowserDenial,
+    reportBrowserAllow: _reportBrowserAllow,
+    ...wireContext
+  } = context;
   return wireContext;
 }
 
@@ -55,7 +82,11 @@ export interface SubagentHostRunParams {
   task: string;
   context?: string;
   parentConversationSummary?: string;
+  delegatedUserTurn?: DelegatedUserTurn;
+  delegatedMediaFallback?: 'text-only';
   parentConversationId?: string;
+  parentLoopId?: string;
+  parentUserMessageId?: string;
   persistParentToolImages?: boolean;
   imContext?: IMContext;
   allowedTools?: string[];
@@ -67,6 +98,12 @@ export interface SubagentHostRunParams {
   runPermissionCeiling?: import('@/core/permissions/runPermissionCeiling').RunPermissionCeiling;
   triggerId?: string;
   scheduledTaskId?: string;
+  /** Shell-resolved `## Preloaded Skills` section for the agent's `skills:`
+   *  field. It can only be resolved shell-side — this process hosts the loop
+   *  with an empty skill loader — so it arrives as rendered text. */
+  preloadedSkills?: SubagentLoopOptions['preloadedSkills'];
+  initiatedBy?: import('@/core/agent/runInteractionMode').RunInitiator;
+  dispatchKey?: string;
   locale: string;
   uiStrings: SubagentUiStrings;
   settingsSnapshot: SettingsState;
@@ -77,6 +114,7 @@ export interface SubagentHostRunParams {
 
 export const SUBAGENT_HOST_RUN_WIRE_FIELDS =
   SHARED_SUBAGENT_RUN_WIRE_FIELDS satisfies readonly (keyof SubagentHostRunParams)[];
+const subagentHostRunWireFieldSet = new Set<string>(SUBAGENT_HOST_RUN_WIRE_FIELDS);
 
 type AssertNever<T extends never> = T;
 
@@ -127,14 +165,61 @@ interface SerializableSubagentResult {
   tokenUsage: { input: number; output: number };
   duration: number;
   stopReason: SubagentStopReason;
+  upstream?: UpstreamErrorDetails;
 }
+
+const PROGRESS_MEDIA_TRANSPORT_ERROR = 'Error: Could not prepare sidecar progress media for transport.';
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
+function cloneWireValue<T>(value: T): T {
+  if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function failClosedProgressEvent(event: SubagentProgressEvent): SubagentProgressEvent {
+  const safeEvent = redactSidecarValueForWireFailure(event) as SubagentProgressEvent;
+  if (safeEvent.type !== 'tool-end') return safeEvent;
+  return {
+    ...safeEvent,
+    result: PROGRESS_MEDIA_TRANSPORT_ERROR,
+    error: true,
+    resultContent: undefined,
+  };
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+/** The rendered section is prompt text, so validate its shape rather than
+ *  passing an arbitrary object into the system prompt. */
+function assertPreloadedSkills(value: unknown): void {
+  if (!isRecord(value)) {
+    throw new RpcError(-32602, 'Invalid params: preloadedSkills must be an object');
+  }
+  if (typeof value.text !== 'string' || !value.text) {
+    throw new RpcError(-32602, 'Invalid params: preloadedSkills.text must be a non-empty string');
+  }
+  for (const field of ['resolved', 'missing', 'truncated'] as const) {
+    if (!isStringArray(value[field])) {
+      throw new RpcError(-32602, `Invalid params: preloadedSkills.${field} must be a string array`);
+    }
+  }
+}
+
+function assertDelegatedUserTurn(value: unknown): asserts value is DelegatedUserTurn {
+  if (!isDelegatedUserTurn(value)) {
+    throw new RpcError(-32602, 'Invalid params: delegatedUserTurn must contain only opaque media refs and trusted origin metadata');
+  }
+}
+
 function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (!isRecord(params)) throw new RpcError(-32602, 'Invalid params: expected object');
+  const unknownKey = Object.keys(params).find((key) => !subagentHostRunWireFieldSet.has(key));
+  if (unknownKey) throw new RpcError(-32602, `Invalid params: unsupported field ${unknownKey}`);
   const { runId, agent, task, tools, settingsSnapshot, resolvedCreds, uiStrings, locale } = params;
   if (typeof runId !== 'string' || !runId) {
     throw new RpcError(-32602, 'Invalid params: runId must be a non-empty string');
@@ -175,6 +260,15 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (params.authorizationScopeId !== undefined && (typeof params.authorizationScopeId !== 'string' || !params.authorizationScopeId)) {
     throw new RpcError(-32602, 'Invalid params: authorizationScopeId must be a non-empty string');
   }
+  if (params.parentConversationId !== undefined && (typeof params.parentConversationId !== 'string' || !params.parentConversationId)) {
+    throw new RpcError(-32602, 'Invalid params: parentConversationId must be a non-empty string');
+  }
+  if (params.parentLoopId !== undefined && (typeof params.parentLoopId !== 'string' || !params.parentLoopId)) {
+    throw new RpcError(-32602, 'Invalid params: parentLoopId must be a non-empty string');
+  }
+  if (params.parentUserMessageId !== undefined && (typeof params.parentUserMessageId !== 'string' || !params.parentUserMessageId)) {
+    throw new RpcError(-32602, 'Invalid params: parentUserMessageId must be a non-empty string');
+  }
   if (
     params.runPermissionCeiling !== undefined
     && !isRunPermissionCeiling(params.runPermissionCeiling)
@@ -187,8 +281,30 @@ function parseSubagentRunParams(params: unknown): SubagentHostRunParams {
   if (params.scheduledTaskId !== undefined && typeof params.scheduledTaskId !== 'string') {
     throw new RpcError(-32602, 'Invalid params: scheduledTaskId must be a string');
   }
+  if (params.initiatedBy !== undefined && params.initiatedBy !== 'user' && params.initiatedBy !== 'automation') {
+    throw new RpcError(-32602, "Invalid params: initiatedBy must be 'user' or 'automation'");
+  }
+  if (params.dispatchKey !== undefined && typeof params.dispatchKey !== 'string') {
+    throw new RpcError(-32602, 'Invalid params: dispatchKey must be a string');
+  }
   if (params.persistParentToolImages !== undefined && typeof params.persistParentToolImages !== 'boolean') {
     throw new RpcError(-32602, 'Invalid params: persistParentToolImages must be a boolean');
+  }
+  if (params.delegatedUserTurn !== undefined) {
+    assertDelegatedUserTurn(params.delegatedUserTurn);
+    if (
+      params.parentConversationId !== params.delegatedUserTurn.origin.conversationId
+      || params.parentLoopId !== params.delegatedUserTurn.origin.loopId
+      || params.parentUserMessageId !== params.delegatedUserTurn.origin.messageId
+    ) {
+      throw new RpcError(-32602, 'Invalid params: delegatedUserTurn origin must match trusted parent identity');
+    }
+  }
+  if (params.delegatedMediaFallback !== undefined && params.delegatedMediaFallback !== 'text-only') {
+    throw new RpcError(-32602, 'Invalid params: delegatedMediaFallback must be text-only');
+  }
+  if (params.preloadedSkills !== undefined) {
+    assertPreloadedSkills(params.preloadedSkills);
   }
   const { workspacePathSnapshot } = params;
   if (workspacePathSnapshot !== null && typeof workspacePathSnapshot !== 'string') {
@@ -258,7 +374,12 @@ function parseAbortParams(params: unknown): { runId: string } {
  * scope for this phase, so per "when in doubt, everything goes reverse —
  * correctness over latency", every tool call round-trips to the shell.
  */
-function createReverseToolInvoker(runId: string, tools: SerializableToolDefinition[]): ToolInvoker {
+function createReverseToolInvoker(
+  runId: string,
+  tools: SerializableToolDefinition[],
+  mediaOriginConversationId: string | undefined,
+  signal: AbortSignal | undefined,
+): ToolInvoker {
   const fullTools: ToolDefinition[] = tools.map((t) => ({
     name: t.name,
     description: t.description,
@@ -273,18 +394,27 @@ function createReverseToolInvoker(runId: string, tools: SerializableToolDefiniti
   return {
     getAllTools: () => fullTools,
     executeAnyTool: async (name, input, _onConfirm, _onFilePerm, context) => {
-      return (await sendRequest('tool.invoke', {
+      const result = (await sendRequest('tool.invoke', {
         runId,
         toolName: name,
         input,
         context: toWireToolContext(context as ToolExecutionContext | undefined),
       })) as ToolResult;
+      if (!sidecarValueHasOpaqueMediaRefs(result)) return result;
+      if (!mediaOriginConversationId) {
+        throw new Error('Cannot materialize sidecar tool media: media origin is missing');
+      }
+      return await materializeSidecarMediaRefsForShell(result, mediaOriginConversationId, signal) as ToolResult;
     },
     toolResultToString,
   };
 }
 
-const activeRuns = new Map<string, { controller: AbortController }>();
+const activeRuns = new Map<string, { controller: AbortController; dispatchKey?: string }>();
+
+export function isSubagentDispatchActive(key: string): boolean {
+  return Array.from(activeRuns.values()).some((run) => run.dispatchKey === key && !run.controller.signal.aborted);
+}
 
 export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   const params = parseSubagentRunParams(rawParams);
@@ -295,15 +425,86 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
   }
 
   const controller = new AbortController();
-  activeRuns.set(runId, { controller });
+  activeRuns.set(runId, { controller, dispatchKey: params.dispatchKey });
 
-  const settingsReader: SettingsReader = { getSnapshot: () => params.settingsSnapshot };
-  const toolInvoker = createReverseToolInvoker(runId, params.tools);
+  /**
+   * Read settings through the sidecar's SHARED mirror, not through this run's
+   * dispatch-time snapshot (config-batch4, 2026-09-06).
+   *
+   * This used to be `getSnapshot: () => params.settingsSnapshot` — a snapshot
+   * frozen for the whole life of the subagent. The original note called that an
+   * acceptable simplification because a subagent run is short; it is not. A
+   * delegated agent can browse for minutes, and a user who changes a setting
+   * mid-run expects the change to take effect, not to wait for the run to end.
+   *
+   * WHAT THIS DOES AND DOES NOT COVER. What was frozen is what the subagent
+   * LOOP reads out of settings for itself — its turn limit, its model, the
+   * per-tool switches it consults directly. The browser gate is NOT in that
+   * set and never was: a sidecar-hosted tool call goes back to the shell over
+   * `approval.check`, and the shell answers from the renderer's LIVE store. So
+   * turning the unattended-browser master switch off did already stop the next
+   * browser action of a running subagent; do not read this comment as saying
+   * it did not. (S10/AC-S16 is satisfied by that round-trip, not by this
+   * line.) The freeze was still a real defect — a run must not read a stale
+   * turn limit or a stale model either — and SCOPE-RULING §7 named it.
+   *
+   * Seeding first preserves the previous behaviour for the only case the freeze
+   * was actually protecting: a subagent that starts before any `state.settings`
+   * push has landed still has its own snapshot to read. Once a push arrives,
+   * every run — main loop and subagent alike — reads the same live value.
+   */
+  seedSettingsMirrorIfEmpty(params.settingsSnapshot);
+  const settingsReader: SettingsReader = getSettingsMirrorReader();
+  const toolInvoker = createReverseToolInvoker(runId, params.tools, params.parentConversationId, controller.signal);
   const workspaceReader: WorkspaceReader = { getCurrentPath: () => params.workspacePathSnapshot };
   const capsPort = createDegradedCapsPort();
   // tool-start inputs, cached so the tool-end image-persistence path below can
   // record the call with its real input (tool-end events don't carry it).
   const toolInputById = new Map<string, Record<string, unknown>>();
+  let progressTail: Promise<void> = Promise.resolve();
+  let progressBusy = false;
+
+  function enqueueProgress(task: () => void | Promise<void>): void {
+    progressBusy = true;
+    const current = progressTail.then(async () => {
+      await task();
+    });
+    progressTail = current.catch(() => undefined);
+    const capturedTail = progressTail;
+    void capturedTail.finally(() => {
+      if (progressTail === capturedTail) progressBusy = false;
+    });
+  }
+
+  async function drainProgress(): Promise<void> {
+    while (true) {
+      const pending = progressTail;
+      await pending;
+      if (progressTail === pending) return;
+    }
+  }
+
+  function sendProgress(event: SubagentProgressEvent): void {
+    const wireEvent = cloneWireValue(event);
+    const pushProgress = (preparedEvent: SubagentProgressEvent): void => {
+      sendNotification('subagent.progress', { runId, event: preparedEvent });
+    };
+
+    if (!sidecarValueNeedsMediaEncoding(wireEvent)) {
+      const task = () => pushProgress(redactSidecarValueForWireFailure(wireEvent));
+      if (progressBusy) enqueueProgress(task);
+      else task();
+      return;
+    }
+
+    enqueueProgress(async () => {
+      try {
+        pushProgress(await prepareSidecarValueForWire(params.parentConversationId, wireEvent, controller.signal));
+      } catch {
+        pushProgress(failClosedProgressEvent(wireEvent));
+      }
+    });
+  }
 
   const runCtx: SubagentRunContext = {
     runId,
@@ -320,7 +521,11 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     task: params.task,
     context: params.context,
     parentConversationSummary: params.parentConversationSummary,
+    delegatedUserTurn: params.delegatedUserTurn,
+    delegatedMediaFallback: params.delegatedMediaFallback,
     parentConversationId: params.parentConversationId,
+    parentLoopId: params.parentLoopId,
+    parentUserMessageId: params.parentUserMessageId,
     persistParentToolImages: params.persistParentToolImages,
     imContext: params.imContext,
     allowedTools: params.allowedTools,
@@ -329,6 +534,9 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     runPermissionCeiling: params.runPermissionCeiling,
     triggerId: params.triggerId,
     scheduledTaskId: params.scheduledTaskId,
+    preloadedSkills: params.preloadedSkills,
+    initiatedBy: params.initiatedBy,
+    dispatchKey: params.dispatchKey,
   } satisfies Pick<SubagentLoopOptions, SubagentWireBackedLoopOptionField>
     & Record<SubagentWireBackedLoopOptionField, unknown>;
 
@@ -346,30 +554,18 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
     // (delegate_to_agent/run_agent_batch's onProgress wiring in
     // agentTools.ts/orchestrationTools.ts). Without this, a sidecar-run
     // subagent would look completely frozen until the final result —
-    // fire-and-forget NOTIFICATION per event (same discipline as
-    // hook.notify: progress must never block the loop on an ack).
+    // ordered NOTIFICATION per event (same no-ack discipline as hook.notify,
+    // but media-bearing progress first enters a per-run transport tail).
     //
-    // Serializability: every SubagentProgressEvent variant is already
-    // JSON-safe. tool-start's `toolInput` is the parsed tool_use JSON
-    // object (always JSON-safe — it came FROM parsed JSON). tool-end
-    // carries the stringified `result` plus an optional `resultContent`
-    // (the raw ToolResultContent[] blocks, for child-step image
-    // rendering) — both plain data: resultContent is the same JSON-safe
-    // array the tool.invoke response already carried in this direction's
-    // mirror, so forwarding it back is a second copy of known-serializable
-    // data, not a new projection concern. turn-complete is two numbers.
-    // Verified by reading, not assumed.
+    // Media boundary: tool-end may carry rich image resultContent from a
+    // shell tool result. That is JSON-shaped but not wire-safe: base64 pixels
+    // and local paths must not cross raw. sendProgress() persists images as
+    // conversation-bound delegated refs, redacts path text, and fails closed
+    // with a visible tool-end error if persistence cannot complete.
     //
-    // Ordering: progress notifications and the final subagent.run RESPONSE
-    // travel the same single ordered NDJSON stdout pipe (one JSON-RPC
-    // message per line, written in emission order — see protocol.ts's
-    // module doc). Every onProgress call here happens synchronously within
-    // runSubagentLoop's execution, strictly before that same async call
-    // resolves and handleSubagentRun returns its result below — so every
-    // progress notification for a run is guaranteed to reach the shell
-    // BEFORE that run's final response. Not asserted anywhere (pipe
-    // ordering is a platform guarantee, not app logic to test) — documented
-    // here per the follow-up card's instruction.
+    // Ordering: raw NDJSON ordering alone is insufficient once media
+    // persistence is async. All progress frames share the tail above, and
+    // handleSubagentRun drains it before returning its terminal response.
     //
     // Image persistence (sidecar-authoritative when the PARENT loop is also
     // sidecar-run): a tool-end whose resultContent carries an image is
@@ -407,7 +603,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
           }
         }
       }
-      sendNotification('subagent.progress', { runId, event });
+      sendProgress(event);
     },
     // commandConfirmCallback/filePermissionCallback intentionally omitted:
     // createReverseToolInvoker's executeAnyTool ALWAYS reverses to the
@@ -420,6 +616,8 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
 
   try {
     const result = await subagentRunContext.run(runCtx, () => runSubagentLoop(options));
+    await drainProgress();
+    const upstream = normalizeUpstreamErrorDetails(result.upstream);
     return {
       text: result.text,
       toolCallCount: result.toolCallCount,
@@ -427,9 +625,14 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
       tokenUsage: result.tokenUsage,
       duration: result.duration,
       stopReason: result.stopReason,
+      ...(upstream ? { upstream } : {}),
     } satisfies SerializableSubagentResult;
   } finally {
+    await drainProgress();
     activeRuns.delete(runId);
+    // Instructions queued for this hand-off die with it (the shell-side
+    // registry cannot see runs hosted here).
+    if (params.dispatchKey) clearDispatchInputs(params.dispatchKey);
   }
 }
 

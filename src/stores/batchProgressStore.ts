@@ -130,7 +130,7 @@ const IMAGE_BLOCK_JSON_ENVELOPE_BYTES = textEncoder.encode(JSON.stringify({
   source: { type: 'base64', media_type: '', data: '' },
 })).byteLength;
 const RESULT_CONTENT_ARRAY_ENVELOPE_BYTES = 2;
-const JSON_SAFE_ASCII = /^[\x20-\x21\x23-\x5b\x5d-\x7e]*$/;
+const JSON_UNSAFE_ASCII = /[^\x20-\x21\x23-\x5b\x5d-\x7e]/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -153,18 +153,20 @@ function isImageMediaType(value: string): boolean {
  * second attacker-sized JSON copy. This accounts for JSON escapes and treats a
  * surrogate pair atomically so retained text never ends on half an emoji. */
 function jsonStringContentBytes(text: string, maxBytes = Number.POSITIVE_INFINITY): { bytes: number; end: number } {
-  const safeAsciiLimit = Number.isFinite(maxBytes)
-    ? Math.max(0, Math.min(text.length, Math.floor(maxBytes)))
-    : text.length;
-  const safeAsciiCandidate = safeAsciiLimit === text.length
-    ? text
-    : text.slice(0, safeAsciiLimit);
-  if (JSON_SAFE_ASCII.test(safeAsciiCandidate)) {
-    return { bytes: safeAsciiLimit, end: safeAsciiLimit };
+  // Locate the first character JSON does not encode as its own single byte, so
+  // everything before it can be accounted for by arithmetic. Scanning for that
+  // character (instead of testing whether a sliced candidate is entirely safe)
+  // keeps the "megabytes of ASCII with one emoji in them" case off the
+  // per-code-unit walk below, which v8 coverage instrumentation slows ~12x.
+  const firstUnsafe = text.search(JSON_UNSAFE_ASCII);
+  const safeAsciiEnd = firstUnsafe === -1 ? text.length : firstUnsafe;
+  if (safeAsciiEnd >= maxBytes) {
+    const limit = Math.max(0, Math.floor(maxBytes));
+    return { bytes: limit, end: limit };
   }
 
-  let bytes = 0;
-  let index = 0;
+  let bytes = safeAsciiEnd;
+  let index = safeAsciiEnd;
   while (index < text.length) {
     const code = text.charCodeAt(index);
     let codeUnits = 1;

@@ -29,6 +29,10 @@ function snapshotStep(step: ExecutionStep): ExecutionStepSnapshot {
     snapshot.agentName = step.agentName;
   }
 
+  if (step.batchTask) {
+    snapshot.batchTask = step.batchTask;
+  }
+
   if (step.childSteps && step.childSteps.length > 0) {
     snapshot.childSteps = step.childSteps.map(snapshotStep);
   }
@@ -79,6 +83,7 @@ export function snapshotToExecutionSteps(snapshots: ExecutionStepSnapshot[]): Ex
     duration: s.duration,
     agentName: s.agentName,
     childSteps: s.childSteps ? snapshotToExecutionSteps(s.childSteps) : undefined,
+    batchTask: s.batchTask,
   }));
 }
 

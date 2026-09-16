@@ -67,6 +67,12 @@ const fs = require('node:fs');
 const { execFile } = require('node:child_process');
 const { REPO_ROOT } = require('./appEnv.cjs');
 const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
+const { resolveWindowPosition, wireWindowMoveEvent } = require('./windowPlacement.cjs');
+// Every floating window this module reveals (overlay / stop-button / pet) goes
+// through the window-show policy main.cjs configured at boot, so an E2E
+// launch with ABU_E2E_QUIET_WINDOW=1 never activates the app from here either
+// (a bare `win.show()` would steal focus on the developer's machine).
+const { revealWindow } = require('./windowShowPolicy.cjs');
 
 const GUI_MISS = Symbol('gui-dispatch-miss');
 
@@ -262,13 +268,13 @@ function applyAllSpaces(win) {
   }
 }
 
-/** `show()` on 'ready-to-show' (avoids a white flash), with a timeout fallback in case that event never fires (e.g. a renderer-side error before first paint) so the window doesn't stay hidden forever. */
+/** Reveal on 'ready-to-show' (avoids a white flash), with a timeout fallback in case that event never fires (e.g. a renderer-side error before first paint) so the window doesn't stay hidden forever. Reveals via the window-show policy (`show()` normally, `showInactive()` under the quiet E2E policy). */
 function showWhenReady(win, timeoutMs = 1500) {
   let shown = false;
   const doShow = () => {
     if (shown || !win || win.isDestroyed()) return;
     shown = true;
-    win.show();
+    revealWindow(win);
   };
   win.once('ready-to-show', doShow);
   setTimeout(doShow, timeoutMs);
@@ -276,7 +282,7 @@ function showWhenReady(win, timeoutMs = 1500) {
 
 function showOverlay() {
   if (overlayWindow && !overlayWindow.isDestroyed()) {
-    overlayWindow.show();
+    revealWindow(overlayWindow);
     return;
   }
   const display = screen.getPrimaryDisplay();
@@ -302,7 +308,7 @@ function showOverlay() {
 
 function showStopButton(stopLabel) {
   if (stopBtnWindow && !stopBtnWindow.isDestroyed()) {
-    stopBtnWindow.show();
+    revealWindow(stopBtnWindow);
     return;
   }
   const display = screen.getPrimaryDisplay();
@@ -499,16 +505,40 @@ let petWindow = null;
 const PET_SIZE = 80;
 const PET_PRELOAD = path.join(__dirname, 'preload.cjs'); // full preload — pet.html is a real @tauri-apps/api-using React bundle, same as the main window
 
-/** `pet_show` — pet.rs:48. */
-function petShow() {
+/**
+ * Where a newly created pet window goes: the saved spot when the caller passes
+ * one (`{ x, y }` physical px — settingsStore.petPosition, same units as
+ * outer_position), mapped to DIP and kept on a display exactly like
+ * set_position; otherwise pet.rs's default, bottom-right of the primary display.
+ * Creating it there (instead of letting the pet move itself after its first
+ * paint) is what keeps it from flashing at the corner and jumping on launch.
+ */
+function initialPetPosition(saved) {
+  if (saved && typeof saved === 'object') {
+    try {
+      // Tie-break on the primary display: where Tauri created the pet before
+      // its set_position restore converted with that display's scale factor.
+      return resolveWindowPosition(
+        screen,
+        { Physical: saved },
+        { width: PET_SIZE, height: PET_SIZE },
+        screen.getPrimaryDisplay()
+      );
+    } catch {
+      /* malformed saved value — fall back to the default corner */
+    }
+  }
+  const { x: dx, y: dy, width, height } = screen.getPrimaryDisplay().bounds;
+  return { x: Math.round(dx + width - PET_SIZE - 100), y: Math.round(dy + height - PET_SIZE - 100) };
+}
+
+/** `pet_show {position?}` — pet.rs:48, plus the optional saved position. */
+function petShow(args) {
   if (petWindow && !petWindow.isDestroyed()) {
-    petWindow.show();
+    revealWindow(petWindow);
     return null;
   }
-  const display = screen.getPrimaryDisplay();
-  const { x: dx, y: dy, width, height } = display.bounds;
-  const x = Math.round(dx + width - PET_SIZE - 100);
-  const y = Math.round(dy + height - PET_SIZE - 100);
+  const { x, y } = initialPetPosition(args && args.position);
   petWindow = new BrowserWindow({
     x,
     y,
@@ -534,6 +564,11 @@ function petShow() {
   });
   petWindow.setAlwaysOnTop(true, 'floating');
   applyAllSpaces(petWindow);
+  // usePetDrag persists the pet's position from getCurrentWindow().onMoved.
+  wireWindowMoveEvent(petWindow, {
+    screen,
+    emitWindowEvent: (win, event, payload) => tauriHost().emitWindowEvent(win, event, payload),
+  });
   const page = resolveHtml('pet.html');
   registerPrivilegedWindow(petWindow, page, { label: 'pet' });
   void petWindow.loadFile(page);
@@ -627,7 +662,7 @@ function guiDispatch(app, cmd, args) {
     case 'get_abu_window_id':
       return getAbuWindowId();
     case 'pet_show':
-      return petShow();
+      return petShow(a);
     case 'pet_hide':
       return petHide();
     case 'pet_focus_main':
@@ -691,5 +726,7 @@ module.exports = {
   __test: {
     WINDOWS_ACTIVE_WINDOW_SCRIPT,
     getActiveWindowForPlatform,
+    initialPetPosition,
+    showWhenReady,
   },
 };

@@ -36,7 +36,7 @@ describe('ChatInput keyboard contract', () => {
       pendingInput: null,
       pendingInputAppend: null,
       pendingReferences: [],
-      pendingAttachmentPaths: [],
+      pendingAttachmentRequests: [],
     });
     useSettingsStore.setState({ composerEnterBehavior: 'enter' });
     useChatStore.getState().createConversation();

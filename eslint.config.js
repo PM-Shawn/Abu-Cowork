@@ -26,6 +26,7 @@ export default defineConfig([
     '.wt-*/',
     '.claude/worktrees/',
     'sidecar/index.mjs',
+    'abu-browser-bridge/dist',
     'electron/browser-runtime/dist',
     'electron/chrome-bridge-runtime/dist',
   ]),

@@ -65,7 +65,29 @@ export async function invokeCleanupForCapturedRun<T>(
   return sendRequest('native.invoke', { runId, cmd, args }) as Promise<T>;
 }
 
-export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+/**
+ * Mirrors `@tauri-apps/api/core`'s `InvokeArgs`. Only the record form can
+ * cross the `native.invoke` JSON wire — the binary forms are accepted here
+ * solely so they are REJECTED loudly instead of being stringified into an
+ * object with numeric keys.
+ */
+export type InvokeArgsLike = Record<string, unknown> | number[] | ArrayBuffer | Uint8Array;
+
+/**
+ * The real `invoke` is `(cmd, args?: InvokeArgs, options?: InvokeOptions)`.
+ * This shim used to declare two parameters and a narrower `args`, so a third
+ * argument was silently discarded and a binary payload would have been
+ * JSON-serialized into a numeric-keyed object. Both are now rejected; the
+ * checks run BEFORE the run-context check so a malformed call fails the same
+ * way inside or outside a run.
+ */
+export async function invoke<T>(cmd: string, args?: InvokeArgsLike, options?: unknown): Promise<T> {
+  if (options !== undefined) {
+    throw new Error(`[sidecar] native.invoke does not support InvokeOptions (headers): ${cmd}`);
+  }
+  if (args !== undefined && (Array.isArray(args) || args instanceof ArrayBuffer || ArrayBuffer.isView(args))) {
+    throw new Error(`[sidecar] native.invoke args must be a plain record, not a binary payload: ${cmd}`);
+  }
   const runId = agentRunContext.getStore()?.runId ?? subagentRunContext.getStore()?.runId;
   if (!runId) {
     throw new Error('[sidecar] native.invoke called outside an agent/subagent run context');

@@ -70,6 +70,44 @@ function writeAll(fd, content) {
   }
 }
 
+/**
+ * Opens a file for a plugin:fs write the way tauri-plugin-fs 2.5.1 does
+ * (`commands.rs` `write_file_inner` builds a Rust `std::fs::OpenOptions` whose
+ * `create` defaults to TRUE and whose `truncate` is `!append`):
+ *   - `createNew` → `'wx'`/`'ax'` (`O_CREAT|O_EXCL`), and it wins over
+ *     `create`: the create itself is the existence check, so an existing file
+ *     fails with EEXIST atomically — never a probe, then a write.
+ *   - `create: false` → `O_WRONLY` with NO `O_CREAT`: a missing file fails with
+ *     ENOENT and is not created, so a file deleted since the caller last read
+ *     it is refused rather than recreated (`src/core/team/roleIdentity.ts`'s
+ *     `ensureRoleId` and `src/utils/itemStorage.ts` rely on exactly that).
+ *     Node has no flag string for "write but never create", and the two
+ *     obvious stand-ins are both wrong: `O_TRUNC` without `O_CREAT` is
+ *     rejected on Windows with EINVAL instead of opening the existing file
+ *     (CI's `test-windows` caught that on the first cut of the sibling sidecar
+ *     shim), and `'r+'` is `O_RDWR`, which fails with EACCES on a file whose
+ *     owner left it write-only — one the plugin's `O_WRONLY` opens fine. So
+ *     the truncation happens after the open instead (see the caller).
+ *   - otherwise → `'w'`/`'a'` (`O_CREAT`, truncating only when not appending).
+ * Appends always carry `O_APPEND` (`'a'`, `'ax'`, or the flag itself), so the
+ * kernel positions every write at the end, as the plugin does — never a
+ * seek-then-write that a concurrent appender could interleave with.
+ * `mode` is passed only on the paths that can CREATE the file, which is the
+ * only thing it applies to, and never on Windows: the plugin's own
+ * `opts.mode(mode)` sits inside a `#[cfg(unix)]` block (`lib.rs`'s
+ * `From<OpenOptions> for std::fs::OpenOptions`), while Node would turn a mode
+ * without the owner write bit into a read-only file there.
+ */
+function openForPluginWrite(resolved, options) {
+  const append = !!options.append;
+  const mode = process.platform === 'win32' ? undefined : options.mode;
+  if (options.createNew) return fs.openSync(resolved, append ? 'ax' : 'wx', mode);
+  if (options.create === false) {
+    return fs.openSync(resolved, fs.constants.O_WRONLY | (append ? fs.constants.O_APPEND : 0));
+  }
+  return fs.openSync(resolved, append ? 'a' : 'w', mode);
+}
+
 function openExclusiveSibling(parent, prefix) {
   const flags =
     fs.constants.O_WRONLY |
@@ -362,11 +400,49 @@ function resolveScoped(app, p, baseDirNum, opts) {
   return assertAllowed(resolved, opts);
 }
 
-function dateOrNull(value) {
-  return value instanceof Date && Number.isFinite(value.getTime()) ? value.toISOString() : null;
+/**
+ * A timestamp on the wire, in the SAME integer milliseconds the real plugin
+ * produces.
+ *
+ * Tauri's Rust `plugin:fs` builds every FileInfo timestamp with
+ * `SystemTime::duration_since(UNIX_EPOCH).as_millis()` (`commands.rs:1721`),
+ * and `as_millis()` **truncates** the sub-millisecond remainder. Node's
+ * `Stats.mtime` is `new Date(Math.round(mtimeMs))` — it **rounds**. Shimming
+ * the plugin with Node's `Date` therefore hands the frontend a value that is
+ * one millisecond LATER than the plugin's for every file whose mtime has a
+ * fractional part of .5 ms or more (measured: 11 of 20 freshly written files
+ * on APFS).
+ *
+ * That one millisecond is not cosmetic: `upload_file` freezes the approved
+ * file's identity from this value in the renderer gate and the main process
+ * re-derives it with `Math.floor(stat.mtimeMs)` before sending the bytes
+ * (`browserHost.cjs` `readApprovedUploadFile`). Rounding on one side and
+ * flooring on the other made roughly half of all uploads of an UNCHANGED file
+ * refuse themselves with 「changed on disk」 (acceptance F1).
+ *
+ * So the truncation happens here, once, at the only place that still sees the
+ * float — not at each of the tiers that consume the value.
+ */
+function msecOrNull(ms) {
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(Math.floor(ms));
+  // An out-of-range stamp makes an Invalid Date, whose `toISOString()` throws.
+  // `dateOrNull` used to swallow that case by testing `getTime()`; keep doing so.
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
 /** Convert Node's fs.Stats into @tauri-apps/plugin-fs FileInfo wire shape. */
+/**
+ * plugin-fs's `FileInfo.readonly` is Rust's `std::fs::Permissions::readonly()`
+ * — on Unix `mode & 0o222 == 0` (ANY write bit), on Windows the
+ * `FILE_ATTRIBUTE_READONLY` attribute. `node:fs` synthesizes `mode` on Windows
+ * from that same attribute, so ONE expression serves both; this used to
+ * hardcode `false` on Windows, i.e. "no file is ever readonly".
+ * `electron/fsHost.readonly.test.ts` pins it on both platforms (it runs on the
+ * `test-windows` job too). Device/inode identity comes from Node on both
+ * platforms; do not discard Windows file identities used by upload approval.
+ * POSIX ownership/mode fields retain the existing platform behavior.
+ */
 function toFileInfo(info) {
   const unix = process.platform !== 'win32';
   return {
@@ -374,13 +450,13 @@ function toFileInfo(info) {
     isDirectory: info.isDirectory(),
     isSymlink: info.isSymbolicLink(),
     size: info.size,
-    mtime: dateOrNull(info.mtime),
-    atime: dateOrNull(info.atime),
-    birthtime: dateOrNull(info.birthtime),
-    readonly: unix ? (info.mode & 0o222) === 0 : false,
+    mtime: msecOrNull(info.mtimeMs),
+    atime: msecOrNull(info.atimeMs),
+    birthtime: msecOrNull(info.birthtimeMs),
+    readonly: (info.mode & 0o222) === 0,
     fileAttributes: null,
-    dev: unix ? info.dev : null,
-    ino: unix ? info.ino : null,
+    dev: Number.isSafeInteger(info.dev) && info.dev >= 0 ? info.dev : null,
+    ino: Number.isSafeInteger(info.ino) && info.ino > 0 ? info.ino : null,
     mode: unix ? info.mode : null,
     nlink: unix ? info.nlink : null,
     uid: unix ? info.uid : null,
@@ -485,19 +561,34 @@ function fsDispatch(app, cmd, payload) {
       const options = JSON.parse(h.options || '{}');
       const resolved = resolveScoped(app, p, options.baseDir);
       const buf = Buffer.from(body);
-      const exists = fs.existsSync(resolved);
-      // Honor Tauri's create/createNew: create:false rejects a missing file
-      // (used as an existence guard); createNew rejects an existing file.
-      if (options.create === false && !exists) {
-        throw new Error(`fs: file does not exist and create is false: ${resolved}`);
+      // The open decides create/createNew — see openForPluginWrite — so there
+      // is no check-then-write window for either: a file that appears after a
+      // probe is never overwritten, and one deleted after a probe is never
+      // recreated.
+      let fd;
+      try {
+        fd = openForPluginWrite(resolved, options);
+      } catch (err) {
+        // Keep the messages callers already see; the open, not a probe, is what
+        // produced the errno.
+        if (options.createNew && err && err.code === 'EEXIST') {
+          throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
+        }
+        if (options.create === false && err && err.code === 'ENOENT') {
+          throw new Error(`fs: file does not exist and create is false: ${resolved}`);
+        }
+        throw err;
       }
-      if (options.createNew && exists) {
-        throw new Error(`fs: file already exists and createNew is set: ${resolved}`);
-      }
-      if (options.append) {
-        fs.appendFileSync(resolved, buf);
-      } else {
-        fs.writeFileSync(resolved, buf);
+      try {
+        // The plugin's `truncate = !append`. Every other path got it from its
+        // open flags; create:false could not carry `O_TRUNC` (see above), and
+        // an append needs no truncation at all, so this is the only leftover.
+        if (options.create === false && !options.createNew && !options.append) {
+          fs.ftruncateSync(fd, 0);
+        }
+        writeAll(fd, buf);
+      } finally {
+        fs.closeSync(fd);
       }
       return null;
     }

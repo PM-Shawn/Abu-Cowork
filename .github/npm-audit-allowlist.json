@@ -1,0 +1,17 @@
+{
+  "$comment": "Accepted npm audit findings with no upstream fix. Every entry needs ghsa, package, reason, expires (YYYY-MM-DD); scripts/npm-audit-check.mjs fails CI once an entry expires so it gets re-reviewed. See TESTING.md §7.",
+  "entries": [
+    {
+      "ghsa": "GHSA-w3rx-r6r6-pgpr",
+      "package": "image-size",
+      "reason": "ICNS parser DoS. image-size has no patched version (advisory patched_versions is null as of 2026-09-07; latest 2.0.2 is in range). npm audit fix --force proposes pptxgenjs 1.1.5, a semver-major downgrade from the required ^4.0.1. Only reached via pptxgenjs, whose dist never requires image-size (grep of node_modules/pptxgenjs/dist: 0 hits), and pptxgenjs is bundled solely for the pptx skill.",
+      "expires": "2026-12-31"
+    },
+    {
+      "ghsa": "GHSA-5p2g-fcmc-qvqq",
+      "package": "image-size",
+      "reason": "JXL/HEIF parser DoS. image-size has no patched version (advisory patched_versions is null as of 2026-09-07; latest 2.0.2 is in range). npm audit fix --force proposes pptxgenjs 1.1.5, a semver-major downgrade from the required ^4.0.1. The only dependent (pptxgenjs) never loads image-size.",
+      "expires": "2026-12-31"
+    }
+  ]
+}

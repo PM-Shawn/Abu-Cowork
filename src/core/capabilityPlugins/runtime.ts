@@ -15,6 +15,8 @@ export interface CapabilityRuntimeInputs {
     enabled: boolean;
     status: MCPConnectionStatus;
     extensionConnected?: boolean;
+    /** Monotonic: has the extension ever handshaked in this session. */
+    extensionEverConnected?: boolean;
   };
   computerUseEnabled: boolean;
   computerUsePermissions?: ComputerUsePermissions;
@@ -36,6 +38,7 @@ export function readCapabilityRuntimeSnapshot(
       enabled: inputs.chromeBridge?.enabled ?? false,
       status: inputs.chromeBridge?.status,
       extensionConnected: inputs.chromeBridge?.extensionConnected,
+      extensionEverConnected: inputs.chromeBridge?.extensionEverConnected,
     },
     computerUse: {
       enabled: inputs.computerUseEnabled,

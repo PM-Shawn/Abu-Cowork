@@ -44,7 +44,7 @@
 import { readTextFile, exists, mkdir, readDir } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
 
-import type { ToolDefinition, SkillMetadata, Skill, ToolExecutionContext, InteractiveNoticeCard } from '../../../types';
+import type { ToolDefinition, SkillMetadata, SkillSource, Skill, ToolExecutionContext, InteractiveNoticeCard } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import {
@@ -58,11 +58,13 @@ import {
   type ScanContext,
   type Finding,
 } from '../../safety/contentGuard';
-import { skillLoader, serializeSkillMd } from '../../skill/loader';
+import { skillLoader, serializeSkillMd, parseSkillFile } from '../../skill/loader';
+import { skillPolicyDenial, SkillPolicyDeniedError } from '../../skill/skillPolicy';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { writeDraft, writeSkillDirect, rejectDraft } from '../../skill/drafts';
 import { appendHistoryEntry, writeTombstone, newTurnId } from '../../skill/history';
 import { joinPath, normalizeSeparators } from '../../../utils/pathUtils';
+import { isItemNameTaken } from '../../../utils/validation';
 import { sanitizePath } from '../../memdir/paths';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
@@ -300,6 +302,26 @@ interface ErrorResult {
 
 type ActionResult = SuccessResult | ErrorResult;
 
+// ── Organization skill policy ───────────────────────────────────────────
+
+/**
+ * The refusal when the organization's policy blocks the skill name `name`,
+ * otherwise `null`. Every action that writes applies it to the skill it
+ * touches — a copy-on-modify fork creates a new copy under that name — and,
+ * for a SKILL.md rewrite, to the name the new frontmatter declares, since
+ * that is the name the loader will answer to. delete / remove_file are never
+ * refused.
+ */
+function policyRefusal(name: string | null | undefined): ErrorResult | null {
+  if (!name || !skillPolicyDenial(name)) return null;
+  return { success: false, error: format(getI18n().toolResult.skill.policyDenied, { name }) };
+}
+
+/** The name a SKILL.md's frontmatter declares, or `null` when it declares none. */
+function declaredSkillName(skillMd: string): string | null {
+  return parseSkillFile(skillMd, 'SKILL.md')?.name ?? null;
+}
+
 // ── Post-write scan + rollback ──────────────────────────────────────────
 
 /**
@@ -376,6 +398,7 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
   let skillName: string;
   let fileCount: number;
   let skipped: string[] = [];
+  let skippedLinks: string[] = [];
 
   try {
     if (sourceType === 'folder') {
@@ -384,11 +407,20 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
         if (r.code === 'ALREADY_EXISTS') {
           return { success: false, error: `${r.message}${t.overwriteHint}` };
         }
+        // A folder that is itself a link is a refusal we can explain and the
+        // model can act on (retry with the real path), not a read failure.
+        if (r.code === 'SYMLINK_ROOT') {
+          return { success: false, error: format(t.symlinkRootRefused, { path: source }) };
+        }
+        if (r.code === 'POLICY_DENIED') {
+          return { success: false, error: format(t.policyDenied, { name: r.skillName }) };
+        }
         return { success: false, error: r.message };
       }
       skillName = r.name;
       fileCount = r.fileCount;
       skipped = r.skipped ?? [];
+      skippedLinks = r.skippedSymlinks ?? [];
     } else if (sourceType === 'npm') {
       const r = await installSkillFromNpm(source);
       skillName = r.skillName;
@@ -399,6 +431,9 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
       fileCount = r.files.length;
     }
   } catch (e) {
+    if (e instanceof SkillPolicyDeniedError) {
+      return { success: false, error: format(t.policyDenied, { name: e.skillName }) };
+    }
     return { success: false, error: format(t.installFailed, { error: e instanceof Error ? e.message : String(e) }) };
   }
 
@@ -409,15 +444,74 @@ async function installAction(input: Record<string, unknown>): Promise<ActionResu
   const skippedNote = skipped.length > 0
     ? format(t.skippedNote, { count: skipped.length, files: skipped.join(getI18n().toolResult.listSeparator) })
     : '';
+  // Its own note, not folded into skippedNote: that one says "hidden file(s)",
+  // which a link is not, and the model has to be told the installed skill is
+  // missing exactly these entries.
+  const linksNote = skippedLinks.length > 0
+    ? format(t.skippedLinksNote, { count: skippedLinks.length, files: skippedLinks.join(getI18n().toolResult.listSeparator) })
+    : '';
 
   return {
     success: true,
     status: 'applied',
-    message: format(t.installed, { name: skillName, count: fileCount, skippedNote }),
+    message: format(t.installed, { name: skillName, count: fileCount, skippedNote, linksNote }),
   };
 }
 
 // ── Action: create ──────────────────────────────────────────────────────
+
+/**
+ * Skill sources a created skill must never take the name of, in any letter
+ * case: create writes to workspace-auto (or its drafts/), which the loader
+ * scans before them, so the new skill would hide that one in this workspace.
+ */
+const RESERVED_SKILL_SOURCES: ReadonlySet<SkillSource> = new Set<SkillSource>(['builtin', 'plugin', 'enterprise']);
+
+/** The workspace-auto subfolder drafts live in (see drafts.ts) — never a skill's folder. */
+const DRAFTS_DIRNAME = 'drafts';
+
+async function folderNames(dir: string): Promise<string[]> {
+  try {
+    return (await readDir(dir)).filter((entry) => entry.isDirectory).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * May `create` take `name` in this workspace? Every skill the loader scanned
+ * counts (`getNameClaims`), not just the one `getSkill` resolves the name to —
+ * that one skips disabled plugins' skills and any skill a same-name draft
+ * shadows.
+ *
+ * - `in-use`: a built-in / plugin (disabled included) / enterprise skill has
+ *   the name in any letter case; another skill, or a folder in the
+ *   workspace-auto or drafts dir, has it in other letter case (the same folder
+ *   on macOS / Windows); a workspace-auto folder of that name is already
+ *   there — its SKILL.md filed under another name, or none; or the name is
+ *   `drafts`, the folder the drafts live in. Writing would replace or hide
+ *   what is there.
+ * - `exists`: one of the user's skills has exactly this name. Changing it is
+ *   patch / edit's job.
+ *
+ * A draft of exactly this name is the one claim create takes over: a proposal
+ * supersedes it, a direct create moves it to the trash.
+ */
+async function checkCreateName(name: string, workspacePath: string): Promise<'in-use' | 'exists' | null> {
+  const claims = skillLoader.getNameClaims();
+  const reserved = claims.filter((claim) => RESERVED_SKILL_SOURCES.has(claim.source)).map((claim) => claim.name);
+  if (isItemNameTaken(name, null, [...reserved, DRAFTS_DIRNAME])) return 'in-use';
+
+  const skillsDir = await getWorkspaceAutoSkillsDir(workspacePath);
+  const autoFolders = await folderNames(skillsDir);
+  const draftFolders = await folderNames(joinPath(skillsDir, DRAFTS_DIRNAME));
+  if (isItemNameTaken(name, name, [...claims.map((claim) => claim.name), ...autoFolders, ...draftFolders])) {
+    return 'in-use';
+  }
+
+  if (claims.some((claim) => claim.name === name && claim.source !== 'draft')) return 'exists';
+  return autoFolders.includes(name) ? 'in-use' : null;
+}
 
 async function createAction(input: Record<string, unknown>, context?: ToolExecutionContext): Promise<ActionResult> {
   const t = getI18n().toolResult.skill;
@@ -427,6 +521,10 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
   // Validate
   const nameErr = validateName(name);
   if (nameErr) return { success: false, error: nameErr };
+  // Before either branch below: a draft under a blocked name is still a skill
+  // under that name, one click away from being accepted.
+  const policyRefused = policyRefusal(name);
+  if (policyRefused) return policyRefused;
 
   if (!content) {
     return { success: false, error: 'create requires content (the SKILL.md body)' };
@@ -468,15 +566,13 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
 
   const workspacePath = requireWorkspace(context);
 
-  // Name collision: abort if a non-draft skill with this name already exists.
+  // Name collision: abort unless nothing but a same-name draft claims the name.
   // Drafts with the same name are allowed to be overwritten (superseded).
-  const existing = skillLoader.getSkill(name);
-  if (existing && existing.source !== 'draft') {
-    return {
-      success: false,
-      error: `skill "${name}" already exists (source=${existing.source}). Use patch or edit to modify, or pick a different name.`,
-    };
+  const nameClash = await checkCreateName(name, workspacePath);
+  if (nameClash !== null) {
+    return { success: false, error: format(nameClash === 'in-use' ? t.errNameInUse : t.errSkillExists, { name }) };
   }
+  const existing = skillLoader.getSkill(name);
 
   const serialized = serializeSkillMd(frontmatter, content);
 
@@ -610,6 +706,8 @@ async function createAction(input: Record<string, unknown>, context?: ToolExecut
       error: `write failed: ${e instanceof Error ? e.message : String(e)}`,
     };
   }
+  // The folder appeared after the check (another loop creating this name).
+  if (directResult === null) return { success: false, error: format(t.errNameInUse, { name }) };
 
   // Refresh both skill discovery (for main skills list UI) and drafts
   // store (in case we swept a same-name draft above). discoveryStore's
@@ -654,6 +752,8 @@ async function patchAction(input: Record<string, unknown>, context?: ToolExecuti
   if (nameErr) return { success: false, error: nameErr };
   if (oldString === undefined) return { success: false, error: 'old_string is required' };
   if (newString === undefined) return { success: false, error: 'new_string is required' };
+  const refused = policyRefusal(name);
+  if (refused) return refused;
 
   // Require explicit scope guard on user-scope mutations.
   const requestedScope = (input.scope as SkillScope | undefined) ?? 'workspace-auto';
@@ -720,6 +820,9 @@ async function patchAction(input: Record<string, unknown>, context?: ToolExecuti
         error: 'Patch would break the SKILL.md frontmatter. Preserve the `---` delimiters and required fields.',
       };
     }
+    // Patching `name:` renames the skill.
+    const renamedRefusal = policyRefusal(declaredSkillName(fuzzy.newContent));
+    if (renamedRefusal) return renamedRefusal;
   }
   if (fuzzy.newContent.length > MAX_CONTENT_CHARS) {
     return {
@@ -824,6 +927,8 @@ async function writeFileAction(input: Record<string, unknown>, context?: ToolExe
 
   const pathErr = validateFilePath(filePath);
   if (pathErr) return { success: false, error: pathErr };
+  const refused = policyRefusal(name);
+  if (refused) return refused;
 
   if (fileContent === undefined) return { success: false, error: 'file_content is required' };
   if (fileContent.length > MAX_CONTENT_CHARS) {
@@ -907,6 +1012,10 @@ async function editAction(input: Record<string, unknown>, context?: ToolExecutio
   if (content.length > MAX_CONTENT_CHARS) {
     return { success: false, error: `content exceeds ${MAX_CONTENT_CHARS} chars` };
   }
+  // The skill being edited, and — for a SKILL.md rewrite — the name the new
+  // frontmatter gives it.
+  const refused = policyRefusal(name) ?? (filePath ? null : policyRefusal(declaredSkillName(content)));
+  if (refused) return refused;
 
   const requestedScope = (input.scope as SkillScope | undefined) ?? 'workspace-auto';
   if (requestedScope === 'user') {
@@ -1010,7 +1119,9 @@ async function deleteAction(input: Record<string, unknown>, context?: ToolExecut
 
   const workspacePath = requireWorkspace(context);
 
-  const existing = skillLoader.getSkill(name);
+  // A skill the organization's blacklist hides can still be removed: removal
+  // is never refused (skillPolicy.ts).
+  const existing = skillLoader.getSkill(name, { includePolicyBlocked: true });
   if (!existing) {
     return { success: false, error: `skill "${name}" not found` };
   }
@@ -1155,7 +1266,7 @@ export const skillManageTool: ToolDefinition = {
   description:
     'Manage skills (the agent\'s procedural memory). 7 actions:' +
     '\n- **install**: Install a skill from an external source (npm package name / local path / URL / GitHub link) into the user\'s "My Skills"' +
-    '\n- **create**: Create a new skill (required: name + content + frontmatter.description)' +
+    '\n- **create**: Create a new skill (required: name + content + frontmatter.description). A name another skill already uses — built-in, plugin (even a disabled one), enterprise, the user\'s own, or one differing only in letter case — is refused; to change an existing skill, use patch or edit' +
     '\n- **patch**: Edit an existing skill in place using fuzzy find-and-replace (old_string → new_string)' +
     '\n- **edit**: Full-file replacement (more reliable than patch — use edit for large-scale changes, do not force them into patch)' +
     '\n- **write_file**: Add or overwrite a supporting file in a skill (references / templates / scripts / assets)' +

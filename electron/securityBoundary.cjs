@@ -25,6 +25,9 @@ const RESTRICTED_WINDOW_COMMANDS = new Map([
       'plugin:window|outer_position',
       'plugin:window|primary_monitor',
       'plugin:window|start_dragging',
+      // Restore + edge-snap its own position (caller-aware in tauriHost; the
+      // value is validated and clamped on-screen there).
+      'plugin:window|set_position',
     ]),
   ],
   ['overlay', new Set(['plugin:event|listen', 'plugin:event|unlisten'])],
@@ -37,6 +40,8 @@ const RESTRICTED_EMITTED_EVENTS = new Map([
       'pet-resync-request',
       'pet-send-message',
       'pet-open-state-changed',
+      // Where the pet was left; the main window stores it (petPositionSync.ts).
+      'pet-position-changed',
     ]),
   ],
   ['stop-button', new Set(['computer-use-abort'])],

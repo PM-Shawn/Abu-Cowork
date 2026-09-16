@@ -1,16 +1,20 @@
 import { useState } from 'react';
-import { AlertTriangle, ChevronDown, ChevronRight, Loader2, MonitorCog, Settings, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight, ChevronRight, Loader2, MonitorCog, ShieldCheck } from 'lucide-react';
 import type { SandboxRecoveryAction, SandboxRecoveryPayload } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { format, useI18n } from '@/i18n';
 
 const RECOVERY_STOP_TIMEOUT_MS = 5_000;
 const RECOVERY_STOP_POLL_MS = 50;
+
+const ACTION_BUTTON_BASE =
+  'inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-minor font-medium transition-colors disabled:cursor-default disabled:opacity-60';
 
 async function waitForPreviousRunToStop(conversationId: string): Promise<void> {
   const deadline = Date.now() + RECOVERY_STOP_TIMEOUT_MS;
@@ -108,6 +112,7 @@ export default function SandboxRecoveryCard({
       await setAction(conversationId, messageId, toolCallId, 'started');
       computerUseMayHaveSideEffects = true;
 
+      announceChatTurnScrollIntent({ conversationId, source: 'sandbox-recovery' });
       const result = await runAgentLoopDispatched(
         conversationId,
         format(t.sandbox.appAutomationContinuePrompt, { app }),
@@ -117,6 +122,7 @@ export default function SandboxRecoveryCard({
             TOOL_NAMES.ASK_USER_QUESTION,
           ],
           requireNewRun: true,
+          initiatedBy: 'user',
         },
       );
       if (result.reason === 'completed') {
@@ -189,14 +195,11 @@ export default function SandboxRecoveryCard({
           <AlertTriangle className="h-4 w-4 text-[var(--abu-warning)]" />
         </div>
         <div className="min-w-0 flex-1">
-          <h4 className="text-body font-semibold text-[var(--abu-text-primary)]">
+          <h4 className="text-h-xs text-[var(--abu-text-primary)]">
             {t.sandbox.appAutomationTitle}
           </h4>
           <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
             {format(t.sandbox.appAutomationDescription, { app })}
-          </p>
-          <p className="mt-1 text-caption leading-relaxed text-[var(--abu-text-tertiary)]">
-            {t.sandbox.appAutomationConnectorPending}
           </p>
           {effectiveAction === 'failed' && (
             <p className="mt-2 text-caption font-medium text-[var(--abu-danger)]">
@@ -211,7 +214,7 @@ export default function SandboxRecoveryCard({
           type="button"
           onClick={() => void continueWithComputerUse()}
           disabled={processing}
-          className="btn-primary inline-flex h-8 items-center gap-1.5 px-3 text-minor disabled:opacity-60"
+          className={`${ACTION_BUTTON_BASE} bg-[var(--abu-clay)] text-white hover:bg-[var(--abu-clay-hover)]`}
         >
           {processing
             ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -222,34 +225,33 @@ export default function SandboxRecoveryCard({
           type="button"
           onClick={() => void stopTask()}
           disabled={processing}
-          className="btn-secondary h-8 px-3 text-minor disabled:opacity-60"
+          className={`${ACTION_BUTTON_BASE} border border-[var(--abu-border)] bg-[var(--abu-bg-base)] text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]`}
         >
           {t.sandbox.appAutomationStop}
         </button>
         <button
           type="button"
+          aria-expanded={advancedOpen}
           onClick={() => setAdvancedOpen((open) => !open)}
-          className="btn-ghost inline-flex h-8 items-center gap-1 px-2 text-minor text-[var(--abu-text-tertiary)]"
+          className="btn-ghost ml-auto inline-flex h-8 items-center gap-1 px-2 text-caption text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-secondary)]"
         >
-          {advancedOpen
-            ? <ChevronDown className="h-3.5 w-3.5" />
-            : <ChevronRight className="h-3.5 w-3.5" />}
+          <ChevronRight
+            className={`h-3.5 w-3.5 transition-transform ${advancedOpen ? 'rotate-90' : ''}`}
+          />
           {t.sandbox.appAutomationAdvanced}
         </button>
       </div>
 
       {advancedOpen && (
-        <div className="mt-3 border-t border-[var(--abu-border-subtle)] pt-3">
-          <p className="text-caption leading-relaxed text-[var(--abu-text-tertiary)]">
-            {t.sandbox.appAutomationAdvancedWarning}
-          </p>
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-[var(--abu-border-subtle)] pt-2.5 text-caption leading-relaxed text-[var(--abu-text-tertiary)]">
+          <span>{t.sandbox.appAutomationAdvancedWarning}</span>
           <button
             type="button"
             onClick={() => useSettingsStore.getState().openSystemSettings('sandbox')}
-            className="btn-secondary mt-2 inline-flex h-8 items-center gap-1.5 px-3 text-minor"
+            className="inline-flex items-center gap-0.5 text-caption text-[var(--abu-text-secondary)] underline decoration-[var(--abu-border)] underline-offset-[3px] hover:text-[var(--abu-text-primary)] hover:decoration-current"
           >
-            <Settings className="h-3.5 w-3.5" />
             {t.sandbox.appAutomationOpenSettings}
+            <ArrowUpRight className="h-3 w-3" />
           </button>
         </div>
       )}

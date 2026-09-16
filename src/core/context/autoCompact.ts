@@ -14,7 +14,10 @@
  * is disabled for the rest of the session to avoid infinite retry loops.
  */
 
+import type { LLMErrorCode } from '../llm/adapter';
+
 export type ContextWarningLevel = 0 | 1 | 2 | 3;
+export type AutoCompactFailureCode = LLMErrorCode | 'timeout' | 'error';
 
 /** Thresholds as fractions of max input tokens */
 const LEVEL_1_THRESHOLD = 0.60;
@@ -99,7 +102,7 @@ export class AutoCompactTracker {
    * Record a failed compression — may trip the circuit breaker with cooldown.
    * Error-type-aware: network errors don't accumulate, auth errors disable immediately.
    */
-  recordFailure(errorCode?: string): void {
+  recordFailure(errorCode?: AutoCompactFailureCode): void {
     // Network/rate-limit errors are transient — don't punish the compressor
     if (errorCode === 'network_error' || errorCode === 'rate_limit' || errorCode === 'overloaded') {
       return;
@@ -109,6 +112,9 @@ export class AutoCompactTracker {
       this.disabledUntil = Date.now() + 30 * 60 * 1000; // 30 minutes
       return;
     }
+    // Content-policy rejection is conversation-specific, not a broken API
+    // credential. It deliberately uses the ordinary 3-failure / 5-minute
+    // breaker below instead of the authentication 30-minute disable path.
     // Other errors (LLM quality, invalid request, etc.) — accumulate toward circuit breaker
     this.consecutiveFailures++;
     if (this.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {

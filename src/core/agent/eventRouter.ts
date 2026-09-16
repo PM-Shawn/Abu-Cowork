@@ -610,6 +610,7 @@ export class EventRouter {
       source: payload.source || inferStepSource(payload.toolName),
       detailBlocks: [],
       startTime: Date.now(),
+      ...(payload.batchTask ? { batchTask: payload.batchTask } : {}),
     };
 
     this.deps.executionStore.addChildStep(execution.id, parentStepId, childStep);

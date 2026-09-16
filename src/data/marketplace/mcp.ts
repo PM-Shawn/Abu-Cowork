@@ -1,219 +1,86 @@
+/**
+ * The marketplace's view of Abu's connector catalog.
+ *
+ * There is one catalog — {@link BUILTIN_REGISTRY}, what the agent searches and
+ * installs. `MCPTemplate` is no longer data: it is that registry rendered for
+ * the install UI, which needs a few things the registry deliberately does not
+ * store — prose, in both languages, for a card and a form field.
+ *
+ * The prose comes from the two locale dictionaries directly rather than through
+ * the current-locale accessors, because a template carries *both* languages at
+ * once (`description` + `descriptionEn`); resolving one locale would leave the
+ * other field guessing. The view is therefore locale-independent — what a card
+ * shows is picked from the pair at render time, as it always was.
+ */
+
 import type { MCPTemplate, ModelPreset } from '@/types/marketplace';
 import { hasElectronCommandHost } from '@/utils/electronHost';
+import { BUILTIN_REGISTRY, getRegistryEntry, type MCPRegistryEntry } from '@/core/agent/mcpDiscovery';
+import zhCN from '@/i18n/locales/zh-CN';
+import enUS from '@/i18n/locales/en-US';
 
-/** MCP Server templates for quick installation */
-export const mcpTemplates: MCPTemplate[] = [
-  {
-    id: 'brave-search',
-    name: 'brave-search',
-    description: '使用 Brave Search API 进行网络搜索',
-    descriptionEn: 'Web search powered by the Brave Search API',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-brave-search'],
-    configurableArgs: [],
-    requiredEnvVars: [
-      {
-        name: 'BRAVE_API_KEY',
-        label: 'Brave Search API Key',
-        placeholder: 'BSA...',
-        description: '从 brave.com/search/api 获取',
-        descriptionEn: 'Get it from brave.com/search/api',
-      },
-    ],
-  },
-  {
-    id: 'sqlite',
-    name: 'sqlite',
-    description: 'SQLite 数据库操作和查询',
-    descriptionEn: 'SQLite database operations and queries',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-sqlite', '/path/to/database.db'],
-    configurableArgs: [
-      {
-        index: 2,
-        label: '数据库文件路径',
-        labelEn: 'Database file path',
-        placeholder: '/path/to/your/database.db',
-      },
-    ],
-  },
-  {
-    id: 'puppeteer',
-    name: 'puppeteer',
-    description: '浏览器自动化，支持网页截图和交互',
-    descriptionEn: 'Browser automation with support for screenshots and page interaction',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-puppeteer'],
-    configurableArgs: [],
-  },
-  {
-    id: 'memory',
-    name: 'memory',
-    description: '持久化记忆存储，跨会话保存信息',
-    descriptionEn: 'Persistent memory storage that retains information across sessions',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-memory'],
-    configurableArgs: [],
-  },
-  {
-    id: 'github',
-    name: 'github',
-    description: 'GitHub API 集成，支持仓库、Issues、PR 操作',
-    descriptionEn: 'GitHub API integration for managing repositories, issues, and pull requests',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-github'],
-    configurableArgs: [],
-    requiredEnvVars: [
-      {
-        name: 'GITHUB_PERSONAL_ACCESS_TOKEN',
-        label: 'GitHub Personal Access Token',
-        placeholder: 'ghp_...',
-        description: '从 GitHub Settings → Developer settings → Personal access tokens 生成',
-        descriptionEn: 'Generate it from GitHub Settings → Developer settings → Personal access tokens',
-      },
-    ],
-  },
-  {
-    id: 'slack',
-    name: 'slack',
-    description: 'Slack 集成，发送消息和管理频道',
-    descriptionEn: 'Slack integration for sending messages and managing channels',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-slack'],
-    configurableArgs: [],
-    requiredEnvVars: [
-      {
-        name: 'SLACK_BOT_TOKEN',
-        label: 'Slack Bot Token',
-        placeholder: 'xoxb-...',
-        description: '从 Slack API 管理页面获取 Bot Token',
-        descriptionEn: 'Get the Bot Token from the Slack API management page',
-      },
-    ],
-  },
-  {
-    id: 'fetch',
-    name: 'fetch',
-    description: 'HTTP 请求工具，获取网页和 API 数据',
-    descriptionEn: 'HTTP request tool for fetching web pages and API data',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-fetch'],
-    configurableArgs: [],
-  },
-  {
-    id: 'playwright',
-    name: 'playwright',
-    description: '浏览器自动化，支持网页操作、截图、表单填写',
-    descriptionEn: 'Browser automation with support for page interaction, screenshots, and form filling',
-    command: 'npx',
-    defaultArgs: ['-y', '@playwright/mcp@latest'],
-    configurableArgs: [],
-  },
-  {
-    id: 'notion',
-    name: 'notion',
-    description: 'Notion 集成，管理页面、数据库和内容',
-    descriptionEn: 'Notion integration for managing pages, databases, and content',
-    command: 'npx',
-    defaultArgs: ['-y', '@notionhq/mcp-server-notion'],
-    configurableArgs: [],
-    requiredEnvVars: [
-      {
-        name: 'NOTION_API_KEY',
-        label: 'Notion Integration Token',
-        placeholder: 'ntn_...',
-        description: '从 notion.so/my-integrations 创建并获取',
-        descriptionEn: 'Create and obtain it from notion.so/my-integrations',
-      },
-    ],
-  },
-  {
-    id: 'postgres',
-    name: 'postgres',
-    description: 'PostgreSQL 数据库查询和管理',
-    descriptionEn: 'PostgreSQL database queries and management',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-postgres', 'postgresql://localhost:5432/mydb'],
-    configurableArgs: [
-      {
-        index: 2,
-        label: '数据库连接字符串',
-        labelEn: 'Database connection string',
-        placeholder: 'postgresql://user:pass@localhost:5432/dbname',
-      },
-    ],
-  },
-  {
-    id: 'docker',
-    name: 'docker',
-    description: 'Docker 容器管理，支持列出、启停容器和镜像操作',
-    descriptionEn: 'Docker container management including listing, starting, stopping containers, and image operations',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-docker'],
-    configurableArgs: [],
-  },
-  {
-    id: 'sentry',
-    name: 'sentry',
-    description: 'Sentry 错误监控集成，查看和管理 issues',
-    descriptionEn: 'Sentry error monitoring integration for viewing and managing issues',
-    command: 'npx',
-    defaultArgs: ['-y', '@sentry/mcp-server-sentry'],
-    configurableArgs: [],
-    requiredEnvVars: [
-      {
-        name: 'SENTRY_AUTH_TOKEN',
-        label: 'Sentry Auth Token',
-        placeholder: 'sntrys_...',
-        description: '从 sentry.io 的 Settings → Auth Tokens 获取',
-        descriptionEn: 'Get it from Settings → Auth Tokens on sentry.io',
-      },
-    ],
-  },
-  {
-    id: 'linear',
-    name: 'linear',
-    description: 'Linear 项目管理集成，管理 Issues 和项目',
-    descriptionEn: 'Linear project management integration for managing issues and projects',
-    command: 'npx',
-    defaultArgs: ['-y', '@anthropic/mcp-server-linear'],
-    configurableArgs: [],
-    requiredEnvVars: [
-      {
-        name: 'LINEAR_API_KEY',
-        label: 'Linear API Key',
-        placeholder: 'lin_api_...',
-        description: '从 Linear Settings → API 获取',
-        descriptionEn: 'Get it from Linear Settings → API',
-      },
-    ],
-  },
-  {
-    id: 'chrome-devtools',
-    name: 'chrome-devtools',
-    description: 'Chrome DevTools 浏览器调试与自动化，支持截图、网络监控、性能分析、页面操作',
-    descriptionEn: 'Chrome DevTools browser debugging and automation with screenshots, network monitoring, performance analysis, and page interaction',
-    command: 'npx',
-    defaultArgs: ['-y', 'chrome-devtools-mcp@latest'],
-    configurableArgs: [],
-  },
-  {
-    id: 'abu-browser-bridge',
-    name: 'abu-browser-bridge',
-    description: '阿布浏览器桥接，配合 Chrome 插件实现网页自动化：点击、填写、提取数据、截图等',
-    descriptionEn: 'Abu browser bridge — works with the Chrome extension to automate web pages: clicking, form filling, data extraction, screenshots, and more',
-    command: 'npx',
-    defaultArgs: ['-y', 'abu-browser-bridge@latest'],
-    configurableArgs: [],
-    setupHint: '需要配合 Abu Browser Bridge Chrome 插件使用。请从 GitHub 仓库下载插件，解压后在 Chrome 扩展管理页面（chrome://extensions）开启开发者模式并加载已解压的扩展。',
-    setupHintEn: 'Requires the Abu Browser Bridge Chrome extension. Download the extension from the GitHub repository, unzip it, then go to chrome://extensions, enable Developer mode, and load the unpacked extension.',
-    defaultTimeout: 120000, // 120s — browser automation needs longer timeouts (e.g. waiting for popups)
-  },
-];
+const zh = zhCN.toolResult.system;
+const en = enUS.toolResult.system;
 
+/** One registry entry, already host-resolved, as the install UI needs it. */
+function toTemplate(entry: MCPRegistryEntry): MCPTemplate {
+  const envKeys = Object.keys(entry.env);
+  const configurableArgs = entry.configurableArgs ?? [];
+  return {
+    id: entry.name,
+    name: entry.name,
+    // Falling back to the name matches getEntryDescription(); the registry's
+    // own tests keep every entry described in both dictionaries.
+    description: zh.mcpCatalog[entry.name] ?? entry.name,
+    descriptionEn: en.mcpCatalog[entry.name] ?? entry.name,
+    command: entry.command,
+    defaultArgs: [...entry.args],
+    ...(configurableArgs.length > 0 && {
+      configurableArgs: configurableArgs.map((arg) => ({
+        index: arg.index,
+        // A slot with no label would be an unlabeled required field; the
+        // placeholder at least says what belongs in it. The registry's own
+        // tests keep every slot labeled in both dictionaries.
+        label: zh.mcpArgLabels[`${entry.name}.${arg.index}`] ?? arg.placeholder,
+        labelEn: en.mcpArgLabels[`${entry.name}.${arg.index}`] ?? arg.placeholder,
+        placeholder: arg.placeholder,
+      })),
+    }),
+    ...(envKeys.length > 0 && {
+      // The key *is* the label: it is what the server reads, so naming it
+      // anything else would leave the user matching prose to documentation.
+      requiredEnvVars: envKeys.map((key) => ({
+        name: key,
+        label: key,
+        placeholder: entry.envPlaceholders?.[key] ?? '',
+        description: zh.mcpEnvHints[key],
+        descriptionEn: en.mcpEnvHints[key],
+      })),
+    }),
+    ...(zh.mcpSetupHints[entry.name] && { setupHint: zh.mcpSetupHints[entry.name] }),
+    ...(en.mcpSetupHints[entry.name] && { setupHintEn: en.mcpSetupHints[entry.name] }),
+    ...(entry.defaultTimeout !== undefined && { defaultTimeout: entry.defaultTimeout }),
+  };
+}
+
+/**
+ * Every connector in the catalog, resolved the way this host would run it —
+ * the Electron build swaps the Chrome bridge's command, so a template built
+ * here describes an install that would actually start.
+ */
+export function getMCPTemplates(): MCPTemplate[] {
+  return BUILTIN_REGISTRY.map((entry) => toTemplate(getRegistryEntry(entry.name) ?? entry));
+}
+
+/**
+ * The templates this host offers to install. Electron provisions the Chrome
+ * bridge itself (see provisionFirstPartyMCPServers), so offering it again as
+ * an install card would duplicate a server the user already has.
+ */
 export function getMCPTemplatesForHost(): MCPTemplate[] {
-  if (!hasElectronCommandHost()) return mcpTemplates;
-  return mcpTemplates.filter((template) => template.id !== 'abu-browser-bridge');
+  const templates = getMCPTemplates();
+  if (!hasElectronCommandHost()) return templates;
+  return templates.filter((template) => template.id !== 'abu-browser-bridge');
 }
 
 /** Model presets for quick switching */
@@ -332,7 +199,7 @@ export const modelPresets: ModelPreset[] = [
 
 /** Get MCP template by ID */
 export function getMCPTemplate(id: string): MCPTemplate | undefined {
-  return mcpTemplates.find((t) => t.id === id);
+  return getMCPTemplates().find((t) => t.id === id);
 }
 
 /** Get model preset by ID */

@@ -11,8 +11,11 @@ import { cn } from '@/lib/utils';
  */
 export interface ToolDetailModalProps {
   open: boolean;
+  ariaLabel?: string;
+  testId?: string;
   onClose: () => void;
   avatar?: ReactNode;
+  stackedHeader?: boolean;
   title?: ReactNode;
   subtitle?: ReactNode;
   /** Header-row actions to the left of the close X (toggle, menu, primary CTA). */
@@ -22,6 +25,7 @@ export interface ToolDetailModalProps {
   children: ReactNode;
   /** Tailwind max-width class for the panel. */
   maxWidth?: string;
+  panelClassName?: string;
   /** Suppress the Escape-to-close handler — e.g. while a nested modal (skill
    *  history) is stacked on top and should own the Escape key. */
   disableEscape?: boolean;
@@ -29,14 +33,18 @@ export interface ToolDetailModalProps {
 
 export default function ToolDetailModal({
   open,
+  ariaLabel,
+  testId,
   onClose,
   avatar,
+  stackedHeader = false,
   title,
   subtitle,
   headerActions,
   footer,
   children,
   maxWidth = 'max-w-lg',
+  panelClassName,
   disableEscape = false,
 }: ToolDetailModalProps) {
   // Escape to close — suppressed when a nested modal owns Escape.
@@ -56,16 +64,20 @@ export default function ToolDetailModal({
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
+        role={ariaLabel ? 'dialog' : undefined}
+        aria-modal={ariaLabel ? true : undefined}
+        aria-label={ariaLabel}
+        data-testid={testId}
         className={cn(
           'relative bg-[var(--abu-bg-base)] rounded-2xl shadow-2xl w-full max-h-[85vh] flex flex-col overflow-hidden border border-[var(--abu-border)]',
-          maxWidth
+          maxWidth, panelClassName
         )}
       >
         {/* Header: avatar + title/subtitle · actions + close */}
         <div className="shrink-0 flex items-start justify-between gap-3 px-6 pt-6 pb-4">
           <div className="flex items-start gap-4 min-w-0">
             {avatar && (
-              <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-[var(--abu-bg-active)] text-h-xl shrink-0 select-none">
+              <div className={cn("flex items-center justify-center text-h-xl shrink-0 select-none", stackedHeader ? "w-11 h-11 rounded-full border border-[var(--abu-border)]" : "w-14 h-14 rounded-2xl bg-[var(--abu-bg-active)]")}>
                 {avatar}
               </div>
             )}

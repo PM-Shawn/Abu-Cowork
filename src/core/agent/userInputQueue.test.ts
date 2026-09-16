@@ -3,7 +3,7 @@
  * cancellable staging area until the current task finishes; system wake-ups
  * may be consumed inside the current loop.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   enqueueUserInput,
   enqueueUserInputWithId,
@@ -16,7 +16,9 @@ import {
   isUserInputQueuePaused,
   pauseUserInputQueue,
   removeQueuedInput,
+  restoreDequeuedUserInput,
   resumeUserInputQueue,
+  subscribeToInputQueue,
 } from './userInputQueue';
 
 const CONV = 'conv-queue-test';
@@ -90,6 +92,98 @@ describe('userInputQueue staging', () => {
     expect(isUserInputQueuePaused(CONV)).toBe(false);
     expect(dequeueNextUserInput(CONV)?.id).toBe('user-1');
     expect(dequeueNextUserInput(CONV)?.id).toBe('user-2');
+  });
+
+  it('atomically restores a failed handoff at the front and pauses the queue', () => {
+    enqueueUserInputWithId(CONV, 'user-1', 'first user');
+    enqueueUserInputWithId(CONV, 'user-2', 'second user');
+    const first = dequeueNextUserInput(CONV)!;
+    const observedPausedStates: boolean[] = [];
+    const unsubscribe = subscribeToInputQueue(() => {
+      observedPausedStates.push(isUserInputQueuePaused(CONV));
+    });
+
+    restoreDequeuedUserInput(CONV, first);
+    unsubscribe();
+
+    expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['user-1', 'user-2']);
+    expect(getQueuedInputs(CONV)[0]).toEqual(first);
+    expect(isUserInputQueuePaused(CONV)).toBe(true);
+    expect(observedPausedStates).toEqual([true]);
+    expect(dequeueNextUserInput(CONV)).toBeUndefined();
+
+    resumeUserInputQueue(CONV);
+    expect(dequeueNextUserInput(CONV)?.id).toBe('user-1');
+    expect(dequeueNextUserInput(CONV)?.id).toBe('user-2');
+  });
+
+  it('deduplicates a repeated restore of the same dequeued item', () => {
+    enqueueUserInputWithId(CONV, 'user-1', 'first user');
+    enqueueUserInputWithId(CONV, 'user-2', 'second user');
+    const first = dequeueNextUserInput(CONV)!;
+
+    restoreDequeuedUserInput(CONV, first);
+    restoreDequeuedUserInput(CONV, first);
+
+    expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['user-1', 'user-2']);
+    expect(getQueuedInputs(CONV).filter((item) => item.id === 'user-1')).toHaveLength(1);
+  });
+
+  it('keeps an enqueued message accepted when one subscriber throws', () => {
+    const healthySubscriber = vi.fn();
+    const unsubscribeThrowing = subscribeToInputQueue(() => {
+      throw new Error('broken queue observer');
+    });
+    const unsubscribeHealthy = subscribeToInputQueue(healthySubscriber);
+
+    try {
+      expect(() => enqueueUserInput(CONV, 'accepted follow-up')).not.toThrow();
+      expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['accepted follow-up']);
+      expect(healthySubscriber).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribeThrowing();
+      unsubscribeHealthy();
+    }
+  });
+
+  it('returns a dequeued message even when one subscriber throws', () => {
+    enqueueUserInputWithId(CONV, 'user-1', 'first user');
+    enqueueUserInputWithId(CONV, 'user-2', 'second user');
+    const healthySubscriber = vi.fn();
+    const unsubscribeThrowing = subscribeToInputQueue(() => {
+      throw new Error('broken queue observer');
+    });
+    const unsubscribeHealthy = subscribeToInputQueue(healthySubscriber);
+
+    try {
+      expect(dequeueNextUserInput(CONV)?.id).toBe('user-1');
+      expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['user-2']);
+      expect(healthySubscriber).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribeThrowing();
+      unsubscribeHealthy();
+    }
+  });
+
+  it('finishes restoring and pausing a handoff when one subscriber throws', () => {
+    enqueueUserInputWithId(CONV, 'user-1', 'first user');
+    enqueueUserInputWithId(CONV, 'user-2', 'second user');
+    const first = dequeueNextUserInput(CONV)!;
+    const healthySubscriber = vi.fn();
+    const unsubscribeThrowing = subscribeToInputQueue(() => {
+      throw new Error('broken queue observer');
+    });
+    const unsubscribeHealthy = subscribeToInputQueue(healthySubscriber);
+
+    try {
+      expect(() => restoreDequeuedUserInput(CONV, first)).not.toThrow();
+      expect(getQueuedInputs(CONV).map((item) => item.id)).toEqual(['user-1', 'user-2']);
+      expect(isUserInputQueuePaused(CONV)).toBe(true);
+      expect(healthySubscriber).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribeThrowing();
+      unsubscribeHealthy();
+    }
   });
 
   it('clears the paused state after the last user item is cancelled', () => {

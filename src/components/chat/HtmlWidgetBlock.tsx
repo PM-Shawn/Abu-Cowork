@@ -10,6 +10,7 @@ import {
 import { WIDGET_RECEIVER_DOM_JS } from './widgetReceiverDom';
 import { buildWidgetDesignCss } from '@/core/widget/designSystem';
 import { useChatStore } from '@/stores/chatStore';
+import { openWidgetLink } from './widgetLink';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -411,7 +412,7 @@ function getOrCreateIframe(container: HTMLDivElement, code: string): HTMLIFrameE
       setHeightCache(hKey(code), h);
     }
     if (d?.type === 'abu-widget-link' && typeof d.url === 'string') {
-      window.open(d.url, '_blank', 'noopener');
+      openWidgetLink(d.url);
     }
     // P3 — window.sendPrompt(text) bridge: insert (don't auto-send) into the
     // chat composer by APPENDING to the current draft (appendPendingInput),

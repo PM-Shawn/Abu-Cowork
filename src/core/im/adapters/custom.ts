@@ -18,12 +18,20 @@ export class CustomAdapter extends BaseAdapter {
     supportsCard: false,
   };
 
+  /**
+   * A free-form JSON envelope, so this is the one adapter that can carry
+   * `metadata` — which is where an unattended run's structured ending lives
+   * (batch 8, F8-3). Additive: `content` stays byte-identical to what a
+   * consumer received before, and the key is simply absent when there is no
+   * metadata, so an existing `JSON.parse(body.content)` reader is untouched.
+   */
   formatOutbound(message: AbuMessage): unknown {
     return {
       title: message.title,
       content: message.content,
       color: message.color,
       footer: message.footer,
+      ...(message.metadata ? { metadata: message.metadata } : {}),
       timestamp: new Date().toISOString(),
     };
   }

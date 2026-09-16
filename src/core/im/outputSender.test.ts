@@ -70,6 +70,20 @@ describe('OutputSender.extractAIResponse', () => {
     expect(outputSender.extractAIResponse('conv-1', 'last_message')).toBe('(无结果)');
   });
 
+  it('last_message — skips the turn-cap notice and delivers the real answer', () => {
+    // The notice is `role: 'system'`, so an unattended run that ran into its
+    // cap still pushes what it actually produced. Before the notice became a
+    // card it was an ASSISTANT message, and this extraction pushed the
+    // 「已完成 200 轮」 sentence to IM instead of the partial answer.
+    mockConversation([
+      { role: 'user', content: 'question' },
+      { role: 'assistant', content: 'partial answer' },
+      { role: 'system', content: '' },
+    ]);
+
+    expect(outputSender.extractAIResponse('conv-1', 'last_message')).toBe('partial answer');
+  });
+
   it('full — all messages formatted', () => {
     mockConversation([
       { role: 'user', content: 'q' },
@@ -191,6 +205,82 @@ describe('OutputSender.buildMessage', () => {
 
     const msg = outputSender.buildMessage('conv-1', output, context);
     expect(msg.content).toBe('T|E|ok|5s|TS|{"k":"v"}');
+  });
+
+  /**
+   * Batch-8 ruling — a `custom_template` payload is the user's, so the run's
+   * ending is offered, never spliced in.
+   *
+   * The pin that matters is the first one: a template written before this
+   * batch has to render byte-identically, because the usual template is a
+   * JSON body somebody's script parses.
+   */
+  it('leaves a template that never asked for $RUN_OUTCOME byte-identical', () => {
+    mockConversation([{ role: 'assistant', content: 'ok' }]);
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      platform: 'custom',
+      webhookUrl: 'https://x',
+      extractMode: 'custom_template',
+      customTemplate: '{"answer":"$AI_RESPONSE"}',
+    };
+    const context: OutputContext = {
+      triggerName: 'T',
+      aiResponse: '',
+      timestamp: 'TS',
+      runOutcome: 'Partly done: 1 of 2 browser actions failed',
+    };
+
+    const msg = outputSender.buildMessage('conv-1', output, context);
+    expect(msg.content).toBe('{"answer":"ok"}');
+    expect(JSON.parse(msg.content)).toEqual({ answer: 'ok' });
+  });
+
+  it('substitutes $RUN_OUTCOME where the template puts it, on one line', () => {
+    mockConversation([{ role: 'assistant', content: 'ok' }]);
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      platform: 'custom',
+      webhookUrl: 'https://x',
+      extractMode: 'custom_template',
+      customTemplate: '{"outcome":"$RUN_OUTCOME","answer":"$AI_RESPONSE"}',
+    };
+    const context: OutputContext = {
+      triggerName: 'T',
+      aiResponse: '',
+      timestamp: 'TS',
+      runOutcome: 'Partly done: 1 of 2 browser actions failed',
+    };
+
+    const msg = outputSender.buildMessage('conv-1', output, context);
+    // Still valid JSON: the variable is a single line by construction, so it
+    // cannot break a string literal in the body the user wrote.
+    expect(JSON.parse(msg.content)).toEqual({
+      outcome: 'Partly done: 1 of 2 browser actions failed',
+      answer: 'ok',
+    });
+  });
+
+  it('renders an empty string when the caller reports no outcome at all', () => {
+    mockConversation([{ role: 'assistant', content: 'ok' }]);
+
+    const output: TriggerOutput = {
+      enabled: true,
+      target: 'webhook',
+      platform: 'custom',
+      webhookUrl: 'https://x',
+      extractMode: 'custom_template',
+      customTemplate: '[$RUN_OUTCOME]',
+    };
+    const context: OutputContext = { triggerName: 'T', aiResponse: '', timestamp: 'TS' };
+
+    // Never the literal token: an unresolved `$RUN_OUTCOME` in a payload is
+    // worse than nothing.
+    expect(outputSender.buildMessage('conv-1', output, context).content).toBe('[]');
   });
 });
 

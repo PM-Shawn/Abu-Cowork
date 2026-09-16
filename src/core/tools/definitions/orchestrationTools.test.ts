@@ -26,10 +26,35 @@ import {
   SUBAGENT_WALLCLOCK_TIMEOUT_MS,
 } from './orchestrationTools';
 import { SubagentResult } from '../../agent/subagentLoop';
+import { getLanguageSetting, setLanguage } from '@/i18n';
 import * as subagentRunner from '../../agent/subagentRunner';
 import { useBatchProgressStore } from '../../../stores/batchProgressStore';
+import { useChatStore } from '../../../stores/chatStore';
 import { makeBatchKey, type BatchIdentity } from '../../../types';
 import { clearLoopContext, setLoopContext } from '../../agent/permissionBridge';
+import { agentRegistry } from '../../agent/registry';
+import { useSettingsStore } from '../../../stores/settingsStore';
+
+const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLkwwAAAABJRU5ErkJggg==';
+const materializeDelegatedUserTurnMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../subagent/delegatedUserTurnMaterializer', () => ({
+  materializeDelegatedUserTurn: (...args: unknown[]) => materializeDelegatedUserTurnMock(...args),
+}));
+
+function installTrustedLoop(conversationId: string, loopId: string): AbortSignal {
+  const signal = new AbortController().signal;
+  setLoopContext(loopId, {
+    loopId,
+    conversationId,
+    signal,
+    commandConfirmCallback: async () => true,
+    filePermissionCallback: async () => true,
+    eventRouter: { route: vi.fn() } as never,
+    toolCallToStepId: new Map(),
+  });
+  return signal;
+}
 
 function batchIdentity(conversationId: string, batchToolCallId: string): BatchIdentity {
   return { conversationId, batchToolCallId };
@@ -50,6 +75,12 @@ function subagentResult(text: string, stopReason: 'completed' | 'aborted' | 'err
   });
 }
 
+const findMissingExpectedFilesMock = vi.fn(async (_files: readonly string[], _ws: string | null | undefined): Promise<string[]> => []);
+vi.mock('../../team/expectedFiles', async () => {
+  const actual = await vi.importActual<typeof import('../../team/expectedFiles')>('../../team/expectedFiles');
+  return { ...actual, findMissingExpectedFiles: (files: readonly string[], ws: string | null | undefined) => findMissingExpectedFilesMock(files, ws) };
+});
+
 describe('runAgentBatchTool preset boundaries', () => {
   it('describes the fixed tool boundaries of built-in role presets', () => {
     const tasks = runAgentBatchTool.inputSchema.properties.tasks as {
@@ -65,6 +96,12 @@ describe('runAgentBatchTool preset boundaries', () => {
 describe('runAgentBatchTool progress wiring', () => {
   beforeEach(() => {
     useBatchProgressStore.setState({ batches: {} });
+    materializeDelegatedUserTurnMock.mockReset();
+    materializeDelegatedUserTurnMock.mockResolvedValue(Object.freeze({
+      schemaVersion: 1,
+      origin: Object.freeze({ conversationId: 'conv-test', loopId: 'loop-test', messageId: 'user-1' }),
+      content: Object.freeze([Object.freeze({ type: 'text', text: 'source turn' })]),
+    }));
   });
 
   afterEach(() => {
@@ -77,6 +114,7 @@ describe('runAgentBatchTool progress wiring', () => {
   });
 
   it('retains tool-end rich content and cumulative progress usage in the batch store', async () => {
+    installTrustedLoop('conv-progress', 'loop-progress');
     const image = [{ type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png' as const, data: 'aGk=' } }];
     vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
       options.onProgress?.({ type: 'tool-start', id: 'sub-tool-1', toolName: 'abu-browser__screenshot', toolInput: { fullPage: true } });
@@ -94,7 +132,7 @@ describe('runAgentBatchTool progress wiring', () => {
 
     await runAgentBatchTool.execute(
       { tasks: [{ type: 'executor', task: 'capture the page' }] },
-      { conversationId: 'conv-progress', toolCallId: 'batch-progress' },
+      { conversationId: 'conv-progress', loopId: 'loop-progress', toolCallId: 'batch-progress' },
     );
 
     const task = batch(batchIdentity('conv-progress', 'batch-progress')).tasks[0];
@@ -110,7 +148,202 @@ describe('runAgentBatchTool progress wiring', () => {
     });
   });
 
+  it('quotes the instructions the user sent a member mid-run in that member\'s section', () => {
+    const report = aggregateBatchResults([
+      { label: 'A', status: 'ok', text: 'done', toolCallCount: 2, userInstructions: ['只看 Q3'] },
+      { label: 'B', status: 'ok', text: 'done', toolCallCount: 2 },
+    ]);
+    const [, sectionA, sectionB] = report.split('\n\n### ');
+    expect(sectionA).toContain('- 只看 Q3');
+    expect(sectionB).not.toContain('只看 Q3');
+  });
+
+  it('flags a member result that made zero tool calls in the aggregated report', () => {
+    const report = aggregateBatchResults([
+      { label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 },
+      { label: 'B', status: 'ok', text: 'checked', toolCallCount: 3 },
+    ], { flagNoToolCalls: true });
+    expect(aggregateBatchResults([{ label: 'A', status: 'ok', text: 'did it', toolCallCount: 0 }])).not.toContain('no tool calls');
+    const [, sectionA, sectionB] = report.split('\n\n### ');
+    expect(sectionA).toContain('did it');
+    expect(sectionA).toContain('no tool calls');
+    expect(sectionB).not.toContain('no tool calls');
+  });
+
+  it('records each member tool call as a batchTask-tagged child of the batch step (persisted process)', async () => {
+    const addChildStepToDelegate = vi.fn(() => 'child-1');
+    const completeChildStep = vi.fn();
+    const signal = new AbortController().signal;
+    setLoopContext('loop-children', {
+      loopId: 'loop-children',
+      conversationId: 'conv-children',
+      signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: {
+        route: vi.fn(),
+        getCurrentStepId: () => 'unrelated-sibling-step',
+        addChildStepToDelegate,
+        completeChildStep,
+      } as never,
+      toolCallToStepId: new Map([['batch-children', 'batch-step']]),
+    });
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
+      options.onProgress?.({ type: 'tool-start', id: 'sub-tool-1', toolName: 'read_file', toolInput: { path: 'a.md' } });
+      options.onProgress?.({ type: 'tool-end', id: 'sub-tool-1', toolName: 'read_file', result: 'ok', error: false });
+      return new SubagentResult({
+        text: 'done', stopReason: 'completed', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 1, output: 1 }, duration: 1,
+      });
+    });
+    try {
+      await runAgentBatchTool.execute(
+        { tasks: [{ type: 'executor', task: 'read the doc' }] },
+        { conversationId: 'conv-children', loopId: 'loop-children', toolCallId: 'batch-children' },
+      );
+      expect(addChildStepToDelegate).toHaveBeenCalledWith('loop-children', 'batch-step', {
+        toolName: 'read_file',
+        toolInput: { path: 'a.md' },
+        toolCallId: 'sub-tool-1',
+        batchTask: expect.objectContaining({ index: 0, label: 'read the doc' }),
+      });
+      expect(completeChildStep).toHaveBeenCalledWith('loop-children', 'batch-step', 'child-1', 'ok', false, undefined);
+    } finally {
+      clearLoopContext('loop-children');
+    }
+  });
+
+  it('fails a batch task whose declared expected file is missing', async () => {
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async () => new SubagentResult({
+      text: 'done', stopReason: 'completed', toolCallCount: 1, turnCount: 1, tokenUsage: { input: 1, output: 1 }, duration: 1,
+    }));
+    findMissingExpectedFilesMock.mockImplementationOnce(async () => ['/ws/a/out.md']);
+    setLoopContext('loop-files', {
+      loopId: 'loop-files',
+      conversationId: 'conv-files',
+      signal: new AbortController().signal,
+      commandConfirmCallback: async () => true,
+      filePermissionCallback: async () => true,
+      eventRouter: { route: vi.fn(), getCurrentStepId: () => undefined } as never,
+      toolCallToStepId: new Map(),
+    });
+    try {
+      const report = await runAgentBatchTool.execute(
+        { tasks: [{ type: 'executor', task: 'make a', expected_files: ['a/out.md'] }, { type: 'executor', task: 'make b', expected_files: ['b/out.md'] }] },
+        { conversationId: 'conv-files', loopId: 'loop-files', toolCallId: 'batch-files', workspacePath: '/ws' },
+      );
+      expect(String(report)).toContain('/ws/a/out.md');
+      expect(findMissingExpectedFilesMock).toHaveBeenCalledTimes(2);
+    } finally {
+      clearLoopContext('loop-files');
+    }
+  });
+
+  // `disabledAgents` means only "not in the automatic-delegation pool". A batch
+  // task that names such an expert explicitly asked for it, so it is dispatched
+  // like any other — the tool must not refuse it.
+  it('dispatches a batch task naming an expert that is off the auto-dispatch pool', async () => {
+    const previousDisabledAgents = useSettingsStore.getState().disabledAgents;
+    useSettingsStore.setState({ disabledAgents: ['reviewer'] });
+    vi.spyOn(agentRegistry, 'getAgent').mockReturnValue({
+      name: 'reviewer',
+      description: 'test',
+      systemPrompt: 'test',
+    } as never);
+    vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(subagentResult('done', 'completed'));
+    installTrustedLoop('conv-off-pool', 'loop-off-pool');
+    try {
+      const report = await runAgentBatchTool.execute(
+        { tasks: [{ agent_name: 'reviewer', task: 'review this' }] },
+        { conversationId: 'conv-off-pool', loopId: 'loop-off-pool', toolCallId: 'batch-off-pool' },
+      );
+      expect(String(report)).not.toContain('已被停用');
+      expect(String(report)).not.toContain('is disabled');
+      expect(subagentRunner.runSubagent).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(subagentRunner.runSubagent).mock.calls[0][0]).toEqual(
+        expect.objectContaining({ agent: expect.objectContaining({ name: 'reviewer' }) }),
+      );
+    } finally {
+      useSettingsStore.setState({ disabledAgents: previousDisabledAgents });
+      clearLoopContext('loop-off-pool');
+    }
+  });
+
+  it('hands the triggering multimodal user turn to every run_agent_batch child', async () => {
+    const conversationId = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(conversationId, {
+      id: 'user-1', role: 'user', loopId: 'loop-batch', timestamp: 0,
+      content: [
+        { type: 'text', text: 'Compare this image.' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: TINY_PNG_BASE64 } },
+        { type: 'text', text: 'Keep this ordering.' },
+      ],
+    });
+    const loopSignal = installTrustedLoop(conversationId, 'loop-batch');
+    vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(subagentResult('done', 'completed'));
+
+    await runAgentBatchTool.execute(
+      { tasks: [{ type: 'research', task: 'Describe it.' }, { type: 'writer', task: 'Summarize it.' }] },
+      { conversationId, loopId: 'loop-batch', toolCallId: 'batch-1' },
+    );
+
+    expect(materializeDelegatedUserTurnMock).toHaveBeenCalledTimes(1);
+    expect(materializeDelegatedUserTurnMock).toHaveBeenCalledWith({ conversationId, loopId: 'loop-batch', signal: loopSignal });
+    expect(subagentRunner.runSubagent).toHaveBeenCalledTimes(2);
+    const childTurns = vi.mocked(subagentRunner.runSubagent).mock.calls.map(
+      ([childOptions]) => (childOptions as { delegatedUserTurn?: unknown }).delegatedUserTurn,
+    );
+    expect(childTurns[0]).toBe(childTurns[1]);
+    expect(Object.isFrozen(childTurns[0])).toBe(true);
+  });
+
+  it('fails closed before materializing or starting children without an exact trusted loop binding', async () => {
+    installTrustedLoop('trusted-conversation', 'trusted-loop');
+    const runSubagentSpy = vi.spyOn(subagentRunner, 'runSubagent');
+
+    await expect(runAgentBatchTool.execute(
+      { tasks: [{ type: 'research', task: 'do not start' }] },
+      { conversationId: 'trusted-conversation', toolCallId: 'missing-loop' },
+    )).rejects.toThrow(/trusted loop context/);
+    await expect(runAgentBatchTool.execute(
+      { tasks: [{ type: 'research', task: 'do not start' }] },
+      { conversationId: 'untrusted-conversation', loopId: 'trusted-loop', toolCallId: 'mismatched-conversation' },
+    )).rejects.toThrow(/trusted loop context/);
+
+    expect(materializeDelegatedUserTurnMock).not.toHaveBeenCalled();
+    expect(runSubagentSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps a shared frozen delegated turn when one batch child is cancelled', async () => {
+    installTrustedLoop('conv-child-cancel', 'loop-child-cancel');
+    const delegatedUserTurn = Object.freeze({
+      schemaVersion: 1,
+      origin: Object.freeze({ conversationId: 'conv-child-cancel', loopId: 'loop-child-cancel', messageId: 'user-1' }),
+      content: Object.freeze([Object.freeze({ type: 'text', text: 'source turn' })]),
+    });
+    materializeDelegatedUserTurnMock.mockResolvedValueOnce(delegatedUserTurn);
+    vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => subagentResult(
+      options.task === 'cancelled child' ? 'cancelled' : 'completed',
+      options.task === 'cancelled child' ? 'aborted' : 'completed',
+    ));
+
+    await runAgentBatchTool.execute(
+      { tasks: [{ type: 'research', task: 'cancelled child' }, { type: 'writer', task: 'sibling child' }], concurrency: 2 },
+      { conversationId: 'conv-child-cancel', loopId: 'loop-child-cancel', toolCallId: 'batch-child-cancel' },
+    );
+
+    expect(materializeDelegatedUserTurnMock).toHaveBeenCalledTimes(1);
+    const childTurns = vi.mocked(subagentRunner.runSubagent).mock.calls.map(
+      ([childOptions]) => (childOptions as { delegatedUserTurn?: unknown }).delegatedUserTurn,
+    );
+    expect(childTurns).toEqual([delegatedUserTurn, delegatedUserTurn]);
+    expect(childTurns[0]).toBe(childTurns[1]);
+    expect(Object.isFrozen(childTurns[0])).toBe(true);
+    expect(batch(batchIdentity('conv-child-cancel', 'batch-child-cancel')).tasks.map((task) => task.status))
+      .toEqual(['stopped', 'succeeded']);
+  });
+
   it('uses terminal counters when no progress event is emitted', async () => {
+    installTrustedLoop('conv-terminal-usage', 'loop-terminal-usage');
     vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(new SubagentResult({
       text: 'direct answer',
       toolCallCount: 3,
@@ -122,7 +355,7 @@ describe('runAgentBatchTool progress wiring', () => {
 
     await runAgentBatchTool.execute(
       { tasks: [{ type: 'executor', task: 'answer directly' }] },
-      { conversationId: 'conv-terminal-usage', toolCallId: 'batch-terminal-usage' },
+      { conversationId: 'conv-terminal-usage', loopId: 'loop-terminal-usage', toolCallId: 'batch-terminal-usage' },
     );
 
     const task = batch(batchIdentity('conv-terminal-usage', 'batch-terminal-usage')).tasks[0];
@@ -132,6 +365,7 @@ describe('runAgentBatchTool progress wiring', () => {
   });
 
   it('marks the progress row failed when structured output validation fails', async () => {
+    installTrustedLoop('conv-invalid-structured', 'loop-invalid-structured');
     vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(new SubagentResult({
       text: 'not json',
       toolCallCount: 0,
@@ -146,7 +380,7 @@ describe('runAgentBatchTool progress wiring', () => {
         tasks: [{ type: 'executor', task: 'return structured data' }],
         schema: { type: 'object', required: ['name'] },
       },
-      { conversationId: 'conv-invalid-structured', toolCallId: 'batch-invalid-structured' },
+      { conversationId: 'conv-invalid-structured', loopId: 'loop-invalid-structured', toolCallId: 'batch-invalid-structured' },
     );
 
     expect(batch(batchIdentity('conv-invalid-structured', 'batch-invalid-structured')).tasks[0].status)
@@ -157,6 +391,7 @@ describe('runAgentBatchTool progress wiring', () => {
   });
 
   it('preserves a structured child abort instead of overwriting it as invalid_structured', async () => {
+    installTrustedLoop('conv-aborted-structured', 'loop-aborted-structured');
     vi.spyOn(subagentRunner, 'runSubagent').mockResolvedValue(new SubagentResult({
       text: 'not json',
       toolCallCount: 0,
@@ -171,7 +406,7 @@ describe('runAgentBatchTool progress wiring', () => {
         tasks: [{ type: 'executor', task: 'return structured data' }],
         schema: { type: 'object', required: ['name'] },
       },
-      { conversationId: 'conv-aborted-structured', toolCallId: 'batch-aborted-structured' },
+      { conversationId: 'conv-aborted-structured', loopId: 'loop-aborted-structured', toolCallId: 'batch-aborted-structured' },
     );
 
     const task = batch(batchIdentity('conv-aborted-structured', 'batch-aborted-structured')).tasks[0];
@@ -180,6 +415,7 @@ describe('runAgentBatchTool progress wiring', () => {
   });
 
   it('checkpoints a minimal batch terminal summary through trusted metadata', async () => {
+    installTrustedLoop('conv-summary', 'loop-summary');
     vi.spyOn(subagentRunner, 'runSubagent')
       .mockResolvedValueOnce(new SubagentResult({
         text: 'ok',
@@ -201,7 +437,7 @@ describe('runAgentBatchTool progress wiring', () => {
 
     await runAgentBatchTool.execute(
       { tasks: [{ type: 'executor', task: 'one' }, { type: 'executor', task: 'two' }] },
-      { conversationId: 'conv-summary', toolCallId: 'batch-summary', reportMetadata },
+      { conversationId: 'conv-summary', loopId: 'loop-summary', toolCallId: 'batch-summary', reportMetadata },
     );
 
     expect(reportMetadata).toHaveBeenCalledWith({
@@ -258,13 +494,13 @@ describe('runAgentBatchTool progress wiring', () => {
   it('checkpoints parent-aborted queued tasks immediately while a non-cooperative running child is still pending', async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
-    setLoopContext('loop-parent-abort', {
+    setLoopContext('loop-parent-abort-immediate', {
       commandConfirmCallback: async () => true,
       filePermissionCallback: async () => true,
       signal: controller.signal,
       eventRouter: { route: vi.fn() } as never,
-      loopId: 'loop-parent-abort',
-      conversationId: 'conv-parent-abort',
+      loopId: 'loop-parent-abort-immediate',
+      conversationId: 'conv-parent-abort-immediate',
       toolCallToStepId: new Map(),
     });
     vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(async (options) => {
@@ -296,7 +532,7 @@ describe('runAgentBatchTool progress wiring', () => {
       {
         conversationId: 'conv-parent-abort-immediate',
         toolCallId: 'batch-parent-abort-immediate',
-        loopId: 'loop-parent-abort',
+        loopId: 'loop-parent-abort-immediate',
         reportMetadata,
       },
     ).then((value) => {
@@ -326,11 +562,12 @@ describe('runAgentBatchTool progress wiring', () => {
 
   it('marks a wall-clock timeout as a failed task with timeout reason', async () => {
     vi.useFakeTimers();
+    installTrustedLoop('conv-timeout', 'loop-timeout');
     vi.spyOn(subagentRunner, 'runSubagent').mockImplementation(() => new Promise(() => {}));
 
     const run = runAgentBatchTool.execute(
       { tasks: [{ type: 'executor', task: 'hang' }] },
-      { conversationId: 'conv-timeout', toolCallId: 'batch-timeout' },
+      { conversationId: 'conv-timeout', loopId: 'loop-timeout', toolCallId: 'batch-timeout' },
     );
     await vi.advanceTimersByTimeAsync(SUBAGENT_WALLCLOCK_TIMEOUT_MS);
     await run;
@@ -351,6 +588,26 @@ describe('structured subagent terminal aggregation', () => {
     expect(output).toContain('2 sub-tasks total: 1 succeeded, 1 failed');
     expect(output).toContain('Error: quoted log heading');
     expect(output).toContain('[Failed] stopped before finishing');
+  });
+
+  // Same failure as delegate_to_agent: a member that ran out of turns produced
+  // a section indistinguishable from a finished one, so the leader merged it
+  // into the final report as done.
+  it('marks a batch task line with the stop reason when the member did not finish', () => {
+    const previous = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const output = aggregateSubagentTextResults([
+        { status: 'fulfilled', value: subagentResult('全部做完', 'completed') },
+        { status: 'fulfilled', value: subagentResult('做到一半', 'max_turns') },
+      ], ['已完成的活', '没做完的活']);
+
+      const lines = output.split('\n');
+      expect(lines.find((l) => l.includes('已完成的活'))).not.toContain('（');
+      expect(lines.find((l) => l.includes('没做完的活'))).toContain('轮数用尽');
+    } finally {
+      setLanguage(previous);
+    }
   });
 
   it('aggregates mixed terminal reasons with deterministic failure priority', () => {
@@ -724,7 +981,7 @@ describe('runWithTimeout', () => {
       3000,
     );
     // Pre-attach before advancing timer.
-    const assertion = expect(racePromise).rejects.toThrow('Sub-agent execution timed out (aborted)');
+    const assertion = expect(racePromise).rejects.toThrow('Subagent execution timed out (aborted)');
     await vi.advanceTimersByTimeAsync(3000);
     await assertion;
   });

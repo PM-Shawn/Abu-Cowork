@@ -167,20 +167,20 @@ function initDeepLink(app, deps) {
   getWindowFn = deps.getMainWindow;
   activeScheme = resolveDeepLinkScheme(app);
 
-  // Register as the OS default handler for our scheme. In an unpackaged dev run
-  // (`electron electron/main.cjs`) the registration must point back at the
-  // electron binary + entry script so the OS can relaunch us with the URL
-  // (required on Windows; harmless on macOS). Mirrors the Electron docs recipe.
-  try {
-    const target = registrationTarget();
-    if (target) {
-      app.setAsDefaultProtocolClient(activeScheme, target.executablePath, target.args);
-    } else {
-      app.setAsDefaultProtocolClient(activeScheme);
+  // macOS development registration belongs to mac-protocol-shell.mjs, which
+  // verifies the exact app path and unique checkout bundle ID. Generic Electron
+  // runners (including E2E) must not overwrite it with com.github.Electron.
+  // Windows still needs the executable + entry script; packaged apps own abu://.
+  if (process.platform !== 'darwin' || app.isPackaged) {
+    try {
+      const target = registrationTarget();
+      const registered = target
+        ? app.setAsDefaultProtocolClient(activeScheme, target.executablePath, target.args)
+        : app.setAsDefaultProtocolClient(activeScheme);
+      log(registered ? 'registered protocol client' : 'protocol registration declined', { scheme: activeScheme });
+    } catch (err) {
+      log('setAsDefaultProtocolClient failed', { err: String(err) });
     }
-    log('registered protocol client', { scheme: activeScheme });
-  } catch (err) {
-    log('setAsDefaultProtocolClient failed', { err: String(err) });
   }
 
   // macOS: both cold-launch and running-app deep links arrive via 'open-url'.

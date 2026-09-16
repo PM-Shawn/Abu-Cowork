@@ -95,7 +95,7 @@ describe('AccountMenu identity', () => {
     fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
-    expect(screen.getByText('切换账号')).toBeInTheDocument();
+    expect(screen.queryByText('切换账号')).not.toBeInTheDocument();
     expect(screen.getByText('退出企业账号')).toBeInTheDocument();
     expect(screen.queryByText('登录 / 注册')).not.toBeInTheDocument();
   });
@@ -131,10 +131,29 @@ describe('AccountMenu identity', () => {
 
     expect(screen.getByText('admin@abu.local · Default Organization')).toBeInTheDocument();
     expect(screen.queryByText('Personal User')).not.toBeInTheDocument();
-    expect(screen.getByText('切换账号')).toBeInTheDocument();
+    expect(screen.queryByText('切换账号')).not.toBeInTheDocument();
     expect(screen.getByText('退出企业账号')).toBeInTheDocument();
     expect(screen.queryByText('账号设置')).not.toBeInTheDocument();
     expect(screen.queryByText('退出个人账号')).not.toBeInTheDocument();
+  });
+
+  it('keeps enterprise sign-out at the footer and profile editing in the identity header', () => {
+    const editProfile = vi.fn();
+    mocks.enterprise.mode = {
+      kind: 'enterprise',
+      binding: { userName: 'Admin', userEmail: 'admin@example.com', orgName: 'Example' },
+    };
+    render(<AccountMenu onEditProfile={editProfile} />);
+    fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
+    const rows = screen.getAllByRole('menuitem');
+    expect(rows.at(-1)).toHaveTextContent('退出企业账号');
+    expect(rows.some(row => row.textContent?.includes('编辑资料'))).toBe(false);
+    fireEvent.click(screen.getByTitle('编辑资料'));
+    expect(editProfile).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: /Admin/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '退出企业账号' }));
+    expect(mocks.enterprise.unbind).toHaveBeenCalledOnce();
+    expect(mocks.account.signOut).not.toHaveBeenCalled();
   });
 
   it('starts enterprise login from an active personal account', async () => {

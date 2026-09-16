@@ -78,7 +78,11 @@ test('registers and queries the scheme used by the current shell', () => {
 
   assert.equal(deepLinkHost.isCurrentSchemeRegistered(app), true);
   assert.equal(queried[0][0], 'abu-dev');
-  assert.deepEqual(queried[0], registered[0]);
+  if (process.platform === 'darwin') {
+    assert.deepEqual(registered, [], 'unpackaged macOS runners must not overwrite the dedicated shell handler');
+  } else {
+    assert.deepEqual(queried[0], registered[0]);
+  }
 });
 
 test('keeps registration query failures distinct from not registered', () => {
@@ -190,4 +194,13 @@ test('activates the macOS app when a running deep link arrives', {
     ['window.focus'],
     ['app.focus', { steal: true }],
   ]);
+});
+
+test('packaged apps still register the production scheme', () => {
+  const registered = [];
+  const app = fakeApp(true);
+  app.setAsDefaultProtocolClient = (...args) => { registered.push(args); return true; };
+  deepLinkHost.initDeepLink(app, deps);
+  assert.equal(registered.length, 1);
+  assert.equal(registered[0][0], 'abu');
 });

@@ -127,7 +127,7 @@ export function BindToEnterpriseFlow(_props: {
   onCancel: () => void
   initialServerUrl?: string
 }): null { return null }
-export type EnterpriseAccountLoginResult = 'started' | 'configuration_required'
+export type EnterpriseAccountLoginResult = 'started' | 'configuration_required' | 'failed'
 export function startEnterpriseAccountLogin(): Promise<EnterpriseAccountLoginResult> {
   return Promise.resolve('configuration_required')
 }

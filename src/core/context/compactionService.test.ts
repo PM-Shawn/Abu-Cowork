@@ -4,7 +4,14 @@ import type { Message } from '@/types';
 // ── Mock chatStore ──
 // Must be hoisted-compatible: use plain const objects since they start with "mock"
 
-const mockConversations: Record<string, { messages: Message[] }> = {};
+const mockConversations: Record<
+  string,
+  { messages: Message[]; model?: { providerId: string; modelId: string } }
+> = {};
+const mockConversationIndex: Record<
+  string,
+  { model?: { providerId: string; modelId: string } }
+> = {};
 const mockAddMessage = vi.fn();
 const mockClearContextCache = vi.fn();
 const mockSetIsCompressing = vi.fn();
@@ -13,6 +20,7 @@ vi.mock('@/stores/chatStore', () => ({
   useChatStore: {
     getState: () => ({
       conversations: mockConversations,
+      conversationIndex: mockConversationIndex,
       addMessage: mockAddMessage,
       clearContextCache: mockClearContextCache,
       setIsCompressing: mockSetIsCompressing,
@@ -28,6 +36,19 @@ vi.mock('@/stores/settingsStore', () => ({
   getActiveProvider: vi.fn().mockReturnValue({ apiFormat: 'anthropic-compatible', baseUrl: undefined }),
   getActiveApiKey: vi.fn().mockReturnValue('test-api-key'),
   getEffectiveModel: vi.fn().mockReturnValue('claude-haiku-4-5'),
+}));
+
+// ── Mock settingsReader port ──
+// The default in-process reader snapshots the (mocked, empty) settingsStore, so
+// pin a snapshot with a known global default model.
+
+vi.mock('@/core/agent/ports/settingsReader', () => ({
+  getSettingsReader: () => ({
+    getSnapshot: () => ({
+      activeModel: { providerId: 'p', modelId: 'global-model' },
+      providers: [],
+    }),
+  }),
 }));
 
 // ── Mock enterprise llm-resolver ──
@@ -60,6 +81,7 @@ vi.mock('@/core/context/contextCompressor', () => ({
 // ── Import after all mocks ──
 
 import * as contextCompressor from '@/core/context/contextCompressor';
+import * as settingsStore from '@/stores/settingsStore';
 import { compactConversationManually } from './compactionService';
 import { isCompactBoundary } from './compactBoundary';
 
@@ -101,6 +123,9 @@ beforeEach(() => {
   mockSetIsCompressing.mockReset();
   for (const key of Object.keys(mockConversations)) {
     delete mockConversations[key];
+  }
+  for (const key of Object.keys(mockConversationIndex)) {
+    delete mockConversationIndex[key];
   }
 });
 
@@ -171,6 +196,41 @@ describe('compactConversationManually', () => {
       const result = await compactConversationManually(CONV_ID);
       expect(result).toEqual({ compacted: false, reason: 'summarize-failed' });
       expect(mockAddMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('model scope', () => {
+    it('summarizes with the conversation model, not the global default (#545)', async () => {
+      mockConversations['conv-m'] = {
+        messages: buildRounds(6),
+        model: { providerId: 'p', modelId: 'conv-model' },
+      };
+      mockSummarize.mockResolvedValue('summary');
+      await compactConversationManually('conv-m');
+      const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
+      expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'conv-model' });
+      // Provider identity (credentials + adapter) must follow the same model.
+      const keyArg = vi.mocked(settingsStore.getActiveApiKey).mock.calls.at(-1)?.[0];
+      expect(keyArg?.activeModel).toEqual({ providerId: 'p', modelId: 'conv-model' });
+      const providerArg = vi.mocked(settingsStore.getActiveProvider).mock.calls.at(-1)?.[0];
+      expect(providerArg?.activeModel).toEqual({ providerId: 'p', modelId: 'conv-model' });
+    });
+
+    it('falls back to the index entry model when the loaded conversation has none', async () => {
+      mockConversations[CONV_ID] = { messages: buildRounds(6) };
+      mockConversationIndex[CONV_ID] = { model: { providerId: 'p', modelId: 'index-model' } };
+      mockSummarize.mockResolvedValue('summary');
+      await compactConversationManually(CONV_ID);
+      const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
+      expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'index-model' });
+    });
+
+    it('falls back to the global default when the conversation has no pinned model', async () => {
+      mockConversations[CONV_ID] = { messages: buildRounds(6) };
+      mockSummarize.mockResolvedValue('summary');
+      await compactConversationManually(CONV_ID);
+      const snapshotArg = vi.mocked(settingsStore.getEffectiveModel).mock.calls.at(-1)?.[0];
+      expect(snapshotArg?.activeModel).toEqual({ providerId: 'p', modelId: 'global-model' });
     });
   });
 

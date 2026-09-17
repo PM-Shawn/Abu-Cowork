@@ -678,6 +678,29 @@ function protocolErrorText(
   }
 }
 
+/**
+ * Protocol failures whose answer is "observe again", so the model gets the
+ * sentence rather than the exception.
+ *
+ * A thrown computer failure is how a turn is stopped, which is right for a
+ * missing target and wrong for a stale reference — the contract marks these
+ * `recoverable: true` and even names the next action. Until now only
+ * `target-ambiguous` was translated; everything else reached the model as
+ * `Computer Use protocol failure: {"code":"window-ref-invalid",…}`. Measured:
+ * three times across three conversations, each on a `get_window_state` whose
+ * only problem was a reference from an earlier observation — and
+ * `errWindowRefStale` has said "call list_windows again and pick from what it
+ * returns" the whole time.
+ *
+ * This is the same shape as the `list_windows` defect fixed on 2026-09-15:
+ * raw plumbing reaching the model reads as a broken tool, not as an answer.
+ */
+const OBSERVE_AGAIN_PROTOCOL_CODES: ReadonlySet<string> = new Set([
+  'window-ref-invalid',
+  'window-ref-expired',
+  'screenshot-stale',
+]);
+
 function officeEditingUnavailable(elements: AxElement[]): boolean {
   return elements.some((element) => /(?:未经授权产品|产品已停用|unlicensed product|product deactivated|大部分功能已禁用|most features (?:have been )?disabled)/i.test(
     `${element.label ?? ''} ${element.value ?? ''}`,
@@ -1731,7 +1754,10 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
             requiresUserRecovery: 'computer-outcome-unknown-new-turn',
           });
         }
-        if (e.protocolError.code === 'target-ambiguous') {
+        if (
+          e.protocolError.code === 'target-ambiguous'
+          || OBSERVE_AGAIN_PROTOCOL_CODES.has(e.protocolError.code)
+        ) {
           return protocolErrorText(e.protocolError, t);
         }
         throw e;

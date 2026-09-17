@@ -2992,3 +2992,60 @@ describe('a malformed expected_effect says what the type needs', () => {
     expect(result).not.toContain('expected_effect');
   });
 });
+
+/// Measured three times across three conversations, each on a
+/// `get_window_state` whose only problem was a reference from an earlier
+/// observation: the model was handed
+/// `Computer Use protocol failure: {"code":"window-ref-invalid",…}`, which
+/// reads as a broken tool rather than as an answer — while the translated
+/// text has said "call list_windows again and pick from what it returns" all
+/// along. Same shape as the `list_windows` defect fixed on 2026-09-15.
+describe('a stale reference is answered, not thrown', () => {
+  beforeEach(() => {
+    setElectronHost(true);
+    vi.mocked(isWindows).mockReturnValue(true);
+    vi.mocked(isMacOS).mockReturnValue(false);
+  });
+
+  const failWith = (code: string) => {
+    vi.mocked(invoke).mockImplementation((cmd: string) => {
+      if (cmd === 'check_macos_permissions') {
+        return Promise.resolve({ screen_recording: true, accessibility: true });
+      }
+      if (cmd === 'frontmost_app_identity' || cmd === 'resolve_app_identity') {
+        return Promise.resolve({ app_name: 'Notepad', bundle_id: 'notepad.exe', process_id: 42 });
+      }
+      if (cmd === 'computer_use_begin_session') {
+        return Promise.resolve({
+          status: 'target-error',
+          error: { code, recoverable: true, next_action: 'select-target' },
+        });
+      }
+      return Promise.resolve(null);
+    });
+    return computerTool.execute({
+      action: 'get_window_state',
+      window_ref: 'wr-from-an-earlier-observation',
+      consequence: 'none',
+    }, {
+      conversationId: 'stale-ref',
+      loopId: 'stale-ref-loop',
+      toolCallId: 'stale-ref-tool',
+      interactionMode: 'foreground',
+      supportsVision: false,
+    });
+  };
+
+  it.each(['window-ref-invalid', 'window-ref-expired'])('explains %s', async (code) => {
+    const result = String(await failWith(code));
+    expect(result).not.toContain('protocol failure');
+    expect(result).not.toContain('"recoverable"');
+    expect(result).toMatch(/list_windows/);
+  });
+
+  // A missing target is a different thing: it is a user precondition, and
+  // throwing is how the turn stops rather than wandering to another app.
+  it('still throws for a target that is not there', async () => {
+    await expect(failWith('target-not-found')).rejects.toThrow();
+  });
+});

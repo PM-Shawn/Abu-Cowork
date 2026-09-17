@@ -121,3 +121,5 @@ release-electron-e2e/
 .artifact-digests/
 # Local macOS protocol shell (not a distributable).
 .dev-shell/
+# Local working notes and intermediate command output.
+.scratch/

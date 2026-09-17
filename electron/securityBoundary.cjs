@@ -547,9 +547,12 @@ function validateTextRawBody(cmd, spec, args, body, headers) {
   } catch {
     throw new Error(`${cmd} path header is not valid URI encoding`);
   }
-  // Same check the plain form's `path` arg gets in assertJsonValue (PATH_KEYS);
-  // fsDispatch still applies resolveScoped to the decoded path.
+  // Same checks the plain form's `path` arg gets in assertJsonValue (PATH_KEYS)
+  // and assertFsPathsAbsolute; fsDispatch still applies resolveScoped to the
+  // decoded path. These commands take no baseDir in either form, so there is
+  // never an anchor that would make a relative path meaningful.
   assertSafePath(decodedPath, `${cmd} path header`);
+  assertAbsolutePath(decodedPath, `${cmd} path header`);
   return { cmd, args: { path: decodedPath }, body: bytes, headers: rest };
 }
 

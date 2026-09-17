@@ -9,6 +9,7 @@ import type { Conversation, Message } from '@/types';
 import MessageBubble from './MessageBubble';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 vi.mock('./MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div>{content}</div>,
@@ -111,9 +112,78 @@ describe('MessageBubble user run status', () => {
     expect(screen.getByText('governance.alicloud_content_safety_input_rejected')).toBeInTheDocument();
     expect(screen.getByText('trace-403-local')).toBeInTheDocument();
     expect(screen.getByText('The upstream content safety system rejected the request.')).toBeInTheDocument();
+    // #549: `runError` is raw upstream text unless a `runErrorKind` marks it as
+    // one of our own, user-readable pre-accept reasons — so it stays hidden here.
     expect(screen.queryByText(message.runError as string)).not.toBeInTheDocument();
     expect(screen.getByText('Send failed').parentElement).not.toHaveAttribute('title');
     expect(screen.queryByText(/conversation history/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('#549: shows the pre-accept reason with Retry', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'The background service did not start, so this message was not sent. Click Retry to try again.',
+      runErrorKind: 'sidecar_unavailable',
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+
+    expect(screen.getByText(message.runError as string)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('#549: shows the reason for a dispatch failure that also carries upstream details', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'Abu could not prepare this message, so it was not sent. Click Retry to try again.',
+      runErrorKind: 'dispatch_failed',
+      runErrorDetails: {
+        status: 403,
+        error_type: 'governance.alicloud_content_safety_input_rejected',
+        traceId: 'trace-403-local',
+        summary: 'The upstream content safety system rejected the request.',
+      },
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+
+    expect(screen.getByText(message.runError as string)).toBeInTheDocument();
+    expect(screen.getByText('HTTP 403')).toBeInTheDocument();
+  });
+
+  it('#549: oversize offers a new conversation carrying the text instead of Retry', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'This conversation is too long to continue. Please start a new conversation.',
+      runErrorKind: 'payload_too_large',
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+
+    expect(screen.getByText(message.runError as string)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+
+    expect(useChatStore.getState().activeConversationId).toBeNull();
+    expect(useChatStore.getState().pendingInput).toBe(baseMessage.content);
+    expect(useSettingsStore.getState().viewMode).toBe('chat');
+  });
+
+  it('keeps generic failures unchanged (no reason line without a kind)', () => {
+    const message = { ...baseMessage, runState: 'failed' as const, runError: 'network unavailable' };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+
+    expect(screen.queryByText('network unavailable')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 

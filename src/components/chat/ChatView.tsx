@@ -34,6 +34,7 @@ import { useToastStore } from '@/stores/toastStore';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
+import SidecarStatusStrip from './SidecarStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
 import TeamFollowUpChips from './TeamFollowUpChips';
@@ -1718,6 +1719,9 @@ export default function ChatView({
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamFollowUpChips conversationId={activeConv.id} />}
+          {/* #549: the agent sidecar's own cold start / restart / give-up states.
+              Above AgentStatusStrip because a dead sidecar outranks a slow provider. */}
+          <SidecarStatusStrip conversationId={activeConv.id} />
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}

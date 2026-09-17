@@ -1,9 +1,10 @@
-import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare, MessageSquarePlus } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
 import ToolCallsGroup, { InlineToolResultImages } from './ToolCallsGroup';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -454,6 +455,19 @@ export default function MessageBubble({
   const activeConv = useActiveConversation();
   const isConvRunning = activeConv?.status === 'running';
   const hasRunFailure = message.runState === 'failed' || message.runState === 'connection-failed';
+  // #549: an oversize turn can never succeed by retrying — the only way forward
+  // is a fresh conversation, so the row swaps Retry for 「新建对话」.
+  const isOversizeFailure = hasRunFailure && message.runErrorKind === 'payload_too_large';
+  const handleNewConversationWithDraft = () => {
+    // Text only: the store has no one-shot buffer for inline base64 images
+    // (`addPendingAttachment` carries workspace paths, not attachments), so any
+    // images on the failed turn are deliberately NOT carried over. See Task 7's
+    // note on `setPendingInput` if an image buffer is ever added.
+    const draft = getTextContent(message.content);
+    useChatStore.getState().startNewConversation();
+    useSettingsStore.getState().setViewMode('chat');
+    useChatStore.getState().setPendingInput(draft);
+  };
 
   // Rewind (edit-resend / regenerate / run-retry) truncates the conversation
   // from the redone turn onward via deleteMessagesFrom, durably discarding
@@ -737,20 +751,34 @@ export default function MessageBubble({
                   })()}
                 </div>
               )}
-              {/* Reliable-run progress is internal. The assistant activity row already
-                  communicates that work is in progress; only actionable failures belong
-                  under the user's message. */}
+              {/* Reliable-run progress is internal (existing ruling, kept for #549):
+                  starting / recovering live in SidecarStatusStrip above the composer;
+                  only actionable failures belong under the user's message. */}
               {hasRunFailure && (
-                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
-                  <span>
-                    {message.runState === 'failed' && t.chat.runFailed}
-                    {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
-                  </span>
-                  {!isConvRunning && (
-                    <Button variant="ghost" size="xs" onClick={handleRunRetry}>
-                      <RefreshCw className="h-3 w-3" />
-                      {t.chat.runRetry}
-                    </Button>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
+                    <span>
+                      {message.runState === 'failed' && t.chat.runFailed}
+                      {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
+                    </span>
+                    {!isConvRunning && (isOversizeFailure ? (
+                      <Button variant="ghost" size="xs" onClick={handleNewConversationWithDraft}>
+                        <MessageSquarePlus className="h-3 w-3" />
+                        {t.chat.newConversationAction}
+                      </Button>
+                    ) : (
+                      <Button variant="ghost" size="xs" onClick={handleRunRetry}>
+                        <RefreshCw className="h-3 w-3" />
+                        {t.chat.runRetry}
+                      </Button>
+                    ))}
+                  </div>
+                  {/* #549: `runErrorKind` marks the reasons we wrote ourselves and
+                      showed the user; raw upstream `runError` text stays hidden. */}
+                  {message.runErrorKind && message.runError && (
+                    <p className="max-w-2xl break-words text-caption text-[var(--abu-text-secondary)]">
+                      {message.runError}
+                    </p>
                   )}
                 </div>
               )}

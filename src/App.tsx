@@ -33,6 +33,7 @@ import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { initNetworkProxy } from '@/core/sandbox/config';
 import { startSidecar } from '@/core/sidecar/sidecarManager';
+import { ensureSidecarStatusProjection } from '@/stores/sidecarStatusStore';
 
 // Initialize platform detection at module load time (before any component renders)
 // so that isWindows()/isMacOS() return correct values immediately
@@ -48,6 +49,9 @@ const platformInitialization = initPlatform().then((detectedPlatform) => {
   startSidecar().catch((err) => {
     console.warn('[App] Sidecar init error:', err);
   });
+  // #549: mirror the supervisor into the UI store from the very first
+  // transition, so SidecarStatusStrip never renders the seeded 'stopped'.
+  ensureSidecarStatusProjection();
   return detectedPlatform;
 }).catch((err) => {
   console.warn('[App] Platform detection init error:', err);

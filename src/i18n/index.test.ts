@@ -150,3 +150,22 @@ describe('i18n', () => {
     });
   });
 });
+
+// ── #549 run-failure copy (real dict, not a mock) ──
+// The agent-loop suites mock `@/i18n` with their own copy of these strings, so
+// a drift between the mock and the shipped dict would otherwise go unnoticed
+// until a zh-CN E2E run. Assert against the real locale module.
+describe('#549 sidecar failure copy', () => {
+  it('pins the zh-CN strings the failed user row and the status strip render', async () => {
+    const { default: zhCN } = await import('./locales/zh-CN');
+
+    expect(zhCN.chat.sidecarInterrupted).toBe('连接中断，可点重试');
+    expect(zhCN.chat.payloadTooLarge).toBe('这段对话太长，无法继续。请新建对话继续。');
+    expect(zhCN.chat.sidecarNotReady).toBe('后台服务没有启动成功，这条消息还没有发出。可点重试。');
+    expect(zhCN.chat.runRecovering).toBe('连接中断，正在恢复…');
+    expect(zhCN.chat.runStartingSidecar).toBe('正在启动…');
+    expect(zhCN.chat.newConversationAction).toBe('新建对话');
+    expect(zhCN.chat.sidecarStopped).toBe('后台服务已停止');
+    expect(zhCN.chat.sidecarReconnect).toBe('重新连接');
+  });
+});

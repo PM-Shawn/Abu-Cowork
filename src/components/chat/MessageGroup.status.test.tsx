@@ -74,6 +74,37 @@ describe('MessageGroup stopped terminal', () => {
     expect(screen.getByText('You stopped after 2s')).toBeInTheDocument();
   });
 
+  it('#549: a pre-accept failure inside a group shows its reason and the oversize escape', () => {
+    // MessageGroup renders the user row through MessageBubble, so the reason
+    // line and 「新建对话」 must reach every retry surface, not just the composer.
+    const userMessage: Message = {
+      id: 'user-oversize',
+      role: 'user',
+      content: 'summarise everything so far',
+      timestamp: 1_000,
+      loopId: 'loop-oversize',
+      runState: 'failed',
+      runError: 'This conversation is too long to continue. Please start a new conversation.',
+      runErrorKind: 'payload_too_large',
+      runEndedAt: 3_000,
+    };
+    const conversation: Conversation = {
+      id: 'conversation-oversize',
+      title: 'Oversize task',
+      messages: [userMessage],
+      createdAt: 1_000,
+      updatedAt: 3_000,
+      status: 'idle',
+    };
+    setConversationState(conversation);
+
+    render(<MessageGroup conversationId={conversation.id} messages={[userMessage]} isLastGroup />);
+
+    expect(screen.getByText(userMessage.runError as string)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+  });
+
   it('keeps a terminal batch card visible and falls back to its legacy result after live eviction', () => {
     const userMessage: Message = {
       id: 'user-batch',

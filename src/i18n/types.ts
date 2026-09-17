@@ -294,6 +294,14 @@ export interface TranslationDict {
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
+    /** Composer-top strip: this send is waiting for the agent sidecar's cold start (#549). */
+    runStartingSidecar: string;
+    /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
+    newConversationAction: string;
+    /** Composer-top strip: the supervisor gave up restarting the sidecar (#549). */
+    sidecarStopped: string;
+    /** Composer-top strip action next to sidecarStopped (#549). */
+    sidecarReconnect: string;
     noModelConfigured: string;
     scrollToBottom: string;
     compressingContext: string;

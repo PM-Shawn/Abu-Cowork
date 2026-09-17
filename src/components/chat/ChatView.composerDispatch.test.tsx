@@ -33,6 +33,9 @@ vi.mock('@/core/agent/agentLoopRunner', () => ({
 vi.mock('@/utils/electronHost', () => ({
   authorizeElectronUserAttachment: vi.fn(),
   hasElectronCommandHost: vi.fn(() => false),
+  // #549: conversationStorage's debounced flushIndex reaches rawBodyInvoke,
+  // which probes this — without it the timer rejects after the suite ends.
+  hasElectronRawBodyInvoke: vi.fn(() => false),
   hasElectronUserAttachmentAuthorizeHost: vi.fn(() => false),
   hasElectronUserAttachmentReadHost: vi.fn(() => false),
   hasElectronUserAttachmentReleaseHost: vi.fn(() => false),

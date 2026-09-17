@@ -382,6 +382,23 @@ function trackConversationPersistence(
 }
 
 /**
+ * Write a message revision through the conversation's serial persistence
+ * queue. Every replacement must ride this queue: a bare fire-and-forget
+ * replace overtakes an older revision still queued behind an append (e.g.
+ * finishStreaming's checkpoint), and that stale revision then lands last and
+ * wins the fold — the turn-end executionSteps / plannedSteps snapshots were
+ * lost across a restart exactly this way (2026-09-16).
+ */
+function persistMessageReplacement(convId: string, message: Message): void {
+  trackConversationPersistence(
+    convId,
+    () => import('../core/session/conversationStorage').then(({ replaceMessageById }) =>
+      replaceMessageById(convId, message)
+    ),
+  );
+}
+
+/**
  * Wait until every message/index persistence operation already started for
  * this conversation has settled. The loop handles operations added while it
  * is awaiting an earlier snapshot, so an append that schedules its index
@@ -1609,9 +1626,7 @@ export const useChatStore = create<ChatStore>()(
         // used by updateToolCall above.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -1631,9 +1646,7 @@ export const useChatStore = create<ChatStore>()(
         // setToolCallNoticeCardAction above.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -1652,9 +1665,7 @@ export const useChatStore = create<ChatStore>()(
         // sees it on the next turn, which may be after a restart.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -1727,9 +1738,7 @@ export const useChatStore = create<ChatStore>()(
         });
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -2055,9 +2064,7 @@ export const useChatStore = create<ChatStore>()(
         if (targetMsgId) {
           const msg = get().conversations[convId]?.messages.find((m) => m.id === targetMsgId);
           if (msg) {
-            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-              replaceMessageById(convId, msg).catch(() => {});
-            }).catch(() => {});
+            persistMessageReplacement(convId, msg);
           }
         }
       },
@@ -2095,9 +2102,7 @@ export const useChatStore = create<ChatStore>()(
         if (targetMsgId) {
           const msg = get().conversations[convId]?.messages.find((m) => m.id === targetMsgId);
           if (msg) {
-            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-              replaceMessageById(convId, msg).catch(() => {});
-            }).catch(() => {});
+            persistMessageReplacement(convId, msg);
           }
         }
       },

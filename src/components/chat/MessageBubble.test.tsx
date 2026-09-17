@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
@@ -161,53 +161,118 @@ describe('MessageBubble user run status', () => {
   });
 
   describe('when the conversation pinned model is no longer usable', () => {
+    const GONE_PIN = { providerId: 'gone-provider', modelId: 'model-a' };
+    const USABLE_PIN = { providerId: 'anthropic', modelId: 'model-a' };
+
     beforeEach(() => {
       vi.mocked(runAgentLoopDispatched).mockReset();
       useSettingsStore.setState(useSettingsStore.getInitialState(), true);
       useSettingsStore.setState((state) => ({
         providers: state.providers.map((provider) =>
-          provider.id === 'anthropic' ? { ...provider, enabled: true, apiKey: 'test-key' } : provider,
+          provider.id === 'anthropic'
+            ? { ...provider, enabled: true, apiKey: 'test-key', models: [...provider.models, { ...provider.models[0], id: 'model-a', label: '' }] }
+            : provider,
         ),
       }));
       useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
       useToastStore.setState(useToastStore.getInitialState(), true);
     });
 
+    let deleteSpy: MockInstance | undefined;
+
     afterEach(() => {
+      deleteSpy?.mockRestore();
+      deleteSpy = undefined;
       useToastStore.setState(useToastStore.getInitialState(), true);
       useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+      useEnterpriseStore.setState(useEnterpriseStore.getInitialState(), true);
     });
 
-    it('refuses retry before rewinding any turns', () => {
-      const failed: Message = { ...baseMessage, runState: 'failed', runError: 'boom', loopId: 'loop-1' };
-      const later: Message = { id: 'message-2', role: 'assistant', content: 'later answer', timestamp: 1, loopId: 'loop-2' };
-      setConversation(failed, 'idle');
-      useChatStore.setState((state) => {
-        const conversation = state.conversations['conversation-1'];
-        return {
-          conversations: {
-            'conversation-1': {
-              ...conversation,
-              messages: [failed, later],
-              model: { providerId: 'gone-provider', modelId: 'model-a' },
-            },
-          },
-        };
-      });
-      const before = useChatStore.getState().conversations['conversation-1'].messages;
-      const deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
+    /** A conversation with the given turns, pinned to `model`; returns a delete spy. */
+    function seedConversation(messages: Message[], model: { providerId: string; modelId: string }): MockInstance {
+      setConversation(messages[0], 'idle');
+      useChatStore.setState((state) => ({
+        conversations: {
+          'conversation-1': { ...state.conversations['conversation-1'], messages, model },
+        },
+      }));
+      deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
+      return deleteSpy;
+    }
 
-      render(<MessageBubble message={failed} />);
-      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
-
-      expect(deleteSpy).not.toHaveBeenCalled();
+    function expectNothingSent(spy: MockInstance, before: Message[]): void {
+      expect(spy).not.toHaveBeenCalled();
       expect(useChatStore.getState().conversations['conversation-1'].messages).toBe(before);
       expect(runAgentLoopDispatched).not.toHaveBeenCalled();
       expect(useToastStore.getState().toasts).toEqual([
         expect.objectContaining({ type: 'error', title: expect.stringContaining('model-a') }),
       ]);
+    }
+
+    const laterTurn: Message = { id: 'message-later', role: 'assistant', content: 'later answer', timestamp: 3, loopId: 'loop-2' };
+
+    it('refuses retry before rewinding any turns', () => {
+      const failed: Message = { ...baseMessage, runState: 'failed', runError: 'boom', loopId: 'loop-1' };
+      const spy = seedConversation([failed, laterTurn], GONE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={failed} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+      expectNothingSent(spy, before);
       expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
-      deleteSpy.mockRestore();
+    });
+
+    it('re-checks when the provider is removed while the rewind confirm is open', () => {
+      const failed: Message = { ...baseMessage, runState: 'failed', runError: 'boom', loopId: 'loop-1' };
+      const spy = seedConversation([failed, laterTurn], USABLE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={failed} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(screen.getByText(getI18n().chat.rewindConfirmTitle)).toBeInTheDocument();
+      expect(useToastStore.getState().toasts).toEqual([]);
+
+      useSettingsStore.setState((state) => ({
+        providers: state.providers.map((provider) =>
+          provider.id === 'anthropic' ? { ...provider, enabled: false } : provider,
+        ),
+      }));
+      // Another provider stays usable, so the refusal is a toast, not Settings.
+      useSettingsStore.setState((state) => ({
+        providers: [...state.providers, { ...state.providers.find((p) => p.id === 'anthropic')!, id: 'other', enabled: true }],
+      }));
+      fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+
+      expectNothingSent(spy, before);
+    });
+
+    it('refuses edit-resend and keeps the editor open', () => {
+      const sent: Message = { ...baseMessage, loopId: 'loop-1' };
+      const spy = seedConversation([sent, laterTurn], GONE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={sent} />);
+      fireEvent.click(screen.getByRole('button', { name: getI18n().chat.edit }));
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited text' } });
+      fireEvent.click(screen.getByRole('button', { name: getI18n().chat.saveAndResend }));
+
+      expectNothingSent(spy, before);
+      expect(screen.getByRole('textbox')).toHaveValue('edited text');
+      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+    });
+
+    it('refuses regenerate before rewinding any turns', () => {
+      const question: Message = { ...baseMessage, loopId: 'loop-1' };
+      const answer: Message = { id: 'message-answer', role: 'assistant', content: 'first answer', timestamp: 1, loopId: 'loop-1' };
+      const spy = seedConversation([question, answer, laterTurn], GONE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={answer} />);
+      fireEvent.click(screen.getByRole('button', { name: getI18n().chat.regenerate }));
+
+      expectNothingSent(spy, before);
+      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
     });
   });
 });

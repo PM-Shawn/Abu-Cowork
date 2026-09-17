@@ -4229,6 +4229,23 @@ describe('agentLoopRunner', () => {
       expect(JSON.stringify(chatStoreUpdateUserMessageRunMock.mock.calls)).not.toContain(upstreamErrorDetails.traceId);
     });
 
+    it('pushes the current settings to the sidecar before agent.start goes out', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      notifySidecar.mockClear();
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+      const settingsPushOrders = notifySidecar.mock.calls
+        .map((call, index) => ({ method: call[0], order: notifySidecar.mock.invocationCallOrder[index] }))
+        .filter((call) => call.method === 'state.settings')
+        .map((call) => call.order);
+      expect(settingsPushOrders.length).toBeGreaterThan(0);
+      expect(Math.min(...settingsPushOrders))
+        .toBeLessThan(agentStartRequestMock.mock.invocationCallOrder[0]);
+    });
+
     it('persists the user message before the bounded start handshake', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       sidecarRequestMock.mockResolvedValue({ reason: 'completed' });

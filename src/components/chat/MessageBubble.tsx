@@ -496,6 +496,8 @@ export default function MessageBubble({
     setIsEditing(false);
 
     const proceed = async () => {
+      // Re-check: the provider may have been removed while the confirm was open.
+      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
       // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
       useChatStore.getState().deleteMessagesFrom(convId, message.id);
       // Re-attach the original routing prefix (@expert or /skill) so the
@@ -539,6 +541,8 @@ export default function MessageBubble({
       : message.id;
 
     const proceed = async () => {
+      // Re-check: the provider may have been removed while the confirm was open.
+      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
       useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
       announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
       await runAgentLoopDispatched(
@@ -597,6 +601,8 @@ export default function MessageBubble({
       const imageAttachments = rebuildImageAttachments(targetUserMsg.content, `regen-${Date.now()}`);
 
       const proceed = async () => {
+        // Re-check: the provider may have been removed while the confirm was open.
+        if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
         // Delete from user message onwards and regenerate
         useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
         announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });

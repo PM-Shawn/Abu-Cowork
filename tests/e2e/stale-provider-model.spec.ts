@@ -229,20 +229,27 @@ test.describe('stale provider pin', () => {
 
   test.afterEach(async () => {
     const testInfo = test.info();
-    if (testInfo.status !== testInfo.expectedStatus) {
-      await testInfo.attach('mock-requests.json', {
-        body: JSON.stringify({ a: mockA?.requests, b: mockB?.requests }, null, 2),
-        contentType: 'application/json',
-      });
-    }
-    if (app) await closeAbuElectron(app);
+    const [openApp, openMockA, openMockB, openDataRoot] = [app, mockA, mockB, dataRoot];
     app = undefined;
-    await mockA?.close();
-    await mockB?.close();
     mockA = undefined;
     mockB = undefined;
-    if (dataRoot) removeElectronDataRoot(dataRoot);
     dataRoot = undefined;
+    // Each step runs even if an earlier one throws, so no mock or data root leaks.
+    try {
+      if (testInfo.status !== testInfo.expectedStatus) {
+        await testInfo.attach('mock-requests.json', {
+          body: JSON.stringify({ a: openMockA?.requests, b: openMockB?.requests }, null, 2),
+          contentType: 'application/json',
+        });
+      }
+      if (openApp) await closeAbuElectron(openApp);
+    } finally {
+      try {
+        await Promise.allSettled([openMockA?.close(), openMockB?.close()]);
+      } finally {
+        if (openDataRoot) removeElectronDataRoot(openDataRoot);
+      }
+    }
   });
 
   test('a turned-off or deleted provider blocks the send; switching the model recovers', async () => {

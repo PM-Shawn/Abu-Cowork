@@ -33,6 +33,7 @@ import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, par
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
@@ -824,6 +825,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
   // Handle retry
   const handleRetry = async () => {
     if (!userMsg || !activeConv?.id) return;
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const convId = activeConv.id;
     const userContent = getTextContent(userMsg.content);
 
@@ -832,6 +834,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     const firstAssistantInLoop = assistantMsgs[0];
 
     const proceed = async () => {
+      // Re-check: the provider may have been removed while the confirm was open.
+      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
       if (firstAssistantInLoop) {
         useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
       }

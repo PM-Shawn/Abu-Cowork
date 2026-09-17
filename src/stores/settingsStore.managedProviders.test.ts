@@ -1,6 +1,20 @@
-import { describe, it, expect, beforeEach } from 'vitest';
-import { useSettingsStore } from './settingsStore';
-import type { ManagedProviderInput } from '../types/provider';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { invoke } from '@tauri-apps/api/core';
+import { bootstrapSecrets, reconcileActiveProvider, useSettingsStore } from './settingsStore';
+import type { ManagedProviderInput, ProviderInstance } from '../types/provider';
+
+const personalProvider: ProviderInstance = {
+  id: 'deepseek',
+  source: 'builtin',
+  name: 'DeepSeek',
+  enabled: true,
+  apiFormat: 'openai-compatible',
+  baseUrl: '',
+  apiKey: 'sk-personal',
+  models: [{ id: 'deepseek-chat', label: 'deepseek-chat' }],
+  status: 'unchecked',
+  sortOrder: 1,
+};
 
 const gatewayInput: ManagedProviderInput = {
   id: 'enterprise-gateway',
@@ -82,6 +96,105 @@ describe('managed providers', () => {
       expect(matched).toHaveLength(1);
       expect(matched[0].apiKey).toBe('sk-rotated');
       expect(matched[0].models.map(m => m.id)).toEqual(['qwen-max']);
+    });
+  });
+
+  describe('持久化隔离', () => {
+    // 托管条目的凭据属于注册它的外部系统。localStorage 或密钥库里多出一份副本，
+    // 凭据更换后它就是过期的，退出后它就是仍然可用的凭据。
+    const invokeMock = vi.mocked(invoke);
+
+    function persistedProviders(): Array<{ id: string }> {
+      const options = (useSettingsStore as unknown as {
+        persist: { getOptions: () => { partialize: (state: unknown) => { providers: Array<{ id: string }> } } };
+      }).persist.getOptions();
+      return options.partialize(useSettingsStore.getState()).providers;
+    }
+
+    /** 每次带 key 的密钥库调用：[命令, key]。 */
+    function secretCalls(): Array<[string, string]> {
+      return invokeMock.mock.calls.flatMap(([cmd, args]): Array<[string, string]> => {
+        const key = (args as { key?: string } | undefined)?.key;
+        return typeof key === 'string' ? [[cmd as string, key]] : [];
+      });
+    }
+
+    beforeEach(() => {
+      invokeMock.mockReset();
+      invokeMock.mockResolvedValue(null);
+      useSettingsStore.setState({
+        providers: [personalProvider],
+        auxiliaryServices: {},
+        imageGeneration: { backends: [] },
+      });
+      useSettingsStore.getState().upsertManagedProvider(gatewayInput);
+    });
+
+    it('持久化快照只含个人 provider', () => {
+      expect(persistedProviders().map(p => p.id)).toEqual(['deepseek']);
+    });
+
+    it('启动时的密钥读取与回填都不碰托管条目', async () => {
+      await bootstrapSecrets();
+
+      const touched = secretCalls().map(([, key]) => key);
+      expect(touched).toContain('provider:deepseek');
+      expect(touched).not.toContain('provider:enterprise-gateway');
+    });
+
+    it('清除全部密钥不会删除或清空托管条目的凭据', async () => {
+      await useSettingsStore.getState().clearAllStoredKeys();
+
+      expect(secretCalls()).not.toContainEqual(['secret_delete', 'provider:enterprise-gateway']);
+      const providers = useSettingsStore.getState().providers;
+      expect(providers.find(p => p.id === 'enterprise-gateway')?.apiKey).toBe('sk-virtual-test');
+      expect(providers.find(p => p.id === 'deepseek')?.apiKey).toBe('');
+    });
+  });
+
+  describe('重启后的选择', () => {
+    // rehydrate 是同步的，托管条目由外部系统稍后注册。这段时间里“找不到
+    // provider”只说明它还没注册。
+    const missing = (): { providers: ProviderInstance[]; activeModel: { providerId: string; modelId: string } } => ({
+      providers: [{ ...personalProvider }],
+      activeModel: { providerId: 'enterprise-gateway', modelId: 'deepseek-v3' },
+    });
+
+    it('托管条目注册之前保留选择', () => {
+      const state = missing();
+      reconcileActiveProvider(state, { managedProvidersReady: false });
+
+      expect(state.activeModel).toEqual({ providerId: 'enterprise-gateway', modelId: 'deepseek-v3' });
+    });
+
+    it('注册时机过后仍然找不到，换成可用的个人 provider', () => {
+      const state = missing();
+      reconcileActiveProvider(state, { managedProvidersReady: true });
+
+      expect(state.activeModel).toEqual({ providerId: 'deepseek', modelId: 'deepseek-chat' });
+    });
+
+    it('markManagedProvidersReady 保留已注册的托管选择', () => {
+      useSettingsStore.setState({
+        providers: [personalProvider],
+        activeModel: { providerId: 'enterprise-gateway', modelId: 'deepseek-v3' },
+      });
+      useSettingsStore.getState().upsertManagedProvider(gatewayInput);
+
+      useSettingsStore.getState().markManagedProvidersReady();
+
+      expect(useSettingsStore.getState().activeModel).toEqual({ providerId: 'enterprise-gateway', modelId: 'deepseek-v3' });
+    });
+
+    it('markManagedProvidersReady 在托管条目不存在时换成个人 provider', () => {
+      useSettingsStore.setState({
+        providers: [personalProvider],
+        activeModel: { providerId: 'enterprise-gateway', modelId: 'deepseek-v3' },
+      });
+
+      useSettingsStore.getState().markManagedProvidersReady();
+
+      expect(useSettingsStore.getState().activeModel).toEqual({ providerId: 'deepseek', modelId: 'deepseek-chat' });
     });
   });
 

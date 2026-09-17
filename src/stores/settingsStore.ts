@@ -487,6 +487,9 @@ interface SettingsActions {
   // Registered at runtime by an external system, never edited by the user.
   upsertManagedProvider: (input: ManagedProviderInput) => void;
   removeManagedProvider: (id: string) => void;
+  /** Call once the external system has had its chance to register; runs the
+   *  missing-provider rule that rehydration skipped. */
+  markManagedProvidersReady: () => void;
 
   // ── Model selection (V2) ──
   selectModel: (providerId: string, modelId: string) => void;
@@ -650,6 +653,17 @@ interface SettingsActions {
 // ============================================================
 
 /**
+ * The providers whose configuration belongs to the user. Everything that
+ * writes to localStorage or the secret store goes through this: a managed
+ * provider's credential belongs to the system that registered it, and a second
+ * copy here would go stale when that system rotates the key and would survive
+ * after it withdraws the provider.
+ */
+function userOwnedProviders(providers: ProviderInstance[]): ProviderInstance[] {
+  return providers.filter((p) => p.source !== 'managed');
+}
+
+/**
  * Reconcile activeModel after rehydration so that downstream code
  * (getActiveProvider, ChatInput, agentLoop) always sees a consistent state.
  *
@@ -658,18 +672,24 @@ interface SettingsActions {
  *
  * Rules:
  * 1. Active provider missing  → switch to a usable enabled provider, falling
- *    back to any enabled provider.
+ *    back to any enabled provider. Skipped while `managedProvidersReady` is
+ *    false: rehydration is synchronous and managed providers are registered
+ *    later, so "missing" at that point only means "not registered yet".
+ *    `markManagedProvidersReady()` runs this rule once registration has had
+ *    its turn.
  * 2. Active provider disabled but has key (or is ollama) → silently re-enable.
  * 3. Active provider disabled and unusable → switch to a usable fallback;
  *    only force-enable as a last resort so getActiveProvider() keeps resolving.
  */
 export function reconcileActiveProvider(
-  state: Pick<SettingsState, 'providers' | 'activeModel'>
+  state: Pick<SettingsState, 'providers' | 'activeModel'>,
+  options: { managedProvidersReady: boolean } = { managedProvidersReady: true },
 ): void {
   const activeProvider = state.providers.find(
     p => p.id === state.activeModel.providerId
   );
   if (!activeProvider) {
+    if (!options.managedProvidersReady) return;
     const fallback =
       state.providers.find(
         p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
@@ -1438,6 +1458,16 @@ export const useSettingsStore = create<SettingsStore>()(
         providers: s.providers.filter(p => !(p.id === id && p.source === 'managed')),
       })),
 
+      markManagedProvidersReady: () => set((s) => {
+        // reconcileActiveProvider mutates its argument; give it copies.
+        const next = {
+          providers: s.providers.map((p) => ({ ...p })),
+          activeModel: { ...s.activeModel },
+        };
+        reconcileActiveProvider(next);
+        return next;
+      }),
+
       toggleProvider: (id) => set((s) => ({
         providers: s.providers.map(p =>
           p.id === id ? { ...p, enabled: !p.enabled } : p
@@ -1911,7 +1941,7 @@ export const useSettingsStore = create<SettingsStore>()(
         // This action is scoped to API keys. Delete those exact entries so an
         // unrelated account credential in the same OS store remains intact.
         const knownKeys = [
-          ...s.providers.map((p) => SECRET_KEYS.provider(p.id)),
+          ...userOwnedProviders(s.providers).map((p) => SECRET_KEYS.provider(p.id)),
           SECRET_KEYS.auxWebSearch,
           SECRET_KEYS.auxImageGen,
           ...s.imageGeneration.backends.map((b) => SECRET_KEYS.imageGenBackend(b.id)),
@@ -1927,7 +1957,7 @@ export const useSettingsStore = create<SettingsStore>()(
           // orphaned entries the backend couldn't remove.
         }
         set((state) => ({
-          providers: state.providers.map((p) => ({ ...p, apiKey: '' })),
+          providers: state.providers.map((p) => (p.source === 'managed' ? p : { ...p, apiKey: '' })),
           auxiliaryServices: {
             ...(state.auxiliaryServices.webSearch && {
               webSearch: { ...state.auxiliaryServices.webSearch, apiKey: '' },
@@ -2878,8 +2908,8 @@ export const useSettingsStore = create<SettingsStore>()(
         // to Phase 2 behavior (plaintext in localStorage) so a broken secret
         // backend can't cause silent data loss on save.
         providers: persistApiKeyPlaintextFallback
-          ? state.providers
-          : state.providers.map((p) => ({ ...p, apiKey: '' })),
+          ? userOwnedProviders(state.providers)
+          : userOwnedProviders(state.providers).map((p) => ({ ...p, apiKey: '' })),
         activeModel: state.activeModel,
         recentModels: state.recentModels,
         favoriteModels: state.favoriteModels,
@@ -2959,8 +2989,9 @@ export const useSettingsStore = create<SettingsStore>()(
         if (state.language) {
           initLanguage(state.language);
         }
-        // Validate active model points to a usable provider
-        reconcileActiveProvider(state);
+        // Validate active model points to a usable provider. Managed providers
+        // are not registered yet; `markManagedProvidersReady()` finishes the job.
+        reconcileActiveProvider(state, { managedProvidersReady: false });
         // Defense in depth against a malformed browserOperationPolicy that
         // reached storage without going through `migrate` (hand-edited
         // localStorage, a future bug writing a partial object, ...) — the
@@ -3030,8 +3061,9 @@ export async function bootstrapSecrets(): Promise<void> {
     | { kind: 'imageGenBackend'; backendId: string; value: string | null };
 
   const tasks: Promise<Fetch>[] = [];
+  const ownProviders = userOwnedProviders(state.providers);
 
-  for (const p of state.providers) {
+  for (const p of ownProviders) {
     tasks.push(
       getSecret(SECRET_KEYS.provider(p.id)).then(
         (value) => ({ kind: 'provider', providerId: p.id, value } as Fetch),
@@ -3079,7 +3111,7 @@ export async function bootstrapSecrets(): Promise<void> {
   // Happens on first 0.12 launch for users whose keys came from 0.11 or
   // Phase 2 if some provider was never edited (write-through never fired).
   const backfills: Promise<void>[] = [];
-  for (const p of state.providers) {
+  for (const p of ownProviders) {
     const plain = p.apiKey?.trim() ?? '';
     if (plain.length > 0 && !providerUpdates.has(p.id)) {
       backfills.push(setSecret(SECRET_KEYS.provider(p.id), plain));

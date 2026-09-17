@@ -78,6 +78,30 @@ const PATH_KEYS = new Set([
   'target',
   'backup',
 ]);
+// fs commands whose main-side handler uses a path as given unless the named
+// options key supplies a BaseDirectory to join it to (`null`: the command never
+// takes one). A relative path with no anchor would resolve against main's cwd,
+// so the boundary requires it to be absolute. Raw-body writes are checked
+// against their `path` header in validateInvokePayload.
+const PLUGIN_FS_PATH_ARG = [['path', 'baseDir']];
+const FS_PATH_ARGS = new Map([
+  ['plugin:fs|exists', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|read_text_file', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|read_file', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|stat', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|lstat', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|read_dir', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|mkdir', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|remove', PLUGIN_FS_PATH_ARG],
+  ['plugin:fs|watch', [['paths', 'baseDir']]],
+  ['plugin:fs|rename', [['oldPath', 'oldPathBaseDir'], ['newPath', 'newPathBaseDir']]],
+  ['plugin:fs|copy_file', [['fromPath', 'fromPathBaseDir'], ['toPath', 'toPathBaseDir']]],
+  ['append_file_text', [['path', null]]],
+  ['atomic_write_text', [['path', null]]],
+  ['atomic_write_with_backup', [['path', null]]],
+  ['restore_from_backup', [['target', null], ['backup', null]]],
+  ['cleanup_old_backups', [['dir', null]]],
+]);
 const BASE_DIRECTORY_KEYS = new Set([
   'baseDir',
   'oldPathBaseDir',
@@ -339,6 +363,27 @@ function assertSafePath(value, label) {
   if (byteLength(value) > MAX_PATH_BYTES) throw new Error(`${label} is too long`);
 }
 
+// Names the argument, never its value.
+function assertAbsolutePath(value, label) {
+  if (!path.isAbsolute(value)) throw new Error(`${label} must be an absolute path`);
+}
+
+function assertFsPathsAbsolute(cmd, args) {
+  const spec = FS_PATH_ARGS.get(cmd);
+  if (!spec) return;
+  for (const [key, baseDirKey] of spec) {
+    if (baseDirKey && args?.options?.[baseDirKey] != null) continue;
+    const value = args?.[key];
+    if (value === undefined) continue;
+    // `paths` (watch) is not a PATH_KEYS key, so its items get the same
+    // string checks here.
+    for (const item of Array.isArray(value) ? value : [value]) {
+      assertSafePath(item, `IPC ${key}`);
+      assertAbsolutePath(item, `IPC ${key}`);
+    }
+  }
+}
+
 function assertJsonValue(value, state, depth, key) {
   state.nodes++;
   if (state.nodes > MAX_ARGS_NODES) throw new Error('IPC args contain too many values');
@@ -538,6 +583,7 @@ function validateInvokePayload(record, payload) {
   }
   assertWindowEventAllowed(record, cmd, args);
   assertComputerUseEnvelope(cmd, args);
+  assertFsPathsAbsolute(cmd, args);
   if (
     cmd === 'plugin:path|resolve_directory' &&
     (!Number.isInteger(args?.directory) || !BASE_DIRECTORY_VALUES.has(args.directory))
@@ -574,8 +620,8 @@ function validateInvokePayload(record, payload) {
       throw new Error(`${cmd} path header is not valid URI encoding`);
     }
     assertSafePath(decodedPath, `${cmd} path header`);
+    let options = null;
     if (headers.options != null) {
-      let options;
       try {
         options = JSON.parse(headers.options);
       } catch {
@@ -584,6 +630,7 @@ function validateInvokePayload(record, payload) {
       if (!isPlainRecord(options)) throw new Error(`${cmd} options header must encode an object`);
       assertJsonValue(options, { cmd, nodes: 0, bytes: 0, seen: new WeakSet() }, 0, '');
     }
+    if (options?.baseDir == null) assertAbsolutePath(decodedPath, `${cmd} path header`);
     if (headers.options === undefined) normalizedHeaders = { ...headers, options: '{}' };
   }
 

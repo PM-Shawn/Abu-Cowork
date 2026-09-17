@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import type { LLMProvider, ApiFormat, CustomService } from '../types';
-import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
+import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ManagedProviderInput, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
 import { deriveUiCaps } from '../core/llm/modelCapabilities';
 import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
@@ -481,6 +481,11 @@ interface SettingsActions {
   toggleProvider: (id: string) => void;
   reorderProviders: (ids: string[]) => void;
   setProviderStatus: (id: string, status: ProviderInstance['status'], message?: string, latency?: number) => void;
+
+  // ── Managed providers ──
+  // Registered at runtime by an external system, never edited by the user.
+  upsertManagedProvider: (input: ManagedProviderInput) => void;
+  removeManagedProvider: (id: string) => void;
 
   // ── Model selection (V2) ──
   selectModel: (providerId: string, modelId: string) => void;
@@ -1399,6 +1404,35 @@ export const useSettingsStore = create<SettingsStore>()(
         });
         fafSecretWrite(SECRET_KEYS.provider(id), deleteSecret(SECRET_KEYS.provider(id)), `removeProvider(${id})`);
       },
+
+      // A managed provider's endpoint, credential and model list come from an
+      // external system and are refreshed there. Registering is idempotent so a
+      // credential rotation can reuse this same path.
+      upsertManagedProvider: (input) => set((s) => {
+        const existing = s.providers.find(p => p.id === input.id && p.source === 'managed');
+        const entry: ProviderInstance = {
+          ...existing,
+          id: input.id,
+          source: 'managed',
+          name: input.name,
+          enabled: true,
+          apiFormat: 'openai-compatible',
+          baseUrl: input.baseUrl,
+          apiKey: input.apiKey,
+          models: input.models,
+          status: existing?.status ?? 'unchecked',
+          userAdded: false,
+          // Managed entries always head the list.
+          sortOrder: Number.MAX_SAFE_INTEGER,
+        };
+        return { providers: [entry, ...s.providers.filter(p => p.id !== input.id || p.source !== 'managed')] };
+      }),
+
+      // The source check keeps a user-created provider that happens to share
+      // the id from being removed along with the managed one.
+      removeManagedProvider: (id) => set((s) => ({
+        providers: s.providers.filter(p => !(p.id === id && p.source === 'managed')),
+      })),
 
       toggleProvider: (id) => set((s) => ({
         providers: s.providers.map(p =>

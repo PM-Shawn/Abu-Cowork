@@ -3719,6 +3719,7 @@ const zhCN: TranslationDict = {
       errActionAmbiguous: 'Error: 原生操作返回了不确定结果（{msg}）。为避免重复执行可能已生效的动作，Abu 没有自动降级重试。请调用 get_app_state 检查当前界面。',
       actionNotExecuted: '上一步动作没有执行（{code}：{msg}）。目标没有收到任何输入，因此不存在重复执行的风险；界面可能已经变化，下面是刚刚重新观察到的最新状态。请基于它选择动作，不要用旧的 state_id 重复同一动作。',
       actionNotExecutedHandoff: 'Error: 动作再次未能执行（{msg}），自动恢复次数已用完。请用户先处理（例如把目标窗口切到前台、关闭遮挡它的窗口或解锁桌面），再继续。不要改用 shell、脚本或其他工具向窗口发送点击和按键来绕过这个限制。',
+      actionNotExecutedHandoffPhysicalInput: 'Error: 动作没有执行——每次准备动手时都检测到你在用鼠标或键盘，自动重试次数已用完。这不是故障：你在操作电脑时阿布会让开。现场保留，已完成的步骤不会撤销。请告诉用户：手上的事忙完后回一句让你继续，你会重新看一眼屏幕再接着做。不要改用 shell、脚本或其他工具向窗口发送点击和按键来绕过这个限制。',
       actionNotExecutedStopped: 'Error: 动作未执行（{msg}），且本轮已停止。不要再尝试，等待用户指示。不要改用 shell、脚本或其他工具向窗口发送点击和按键来绕过这个限制。',
       actionNotExecutedReobserveFailed: '自动重新观察也失败了（{msg}）。请调用 get_app_state 重新观察，再基于新状态选择动作。',
       boundarySecureDesktop: 'Error: 目标现在在安全桌面上（例如 UAC 提示、锁屏或 Ctrl+Alt+Del 界面），阿布无法在那里操作（{msg}）。请你先处理这个提示或解锁，再让阿布继续。',

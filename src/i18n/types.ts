@@ -4861,6 +4861,7 @@ export interface TranslationDict {
       errActionAmbiguous: string;
       actionNotExecuted: string;
       actionNotExecutedHandoff: string;
+      actionNotExecutedHandoffPhysicalInput: string;
       actionNotExecutedStopped: string;
       actionNotExecutedReobserveFailed: string;
       /** Platform boundaries the user must clear; the helper marked the refusal non-retryable. {msg} */

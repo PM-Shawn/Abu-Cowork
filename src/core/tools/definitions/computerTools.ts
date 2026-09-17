@@ -695,6 +695,27 @@ function protocolErrorText(
  * This is the same shape as the `list_windows` defect fixed on 2026-09-15:
  * raw plumbing reaching the model reads as a broken tool, not as an answer.
  */
+/**
+ * What to tell the user when the retry budget is spent.
+ *
+ * The generic hand-off says to bring the target window forward, close
+ * whatever covers it, or unlock the desktop. When the retries went on
+ * `physical-input` none of that is the problem — the user simply had their
+ * hand on the mouse, which is Abu getting out of the way working as designed
+ * — and the advice sends them after the wrong thing. Measured six times
+ * across two conversations in the sweep since 2026-09-15; the helper has
+ * always said which cause it was.
+ */
+export function handoffText(
+  helperCode: string | undefined,
+  message: string,
+  t: ReturnType<typeof getI18n>['toolResult']['computer'],
+): string {
+  return helperCode === 'physical-input'
+    ? t.actionNotExecutedHandoffPhysicalInput
+    : format(t.actionNotExecutedHandoff, { msg: message });
+}
+
 const OBSERVE_AGAIN_PROTOCOL_CODES: ReadonlySet<string> = new Set([
   'window-ref-invalid',
   'window-ref-expired',
@@ -2529,7 +2550,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
           context?.reportMetadata?.({
             requiresUserRecovery: 'computer-target-unavailable',
           });
-          return format(t.actionNotExecutedHandoff, { msg });
+          return handoffText(notExecuted.helper_code, msg, t);
         }
         return format(t.actionNotExecutedStopped, { msg });
       }

@@ -6,6 +6,7 @@
  * targets are rejected by the native action guard.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { getI18n } from '@/i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { isWindows, isMacOS } from '../../../utils/platform';
 import {
@@ -13,6 +14,7 @@ import {
   computerTool,
   formatComputerVerification,
   selectAxElementsForModel,
+  handoffText,
 } from './computerTools';
 import enUS from '../../../i18n/locales/en-US';
 import zhCN from '../../../i18n/locales/zh-CN';
@@ -3047,5 +3049,39 @@ describe('a stale reference is answered, not thrown', () => {
   // throwing is how the turn stops rather than wandering to another app.
   it('still throws for a target that is not there', async () => {
     await expect(failWith('target-not-found')).rejects.toThrow();
+  });
+});
+
+
+/// Measured six times across two conversations in the sweep since
+/// 2026-09-15: the retries were spent because the user had a hand on the
+/// mouse, and the hand-off then told them to bring the target window forward,
+/// close whatever covers it, or unlock the desktop — none of which was the
+/// problem. The helper has always said which cause it was.
+describe('handoffText', () => {
+  const t = getI18n().toolResult.computer;
+
+  it('says you were using the machine when that is why the retries ran out', () => {
+    const text = handoffText('physical-input', 'physical user input occurred', t);
+    expect(text).toMatch(/鼠标|mouse/);
+    expect(text).not.toMatch(/切到前台|bring the target window to the front/);
+  });
+
+  it('keeps the window advice for a reason that really is about the window', () => {
+    const text = handoffText('window-occluded', 'window is covered', t);
+    expect(text).toMatch(/切到前台|bring the target window to the front/);
+    expect(text).toContain('window is covered');
+  });
+
+  it('falls back to the generic advice when the helper named no cause', () => {
+    expect(handoffText(undefined, 'something failed', t)).toContain('something failed');
+  });
+
+  // Both messages have to keep telling the model not to reach for the shell:
+  // a hand-off is exactly the moment it starts looking for another way in.
+  it('refuses the shell in either message', () => {
+    for (const code of ['physical-input', 'window-occluded']) {
+      expect(handoffText(code, 'x', t)).toMatch(/shell/);
+    }
   });
 });

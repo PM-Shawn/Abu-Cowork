@@ -11,6 +11,7 @@ import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 
 vi.mock('./MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div>{content}</div>,
@@ -32,7 +33,11 @@ const baseMessage: Message = {
   timestamp: 0,
 };
 
-function setConversation(message: Message, status: Conversation['status']): void {
+function setConversation(
+  message: Message,
+  status: Conversation['status'],
+  overrides: Partial<Conversation> = {},
+): void {
   const conversation: Conversation = {
     id: 'conversation-1',
     title: 'test',
@@ -41,6 +46,7 @@ function setConversation(message: Message, status: Conversation['status']): void
     updatedAt: 0,
     status,
     workspacePath: '/workspace',
+    ...overrides,
   };
   useChatStore.setState({
     activeConversationId: conversation.id,
@@ -55,6 +61,7 @@ describe('MessageBubble user run status', () => {
     vi.mocked(runAgentLoopDispatched).mockResolvedValue({ reason: 'completed' });
     useImageLightboxStore.getState().close();
     usePreviewStore.setState(usePreviewStore.getInitialState(), true);
+    useWorkspaceStore.setState({ currentPath: null });
   });
 
   afterEach(() => {
@@ -194,7 +201,7 @@ describe('MessageBubble user run status', () => {
     expect(screen.getByText('HTTP 403')).toBeInTheDocument();
   });
 
-  it('#549: oversize offers a new conversation carrying the text instead of Retry', () => {
+  it('#549: oversize states the limit in place of the failure label and offers a new conversation', () => {
     const message: Message = {
       ...baseMessage,
       runState: 'failed',
@@ -205,7 +212,9 @@ describe('MessageBubble user run status', () => {
 
     render(<MessageBubble message={message} />);
 
+    // The sentence IS the label here — 「发送失败」 would only repeat it.
     expect(screen.getByText(message.runError as string)).toBeInTheDocument();
+    expect(screen.queryByText('Send failed')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
@@ -213,6 +222,41 @@ describe('MessageBubble user run status', () => {
     expect(useChatStore.getState().activeConversationId).toBeNull();
     expect(useChatStore.getState().pendingInput).toBe(baseMessage.content);
     expect(useSettingsStore.getState().viewMode).toBe('chat');
+  });
+
+  it('#549: the new conversation keeps the failed conversation’s workspace', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'This conversation is too long to continue.',
+      runErrorKind: 'payload_too_large',
+    };
+    setConversation(message, 'idle');
+    useWorkspaceStore.setState({ currentPath: '/workspace' });
+
+    render(<MessageBubble message={message} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+
+    // startNewConversation() clears the workspace by design; carrying the text
+    // into a project-less conversation would break every relative path in it.
+    expect(useWorkspaceStore.getState().currentPath).toBe('/workspace');
+    expect(useChatStore.getState().pendingInput).toBe(baseMessage.content);
+  });
+
+  it('#549: a failed conversation with no workspace starts the new one without one', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'This conversation is too long to continue.',
+      runErrorKind: 'payload_too_large',
+    };
+    setConversation(message, 'idle', { workspacePath: undefined });
+    useWorkspaceStore.setState({ currentPath: '/left-over' });
+
+    render(<MessageBubble message={message} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+
+    expect(useWorkspaceStore.getState().currentPath).toBeNull();
   });
 
   it('keeps generic failures unchanged (no reason line without a kind)', () => {

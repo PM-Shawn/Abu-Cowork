@@ -1,9 +1,13 @@
 /**
- * Where an agent run executes (#549 B). Electron: always the sidecar — if it
- * is starting we wait (visibly, ≤60s); if it failed we try one restart; then
- * we fail visibly. There is no silent in-process fallback. Only a renderer
- * with no desktop process bridge (web preview, unit tests) runs the loop
- * in-process, and that is an environment choice, not a recovery path.
+ * Where an agent run executes (#549 B). Electron: always the sidecar — if it is
+ * starting we wait up to 60s for `running`; if it is dead a user-initiated send
+ * may spend one restart attempt and then wait the same 60s; otherwise the send
+ * fails and its row says so. There is no silent in-process fallback. Only a
+ * renderer with no desktop process bridge (web preview, unit tests) runs the
+ * loop in-process, and that is an environment choice, not a recovery path.
+ *
+ * The wait itself is silent: the turn's own 「思考中」 row is the only UI while
+ * it runs.
  */
 import { isTauriEnv } from '@/utils/tauriEnv';
 import {

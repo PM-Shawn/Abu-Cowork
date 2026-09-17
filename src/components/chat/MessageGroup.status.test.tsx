@@ -101,6 +101,7 @@ describe('MessageGroup stopped terminal', () => {
     render(<MessageGroup conversationId={conversation.id} messages={[userMessage]} isLastGroup />);
 
     expect(screen.getByText(userMessage.runError as string)).toBeInTheDocument();
+    expect(screen.queryByText('Send failed')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
   });

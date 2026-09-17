@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatView from './ChatView';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
@@ -186,6 +186,62 @@ describe('ChatView welcome composer dispatch ownership', () => {
       expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument(),
     );
     expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it('#549: a rethrown failure the row already explains raises no toast either', async () => {
+    configureApiKey();
+    dispatchMock.mockImplementationOnce(async (conversationId: string, text: string) => {
+      useChatStore.getState().addMessage(conversationId, {
+        id: 'unavailable-user-message',
+        role: 'user',
+        content: text,
+        timestamp: 1,
+        loopId: 'unavailable-run',
+        runState: 'failed',
+        runError: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+        runErrorKind: 'sidecar_unavailable',
+      });
+      throw new AgentLoopDispatchError(new Error('sidecar unavailable'), true);
+    });
+
+    render(<ChatView />);
+    await submitWelcome('anything');
+
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument());
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it('#549: 「新建对话」 puts the oversize turn’s text back in the composer', async () => {
+    configureApiKey();
+    dispatchMock.mockImplementationOnce(async (conversationId: string, text: string) => {
+      useChatStore.getState().addMessage(conversationId, {
+        id: 'oversize-carry-message',
+        role: 'user',
+        content: text,
+        timestamp: 1,
+        loopId: 'oversize-carry-run',
+        runState: 'failed',
+        runError: 'This conversation is too long to continue.',
+        runErrorKind: 'payload_too_large',
+      });
+      return {
+        reason: 'error',
+        error: 'This conversation is too long to continue.',
+        messageTaken: true,
+        runErrorKind: 'payload_too_large',
+      };
+    });
+
+    render(<ChatView />);
+    await submitWelcome('carry me back');
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('carry me back'));
   });
 
   it('keeps the composer empty after a post-commit dispatch rejection', async () => {

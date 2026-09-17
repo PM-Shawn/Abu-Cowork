@@ -4,6 +4,9 @@ const electronHost = vi.hoisted(() => ({
   hasElectronDelegatedMediaStore: vi.fn(),
   persistElectronDelegatedMedia: vi.fn(),
   readElectronDelegatedMedia: vi.fn(),
+  // #549: conversationStorage's debounced flushIndex reaches rawBodyInvoke,
+  // which probes this — without it the timer rejects after the suite ends.
+  hasElectronRawBodyInvoke: vi.fn(() => false),
 }));
 
 vi.mock('@/utils/electronHost', () => electronHost);

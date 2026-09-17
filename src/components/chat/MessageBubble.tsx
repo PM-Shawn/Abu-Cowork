@@ -5,6 +5,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import ToolCallsGroup, { InlineToolResultImages } from './ToolCallsGroup';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -458,18 +459,24 @@ export default function MessageBubble({
   // #549: an oversize turn can never succeed by retrying — the only way forward
   // is a fresh conversation, so the row swaps Retry for 「新建对话」.
   const isOversizeFailure = hasRunFailure && message.runErrorKind === 'payload_too_large';
-  // #549: only the two kinds whose cause the user cannot read off the label get
-  // a sentence. 'sidecar_unavailable' and a kind-less failure are 「发送失败」 +
-  // Retry alone; raw upstream `runError` text stays hidden either way.
-  const showFailureReason = hasRunFailure
-    && (message.runErrorKind === 'payload_too_large' || message.runErrorKind === 'dispatch_failed');
+  // #549: an oversize row states the limit in the label position, so only a
+  // dispatch failure still needs a second line for its cause. 'sidecar_unavailable'
+  // and a kind-less failure are 「发送失败」 + Retry alone; raw upstream `runError`
+  // text stays hidden either way.
+  const showFailureReason = hasRunFailure && message.runErrorKind === 'dispatch_failed';
   const handleNewConversationWithDraft = () => {
     // Text only: the store has no one-shot buffer for inline base64 images
     // (`addPendingAttachment` carries workspace paths, not attachments), so any
     // images on the failed turn are deliberately NOT carried over. See Task 7's
     // note on `setPendingInput` if an image buffer is ever added.
     const draft = getTextContent(message.content);
+    const workspacePath = activeConv?.workspacePath;
     useChatStore.getState().startNewConversation();
+    // startNewConversation() clears the workspace — right for a top-level 「新建任务」,
+    // wrong here: this conversation is the same piece of work, and the text being
+    // carried over can name paths inside that project. Restore it through the same
+    // setter the workspace picker uses, so authorization is re-granted too.
+    if (workspacePath) useWorkspaceStore.getState().setWorkspace(workspacePath);
     useSettingsStore.getState().setViewMode('chat');
     useChatStore.getState().setPendingInput(draft);
   };
@@ -763,8 +770,9 @@ export default function MessageBubble({
                 <div className="flex flex-col gap-1">
                   <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
                     <span>
-                      {message.runState === 'failed' && t.chat.runFailed}
-                      {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
+                      {isOversizeFailure && t.chat.payloadTooLarge}
+                      {!isOversizeFailure && message.runState === 'failed' && t.chat.runFailed}
+                      {!isOversizeFailure && message.runState === 'connection-failed' && t.chat.runConnectionFailed}
                     </span>
                     {!isConvRunning && (isOversizeFailure ? (
                       <Button variant="ghost" size="xs" onClick={handleNewConversationWithDraft}>

@@ -167,4 +167,12 @@ describe('#549 sidecar failure copy', () => {
     expect(zhCN.chat.runRetry).toBe('重试');
     expect(zhCN.chat.newConversationAction).toBe('新建对话');
   });
+
+  it('pins the en-US strings that carry the same meaning', async () => {
+    const { default: enUS } = await import('./locales/en-US');
+
+    expect(enUS.chat.payloadTooLarge).toBe('This conversation is too long to continue.');
+    expect(enUS.chat.newConversationAction).toBe('New conversation');
+    expect(enUS.chat.sidecarInterrupted).toBe('Connection interrupted. Click Retry to try again.');
+  });
 });

@@ -42,6 +42,8 @@ import { mergeFileAttachments } from '@/components/chat/composerFileAttachments'
 import type { PermissionDuration } from '@/stores/permissionStore';
 import { useI18n, format } from '@/i18n';
 import { useToastStore } from '@/stores/toastStore';
+import { getModelUnavailableReason, getModelDisplayLabel } from '@/utils/settingsSelectors';
+import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
 import { useTeamStore } from '@/stores/teamStore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -656,11 +658,15 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const isAdmissionPendingForDraft = draftRuntimeState.pendingAdmissions > 0;
   const isStreaming = !isWelcome && isRunning;
   const isEnterpriseGatewayModel = isEnterprise && effModel.providerId === 'enterprise-gateway' && currentModel.length > 0;
-  const hasActiveProvider = isEnterpriseGatewayModel || (!!effProvider && effProvider.enabled);
+  // Enterprise sends skip the availability check, so the label must not claim it either.
+  const modelIssue = isEnterprise ? null : getModelUnavailableReason({ providers }, effModel);
+  const hasActiveProvider = isEnterpriseGatewayModel || !modelIssue;
   const availableModels = effProvider?.models ?? [];
   const activeModelInfo = availableModels.find((m) => m.id === currentModel);
-  const modelDisplay = !hasActiveProvider
-    ? t.chat.noModelConfigured
+  const modelDisplay = modelIssue
+    ? (providers.some((p) => p.enabled)
+        ? describeModelUnavailable(t.chat, modelIssue, getModelDisplayLabel({ providers }, effModel)).label
+        : t.chat.noModelConfigured)
     : isEnterpriseGatewayModel
       ? currentModel
       : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));

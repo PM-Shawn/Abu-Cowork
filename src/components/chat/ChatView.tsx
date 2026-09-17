@@ -9,7 +9,7 @@ import {
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
-import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -31,6 +31,7 @@ import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
@@ -832,14 +833,10 @@ export default function ChatView({
     workspacePath?: string | null,
     onAccepted?: () => void,
   ) => {
-    // Block sending if API key is not configured (Ollama doesn't need one).
-    // Returning false hands the text back to the composer — opening settings
-    // used to swallow whatever the user had typed.
-    const currentState = useSettingsStore.getState();
-    if (!isEnterprise && providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
-      currentState.openSystemSettings('ai-services');
-      return false;
-    }
+    // Check the model THIS conversation will run on (its pin, else the global
+    // default). Returning false hands the text back to the composer — opening
+    // settings used to swallow whatever the user had typed.
+    if (!ensureConversationModelUsable(activeConv ?? undefined, t.chat)) return false;
 
     if (text.trim() === '/compact') {
       const convId = activeConv?.id;

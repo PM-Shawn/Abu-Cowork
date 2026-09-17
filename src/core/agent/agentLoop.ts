@@ -9,7 +9,15 @@ import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { ToolDefinition } from '../../types';
-import { getActiveApiKey, getActiveProvider, providerRequiresApiKey } from '../../utils/settingsSelectors';
+import {
+  getActiveApiKey,
+  getActiveProvider,
+  getModelDisplayLabel,
+  getModelUnavailableReason,
+  hasAnyEnabledProvider,
+  providerRequiresApiKey,
+} from '../../utils/settingsSelectors';
+import { describeModelUnavailable } from '../../utils/modelUnavailableCopy';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
@@ -903,7 +911,28 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     catch { return { forceOpenAiCompatible: false } }
   })()
   const isEnterpriseGatewayMode = _startForce
-  if (!isEnterpriseGatewayMode && providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel)) {
+  // A pinned model whose provider was deleted/turned off, or which its provider
+  // no longer lists, must never reach an adapter: a missing provider leaves the
+  // base URL empty and the adapter would fall back to a public default endpoint.
+  // With no usable provider at all, keep the long-standing "configure a key" copy.
+  // Enterprise-gateway pins are virtual (never in `providers`), so they are never
+  // checked here — even when the gateway resolver is unavailable.
+  const pinnedModelIssue =
+    isEnterpriseGatewayMode || settingsForModel.activeModel.providerId === 'enterprise-gateway'
+      ? null
+      : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
+  const blockText = isEnterpriseGatewayMode
+    ? null
+    : pinnedModelIssue && hasAnyEnabledProvider(settingsForModel)
+      ? describeModelUnavailable(
+          getI18n().chat,
+          pinnedModelIssue,
+          getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+        ).inTask
+      : pinnedModelIssue || (providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel))
+        ? getI18n().chat.configureApiKey
+        : null;
+  if (blockText) {
     // Persist the user's input first so the chat history isn't an orphan warning.
     // Use raw userMessage (orchestrator hasn't run); skill metadata is intentionally omitted —
     // the user needs to configure a key before any skill/agent routing takes effect.
@@ -922,11 +951,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     chatDelta.addMessage(conversationId, {
       id: generateId(),
       role: 'assistant',
-      content: getI18n().chat.configureApiKey,
+      content: blockText,
       timestamp: Date.now(),
       loopId,
     });
-    return { reason: 'error', error: 'API Key not configured', messageTaken: true };
+    return {
+      reason: 'error',
+      error: pinnedModelIssue ? 'Model unavailable' : 'API Key not configured',
+      messageTaken: true,
+    };
   }
 
   // Create TaskExecution for this agent loop (after apiKey check to avoid leaking executions)

@@ -119,3 +119,6 @@ release-electron-e2e/
 
 # Build bookkeeping for scripts/check-browser-artifacts.mjs
 .artifact-digests/
+
+# Agent scratch space (intermediate scripts, logs, screenshots)
+.scratch/

@@ -1,5 +1,4 @@
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
-import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useToastStore } from '@/stores/toastStore';
 import { getModelUnavailableReason, hasAnyEnabledProvider, getModelDisplayLabel } from '@/utils/settingsSelectors';
 import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
@@ -11,13 +10,12 @@ import type { Conversation } from '@/types';
  * global default). Returns true when sending may proceed. When it returns false
  * it has already told the user: a toast naming the unusable model when another
  * provider is usable, otherwise it opens Settings → AI services (unchanged
- * "configure a key" path). Enterprise mode always returns true.
+ * "configure a key" path).
  */
 export function ensureConversationModelUsable(
   conversation: Pick<Conversation, 'model'> | undefined,
   chat: TranslationDict['chat'],
 ): boolean {
-  if (useEnterpriseStore.getState().mode.kind !== 'personal') return true;
   const currentState = useSettingsStore.getState();
   const effModel = conversation?.model ?? currentState.activeModel;
   const effState = { ...currentState, activeModel: effModel };

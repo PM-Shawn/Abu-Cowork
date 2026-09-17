@@ -665,8 +665,7 @@ function ensureHandlersRegistered(): void {
  * for the sidecar-side half of this contract and its documented "frozen for
  * the whole run" simplification.
  *
- * Throws if `resolveEffectiveLlmCreds` throws (e.g.
- * `EnterpriseLlmUnavailableError`) — the caller (`runSubagent`) treats that
+ * Throws if `resolveEffectiveLlmCreds` throws — the caller (`runSubagent`) treats that
  * as a pre-dispatch failure and falls back to `runSubagentLoop` in-process,
  * which hits the identical real error path itself rather than this
  * function duplicating its error-shaping logic.
@@ -880,8 +879,8 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     params = buildSubagentRunParams(runId, withPreloadedSkills, availableTools);
   } catch (err) {
     // Failed before any dispatch — no tool has executed. Fall back to the
-    // in-process engine, which hits the identical real error path (e.g.
-    // EnterpriseLlmUnavailableError) itself. See buildSubagentRunParams's doc.
+    // in-process engine, which hits the identical real error path itself.
+    // See buildSubagentRunParams's doc.
     logger.warn('subagent params build failed — running in-process', {
       runId,
       error: err instanceof Error ? err.message : String(err),

@@ -1659,13 +1659,18 @@ describe('sidecarManager', () => {
     it('unsubscribes handlers and survives a throwing one', async () => {
       mockHappyPath();
       const kept: string[] = [];
-      const unsubscribe = onSidecarStatusChange(() => { throw new Error('handler boom'); });
+      const dropped: string[] = [];
+      onSidecarStatusChange(() => { throw new Error('handler boom'); });
+      const unsubscribe = onSidecarStatusChange((s) => dropped.push(s));
       onSidecarStatusChange((s) => kept.push(s));
       await startSidecar();
+      // The throwing handler is registered first and must not starve the rest.
       expect(kept).toEqual(['starting', 'running']);
+      expect(dropped).toEqual(['starting', 'running']);
       unsubscribe();
       await stopSidecar();
-      expect(kept.at(-1)).toBe('stopped');
+      expect(kept).toEqual(['starting', 'running', 'stopped']);
+      expect(dropped).toEqual(['starting', 'running']); // stopped after unsubscribe
     });
   });
 });

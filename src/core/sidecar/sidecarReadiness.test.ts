@@ -65,13 +65,45 @@ describe('sidecarReadiness', () => {
     expect(startSidecar).not.toHaveBeenCalled();
   });
 
-  it('attempts exactly one start after failed/stopped, then fails visibly', async () => {
+  it('attempts exactly one start after failed/stopped with allowRestart, then fails visibly', async () => {
     status = 'failed';
     waitForSidecarStatus.mockResolvedValue('failed');
-    const err = await waitForSidecarVenue().catch((e: unknown) => e);
+    const err = await waitForSidecarVenue({ allowRestart: true }).catch((e: unknown) => e);
     expect(startSidecar).toHaveBeenCalledTimes(1);
     expect(err).toBeInstanceOf(SidecarUnavailableError);
     expect(err).toMatchObject({ code: 'sidecar_unavailable', stopReason: 'sidecar_unavailable', reason: 'failed' });
+  });
+
+  it.each(['failed', 'stopped'])(
+    'never restarts a %s sidecar by default — headless dispatchers must not re-arm the crash-loop window',
+    async (dead) => {
+      status = dead;
+      const err = await waitForSidecarVenue({ conversationId: 'c1' }).catch((e: unknown) => e);
+      expect(startSidecar).not.toHaveBeenCalled();
+      expect(waitForSidecarStatus).not.toHaveBeenCalled();
+      expect(err).toBeInstanceOf(SidecarUnavailableError);
+      expect(err).toMatchObject({ reason: 'failed', lastStatus: dead });
+      expect(useSidecarStatusStore.getState().waiting).toEqual({});
+    },
+  );
+
+  it('still waits (without restarting) for a starting sidecar when allowRestart is false', async () => {
+    status = 'starting';
+    waitForSidecarStatus.mockResolvedValue('running');
+    await waitForSidecarVenue();
+    expect(startSidecar).not.toHaveBeenCalled();
+    expect(waitForSidecarStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws the abort reason at entry without restarting or waiting', async () => {
+    status = 'failed';
+    const controller = new AbortController();
+    controller.abort(new Error('stop pressed'));
+    await expect(waitForSidecarVenue({ signal: controller.signal, allowRestart: true, conversationId: 'c1' }))
+      .rejects.toThrow('stop pressed');
+    expect(startSidecar).not.toHaveBeenCalled();
+    expect(waitForSidecarStatus).not.toHaveBeenCalled();
+    expect(useSidecarStatusStore.getState().waiting).toEqual({});
   });
 
   it('never starts the sidecar itself while it is already starting or restarting', async () => {
@@ -81,21 +113,27 @@ describe('sidecarReadiness', () => {
     expect(startSidecar).not.toHaveBeenCalled();
   });
 
+  /** Abort that arrives mid-wait (Stop pressed while 「正在启动…」 is showing). */
+  function abortDuringWait(controller: AbortController, reason?: unknown): void {
+    waitForSidecarStatus.mockImplementationOnce(async () => {
+      controller.abort(reason);
+      return 'aborted';
+    });
+  }
+
   it('maps timeout and abort', async () => {
     status = 'restarting';
     waitForSidecarStatus.mockResolvedValueOnce('timeout');
     await expect(waitForSidecarVenue()).rejects.toMatchObject({ reason: 'timeout' });
     const controller = new AbortController();
-    controller.abort(new Error('stop pressed'));
-    waitForSidecarStatus.mockResolvedValueOnce('aborted');
+    abortDuringWait(controller, new Error('stop pressed'));
     await expect(waitForSidecarVenue({ signal: controller.signal })).rejects.toThrow('stop pressed');
   });
 
   it('wraps a non-Error abort reason in an AbortError that keeps the text', async () => {
     status = 'starting';
     const controller = new AbortController();
-    controller.abort('stop pressed');
-    waitForSidecarStatus.mockResolvedValueOnce('aborted');
+    abortDuringWait(controller, 'stop pressed');
     const err = await waitForSidecarVenue({ signal: controller.signal, timeoutMs: 5_000 }).catch((e: unknown) => e);
     expect(waitForSidecarStatus).toHaveBeenCalledWith(5_000, controller.signal);
     expect((err as Error).name).toBe('AbortError');
@@ -105,8 +143,7 @@ describe('sidecarReadiness', () => {
   it('names a reasonless abort AbortError', async () => {
     status = 'starting';
     const controller = new AbortController();
-    controller.abort();
-    waitForSidecarStatus.mockResolvedValueOnce('aborted');
+    abortDuringWait(controller);
     const err = await waitForSidecarVenue({ signal: controller.signal, conversationId: 'c2' }).catch((e: unknown) => e);
     expect((err as Error).name).toBe('AbortError');
     // The waiting marker must be released even when the wait throws.

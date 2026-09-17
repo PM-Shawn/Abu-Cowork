@@ -51,9 +51,14 @@ function abortReason(signal: AbortSignal | undefined): Error {
  * - `running`: resolves immediately.
  * - `starting` / `restarting`: waits up to 60s, marking the conversation as
  *   waiting so the UI can say so.
- * - `failed` / `stopped`: attempts exactly ONE `startSidecar()` (the "restart
- *   on the next user send" rule, spec §5) and then waits the normal 60s.
- *   The crash-loop policy in sidecarManager owns any further backoff.
+ * - `failed` / `stopped`: only with `allowRestart` (a USER-initiated send or
+ *   「重新连接」) does it attempt exactly ONE `startSidecar()` and then wait the
+ *   normal 60s — spec §5's "restart on the next user send". Without it the
+ *   call fails immediately, because `startSidecar()` re-arms the crash-loop
+ *   window and its remote report: a headless dispatcher (scheduler, trigger,
+ *   file watcher, IM, team resume) firing on a timer would otherwise turn a
+ *   dead sidecar into an unbounded respawn-and-report loop. The crash-loop
+ *   policy in sidecarManager owns all further backoff either way.
  *
  * Never auto-resends anything: it only reports whether the venue is ready.
  */
@@ -61,12 +66,18 @@ export async function waitForSidecarVenue(options: {
   signal?: AbortSignal;
   conversationId?: string;
   timeoutMs?: number;
+  /** User-initiated send / reconnect: may spend one restart attempt. */
+  allowRestart?: boolean;
 } = {}): Promise<void> {
   if (isInProcessAgentEnvironment()) return;
+  // Already cancelled: never spend a restart or subscribe for a caller that
+  // has stopped caring.
+  if (options.signal?.aborted) throw abortReason(options.signal);
   ensureSidecarStatusProjection();
   const initial = getSidecarStatus();
   if (initial === 'running') return;
   if (initial === 'failed' || initial === 'stopped') {
+    if (!options.allowRestart) throw new SidecarUnavailableError(initial, 'failed');
     // One restart attempt per user send (spec §5). startSidecar never throws
     // and flips status to 'starting' synchronously.
     void startSidecar();

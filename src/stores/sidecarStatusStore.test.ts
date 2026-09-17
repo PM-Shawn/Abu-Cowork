@@ -21,6 +21,11 @@ import {
   useSidecarStatusStore,
 } from './sidecarStatusStore';
 
+// Captured at module scope, BEFORE any beforeEach can clear the spy — an
+// import-time read of the supervisor has to be visible here or nowhere.
+const managerReadsAtImport = getSidecarStatus.mock.calls.length;
+const listenersAtImport = statusListeners.length;
+
 describe('sidecarStatusStore', () => {
   beforeEach(() => {
     useSidecarStatusStore.setState({ status: 'stopped', waiting: {} });
@@ -31,8 +36,9 @@ describe('sidecarStatusStore', () => {
   it('does not subscribe to the supervisor at import time (ruling R1)', () => {
     // Importing the module must not touch sidecarManager — suites that mock it
     // with only the members they use would otherwise crash on import.
+    expect(listenersAtImport).toBe(0);
+    expect(managerReadsAtImport).toBe(0);
     expect(statusListeners).toHaveLength(0);
-    expect(getSidecarStatus).not.toHaveBeenCalled();
   });
 
   it('ensureSidecarStatusProjection seeds the current status and is idempotent', () => {

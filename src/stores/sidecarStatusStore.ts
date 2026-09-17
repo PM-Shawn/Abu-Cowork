@@ -30,6 +30,9 @@ export const useSidecarStatusStore = create<SidecarStatusState>()((set) => ({
     return { waiting: next };
   }),
   reconnect: () => {
+    // Attach the projection first: a reconnect pressed from a surface that
+    // never called ensure…() must still see the resulting transitions.
+    ensureSidecarStatusProjection();
     // startSidecar() never throws and is idempotent while already active.
     void startSidecar();
   },

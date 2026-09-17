@@ -317,6 +317,64 @@ describe('conversationStorage', () => {
       expect(loaded[0].content).toBe('seed message');
       expect(loaded[1].content).toBe('fallback hello');
     });
+
+    it('#549: Electron appends a >8 MiB line through the raw-body form and reloads it', async () => {
+      (globalThis as { __ABU_SHELL__?: unknown }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+      try {
+        const writes: Array<{ cmd: string; path: string; bytes: number; headerKeys: string[] }> = [];
+        const plainTextWrites: string[] = [];
+        const baseImpl = (invoke as ReturnType<typeof vi.fn>).getMockImplementation();
+        (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+          cmd: string,
+          args?: unknown,
+          options?: { headers?: Record<string, string> },
+        ) => {
+          if (cmd !== 'append_file_text' && cmd !== 'atomic_write_text') return baseImpl?.(cmd, args, options);
+          if (!(args instanceof Uint8Array)) {
+            plainTextWrites.push(cmd);
+            throw new Error('plain form must not be used in the Electron renderer');
+          }
+          const path = decodeURIComponent(options!.headers!.path);
+          writes.push({ cmd, path, bytes: args.byteLength, headerKeys: Object.keys(options!.headers!) });
+          const text = new TextDecoder().decode(args);
+          const previous = cmd === 'append_file_text' ? memFs.files.get(path) ?? '' : '';
+          memFs.files.set(path, previous + text);
+          return undefined;
+        });
+        const big = '中'.repeat(3 * 1024 * 1024);
+        await storage.appendMessage('conv-big', makeMsg({ id: 'big-1', content: big }));
+        await storage.flushWrites();
+        expect(plainTextWrites).toEqual([]);
+        const ledgerWrite = writes.find((w) => w.cmd === 'append_file_text' && w.path.includes('conv-big'));
+        expect(ledgerWrite?.path.endsWith('messages.jsonl')).toBe(true);
+        expect(ledgerWrite?.bytes).toBeGreaterThan(8 * 1024 * 1024);
+        expect(writes.every((w) => w.headerKeys.join() === 'path')).toBe(true);
+        const loaded = await storage.loadMessages('conv-big');
+        expect(loaded.find((m) => m.id === 'big-1')?.content).toBe(big);
+      } finally {
+        delete (globalThis as { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
+      }
+    });
+
+    it('#549: an oversize native append rejects appendMessage and never falls back to a full-file rewrite', async () => {
+      const calls: Array<{ cmd: string; path: string }> = [];
+      const baseImpl = (invoke as ReturnType<typeof vi.fn>).getMockImplementation();
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string, args?: { path?: string }) => {
+        calls.push({ cmd, path: String(args?.path ?? '') });
+        if (cmd === 'append_file_text') {
+          throw new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"append_file_text"}');
+        }
+        return baseImpl?.(cmd, args);
+      });
+      // R8: drainAll uses allSettled and flushWrites never rejects, so the
+      // failure must surface on appendMessage itself.
+      const err = await storage.appendMessage('conv-over', makeMsg({ id: 'o-1', content: 'x' })).catch((e: unknown) => e);
+      expect(err).toMatchObject({ name: 'PayloadTooLargeError', code: 'payload_too_large', bytes: 9, limit: 8 });
+      await expect(storage.flushWrites()).resolves.toBeUndefined();
+      expect(calls.filter((c) => c.cmd === 'append_file_text' && c.path.includes('conv-over'))).toHaveLength(1);
+      expect(calls.filter((c) => c.cmd === 'atomic_write_text' && c.path.includes('conv-over'))).toHaveLength(0);
+      expect(memFs.files.has(calls.find((c) => c.cmd === 'append_file_text')!.path)).toBe(false);
+    });
   });
 
   describe('SQLite catalog write-through (message-storage P0)', () => {

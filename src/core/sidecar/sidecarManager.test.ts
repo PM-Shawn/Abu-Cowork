@@ -32,6 +32,7 @@ import {
   __resetForTests,
 } from './sidecarManager';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { IPC_MAX_RAW_BODY_BYTES, PayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import type { EnterpriseBinding } from '@/core/enterprise/types';
 
 type EventPayload = { payload: string };
@@ -66,6 +67,13 @@ function spawnCallCount(): number {
 
 function killCallCount(): number {
   return invoke.mock.calls.filter((c) => c[0] === 'mcp_kill').length;
+}
+
+/** Decode the JSON-RPC line of an mcp_write call in either wire form (#549). */
+function sentMessage(call: unknown): string {
+  const args = (call as unknown[] | undefined)?.[1];
+  if (args instanceof Uint8Array) return new TextDecoder().decode(args);
+  return (args as { message: string }).message;
 }
 
 /** Wire up default happy-path mocks: spawn/kill/write all resolve, listen captures callbacks. */
@@ -118,7 +126,7 @@ describe('sidecarManager', () => {
 
       const entitlementWrites = () => invoke.mock.calls
         .filter((call) => call[0] === 'mcp_write')
-        .map((call) => JSON.parse((call as [string, { message: string }])[1].message) as { method?: string; params?: unknown })
+        .map((call) => JSON.parse(sentMessage(call)) as { method?: string; params?: unknown })
         .filter((message) => message.method === 'state.enterpriseEntitlement');
 
       expect(entitlementWrites()).toContainEqual(expect.objectContaining({
@@ -240,7 +248,7 @@ describe('sidecarManager', () => {
 
       const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
       expect(writeCall).toBeDefined();
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as {
+      const sent = JSON.parse(sentMessage(writeCall)) as {
         id: number;
         method: string;
       };
@@ -275,7 +283,7 @@ describe('sidecarManager', () => {
       expect(settled).toBe(false);
 
       const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      const sent = JSON.parse(sentMessage(writeCall)) as { id: number };
       emitMsg({ jsonrpc: '2.0', id: sent.id, result: { ok: true } });
       await expect(pending).resolves.toEqual({ ok: true });
     });
@@ -298,7 +306,7 @@ describe('sidecarManager', () => {
       const controller = new AbortController();
       const pending = request('agent.run', { runId: 'run-1' }, 0, controller.signal);
       const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      const sent = JSON.parse(sentMessage(writeCall)) as { id: number };
 
       controller.abort();
       await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
@@ -375,7 +383,7 @@ describe('sidecarManager', () => {
 
       const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
       expect(writeCall).toBeDefined();
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as {
+      const sent = JSON.parse(sentMessage(writeCall)) as {
         id?: number;
         method: string;
         params: unknown;
@@ -463,7 +471,7 @@ describe('sidecarManager', () => {
       const callsBefore = invoke.mock.calls.length;
       const pending = request('echo', { a: 1 }, 2000);
       const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      const sent = JSON.parse(sentMessage(writeCall)) as { id: number };
       emitMsg({ jsonrpc: '2.0', id: sent.id, result: { a: 1 } });
 
       await expect(pending).resolves.toEqual({ a: 1 });
@@ -491,7 +499,7 @@ describe('sidecarManager', () => {
 
       expect(handler).toHaveBeenCalledWith({ toolName: 'read_file' });
       const writeCall = writesAfter(callsBefore)[0];
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as {
+      const sent = JSON.parse(sentMessage(writeCall)) as {
         jsonrpc: string;
         id: string;
         result: unknown;
@@ -515,7 +523,7 @@ describe('sidecarManager', () => {
 
       expect(handler).toHaveBeenCalledTimes(1);
       const sent = JSON.parse(
-        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+        sentMessage(writesAfter(callsBefore)[0]),
       ) as { id: number; result: unknown };
       expect(sent.id).toBe(42);
       expect(sent.result).toBe('numeric-id-result');
@@ -531,7 +539,7 @@ describe('sidecarManager', () => {
       expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
 
       const sent = JSON.parse(
-        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+        sentMessage(writesAfter(callsBefore)[0]),
       ) as { id: string; error: { code: number; message: string } };
       expect(sent.id).toBe('sq-2');
       expect(sent.error.code).toBe(-32601);
@@ -549,7 +557,7 @@ describe('sidecarManager', () => {
       expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
 
       const sent = JSON.parse(
-        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+        sentMessage(writesAfter(callsBefore)[0]),
       ) as { id: string; error: { code: number; message: string; data?: unknown } };
       expect(sent.error.code).toBe(-32000);
       expect(sent.error.message).toBe('handler bug');
@@ -569,7 +577,7 @@ describe('sidecarManager', () => {
       expect(writesAfter(callsBefore).length).toBeGreaterThan(0);
 
       const sent = JSON.parse(
-        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+        sentMessage(writesAfter(callsBefore)[0]),
       ) as { id: string; error: { code: number; message: string; data?: unknown } };
       expect(sent.error.code).toBe(-32001);
       expect(sent.error.message).toBe('bad input');
@@ -591,7 +599,7 @@ describe('sidecarManager', () => {
 
       expect(handler).not.toHaveBeenCalled();
       const sent = JSON.parse(
-        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+        sentMessage(writesAfter(callsBefore)[0]),
       ) as { error: { code: number } };
       expect(sent.error.code).toBe(-32601);
     });
@@ -614,7 +622,7 @@ describe('sidecarManager', () => {
       expect(first).not.toHaveBeenCalled();
       expect(second).toHaveBeenCalledTimes(1);
       const sent = JSON.parse(
-        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+        sentMessage(writesAfter(callsBefore)[0]),
       ) as { result: unknown };
       expect(sent.result).toBe('second');
     });
@@ -630,7 +638,7 @@ describe('sidecarManager', () => {
       // Our own outbound request mints a NUMERIC id.
       const pending = request('echo', { x: 1 }, 2000);
       const sent = JSON.parse(
-        (writesAfter(callsBefore)[0] as [string, { message: string }])[1].message,
+        sentMessage(writesAfter(callsBefore)[0]),
       ) as { id: number };
       expect(typeof sent.id).toBe('number');
 
@@ -947,7 +955,7 @@ describe('sidecarManager', () => {
       const callsBefore = invoke.mock.calls.length;
       const pending = request('echo', { via: 'dedicated' }, 2_000);
       const writeCall = invoke.mock.calls.slice(callsBefore).find((call) => call[0] === 'mcp_write');
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      const sent = JSON.parse(sentMessage(writeCall)) as { id: number };
       dedicatedHandler?.({
         type: 'message',
         payload: JSON.stringify({ jsonrpc: '2.0', id: sent.id, result: { ok: true } }),
@@ -995,7 +1003,7 @@ describe('sidecarManager', () => {
       const callsBefore = invoke.mock.calls.length;
       const pending = request('echo', { via: 'replay' }, 2_000);
       const writeCall = invoke.mock.calls.slice(callsBefore).find((call) => call[0] === 'mcp_write');
-      const sent = JSON.parse((writeCall as [string, { message: string }])[1].message) as { id: number };
+      const sent = JSON.parse(sentMessage(writeCall)) as { id: number };
       getSidecarBridgeSnapshot.mockResolvedValue({
         version: 1,
         sidecarId: 'abu-sidecar',
@@ -1114,7 +1122,7 @@ describe('sidecarManager', () => {
         .slice(writeCallsBefore)
         .filter((c) => {
           try {
-            const msg = JSON.parse((c[1] as { message: string }).message) as { method?: string };
+            const msg = JSON.parse(sentMessage(c)) as { method?: string };
             return msg.method === 'ping';
           } catch {
             return false;
@@ -1131,6 +1139,172 @@ describe('sidecarManager', () => {
 
       expect(spawnCallCount()).toBe(spawnsBefore + 1);
       expect(getSidecarStatus()).toBe('running');
+    });
+
+    type ShellEvent = { type: 'message' | 'error' | 'close' | 'hung'; payload: string; sequence: number; generation: number };
+    type RawWrite = [string, Uint8Array, { headers: Record<string, string> }];
+
+    /** Simulate the Electron renderer (preload marker) and capture the dedicated sidecar channel. */
+    function enterElectronShell(): { deliver: (payload: unknown) => void } {
+      let handler: ((event: ShellEvent) => void) | undefined;
+      let sequence = 0;
+      (window as Window & { __ABU_SHELL__?: unknown }).__ABU_SHELL__ = {
+        mainSupervisesSidecar: true,
+        subscribeSidecarEvents: (h: (event: ShellEvent) => void) => {
+          handler = h;
+          return () => {};
+        },
+      };
+      return {
+        deliver: (payload) => handler?.({
+          type: 'message', payload: JSON.stringify(payload), sequence: ++sequence, generation: 1,
+        }),
+      };
+    }
+
+    function rawWritesAfter(callsBefore: number): RawWrite[] {
+      return invoke.mock.calls.slice(callsBefore).filter((c) => c[0] === 'mcp_write') as RawWrite[];
+    }
+
+    it('#549: Electron sends requests as raw UTF-8 bytes with routing headers', async () => {
+      const shell = enterElectronShell();
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+      const pending = request('agent.start', {
+        runId: 'run-7', clientMessageId: 'msg-7', payloadDigest: 'd7', userMessage: '中',
+      }, 1000);
+      const [call] = rawWritesAfter(callsBefore);
+      expect(call[1]).toBeInstanceOf(Uint8Array);
+      expect(call[2]).toEqual({ headers: expect.any(Object) });
+      const line = JSON.parse(sentMessage(call)) as { id: number; method: string; params: { userMessage: string } };
+      expect(line).toMatchObject({ method: 'agent.start', params: { userMessage: '中' } });
+      expect(call[2].headers).toEqual({
+        id: 'abu-sidecar',
+        method: 'agent.start',
+        rpcId: String(line.id),
+        runId: 'run-7',
+        clientMessageId: 'msg-7',
+        payloadDigest: 'd7',
+      });
+      shell.deliver({ jsonrpc: '2.0', id: line.id, result: { accepted: true } });
+      await expect(pending).resolves.toEqual({ accepted: true });
+    });
+
+    it('#549: request() encodes the JSON-RPC line once and sends that same buffer', async () => {
+      enterElectronShell();
+      mockHappyPath();
+      await startSidecar();
+      traceRuntimeEvent.mockClear();
+      const encodeSpy = vi.spyOn(TextEncoder.prototype, 'encode');
+      try {
+        const callsBefore = invoke.mock.calls.length;
+        void request('agent.run', { runId: 'run-e', note: '中文' }, 1000).catch(() => {});
+        expect(encodeSpy).toHaveBeenCalledTimes(1);
+        const sentBuffer = encodeSpy.mock.results[0].value as Uint8Array;
+        expect(rawWritesAfter(callsBefore)[0][1]).toBe(sentBuffer);
+        await vi.advanceTimersByTimeAsync(0);
+        const event = traceRuntimeEvent.mock.calls.find((c) => c[0] === 'renderer.sidecar_rpc_sent')?.[1] as Record<string, unknown>;
+        expect(event.payloadBytes).toBe(sentBuffer.byteLength);
+      } finally {
+        encodeSpy.mockRestore();
+      }
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    it('#549: an oversize request rejects with PayloadTooLargeError and records a numbers-only breakdown', async () => {
+      enterElectronShell();
+      mockHappyPath();
+      await startSidecar();
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'mcp_write') {
+          throw new Error('payload_too_large {"code":"payload_too_large","bytes":500,"limit":400,"method":"mcp_write"}');
+        }
+        return undefined;
+      });
+      const err = await request(
+        'agent.start',
+        { runId: 'r', conversationSnapshot: { messages: [{ role: 'user', content: 'secret words' }] } },
+        1000,
+      ).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PayloadTooLargeError);
+      expect(err).toMatchObject({ name: 'PayloadTooLargeError', method: 'agent.start', bytes: 500, limit: 400 });
+      const event = traceRuntimeEvent.mock.calls.find((c) => c[0] === 'renderer.sidecar_rpc_payload_too_large')?.[1] as Record<string, unknown>;
+      expect(event).toMatchObject({
+        method: 'agent.start',
+        runId: 'r',
+        payloadBytes: 500,
+        limitBytes: 400,
+        outcome: 'error',
+        errorType: 'payload_too_large',
+        fieldMessagesTextBytes: 12,
+      });
+      expect(JSON.stringify(event)).not.toContain('secret');
+      expect(JSON.stringify(traceRuntimeEvent.mock.calls)).not.toContain('secret');
+    });
+
+    it('#549: a request over 128 MiB is refused before it reaches the IPC boundary', async () => {
+      enterElectronShell();
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+      const huge = 'x'.repeat(IPC_MAX_RAW_BODY_BYTES);
+      const err = await request('llm.chat', { callId: 'c', text: huge }, 0).catch((e: unknown) => e);
+      expect(err).toMatchObject({ name: 'PayloadTooLargeError', method: 'llm.chat', limit: IPC_MAX_RAW_BODY_BYTES });
+      expect(rawWritesAfter(callsBefore)).toHaveLength(0);
+    });
+
+    it('#549: notifications and responses to sidecar requests use the raw form too', async () => {
+      const shell = enterElectronShell();
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+
+      notifySidecar('llm.abort', { callId: 'c1' });
+      onSidecarRequest('tool.invoke', async () => ({ ok: true, text: '中'.repeat(4) }));
+      shell.deliver({ jsonrpc: '2.0', id: 'sq-9', method: 'tool.invoke', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const [notify, response] = rawWritesAfter(callsBefore);
+      expect(notify[1]).toBeInstanceOf(Uint8Array);
+      expect(notify[2].headers).toEqual({ id: 'abu-sidecar', method: 'llm.abort' });
+      expect(JSON.parse(sentMessage(notify))).toEqual({ jsonrpc: '2.0', method: 'llm.abort', params: { callId: 'c1' } });
+      expect(response[1]).toBeInstanceOf(Uint8Array);
+      expect(response[2].headers).toEqual({ id: 'abu-sidecar' });
+      expect(JSON.parse(sentMessage(response))).toEqual({ jsonrpc: '2.0', id: 'sq-9', result: { ok: true, text: '中中中中' } });
+    });
+  });
+
+  describe('#549 tracer failures never strand a request', () => {
+    it('a throwing tracer on the send-failure path still rejects an untimed llm.chat and clears it', async () => {
+      mockHappyPath();
+      await startSidecar();
+      traceRuntimeEvent.mockImplementation((name: string) => {
+        if (name === 'renderer.sidecar_rpc_sent') throw new Error('tracer exploded');
+      });
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'mcp_write') throw new Error('no live process');
+        return undefined;
+      });
+      const pending = request('llm.chat', { callId: 'c-untimed' }, 0);
+      await expect(pending).rejects.toThrow('no live process');
+      // A late response for the (already rejected) id is ignored.
+      expect(() => emitMsg({ jsonrpc: '2.0', id: 999, result: {} })).not.toThrow();
+    });
+
+    it('a throwing tracer on the success path neither rejects nor leaks an unhandled rejection', async () => {
+      mockHappyPath();
+      await startSidecar();
+      traceRuntimeEvent.mockImplementation((name: string) => {
+        if (name === 'renderer.sidecar_rpc_sent') throw new Error('tracer exploded');
+      });
+      const callsBefore = invoke.mock.calls.length;
+      const pending = request('llm.chat', { callId: 'c-ok' }, 0);
+      await vi.advanceTimersByTimeAsync(0);
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
+      const sent = JSON.parse(sentMessage(writeCall)) as { id: number };
+      emitMsg({ jsonrpc: '2.0', id: sent.id, result: { done: true } });
+      await expect(pending).resolves.toEqual({ done: true });
     });
   });
 

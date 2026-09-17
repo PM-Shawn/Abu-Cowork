@@ -130,6 +130,8 @@ import {
 import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtimeTrace';
 import { FIELD_BREAKDOWN_MIN_BYTES, MEASURED_RPC_METHODS, measurePayloadFields } from '@/core/ipc/payloadFieldSizes';
 import { reportError } from '@/utils/consoleError';
+import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
+import { parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 
 const logger = createLogger('sidecar');
 
@@ -361,6 +363,43 @@ function stringParam(params: unknown, key: string): string | undefined {
   return typeof value === 'string' && value.length <= 256 ? value : undefined;
 }
 
+const ROUTING_META_KEYS = ['runId', 'clientMessageId', 'payloadDigest'] as const;
+
+/**
+ * #549: diagnostic `mcp_write` headers for the raw-body form. They come from
+ * the same message as the body, so main-process observability sees exactly
+ * what the line carries; `invokeTextCommand` drops any value the main header
+ * schema would refuse.
+ */
+function routingMeta(method: string, rpcId: number | undefined, params: unknown): Record<string, string> {
+  const meta: Record<string, string> = { method };
+  if (rpcId !== undefined) meta.rpcId = String(rpcId);
+  for (const key of ROUTING_META_KEYS) {
+    const value = stringParam(params, key);
+    if (value) meta[key] = value;
+  }
+  return meta;
+}
+
+/** Write one JSON-RPC line to the sidecar's stdin (raw body in Electron, #549). */
+function sendSidecarLine(
+  method: string,
+  payload: string,
+  meta: Record<string, string>,
+  encoded?: Uint8Array,
+): Promise<void> {
+  return invokeTextCommand('mcp_write', { id: SIDECAR_ID }, payload, { method, meta, encoded });
+}
+
+/** Diagnostics must never change request settlement (#549 Task 1 review). */
+function traceSafely(emit: () => void): void {
+  try {
+    emit();
+  } catch (err) {
+    logger.warn('Sidecar RPC trace failed', { error: runtimeErrorType(err) });
+  }
+}
+
 /**
  * #549 step 0: record how many bytes a growing RPC put on the wire (numbers
  * only; a per-field breakdown once the payload reaches 1 MiB). Called after the
@@ -444,16 +483,35 @@ export function request(
 
     pendingRequests.set(id, { resolve, reject, timer, cleanupAbort });
 
-    invoke('mcp_write', { id: SIDECAR_ID, message: payload }).then(() => {
-      traceRpcSent(method, id, params, encoded.byteLength);
+    sendSidecarLine(method, payload, routingMeta(method, id, params), encoded).then(() => {
+      traceSafely(() => traceRpcSent(method, id, params, encoded.byteLength));
     }, (err: unknown) => {
-      traceRpcSent(method, id, params, encoded.byteLength, err ?? new Error('mcp_write failed'));
+      // Settle first: a throwing tracer must never strand a request (llm.chat
+      // has no timeout).
       const entry = pendingRequests.get(id);
       if (entry) {
         if (entry.timer) clearTimeout(entry.timer);
         pendingRequests.delete(id);
         entry.cleanupAbort?.();
       }
+      const tooLarge = parsePayloadTooLargeError(err, method);
+      if (tooLarge) {
+        // Oversize is its own terminal event (numbers only, full breakdown);
+        // it replaces renderer.sidecar_rpc_sent for this request.
+        traceSafely(() => traceRuntimeEvent('renderer.sidecar_rpc_payload_too_large', {
+          method,
+          rpcId: String(id),
+          runId: stringParam(params, 'runId'),
+          payloadBytes: tooLarge.bytes,
+          limitBytes: tooLarge.limit,
+          outcome: 'error',
+          errorType: 'payload_too_large',
+          ...measurePayloadFields(params),
+        }));
+        reject(tooLarge);
+        return;
+      }
+      traceSafely(() => traceRpcSent(method, id, params, encoded.byteLength, err ?? new Error('mcp_write failed')));
       reject(err instanceof Error ? err : new Error(String(err)));
     });
   });
@@ -466,7 +524,7 @@ export function request(
  */
 export function notifySidecar(method: string, params: unknown): void {
   const payload = JSON.stringify({ jsonrpc: '2.0', method, params });
-  invoke('mcp_write', { id: SIDECAR_ID, message: payload }).catch((err: unknown) => {
+  sendSidecarLine(method, payload, { method }).catch((err: unknown) => {
     logger.warn('Sidecar notify failed', {
       method,
       error: err instanceof Error ? err.message : String(err),
@@ -1058,7 +1116,7 @@ async function handleIncomingRequest(
 /** Write one JSON-RPC message (a response to an incoming sidecar request) back over the pipe. Fail-soft — logs, never throws. */
 async function writeRpcMessage(payload: unknown): Promise<void> {
   try {
-    await invoke('mcp_write', { id: SIDECAR_ID, message: JSON.stringify(payload) });
+    await sendSidecarLine('rpc.response', JSON.stringify(payload), {});
   } catch (err) {
     logger.warn('Failed to write response to an incoming sidecar request', {
       error: err instanceof Error ? err.message : String(err),

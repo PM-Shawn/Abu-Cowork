@@ -45,6 +45,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
+import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
+import { isPayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import { foldMessageLog, createLedgerEvent, LEDGER_KIND_PUT, type LedgerLine } from './messageLedger';
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
 import type { Message, MessageContent, SandboxRecoveryAction, ToolCall, ToolCallForContext, ToolResultContent } from '@/types';
@@ -365,11 +367,14 @@ async function appendToFile(filePath: string, rawData: string): Promise<void> {
   return withFileLock(filePath, async () => {
     const data = await repairTornTail(filePath, rawData);
     try {
-      // Native O(1) append (Part B1). Falls back to read+atomic-rewrite below
-      // if the command is unavailable or fails.
-      await invoke('append_file_text', { path: filePath, data });
+      // Native O(1) append (Part B1) — raw-body in Electron (#549). Falls back
+      // to read+atomic-rewrite below if the command is unavailable or fails.
+      await invokeTextCommand('append_file_text', { path: filePath }, data);
       return;
-    } catch {
+    } catch (err) {
+      // An oversize line can never be written by rewriting the whole file
+      // (that body is even larger) — surface it instead (#549 M2).
+      if (isPayloadTooLargeError(err)) throw err;
       // Fall through to the read + atomic-write path. NOTE: this fallback is not
       // idempotent — if the native append durably wrote `data` but its promise
       // still rejected (IPC teardown / shutdown race), we re-append the same

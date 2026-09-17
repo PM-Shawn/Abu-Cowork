@@ -187,6 +187,7 @@ vi.mock('@/i18n', () => ({
 // ── Import after mocks ──
 
 import { imChannelRouter } from './channelRouter';
+import { sessionMapper } from './sessionMapper';
 
 // Access private methods via type cast for testing
 type RouterInternal = {
@@ -1045,6 +1046,64 @@ describe('IMChannelRouter', () => {
       expect(mockSetChannelStatus).toHaveBeenLastCalledWith('ch1', 'connected');
     });
 
+    /**
+     * The same three endings, but on a LATER turn of the same session.
+     *
+     * An IM session reuses one conversation, so a conversation-wide "last
+     * assistant message" lookup finds the previous turn's answer, skips the
+     * failure reply, and re-sends that stale answer to the new question —
+     * and `payload_too_large` only ever happens in a long conversation, so
+     * that reply would never have fired at all.
+     */
+    function seedSessionWithEarlierAnswer(convId: string, earlierAnswer: string): void {
+      mockConversations[convId] = { messages: [{ role: 'assistant', content: earlierAnswer }] };
+      vi.mocked(sessionMapper.resolve).mockReturnValueOnce({
+        session: {
+          key: 'test:chat1:window',
+          channelId: 'ch1',
+          conversationId: convId,
+          lastActiveAt: FIXED_TIMESTAMP,
+          messageCount: 2,
+          userId: 'u1',
+          userName: '张三',
+          capability: 'safe_tools',
+          platform: 'dingtalk',
+          chatId: 'chat1',
+        },
+        isNew: false,
+        isRecovered: false,
+      } as never);
+    }
+
+    it.each([
+      [
+        'payload_too_large',
+        { stopReason: 'payload_too_large' as const, error: 'x' },
+        '这段对话太长，无法继续。请发送「新对话」开启新对话后再问一次。',
+      ],
+      [
+        'sidecar_unavailable',
+        { stopReason: 'sidecar_unavailable' as const, error: 'x' },
+        '阿布的后台服务暂时不可用，请稍后再试。',
+      ],
+      [
+        'dispatch_failed',
+        { error: '发送失败' },
+        'Abu 处理出错: 发送失败',
+      ],
+    ])('#549: %s on a later turn answers the new question, not the old one', async (name, ending, reply) => {
+      const convId = `conv-earlier-${name}`;
+      seedSessionWithEarlierAnswer(convId, '上一轮的回答');
+      mockRunAgentLoop.mockResolvedValue({ reason: 'error', messageTaken: true, ...ending });
+      mockSendFinal.mockClear();
+
+      await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
+
+      const contents = mockSendFinal.mock.calls.map((c) => (c[1] as { content: string }).content);
+      expect(contents).toContain(reply);
+      expect(contents.some((c) => c.includes('上一轮的回答'))).toBe(false);
+    });
+
     it('#549: an error that still produced an answer delivers the answer', async () => {
       mockRunAgentLoop.mockImplementation(async (convId: string) => {
         mockConversations[convId]?.messages.push({ role: 'assistant', content: 'partial answer' });
@@ -1057,6 +1116,21 @@ describe('IMChannelRouter', () => {
       const contents = mockSendFinal.mock.calls.map((c) => (c[1] as { content: string }).content);
       expect(contents).toContain('partial answer');
       expect(contents.some((c) => c.includes('Abu 处理出错'))).toBe(false);
+    });
+
+    it('#549: a later turn still delivers the answer that turn produced', async () => {
+      seedSessionWithEarlierAnswer('conv-earlier-ok', '上一轮的回答');
+      mockRunAgentLoop.mockImplementation(async (convId: string) => {
+        mockConversations[convId]?.messages.push({ role: 'assistant', content: '这一轮的回答' });
+        return { reason: 'completed' };
+      });
+      mockSendFinal.mockClear();
+
+      await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
+
+      const contents = mockSendFinal.mock.calls.map((c) => (c[1] as { content: string }).content);
+      expect(contents).toContain('这一轮的回答');
+      expect(contents.some((c) => c.includes('上一轮的回答'))).toBe(false);
     });
   });
 });

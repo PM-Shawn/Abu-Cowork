@@ -139,7 +139,7 @@ export async function handleWatchTrigger(rule: FileWatchRule, filePath: string) 
       // log (#549). A run that failed before the sidecar accepted it wrote
       // nothing here at all, so the rule just looked like it never fired.
       useChatStore.getState().addMessage(conversationId, {
-        id: `watch-failed-${Date.now().toString(36)}`,
+        id: `watch-failed-${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`,
         role: 'assistant',
         content: format(getI18n().chat.automationRunFailed, { error: result.error ?? result.reason }),
         timestamp: Date.now(),

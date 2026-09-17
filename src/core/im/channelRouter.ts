@@ -10,7 +10,7 @@
 
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
-import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
+import { runAgentLoopDispatched, type AgentLoopDispatchResult } from '../agent/agentLoopRunner';
 import { buildIMRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { createAuthorizationScope, disposeAuthorizationScope, scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import type { NormalizedIMMessage } from './inboundRouter';
@@ -101,6 +101,27 @@ function mergeInboundMessages(
     text: [buffered.text.trim(), next.text.trim()].filter(Boolean).join('\n') || next.text,
     images: [...(buffered.images ?? []), ...(next.images ?? [])],
   };
+}
+
+/** Longest error text a reply quotes back; the rest is in the desktop log. */
+const MAX_ERROR_REPLY_CHARS = 100;
+
+function truncateForReply(error: string): string {
+  return error.length > MAX_ERROR_REPLY_CHARS
+    ? error.slice(0, MAX_ERROR_REPLY_CHARS) + '...'
+    : error;
+}
+
+/**
+ * What the sender is told when a run ended in error without producing an
+ * answer (#549). The two pre-accept endings have their own copy because the
+ * sender can act on them: start a new conversation, or wait and retry.
+ */
+function failureReplyFor(result: AgentLoopDispatchResult): string {
+  const t = getI18n().imChannel;
+  if (result.stopReason === 'payload_too_large') return t.runPayloadTooLarge;
+  if (result.stopReason === 'sidecar_unavailable') return t.runServiceUnavailable;
+  return format(t.errorReply, { error: truncateForReply(result.error ?? result.reason) });
 }
 
 class IMChannelRouter {
@@ -553,6 +574,11 @@ class IMChannelRouter {
         }
         return granted;
       };
+      // Where this run's own messages begin. An IM session reuses one
+      // conversation across turns (sessionMapper), so without this boundary
+      // "the last assistant message" is the PREVIOUS turn's answer whenever
+      // this run produces none (#549).
+      const priorMessageCount = this.conversationMessageCount(session.conversationId);
       let ownedAbortController: AbortController | undefined;
       const dispatchResult = await this.runWithTimeout(
         runAgentLoopDispatched(session.conversationId, userText, {
@@ -598,18 +624,13 @@ class IMChannelRouter {
       );
 
       // 5. Extract and send reply
-      const lastAIContent = this.extractLastAIReply(session.conversationId);
+      const lastAIContent = this.extractLastAIReply(session.conversationId, priorMessageCount);
 
       // #549: a run that failed before the sidecar accepted it wrote no
       // assistant message, so there is nothing to extract. Say what happened —
       // silence in a chat is indistinguishable from the bot being offline.
       if (!lastAIContent && dispatchResult.reason === 'error') {
-        const t = getI18n().imChannel;
-        const content = dispatchResult.stopReason === 'payload_too_large'
-          ? t.runPayloadTooLarge
-          : dispatchResult.stopReason === 'sidecar_unavailable'
-            ? t.runServiceUnavailable
-            : format(t.errorReply, { error: dispatchResult.error ?? dispatchResult.reason });
+        const content = failureReplyFor(dispatchResult);
         const failureReply = await sendFinal(replyHandle, { content });
         if (!failureReply.success) {
           console.warn(`[IMChannel] Failure reply send failed: ${failureReply.error}`);
@@ -617,7 +638,11 @@ class IMChannelRouter {
         // Only an unreachable backend is a channel-level fault. The other
         // endings belong to this one run; the channel itself still works.
         if (dispatchResult.stopReason === 'sidecar_unavailable') {
-          useIMChannelStore.getState().setChannelStatus(channel.id, 'error', t.runServiceUnavailable);
+          useIMChannelStore.getState().setChannelStatus(
+            channel.id,
+            'error',
+            getI18n().imChannel.runServiceUnavailable,
+          );
         } else {
           useIMChannelStore.getState().setChannelStatus(channel.id, 'connected');
         }
@@ -761,9 +786,8 @@ class IMChannelRouter {
    * Best-effort: try to notify the user that an error occurred.
    */
   private async sendErrorReply(message: NormalizedIMMessage, error: string) {
-    const truncated = error.length > 100 ? error.slice(0, 100) + '...' : error;
     const errorMessage: AbuMessage = {
-      content: format(getI18n().imChannel.errorReply, { error: truncated }),
+      content: format(getI18n().imChannel.errorReply, { error: truncateForReply(error) }),
     };
     const handle = { platform: message.platform, supportsUpdate: false, replyContext: message.replyContext };
     await sendFinal(handle, errorMessage);
@@ -827,11 +851,25 @@ class IMChannelRouter {
     }
   }
 
-  private extractLastAIReply(conversationId: string): string | null {
+  private conversationMessageCount(conversationId: string): number {
+    return useChatStore.getState().conversations[conversationId]?.messages.length ?? 0;
+  }
+
+  /**
+   * The assistant answer produced from `sinceIndex` onward — i.e. this run's
+   * own answer, given the message count taken before it started.
+   *
+   * The window matters because an IM session reuses one conversation across
+   * turns: scanning the whole conversation would hand back the previous
+   * turn's answer for a run that produced nothing, re-sending a stale reply
+   * to a new question and hiding the failure (#549).
+   */
+  private extractLastAIReply(conversationId: string, sinceIndex: number): string | null {
     const conv = useChatStore.getState().conversations[conversationId];
     if (!conv) return null;
 
-    const lastAI = [...conv.messages].reverse().find((m) => m.role === 'assistant');
+    // slice() already copies, so reverse() cannot touch the store's array.
+    const lastAI = conv.messages.slice(sinceIndex).reverse().find((m) => m.role === 'assistant');
     if (!lastAI) return null;
 
     if (typeof lastAI.content === 'string') return lastAI.content;

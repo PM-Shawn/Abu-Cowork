@@ -125,6 +125,9 @@ describe('handleWatchTrigger background authorization', () => {
     await handleWatchTrigger({ ...rule, id: 'watch-failed-note' }, `${rule.path}/a.txt`);
 
     expect(addMessageMock).toHaveBeenCalledWith('watch-conversation-1', expect.objectContaining({
+      // Prefix only: the id carries a random suffix so two failures in the
+      // same millisecond cannot collide.
+      id: expect.stringMatching(/^watch-failed-/),
       role: 'assistant',
       content: 'failed: 这段对话太长',
       isSystem: true,

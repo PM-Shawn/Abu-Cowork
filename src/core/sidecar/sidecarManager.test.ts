@@ -1354,6 +1354,51 @@ describe('sidecarManager', () => {
       }));
     });
 
+    it('answers with a small error when the handler-thrown error is itself too large to deliver', async () => {
+      mockHappyPath();
+      await startSidecar();
+      // A handler error whose own message is oversize — the -32000 the shell
+      // would normally send is refused by the boundary. The sidecar must still
+      // get an answer: on the unbounded tool.invoke, nothing means a hang.
+      const hugeMessage = 'h'.repeat(64);
+      onSidecarRequest('tool.invoke', vi.fn().mockRejectedValue(new Error(hugeMessage)));
+      const callsBefore = invoke.mock.calls.length;
+      invoke.mockImplementation(async (cmd: string, args: unknown) => {
+        // Stands in for the 128 MiB boundary with an injected small limit:
+        // any line still carrying the handler's message is refused.
+        if (cmd === 'mcp_write' && sentMessage([cmd, args]).includes(hugeMessage)) throw tooLarge();
+        return undefined;
+      });
+
+      emitMsg({ jsonrpc: '2.0', id: 'sq-12', method: 'tool.invoke', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const writes = writtenLines(callsBefore);
+      expect(writes.at(-1)).toMatchObject({
+        id: 'sq-12',
+        error: { code: -32000, data: { code: 'payload_too_large', bytes: 9, limit: 8, method: 'tool.invoke' } },
+      });
+      expect(JSON.stringify(writes.at(-1))).not.toContain(hugeMessage);
+    });
+
+    it('answers with a small error when an oversize -32601 cannot be delivered', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const callsBefore = invoke.mock.calls.length;
+      invoke.mockImplementation(async (cmd: string, args: unknown) => {
+        if (cmd === 'mcp_write' && sentMessage([cmd, args]).includes('Method not found')) throw tooLarge();
+        return undefined;
+      });
+
+      emitMsg({ jsonrpc: '2.0', id: 'sq-13', method: 'never.registered', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(writtenLines(callsBefore).at(-1)).toMatchObject({
+        id: 'sq-13',
+        error: { code: -32000, data: { code: 'payload_too_large', method: 'never.registered' } },
+      });
+    });
+
     it('does not loop when the fallback error cannot be written either', async () => {
       mockHappyPath();
       await startSidecar();
@@ -1367,6 +1412,11 @@ describe('sidecarManager', () => {
       await vi.advanceTimersByTimeAsync(0);
       // The real response, then exactly one fallback attempt. No recursion.
       expect(invoke.mock.calls.slice(callsBefore).filter((c) => c[0] === 'mcp_write')).toHaveLength(2);
+      // Both writes are recorded, and the second says the sidecar got nothing.
+      const stages = traceRuntimeEvent.mock.calls
+        .filter((c) => c[0] === 'renderer.sidecar_response_write_failed')
+        .map((c) => (c[1] as { stage?: string }).stage);
+      expect(stages).toEqual(['response', 'fallback']);
     });
 
     it('records notify failures and re-pushes registered state on the next send', async () => {

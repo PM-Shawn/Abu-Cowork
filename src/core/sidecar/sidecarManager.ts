@@ -1181,14 +1181,22 @@ async function handleIncomingRequest(
 
 /**
  * Write one JSON-RPC response to an incoming sidecar request. Fail-soft (it
- * never throws) but never silent (#549): if the real response cannot be
- * delivered, the sidecar still gets a small error so its awaiting request
- * settles instead of hanging until its own timeout. The fallback carries
- * numbers and the method name only — never any part of the result.
+ * never throws) but never silent (#549): if the response cannot be delivered,
+ * the sidecar still gets a small error so its awaiting request settles instead
+ * of hanging — on the unbounded `tool.invoke` a missing answer hangs FOREVER,
+ * which is the #549 symptom itself. The fallback carries numbers and the
+ * method name only — never any part of the result or of the handler's error.
+ *
+ * `isFallback` says whether THIS payload is already the small substitute. The
+ * decision is by intent, not by shape: a `-32601` and a handler-thrown `-32000`
+ * both carry `error` yet are ordinary responses whose own body (an arbitrary
+ * `err.message`, arbitrary `SidecarRequestError.data`) can itself be refused as
+ * oversize, and they need the substitute just as much as a result does.
  */
 async function writeRpcMessage(
   payload: { jsonrpc: '2.0'; id: string | number | null; result?: unknown; error?: unknown },
   method: string,
+  isFallback = false,
 ): Promise<void> {
   try {
     await sendSidecarLine(`${method}.response`, JSON.stringify(payload), {});
@@ -1198,6 +1206,9 @@ async function writeRpcMessage(
     traceSafely(() => traceRuntimeEvent('renderer.sidecar_response_write_failed', {
       method,
       rpcId: String(payload.id),
+      // Which write was refused: the real answer, or the small substitute for
+      // it (the latter means the sidecar got NOTHING for this request).
+      stage: isFallback ? 'fallback' : 'response',
       outcome: 'error',
       errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(err),
       ...(tooLarge ? { payloadBytes: tooLarge.bytes, limitBytes: tooLarge.limit } : {}),
@@ -1206,7 +1217,7 @@ async function writeRpcMessage(
       method,
       error: err instanceof Error ? err.message : String(err),
     });
-    if ('error' in payload) return; // already the fallback; don't loop
+    if (isFallback) return; // this WAS the substitute; don't loop
     const error = tooLarge
       ? {
           code: -32000,
@@ -1218,14 +1229,7 @@ async function writeRpcMessage(
           message: `The result of ${method} could not be delivered.`,
           data: { code: 'response_write_failed', method },
         };
-    try {
-      await sendSidecarLine(`${method}.response`, JSON.stringify({ jsonrpc: '2.0', id: payload.id, error }), {});
-    } catch (secondErr) {
-      logger.warn('Failed to write the fallback error response', {
-        method,
-        error: secondErr instanceof Error ? secondErr.message : String(secondErr),
-      });
-    }
+    await writeRpcMessage({ jsonrpc: '2.0', id: payload.id, error }, method, true);
   }
 }
 

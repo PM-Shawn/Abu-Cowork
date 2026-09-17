@@ -19,6 +19,8 @@ export interface RuntimeTraceAttributes {
   limitBytes?: number;
   /** #549 step 0 per-field byte counts (numbers only, never content) — see core/ipc/payloadFieldSizes. */
   fieldMessagesTextBytes?: number;
+  fieldUserMessageBytes?: number;
+  fieldRouteBytes?: number;
   fieldToolResultsBytes?: number;
   fieldToolContextResultsBytes?: number;
   fieldMediaBase64Bytes?: number;
@@ -111,6 +113,8 @@ const SAFE_ATTRIBUTE_KEYS = new Set<keyof RuntimeTraceAttributes>([
   'payloadBytes',
   'limitBytes',
   'fieldMessagesTextBytes',
+  'fieldUserMessageBytes',
+  'fieldRouteBytes',
   'fieldToolResultsBytes',
   'fieldToolContextResultsBytes',
   'fieldMediaBase64Bytes',

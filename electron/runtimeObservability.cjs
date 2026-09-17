@@ -35,6 +35,8 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'payloadBytes',
   'limitBytes',
   'fieldMessagesTextBytes',
+  'fieldUserMessageBytes',
+  'fieldRouteBytes',
   'fieldToolResultsBytes',
   'fieldToolContextResultsBytes',
   'fieldMediaBase64Bytes',

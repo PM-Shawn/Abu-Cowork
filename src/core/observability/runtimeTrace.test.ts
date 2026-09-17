@@ -166,6 +166,8 @@ describe('renderer runtime trace', () => {
       payloadBytes: 2_000_000,
       limitBytes: 134_217_728,
       fieldMessagesTextBytes: 10.4,
+      fieldUserMessageBytes: 7,
+      fieldRouteBytes: 8,
       fieldToolResultsBytes: 1,
       fieldToolContextResultsBytes: 2,
       fieldMediaBase64Bytes: 3,
@@ -179,6 +181,8 @@ describe('renderer runtime trace', () => {
     expect(event).toMatchObject({
       limitBytes: 134_217_728,
       fieldMessagesTextBytes: 10,
+      fieldUserMessageBytes: 7,
+      fieldRouteBytes: 8,
       fieldToolResultsBytes: 1,
       fieldToolContextResultsBytes: 2,
       fieldMediaBase64Bytes: 3,

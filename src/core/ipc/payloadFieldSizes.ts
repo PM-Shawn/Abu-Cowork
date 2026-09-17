@@ -13,6 +13,10 @@ export const MEASURED_RPC_METHODS: ReadonlySet<string> = new Set([
 
 export interface PayloadFieldBytes {
   fieldMessagesTextBytes: number;
+  /** The turn's text again, as the top-level `userMessage` param. */
+  fieldUserMessageBytes: number;
+  /** The route object, whose `cleanInput` is the turn's text a third time. */
+  fieldRouteBytes: number;
   fieldToolResultsBytes: number;
   fieldToolContextResultsBytes: number;
   fieldMediaBase64Bytes: number;
@@ -102,6 +106,8 @@ function messagesOf(params: Record<string, unknown>): unknown[] {
 export function measurePayloadFields(params: unknown): PayloadFieldBytes {
   const out: PayloadFieldBytes = {
     fieldMessagesTextBytes: 0,
+    fieldUserMessageBytes: 0,
+    fieldRouteBytes: 0,
     fieldToolResultsBytes: 0,
     fieldToolContextResultsBytes: 0,
     fieldMediaBase64Bytes: 0,
@@ -120,10 +126,12 @@ export function measurePayloadFields(params: unknown): PayloadFieldBytes {
     const value = params[key];
     if (typeof value === 'string') out.fieldMessagesTextBytes += utf8ByteLength(value);
   }
+  out.fieldUserMessageBytes = textBytes(params.userMessage);
   out.fieldMediaBase64Bytes = base64Bytes(params);
   const options = isRecord(params.options) ? params.options : undefined;
   out.fieldToolListBytes = jsonBytes(params.toolList ?? params.tools ?? options?.tools);
   const orchestration = isRecord(params.orchestration) ? params.orchestration : undefined;
+  out.fieldRouteBytes = jsonBytes(orchestration?.route);
   out.fieldSystemPromptBytes = jsonBytes(orchestration?.systemPromptSections ?? options?.systemPrompt);
   out.fieldSettingsBytes = jsonBytes(params.settingsSnapshot);
   return out;

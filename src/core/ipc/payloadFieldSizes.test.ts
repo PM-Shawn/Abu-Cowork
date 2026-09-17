@@ -42,6 +42,33 @@ describe('measurePayloadFields', () => {
     expect(JSON.stringify(breakdown)).not.toContain('sk-must-not-leak');
   });
 
+  it('counts the two further copies of the user text an agent.start carries', () => {
+    // The turn's text is on the wire three times: in the snapshot message, in
+    // the top-level `userMessage` param, and in the route's clean input. Only
+    // the snapshot copy used to be counted, so a text-heavy turn's breakdown
+    // accounted for about a third of `payloadBytes`.
+    const text = '导出上个月的报表';
+    const route = { type: 'delegate', cleanInput: text, delegateAgent: { name: '研究员' } };
+    const breakdown = measurePayloadFields({
+      runId: 'run-1',
+      userMessage: text,
+      orchestration: { route, systemPromptSections: [] },
+      conversationSnapshot: { messages: [{ role: 'user', content: text }] },
+    });
+
+    expect(breakdown.fieldUserMessageBytes).toBe(utf8ByteLength(text));
+    expect(breakdown.fieldRouteBytes).toBe(utf8ByteLength(JSON.stringify(route)));
+    expect(Object.values(breakdown).every((v) => typeof v === 'number')).toBe(true);
+    expect(JSON.stringify(breakdown)).not.toContain('报表');
+  });
+
+  it('reports zero for the extra copies when the payload has neither', () => {
+    const breakdown = measurePayloadFields({ messages: [{ role: 'user', content: 'hey' }] });
+
+    expect(breakdown.fieldUserMessageBytes).toBe(0);
+    expect(breakdown.fieldRouteBytes).toBe(0);
+  });
+
   it('reads llm.chat and subagent.run shapes', () => {
     const llm = measurePayloadFields({ messages: [{ role: 'user', content: 'hey' }], options: { tools: [{ name: 'x' }], systemPrompt: 'sp' } });
     expect(llm.fieldMessagesTextBytes).toBe(3);

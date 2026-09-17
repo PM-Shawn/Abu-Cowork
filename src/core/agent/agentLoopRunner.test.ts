@@ -5452,6 +5452,60 @@ describe('agentLoopRunner', () => {
       expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({ stage: 'sidecar_unavailable', outcome: 'error' }));
     });
 
+    it('#549: a pre-accept failure leaves queued follow-ups paused, never auto-sent', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      agentStartRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+      runGetStateRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+      dequeueNextUserInputMock.mockReturnValue({ id: 'q1', text: 'queued follow-up', timestamp: 1 });
+      getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'queued follow-up', timestamp: 1 }]);
+
+      const result = await runAgentLoopDispatched('conv-1', 'hello', { initiatedBy: 'user' });
+
+      expect(result.reason).toBe('error');
+      // The user's queue is never drained by a failure: no dequeue, no second
+      // dispatch, and the strip's explicit Resume is the only way forward.
+      expect(dequeueNextUserInputMock).not.toHaveBeenCalled();
+      expect(pauseUserInputQueueMock).toHaveBeenCalledWith('conv-1');
+      // Exactly one user row was appended — the queued text never became a
+      // turn of its own.
+      expect(chatStoreAddMessageMock).toHaveBeenCalledTimes(1);
+      expect(chatStoreAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({ content: 'hello' }));
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+    });
+
+    it('#549: a pre-accept failure with a session releases ownership for the next send', async () => {
+      const { runAgentLoopDispatched, getRunSession } = await importFresh();
+      agentStartRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+      runGetStateRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+
+      const failed = await runAgentLoopDispatched('conv-1', 'hello', { initiatedBy: 'user' });
+      expect(failed.reason).toBe('error');
+
+      // The failing run's session and abort controller must both be gone, or
+      // the next send would be swallowed into a dead run's input queue
+      // instead of starting a real one. (A scoped run stays joinable even
+      // after `terminalPublished`, so unregistering is the real release.)
+      const failedRunId = (chatStoreAddMessageMock.mock.calls[0][1] as { runId: string }).runId;
+      expect(getRunSession(failedRunId)).toBeUndefined();
+      expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1', expect.any(AbortController));
+
+      agentStartRequestMock.mockImplementation((params: { runId: string; clientMessageId: string }) => Promise.resolve({
+        version: 1,
+        runId: params.runId,
+        clientMessageId: params.clientMessageId,
+        acceptedAt: 1,
+        state: 'accepted',
+        replay: false,
+      }));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      const retried = await runAgentLoopDispatched('conv-1', 'hello again', { initiatedBy: 'user' });
+
+      expect(retried.reason).not.toBe('enqueued');
+      expect(retried).toEqual({ reason: 'completed' });
+      expect(enqueueUserInputMock).not.toHaveBeenCalled();
+    });
+
     it('#549: payload_too_large on agent.start gives the oversize copy and kind', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       agentStartRequestMock.mockRejectedValue(new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"agent.start"}'));
@@ -5464,6 +5518,10 @@ describe('agentLoopRunner', () => {
       });
       expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({ stage: 'payload_too_large', errorType: 'payload_too_large' }));
       expect(runAgentLoopMock).not.toHaveBeenCalled();
+      // #549 invariant: exactly one terminal per path. The session-carrying
+      // pre-accept handler must leave finishRuntimeRun to the dispatcher's
+      // own `finally`, never call it a second time itself.
+      expect(finishRuntimeRunMock).toHaveBeenCalledTimes(1);
     });
 
     it('#549: accepted but uncommitted transport failure surfaces the error without an in-process rerun', async () => {
@@ -5866,6 +5924,9 @@ describe('agentLoopRunner', () => {
           errorType: 'sidecar_timeout',
         }));
         expect(runAgentLoopMock).not.toHaveBeenCalled();
+        // #549 invariant: exactly one terminal per path. No RunSession exists
+        // on this path, so the handler itself owns the single call.
+        expect(finishRuntimeRunMock).toHaveBeenCalledTimes(1);
       });
 
       it('Stop while waiting ends as interrupted', async () => {

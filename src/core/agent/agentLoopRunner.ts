@@ -2745,11 +2745,12 @@ async function waitForReattachedTerminal(
  *
  * Throws if `resolveEffectiveLlmCreds` throws (enterprise gateway
  * unavailable — `EnterpriseLlmUnavailableError`) or if the conversation
- * record is missing — the caller (`runAgentLoopDispatched`) treats either
- * as a pre-dispatch failure and falls back to `runAgentLoop` in-process,
- * which hits the identical real error path itself rather than this
- * function duplicating its error-shaping logic (same discipline as
- * subagentRunner.ts's `buildSubagentRunParams`).
+ * record is missing. The caller (`runAgentLoopDispatched`) treats either as
+ * a pre-accept failure (#549): the user row ends `failed` with the reason
+ * from `paramsBuildDisplayMessage` and the existing Retry. Nothing is re-run
+ * in this renderer, so this function still does not duplicate the loop's
+ * error-shaping logic (same discipline as subagentRunner.ts's
+ * `buildSubagentRunParams`).
  *
  * Deliberately does NOT replicate the loop's OWN "no API key configured"
  * early-return gate (`providerRequiresApiKey(settingsForModel) &&

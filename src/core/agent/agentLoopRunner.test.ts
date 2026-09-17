@@ -5429,6 +5429,86 @@ describe('agentLoopRunner', () => {
       expect(runGetStateRequestMock).not.toHaveBeenCalled();
     });
 
+    it('#549: budgets the agent.start acknowledgement from the encoded payload size', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      const budget = (agentStartRequestMock.mock.calls[0] as unknown[])[1] as (encodedBytes: number) => number;
+      expect(typeof budget).toBe('function');
+      const MIB = 1024 * 1024;
+      expect([0, 1, MIB, 8 * MIB, 128 * MIB].map((bytes) => budget(bytes)))
+        .toEqual([3_000, 3_100, 3_100, 3_800, 15_800]);
+    });
+
+    it('#549: replays agent.start on the same size-aware budget', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      agentStartRequestMock
+        .mockRejectedValueOnce(new Error('ACK lost'))
+        .mockImplementationOnce((params: { runId: string; clientMessageId: string }) => Promise.resolve({
+          version: 1,
+          runId: params.runId,
+          clientMessageId: params.clientMessageId,
+          acceptedAt: 2,
+          state: 'accepted',
+          replay: false,
+        }));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(2);
+      const first = (agentStartRequestMock.mock.calls[0] as unknown[])[1];
+      const second = (agentStartRequestMock.mock.calls[1] as unknown[])[1];
+      expect(typeof first).toBe('function');
+      expect(second).toBe(first);
+    });
+
+    it('#549: a 40 MiB agent.start answered after 5 s is accepted, a 1 KiB one is not', async () => {
+      // Stands in for sidecarManager.request: apply the caller's budget to the
+      // encoded size the request carries, then race the reply against it.
+      const answerAfter5s = (encodedBytes: number) =>
+        (params: { runId: string; clientMessageId: string }, budget: unknown) => new Promise((resolve, reject) => {
+          const budgetMs = typeof budget === 'function'
+            ? (budget as (bytes: number) => number)(encodedBytes)
+            : (budget as number);
+          setTimeout(() => resolve({
+            version: 1,
+            runId: params.runId,
+            clientMessageId: params.clientMessageId,
+            acceptedAt: 1,
+            state: 'accepted',
+            replay: false,
+          }), 5_000);
+          setTimeout(() => reject(new Error(`Sidecar request "agent.start" timed out after ${budgetMs}ms`)), budgetMs);
+        });
+
+      vi.useFakeTimers();
+      const { runAgentLoopDispatched } = await importFresh();
+      agentStartRequestMock.mockImplementation(answerAfter5s(40 * 1024 * 1024));
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+
+      const large = runAgentLoopDispatched('conv-1', 'hello');
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(large).resolves.toEqual({ reason: 'completed' });
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+
+      agentStartRequestMock.mockClear();
+      agentStartRequestMock.mockImplementation(answerAfter5s(1024));
+
+      // 3 100 ms for 1 KiB, then the state query and one replay on the same
+      // budget — past 5 000 ms, so the reply never wins.
+      const small = runAgentLoopDispatched('conv-1', 'hello');
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(small).resolves.toMatchObject({
+        reason: 'error',
+        runErrorKind: 'sidecar_unavailable',
+      });
+      // Missing ack → state query → one idempotent replay, both on the budget.
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(2);
+    });
+
     it('#549: a transport failure before agent.start is accepted fails the row visibly — never reruns in-process', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       agentStartRequestMock.mockRejectedValue(new Error('Sidecar process closed'));

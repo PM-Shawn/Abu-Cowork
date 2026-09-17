@@ -196,8 +196,24 @@ const logger = createLogger('agent-loop-runner');
 const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
 const AGENT_ABORT_FORCE_FINALIZE_MS = 5_000;
 const AGENT_FIRST_FRAME_STALL_MS = 30_000;
-const AGENT_START_ACK_TIMEOUT_MS = 3_000;
+const AGENT_START_ACK_BASE_TIMEOUT_MS = 3_000;
+const AGENT_START_ACK_MS_PER_MIB = 100;
 const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
+
+/**
+ * How long the `agent.start` acknowledgement may take, as a function of the
+ * encoded request size. The clock starts before the write, so the budget has
+ * to cover the IPC transfer, the boundary validation, the stdin pipe, the
+ * sidecar's framing and `JSON.parse`, and the digest check — all of which
+ * scale with the body. A base allowance plus a per-started-MiB allowance
+ * gives 3 000 ms for an ordinary turn and 15 800 ms at the 128 MiB raw-body
+ * ceiling. Passed to `sidecarRequest` as a function so the encoded length is
+ * taken from the bytes that request already produced (#549).
+ */
+function agentStartAckBudgetMs(encodedBytes: number): number {
+  const startedMib = Math.ceil(encodedBytes / (1024 * 1024));
+  return AGENT_START_ACK_BASE_TIMEOUT_MS + startedMib * AGENT_START_ACK_MS_PER_MIB;
+}
 const MAX_REATTACH_UNAVAILABLE_CHECKS = 3;
 const AGENT_LOOP_EXIT_REASONS = new Set<AgentLoopExitReason>([
   'completed',
@@ -2596,7 +2612,7 @@ async function establishAgentStart(
   };
 
   try {
-    return accept(await sidecarRequest('agent.start', params, AGENT_START_ACK_TIMEOUT_MS));
+    return accept(await sidecarRequest('agent.start', params, agentStartAckBudgetMs));
   } catch (startError) {
     // An oversize start can never succeed on retry: don't query state or
     // replay the same bytes (#549 M2 — it used to cost 2 more full sends).
@@ -2639,7 +2655,7 @@ async function establishAgentStart(
 
     // Same runId/clientMessageId/payloadDigest: the sidecar either accepts it
     // once or replays the existing fact. It can never execute twice.
-    return accept(await sidecarRequest('agent.start', params, AGENT_START_ACK_TIMEOUT_MS));
+    return accept(await sidecarRequest('agent.start', params, agentStartAckBudgetMs));
   }
 }
 

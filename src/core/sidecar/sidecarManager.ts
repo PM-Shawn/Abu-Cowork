@@ -495,17 +495,24 @@ function traceRpcSent(method: string, rpcId: number, params: unknown, payloadByt
  * here. Pending requests sent with timeoutMs: 0 still reject like any other
  * pending request when the sidecar process closes (rejectAllPending, called
  * from handleClose()) — they are not immune to that.
+ *
+ * The timer starts before the write, so it covers the IPC transfer, the
+ * boundary validation, the stdin pipe and the sidecar's own parse. A caller
+ * whose budget has to grow with the body passes a function instead of a
+ * number; it is called once with the encoded byte length of this exact
+ * request (#549, `agentStartAckBudgetMs`), so nothing is encoded twice.
  */
 export function request(
   method: string,
   params: unknown,
-  timeoutMs: number = REQUEST_DEFAULT_TIMEOUT_MS,
+  timeoutMs: number | ((encodedBytes: number) => number) = REQUEST_DEFAULT_TIMEOUT_MS,
   signal?: AbortSignal,
 ): Promise<unknown> {
   drainDirtyNotifyResyncs();
   const id = nextRequestId++;
   const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
   const encoded = textEncoder.encode(payload);
+  const budgetMs = typeof timeoutMs === 'function' ? timeoutMs(encoded.byteLength) : timeoutMs;
 
   return new Promise<unknown>((resolve, reject) => {
     const abortError = (): Error => {
@@ -521,13 +528,13 @@ export function request(
       return;
     }
 
-    const timer = timeoutMs > 0
+    const timer = budgetMs > 0
       ? setTimeout(() => {
           const entry = pendingRequests.get(id);
           pendingRequests.delete(id);
           entry?.cleanupAbort?.();
-          reject(new Error(`Sidecar request "${method}" timed out after ${timeoutMs}ms`));
-        }, timeoutMs)
+          reject(new Error(`Sidecar request "${method}" timed out after ${budgetMs}ms`));
+        }, budgetMs)
       : null;
 
     const onAbort = (): void => {

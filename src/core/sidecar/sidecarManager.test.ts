@@ -271,6 +271,26 @@ describe('sidecarManager', () => {
       await assertion;
     });
 
+    it('#549: a timeout given as a function is handed the encoded byte length and bounds the request', async () => {
+      mockHappyPath();
+      await startSidecar();
+
+      const callsBefore = invoke.mock.calls.length;
+      const seen: number[] = [];
+      const pending = request('agent.start', { runId: 'run-1', text: '中文' }, (encodedBytes) => {
+        seen.push(encodedBytes);
+        return 4_000;
+      });
+      const assertion = expect(pending).rejects.toThrow(/timed out after 4000ms/);
+
+      const writeCall = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write');
+      expect(seen).toEqual([new TextEncoder().encode(sentMessage(writeCall)).byteLength]);
+
+      await vi.advanceTimersByTimeAsync(3_999);
+      await vi.advanceTimersByTimeAsync(1);
+      await assertion;
+    });
+
     it('timeoutMs: 0 means no timeout — the request stays pending indefinitely until a response arrives', async () => {
       mockHappyPath();
       await startSidecar();

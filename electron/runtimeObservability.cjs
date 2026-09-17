@@ -14,6 +14,12 @@ const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const MAX_RECENT_EVENTS = 1_000;
 const MAX_STRING_CHARS = 160;
 const BRIDGE_ACK_TIMEOUT_MS = 3_000;
+// A pending entry is normally removed when its response arrives, its write
+// fails, or the sidecar closes. A response line that never comes back (a lost
+// stdout line, a method the sidecar answers out-of-band) would otherwise keep
+// its entry for the life of the process, so the map is bounded the same way
+// sidecarRunRegistry bounds its own pendingRequests: oldest insertion first.
+const MAX_PENDING_RPCS = 500;
 
 const SAFE_ATTRIBUTE_KEYS = new Set([
   'runId',
@@ -179,6 +185,7 @@ function createRuntimeState({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
   bridgeAckTimeoutMs = BRIDGE_ACK_TIMEOUT_MS,
+  maxPendingRpcs = MAX_PENDING_RPCS,
 } = {}) {
   const sidecars = new Map();
   const pendingRpcs = new Map();
@@ -369,7 +376,12 @@ function createRuntimeState({
       stage: 'stdin_write',
       startedAt,
     };
-    if (rpcId) pendingRpcs.set(pendingKey(id, rpcId), rpc);
+    if (rpcId) {
+      pendingRpcs.set(pendingKey(id, rpcId), rpc);
+      while (pendingRpcs.size > maxPendingRpcs) {
+        pendingRpcs.delete(pendingRpcs.keys().next().value);
+      }
+    }
     emitEvent('main', 'main.rpc_write_started', rpc);
     return rpc;
   }

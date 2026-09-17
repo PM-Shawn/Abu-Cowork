@@ -19,7 +19,7 @@ const {
   sanitizeAttributes,
 } = require('./runtimeObservability.cjs');
 
-function makeHarness() {
+function makeHarness(overrides = {}) {
   let now = 1_000;
   let nextTimerId = 1;
   const timers = new Map();
@@ -34,6 +34,7 @@ function makeHarness() {
     },
     clearTimer: (id) => timers.delete(id),
     bridgeAckTimeoutMs: 3_000,
+    ...overrides,
   });
   return {
     state,
@@ -606,4 +607,29 @@ test('#549: header metadata is clipped like parsed metadata', () => {
   assert.equal(rpc.runId.length, 160);
   // A method longer than 80 chars is not a tracked method after clipping.
   assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: `agent.run${'x'.repeat(100)}` }, 7), null);
+});
+
+test('#549: the pending-RPC map is capped and evicts the oldest entry', () => {
+  const h = makeHarness({ maxPendingRpcs: 3 });
+  h.state.noteSpawnStarted('abu-sidecar', true);
+
+  for (let i = 1; i <= 5; i += 1) {
+    h.state.noteRpcWriteStartedMeta('abu-sidecar', {
+      method: 'agent.run',
+      rpcId: `rpc-${i}`,
+      runId: `run-${i}`,
+    }, 7);
+  }
+
+  const pending = h.state.snapshot().pendingRpcs;
+  assert.equal(pending.length, 3);
+  assert.deepEqual(pending.map((rpc) => rpc.rpcId), ['rpc-3', 'rpc-4', 'rpc-5']);
+
+  // An evicted entry no longer answers its response, but a retained one still
+  // completes normally — the cap drops bookkeeping, never the live RPC.
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 'rpc-1', result: {} }));
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 'rpc-4', result: {} }));
+  const responses = h.events.filter((entry) => entry.event === 'main.rpc_response_received');
+  assert.deepEqual(responses.map((entry) => entry.attributes.rpcId), ['rpc-4']);
+  assert.equal(h.state.snapshot().pendingRpcs.length, 2);
 });

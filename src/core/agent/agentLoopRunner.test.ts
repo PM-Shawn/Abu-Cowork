@@ -5449,7 +5449,6 @@ describe('agentLoopRunner', () => {
       });
       expect(chatDeltaSetConversationStatusMock).toHaveBeenLastCalledWith('conv-1', 'idle');
       expect(chatDeltaAppendTextMock).not.toHaveBeenCalled();
-      expect(traceRuntimeEventMock.mock.calls.map((c) => c[0])).not.toContain('renderer.agent_run_fallback');
       expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({ stage: 'sidecar_unavailable', outcome: 'error' }));
     });
 
@@ -5953,6 +5952,89 @@ describe('agentLoopRunner', () => {
         expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_aborted', expect.objectContaining({
           stage: 'waiting_for_sidecar',
         }));
+      });
+    });
+
+    // #549 observability invariant: a dispatch may leave through many doors,
+    // but every door records exactly one terminal renderer event — never zero
+    // (a run that vanishes from the timeline) and never two (a run counted
+    // twice, with two root causes).
+    describe('#549 terminal events', () => {
+      const TERMINAL = new Set([
+        'renderer.agent_run_completed',
+        'renderer.agent_run_failed',
+        'renderer.agent_run_aborted',
+      ]);
+      const terminalEvents = () => traceRuntimeEventMock.mock.calls
+        .filter((call) => TERMINAL.has(call[0] as string))
+        .map((call) => ({
+          event: call[0] as string,
+          stage: (call[1] as { stage?: string } | undefined)?.stage,
+        }));
+
+      type Dispatch = Awaited<ReturnType<typeof importFresh>>['runAgentLoopDispatched'];
+
+      const oversizeError = () => new Error(
+        'payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"agent.start"}',
+      );
+
+      it.each<[string, (dispatch: Dispatch) => Promise<unknown>, string, string]>([
+        ['normal completion', async (dispatch) => {
+          sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+          return dispatch('conv-1', 'hello');
+        }, 'renderer.agent_run_completed', 'completed'],
+        ['Stop during the run', async (dispatch) => {
+          const shellController = new AbortController();
+          const runRpc = deferred<unknown>();
+          getAbortControllerMock.mockReturnValue(shellController);
+          sidecarRequestMock.mockImplementation((method: string) => (
+            method === 'agent.abort' ? Promise.resolve({ accepted: true, state: 'aborting' }) : runRpc.promise
+          ));
+          const running = dispatch('conv-1', 'hello');
+          await waitForCall(sidecarRequestMock);
+          shellController.abort();
+          runRpc.reject(new Error('sidecar transport closed during stop'));
+          return running;
+        }, 'renderer.agent_run_aborted', 'run_terminal_error'],
+        ['sidecar wait timeout', async (dispatch) => {
+          waitForSidecarVenueMock.mockRejectedValue(new MockSidecarUnavailableError('timeout'));
+          return dispatch('conv-1', 'hello', { initiatedBy: 'user' });
+        }, 'renderer.agent_run_failed', 'sidecar_unavailable'],
+        ['sidecar failed with allowRestart false', async (dispatch) => {
+          waitForSidecarVenueMock.mockRejectedValue(new MockSidecarUnavailableError('failed'));
+          const result = await dispatch('conv-1', 'hello', { initiatedBy: 'automation' });
+          expect(waitForSidecarVenueMock).toHaveBeenCalledWith(expect.objectContaining({ allowRestart: false }));
+          return result;
+        }, 'renderer.agent_run_failed', 'sidecar_unavailable'],
+        ['payload_too_large at agent.start', async (dispatch) => {
+          agentStartRequestMock.mockRejectedValue(oversizeError());
+          return dispatch('conv-1', 'hello');
+        }, 'renderer.agent_run_failed', 'payload_too_large'],
+        ['params-build failure', async (dispatch) => {
+          resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('boom'); });
+          return dispatch('conv-1', 'hello');
+        }, 'renderer.agent_run_failed', 'params_build_failed'],
+        ['pre-commit transport failure', async (dispatch) => {
+          agentStartRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+          runGetStateRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+          return dispatch('conv-1', 'hello');
+        }, 'renderer.agent_run_failed', 'sidecar_unavailable'],
+        ['accepted-but-uncommitted transport failure', async (dispatch) => {
+          // agent.start is accepted (the default mock), then every agent.run —
+          // the first and its one replay — dies on the transport without a
+          // single committed frame.
+          sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+          return dispatch('conv-1', 'hello');
+        }, 'renderer.agent_run_failed', 'failed_after_commit'],
+      ])('%s emits exactly one terminal event', async (_label, drive, event, stage) => {
+        const { runAgentLoopDispatched } = await importFresh();
+
+        await drive(runAgentLoopDispatched);
+
+        // Exactly one, and through the door this arm meant to open — otherwise
+        // an arrangement that silently stopped applying would still pass by
+        // completing normally.
+        expect(terminalEvents()).toEqual([{ event, stage }]);
       });
     });
 

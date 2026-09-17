@@ -251,8 +251,6 @@ const pendingRequests = new Map<number, PendingRequest>();
 const connectionHandlers = new Set<(event: SidecarConnectionEvent) => void>();
 /** Wake-ups for in-flight waitForSidecarStatus() calls (#549 cold start). */
 const statusWaiters = new Set<() => void>();
-/** onSidecarStatusChange() subscribers (UI projection of `status`). */
-const statusHandlers = new Set<(status: SidecarStatus) => void>();
 let lastSidecarSequence = 0;
 let lastSidecarGeneration = 0;
 let sidecarEventChain: Promise<void> = Promise.resolve();
@@ -309,31 +307,16 @@ export function getSidecarStatus(): SidecarStatus {
 }
 
 /**
- * The ONLY way production code changes `status` (#549): every transition
- * wakes pending readiness waiters and notifies UI subscribers. Assigning
- * `status` directly would leave a cold-start wait hanging for its full
- * timeout. (`__resetForTests` is the one deliberate exception.)
+ * The ONLY way production code changes `status` (#549): every transition wakes
+ * pending readiness waiters. Assigning `status` directly would leave a
+ * cold-start wait hanging for its full timeout. (`__resetForTests` is the one
+ * deliberate exception.)
  */
 function setStatus(next: SidecarStatus): void {
   if (status === next) return;
   status = next;
   // Copy: a waiter removes itself from the set as it settles.
   for (const waiter of [...statusWaiters]) waiter();
-  for (const handler of statusHandlers) {
-    try {
-      handler(next);
-    } catch (err) {
-      logger.warn('Sidecar status handler threw', { error: err instanceof Error ? err.message : String(err) });
-    }
-  }
-}
-
-/** Subscribe to supervisor status transitions (UI projection, readiness waits). */
-export function onSidecarStatusChange(handler: (status: SidecarStatus) => void): () => void {
-  statusHandlers.add(handler);
-  return () => {
-    statusHandlers.delete(handler);
-  };
 }
 
 export type SidecarWaitOutcome = 'running' | 'failed' | 'timeout' | 'aborted';
@@ -706,11 +689,10 @@ export function onSidecarRequest(method: string, handler: SidecarRequestHandler)
 /** Reset all module state for test isolation. Not used by production code. */
 export function __resetForTests(): void {
   stopEnterpriseEntitlementSync();
-  // Direct assignment on purpose: a reset is not a transition — waiters and
-  // handlers from the previous test are dropped below, not notified.
+  // Direct assignment on purpose: a reset is not a transition — waiters from
+  // the previous test are dropped below, not notified.
   status = 'stopped';
   statusWaiters.clear();
-  statusHandlers.clear();
   listenersReady = false;
   unlisteners = [];
   deliberatelyStopped = true;

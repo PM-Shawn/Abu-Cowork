@@ -28,7 +28,6 @@ import {
   onSidecarNotification,
   onSidecarRequest,
   onSidecarConnectionState,
-  onSidecarStatusChange,
   waitForSidecarStatus,
   registerSidecarNotifyResync,
   SidecarRequestError,
@@ -1626,8 +1625,6 @@ describe('sidecarManager', () => {
       invoke.mockImplementation((cmd: string) => cmd === 'mcp_spawn'
         ? new Promise<void>((resolve) => { releaseSpawn = resolve; })
         : Promise.resolve(undefined));
-      const seen: string[] = [];
-      onSidecarStatusChange((s) => seen.push(s));
       const start = startSidecar();
       await vi.advanceTimersByTimeAsync(0);
       expect(getSidecarStatus()).toBe('starting');
@@ -1635,8 +1632,7 @@ describe('sidecarManager', () => {
       releaseSpawn();
       await expect(waited).resolves.toBe('running');
       await start;
-      expect(seen).toContain('starting');
-      expect(seen.at(-1)).toBe('running');
+      expect(getSidecarStatus()).toBe('running');
     });
 
     it('times out, reports failed on crash-loop give-up, and honours abort', async () => {
@@ -1656,21 +1652,16 @@ describe('sidecarManager', () => {
       await expect(waitForSidecarStatus(1)).resolves.toBe('failed');
     });
 
-    it('unsubscribes handlers and survives a throwing one', async () => {
+    it('wakes every pending waiter on one transition', async () => {
       mockHappyPath();
-      const kept: string[] = [];
-      const dropped: string[] = [];
-      onSidecarStatusChange(() => { throw new Error('handler boom'); });
-      const unsubscribe = onSidecarStatusChange((s) => dropped.push(s));
-      onSidecarStatusChange((s) => kept.push(s));
-      await startSidecar();
-      // The throwing handler is registered first and must not starve the rest.
-      expect(kept).toEqual(['starting', 'running']);
-      expect(dropped).toEqual(['starting', 'running']);
-      unsubscribe();
+      invoke.mockImplementation((cmd: string) => cmd === 'mcp_spawn' ? new Promise(() => {}) : Promise.resolve(undefined));
+      void startSidecar();
+      await vi.advanceTimersByTimeAsync(0);
+      const first = waitForSidecarStatus(60_000);
+      const second = waitForSidecarStatus(60_000);
       await stopSidecar();
-      expect(kept).toEqual(['starting', 'running', 'stopped']);
-      expect(dropped).toEqual(['starting', 'running']); // stopped after unsubscribe
+      await expect(first).resolves.toBe('failed');
+      await expect(second).resolves.toBe('failed');
     });
   });
 });

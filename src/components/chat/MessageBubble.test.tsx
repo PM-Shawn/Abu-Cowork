@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import MessageBubble from './MessageBubble';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -50,6 +51,8 @@ function setConversation(message: Message, status: Conversation['status']): void
 describe('MessageBubble user run status', () => {
   beforeEach(() => {
     initLanguage('en-US');
+    vi.mocked(runAgentLoopDispatched).mockReset();
+    vi.mocked(runAgentLoopDispatched).mockResolvedValue({ reason: 'completed' });
     useImageLightboxStore.getState().close();
     usePreviewStore.setState(usePreviewStore.getInitialState(), true);
   });
@@ -120,7 +123,7 @@ describe('MessageBubble user run status', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
   });
 
-  it('#549: shows the pre-accept reason with Retry', () => {
+  it('#549: an unreachable sidecar is just Send failed + Retry, with no reason line', () => {
     const message: Message = {
       ...baseMessage,
       runState: 'failed',
@@ -131,8 +134,43 @@ describe('MessageBubble user run status', () => {
 
     render(<MessageBubble message={message} />);
 
-    expect(screen.getByText(message.runError as string)).toBeInTheDocument();
+    expect(screen.getByText('Send failed')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText(message.runError as string)).not.toBeInTheDocument();
+  });
+
+  it('#549: a connection-failed row keeps its own label and Retry', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'connection-failed',
+      runError: 'Connection interrupted. Click Retry to try again.',
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+
+    expect(screen.getByText('Connection recovery failed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+    expect(screen.queryByText(message.runError as string)).not.toBeInTheDocument();
+  });
+
+  it('#549: Retry dispatches as a user-initiated send so a stopped sidecar restarts', async () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runErrorKind: 'sidecar_unavailable',
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalled());
+
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(
+      'conversation-1',
+      baseMessage.content,
+      expect.objectContaining({ initiatedBy: 'user' }),
+    );
   });
 
   it('#549: shows the reason for a dispatch failure that also carries upstream details', () => {
@@ -160,7 +198,7 @@ describe('MessageBubble user run status', () => {
     const message: Message = {
       ...baseMessage,
       runState: 'failed',
-      runError: 'This conversation is too long to continue. Please start a new conversation.',
+      runError: 'This conversation is too long to continue.',
       runErrorKind: 'payload_too_large',
     };
     setConversation(message, 'idle');

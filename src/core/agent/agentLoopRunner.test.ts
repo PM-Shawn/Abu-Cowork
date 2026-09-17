@@ -480,7 +480,7 @@ vi.mock('../../i18n', () => ({
       attachmentDuringRun: '请等待当前任务结束后再发送附件，草稿已为你保留。',
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
       errorEmptyBody: '请求失败但无详情',
-      payloadTooLarge: '这段对话太长，无法继续。请新建对话继续。',
+      payloadTooLarge: '这段对话太长，无法继续。',
       sidecarNotReady: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
       gatewayUnreachable: '无法连接企业 AI 网关。',
     },
@@ -5441,6 +5441,7 @@ describe('agentLoopRunner', () => {
         reason: 'error',
         error: '连接中断，可点重试',
         messageTaken: true,
+        runErrorKind: 'sidecar_unavailable',
         stopReason: 'sidecar_unavailable',
       });
       expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
@@ -5512,9 +5513,9 @@ describe('agentLoopRunner', () => {
 
       const result = await runAgentLoopDispatched('conv-1', 'hello');
 
-      expect(result).toMatchObject({ reason: 'error', error: '这段对话太长，无法继续。请新建对话继续。', messageTaken: true, stopReason: 'payload_too_large' });
+      expect(result).toMatchObject({ reason: 'error', error: '这段对话太长，无法继续。', messageTaken: true, runErrorKind: 'payload_too_large', stopReason: 'payload_too_large' });
       expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
-        state: 'failed', error: '这段对话太长，无法继续。请新建对话继续。', errorKind: 'payload_too_large',
+        state: 'failed', error: '这段对话太长，无法继续。', errorKind: 'payload_too_large',
       });
       expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({ stage: 'payload_too_large', errorType: 'payload_too_large' }));
       expect(runAgentLoopMock).not.toHaveBeenCalled();
@@ -5773,7 +5774,12 @@ describe('agentLoopRunner', () => {
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(agentStartRequestMock).not.toHaveBeenCalled();
       expect(runAgentLoopMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ reason: 'error', error: '无法连接企业 AI 网关。', messageTaken: true });
+      expect(result).toEqual({
+        reason: 'error',
+        error: '无法连接企业 AI 网关。',
+        messageTaken: true,
+        runErrorKind: 'dispatch_failed',
+      });
       expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
         state: 'failed', error: '无法连接企业 AI 网关。', errorKind: 'dispatch_failed',
       });
@@ -5886,7 +5892,6 @@ describe('agentLoopRunner', () => {
         expect(order.slice(0, 3)).toEqual(['persist', 'wait', 'build']);
         expect(waitForSidecarVenueMock).toHaveBeenCalledWith({
           signal: expect.any(AbortSignal),
-          conversationId: 'conv-1',
           allowRestart: true,
         });
       });
@@ -5914,6 +5919,9 @@ describe('agentLoopRunner', () => {
           reason: 'error',
           error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
           messageTaken: true,
+          // #549: the row owns this failure's explanation, so ChatView must be
+          // able to tell and skip the duplicate toast.
+          runErrorKind: 'sidecar_unavailable',
           stopReason: 'sidecar_unavailable',
         });
         expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {

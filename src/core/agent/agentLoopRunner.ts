@@ -908,6 +908,7 @@ async function finalizePreAcceptFailure(params: {
     reason: 'error',
     error: params.displayMessage,
     messageTaken: true,
+    runErrorKind: params.kind,
     ...(params.kind === 'dispatch_failed' ? {} : { stopReason: params.kind }),
   };
 }
@@ -3151,13 +3152,13 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   });
 
   // #549: the venue is decided AFTER the row is durable and BEFORE any work is
-  // built for it. A cold or restarting sidecar is waited for (≤60s, visible);
-  // a dead one fails this send visibly instead of silently running here.
-  // `allowRestart` is spent only for a human-initiated send — see the helper.
+  // built for it. A cold or restarting sidecar is waited for (≤60s, under the
+  // turn's own 「思考中」 row); a dead one fails this send visibly instead of
+  // silently running here. `allowRestart` is spent only for a human-initiated
+  // send — see the helper.
   try {
     await waitForSidecarVenue({
       signal: shellAbortController.signal,
-      conversationId,
       allowRestart: mayRestartSidecarForSend(options),
     });
   } catch (err) {

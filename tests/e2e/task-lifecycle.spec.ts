@@ -834,7 +834,10 @@ test.describe.serial('Electron product task lifecycle', () => {
     await crashAbuSidecarForE2E(page, dataRoot.sidecarCrashToken);
     await expect.poll(() => taskRequests(mock!)[0]?.responseAborted, { timeout: READY_TIMEOUT }).toBe(true);
 
-    await expect(page.getByText(/后台服务意外中断.*自动恢复/)).toBeVisible({ timeout: READY_TIMEOUT });
+    // #549: the row states the failure and offers the action; the stored
+    // `runError` sentence below is what the next turn carries upstream.
+    await expect(page.getByText('连接恢复失败')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByRole('button', { name: '重试' })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByLabel(/^(停止|Stop)$/)).toBeHidden({ timeout: READY_TIMEOUT });
     await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
     expect(app.process().exitCode).toBeNull();
@@ -846,7 +849,7 @@ test.describe.serial('Electron product task lifecycle', () => {
     const secondRequestBody = JSON.stringify(taskRequests(mock)[1]?.body);
     expect(secondRequestBody).toContain(prompt);
     expect(secondRequestBody).toContain(partial);
-    expect(secondRequestBody).toContain('后台服务意外中断');
+    expect(secondRequestBody).toContain('连接中断，可点重试');
     expect(secondRequestBody).not.toContain('Sidecar process closed');
     expect(secondRequestBody).toContain(followUp);
     await expect(page.getByText(followUpResponse, { exact: true })).toBeVisible({

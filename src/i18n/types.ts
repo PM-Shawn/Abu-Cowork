@@ -294,14 +294,8 @@ export interface TranslationDict {
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
-    /** Composer-top strip: this send is waiting for the agent sidecar's cold start (#549). */
-    runStartingSidecar: string;
     /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
     newConversationAction: string;
-    /** Composer-top strip: the supervisor gave up restarting the sidecar (#549). */
-    sidecarStopped: string;
-    /** Composer-top strip action next to sidecarStopped (#549). */
-    sidecarReconnect: string;
     noModelConfigured: string;
     scrollToBottom: string;
     compressingContext: string;
@@ -496,13 +490,17 @@ export interface TranslationDict {
     skillMissingTools: string;
     /** Enterprise AI gateway unreachable (shown as an error bubble). */
     gatewayUnreachable: string;
-    /** Sidecar process exited mid-task and automatic recovery has started. */
+    /** Sidecar process exited mid-task, leaving the turn for the user to retry. */
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
     sidecarUnavailable: string;
     /** The turn was too big for the shell→sidecar channel; the only way forward is a new conversation (#549). */
     payloadTooLarge: string;
-    /** The sidecar never reached `running`, so the message was never sent (#549). */
+    /**
+     * The sidecar never reached `running`, so the message was never sent (#549).
+     * The chat row says 「发送失败」 and offers Retry instead of this sentence;
+     * it is the durable `runError` and the text headless dispatchers log.
+     */
     sidecarNotReady: string;
     messageSaveFailed: string;
     /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */

@@ -157,6 +157,37 @@ describe('ChatView welcome composer dispatch ownership', () => {
     );
   });
 
+  it('#549: a failure the row already explains raises no toast', async () => {
+    configureApiKey();
+    dispatchMock.mockImplementationOnce(async (conversationId: string, text: string) => {
+      useChatStore.getState().addMessage(conversationId, {
+        id: 'oversize-user-message',
+        role: 'user',
+        content: text,
+        timestamp: 1,
+        loopId: 'oversize-run',
+        runState: 'failed',
+        runError: 'This conversation is too long to continue.',
+        runErrorKind: 'payload_too_large',
+      });
+      return {
+        reason: 'error',
+        error: 'This conversation is too long to continue.',
+        messageTaken: true,
+        runErrorKind: 'payload_too_large',
+      };
+    });
+
+    render(<ChatView />);
+    await submitWelcome('way too much text');
+
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'New conversation' })).toBeInTheDocument(),
+    );
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
   it('keeps the composer empty after a post-commit dispatch rejection', async () => {
     configureApiKey();
     dispatchMock.mockImplementationOnce(async (conversationId: string, text: string) => {

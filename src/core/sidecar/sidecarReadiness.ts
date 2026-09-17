@@ -6,7 +6,6 @@
  * in-process, and that is an environment choice, not a recovery path.
  */
 import { isTauriEnv } from '@/utils/tauriEnv';
-import { ensureSidecarStatusProjection, useSidecarStatusStore } from '@/stores/sidecarStatusStore';
 import {
   getSidecarStatus,
   startSidecar,
@@ -49,10 +48,9 @@ function abortReason(signal: AbortSignal | undefined): Error {
  * - In-process environment (no desktop bridge): resolves immediately; the
  *   caller keeps the in-process loop.
  * - `running`: resolves immediately.
- * - `starting` / `restarting`: waits up to 60s, marking the conversation as
- *   waiting so the UI can say so.
- * - `failed` / `stopped`: only with `allowRestart` (a USER-initiated send or
- *   「重新连接」) does it attempt exactly ONE `startSidecar()` and then wait the
+ * - `starting` / `restarting`: waits up to 60s.
+ * - `failed` / `stopped`: only with `allowRestart` (a USER-initiated send, which
+ *   includes Retry on a failed row) does it attempt exactly ONE `startSidecar()` and then wait the
  *   normal 60s — spec §5's "restart on the next user send". Without it the
  *   call fails immediately, because `startSidecar()` re-arms the crash-loop
  *   window and its remote report: a headless dispatcher (scheduler, trigger,
@@ -64,7 +62,6 @@ function abortReason(signal: AbortSignal | undefined): Error {
  */
 export async function waitForSidecarVenue(options: {
   signal?: AbortSignal;
-  conversationId?: string;
   timeoutMs?: number;
   /** User-initiated send / reconnect: may spend one restart attempt. */
   allowRestart?: boolean;
@@ -73,7 +70,6 @@ export async function waitForSidecarVenue(options: {
   // Already cancelled: never spend a restart or subscribe for a caller that
   // has stopped caring.
   if (options.signal?.aborted) throw abortReason(options.signal);
-  ensureSidecarStatusProjection();
   const initial = getSidecarStatus();
   if (initial === 'running') return;
   if (initial === 'failed' || initial === 'stopped') {
@@ -82,14 +78,8 @@ export async function waitForSidecarVenue(options: {
     // and flips status to 'starting' synchronously.
     void startSidecar();
   }
-  const { conversationId } = options;
-  if (conversationId) useSidecarStatusStore.getState().setWaiting(conversationId, true);
-  try {
-    const outcome = await waitForSidecarStatus(options.timeoutMs ?? SIDECAR_READY_TIMEOUT_MS, options.signal);
-    if (outcome === 'running') return;
-    if (outcome === 'aborted') throw abortReason(options.signal);
-    throw new SidecarUnavailableError(getSidecarStatus(), outcome);
-  } finally {
-    if (conversationId) useSidecarStatusStore.getState().setWaiting(conversationId, false);
-  }
+  const outcome = await waitForSidecarStatus(options.timeoutMs ?? SIDECAR_READY_TIMEOUT_MS, options.signal);
+  if (outcome === 'running') return;
+  if (outcome === 'aborted') throw abortReason(options.signal);
+  throw new SidecarUnavailableError(getSidecarStatus(), outcome);
 }

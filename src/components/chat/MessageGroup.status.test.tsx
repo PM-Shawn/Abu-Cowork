@@ -84,7 +84,7 @@ describe('MessageGroup stopped terminal', () => {
       timestamp: 1_000,
       loopId: 'loop-oversize',
       runState: 'failed',
-      runError: 'This conversation is too long to continue. Please start a new conversation.',
+      runError: 'This conversation is too long to continue.',
       runErrorKind: 'payload_too_large',
       runEndedAt: 3_000,
     };

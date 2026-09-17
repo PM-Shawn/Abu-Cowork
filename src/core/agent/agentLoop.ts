@@ -726,6 +726,13 @@ interface AgentLoopResultBase {
    * a sidecar terminal never carries it (see agentRunTerminal.ts's key set).
    */
   abortCause?: BrowserDenialAbortCause;
+  /**
+   * The kind stamped on the failed user row for a run the sidecar never
+   * accepted (#549), so a caller can tell that the row already explains the
+   * failure and offers its own action. Shell-owned, like `abortCause`: a
+   * sidecar terminal never carries it (see agentRunTerminal.ts's key set).
+   */
+  runErrorKind?: NonNullable<Message['runErrorKind']>;
 }
 
 /**

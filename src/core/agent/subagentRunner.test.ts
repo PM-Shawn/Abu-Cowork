@@ -248,7 +248,7 @@ vi.mock('./lifecycleHooks', () => ({
 
 // #549 FINAL copy (Shawn 2026-09-17). Kept as constants so the expectations
 // below and the i18n mock can never drift apart.
-const PAYLOAD_TOO_LARGE_COPY = '这段对话太长，无法继续。请新建对话继续。';
+const PAYLOAD_TOO_LARGE_COPY = '这段对话太长，无法继续。';
 const SIDECAR_NOT_READY_COPY = '后台服务没有启动成功，这条消息还没有发出。可点重试。';
 const GATEWAY_UNREACHABLE = '无法连接企业 AI 网关。';
 

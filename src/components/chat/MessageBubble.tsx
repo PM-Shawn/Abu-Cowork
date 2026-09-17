@@ -458,6 +458,11 @@ export default function MessageBubble({
   // #549: an oversize turn can never succeed by retrying — the only way forward
   // is a fresh conversation, so the row swaps Retry for 「新建对话」.
   const isOversizeFailure = hasRunFailure && message.runErrorKind === 'payload_too_large';
+  // #549: only the two kinds whose cause the user cannot read off the label get
+  // a sentence. 'sidecar_unavailable' and a kind-less failure are 「发送失败」 +
+  // Retry alone; raw upstream `runError` text stays hidden either way.
+  const showFailureReason = hasRunFailure
+    && (message.runErrorKind === 'payload_too_large' || message.runErrorKind === 'dispatch_failed');
   const handleNewConversationWithDraft = () => {
     // Text only: the store has no one-shot buffer for inline base64 images
     // (`addPendingAttachment` carries workspace paths, not attachments), so any
@@ -752,7 +757,7 @@ export default function MessageBubble({
                 </div>
               )}
               {/* Reliable-run progress is internal (existing ruling, kept for #549):
-                  starting / recovering live in SidecarStatusStrip above the composer;
+                  waiting for the sidecar shows only the 「思考中」 activity row, and
                   only actionable failures belong under the user's message. */}
               {hasRunFailure && (
                 <div className="flex flex-col gap-1">
@@ -773,9 +778,7 @@ export default function MessageBubble({
                       </Button>
                     ))}
                   </div>
-                  {/* #549: `runErrorKind` marks the reasons we wrote ourselves and
-                      showed the user; raw upstream `runError` text stays hidden. */}
-                  {message.runErrorKind && message.runError && (
+                  {showFailureReason && message.runError && (
                     <p className="max-w-2xl break-words text-caption text-[var(--abu-text-secondary)]">
                       {message.runError}
                     </p>

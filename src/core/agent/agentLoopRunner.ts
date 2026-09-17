@@ -163,6 +163,7 @@ import { getElectronSidecarRunFact } from '../../utils/electronHost';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
 import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
+import { paramsBuildDisplayMessage } from './paramsBuildFailure';
 import {
   isInProcessAgentEnvironment,
   waitForSidecarVenue,
@@ -938,23 +939,6 @@ async function preservedMultimodalContent(params: {
     });
     return undefined;
   }
-}
-
-/**
- * The one params-failure message helper (#549 R9) — imported by the subagent
- * dispatcher too, so both surfaces name an unreachable enterprise gateway the
- * same way. Matched on `name`, not `instanceof`: the class lives behind the
- * `@enterprise-modules` alias, and both the OSS stub and the private
- * implementation set `this.name`.
- */
-export function paramsBuildDisplayMessage(err: unknown): string {
-  if (err instanceof Error && err.name === 'EnterpriseLlmUnavailableError') {
-    return getI18n().chat.gatewayUnreachable;
-  }
-  return sanitizeUntrustedLlmErrorText(
-    err instanceof Error ? err.message : String(err),
-    getI18n().chat.errorEmptyBody,
-  );
 }
 
 async function settleRunPersistence(session: RunSession): Promise<void> {

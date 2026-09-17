@@ -54,22 +54,25 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
  * arrives before that run's final `subagent.run` response, since both
  * travel the same single ordered NDJSON stream).
  *
- * ## Fallback discipline
+ * ## Failure discipline (#549)
  *
- * A `subagent.run` request can fail two structurally different ways:
- *   1. Before any `tool.invoke` arrived for this runId → nothing has
- *      executed yet (no side effects) → safe to retry the WHOLE run
- *      in-process via `runSubagentLoop`.
- *   2. After ≥1 `tool.invoke` arrived → the subagent may have already
- *      run a tool with real side effects (wrote a file, ran a command) →
- *      re-running from scratch could double-execute those effects, so
- *      this surfaces as a failed `SubagentResult` instead — the exact
- *      shape a failed subagent already produces today (see
- *      `subagentLoop.ts`'s outer catch block).
- * `RunSession.firstToolInvokeArrived` is the bit that decides which path
- * fires — set the instant `handleToolInvoke` sees a matching runId. Progress
- * is buffered until that commit point (or a valid successful response), so a
- * pre-commit transport failure cannot leave a ghost tool step behind.
+ * Any failure before or during dispatch surfaces as a failed
+ * `SubagentResult` (`stopReason: 'error'`, `text: 'Error: <reason>'`) — the
+ * exact shape a failed subagent already produces today (see
+ * `subagentLoop.ts`'s outer catch block). **Nothing is re-run in-process.**
+ * Only the non-desktop environment (`isInProcessAgentEnvironment()`: web
+ * preview / unit tests) runs the loop locally, and that is an environment
+ * choice made before any dispatch, never a reaction to a failure.
+ *
+ * A silent rerun was never safe in either direction: after ≥1 `tool.invoke`
+ * it could double-execute real side effects, and before the first one it hid
+ * a broken transport (a stale sidecar rejecting a new wire field) behind a
+ * result that looked normal — while burning a second full run's tokens.
+ *
+ * `RunSession.firstToolInvokeArrived` therefore no longer selects a venue; it
+ * is kept as the progress commit point (buffered progress is published only
+ * once a tool request is accepted, or a valid successful response arrives) and
+ * is reported on the terminal trace event so a failure can be classified.
  */
 import type { ToolDefinition, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
 import {
@@ -93,6 +96,10 @@ import { resolvePreloadedSkills } from './prompts/preloadedSkills';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
+import { traceRuntimeEvent, runtimeErrorType } from '../observability/runtimeTrace';
+import { isInProcessAgentEnvironment, waitForSidecarVenue } from '../sidecar/sidecarReadiness';
+import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
+import { paramsBuildDisplayMessage } from './paramsBuildFailure';
 import { isUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../llm/adapter';
 import type { LoopContext } from './permissionBridge';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
@@ -737,6 +744,39 @@ function reconstructSubagentResult(raw: unknown): SubagentResult {
   });
 }
 
+/**
+ * Every pre-dispatch / dispatch failure ends here (#549). Same shape the
+ * post-first-tool path has always returned, so the parent sees one kind of
+ * failure regardless of how far the run got.
+ */
+function failedSubagentResult(message: string): SubagentResult {
+  return new SubagentResult({
+    text: `Error: ${message}`,
+    toolCallCount: 0,
+    turnCount: 0,
+    tokenUsage: { input: 0, output: 0 },
+    duration: 0,
+    stopReason: 'error',
+  });
+}
+
+function traceSubagentRunFailed(
+  runId: string,
+  stage: string,
+  err: unknown,
+  reason?: string,
+): void {
+  traceRuntimeEvent('renderer.subagent_run_failed', {
+    runId,
+    method: 'subagent.run',
+    executionPath: 'sidecar',
+    stage,
+    outcome: 'error',
+    errorType: runtimeErrorType(err),
+    ...(reason ? { reason } : {}),
+  });
+}
+
 function cancelledSubagentResult(): SubagentResult {
   return new SubagentResult({
     text: getI18n().chat.subagent.taskCancelled,
@@ -751,9 +791,9 @@ function cancelledSubagentResult(): SubagentResult {
 // ── Public entry point ──────────────────────────────────────────────────
 
 /**
- * Run a subagent — routes to the sidecar when it's `'running'`, else runs
- * `runSubagentLoop` in-process unchanged. See module doc for the wire
- * protocol and fallback discipline.
+ * Run a subagent — dispatches to the sidecar in the desktop shell, and runs
+ * `runSubagentLoop` in-process only in the non-desktop environment. See the
+ * module doc for the wire protocol and the failure discipline (#549).
  */
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
   const release = acquirePluginUse(pluginOwnerForAgent(options.agent));
@@ -866,9 +906,30 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   assertPluginAgentEnabled(options.agent);
   const localOptions = scopeSubagentLoopProgress(withPreloadedSkills, runId);
 
-  if (getSidecarStatus() !== 'running') {
-    logger.debug('subagent path selected', { path: 'local', runId, sidecarStatus: getSidecarStatus() });
+  if (isInProcessAgentEnvironment()) {
+    // Environment choice (web preview / unit tests) — never a failure
+    // fallback (#549).
+    logger.debug('subagent path selected', { path: 'local-environment', runId });
     return runLocalSubagentLoop(localOptions);
+  }
+
+  // A subagent runs INSIDE a parent run that already established the venue, so
+  // it never spends a restart attempt of its own (`allowRestart: false`): a
+  // restart resets the crash-loop window, and a run of delegates would re-arm
+  // it once per delegate. Resolves synchronously when the sidecar is already
+  // running, which the reverse-channel tests' pre-dispatch ordering relies on.
+  if (getSidecarStatus() !== 'running') {
+    try {
+      await waitForSidecarVenue({ signal: options.signal, allowRestart: false });
+    } catch (err) {
+      if (options.signal?.aborted) return cancelledSubagentResult();
+      logger.warn('subagent could not reach the sidecar', {
+        runId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      traceSubagentRunFailed(runId, 'sidecar_unavailable', err);
+      return failedSubagentResult(getI18n().chat.sidecarNotReady);
+    }
   }
 
   ensureHandlersRegistered();
@@ -879,14 +940,15 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   try {
     params = buildSubagentRunParams(runId, withPreloadedSkills, availableTools);
   } catch (err) {
-    // Failed before any dispatch — no tool has executed. Fall back to the
-    // in-process engine, which hits the identical real error path (e.g.
-    // EnterpriseLlmUnavailableError) itself. See buildSubagentRunParams's doc.
-    logger.warn('subagent params build failed — running in-process', {
+    // Failed before any dispatch — nothing executed. Report it; never rerun in
+    // this renderer (#549). The message helper is shared with the main loop so
+    // both surfaces name an unreachable enterprise gateway the same way.
+    logger.warn('subagent params build failed', {
       runId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return runLocalSubagentLoop(localOptions);
+    traceSubagentRunFailed(runId, 'params_build_failed', err);
+    return failedSubagentResult(paramsBuildDisplayMessage(err));
   }
 
   const sessionOptions: SubagentLoopOptions = {
@@ -961,45 +1023,29 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     if (signal?.aborted) {
       return cancelledSubagentResult();
     }
-    if (!session.firstToolInvokeArrived) {
-      // Nothing executed yet — safe to retry the whole run in-process.
-      // Retry from `withPreloadedSkills`, NOT the pre-resolution `options`:
-      // this is a rerun of the same agent, so it must carry the same prompt,
-      // and the shell already paid for resolving `agent.skills` above. A stale
-      // sidecar that rejects the `preloadedSkills` wire field through its
-      // unknown-key guard lands precisely here, so this is exactly the path
-      // where dropping the section is most likely.
-      // The scope id is deliberately fresh (no `runId`): progress the sidecar
-      // may already have published under `runId` is dropped, so the rerun must
-      // not reuse that namespace — see the fallback-scope test.
-      logger.warn('subagent transport failed before first tool — retrying in-process', {
-        runId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      // The rerun therefore owns — and releases — its own browser tabs, which
-      // is why it goes through `runLocalSubagentLoop` rather than the bare
-      // engine.
-      return runLocalSubagentLoop(scopeSubagentLoopProgress(withPreloadedSkills));
-    }
-    logger.warn('subagent transport failed after tool execution — surfacing error, no rerun', {
+    // Both sides of the old fork now surface the same failure (#549). After
+    // ≥1 tool.invoke a rerun could double-execute real side effects; before
+    // the first one it hid a broken transport (a stale sidecar rejecting a new
+    // wire field) behind a result that looked normal. `firstToolInvokeArrived`
+    // survives only as the reported reason.
+    logger.warn('subagent transport failed — surfacing error, no rerun', {
       runId,
+      toolStarted: session.firstToolInvokeArrived,
       error: err instanceof Error ? err.message : String(err),
     });
-    // At least one tool already ran with (possibly real) side effects —
-    // surface as a failed result, matching the shape runSubagentLoop's own
-    // outer catch produces today. NO rerun.
-    const message = sanitizeUntrustedLlmErrorText(
+    traceSubagentRunFailed(
+      runId,
+      'transport_failed',
+      err,
+      session.firstToolInvokeArrived ? 'after_tool' : 'pre_first_tool',
+    );
+    // Oversize is typed and never retryable: the parent gets the agreed copy,
+    // never the raw wire JSON.
+    if (isPayloadTooLargeError(err)) return failedSubagentResult(getI18n().chat.payloadTooLarge);
+    return failedSubagentResult(sanitizeUntrustedLlmErrorText(
       err instanceof Error ? err.message : String(err),
       getI18n().chat.errorEmptyBody,
-    );
-    return new SubagentResult({
-      text: `Error: ${message}`,
-      toolCallCount: 0,
-      turnCount: 0,
-      tokenUsage: { input: 0, output: 0 },
-      duration: 0,
-      stopReason: 'error',
-    });
+    ));
   } finally {
     // Withdraw browser authority synchronously, before asynchronous progress
     // draining. The returned cleanup waits for any in-flight registration.

@@ -49,20 +49,13 @@ const NORMAL_TURN_TEXT = 'short warm-up';
 const WRITE_LIMIT_MARGIN_BYTES = 256 * 1024;
 
 /**
- * The measurement this spec was sized against (macOS, 2026-09-18): a normal
- * first turn's `agent.start` put 124,692 bytes on the wire, and no other RPC
- * of that turn was larger, giving a 386,836-byte limit. The journey does not
- * trust these numbers — it re-measures on every run — but they record where
- * OVERSIZE_TURN_CHARS came from, and the run-time check below keeps the long
- * turn above whatever the current measurement produces.
- */
-const OBSERVED_NORMAL_TURN_BYTES = 124_692;
-const OBSERVED_WRITE_LIMIT_BYTES = OBSERVED_NORMAL_TURN_BYTES + WRITE_LIMIT_MARGIN_BYTES;
-
-/**
- * The long turn: 250,000 `长` = 750,000 UTF-8 bytes of message text, roughly
- * twice OBSERVED_WRITE_LIMIT_BYTES and still small enough to type, store and
- * read back within the test budget.
+ * The long turn: 250,000 `长` = 750,000 UTF-8 bytes of message text, still
+ * small enough to type, store and read back within the test budget. It was
+ * sized against the measurement this spec was written on (macOS, 2026-09-18):
+ * a normal first turn's largest RPC put 124,692 bytes on the wire, giving a
+ * 386,836-byte limit, so the long turn cleared it about twice over. The
+ * journey re-measures on every run and the check below keeps the long turn
+ * above whatever the current measurement produces.
  */
 const OVERSIZE_TURN_CHARS = 250_000;
 const OVERSIZE_TURN_TEXT_BYTES = OVERSIZE_TURN_CHARS * 3;
@@ -149,10 +142,14 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
     // conversation) as the number the limit has to clear.
     const normalTurnBytes = Math.max(...sentPayloadBytes(baselineEvents));
     const writeLimitBytes = normalTurnBytes + WRITE_LIMIT_MARGIN_BYTES;
-    // Recorded so the report can state the measurement this limit came from.
-    console.log(`[#549] normal turn: agent.start=${agentStartBytes} B, largest RPC=${normalTurnBytes} B, limit=${writeLimitBytes} B (recorded: ${OBSERVED_NORMAL_TURN_BYTES} B / ${OBSERVED_WRITE_LIMIT_BYTES} B)`);
     // The long turn below has to clear the cap this run actually computed.
-    expect(writeLimitBytes).toBeLessThan(OVERSIZE_TURN_TEXT_BYTES);
+    expect(
+      writeLimitBytes,
+      `An ordinary first turn now sends ${normalTurnBytes} bytes (agent.start: ${agentStartBytes}),`
+      + ` putting the derived cap at ${writeLimitBytes} — at or above the long turn's`
+      + ` ${OVERSIZE_TURN_TEXT_BYTES} bytes, so it would no longer trip the limit.`
+      + ' Raise OVERSIZE_TURN_CHARS above the new cap.',
+    ).toBeLessThan(OVERSIZE_TURN_TEXT_BYTES);
     await closeAbuElectron(app);
     app = undefined;
     await mock.close();
@@ -177,7 +174,8 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
     await input.press('Enter');
     await expect(page.getByText(reply, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
 
-    const oversizeTurn = `abu-e2e-oversize-${randomUUID()} ${'长'.repeat(OVERSIZE_TURN_CHARS)}`;
+    const oversizeTurnMarker = `abu-e2e-oversize-${randomUUID()}`;
+    const oversizeTurn = `${oversizeTurnMarker} ${'长'.repeat(OVERSIZE_TURN_CHARS)}`;
     await input.fill(oversizeTurn);
     await input.press('Enter');
 
@@ -207,7 +205,10 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
       for (const [, value] of fields) expect(typeof value).toBe('number');
       expect(event.fieldMessagesTextBytes as number).toBeGreaterThanOrEqual(OVERSIZE_TURN_TEXT_BYTES);
     }
-    expect(JSON.stringify(events)).not.toContain('长长长长');
+    // Neither the filler nor the turn's unique opening words reach the trace.
+    const serializedEvents = JSON.stringify(events);
+    expect(serializedEvents).not.toContain('长长长长');
+    expect(serializedEvents).not.toContain(oversizeTurnMarker);
 
     await failedRow.getByRole('button', { name: '新建对话' }).click();
     await expect.poll(async () => {
@@ -217,6 +218,8 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
       length: oversizeTurn.length,
       matchesFailedTurn: true,
     });
+    // Carrying the turn into a new conversation raises no toast either.
+    await expect(page.locator('[role="status"][aria-live="polite"]:not(.sr-only)')).toHaveCount(0);
   });
 
   test('a turn carrying U+2028 and U+2029 is answered', async () => {

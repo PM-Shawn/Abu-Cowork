@@ -203,9 +203,15 @@ test('raw fs text commands keep the path checks of the plain form', (t) => {
     assert.throws(() => attempt(cmd, { path: encodeURIComponent('/tmp/a') }, new Uint8Array([0x61, 0])), /must not contain NUL/);
     // Multi-line text is the whole point of the fs commands.
     assert.doesNotThrow(() => attempt(cmd, { path: encodeURIComponent(path.join(dir, 'ok.jsonl')) }, bytesOf('a\nb\r\n')));
+  }
+});
 
-    // The scope guard still runs at dispatch time on the decoded path.
-    const outside = attempt(cmd, { path: encodeURIComponent('/etc/abu-549-should-not-exist.txt') });
+// Windows fs scope is allow-all (fsHost assertAllowed), like fsHost.security.test.cjs.
+test('raw fs text commands still hit the dispatch-time scope guard', { skip: process.platform === 'win32' }, () => {
+  for (const cmd of ['append_file_text', 'atomic_write_text']) {
+    const outside = validateInvokePayload(record, {
+      cmd, body: bytesOf('x'), headers: { path: encodeURIComponent('/etc/abu-549-should-not-exist.txt') },
+    });
     assert.throws(() => fsDispatch({}, outside.cmd, outside), /outside the allowed scope/);
     assert.equal(fs.existsSync('/etc/abu-549-should-not-exist.txt'), false);
   }

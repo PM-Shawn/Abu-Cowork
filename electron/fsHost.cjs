@@ -382,6 +382,21 @@ function assertAllowed(resolvedPath, opts) {
 }
 
 /**
+ * With no baseDir the path is used as given, so it must already be absolute:
+ * path.resolve() would otherwise anchor it at main's cwd, which sits inside an
+ * allowed root for a dev launch from the repo. Names the argument, never its
+ * value.
+ * @param {unknown} p
+ * @param {number | undefined} baseDirNum
+ * @param {string} key
+ */
+function assertAbsoluteWithoutBaseDir(p, baseDirNum, key) {
+  if (baseDirNum == null && typeof p === 'string' && p.length > 0 && !path.isAbsolute(p)) {
+    throw new Error(`fs: ${key} must be an absolute path when no baseDir is given`);
+  }
+}
+
+/**
  * Resolve a frontend-supplied path against a Tauri BaseDirectory number (if
  * given) and enforce the capability scope. Lazily requires tauriHost.cjs
  * (which requires this module at its top level — a module-scope require here
@@ -389,9 +404,10 @@ function assertAllowed(resolvedPath, opts) {
  * @param {import('electron').App} app
  * @param {string} p
  * @param {number | undefined} baseDirNum
- * @param {{ remove?: boolean }} [opts]
+ * @param {{ remove?: boolean; followFinalSymlink?: boolean; key?: string }} [opts]
  */
 function resolveScoped(app, p, baseDirNum, opts) {
+  assertAbsoluteWithoutBaseDir(p, baseDirNum, opts?.key ?? 'path');
   let resolved = p;
   if (baseDirNum != null) {
     const { baseDir } = require('./tauriHost.cjs');
@@ -439,8 +455,9 @@ function msecOrNull(ms) {
  * from that same attribute, so ONE expression serves both; this used to
  * hardcode `false` on Windows, i.e. "no file is ever readonly".
  * `electron/fsHost.readonly.test.ts` pins it on both platforms (it runs on the
- * `test-windows` job too). The per-field `unix` guard stays for the numeric
- * POSIX fields below, which Windows genuinely does not report.
+ * `test-windows` job too). Device/inode identity comes from Node on both
+ * platforms; do not discard Windows file identities used by upload approval.
+ * POSIX ownership/mode fields retain the existing platform behavior.
  */
 function toFileInfo(info) {
   const unix = process.platform !== 'win32';
@@ -454,8 +471,8 @@ function toFileInfo(info) {
     birthtime: msecOrNull(info.birthtimeMs),
     readonly: (info.mode & 0o222) === 0,
     fileAttributes: null,
-    dev: unix ? info.dev : null,
-    ino: unix ? info.ino : null,
+    dev: Number.isSafeInteger(info.dev) && info.dev >= 0 ? info.dev : null,
+    ino: Number.isSafeInteger(info.ino) && info.ino > 0 ? info.ino : null,
     mode: unix ? info.mode : null,
     nlink: unix ? info.nlink : null,
     uid: unix ? info.uid : null,
@@ -536,9 +553,14 @@ function fsDispatch(app, cmd, payload) {
     case 'plugin:fs|rename': {
       // RenameOptions carries oldPathBaseDir/newPathBaseDir — NOT baseDir.
       const o = a.options || {};
-      const noFollow = { followFinalSymlink: false };
-      const oldResolved = resolveScoped(app, a.oldPath, o.oldPathBaseDir, noFollow);
-      const newResolved = resolveScoped(app, a.newPath, o.newPathBaseDir, noFollow);
+      const oldResolved = resolveScoped(app, a.oldPath, o.oldPathBaseDir, {
+        followFinalSymlink: false,
+        key: 'oldPath',
+      });
+      const newResolved = resolveScoped(app, a.newPath, o.newPathBaseDir, {
+        followFinalSymlink: false,
+        key: 'newPath',
+      });
       fs.renameSync(oldResolved, newResolved);
       return null;
     }
@@ -546,8 +568,8 @@ function fsDispatch(app, cmd, payload) {
     case 'plugin:fs|copy_file': {
       // CopyFileOptions carries fromPathBaseDir/toPathBaseDir — NOT baseDir.
       const o = a.options || {};
-      const fromResolved = resolveScoped(app, a.fromPath, o.fromPathBaseDir);
-      const toResolved = resolveScoped(app, a.toPath, o.toPathBaseDir);
+      const fromResolved = resolveScoped(app, a.fromPath, o.fromPathBaseDir, { key: 'fromPath' });
+      const toResolved = resolveScoped(app, a.toPath, o.toPathBaseDir, { key: 'toPath' });
       fs.copyFileSync(fromResolved, toResolved);
       return null;
     }
@@ -640,9 +662,14 @@ function fsDispatch(app, cmd, payload) {
       // Restore target from a prior backup; the backup is consumed (renamed
       // away). Cross-device rename falls back to copy + unlink. Mirrors
       // atomic_write.rs::restore_from_backup.
-      const noFollow = { followFinalSymlink: false };
-      const targetPath = resolveScoped(app, a.target, undefined, noFollow);
-      const backupPath = resolveScoped(app, a.backup, undefined, noFollow);
+      const targetPath = resolveScoped(app, a.target, undefined, {
+        followFinalSymlink: false,
+        key: 'target',
+      });
+      const backupPath = resolveScoped(app, a.backup, undefined, {
+        followFinalSymlink: false,
+        key: 'backup',
+      });
       if (!fs.existsSync(backupPath)) {
         throw new Error(`backup not found: ${a.backup}`);
       }
@@ -684,7 +711,7 @@ function fsDispatch(app, cmd, payload) {
       // files matching that pattern, so arbitrary user files are never removed.
       // A per-file removal error is logged and skipped, not fatal. Returns the
       // count removed. Mirrors atomic_write.rs::cleanup_old_backups.
-      const dir = resolveScoped(app, a.dir, undefined);
+      const dir = resolveScoped(app, a.dir, undefined, { key: 'dir' });
       if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
         return 0; // dir may not exist yet on first run — silent success
       }
@@ -729,6 +756,7 @@ function fsDispatch(app, cmd, payload) {
 module.exports = {
   fsDispatch,
   FS_MISS,
+  assertAbsoluteWithoutBaseDir,
   assertAllowed,
   canonicalizeForScope,
   canonicalizeForPathPolicy,

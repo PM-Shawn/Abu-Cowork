@@ -1,5 +1,5 @@
 import { ListChecks, AppWindow, SquareTerminal } from 'lucide-react';
-import { usePreviewStore, useVisibleTabs, workspaceTabButtonId, workspaceTabPanelId } from '@/stores/previewStore';
+import { usePreviewStore, useVisibleTabs, isTabVisibleFor, workspaceTabButtonId, workspaceTabPanelId } from '@/stores/previewStore';
 import { useI18n } from '@/i18n';
 import TabStrip from './TabStrip';
 import SummaryBody from './SummaryBody';
@@ -58,13 +58,14 @@ export default function WorkspacePanel() {
   // never the active one, so its panel stays `hidden` and BrowserTab reads the
   // zero rect that hides its native layer.
   const tabs = usePreviewStore((s) => s.tabs);
+  const conversationId = usePreviewStore((s) => s.currentConversationId);
   const visibleTabs = useVisibleTabs();
   const activeTabId = usePreviewStore((s) => s.activeTabId);
   const empty = visibleTabs.length === 0;
 
   return (
     <div className="flex flex-col h-full">
-      <TabStrip />
+      <TabStrip key={conversationId ?? 'no-conversation'} />
       {empty && <WorkspaceEmptyState />}
       {tabs.length > 0 && (
         <div
@@ -85,7 +86,7 @@ export default function WorkspacePanel() {
               className="h-full"
             >
               {tab.kind === 'summary' ? (
-                <SummaryBody />
+                isTabVisibleFor(tab, conversationId) ? <SummaryBody /> : null
               ) : tab.kind === 'preview' ? (
                 <PreviewPanel filePath={tab.filePath} tabId={tab.id} embedded />
               ) : tab.kind === 'terminal' ? (

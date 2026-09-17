@@ -10,6 +10,13 @@ import { useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import type { Conversation, Message } from '@/types';
 import MessageGroup from './MessageGroup';
+import { usePreviewStore } from '@/stores/previewStore';
+import { resolveFileSource, type ResolvedSource } from '@/core/session/outputSnapshots';
+
+vi.mock('@/core/session/outputSnapshots', async importOriginal => ({
+  ...await importOriginal<typeof import('@/core/session/outputSnapshots')>(),
+  resolveFileSource: vi.fn().mockResolvedValue({ status: 'missing', basename: 'report.md', originalPath: '/tmp/report.md' }),
+}));
 
 function setConversationState(
   conversation: Conversation,
@@ -904,5 +911,40 @@ describe('MessageGroup stopped terminal', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /1 experts: 1 succeeded/ })).toHaveAttribute('aria-expanded', 'false');
     });
+  });
+});
+
+
+describe('automatic preview conversation ownership', () => {
+  const originalOpenPreview = usePreviewStore.getState().openPreview;
+  beforeEach(() => { usePreviewStore.setState({ openPreview: originalOpenPreview }); });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); usePreviewStore.setState({ openPreview: originalOpenPreview }); });
+  it.each([false, true])('does not send a delayed preview to another conversation (switched=%s)', async switched => {
+    initLanguage('en-US');
+    const pending: ((source: ResolvedSource) => void)[] = [];
+    vi.mocked(resolveFileSource).mockImplementation(() => new Promise(resolve => { pending.push(resolve); }));
+    const messages: Message[] = [{
+      id: 'output', role: 'assistant', content: '', timestamp: 1000,
+      toolCalls: [{ id: 'write', name: TOOL_NAMES.WRITE_FILE, input: { path: '/tmp/report.md', content: 'report' }, result: 'ok' }],
+    }];
+    const owner: Conversation = { id: 'preview-owner', title: 'A', messages, createdAt: 1, updatedAt: 1, status: 'running' };
+    setConversationState(owner);
+    usePreviewStore.setState({ tabs: [], currentConversationId: owner.id, activeTabId: null, panelStateByConversation: {}, lastActiveTabByConversation: {} });
+    const open = vi.spyOn(usePreviewStore.getState(), 'openPreview');
+    render(<MessageGroup conversationId={owner.id} messages={messages} isLastGroup />);
+    const before = pending.length;
+    await act(async () => { useChatStore.setState({ conversations: { [owner.id]: { ...owner, status: 'idle' } } }); });
+    await waitFor(() => expect(pending.length).toBeGreaterThan(before));
+    if (switched) {
+      await act(async () => {
+        useChatStore.setState({ activeConversationId: 'other', conversations: { [owner.id]: { ...owner, status: 'idle' }, other: { ...owner, id: 'other', status: 'idle' } } });
+        usePreviewStore.getState().closeTabsForConversationSwitch('other');
+      });
+    }
+    await act(async () => {
+      for (const resolve of pending) resolve({ status: 'available', path: '/tmp/report.md', isFromSnapshot: false });
+    });
+    if (switched) expect(open).not.toHaveBeenCalled();
+    else expect(open).toHaveBeenCalledWith('/tmp/report.md');
   });
 });

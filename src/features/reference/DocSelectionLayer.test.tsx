@@ -51,6 +51,20 @@ describe('DocSelectionLayer integration', () => {
     window.getSelection()?.removeAllRanges();
   });
 
+  it('disarms a retained selection when its conversation/tab becomes hidden', async () => {
+    const view = render(<DocSelectionLayer filePath="/a/private.md"><p>Private A text</p></DocSelectionLayer>);
+    selectElement(screen.getByText('Private A text'));
+    fireEvent.mouseUp(document.querySelector('[data-doc-selection-layer]')!);
+    await act(async () => { await vi.advanceTimersByTimeAsync(150); });
+    expect(screen.getByText('Add to Chat')).toBeInTheDocument();
+    view.rerender(<DocSelectionLayer filePath="/a/private.md" active={false}><p>Private A text</p></DocSelectionLayer>);
+    expect(screen.queryByText('Add to Chat')).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Enter' });
+    expect(useChatStore.getState().pendingReferences).toEqual([]);
+    view.rerender(<DocSelectionLayer filePath="/a/private.md"><p>Private A text</p></DocSelectionLayer>);
+    expect(screen.queryByText('Add to Chat')).not.toBeInTheDocument();
+  });
+
   // ── Case 1: Add to Chat ───────────────────────────────────────────────────
 
   it('adds a reference without comment when "Add to Chat" is clicked', async () => {

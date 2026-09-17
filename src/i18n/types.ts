@@ -560,6 +560,7 @@ export interface TranslationDict {
     /** Toast after a direct instruction was queued for a running team member. */
     memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
+    attachmentInvalidFileName: string;
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;
@@ -1002,6 +1003,63 @@ export interface TranslationDict {
 
   // Settings Modal
   settings: {
+    browserResourceGrantBrowse: string;
+    browserResourceGrantUpload: string;
+    browserRequestOnce: string;
+    browserDownloadsCompleted: string;
+    browserDownloadsUnavailable: string;
+    browserDownloadsUnknown: string;
+    browserResourceAlwaysAllow: string;
+    browserBrowseDesc: string;
+    browserBrowseLabel: string;
+    browserConfigInvalid: string;
+    browserDefaultAllowDesc: string;
+    browserDownloadsChecking: string;
+    browserDownloadsClearSearch: string;
+    browserDownloadsDesc: string;
+    browserDownloadsEmpty: string;
+    browserDownloadsEntryDesc: string;
+    browserDownloadsLoading: string;
+    browserDownloadsNoResults: string;
+    browserDownloadsOmitted: string;
+    browserDownloadsOpenFileLabel: string;
+    browserDownloadsOpenTaskLabel: string;
+    browserDownloadsPartialRead: string;
+    browserDownloadsReadAgain: string;
+    browserDownloadsReadFailed: string;
+    browserDownloadsReveal: string;
+    browserDownloadsRevealLabel: string;
+    browserDownloadsSearchLabel: string;
+    browserDownloadsSearchPlaceholder: string;
+    browserDownloadsTaskUnavailable: string;
+    browserDownloadsTitle: string;
+    browserInherit: string;
+    browserPermissionsSharedDesc: string;
+    browserPermissionsTitle: string;
+    browserScriptActionDesc: string;
+    browserSiteAccess: string;
+    browserSiteAccessBlock: string;
+    browserSiteAddHint: string;
+    browserSiteAddTitle: string;
+    browserSiteAllowBrowse: string;
+    browserSiteAlreadyAdded: string;
+    browserSiteCustom: string;
+    browserSiteCustomTitle: string;
+    browserSiteDefaultState: string;
+    browserSiteDeleteButton: string;
+    browserSiteDeleteLabel: string;
+    browserSiteDeleteMessage: string;
+    browserSiteDeleteTitle: string;
+    browserSitePermsAddCredentials: string;
+    browserSitePermsEffectiveOrigin: string;
+    browserSitePermsSave: string;
+    browserSiteRuleConflict: string;
+    browserSiteRulesDesc: string;
+    browserSiteRulesFootnote: string;
+    browserSiteRulesSummary: string;
+    browserSiteUnblockOnSave: string;
+    browserUploadActionDesc: string;
+    browserEmbeddedScope: string;
     title: string;
     apiConfig: string;
     modelSelect: string;
@@ -1168,6 +1226,19 @@ export interface TranslationDict {
     capabilityWebTitle: string;
     capabilityBuiltinBrowser: string;
     capabilityMyChrome: string;
+    capabilityChromeWaitingForBrowser: string;
+    capabilityChromeSetupHelp: string;
+    capabilityChromeOpenFolder: string;
+    capabilityChromeOpenExtensions: string;
+    capabilityChromeNotInstalled: string;
+    capabilityChromeInstalled: string;
+    capabilityChromeInstallationUnknown: string;
+    capabilityChromeInstallExtension: string;
+    capabilityChromeGuidePage: string;
+    capabilityChromeGuideIntro: string;
+    capabilityChromeGuideFolder: string;
+    capabilityChromeGuideDeveloper: string;
+    capabilityChromeExtension: string;
     capabilityMyChromeDesc: string;
     /** The one consent clause the My Chrome page keeps: it sits on the status
      *  row while the channel is connected, in place of the footer paragraph
@@ -1895,6 +1966,7 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
+    nameTakenHint: string;
     fieldDescription: string;
     fieldDescriptionPlaceholder: string;
     fieldIntro: string;
@@ -2223,7 +2295,7 @@ export interface TranslationDict {
     setupWithAbu: string;
     aiAssistedMCPSetup: string;
     // Source labels
-    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.43: built-ins are the OSS market shelf. */
+    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.50: built-ins are the OSS market shelf. */
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;
@@ -2851,6 +2923,12 @@ export interface TranslationDict {
       reload: string;
       openExternal: string;
       addressPlaceholder: string;
+      takeControl: string;
+      handBack: string;
+      yielding: string;
+      humanControl: string;
+      controlFailed: string;
+      popupBlocked: string;
       startPrompt: string;
       framingHint: string;
       dismissHint: string;

@@ -71,6 +71,7 @@ const mockGetActiveProvider = vi.fn(
 );
 const mockResolveAgentModel = vi.hoisted(() => vi.fn(() => 'claude-opus-4-8'));
 vi.mock('../../stores/settingsStore', () => ({
+  readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: { getState: () => ({ agentMaxTurns: 200, maxOutputTokens: undefined, contextWindowSize: undefined }) },
 }));
 

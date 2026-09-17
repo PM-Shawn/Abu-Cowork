@@ -34,6 +34,7 @@ describe('readBrowserConfigRevisions', () => {
         allowUnattendedBrowser: 1,
       },
     })).toEqual({
+      browserPermissionConfigV2: 0,
       browserOperationPolicy: 3,
       browserSitePermissions: 7,
       allowUnattendedBrowser: 1,
@@ -249,6 +250,7 @@ describe('mergeBrowserConfigForWrite', () => {
     const onDisk = blob({ allowUnattendedBrowser: true }, { allowUnattendedBrowser: 8 });
     const { merged } = mergeBrowserConfigForWrite(outgoing, onDisk);
     expect(merged.state.browserConfigRevisions).toEqual({
+      browserPermissionConfigV2: 0,
       browserOperationPolicy: 2,
       browserSitePermissions: 0,
       allowUnattendedBrowser: 8,
@@ -258,6 +260,7 @@ describe('mergeBrowserConfigForWrite', () => {
 
 describe('browserConfigWasStored', () => {
   const intended = blob({
+    browserPermissionConfigV2: { schemaVersion: 2, defaults: { browse: 'ask', upload: 'ask', script: 'deny' }, sites: {}, embeddedSites: {} },
     browserOperationPolicy: { readOnly: 'allow', interactive: 'allow', scripting: 'ask' },
     browserSitePermissions: { 'https://a.example.com': 'allowed' },
     allowUnattendedBrowser: true,

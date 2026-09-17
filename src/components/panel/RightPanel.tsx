@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { getVisibleTabs, isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { useActiveConversation } from '@/stores/chatStore';
@@ -136,37 +136,23 @@ export default function RightPanel() {
   // Conversation has a workspace → panel is meaningful
   const hasWorkspace = !!conversation?.workspacePath;
 
-  // Reset per-conversation flags when switching conversations.
-  // Also auto-collapse if new conversation has no workspace.
   const conversationId = conversation?.id ?? null;
-  useEffect(() => {
-    autoExpandedRef.current = false;
-    summaryInitedRef.current = false;
-    if (!conversation?.workspacePath && !collapsed) {
-      setRightPanelCollapsed(true);
-    }
+  // Restore before paint so another conversation’s tabs never flash on screen.
+  useLayoutEffect(() => {
+    const store = usePreviewStore.getState();
+    const restored = !!(conversationId && store.panelStateByConversation[conversationId]);
+    autoExpandedRef.current = restored || hasWorkspace;
+    summaryInitedRef.current = restored;
+    store.closeTabsForConversationSwitch(conversationId, !hasWorkspace);
+  // Workspace attachment after the switch is handled by the auto-expand effect.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationId]);
-
-  // Close the conversation-scoped workspace tabs when switching conversations
-  // (summary / preview / terminal / subagent). Defined BEFORE the summary-open
-  // effect so that runs against a cleared tab list.
-  //
-  // Browser tabs are exempt: their native view is a page an agent may still be
-  // driving in the background, and closing the tab destroyed it mid-task
-  // (losing the page, its login state and any typed form data) — the panel's
-  // per-conversation reset must not reach into the agent's runtime. Passing the
-  // conversation id re-scopes visibility instead: an agent tab adopted for
-  // another conversation goes hidden here and comes back when the user does.
-  useEffect(() => {
-    usePreviewStore.getState().closeTabsForConversationSwitch(conversationId);
   }, [conversationId]);
 
   // Default the panel to the "task summary" tab: once per conversation, when the
   // panel is visible (expanded, has messages) and no tab is open yet. Closing
   // the summary tab afterwards leaves the "从这里开始" empty state (not reopened).
   useEffect(() => {
-    if (collapsed || !hasMessages || summaryInitedRef.current) return;
+    if (useSettingsStore.getState().rightPanelCollapsed || !hasMessages || summaryInitedRef.current) return;
     // "No tab" means no tab THIS conversation can see: another conversation's
     // surviving agent browser tab must not suppress this one's summary.
     if (getVisibleTabs().length === 0) {

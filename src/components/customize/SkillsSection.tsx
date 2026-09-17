@@ -395,7 +395,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
 
           <Button size="sm" className="rounded-xl" disabled={disabledSet.has(selected.name) || !pluginAllowed(selected)} onClick={() => {
             startNewConversation();
-            setPendingInput(`/${selected.name} `);
+            setPendingInput(`/${selected.name} `, { startsTask: true });
             setSelectedSkill(null);
             closeExtensions();
           }}><MessageCircle className="h-3.5 w-3.5" />{t.toolbox.menuTrial}</Button>

@@ -3,7 +3,7 @@
 /**
  * The 「最大轮次」 row only. The rest of the General section has no test file,
  * and this deliberately doesn't grow into one — what is worth pinning here is
- * that the control cannot produce a cap that isn't a cap, and that the row
+ * that the control saves finite and unlimited choices, and that the row
  * lines up with the other controls in the column.
  */
 import { cleanup, render, screen } from '@testing-library/react';
@@ -106,19 +106,18 @@ describe('GeneralSection · 最大轮次', () => {
     expect(mockSetAgentMaxTurns).toHaveBeenCalledWith(500);
   });
 
-  it('offers no way to pick "no cap" or an unbounded number', async () => {
+  it('offers unlimited after the finite presets', async () => {
     render(<GeneralSection />);
 
     await userEvent.click(trigger());
     const offered = menuItems().map((o) => o.textContent);
 
-    expect(offered).toEqual(['50 轮', '100 轮', '200 轮', '500 轮', '1000 轮']);
-    expect(offered).not.toContain('不限制');
+    expect(offered).toEqual(['50 轮', '100 轮', '200 轮', '500 轮', '1000 轮', '不限制']);
+    await userEvent.click(menuItems().find((b) => b.textContent === '不限制')!);
+    expect(mockSetAgentMaxTurns).toHaveBeenCalledWith(0);
   });
 
-  it('surfaces an out-of-band "no cap" rather than misreporting it as 200', async () => {
-    // Only reachable by hand-editing config, but the row must not claim a cap
-    // is in force when the loop is running without one.
+  it('shows the saved unlimited choice', async () => {
     settingsState.agentMaxTurns = 0;
     render(<GeneralSection />);
 

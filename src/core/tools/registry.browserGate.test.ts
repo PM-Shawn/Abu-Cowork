@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // P1-a boundary pins for the browser gate in a TEAM conversation.
 //
 // The site verdict is what actually silences a repeated browser action: the
@@ -12,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { useTeamConfirmationStore } from '../../stores/teamConfirmationStore';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
@@ -39,7 +40,9 @@ const teamContext = { conversationId: TEAM_CONV, agentName: 'zz填表员', loopI
 const fillInput = { tabId: TAB_ID, locator: { css: '#q' }, value: 'x' };
 
 function setSitePermissions(entries: Record<string, 'allowed' | 'denied'>) {
-  useSettingsStore.setState({ browserSitePermissions: entries } as never);
+  const config = createBrowserPermissionConfig(); config.defaults.browse = 'ask';
+  config.sites = Object.fromEntries(Object.entries(entries).map(([origin, verdict]) => [origin, { ...emptyBrowserSiteRule(), ...(verdict === 'denied' ? { blocked: true } : { browse: 'allow' as const }) }]));
+  setMigratedBrowserSettings({ browserPermissionConfigV2: config });
 }
 
 describe('browser gate in a team conversation (P1-a)', () => {
@@ -69,7 +72,7 @@ describe('browser gate in a team conversation (P1-a)', () => {
       activeConversationId: null,
     } as never);
     useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, interactive: 'allow' },
       allowUnattendedBrowser: false,

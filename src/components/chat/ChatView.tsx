@@ -1513,6 +1513,7 @@ export default function ChatView({
       {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
         <CommandConfirmDialog
           request={commandConfirmRequest.info}
+          isRequestActive={() => getPendingCommandConfirmation() === commandConfirmRequest}
           onConfirm={handleCommandConfirm}
           onCancel={handleCommandCancel}
         />

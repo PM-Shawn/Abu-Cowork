@@ -169,6 +169,7 @@ describe('RightPanel browser view lifecycle', () => {
       fileTreeMode: false,
       currentConversationId: null,
       lastActiveTabByConversation: {},
+      panelStateByConversation: {},
     });
 
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(
@@ -192,8 +193,9 @@ describe('RightPanel browser view lifecycle', () => {
       useChatStore.setState({ activeConversationId: 'b' });
     });
 
-    // Conversation-scoped tabs still reset; the agent's browser tab survives.
-    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['browser']);
+    // Both conversations retain their own summary; only B’s is listed here.
+    expect(usePreviewStore.getState().tabs.map((tab) => tab.kind)).toEqual(['summary', 'summary', 'browser']);
+    expect(getVisibleTabs().map(tab => tab.kind)).toEqual(['summary']);
     expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.anything());
     expect(browserTabMounted()).toBe(true);
   });
@@ -312,7 +314,8 @@ describe('RightPanel browser view lifecycle', () => {
     });
 
     const s = usePreviewStore.getState();
-    expect(getVisibleTabs().map((tab) => tab.id)).toEqual([OWNED_TAB_ID]);
+    expect(getVisibleTabs().map((tab) => tab.kind)).toEqual(['summary', 'browser']);
+    expect(getVisibleTabs().find(tab => tab.kind === 'browser')?.id).toBe(OWNED_TAB_ID);
     expect(s.activeTabId).toBe(OWNED_TAB_ID);
     expect(document.getElementById(workspaceTabButtonId(OWNED_TAB_ID))).not.toBeNull();
     await waitFor(() => {
@@ -357,7 +360,8 @@ describe('RightPanel browser view lifecycle', () => {
     // A's tab is visible again (a false→true flip of hasWideContent), but it is
     // the same content coming back, not new content — the sidebar stays as the
     // user left it.
-    expect(getVisibleTabs().map((tab) => tab.id)).toEqual([OWNED_TAB_ID]);
+    expect(getVisibleTabs().map((tab) => tab.kind)).toEqual(['summary', 'browser']);
+    expect(getVisibleTabs().find(tab => tab.kind === 'browser')?.id).toBe(OWNED_TAB_ID);
     expect(useSettingsStore.getState().sidebarCollapsed).toBe(false);
   });
 

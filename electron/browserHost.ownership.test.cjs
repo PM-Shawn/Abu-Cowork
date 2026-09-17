@@ -58,6 +58,9 @@ class FakeWebContents {
     this.listeners = new Map();
     this.navigationHistory = { goBack() {}, goForward() {} };
     this.isolatedScripts = [];
+    const contents = this;
+    this.mainFrame = { get origin() { return new URL(contents.url).origin; }, get framesInSubtree() { return [this]; } };
+    this.focusedFrame = this.mainFrame;
     this.debugger = {
       isAttached: () => false,
       attach() {},
@@ -80,7 +83,10 @@ class FakeWebContents {
     for (const handler of this.listeners.get(event) || []) handler(...args);
   }
 
-  setWindowOpenHandler() {}
+  removeListener(event, handler) {
+    this.listeners.set(event, (this.listeners.get(event) || []).filter((entry) => entry !== handler));
+  }
+  setWindowOpenHandler(handler) { this.openWindow = handler; }
   isDestroyed() { return this.destroyed; }
   getURL() { return this.url; }
   getTitle() { return this.title; }
@@ -117,14 +123,15 @@ class FakeWebContents {
 }
 
 class FakeWebContentsView {
-  constructor() {
-    this.webContents = new FakeWebContents();
+  constructor(options = {}) {
+    this.webContents = options.webContents || new FakeWebContents();
     this.visible = true;
     this.bounds = null;
   }
 
   setBounds(bounds) { this.bounds = bounds; }
   setVisible(visible) { this.visible = visible; }
+  getVisible() { return this.visible; }
 }
 
 /**
@@ -142,6 +149,7 @@ function fakeSession(capture) {
     setDisplayMediaRequestHandler() {},
     on() {},
     webRequest: {
+      onBeforeRequest() {},
       onHeadersReceived(_filter, listener) {
         if (capture) capture(listener);
       },
@@ -155,7 +163,7 @@ function fakeSession(capture) {
  * calling `browser_create` with the same id, which is exactly what
  * `App.tsx` → `previewStore.openBrowser()` does in production.
  */
-function loadHost({ adopt = true, onAdopt = null } = {}) {
+function loadHost({ adopt = true, onAdopt = null, visible = true } = {}) {
   const prevElectron = require.cache[electronId];
   const prevTauri = require.cache[tauriHostId];
   delete require.cache[browserHostId];
@@ -208,6 +216,7 @@ function loadHost({ adopt = true, onAdopt = null } = {}) {
           host.browserDispatch(null, 'browser_create', {
             id: payload.id,
             url: 'about:blank',
+            visible,
             x: 0,
             y: 0,
             width: 800,
@@ -521,25 +530,15 @@ test('a headless fallback view still belongs to the requesting conversation', as
       return true;
     });
 
-    // The pending-owner entry was consumed by the fallback. Probe it: dropping
-    // the view clears viewMeta but never touches the pending map, so
-    // re-creating the SAME id as a user pane tab would come back OWNER_A-owned
-    // (and invisible to a legacy caller) if the entry had been stranded.
+    // A destroyed automation id must not be re-adopted as a legacy user tab.
     const contents = contentsFor(aTab);
     contents.destroyed = true;
     contents.fire('destroyed');
     host.browserDispatch(null, 'browser_create', {
-      id: fallbackId,
-      url: 'https://example.com/',
-      x: 0,
-      y: 0,
-      width: 800,
-      height: 600,
+      id: fallbackId, url: 'https://example.com/', x: 0, y: 0, width: 800, height: 600,
     });
+    assert.deepEqual(tabIds(await probeTabs(host)), []);
 
-    const legacyTabs = await getTabs(host);
-    assert.equal(tabIds(legacyTabs).length, 1);
-    assert.equal(legacyTabs.windows[0].tabs[0].url, 'https://example.com/');
   } finally {
     restore();
   }
@@ -1630,7 +1629,7 @@ test('disposing an already-adopted view tells the renderer to drop its record', 
   }
 });
 
-test('the cancelled-adoption tombstone set stays bounded', async () => {
+test('expired cancellation tombstones never allow stale automation adoption', async () => {
   // It only has to outlive an in-flight adoption (milliseconds), so it is capped
   // and evicts oldest-first rather than growing for the life of the session.
   const { host, emitted, restore } = loadHost();
@@ -1649,12 +1648,12 @@ test('the cancelled-adoption tombstone set stays bounded', async () => {
     });
     assert.deepEqual(tabIds(await probeTabs(host)), [], 'a recent cancellation still blocks');
 
-    // ...and the oldest have aged out, which is the bound itself: an adoption
-    // 70 cancellations ago is long dead, so re-using its id is not a ghost path.
+    // Even after bounded tombstone eviction, only a live pending registration
+    // can authorize an automation adoption. Old requests must remain refused.
     host.browserDispatch(null, 'browser_create', {
       id: ids[0], url: 'https://aged-out.example/', x: 0, y: 0, width: 800, height: 600,
     });
-    assert.equal(tabIds(await probeTabs(host)).length, 1, 'the set did not grow past its cap');
+    assert.deepEqual(tabIds(await probeTabs(host)), [], 'expired ids cannot resurrect tabs');
   } finally {
     restore();
   }
@@ -1826,14 +1825,14 @@ test('a tab owned by another conversation is still refused, message unchanged', 
 });
 
 test('browser_dispose_owner with a runKey reaps only that run', async () => {
-  const { host, restore } = loadHost();
+  const { host, restore } = loadHost({ visible: false });
   try {
     const run1Tab = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
     const run2Tab = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
     const mainTab = tabIds(await getTabs(host, OWNER_A))[0];
     const otherConversationTab = tabIds(await getTabs(host, OWNER_B, RUN_1))[0];
 
-    host.browserDispatch(null, 'browser_dispose_owner', {
+    await host.browserDispatch(null, 'browser_dispose_owner', {
       conversationId: OWNER_A,
       runKey: RUN_1,
     });
@@ -3240,8 +3239,10 @@ test('F0: an injecting action still owns the input events it synthesizes', async
     // Real Electron delivers an injected key back as `before-input-event` on
     // the guest — the exact event shape a human keystroke produces. Without
     // suppression on the target view, automation would back off from itself.
-    contentsFor(aTab).sendInputEvent = function sendInputEvent(event) {
-      this.fire('before-input-event', {}, event);
+    const contents = contentsFor(aTab);
+    contents.debugger.sendCommand = async (method, event) => {
+      if (method === 'Input.dispatchKeyEvent') contents.fire('before-input-event', {}, event);
+      return {};
     };
 
     await host.performBrowserAutomation('keyboard', { ownerId: OWNER_A, tabId: aTab, key: 'a' });
@@ -3755,4 +3756,431 @@ test('U5 pin: a trailing-dot FQDN is the same origin, not a way past the pin', a
   } finally {
     restore();
   }
+});
+
+
+test('create_tab opens two separate owned pages without navigating the first', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const first = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://one.example/' });
+    const second = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://two.example/' });
+    assert.notEqual(first.tabId, second.tabId);
+    assert.equal(contentsRegistry.get(first.tabId).url, 'https://one.example/');
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A, createIfEmpty: false });
+    assert.equal(listing.windows[0].tabs.length, 2);
+    const other = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER_B, createIfEmpty: false });
+    assert.equal(other.windows[0].tabs.length, 0);
+  } finally { restore(); }
+});
+
+for (const url of ['file:///etc/passwd', 'javascript:alert(1)', 'chrome://settings', 'not a URL']) {
+  test(`create_tab refuses ${url} before allocating`, async () => {
+    const { host, emitted, restore } = loadHost();
+    try {
+      await assert.rejects(host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url }));
+      assert.equal(emitted.filter((entry) => entry.event === 'browser://automation-open').length, 0);
+    } finally { restore(); }
+  });
+}
+
+test('create_tab refuses a mismatching approval and a stopped request before allocating', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    await assert.rejects(host.performBrowserAutomation('create_tab', {
+      ownerId: OWNER_A, url: 'https://one.example/', expectedOrigin: 'https://two.example',
+    }), /approved origin/);
+    const controller = new AbortController(); controller.abort();
+    await assert.rejects(host.performBrowserAutomation('create_tab', {
+      ownerId: OWNER_A, url: 'https://one.example/',
+    }, { signal: controller.signal }));
+    assert.equal(emitted.filter((entry) => entry.event === 'browser://automation-open').length, 0);
+  } finally { restore(); }
+});
+
+
+test('new tab allocation is bounded without destroying retained pages', async () => {
+  const { host, restore } = loadHost();
+  try {
+    for (let index = 0; index < 8; index += 1) {
+      await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: `https://example.com/${index}` });
+    }
+    await assert.rejects(host.performBrowserAutomation('create_tab', {
+      ownerId: OWNER_A, url: 'https://example.com/overflow',
+    }), /tab limit/);
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A, createIfEmpty: false });
+    assert.equal(listing.windows[0].tabs.length, 8);
+  } finally { restore(); }
+});
+
+
+test('creation accepts an adopted view before its initial blank document commits', async () => {
+  const { host, restore } = loadHost({ onAdopt: () => {
+    contentsRegistry.get(nextContentsId).url = '';
+  } });
+  try {
+    const result = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    assert.equal(contentsRegistry.get(result.tabId).url, 'https://example.com/');
+  } finally { restore(); }
+});
+
+test('creation does not overwrite a page opened during adoption', async () => {
+  const { host, restore } = loadHost({ onAdopt: () => {
+    contentsRegistry.get(nextContentsId).url = 'https://user.example/';
+  } });
+  try {
+    await assert.rejects(host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' }), /user/i);
+    assert.equal(contentsRegistry.get(nextContentsId).url, 'https://user.example/');
+  } finally { restore(); }
+});
+
+
+test('creation rechecks the new page after yielding to user interaction', async () => {
+  let createdTabId;
+  const { host, restore } = loadHost({ onAdopt: () => {
+    createdTabId = nextContentsId;
+    typeInto(createdTabId);
+  } });
+  try {
+    const { clock, state } = fakeClock();
+    host.__testing.setClock(clock);
+    state.onSleep = () => { contentsRegistry.get(createdTabId).url = 'https://user.example/'; };
+    await assert.rejects(host.performBrowserAutomation('create_tab', {
+      ownerId: OWNER_A, url: 'https://example.com/',
+    }), /user/i);
+    assert.ok(state.sleeps.length > 0);
+    assert.equal(contentsRegistry.get(createdTabId).url, 'https://user.example/');
+  } finally { restore(); }
+});
+
+
+test('close_tab preserves every previously presented page even after hiding', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    const id = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+    await host.browserDispatch(null, 'browser_hide', { id });
+    const result = await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId });
+    assert.equal(result.status, 'requires_user_action');
+    assert.equal(contentsRegistry.get(tabId).isDestroyed(), false);
+  } finally { restore(); }
+});
+
+test('close_tab closes an untouched unpresented owned page and cancels its renderer record', async () => {
+  const { host, emitted, restore } = loadHost({ visible: false });
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    const result = await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId });
+    assert.equal(result.status, 'closed');
+    assert.equal(contentsRegistry.get(tabId).isDestroyed(), true);
+    assert.equal(emitted.filter((entry) => entry.event === 'browser://automation-cancel').length, 1);
+  } finally { restore(); }
+});
+
+test('close_tab cannot use same-conversation cross-run access as ownership', async () => {
+  const { host, restore } = loadHost({ visible: false });
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, runId: 'child', url: 'https://example.com/' });
+    const result = await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, runId: 'sibling', tabId });
+    assert.equal(result.status, 'requires_user_action');
+    assert.equal(contentsRegistry.get(tabId).isDestroyed(), false);
+    // Once shared with a sibling, the original owner cannot silently reap it either.
+    assert.equal((await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, runId: 'child', tabId })).status, 'requires_user_action');
+  } finally { restore(); }
+});
+
+test('close_tab preserves AI-edited pages even without an unload handler', async () => {
+  const { host, restore } = loadHost({ visible: false });
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    await host.performBrowserAutomation('keyboard', { ownerId: OWNER_A, tabId, key: 'a' });
+    assert.equal((await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId })).status, 'requires_user_action');
+    assert.equal(contentsRegistry.get(tabId).isDestroyed(), false);
+  } finally { restore(); }
+});
+
+test('unknown automation adoption cannot create a legacy ghost', async () => {
+  const { host, restore } = loadHost();
+  try {
+    await host.browserDispatch(null, 'browser_create', { id: '__abu-browser-automation__expired', url: 'about:blank' });
+    const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A, createIfEmpty: false });
+    assert.equal(listing.windows[0].tabs.length, 0);
+  } finally { restore(); }
+});
+
+
+test('a native unload veto permanently retains the page even if its handler disappears', async () => {
+  const { host, restore } = loadHost({ visible: false });
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    const wc = contentsRegistry.get(tabId);
+    let calls = 0;
+    wc.close = () => {
+      calls++;
+      wc.fire('will-prevent-unload', { preventDefault: () => assert.fail('must not override veto') });
+    };
+    assert.equal((await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId })).status, 'requires_user_action');
+    wc.close = () => assert.fail('a retained page cannot be retried');
+    assert.equal((await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId })).status, 'requires_user_action');
+    assert.equal(calls, 1);
+    assert.equal(wc.isDestroyed(), false);
+  } finally { restore(); }
+});
+
+test('user address-bar navigation protects even an unpresented page', async () => {
+  const { host, emitted, restore } = loadHost({ visible: false });
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    const id = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+    host.browserDispatch(null, 'browser_navigate', { id, url: 'https://user.example/' });
+    assert.equal((await host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId })).status, 'requires_user_action');
+    assert.equal(contentsRegistry.get(tabId).isDestroyed(), false);
+  } finally { restore(); }
+});
+
+
+test('close checks the approved origin again and rejects a stopped run', async () => {
+  const { host, restore } = loadHost({ visible: false });
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    await assert.rejects(host.performBrowserAutomation('close_tab', {
+      ownerId: OWNER_A, tabId, expectedOrigin: 'https://other.example',
+    }), /approved https:\/\/other\.example, now https:\/\/example\.com/);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId }, { signal: controller.signal }), /stop/i);
+    assert.equal(contentsRegistry.get(tabId).isDestroyed(), false);
+  } finally { restore(); }
+});
+
+test('a pending close blocks another page action without force-closing', async () => {
+  const { host, restore } = loadHost({ visible: false });
+  try {
+    const { tabId } = await host.performBrowserAutomation('create_tab', { ownerId: OWNER_A, url: 'https://example.com/' });
+    const wc = contentsRegistry.get(tabId);
+    wc.close = () => {};
+    const closing = host.performBrowserAutomation('close_tab', { ownerId: OWNER_A, tabId });
+    await assert.rejects(host.performBrowserAutomation('navigate', {
+      ownerId: OWNER_A, tabId, url: 'https://other.example/',
+    }), /closing/i);
+    wc.fire('will-prevent-unload');
+    assert.equal((await closing).status, 'requires_user_action');
+    assert.equal(wc.isDestroyed(), false);
+    assert.equal(wc.url, 'https://example.com/');
+  } finally { restore(); }
+});
+
+// A same-conversation explicit handoff can name an older run's source tab.
+// The popup belongs to the CALLER, not to that source's previous owner.
+test('native popup belongs to the calling run and renderer adoption never reloads it', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const sourceId = tabIds(await getTabs(host, OWNER_A, 'older-run'))[0];
+    const source = contentsRegistry.get(sourceId);
+    source.url = 'https://example.com/source';
+    let child;
+    source.debugger.sendCommand = async (method, event) => {
+      if (method !== 'Input.dispatchKeyEvent' || event.type !== 'keyDown') return {};
+      await Promise.resolve(); // Native popup arrives before the input ACK, not synchronously.
+      const response = source.openWindow({ url: 'https://example.com/post-result' });
+      assert.equal(response.action, 'allow');
+      child = new FakeWebContents();
+      child.url = 'https://example.com/post-result';
+      child.loadURL = () => { throw new Error('Native POST must not be replayed'); };
+      response.createWindow({ webContents: child, webPreferences: response.overrideBrowserWindowOptions.webPreferences });
+    };
+    await host.performBrowserAutomation('keyboard', {
+      ownerId: OWNER_A, runId: 'calling-run', tabId: sourceId, key: 'Enter',
+      expectedOrigin: 'https://example.com', popupOrigin: 'https://example.com',
+    });
+    const own = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER_A, runId: 'calling-run', createIfEmpty: false });
+    assert.deepEqual(tabIds(own), [child.id]);
+    assert.deepEqual(tabIds(await getTabs(host, OWNER_A, 'older-run')), [sourceId]);
+    assert.deepEqual(tabIds(await host.performBrowserAutomation('get_tabs', { ownerId: OWNER_B, createIfEmpty: false })), []);
+    assert.equal(child.getURL(), 'https://example.com/post-result');
+    const childEvent = emitted.filter((entry) => entry.event === 'browser://automation-open').at(-1);
+    assert.equal(childEvent.payload.ownerId, OWNER_A);
+    child.close();
+    assert.ok(emitted.some((entry) => entry.event === 'browser://automation-cancel' && entry.payload.id === childEvent.payload.id));
+  } finally { restore(); }
+});
+
+for (const focusState of ['child-frame', 'unknown', 'changed-during-keydown']) {
+  test(`keyboard popup does not inherit top-level approval with ${focusState}`, async () => {
+    const { host, restore } = loadHost();
+    try {
+      const sourceId = tabIds(await getTabs(host, OWNER_A))[0];
+      const source = contentsRegistry.get(sourceId);
+      source.url = 'https://example.com/source';
+      if (focusState === 'child-frame') source.focusedFrame = { origin: 'https://example.com' };
+      if (focusState === 'unknown') source.focusedFrame = null;
+      source.debugger.sendCommand = async (method, event) => {
+        if (method !== 'Input.dispatchKeyEvent' || event.type !== 'keyDown') return {};
+        if (focusState === 'changed-during-keydown') source.focusedFrame = { origin: 'https://example.com' };
+        assert.deepEqual(source.openWindow({ url: 'https://example.com/result' }), { action: 'deny' });
+        return {};
+      };
+      await assert.rejects(host.performBrowserAutomation('keyboard', {
+        ownerId: OWNER_A, tabId: sourceId, key: 'Enter',
+        expectedOrigin: 'https://example.com', popupOrigin: 'https://example.com',
+      }), /Popup blocked/);
+      assert.deepEqual(tabIds(await getTabs(host, OWNER_A)), [sourceId]);
+    } finally { restore(); }
+  });
+}
+
+test('cancellation between native popup permission and creation returns safely and disposes the child', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const sourceId = tabIds(await getTabs(host, OWNER_A))[0];
+    const source = contentsRegistry.get(sourceId);
+    source.url = 'https://example.com/source';
+    const controller = new AbortController();
+    let child;
+    source.debugger.sendCommand = async (method, event) => {
+      if (method !== 'Input.dispatchKeyEvent' || event.type !== 'keyDown') return {};
+      const response = source.openWindow({ url: 'https://example.com/result' });
+      assert.equal(response.action, 'allow');
+      child = new FakeWebContents();
+      child.loadURL = () => { throw new Error('Cancelled POST must not be replayed'); };
+      controller.abort();
+      assert.equal(response.createWindow({ webContents: child }), child);
+      assert.equal(child.isDestroyed(), false, 'native callback must return a live object');
+      assert.deepEqual(child.openWindow({ url: 'https://example.com/again' }), { action: 'deny' });
+      return {};
+    };
+    await assert.rejects(host.performBrowserAutomation('keyboard', {
+      ownerId: OWNER_A, tabId: sourceId, key: 'Enter',
+      expectedOrigin: 'https://example.com', popupOrigin: 'https://example.com',
+    }, { signal: controller.signal }), /abort|cancel|Popup blocked/i);
+    await new Promise(setImmediate);
+    assert.equal(child.isDestroyed(), true);
+    assert.deepEqual(tabIds(await getTabs(host, OWNER_A)), [sourceId]);
+    assert.equal(emitted.filter((entry) => entry.event === 'browser://automation-open').length, 1);
+  } finally { restore(); }
+});
+
+test('explicit takeover blocks page actions, preserves owner and document, and handback permits fresh work', async () => {
+  const { host, emitted, restore } = loadHost();
+  try {
+    const tabId = tabIds(await getTabs(host, OWNER_A))[0];
+    const source = contentsFor(tabId);
+    source.url = 'https://example.com/draft';
+    const id = emitted.find((entry) => entry.event === 'browser://automation-open').payload.id;
+    assert.equal(await host.browserDispatch(null, 'browser_control', { id, action: 'take' }), 'human');
+    for (const action of ['navigate', 'execute_js', 'snapshot', 'keyboard', 'close_tab']) {
+      await assert.rejects(host.performBrowserAutomation(action, {
+        ownerId: OWNER_A, tabId, url: 'https://example.com/replaced', expectedOrigin: 'https://example.com', code: '1', key: 'Enter',
+      }), /user has taken control/);
+    }
+    const list = await probeTabs(host, OWNER_A);
+    assert.equal(list.windows[0].tabs[0].control, 'human');
+    assert.equal(source.getURL(), 'https://example.com/draft');
+    assert.deepEqual(tabIds(list), [tabId]);
+    assert.equal(host.browserDispatch(null, 'browser_control', { id, action: 'release' }), 'ai');
+    await assert.rejects(navigate(host, OWNER_A, tabId, 'https://example.com/resumed'), /Observe/);
+    await host.performBrowserAutomation('snapshot', { ownerId: OWNER_A, tabId });
+    await navigate(host, OWNER_A, tabId, 'https://example.com/resumed');
+    assert.equal(source.getURL(), 'https://example.com/resumed');
+  } finally { restore(); }
+});
+
+test('child settlement keeps presented pages in the conversation and leaves siblings untouched', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const child = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    const sibling = tabIds(await getTabs(host, OWNER_A, RUN_2))[0];
+    await host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A, runKey: RUN_1 });
+    assert.equal(contentsFor(child).isDestroyed(), false);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), [child]);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_1)), []);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A, RUN_2)), [sibling]);
+  } finally { restore(); }
+});
+
+test('explicitly retained background deliverables survive child settlement', async () => {
+  const { host, restore } = loadHost({ visible: false });
+  try {
+    const child = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    const result = await host.performBrowserAutomation('retain_tab', { ownerId: OWNER_A, runId: RUN_1, tabId: child });
+    assert.equal(result.status, 'retained');
+    await host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A, runKey: RUN_1 });
+    assert.equal(contentsFor(child).isDestroyed(), false);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), [child]);
+    await assert.rejects(host.performBrowserAutomation('retain_tab', { ownerId: OWNER_A, runId: RUN_2, tabId: child }), /own tab/);
+  } finally { restore(); }
+});
+
+test('child settlement respects a native unload veto and hands the page to the conversation', async () => {
+  const { host, restore } = loadHost({ visible: false });
+  try {
+    const child = tabIds(await getTabs(host, OWNER_A, RUN_1))[0];
+    contentsFor(child).close = () => contentsFor(child).fire('will-prevent-unload', {
+      preventDefault() { assert.fail('must never override the page veto'); },
+    });
+    await host.browserDispatch(null, 'browser_dispose_owner', { conversationId: OWNER_A, runKey: RUN_1 });
+    assert.equal(contentsFor(child).isDestroyed(), false);
+    assert.deepEqual(tabIds(await probeTabs(host, OWNER_A)), [child]);
+  } finally { restore(); }
+});
+
+test('a source dialog remains answerable while its native child initializes', async () => {
+  const { EventEmitter } = require('node:events');
+  const { host, restore } = loadHost();
+  let finishChild;
+  const pendingChild = new Promise(resolve => { finishChild = resolve; });
+  const installDebugger = (contents, send) => {
+    const events = new EventEmitter();
+    let attached = false;
+    contents.debugger = Object.assign(events, {
+      isAttached: () => attached,
+      attach() { attached = true; },
+      detach() { attached = false; events.emit('detach'); },
+      sendCommand: send,
+    });
+  };
+  try {
+    const tabId = tabIds(await getTabs(host, OWNER_A))[0];
+    const source = contentsFor(tabId);
+    source.url = 'https://example.com/source';
+    let child;
+    let answered = false;
+    installDebugger(source, async (method, params) => {
+      if (method === 'Page.handleJavaScriptDialog') {
+        answered = true;
+        source.debugger.emit('message', {}, 'Page.javascriptDialogClosed', {result:false});
+      }
+      if (method === 'Input.dispatchKeyEvent' && params.type === 'keyDown') {
+        const response = source.openWindow({url:'https://example.com/result'});
+        assert.equal(response.action, 'allow');
+        child = new FakeWebContents();
+        child.url = 'https://example.com/result';
+        installDebugger(child, async method => method === 'Page.enable' ? pendingChild : {});
+        response.createWindow({webContents:child, webPreferences:response.overrideBrowserWindowOptions.webPreferences});
+        source.debugger.emit('message', {}, 'Page.javascriptDialogOpening', {
+          type:'alert', message:'after opening slow child', url:source.url, defaultPrompt:'',
+        });
+      }
+      return {};
+    });
+    await assert.rejects(host.performBrowserAutomation('keyboard', {
+      ownerId:OWNER_A, tabId, key:'Enter', expectedOrigin:'https://example.com', popupOrigin:'https://example.com',
+    }), /dialog/);
+    let blockedInput = false;
+    source.fire('before-mouse-event', {preventDefault() { blockedInput = true; }});
+    assert.equal(blockedInput, true, 'an initializing opener family must not gain fresh input activation');
+    let observed;
+    const observation = host.performBrowserAutomation('get_dialog', {ownerId:OWNER_A, tabId}).then(value => { observed = value; });
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(observed?.pending, true, 'reading the dialog must not wait for the child response');
+    await observation;
+    let handled = false;
+    const handling = host.performBrowserAutomation('handle_dialog', {ownerId:OWNER_A, tabId, action:'dismiss'}).then(() => { handled = true; });
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    assert.equal(answered, true);
+    assert.equal(handled, true, 'answering the dialog must not wait for the child response');
+    await handling;
+    finishChild({});
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    child.close();
+  } finally { finishChild({}); host.closeAllBrowserViews(); restore(); }
 });

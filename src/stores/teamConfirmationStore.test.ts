@@ -115,3 +115,37 @@ describe('teamConfirmationStore', () => {
   });
 
 });
+
+import {buildTeamConfirmationIdentity as auditIdentity} from '@/core/agent/teamConfirmationIdentity';
+describe('audit-review team browser run approval',()=>{
+ beforeEach(()=>useTeamConfirmationStore.setState({pending:{},approvedOnce:{},runRules:{},retrySelections:{}}));
+ it.each(['browser','browser-upload'])('audit-team: %s cannot reuse a run approval for a new call',async(kind)=>{
+  const input={tabId:1,frameId:'f2',locator:'#q',value:'x'};
+  const target={origin:'https://frame.example',pageOrigin:'https://host-a.example',embeddedOrigins:['https://frame.example']};
+  const original=await auditIdentity('abu-browser__fill',input,{conversationId:'c1',loopId:'old',toolCallId:'initial'},target);
+  const browser={...item,kind,identity:original,browserOrigin:target.origin,browserOperationClass:kind==='browser'?'interactive':'upload',browserPermissionResource:kind==='browser'?'browse':'upload',browserPermissionTargets:[{origin:target.origin,embeddedIn:target.pageOrigin}]} as TeamConfirmationInput;
+  const pending=store().add(browser);
+  expect(pending).not.toBeNull();
+  const selected=store().selectRetry(pending!.id,'run');
+  store().beginRetry('c1','retry',selected);
+  const first=await auditIdentity('abu-browser__fill',input,{conversationId:'c1',loopId:'retry',toolCallId:'first'},target);
+  expect(store().consumeApproval({...browser,identity:first})).toBe(true);
+  const changedScope=await auditIdentity('abu-browser__fill',input,{conversationId:'c1',loopId:'retry',toolCallId:'other'}, {...target,pageOrigin:'https://host-b.example'});
+  expect(changedScope.parametersDigest).not.toBe(first.parametersDigest);
+  expect(store().consumeApproval({...browser,identity:changedScope})).toBe(false);
+  const second=await auditIdentity('abu-browser__fill',input,{conversationId:'c1',loopId:'retry',toolCallId:'second'},target);
+  expect(store().consumeApproval({...browser,identity:second})).toBe(false);
+ });
+});
+
+it.each(['browser','browser-upload'] as const)('audit-legacy: %s ignores old run rules and clamps old selections to once',(kind)=>{
+ useTeamConfirmationStore.setState({pending:{},approvedOnce:{},runRules:{},retrySelections:{}});
+ const oldItem={...item,id:'legacy',createdAt:1,kind,identity:{...item.identity,dispatchId:'leader'}};
+ const newItem={...oldItem,identity:{...oldItem.identity,loopId:'retry',callId:'retry-first'}};
+ useTeamConfirmationStore.setState({runRules:{legacy:{item:oldItem,mode:'run' as const,loopId:'retry',dispatchId:'leader'}}});
+ expect(store().consumeApproval(newItem)).toBe(false);
+ useTeamConfirmationStore.setState({retrySelections:{selection:{item:oldItem,mode:'run' as const}}});
+ store().beginRetry('c1','retry','selection');
+ expect(store().consumeApproval(newItem)).toBe(true);
+ expect(store().consumeApproval(newItem)).toBe(false);
+});

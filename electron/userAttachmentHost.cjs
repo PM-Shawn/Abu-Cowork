@@ -19,6 +19,8 @@ const REQUEST_KEYS = new Set(['token']);
 const AUTHORIZE_KEYS = new Set(['path', 'name', 'mediaType', 'maxBytes', 'sender']);
 const SELECT_KEYS = new Set(['mediaTypes']);
 const IMAGE_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+// PDF selections remain ordinary file references; they grant no byte-read capability.
+const SELECT_MEDIA_TYPES = new Set([...IMAGE_MEDIA_TYPES, 'application/pdf']);
 const tokenRecords = new Map();
 
 const MEDIA_TYPE_EXTENSIONS = new Map([
@@ -26,6 +28,7 @@ const MEDIA_TYPE_EXTENSIONS = new Map([
   ['image/png', ['png']],
   ['image/gif', ['gif']],
   ['image/webp', ['webp']],
+  ['application/pdf', ['pdf']],
 ]);
 
 const EXTENSION_MEDIA_TYPES = new Map(
@@ -186,7 +189,7 @@ function validateSelectRequest(request) {
   const unknownKey = Object.keys(request).find((key) => !SELECT_KEYS.has(key));
   if (unknownKey) throw new Error(`attachment select: unsupported request field ${unknownKey}`);
   const mediaTypes = Array.isArray(request.mediaTypes) ? request.mediaTypes : [...IMAGE_MEDIA_TYPES];
-  if (mediaTypes.length === 0 || mediaTypes.some((mediaType) => !IMAGE_MEDIA_TYPES.has(mediaType))) {
+  if (mediaTypes.length === 0 || mediaTypes.some((mediaType) => !SELECT_MEDIA_TYPES.has(mediaType))) {
     throw new Error('attachment select: media type is unsupported');
   }
   return mediaTypes;
@@ -201,15 +204,10 @@ function extensionsForMediaTypes(mediaTypes) {
 }
 
 function dialogFiltersForMediaTypes(mediaTypes) {
-  const imageExtensions = [...new Set(
-    mediaTypes
-      .filter((mediaType) => IMAGE_MEDIA_TYPES.has(mediaType))
-      .flatMap((mediaType) => MEDIA_TYPE_EXTENSIONS.get(mediaType) ?? []),
-  )];
-  if (imageExtensions.length > 0) {
-    return [{ name: 'Images', extensions: imageExtensions }];
-  }
-  return [];
+  return [{
+    name: mediaTypes.includes('application/pdf') ? 'Images and PDF' : 'Images',
+    extensions: extensionsForMediaTypes(mediaTypes),
+  }];
 }
 
 function mediaTypeForSelectedPath(filePath, allowedMediaTypes) {
@@ -238,8 +236,12 @@ async function selectUserAttachments(event, request, overrides = {}) {
     name: path.basename(filePath),
     mediaType: mediaTypeForSelectedPath(filePath, mediaTypes),
   }));
-  enforceTokenBatchCapacity(event?.sender, requests.length);
-  return requests.map((tokenRequest) => issueUserAttachmentToken(tokenRequest, IMAGE_MEDIA_TYPES));
+  enforceTokenBatchCapacity(event?.sender, requests.filter((item) => IMAGE_MEDIA_TYPES.has(item.mediaType)).length);
+  return requests.map((item) => item.mediaType === 'application/pdf'
+    // The path comes only from the native picker, never renderer input. Actual
+    // file reads still go through the normal agent permission/tool boundary.
+    ? { path: item.path, name: item.name, mediaType: item.mediaType }
+    : issueUserAttachmentToken(item, IMAGE_MEDIA_TYPES));
 }
 
 function consumeToken(event, token, now = Date.now()) {

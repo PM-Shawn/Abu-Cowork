@@ -67,6 +67,9 @@ function statusOf(field: 'browserSitePermissions' | 'browserOperationPolicy' | '
 
 describe('browser config saving', () => {
   beforeEach(() => {
+    // No lock contention in this suite; queued multi-window writes are covered
+    // by settingsStore.browserPermissions.test.ts.
+    vi.stubGlobal('navigator', { locks: { request: (_name: string, callback: () => unknown) => Promise.resolve(callback()) } });
     storage = new FakeStorage();
     vi.stubGlobal('localStorage', storage);
     __resetBrowserConfigPersistenceForTests();
@@ -98,6 +101,7 @@ describe('browser config saving', () => {
       useSettingsStore.getState().setAllowUnattendedBrowser(true);
 
       expect(useSettingsStore.getState().browserConfigRevisions).toEqual({
+        browserPermissionConfigV2: 0,
         browserOperationPolicy: 0,
         browserSitePermissions: 0,
         allowUnattendedBrowser: 1,

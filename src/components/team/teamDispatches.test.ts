@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import type { Message } from '@/types';
+import type { BatchTerminalSummary, Message, ToolCall } from '@/types';
 import type { ExecutionStep, TaskExecution } from '@/types/execution';
+import type { BatchEntry } from '@/stores/batchProgressStore';
 import { collectMemberDispatches, findRunningDispatch, parseMemberAddress, summarizeByMember, type MemberDispatch } from './teamDispatches';
 
 function step(over: Partial<ExecutionStep>): ExecutionStep {
@@ -73,6 +74,100 @@ describe('collectMemberDispatches', () => {
     expect(byKey['tc-d:0'].live).toBe(true);
     expect(byKey['tc-d:0'].status).toBe('running');
     expect(byKey['tc-old:0']).toMatchObject({ live: false, agent: 'zz撰写员', identity: { conversationId: 'c1', assistantMessageId: 'a1', batchToolCallId: 'tc-old' } });
+  });
+
+  it('counts every task of a started batch, even members that never called a tool (live)', () => {
+    const tasks = [
+      { agent_name: 'zz取数员', task: '做个自我介绍' },
+      { agent_name: 'zz撰写员', task: '做个自我介绍' },
+      { type: 'research', task: '预设角色任务' },
+    ];
+    const exec = {
+      id: 'e1', conversationId: 'c1', loopId: 'l1', status: 'running', startTime: 10, plannedSteps: [], planParsed: false,
+      steps: [step({ id: 'b1', type: 'delegate', toolName: 'run_agent_batch', toolCallId: 'tc-b', status: 'running', toolInput: { tasks }, childSteps: [] })],
+    } as TaskExecution;
+    const progress = (status: BatchEntry['tasks'][number]['status']) => ({ label: '做个自我介绍', status, toolCallCount: 0, steps: [] });
+    const entry = {
+      identity: { conversationId: 'c1', assistantMessageId: 'a1', batchToolCallId: 'tc-b' },
+      startedAt: 10, tasks: [progress('succeeded'), progress('running'), progress('running')],
+      runLeaseCount: 1, viewLeaseCount: 0, retainedRichBytes: 0, lastRichAccessTick: 0,
+    } as BatchEntry;
+    const result = collectMemberDispatches({ conversationId: 'c1', executions: [exec], messages: [], batches: [entry] });
+    expect(result.map((d) => [d.agent, d.kind, d.taskIndex, d.status, d.stepCount, d.label])).toEqual([
+      ['zz取数员', 'batch', 0, 'completed', 0, '做个自我介绍'],
+      ['zz撰写员', 'batch', 1, 'running', 0, '做个自我介绍'],
+    ]);
+  });
+
+  it('does not count a batch that never started (rejected before any task ran)', () => {
+    const exec = {
+      id: 'e1', conversationId: 'c1', loopId: 'l1', status: 'completed', startTime: 10, plannedSteps: [], planParsed: false,
+      steps: [step({ id: 'b1', type: 'delegate', toolName: 'run_agent_batch', toolCallId: 'tc-b', status: 'completed',
+        toolInput: { tasks: [{ agent_name: 'zz取数员', task: 'x' }] }, childSteps: [] })],
+    } as TaskExecution;
+    expect(collectMemberDispatches({ conversationId: 'c1', executions: [exec], messages: [] })).toEqual([]);
+  });
+
+  it('restores zero-tool batch hand-offs from the persisted call and its terminal summary', () => {
+    const summary: BatchTerminalSummary = {
+      version: 1,
+      batch: { conversationId: 'c1', assistantMessageId: 'a1', batchToolCallId: 'tc-b' },
+      taskCount: 2,
+      counts: { succeeded: 1, failed: 1, stopped: 0, incomplete: 0 },
+      tasks: [
+        { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+        { taskIndex: 1, status: 'failed', terminalReason: 'error' },
+      ],
+    };
+    const call: ToolCall = {
+      id: 'tc-b', name: 'run_agent_batch', batchTerminalSummary: summary,
+      input: { tasks: [{ agent_name: 'zz取数员', task: '做个自我介绍' }, { agent_name: 'zz撰写员', task: 'a'.repeat(70) }] },
+    };
+    const messages: Message[] = [{
+      id: 'a1', role: 'assistant', content: '', timestamp: 5, toolCalls: [call],
+      // Snapshots drop toolInput, and a text-only member leaves no child steps.
+      executionSteps: [{ id: 'b1', toolCallId: 'tc-b', type: 'delegate', label: '批量', status: 'completed', toolName: 'run_agent_batch' }],
+    }];
+    const result = collectMemberDispatches({ conversationId: 'c1', executions: [], messages });
+    expect(result.map((d) => [d.agent, d.taskIndex, d.status, d.stepCount, d.live, d.label])).toEqual([
+      ['zz取数员', 0, 'completed', 0, false, '做个自我介绍'],
+      ['zz撰写员', 1, 'error', 0, false, `${'a'.repeat(60)}…`],
+    ]);
+    expect(summarizeByMember(['zz取数员', 'zz撰写员'], result).map((m) => [m.agent, m.status, m.dispatches.length])).toEqual([
+      ['zz取数员', 'completed', 1],
+      ['zz撰写员', 'error', 1],
+    ]);
+  });
+
+  it('falls back to the finished calls when a reload lost the execution-step snapshot', () => {
+    const summary: BatchTerminalSummary = {
+      version: 1,
+      batch: { conversationId: 'c1', assistantMessageId: 'a1', batchToolCallId: 'tc-b' },
+      taskCount: 2,
+      counts: { succeeded: 1, failed: 0, stopped: 1, incomplete: 0 },
+      tasks: [
+        { taskIndex: 0, status: 'succeeded', terminalReason: 'completed' },
+        { taskIndex: 1, status: 'stopped', terminalReason: 'aborted' },
+      ],
+    };
+    const messages: Message[] = [
+      { id: 'a1', role: 'assistant', content: '', timestamp: 5, toolCalls: [
+        { id: 'tc-b', name: 'run_agent_batch', startTime: 6, batchTerminalSummary: summary,
+          input: { tasks: [{ agent_name: 'zz取数员', task: '取数' }, { agent_name: 'zz撰写员', task: '写稿' }] } },
+        // Rejected before running: no terminal metadata, not a hand-off.
+        { id: 'tc-rejected', name: 'run_agent_batch', input: { tasks: [{ agent_name: 'zz取数员', task: 'x' }] }, result: 'error' },
+      ] },
+      { id: 'a2', role: 'assistant', content: '', timestamp: 7, toolCalls: [
+        { id: 'tc-d', name: 'delegate_to_agent', startTime: 8, subagentStopReason: 'completed', input: { agent_name: 'zz撰写员', task: '验收' } },
+        { id: 'tc-pending', name: 'delegate_to_agent', input: { agent_name: 'zz取数员', task: '未跑完' } },
+      ] },
+    ];
+    const result = collectMemberDispatches({ conversationId: 'c1', executions: [], messages });
+    expect(result.map((d) => [d.key, d.agent, d.kind, d.status, d.label, d.identity.assistantMessageId])).toEqual([
+      ['tc-b:0', 'zz取数员', 'batch', 'completed', '取数', 'a1'],
+      ['tc-b:1', 'zz撰写员', 'batch', 'interrupted', '写稿', 'a1'],
+      ['tc-d:0', 'zz撰写员', 'delegate', 'completed', '验收', 'a2'],
+    ]);
   });
 
   it('tracks last activity for live dispatches and marks hand-offs of an interrupted run', () => {

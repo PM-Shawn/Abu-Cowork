@@ -1898,7 +1898,7 @@ test.describe('Electron browser view lifecycle E2E', () => {
       downloadsCard.getByRole('button', { name: /^(在文件夹中显示|Show in folder)$/ }),
     ).toBeEnabled();
     await ensureSidebarExpanded(page);
-    await page.getByRole('button', { name: /^(我|Me)$/ }).click();
+    await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).click();
     await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
     await page.getByRole('button', { name: /^(能力|Capabilities)$/ }).click();
     await page.getByRole('button', { name: /^(阿布内置浏览器|Abu built-in browser)/ }).click();

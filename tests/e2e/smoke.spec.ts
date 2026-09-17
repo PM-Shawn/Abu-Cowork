@@ -123,7 +123,7 @@ test.describe.serial('Electron shell — real app smoke', () => {
     let page = await app.firstWindow({ timeout: READY_TIMEOUT });
     const openGeneral = async () => {
       await waitForWelcomeScreen(page);
-      await page.getByRole('button', { name: /^(我|Me)$/ }).first().click();
+      await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
       await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
       await page.getByRole('button', { name: '偏好', exact: true }).click();
     };

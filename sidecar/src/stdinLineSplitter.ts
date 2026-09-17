@@ -37,16 +37,31 @@ function decodeLine(line: Buffer): string {
 export function createStdinLineSplitter(onLine: (line: string) => void): StdinLineSplitter {
   let pending: Buffer[] = [];
 
-  /** Join the carried-over chunks with the closing piece and hand the line over. */
-  const flush = (tail: Buffer): void => {
-    if (pending.length === 0) {
-      onLine(decodeLine(tail));
-      return;
-    }
+  /**
+   * Join the carried-over chunks with the closing piece and decode the line.
+   * The chunk list and the joined bytes go out of scope when this returns, so
+   * only the decoded string is alive while the line is being handled.
+   */
+  const takeLine = (tail: Buffer): string => {
+    if (pending.length === 0) return decodeLine(tail);
     const parts = pending;
     pending = [];
     parts.push(tail);
-    onLine(decodeLine(Buffer.concat(parts)));
+    return decodeLine(Buffer.concat(parts));
+  };
+
+  /**
+   * Decode the carried-over chunks as the final, unterminated line. Same
+   * discipline as `takeLine`, with no closing piece to join.
+   */
+  const takeTrailingLine = (): string => {
+    const parts = pending;
+    pending = [];
+    return decodeLine(parts.length === 1 ? parts[0] : Buffer.concat(parts));
+  };
+
+  const flush = (tail: Buffer): void => {
+    onLine(takeLine(tail));
   };
 
   return {
@@ -65,9 +80,7 @@ export function createStdinLineSplitter(onLine: (line: string) => void): StdinLi
     },
     end(): void {
       if (pending.length === 0) return;
-      const parts = pending;
-      pending = [];
-      onLine(decodeLine(parts.length === 1 ? parts[0] : Buffer.concat(parts)));
+      onLine(takeTrailingLine());
     },
   };
 }

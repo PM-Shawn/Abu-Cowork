@@ -40,6 +40,15 @@ import {
 const NORMAL_TURN_TEXT = 'short warm-up';
 
 /**
+ * The separator turn, built from code points so the source names the two
+ * characters it sends instead of hiding them as invisible bytes in a literal:
+ * U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR.
+ */
+const LINE_SEPARATOR = String.fromCodePoint(0x2028);
+const PARAGRAPH_SEPARATOR = String.fromCodePoint(0x2029);
+const SEPARATOR_TURN_TEXT = `line${LINE_SEPARATOR}separator${PARAGRAPH_SEPARATOR}paragraph`;
+
+/**
  * Headroom added to the measured normal turn before capping the second launch.
  * It absorbs the run-to-run differences between two launches of the same
  * profile (fresh ids, timestamps) and the smaller `state.*` notifications that
@@ -241,7 +250,7 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
     await configureLocalMockProvider(page, mock.baseUrl);
 
     const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
-    await input.fill('line separator paragraph');
+    await input.fill(SEPARATOR_TURN_TEXT);
     await input.press('Enter');
 
     await expect(page.getByText(reply, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });

@@ -336,9 +336,12 @@ function assertFsPathsAbsolute(cmd, args) {
   for (const [key, baseDirKey] of spec) {
     if (baseDirKey && args?.options?.[baseDirKey] != null) continue;
     const value = args?.[key];
-    const values = Array.isArray(value) ? value : [value];
-    for (const item of values) {
-      if (typeof item === 'string' && item.length > 0) assertAbsolutePath(item, `IPC ${key}`);
+    if (value === undefined) continue;
+    // `paths` (watch) is not a PATH_KEYS key, so its items get the same
+    // string checks here.
+    for (const item of Array.isArray(value) ? value : [value]) {
+      assertSafePath(item, `IPC ${key}`);
+      assertAbsolutePath(item, `IPC ${key}`);
     }
   }
 }

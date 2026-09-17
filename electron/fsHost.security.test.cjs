@@ -558,10 +558,11 @@ test('renderer reload cleanup closes every fs watch owned by that sender', (t) =
 // it was readable/writable whenever that cwd sat under an allowed root (a dev
 // launch from the repo). These run with cwd inside a temp dir to reproduce it.
 function chdirTemp(t) {
-  const dir = tempDir(t);
   const previous = process.cwd();
-  process.chdir(dir);
+  // Registered first so cwd is restored before tempDir's cleanup removes it.
   t.after(() => process.chdir(previous));
+  const dir = tempDir(t);
+  process.chdir(dir);
   return dir;
 }
 

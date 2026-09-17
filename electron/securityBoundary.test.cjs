@@ -489,6 +489,12 @@ test('fs commands refuse relative paths at the boundary unless a baseDir names t
   refused({ cmd: 'plugin:fs|rename', args: { oldPath: abs, newPath: rel, options: { oldPathBaseDir: 12 } } }, 'newPath');
   refused({ cmd: 'plugin:fs|copy_file', args: { fromPath: rel, toPath: abs, options: { toPathBaseDir: 12 } } }, 'fromPath');
   refused({ cmd: 'plugin:fs|watch', args: { paths: [abs, rel], options: {}, onEvent: '__CHANNEL__:1' } }, 'paths');
+  for (const paths of [[''], [['nested']], [abs, 7]]) {
+    assert.throws(
+      () => validateInvokePayload(record, { cmd: 'plugin:fs|watch', args: { paths, onEvent: '__CHANNEL__:1' } }),
+      /IPC paths must be a non-empty string/
+    );
+  }
 
   // plugin:fs raw-body form.
   for (const cmd of ['plugin:fs|write_file', 'plugin:fs|write_text_file']) {

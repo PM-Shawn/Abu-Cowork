@@ -28,6 +28,8 @@ import {
   onSidecarNotification,
   onSidecarRequest,
   onSidecarConnectionState,
+  onSidecarStatusChange,
+  waitForSidecarStatus,
   registerSidecarNotifyResync,
   SidecarRequestError,
   __resetForTests,
@@ -1609,10 +1611,61 @@ describe('sidecarManager', () => {
       }
 
       expect(getSidecarStatus()).toBe('failed');
+      // #549: a waiter must see the give-up immediately, not hang for 60s.
+      await expect(waitForSidecarStatus(1)).resolves.toBe('failed');
       expect(reportError).toHaveBeenCalledTimes(1);
       expect(
         traceRuntimeEvent.mock.calls.filter((call) => call[0] === 'renderer.sidecar_crash_loop'),
       ).toHaveLength(1);
+    });
+  });
+  describe('#549 status waiters', () => {
+    it('resolves running once a starting sidecar finishes spawning', async () => {
+      mockHappyPath();
+      let releaseSpawn!: () => void;
+      invoke.mockImplementation((cmd: string) => cmd === 'mcp_spawn'
+        ? new Promise<void>((resolve) => { releaseSpawn = resolve; })
+        : Promise.resolve(undefined));
+      const seen: string[] = [];
+      onSidecarStatusChange((s) => seen.push(s));
+      const start = startSidecar();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getSidecarStatus()).toBe('starting');
+      const waited = waitForSidecarStatus(60_000);
+      releaseSpawn();
+      await expect(waited).resolves.toBe('running');
+      await start;
+      expect(seen).toContain('starting');
+      expect(seen.at(-1)).toBe('running');
+    });
+
+    it('times out, reports failed on crash-loop give-up, and honours abort', async () => {
+      mockHappyPath();
+      invoke.mockImplementation((cmd: string) => cmd === 'mcp_spawn' ? new Promise(() => {}) : Promise.resolve(undefined));
+      void startSidecar();
+      await vi.advanceTimersByTimeAsync(0);
+      const timedOut = waitForSidecarStatus(60_000);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(timedOut).resolves.toBe('timeout');
+
+      const controller = new AbortController();
+      const aborted = waitForSidecarStatus(60_000, controller.signal);
+      controller.abort();
+      await expect(aborted).resolves.toBe('aborted');
+      await stopSidecar();
+      await expect(waitForSidecarStatus(1)).resolves.toBe('failed');
+    });
+
+    it('unsubscribes handlers and survives a throwing one', async () => {
+      mockHappyPath();
+      const kept: string[] = [];
+      const unsubscribe = onSidecarStatusChange(() => { throw new Error('handler boom'); });
+      onSidecarStatusChange((s) => kept.push(s));
+      await startSidecar();
+      expect(kept).toEqual(['starting', 'running']);
+      unsubscribe();
+      await stopSidecar();
+      expect(kept.at(-1)).toBe('stopped');
     });
   });
 });

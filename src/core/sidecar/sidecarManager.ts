@@ -249,6 +249,10 @@ let startPromise: Promise<void> | null = null;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, PendingRequest>();
 const connectionHandlers = new Set<(event: SidecarConnectionEvent) => void>();
+/** Wake-ups for in-flight waitForSidecarStatus() calls (#549 cold start). */
+const statusWaiters = new Set<() => void>();
+/** onSidecarStatusChange() subscribers (UI projection of `status`). */
+const statusHandlers = new Set<(status: SidecarStatus) => void>();
 let lastSidecarSequence = 0;
 let lastSidecarGeneration = 0;
 let sidecarEventChain: Promise<void> = Promise.resolve();
@@ -304,6 +308,69 @@ export function getSidecarStatus(): SidecarStatus {
   return status;
 }
 
+/**
+ * The ONLY way production code changes `status` (#549): every transition
+ * wakes pending readiness waiters and notifies UI subscribers. Assigning
+ * `status` directly would leave a cold-start wait hanging for its full
+ * timeout. (`__resetForTests` is the one deliberate exception.)
+ */
+function setStatus(next: SidecarStatus): void {
+  if (status === next) return;
+  status = next;
+  // Copy: a waiter removes itself from the set as it settles.
+  for (const waiter of [...statusWaiters]) waiter();
+  for (const handler of statusHandlers) {
+    try {
+      handler(next);
+    } catch (err) {
+      logger.warn('Sidecar status handler threw', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
+/** Subscribe to supervisor status transitions (UI projection, readiness waits). */
+export function onSidecarStatusChange(handler: (status: SidecarStatus) => void): () => void {
+  statusHandlers.add(handler);
+  return () => {
+    statusHandlers.delete(handler);
+  };
+}
+
+export type SidecarWaitOutcome = 'running' | 'failed' | 'timeout' | 'aborted';
+
+/** `stopped` while waiting counts as `failed`: nobody is going to bring it up. */
+function settledOutcome(current: SidecarStatus): SidecarWaitOutcome | null {
+  if (current === 'running') return 'running';
+  if (current === 'failed' || current === 'stopped') return 'failed';
+  return null;
+}
+
+/**
+ * Wait until the supervisor leaves `starting`/`restarting` (#549 cold start).
+ * Never starts the sidecar itself — see sidecarReadiness.waitForSidecarVenue.
+ */
+export function waitForSidecarStatus(timeoutMs: number, signal?: AbortSignal): Promise<SidecarWaitOutcome> {
+  const immediate = settledOutcome(status);
+  if (immediate) return Promise.resolve(immediate);
+  if (signal?.aborted) return Promise.resolve('aborted');
+  return new Promise((resolve) => {
+    const finish = (outcome: SidecarWaitOutcome): void => {
+      clearTimeout(timer);
+      statusWaiters.delete(onStatus);
+      signal?.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    const onStatus = (): void => {
+      const outcome = settledOutcome(status);
+      if (outcome) finish(outcome);
+    };
+    const onAbort = (): void => finish('aborted');
+    const timer = setTimeout(() => finish('timeout'), timeoutMs);
+    statusWaiters.add(onStatus);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 /** Subscribe to transport recovery state for task-level status/UI projection. */
 export function onSidecarConnectionState(
   handler: (event: SidecarConnectionEvent) => void,
@@ -349,7 +416,7 @@ export async function stopSidecar(): Promise<void> {
   rejectAllPending(new Error('Sidecar stopped'));
   restartTimestamps = [];
   crashLoopWarned = false;
-  status = 'stopped';
+  setStatus('stopped');
 
   for (const unlisten of unlisteners) {
     unlisten();
@@ -639,7 +706,11 @@ export function onSidecarRequest(method: string, handler: SidecarRequestHandler)
 /** Reset all module state for test isolation. Not used by production code. */
 export function __resetForTests(): void {
   stopEnterpriseEntitlementSync();
+  // Direct assignment on purpose: a reset is not a transition — waiters and
+  // handlers from the previous test are dropped below, not notified.
   status = 'stopped';
+  statusWaiters.clear();
+  statusHandlers.clear();
   listenersReady = false;
   unlisteners = [];
   deliberatelyStopped = true;
@@ -808,7 +879,7 @@ async function ensureListeners(): Promise<void> {
 }
 
 async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
-  status = kind === 'initial' ? 'starting' : 'restarting';
+  setStatus(kind === 'initial' ? 'starting' : 'restarting');
 
   // Listeners must be live before we spawn, so we never miss an early
   // stdout line or an immediate crash.
@@ -878,7 +949,7 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     return;
   }
 
-  status = 'running';
+  setStatus('running');
   publishConnectionState({ state: 'connected', reason: 'ready' });
   // Seed after every spawn/restart, then stream heartbeat/store changes.
   ensureEnterpriseEntitlementSync();
@@ -906,7 +977,7 @@ function handleSpawnFailure(err: unknown, reason: string): void {
  */
 function scheduleRestartOrGiveUp(reason: string): void {
   if (deliberatelyStopped) {
-    status = 'stopped';
+    setStatus('stopped');
     return;
   }
 
@@ -915,7 +986,7 @@ function scheduleRestartOrGiveUp(reason: string): void {
   restartTimestamps = restartTimestamps.filter((t) => now - t <= CRASH_LOOP_WINDOW_MS);
 
   if (restartTimestamps.length > CRASH_LOOP_MAX_RESTARTS) {
-    status = 'failed';
+    setStatus('failed');
     publishConnectionState({ state: 'failed', reason: 'crash-loop' });
     if (!crashLoopWarned) {
       crashLoopWarned = true;
@@ -945,7 +1016,7 @@ function scheduleRestartOrGiveUp(reason: string): void {
     return;
   }
 
-  status = 'restarting';
+  setStatus('restarting');
   logger.warn('Sidecar restarting', { reason, attempt: restartTimestamps.length });
   // Local-only: a single respawn is routine and recovers on its own, so it is
   // recorded for diagnosis but never reported remotely.
@@ -1079,7 +1150,7 @@ async function forceRestartOnHang(reason: string): Promise<void> {
   stopHeartbeat();
   // Flip to 'restarting' BEFORE killing, so the close event this kill
   // triggers is recognized as self-initiated by handleClose() below.
-  status = 'restarting';
+  setStatus('restarting');
   await invoke('mcp_kill', { id: SIDECAR_ID }).catch(() => {});
   scheduleRestartOrGiveUp(reason);
 }
@@ -1238,7 +1309,7 @@ function handleClose(): void {
   rejectAllPending(new Error('Sidecar process closed'));
 
   if (deliberatelyStopped) {
-    status = 'stopped';
+    setStatus('stopped');
     return;
   }
 

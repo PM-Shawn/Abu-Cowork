@@ -1131,6 +1131,65 @@ describe('chatStore', () => {
     });
   });
 
+  // ── turn-end shell projections vs the finishStreaming checkpoint ──
+  // Regression (2026-09-16, team batch E2E): the loop ends with
+  // finishStreaming (a checkpoint of the message WITHOUT executionSteps,
+  // queued on the conversation's serial persistence queue) immediately
+  // followed by persistExecutionSnapshot. The snapshot setters wrote outside
+  // that queue, so their put landed first and the stale finishStreaming put
+  // replaced it — messages.jsonl's last revision had no executionSteps and a
+  // restart lost the work-process steps.
+  describe('turn-end snapshot persistence order', () => {
+    const steps = [
+      { id: 's1', toolCallId: 'call_batch', type: 'delegate', label: 'batch', status: 'completed', toolName: 'run_agent_batch' },
+    ] as const;
+    const planned = [{ index: 1, description: 'intro', status: 'completed' }] as const;
+
+    async function runTurnEnd(finish: (id: string) => void) {
+      const lines: string[] = [];
+      vi.mocked(exists).mockResolvedValue(true);
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+        if (cmd === 'append_file_text') lines.push((args as { data: string }).data);
+        return undefined;
+      });
+      try {
+        const id = useChatStore.getState().createConversation();
+        useChatStore.getState().addMessage(id, {
+          id: 'final-1', role: 'assistant', content: '', timestamp: FIXED_TIMESTAMP, loopId: 'loop-1', isStreaming: true,
+        });
+        await waitForConversationPersistence(id);
+        useChatStore.getState().appendToLastMessage(id, 'done', 'final-1');
+        finish(id);
+        await waitForConversationPersistence(id);
+        const { flushWrites } = await import('../core/session/conversationStorage');
+        await flushWrites();
+        const folded = foldMessageLog(lines.join('').split('\n')).messages;
+        return folded.find((m) => m.id === 'final-1');
+      } finally {
+        vi.mocked(invoke).mockReset();
+        vi.mocked(exists).mockReset();
+        vi.mocked(exists).mockResolvedValue(false);
+      }
+    }
+
+    it('keeps executionSteps on the last persisted revision after finishStreaming', async () => {
+      const persisted = await runTurnEnd((id) => {
+        useChatStore.getState().finishStreaming(id, 'final-1');
+        useChatStore.getState().setExecutionStepsSnapshot(id, 'loop-1', [...steps]);
+      });
+      expect(persisted?.executionSteps).toEqual(steps);
+      expect(persisted?.isStreaming).toBeFalsy();
+    });
+
+    it('keeps plannedSteps on the last persisted revision after finishStreaming', async () => {
+      const persisted = await runTurnEnd((id) => {
+        useChatStore.getState().finishStreaming(id, 'final-1');
+        useChatStore.getState().setPlannedStepsSnapshot(id, 'loop-1', [...planned]);
+      });
+      expect(persisted?.plannedSteps).toEqual(planned);
+    });
+  });
+
   // ── appendToLastMessage ──
   describe('appendToLastMessage', () => {
     it('appends token to last message', () => {

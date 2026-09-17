@@ -127,7 +127,8 @@ import {
   subscribeElectronSidecarEvents,
   type ElectronSidecarEvent,
 } from '@/utils/electronHost';
-import { traceRuntimeEvent } from '@/core/observability/runtimeTrace';
+import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtimeTrace';
+import { FIELD_BREAKDOWN_MIN_BYTES, MEASURED_RPC_METHODS, measurePayloadFields } from '@/core/ipc/payloadFieldSizes';
 import { reportError } from '@/utils/consoleError';
 
 const logger = createLogger('sidecar');
@@ -352,6 +353,32 @@ export async function stopSidecar(): Promise<void> {
   }
 }
 
+const textEncoder = new TextEncoder();
+
+function stringParam(params: unknown, key: string): string | undefined {
+  if (typeof params !== 'object' || params === null) return undefined;
+  const value = (params as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.length <= 256 ? value : undefined;
+}
+
+/**
+ * #549 step 0: record how many bytes a growing RPC put on the wire (numbers
+ * only; a per-field breakdown once the payload reaches 1 MiB). Called after the
+ * write settles so `outcome` reflects whether the bytes actually left.
+ */
+function traceRpcSent(method: string, rpcId: number, params: unknown, payloadBytes: number, error?: unknown): void {
+  if (!MEASURED_RPC_METHODS.has(method)) return;
+  traceRuntimeEvent('renderer.sidecar_rpc_sent', {
+    method,
+    rpcId: String(rpcId),
+    runId: stringParam(params, 'runId'),
+    payloadBytes,
+    outcome: error === undefined ? 'success' : 'error',
+    ...(error === undefined ? {} : { errorType: runtimeErrorType(error) }),
+    ...(payloadBytes >= FIELD_BREAKDOWN_MIN_BYTES ? measurePayloadFields(params) : {}),
+  });
+}
+
 /**
  * Send a JSON-RPC request over the bridge and resolve/reject on the
  * correlated response (matched by numeric id) or timeout. Used internally
@@ -377,6 +404,7 @@ export function request(
 ): Promise<unknown> {
   const id = nextRequestId++;
   const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+  const encoded = textEncoder.encode(payload);
 
   return new Promise<unknown>((resolve, reject) => {
     const abortError = (): Error => {
@@ -416,7 +444,10 @@ export function request(
 
     pendingRequests.set(id, { resolve, reject, timer, cleanupAbort });
 
-    invoke('mcp_write', { id: SIDECAR_ID, message: payload }).catch((err: unknown) => {
+    invoke('mcp_write', { id: SIDECAR_ID, message: payload }).then(() => {
+      traceRpcSent(method, id, params, encoded.byteLength);
+    }, (err: unknown) => {
+      traceRpcSent(method, id, params, encoded.byteLength, err ?? new Error('mcp_write failed'));
       const entry = pendingRequests.get(id);
       if (entry) {
         if (entry.timer) clearTimeout(entry.timer);

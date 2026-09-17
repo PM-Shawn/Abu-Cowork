@@ -15,6 +15,16 @@ export interface RuntimeTraceAttributes {
   sidecarGeneration?: number;
   durationMs?: number;
   payloadBytes?: number;
+  /** The limit a payload was checked against (payload_too_large events). */
+  limitBytes?: number;
+  /** #549 step 0 per-field byte counts (numbers only, never content) — see core/ipc/payloadFieldSizes. */
+  fieldMessagesTextBytes?: number;
+  fieldToolResultsBytes?: number;
+  fieldToolContextResultsBytes?: number;
+  fieldMediaBase64Bytes?: number;
+  fieldToolListBytes?: number;
+  fieldSystemPromptBytes?: number;
+  fieldSettingsBytes?: number;
   frameCount?: number;
   /** Frames in a delta batch that were degraded in place (agentLoopRunner's media guard). */
   degradedCount?: number;
@@ -99,6 +109,14 @@ const SAFE_ATTRIBUTE_KEYS = new Set<keyof RuntimeTraceAttributes>([
   'sidecarGeneration',
   'durationMs',
   'payloadBytes',
+  'limitBytes',
+  'fieldMessagesTextBytes',
+  'fieldToolResultsBytes',
+  'fieldToolContextResultsBytes',
+  'fieldMediaBase64Bytes',
+  'fieldToolListBytes',
+  'fieldSystemPromptBytes',
+  'fieldSettingsBytes',
   'frameCount',
   'pendingRpcCount',
   'reason',

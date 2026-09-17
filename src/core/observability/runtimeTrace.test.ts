@@ -157,6 +157,35 @@ describe('renderer runtime trace', () => {
     expect(getRendererRuntimeTraceSnapshot().recentEvents[0]).not.toHaveProperty('toolNames');
   });
 
+  it('#549 step 0: forwards the payload byte breakdown as numbers only', () => {
+    traceRuntimeEvent('renderer.sidecar_rpc_sent', {
+      method: 'agent.start',
+      payloadBytes: 2_000_000,
+      limitBytes: 134_217_728,
+      fieldMessagesTextBytes: 10.4,
+      fieldToolResultsBytes: 1,
+      fieldToolContextResultsBytes: 2,
+      fieldMediaBase64Bytes: 3,
+      fieldToolListBytes: 4,
+      fieldSystemPromptBytes: 5,
+      fieldSettingsBytes: 6,
+      ...({ fieldMessagesText: 'private words' } as unknown as Record<string, never>),
+    });
+
+    const event = getRendererRuntimeTraceSnapshot().recentEvents[0];
+    expect(event).toMatchObject({
+      limitBytes: 134_217_728,
+      fieldMessagesTextBytes: 10,
+      fieldToolResultsBytes: 1,
+      fieldToolContextResultsBytes: 2,
+      fieldMediaBase64Bytes: 3,
+      fieldToolListBytes: 4,
+      fieldSystemPromptBytes: 5,
+      fieldSettingsBytes: 6,
+    });
+    expect(event).not.toHaveProperty('fieldMessagesText');
+  });
+
   describe('conversation join', () => {
     it('stamps the run conversationId onto later events that only carry a runId', () => {
       startRuntimeRun('run-join', 'sidecar', 'local_message_persisting', 'conversation-join');

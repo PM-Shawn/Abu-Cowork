@@ -27,6 +27,14 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'sidecarGeneration',
   'durationMs',
   'payloadBytes',
+  'limitBytes',
+  'fieldMessagesTextBytes',
+  'fieldToolResultsBytes',
+  'fieldToolContextResultsBytes',
+  'fieldMediaBase64Bytes',
+  'fieldToolListBytes',
+  'fieldSystemPromptBytes',
+  'fieldSettingsBytes',
   'frameCount',
   'pendingRpcCount',
   'reason',
@@ -133,6 +141,10 @@ function sanitizeEventName(value) {
   if (typeof value !== 'string' || !/^[a-z][a-z0-9_.-]{0,79}$/.test(value)) return null;
   return value;
 }
+
+// #549 step 0: every shell→sidecar RPC whose payload grows with the
+// conversation is measured, not only agent.run/abort.
+const TRACKED_RPC_METHODS = new Set(['agent.start', 'agent.run', 'agent.abort', 'llm.chat', 'subagent.run']);
 
 function parseJsonRpcMetadata(message) {
   if (typeof message !== 'string') return null;
@@ -348,7 +360,7 @@ function createRuntimeState({
   function noteRpcWriteStarted(id, message) {
     if (id !== SIDECAR_ID) return null;
     const metadata = parseJsonRpcMetadata(message);
-    if (!metadata?.method || !['agent.run', 'agent.abort'].includes(metadata.method)) return null;
+    if (!metadata?.method || !TRACKED_RPC_METHODS.has(metadata.method)) return null;
     const startedAt = now();
     const rpc = {
       sidecarId: id,

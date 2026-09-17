@@ -13,7 +13,8 @@ const reportError = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: (...a: unknown[]) => listen(...a) }));
 vi.mock('@tauri-apps/api/path', () => ({ resolveResource: (...a: unknown[]) => resolveResource(...a) }));
-vi.mock('@/core/observability/runtimeTrace', () => ({
+vi.mock('@/core/observability/runtimeTrace', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/observability/runtimeTrace')>()),
   traceRuntimeEvent: (...a: unknown[]) => traceRuntimeEvent(...a),
 }));
 vi.mock('@/utils/consoleError', () => ({ reportError: (...a: unknown[]) => reportError(...a) }));
@@ -305,6 +306,61 @@ describe('sidecarManager', () => {
       // A sidecar that eventually unwinds may still send the original result.
       // It must not resurrect or re-settle the cancelled transport request.
       expect(() => emitMsg({ jsonrpc: '2.0', id: sent.id, result: { reason: 'aborted' } })).not.toThrow();
+    });
+
+    it('#549 step 0: traces payloadBytes for measured methods only, with a numbers-only breakdown when large', async () => {
+      mockHappyPath();
+      await startSidecar();
+      traceRuntimeEvent.mockClear();
+
+      const callsBefore = invoke.mock.calls.length;
+      void request('agent.start', { runId: 'run-1', userMessage: '中文' }, 1000).catch(() => {});
+      void request('echo', { x: 1 }, 1000).catch(() => {});
+      const big = 'x'.repeat(1024 * 1024);
+      void request('agent.run', { runId: 'run-2', conversationSnapshot: { messages: [{ role: 'user', content: big }] } }, 1000).catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+
+      const sent = traceRuntimeEvent.mock.calls.filter((c) => c[0] === 'renderer.sidecar_rpc_sent');
+      expect(sent).toHaveLength(2);
+      const small = sent[0][1] as Record<string, unknown>;
+      expect(small).toMatchObject({ method: 'agent.start', runId: 'run-1', outcome: 'success' });
+      const startWrite = invoke.mock.calls.slice(callsBefore).find((c) => c[0] === 'mcp_write') as [string, { message: string }];
+      expect(JSON.parse(startWrite[1].message)).toMatchObject({ id: Number(small.rpcId), method: 'agent.start' });
+      expect(small.payloadBytes).toBe(new TextEncoder().encode(startWrite[1].message).byteLength);
+      expect(small.fieldMessagesTextBytes).toBeUndefined();
+      const large = sent[1][1] as Record<string, unknown>;
+      expect(large).toMatchObject({ method: 'agent.run', runId: 'run-2', outcome: 'success' });
+      expect(large.fieldMessagesTextBytes).toBe(1024 * 1024);
+      expect(JSON.stringify(sent)).not.toContain('xxxx');
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    it('#549 step 0: emits renderer.sidecar_rpc_sent only after the write settles, with the real outcome', async () => {
+      mockHappyPath();
+      await startSidecar();
+      traceRuntimeEvent.mockClear();
+      const sentEvents = () => traceRuntimeEvent.mock.calls.filter((c) => c[0] === 'renderer.sidecar_rpc_sent');
+
+      let releaseWrite: () => void = () => {};
+      invoke.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseWrite = resolve; }));
+      void request('llm.chat', { callId: 'c1' }, 1000).catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sentEvents()).toHaveLength(0);
+
+      releaseWrite();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sentEvents()).toHaveLength(1);
+      expect(sentEvents()[0][1]).toMatchObject({ method: 'llm.chat', outcome: 'success' });
+
+      invoke.mockImplementationOnce(() => Promise.reject(new TypeError('pipe closed: secret detail')));
+      const failed = request('subagent.run', { runId: 'run-3', task: 'do' }, 1000);
+      await expect(failed).rejects.toThrow(/pipe closed/);
+      expect(sentEvents()).toHaveLength(2);
+      const failure = sentEvents()[1][1] as Record<string, unknown>;
+      expect(failure).toMatchObject({ method: 'subagent.run', runId: 'run-3', outcome: 'error', errorType: 'typeerror' });
+      expect(typeof failure.payloadBytes).toBe('number');
+      expect(JSON.stringify(failure)).not.toContain('secret detail');
+      await vi.advanceTimersByTimeAsync(1000);
     });
   });
 

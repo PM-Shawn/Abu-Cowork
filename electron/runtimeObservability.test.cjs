@@ -531,3 +531,40 @@ test('events recorded before the log path is known are backfilled to disk', (t) 
   assert.equal(written[0].process, 'main');
   assert.ok(written[0].timestamp <= written[1].timestamp);
 });
+
+test('#549 step 0: payload byte breakdown keys survive sanitization as numbers', () => {
+  const safe = sanitizeAttributes({
+    limitBytes: 134217728,
+    fieldMessagesTextBytes: 10.4,
+    fieldToolResultsBytes: 1,
+    fieldToolContextResultsBytes: 2,
+    fieldMediaBase64Bytes: 3,
+    fieldToolListBytes: 4,
+    fieldSystemPromptBytes: 5,
+    fieldSettingsBytes: 6,
+  });
+  assert.deepEqual(safe, {
+    limitBytes: 134217728,
+    fieldMessagesTextBytes: 10,
+    fieldToolResultsBytes: 1,
+    fieldToolContextResultsBytes: 2,
+    fieldMediaBase64Bytes: 3,
+    fieldToolListBytes: 4,
+    fieldSystemPromptBytes: 5,
+    fieldSettingsBytes: 6,
+  });
+});
+
+test('#549 step 0: agent.start, llm.chat and subagent.run writes record payloadBytes', () => {
+  for (const method of ['agent.start', 'llm.chat', 'subagent.run']) {
+    const h = makeHarness();
+    h.state.noteSpawnStarted('abu-sidecar', true);
+    const line = JSON.stringify({ jsonrpc: '2.0', id: 7, method, params: { runId: 'run-9', userMessage: '中文' } });
+    const rpc = h.state.noteRpcWriteStarted('abu-sidecar', line);
+    assert.ok(rpc, `${method} must be tracked`);
+    assert.equal(rpc.payloadBytes, Buffer.byteLength(line));
+    const started = h.events.find((entry) => entry.event === 'main.rpc_write_started');
+    assert.equal(started.attributes.method, method);
+    assert.equal(started.attributes.payloadBytes, Buffer.byteLength(line));
+  }
+});

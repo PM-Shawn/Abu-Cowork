@@ -3185,7 +3185,9 @@ export async function bootstrapSecrets(): Promise<void> {
   // non-null value from the store (backfilled keys already match in-memory).
   useSettingsStore.setState((s) => {
     const providers = s.providers.map((p) => {
-      const fetched = providerUpdates.get(p.id);
+      // A stored secret belongs to a user-owned provider even when a managed
+      // one carries the same id.
+      const fetched = p.source === 'managed' ? undefined : providerUpdates.get(p.id);
       return fetched ? { ...p, apiKey: fetched } : p;
     });
 

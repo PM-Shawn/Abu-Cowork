@@ -142,6 +142,23 @@ describe('managed providers', () => {
       expect(touched).not.toContain('provider:enterprise-gateway');
     });
 
+    it('密钥库里同 id 的个人密钥不会覆盖托管条目的凭据', async () => {
+      useSettingsStore.setState({
+        providers: [
+          ...useSettingsStore.getState().providers,
+          { ...personalProvider, id: 'enterprise-gateway', source: 'custom', name: '同 id 的个人条目', apiKey: '' },
+        ],
+      });
+      invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) =>
+        cmd === 'secret_get' && (args as { key: string }).key === 'provider:enterprise-gateway' ? 'sk-own-secret' : null);
+
+      await bootstrapSecrets();
+
+      const entries = useSettingsStore.getState().providers.filter(p => p.id === 'enterprise-gateway');
+      expect(entries.find(p => p.source === 'managed')?.apiKey).toBe('sk-virtual-test');
+      expect(entries.find(p => p.source === 'custom')?.apiKey).toBe('sk-own-secret');
+    });
+
     it('清除全部密钥不会删除或清空托管条目的凭据', async () => {
       await useSettingsStore.getState().clearAllStoredKeys();
 

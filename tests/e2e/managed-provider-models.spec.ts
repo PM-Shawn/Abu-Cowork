@@ -258,6 +258,13 @@ test.describe('managed provider models', () => {
     let { app: shell, page } = await launch(dataRoot);
     app = shell;
 
+    // The one-time notice that goes with this is not asserted here: `launch`
+    // reloads the page to dismiss first-run overlays, and the notice belongs to
+    // the load before that reload.
+    await test.step('the first launch that finds the managed provider makes its first model the default', async () => {
+      await expect(composerModelButton(page, org.models[0])).toBeVisible({ timeout: READY_TIMEOUT });
+    });
+
     await test.step('settings lists the managed provider as a read-only card next to the user\'s own', async () => {
       const dialog = await openModelSettings(page, org.accountLabel);
       const orgCard = dialog.locator('div.group', { hasText: `由 ${org.name} 提供` }).first();
@@ -278,12 +285,8 @@ test.describe('managed provider models', () => {
       expect(org.modelListAuthorizations.every((a) => a === `Bearer ${org.credential}`)).toBe(true);
     });
 
-    await test.step('a launch that finds the managed provider already set up leaves the default model alone', async () => {
-      await expect(composerModelButton(page, PERSONAL.modelLabel)).toBeVisible();
-    });
-
     await test.step('the picker lists the managed provider first and the user\'s own under 我的模型', async () => {
-      await composerModelButton(page, PERSONAL.modelLabel).click();
+      await composerModelButton(page, org.models[0]).click();
       const orgHeader = page.getByText(org.name, { exact: true }).last();
       const mineHeader = page.getByText('我的模型', { exact: true });
       await expect(orgHeader).toBeVisible();

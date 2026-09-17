@@ -492,6 +492,10 @@ export interface TranslationDict {
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
     sidecarUnavailable: string;
+    /** The turn was too big for the shell→sidecar channel; the only way forward is a new conversation (#549). */
+    payloadTooLarge: string;
+    /** The sidecar never reached `running`, so the message was never sent (#549). */
+    sidecarNotReady: string;
     messageSaveFailed: string;
     /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
     browserDeniedAbort: string;

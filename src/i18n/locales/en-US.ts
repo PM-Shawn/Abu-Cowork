@@ -442,6 +442,8 @@ const enUS: TranslationDict = {
     gatewayUnreachable: 'Cannot reach the enterprise AI gateway. Check your network connection, or contact your administrator.\n\nThe client will not fall back to a personal API key (to prevent budget bypass).',
     sidecarInterrupted: 'The background service was interrupted and is recovering automatically. Please resend your request in a moment.',
     sidecarUnavailable: 'The background service could not confirm this task\'s state during recovery. Abu stopped waiting and will not replay it automatically, but cannot confirm whether the original task is still running. Check the existing result before deciding to retry.',
+    payloadTooLarge: 'This conversation is too long to continue. Please start a new conversation.',
+    sidecarNotReady: 'The background service did not start, so this message was not sent. Click Retry to try again.',
     messageSaveFailed: 'The message could not be saved to disk, so Abu did not start the task. Check disk access and retry.',
     browserDeniedAbort: 'You declined my browser actions several times in a row, so I stopped — I may have misread what you want. Tell me how you\'d like me to proceed?',
     attachmentDuringRun: 'Wait for the current task to finish before sending attachments. Your draft is still here.',

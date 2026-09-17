@@ -395,6 +395,8 @@ export interface Message {
   runError?: string;
   /** Structured provider fields retained for the failed-run error card. */
   runErrorDetails?: UpstreamErrorDetails;
+  /** Why a run failed before the sidecar accepted it (#549); drives the failed-row UI. */
+  runErrorKind?: 'payload_too_large' | 'sidecar_unavailable' | 'dispatch_failed';
   toolCalls?: ToolCall[];
   // Extended thinking content
   thinking?: string;

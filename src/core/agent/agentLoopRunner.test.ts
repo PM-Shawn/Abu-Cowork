@@ -69,6 +69,23 @@ vi.mock('../sidecar/sidecarManager', () => ({
   SidecarRequestError: MockSidecarRequestError,
 }));
 
+const waitForSidecarVenueMock = vi.fn().mockResolvedValue(undefined);
+class MockSidecarUnavailableError extends Error {
+  readonly code = 'sidecar_unavailable';
+  readonly stopReason = 'sidecar_unavailable';
+  constructor(readonly reason: 'timeout' | 'failed' = 'timeout') {
+    super(`Agent sidecar unavailable (${reason})`);
+    this.name = 'SidecarUnavailableError';
+  }
+}
+vi.mock('../sidecar/sidecarReadiness', () => ({
+  // Existing tests drive the venue with getSidecarStatusMock: 'running' means
+  // Electron + sidecar, anything else stands in for the web/test environment.
+  isInProcessAgentEnvironment: () => getSidecarStatusMock() !== 'running',
+  waitForSidecarVenue: (...a: unknown[]) => waitForSidecarVenueMock(...a),
+  SidecarUnavailableError: MockSidecarUnavailableError,
+}));
+
 const {
   traceRuntimeEventMock,
   startRuntimeRunMock,
@@ -456,13 +473,16 @@ vi.mock('../../stores/taskExecutionStore', () => ({
 vi.mock('../../i18n', () => ({
   getI18n: () => ({
     chat: {
-      sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+      sidecarInterrupted: '连接中断，可点重试',
       sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
       messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
       browserDeniedAbort: '你连续拒绝了我的浏览器操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
       attachmentDuringRun: '请等待当前任务结束后再发送附件，草稿已为你保留。',
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
       errorEmptyBody: '请求失败但无详情',
+      payloadTooLarge: '这段对话太长，无法继续。请新建对话继续。',
+      sidecarNotReady: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+      gatewayUnreachable: '无法连接企业 AI 网关。',
     },
   }),
   getLocale: () => 'zh-CN',
@@ -682,6 +702,8 @@ describe('agentLoopRunner', () => {
     capturedQueueCb = undefined;
     getSidecarStatusMock.mockReset();
     getSidecarStatusMock.mockReturnValue('running');
+    waitForSidecarVenueMock.mockReset();
+    waitForSidecarVenueMock.mockResolvedValue(undefined);
     sidecarRequestMock.mockReset();
     loggerWarnMock.mockReset();
     agentStartRequestMock.mockReset();
@@ -820,7 +842,7 @@ describe('agentLoopRunner', () => {
         ['conv-1', 'msg-connection', { state: 'running' }],
         ['conv-1', 'msg-connection', {
           state: 'connection-failed',
-          error: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
+          error: '连接中断，可点重试',
         }],
       ]);
     });
@@ -3582,17 +3604,17 @@ describe('agentLoopRunner', () => {
         expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1'], ['conv-1']]);
       });
 
-      it('fires once for a run that fell back in-process after a params-build failure', async () => {
+      it('#549: stays silent when params building fails (no in-process rerun)', async () => {
         const { runAgentLoopDispatched } = await importFresh();
-        // Dispatch prep blows up before anything is sent to the sidecar, so
-        // the whole loop runs in-process and returns without ever reaching
-        // the sidecar branch's own seal.
+        // Dispatch prep blows up before anything is sent to the sidecar. No
+        // run ever started in either venue, so — exactly like a pre-dispatch
+        // interruption — there is no settlement to seal.
         precomputeOrchestrationMock.mockRejectedValueOnce(new Error('prompt build failed'));
 
         await runAgentLoopDispatched('conv-1', 'hello');
 
-        expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-        expect(releaseRunBrowserTabClaimsMock.mock.calls).toEqual([['conv-1']]);
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(releaseRunBrowserTabClaimsMock).not.toHaveBeenCalled();
       });
 
       it('stays silent when the run was interrupted before it ever started', async () => {
@@ -4250,9 +4272,13 @@ describe('agentLoopRunner', () => {
         upstream: upstreamErrorDetails,
       });
 
-      await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({ reason: 'completed' });
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
 
-      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
+      // #549: a response the shell cannot trust is a visible failure, never a
+      // silent renderer-side rerun — but its provider details still never
+      // reach the store.
+      expect(result.reason).toBe('error');
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
       expect(JSON.stringify(chatStoreUpdateUserMessageRunMock.mock.calls)).not.toContain('must not survive');
       expect(JSON.stringify(chatStoreUpdateUserMessageRunMock.mock.calls)).not.toContain(upstreamErrorDetails.traceId);
     });
@@ -5403,99 +5429,53 @@ describe('agentLoopRunner', () => {
       expect(runGetStateRequestMock).not.toHaveBeenCalled();
     });
 
-    it('a transport failure BEFORE the run is committed falls back to runAgentLoop in-process', async () => {
+    it('#549: a transport failure before agent.start is accepted fails the row visibly — never reruns in-process', async () => {
       const { runAgentLoopDispatched } = await importFresh();
-      sidecarRequestMock.mockRejectedValue(new Error('sidecar process closed'));
+      agentStartRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+      runGetStateRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
 
       const result = await runAgentLoopDispatched('conv-1', 'hello');
 
-      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-      expect(runAgentLoopMock).toHaveBeenCalledWith('conv-1', 'hello', expect.objectContaining({
-        loopId: expect.any(String),
-        prePersistedUserMessageId: expect.any(String),
-      }));
-      expect(endComputerUseTaskMock).not.toHaveBeenCalled();
-      expect(result).toEqual({ reason: 'completed' });
-    });
-
-    it('preserves upstream details when a pre-commit transport failure falls back in-process', async () => {
-      const { runAgentLoopDispatched } = await importFresh();
-      sidecarRequestMock.mockRejectedValue(new Error('sidecar process closed'));
-      runAgentLoopMock.mockResolvedValueOnce({
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result).toEqual({
         reason: 'error',
-        error: 'HTTP 403 · content_policy',
-        upstream: upstreamErrorDetails,
-      });
-
-      await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({
-        reason: 'error',
-        error: 'HTTP 403 · content_policy',
-        upstream: upstreamErrorDetails,
+        error: '连接中断，可点重试',
         messageTaken: true,
+        stopReason: 'sidecar_unavailable',
       });
-      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenCalledWith(
-        'conv-1',
-        expect.any(String),
-        {
-          state: 'failed',
-          error: 'HTTP 403 · content_policy',
-          errorDetails: upstreamErrorDetails,
-        },
-      );
-      expect(loggerWarnMock).toHaveBeenCalledWith(
-        'agent loop reported a failed result',
-        expect.objectContaining({
-          resultSource: 'fallback-in-process',
-          status: 403,
-          error_type: upstreamErrorDetails.error_type,
-          traceId: upstreamErrorDetails.traceId,
-          providerSummary: upstreamErrorDetails.summary,
-        }),
-      );
+      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
+        state: 'failed', error: '连接中断，可点重试', errorKind: 'sidecar_unavailable',
+      });
+      expect(chatDeltaSetConversationStatusMock).toHaveBeenLastCalledWith('conv-1', 'idle');
+      expect(chatDeltaAppendTextMock).not.toHaveBeenCalled();
+      expect(traceRuntimeEventMock.mock.calls.map((c) => c[0])).not.toContain('renderer.agent_run_fallback');
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({ stage: 'sidecar_unavailable', outcome: 'error' }));
     });
 
-    it('keeps the replacement local task controller after a pre-commit sidecar fallback', async () => {
+    it('#549: payload_too_large on agent.start gives the oversize copy and kind', async () => {
       const { runAgentLoopDispatched } = await importFresh();
-      let activeController: AbortController | undefined;
-      let localController: AbortController | undefined;
-      const localStarted = deferred<void>();
-      const localFinished = deferred<void>();
+      agentStartRequestMock.mockRejectedValue(new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"agent.start"}'));
 
-      clearAbortControllerMock.mockImplementation(() => {
-        activeController = undefined;
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(result).toMatchObject({ reason: 'error', error: '这段对话太长，无法继续。请新建对话继续。', messageTaken: true, stopReason: 'payload_too_large' });
+      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
+        state: 'failed', error: '这段对话太长，无法继续。请新建对话继续。', errorKind: 'payload_too_large',
       });
-      getAbortControllerMock.mockImplementation(() => {
-        activeController ??= new AbortController();
-        return activeController;
-      });
-      sidecarRequestMock.mockRejectedValue(new Error('sidecar process closed'));
-      runAgentLoopMock.mockImplementation(async () => {
-        // Mirror runAgentLoop's synchronous ownership replacement before its
-        // first await. The dispatch wrapper's finally must not clear this new
-        // controller while the fallback task is still running.
-        clearAbortControllerMock('conv-1');
-        localController = getAbortControllerMock('conv-1');
-        localStarted.resolve();
-        try {
-          await localFinished.promise;
-          return { reason: 'completed' };
-        } finally {
-          if (activeController === localController) {
-            clearAbortControllerMock('conv-1');
-          }
-        }
-      });
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({ stage: 'payload_too_large', errorType: 'payload_too_large' }));
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+    });
 
-      const running = runAgentLoopDispatched('conv-1', 'hello');
-      await localStarted.promise;
-      await Promise.resolve();
+    it('#549: accepted but uncommitted transport failure surfaces the error without an in-process rerun', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
+      runGetStateRequestMock.mockResolvedValue({ version: 1, runId: 'x', state: 'not_found' });
 
-      expect(activeController).toBe(localController);
-      expect(activeController?.signal.aborted).toBe(false);
+      const result = await runAgentLoopDispatched('conv-1', 'hello');
 
-      localFinished.resolve();
-      await expect(running).resolves.toEqual({ reason: 'completed' });
-      expect(activeController).toBeUndefined();
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ reason: 'error', messageTaken: true });
+      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenCalledWith('conv-1', expect.any(String), expect.objectContaining({ state: 'connection-failed' }));
     });
 
     it('a transport failure AFTER the run is committed (≥1 tool.invoke arrived) surfaces an error — NO rerun', async () => {
@@ -5628,7 +5608,7 @@ describe('agentLoopRunner', () => {
       });
       expect(chatDeltaAppendTextMock).toHaveBeenCalledWith(
         'conv-1',
-        expect.stringContaining('后台服务意外中断，正在自动恢复'),
+        expect.stringContaining('连接中断，可点重试'),
       );
       expect(chatDeltaAppendTextMock).not.toHaveBeenCalledWith(
         'conv-1',
@@ -5722,50 +5702,28 @@ describe('agentLoopRunner', () => {
       expect(result.reason).toBe('error');
     });
 
-    it('buildAgentRunParams failing (e.g. resolveEffectiveLlmCreds throws) falls back to runAgentLoop in-process — never dispatches', async () => {
+    it('#549: a params-build failure fails the row with its reason — never reruns in-process', async () => {
       const { runAgentLoopDispatched } = await importFresh();
-      resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('EnterpriseLlmUnavailableError'); });
+      resolveEffectiveLlmCredsMock.mockImplementation(() => {
+        const err = new Error('gateway down');
+        err.name = 'EnterpriseLlmUnavailableError';
+        throw err;
+      });
 
       const result = await runAgentLoopDispatched('conv-1', 'hello');
 
       expect(sidecarRequestMock).not.toHaveBeenCalled();
-      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ reason: 'completed' });
+      expect(agentStartRequestMock).not.toHaveBeenCalled();
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result).toEqual({ reason: 'error', error: '无法连接企业 AI 网关。', messageTaken: true });
+      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
+        state: 'failed', error: '无法连接企业 AI 网关。', errorKind: 'dispatch_failed',
+      });
+      expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1');
     });
 
-    it('preserves ownership when a pre-persisted in-process fallback rejects', async () => {
+    it('#549: keeps the attached images on the row a params-build failure left failed', async () => {
       const { runAgentLoopDispatched } = await importFresh();
-      resolveEffectiveLlmCredsMock.mockImplementation(() => {
-        throw new Error('EnterpriseLlmUnavailableError');
-      });
-      runAgentLoopMock.mockRejectedValueOnce(new Error('local provider failed'));
-
-      await expect(runAgentLoopDispatched('conv-1', 'hello')).rejects.toMatchObject({
-        name: 'AgentLoopDispatchError',
-        message: 'local provider failed',
-        messageTaken: true,
-      });
-
-      expect(runAgentLoopMock).toHaveBeenCalledWith(
-        'conv-1',
-        'hello',
-        expect.objectContaining({ prePersistedUserMessageId: expect.any(String) }),
-      );
-      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenCalledWith(
-        'conv-1',
-        expect.any(String),
-        expect.objectContaining({ state: 'failed', error: 'local provider failed' }),
-      );
-    });
-
-    it('upgrades the durable raw message to multimodal content before an early in-process fallback', async () => {
-      const { runAgentLoopDispatched } = await importFresh();
-      getConversationMock.mockReturnValue({
-        id: 'conv-1',
-        title: 't',
-        status: 'idle',
-        messages: [{ id: expect.any(String), role: 'user', content: 'look', timestamp: 1 }],
-      });
       // The generated client id is not known ahead of time; make the reader
       // reflect the user row inserted by the runner.
       chatStoreAddMessageMock.mockImplementation((_convId, message) => {
@@ -5778,31 +5736,30 @@ describe('agentLoopRunner', () => {
       });
       const multimodal = [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'x' } }];
       buildUserMessageContentMock.mockResolvedValue(multimodal);
-      resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('EnterpriseLlmUnavailableError'); });
+      resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('creds unavailable'); });
 
-      await expect(runAgentLoopDispatched('conv-1', 'look', {
+      const result = await runAgentLoopDispatched('conv-1', 'look', {
         images: [{ id: 'i1', data: 'x', mediaType: 'image/png' }],
-      })).resolves.toEqual({ reason: 'completed' });
+      });
 
+      expect(result).toMatchObject({ reason: 'error', messageTaken: true });
       expect(buildUserMessageContentMock).toHaveBeenCalledWith(
         'conv-1',
         'look',
         [{ id: 'i1', data: 'x', mediaType: 'image/png' }],
       );
-      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenCalledWith(
+      // One terminal revision, carrying BOTH the images (so Retry can rebuild
+      // them) and the failure reason.
+      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith(
         'conv-1',
         expect.any(String),
-        expect.objectContaining({ content: multimodal }),
+        expect.objectContaining({ state: 'failed', errorKind: 'dispatch_failed', content: multimodal }),
       );
-      expect(runAgentLoopMock).toHaveBeenCalledWith(
-        'conv-1',
-        'look',
-        expect.objectContaining({ prePersistedUserMessageId: expect.any(String) }),
-      );
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
       expect(sidecarRequestMock).not.toHaveBeenCalled();
     });
 
-    it('preserves ownership when the multimodal fallback upgrade cannot persist', async () => {
+    it('#549: still fails the row visibly when the image upgrade itself throws', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       chatStoreAddMessageMock.mockImplementation((_convId, message) => {
         getConversationMock.mockReturnValue({
@@ -5812,48 +5769,31 @@ describe('agentLoopRunner', () => {
           messages: [message],
         });
       });
-      buildUserMessageContentMock.mockResolvedValue([
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'x' } },
-      ]);
-      resolveEffectiveLlmCredsMock.mockImplementation(() => {
-        throw new Error('EnterpriseLlmUnavailableError');
-      });
-      waitForConversationPersistenceMock
-        .mockResolvedValueOnce(undefined)
-        .mockRejectedValueOnce(new Error('multimodal update not durable'));
+      buildUserMessageContentMock.mockRejectedValue(new Error('attachment unreadable'));
+      resolveEffectiveLlmCredsMock.mockImplementation(() => { throw new Error('creds unavailable'); });
 
-      await expect(runAgentLoopDispatched('conv-1', 'look', {
+      const result = await runAgentLoopDispatched('conv-1', 'look', {
         images: [{ id: 'i1', data: 'x', mediaType: 'image/png' }],
-      })).rejects.toMatchObject({
-        name: 'AgentLoopDispatchError',
-        message: 'multimodal update not durable',
-        messageTaken: true,
       });
 
-      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenCalledWith(
+      expect(result).toMatchObject({ reason: 'error', messageTaken: true });
+      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith(
         'conv-1',
         expect.any(String),
-        expect.objectContaining({ content: expect.any(Array) }),
-      );
-      expect(chatStoreUpdateUserMessageRunMock).toHaveBeenCalledWith(
-        'conv-1',
-        expect.any(String),
-        expect.objectContaining({
-          state: 'failed',
-          error: 'multimodal update not durable',
-        }),
+        { state: 'failed', error: 'creds unavailable', errorKind: 'dispatch_failed' },
       );
       expect(runAgentLoopMock).not.toHaveBeenCalled();
     });
 
-    it('a malformed agent.run response is treated as a failure (pre-commit → falls back in-process)', async () => {
+    it('#549: a malformed agent.run response is a visible failure, not a rerun', async () => {
       const { runAgentLoopDispatched } = await importFresh();
-      sidecarRequestMock.mockResolvedValue({ notReason: 'oops' });
+      sidecarRequestMock.mockResolvedValue({ unexpected: true });
+      runGetStateRequestMock.mockResolvedValue({ version: 1, runId: 'x', state: 'not_found' });
 
       const result = await runAgentLoopDispatched('conv-1', 'hello');
 
-      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ reason: 'completed' });
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result.reason).toBe('error');
     });
 
     it('rejects an agent.run response carrying an unknown raw provider field', async () => {
@@ -5867,9 +5807,84 @@ describe('agentLoopRunner', () => {
 
       const result = await runAgentLoopDispatched('conv-1', 'hello');
 
-      expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ reason: 'completed' });
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(result.reason).toBe('error');
       expect(JSON.stringify(chatStoreUpdateUserMessageRunMock.mock.calls)).not.toContain('private prompt text');
+    });
+
+    describe('#549 cold start', () => {
+      it('waits for the sidecar after the row is durable and before building params', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const order: string[] = [];
+        waitForConversationPersistenceMock.mockImplementation(async () => { order.push('persist'); });
+        waitForSidecarVenueMock.mockImplementation(async () => { order.push('wait'); });
+        precomputeOrchestrationMock.mockImplementation(async () => {
+          order.push('build');
+          return { route: { type: 'general', name: 'general', cleanInput: 'hi' }, systemPromptSections: [] };
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello', { initiatedBy: 'user' });
+
+        expect(order.slice(0, 3)).toEqual(['persist', 'wait', 'build']);
+        expect(waitForSidecarVenueMock).toHaveBeenCalledWith({
+          signal: expect.any(AbortSignal),
+          conversationId: 'conv-1',
+          allowRestart: true,
+        });
+      });
+
+      it('never spends a restart attempt for a headless dispatcher', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+
+        await runAgentLoopDispatched('conv-1', 'hello', { initiatedBy: 'automation' });
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(waitForSidecarVenueMock).toHaveBeenCalledTimes(2);
+        for (const call of waitForSidecarVenueMock.mock.calls) {
+          expect(call[0]).toMatchObject({ allowRestart: false });
+        }
+      });
+
+      it('a start that never becomes ready fails the row with the not-ready copy', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        waitForSidecarVenueMock.mockRejectedValue(new MockSidecarUnavailableError('timeout'));
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(agentStartRequestMock).not.toHaveBeenCalled();
+        expect(result).toEqual({
+          reason: 'error',
+          error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+          messageTaken: true,
+          stopReason: 'sidecar_unavailable',
+        });
+        expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
+          state: 'failed', error: '后台服务没有启动成功，这条消息还没有发出。可点重试。', errorKind: 'sidecar_unavailable',
+        });
+        expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({
+          stage: 'sidecar_unavailable',
+          errorType: 'sidecar_timeout',
+        }));
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+      });
+
+      it('Stop while waiting ends as interrupted', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        waitForSidecarVenueMock.mockRejectedValue(Object.assign(new Error('stopped'), { name: 'AbortError' }));
+        getAbortControllerMock.mockImplementation(() => {
+          const c = new AbortController();
+          c.abort();
+          return c;
+        });
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(result.reason).toBe('aborted');
+        expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), { state: 'interrupted' });
+        expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_aborted', expect.objectContaining({
+          stage: 'waiting_for_sidecar',
+        }));
+      });
     });
 
     describe('concurrency guard', () => {

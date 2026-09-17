@@ -36,7 +36,7 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ToolExecutionContext, Conversation, Message, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -164,6 +164,11 @@ import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
 import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import {
+  isInProcessAgentEnvironment,
+  waitForSidecarVenue,
+  SidecarUnavailableError,
+} from '../sidecar/sidecarReadiness';
+import {
   createRunResourceSettlement,
   getRunResourceSettlement,
   registerRunResourceSettlement,
@@ -207,7 +212,7 @@ function warnFailedAgentResult(params: {
   runId: string;
   conversationId: string;
   cause: string;
-  source: 'terminal' | 'raw-rpc' | 'replay-rpc' | 'fallback-in-process';
+  source: 'terminal' | 'raw-rpc' | 'replay-rpc';
   upstream?: UpstreamErrorDetails;
   errorType?: string;
   stack?: string;
@@ -798,74 +803,11 @@ function updateSessionMessageState(
   );
 }
 
-async function runInProcessWithPersistedMessage(
-  conversationId: string,
-  userMessage: string,
-  runId: string,
-  clientMessageId: string,
-  options?: AgentLoopOptions,
-): Promise<AgentLoopDispatchResult> {
-  try {
-    // Params preparation can fail before it upgrades the durable raw message
-    // to multimodal content. Do that here before the in-process handoff so a
-    // pre-dispatch failure never drops an attached image merely because the
-    // local loop is told not to append a duplicate user row. This belongs
-    // inside the same failure finalization as the local loop: once the shell
-    // has appended the row, every thrown preparation/persistence step must
-    // leave it retryable instead of stranded at `pending`.
-    const persistedMessage = getConversationReader()
-      .getConversation(conversationId)
-      ?.messages.find((message) => message.id === clientMessageId);
-    if (options?.images?.length && typeof persistedMessage?.content === 'string') {
-      const content = await buildUserMessageContent(conversationId, userMessage, options.images);
-      useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
-        state: 'pending',
-        content,
-      });
-      await waitForConversationPersistence(conversationId);
-    }
-    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, { state: 'running' });
-    const result = await runAgentLoop(conversationId, userMessage, rendererRuntimeOptions({
-      ...options,
-      loopId: runId,
-      prePersistedUserMessageId: clientMessageId,
-    }));
-    const state = result.reason === 'aborted'
-      ? 'interrupted'
-      : result.reason === 'error'
-        ? 'failed'
-        : 'completed';
-    if (result.reason === 'error') {
-      warnFailedAgentResult({
-        runId,
-        conversationId,
-        cause: result.error || 'Agent run failed',
-        source: 'fallback-in-process',
-        upstream: result.upstream,
-      });
-    }
-    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
-      state,
-      ...(result.error ? { error: result.error } : {}),
-      ...(result.upstream ? { errorDetails: result.upstream } : {}),
-    });
-    await waitForConversationPersistence(conversationId);
-    return markReturnedErrorAsTaken(result);
-  } catch (error) {
-    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
-      state: 'failed',
-      error: error instanceof Error ? error.message : String(error),
-    });
-    await waitForConversationPersistence(conversationId);
-    throw error;
-  }
-}
-
 async function finalizePreDispatchInterruptedRun(
   conversationId: string,
   clientMessageId: string,
   runId: string,
-  stage: 'params_build_aborted' | 'before_dispatch',
+  stage: 'params_build_aborted' | 'before_dispatch' | 'waiting_for_sidecar',
   runtimeStartedAt: number,
 ): Promise<AgentLoopDispatchResult> {
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
@@ -886,6 +828,133 @@ async function finalizePreDispatchInterruptedRun(
     finishRuntimeRun(runId);
   }
   return { reason: 'aborted' };
+}
+
+type PreAcceptFailureKind = NonNullable<Message['runErrorKind']>;
+
+/**
+ * May THIS send spend the sidecar's one cold-start restart attempt (#549)?
+ *
+ * Only a human-initiated dispatch may. `startSidecar()` resets the crash-loop
+ * breaker's window, so letting a timer-driven dispatcher (scheduler tick,
+ * trigger, file watcher, IM inbound, team resume-after-restart) restart a dead
+ * sidecar would re-arm that window on every tick and hide a real crash loop.
+ * Every UI entry point stamps `initiatedBy: 'user'`; the headless dispatchers
+ * stamp `'automation'` or nothing at all, and an unlabelled run is treated as
+ * headless on purpose — a missing label must never widen authority.
+ */
+function mayRestartSidecarForSend(options: AgentLoopOptions | undefined): boolean {
+  return options?.initiatedBy === 'user';
+}
+
+/**
+ * #549 B: a run the sidecar never accepted ends here — visibly, retryably,
+ * and without running anything in this renderer. The user's text stays in
+ * the failed row (Retry / 新建对话 read it from there).
+ *
+ * If the turn carried images and the durable row is still the raw string
+ * (params building failed before it could upgrade the row), the images are
+ * folded into the SAME terminal revision, so `rebuildImageAttachments` can
+ * reconstruct the attachments when the user retries.
+ */
+async function finalizePreAcceptFailure(params: {
+  conversationId: string;
+  clientMessageId: string;
+  runId: string;
+  runtimeStartedAt: number;
+  kind: PreAcceptFailureKind;
+  displayMessage: string;
+  stage: 'sidecar_unavailable' | 'payload_too_large' | 'params_build_failed';
+  errorType: string;
+  /** Present only once a RunSession exists; its own `finally` owns teardown. */
+  session?: RunSession;
+  userMessage?: string;
+  images?: AgentLoopOptions['images'];
+}): Promise<AgentLoopDispatchResult> {
+  const { conversationId, clientMessageId, runId, session } = params;
+  if (session) {
+    session.dropFrames = true;
+    session.terminalPublished = true;
+  } else {
+    getAbortRegistry().clearAbortController(conversationId);
+  }
+  const content = await preservedMultimodalContent(params);
+  useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+    state: 'failed',
+    error: params.displayMessage,
+    errorKind: params.kind,
+    ...(content ? { content } : {}),
+  });
+  getChatDelta().setConversationStatus(conversationId, 'idle');
+  traceRuntimeEvent('renderer.agent_run_failed', {
+    runId,
+    clientMessageId,
+    executionPath: 'sidecar',
+    stage: params.stage,
+    outcome: 'error',
+    errorType: params.errorType,
+    durationMs: Date.now() - params.runtimeStartedAt,
+  });
+  try {
+    await waitForConversationPersistence(conversationId);
+  } finally {
+    // Only the session-less paths own the runtime-run handle here; once a
+    // RunSession exists the dispatcher's own `finally` calls finishRuntimeRun,
+    // and calling it twice for one run would be a lie in the trace.
+    if (!session) finishRuntimeRun(runId);
+  }
+  return {
+    reason: 'error',
+    error: params.displayMessage,
+    messageTaken: true,
+    ...(params.kind === 'dispatch_failed' ? {} : { stopReason: params.kind }),
+  };
+}
+
+/**
+ * Rebuild the multimodal content for a failed row whose durable copy is still
+ * the plain string. Best effort: if the attachments can no longer be read, the
+ * row still has to end visibly failed, so the failure text wins over the images.
+ */
+async function preservedMultimodalContent(params: {
+  conversationId: string;
+  clientMessageId: string;
+  userMessage?: string;
+  images?: AgentLoopOptions['images'];
+}): Promise<Message['content'] | undefined> {
+  const { conversationId, clientMessageId, userMessage, images } = params;
+  if (!images?.length || userMessage === undefined) return undefined;
+  const persisted = getConversationReader()
+    .getConversation(conversationId)
+    ?.messages.find((message) => message.id === clientMessageId);
+  if (typeof persisted?.content !== 'string') return undefined;
+  try {
+    return await buildUserMessageContent(conversationId, userMessage, images);
+  } catch (error) {
+    logger.warn('could not preserve attachments on a pre-accept failure row', {
+      conversationId,
+      clientMessageId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
+/**
+ * The one params-failure message helper (#549 R9) — imported by the subagent
+ * dispatcher too, so both surfaces name an unreachable enterprise gateway the
+ * same way. Matched on `name`, not `instanceof`: the class lives behind the
+ * `@enterprise-modules` alias, and both the OSS stub and the private
+ * implementation set `this.name`.
+ */
+export function paramsBuildDisplayMessage(err: unknown): string {
+  if (err instanceof Error && err.name === 'EnterpriseLlmUnavailableError') {
+    return getI18n().chat.gatewayUnreachable;
+  }
+  return sanitizeUntrustedLlmErrorText(
+    err instanceof Error ? err.message : String(err),
+    getI18n().chat.errorEmptyBody,
+  );
 }
 
 async function settleRunPersistence(session: RunSession): Promise<void> {
@@ -2854,9 +2923,11 @@ async function buildAgentRunParams(
  * the 4th reuse of the `selectChatAdapter`/`runSubagent` zero-risk-switch
  * shape). Every existing caller of `runAgentLoop` switches to this.
  *
- * - sidecar NOT `'running'` → `runAgentLoop` in-process, unchanged.
- * - sidecar `'running'` → concurrency guard (see below), then dispatch
- *   `agent.run`, then the fallback/re-run discipline (see below).
+ * - Web preview / unit tests (no desktop process bridge,
+ *   `isInProcessAgentEnvironment()`) → `runAgentLoop` in this renderer. This
+ *   is an environment choice, never a recovery path.
+ * - Electron → concurrency guard, durable user row, wait for the sidecar
+ *   (≤60s, visible), build params, `agent.start` + `agent.run`.
  *
  * ## Concurrency guard
  *
@@ -2884,21 +2955,14 @@ async function buildAgentRunParams(
  * current text-only mid-run queue, so an attachment send is rejected while
  * preserving the composer draft; it must never start a concurrent run.
  *
- * ## Fallback / re-run discipline
+ * ## Failure discipline (#549)
  *
- * A `agent.run` dispatch can fail two structurally different ways (mirrors
- * subagentRunner.ts's `runSubagent` exactly):
- *   1. Before the run is "committed" (`RunSession.committed` — flipped on
- *      the first `tool.invoke` OR the first `agent.delta` frame applied) →
- *      nothing observable has happened yet → safe to retry the WHOLE run
- *      in-process via `runAgentLoop`.
- *   2. After the run is committed → real side effects (a tool ran, or text
- *      already streamed into the visible transcript) may have occurred →
- *      surfaces as `{reason:'error', error:...}` instead. NO rerun (would
- *      double-execute tool side effects / duplicate streamed text).
- * `buildAgentRunParams` itself failing (thrown before ANY dispatch — e.g.
- * `EnterpriseLlmUnavailableError`, or a missing conversation record) is
- * ALSO pre-commit by construction — same in-process fallback.
+ * Nothing is ever re-run in-process. Before the sidecar accepts the run
+ * (params build failure, sidecar unavailable, transport failure, oversize
+ * payload) the user row ends `failed` with a reason and Retry. After accept,
+ * the existing recovery (state query, one replay while uncommitted,
+ * reattach) runs; if it cannot settle, the run ends with a visible error.
+ * The user's turn is never resent automatically.
  */
 async function runSingleAgentLoopDispatchedWithOwnership(
   conversationId: string,
@@ -2906,11 +2970,11 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   ownership: { messageTaken: boolean },
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
-  const sidecarRunning = getSidecarStatus() === 'running';
+  const inProcessEnvironment = isInProcessAgentEnvironment();
 
   // ── Concurrency guard — see doc above for the two-venue rationale. This
-  // runs before venue selection so sidecar-down/fallback callers cannot bypass
-  // the same one-live-run-per-conversation invariant.
+  // runs before venue selection so a renderer-hosted run cannot bypass the
+  // same one-live-run-per-conversation invariant.
   {
     const runningConv = getConversationReader().getConversation(conversationId);
     const hasAttachments = Boolean(options?.images?.length);
@@ -2964,7 +3028,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   options = { ...options, loopId: ownedLoopId };
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
-  if (!sidecarRunning) {
+  if (inProcessEnvironment) {
+    // Environment choice (web preview / unit tests): there is no desktop
+    // process bridge, so the loop runs in this renderer. Not a failure
+    // fallback — Electron never reaches this branch (#549).
     await ensureBuiltinBrowserRuntime();
     let localUserMessageId: string | undefined;
     try {
@@ -3097,6 +3164,41 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     stage: 'local_message_persisted',
     durationMs: Date.now() - runtimeStartedAt,
   });
+
+  // #549: the venue is decided AFTER the row is durable and BEFORE any work is
+  // built for it. A cold or restarting sidecar is waited for (≤60s, visible);
+  // a dead one fails this send visibly instead of silently running here.
+  // `allowRestart` is spent only for a human-initiated send — see the helper.
+  try {
+    await waitForSidecarVenue({
+      signal: shellAbortController.signal,
+      conversationId,
+      allowRestart: mayRestartSidecarForSend(options),
+    });
+  } catch (err) {
+    if (shellAbortController.signal.aborted) {
+      return finalizePreDispatchInterruptedRun(
+        conversationId,
+        clientMessageId,
+        runId,
+        'waiting_for_sidecar',
+        runtimeStartedAt,
+      );
+    }
+    return finalizePreAcceptFailure({
+      conversationId,
+      clientMessageId,
+      runId,
+      runtimeStartedAt,
+      kind: 'sidecar_unavailable',
+      displayMessage: getI18n().chat.sidecarNotReady,
+      stage: 'sidecar_unavailable',
+      errorType: err instanceof SidecarUnavailableError ? `sidecar_${err.reason}` : runtimeErrorType(err),
+      userMessage,
+      images: options?.images,
+    });
+  }
+
   traceRuntimeEvent('renderer.agent_params_build_started', {
     runId,
     executionPath: 'sidecar',
@@ -3139,39 +3241,28 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runtimeStartedAt,
       );
     }
-    abortRegistry.clearAbortController(conversationId);
-    shellChatDelta.setConversationStatus(conversationId, 'idle');
-    // Failed before any dispatch — pre-commit by construction (see doc).
-    logger.warn('agent-loop dispatch params build failed — running in-process', {
+    // Failed before any dispatch. Nothing ran in either venue (#549), so the
+    // row ends failed with its reason and Retry — and, like the other
+    // pre-dispatch exits, this seals no browser-tab settlement because no run
+    // ever claimed a tab. `finalizePreAcceptFailure` clears the abort
+    // controller and idles the conversation.
+    logger.warn('agent-loop dispatch params build failed', {
       runId,
       conversationId,
       error: err instanceof Error ? err.message : String(err),
     });
-    traceRuntimeEvent('renderer.agent_params_build_failed', {
+    return finalizePreAcceptFailure({
+      conversationId,
+      clientMessageId,
       runId,
-      executionPath: 'sidecar',
-      stage: 'fallback_in_process',
-      outcome: 'error',
+      runtimeStartedAt,
+      kind: 'dispatch_failed',
+      displayMessage: paramsBuildDisplayMessage(err),
+      stage: 'params_build_failed',
       errorType: runtimeErrorType(err),
-      durationMs: Date.now() - runtimeStartedAt,
+      userMessage,
+      images: options?.images,
     });
-    finishRuntimeRun(runId);
-    try {
-      return await runInProcessWithPersistedMessage(
-        conversationId,
-        userMessage,
-        runId,
-        clientMessageId,
-        options,
-      );
-    } finally {
-      // Third settlement seal, and the only one outside the two `finally`s
-      // above: a params-build failure runs the WHOLE loop in-process and
-      // returns from here, never reaching the sidecar `try`. The other
-      // pre-dispatch exits (`finalizePreDispatchInterruptedRun`) started no
-      // run at all and must stay silent.
-      releaseRunBrowserTabClaims(conversationId);
-    }
   }
   if (shellAbortController.signal.aborted) {
     return finalizePreDispatchInterruptedRun(
@@ -3282,7 +3373,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       durationMs: Date.now() - runtimeStartedAt,
     });
   }, AGENT_FIRST_FRAME_STALL_MS);
-  let handedOffToLocal = false;
   const scopedRun = options?.authorizationScopeId !== undefined;
 
   const settleFromTerminal = async (terminal: AgentRunTerminal): Promise<AgentLoopDispatchResult> => {
@@ -3439,7 +3529,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     return markReturnedErrorAsTaken(raw);
   } catch (err) {
     let transportError = err;
-    let acceptedExecutionStateUnknown = false;
     // A failing RPC can still have flushed committed frames immediately
     // before its error response. Land those frames before deciding fallback
     // or applying the shell-owned error finalization.
@@ -3476,7 +3565,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         return await settleFromTerminal(recovery.terminal);
       }
       if (recovery.action === 'reattach') {
-        acceptedExecutionStateUnknown = true;
         try {
           return await settleFromTerminal(await waitForReattachedTerminal(params, session));
         } catch (reattachError) {
@@ -3484,7 +3572,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         }
       }
       if (recovery.action === 'unavailable' && scopedRun) {
-        acceptedExecutionStateUnknown = true;
         try {
           return await settleFromTerminal(await waitForReattachedTerminal(params, session));
         } catch (reattachError) {
@@ -3563,39 +3650,29 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       await finalizeAbortedRun(session, 'run-terminal');
       return abortedResultForSession(session);
     }
-    if (!session.committed && !acceptedExecutionStateUnknown) {
-      // Release the shell-side ownership before entering the in-process loop.
-      // Otherwise its concurrency guard sees this still-live controller/session
-      // and enqueues the original prompt instead of actually retrying it.
-      removeShellLoopContext(runId);
-      unregisterRunSession(runId);
-      shellAbortController.signal.removeEventListener('abort', onShellAbort);
-      abortRegistry.clearAbortController(conversationId);
-      shellChatDelta.setConversationStatus(conversationId, 'idle');
-      logger.warn('agent-loop transport failed before commit — retrying in-process', {
+    if (!session.accepted) {
+      // The sidecar never took ownership of this run, so nothing observable
+      // happened anywhere: end the row visibly and retryably instead of
+      // silently re-running the turn in this renderer (#549).
+      const tooLarge = isPayloadTooLargeError(transportError);
+      logger.warn('agent-loop transport failed before the sidecar accepted the run', {
         runId,
         conversationId,
         error: transportError instanceof Error ? transportError.message : String(transportError),
       });
-      traceRuntimeEvent('renderer.agent_run_fallback', {
-        runId,
-        executionPath: 'sidecar',
-        stage: 'fallback_in_process',
-        outcome: 'error',
-        errorType: runtimeErrorType(transportError),
-        durationMs: Date.now() - runtimeStartedAt,
-      });
-      // The local loop synchronously installs its own AbortController before its
-      // first await. Mark the ownership transfer so this dispatch wrapper's
-      // finally block cannot delete that replacement controller.
-      handedOffToLocal = true;
-      return runInProcessWithPersistedMessage(
+      return await finalizePreAcceptFailure({
         conversationId,
-        userMessage,
-        runId,
         clientMessageId,
-        options,
-      );
+        runId,
+        runtimeStartedAt,
+        session,
+        kind: tooLarge ? 'payload_too_large' : 'sidecar_unavailable',
+        displayMessage: tooLarge ? getI18n().chat.payloadTooLarge : getI18n().chat.sidecarInterrupted,
+        stage: tooLarge ? 'payload_too_large' : 'sidecar_unavailable',
+        errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(transportError),
+        userMessage,
+        images: options?.images,
+      });
     }
     // Surface the REAL sidecar-side cause: a thrown handler comes back as a
     // generic `-32603 Internal error`, but `errorFromCaught` (sidecar
@@ -3619,7 +3696,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       ? errDataRecord.stack
       : undefined;
     const displayMessage =
-      transportError instanceof SidecarRunStateUnavailableError
+      isPayloadTooLargeError(transportError)
+        ? getI18n().chat.payloadTooLarge
+        : transportError instanceof SidecarRunStateUnavailableError
         ? getI18n().chat.sidecarUnavailable
         : realMessage === 'Sidecar process closed'
         ? getI18n().chat.sidecarInterrupted
@@ -3668,6 +3747,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       ...(transportError instanceof SidecarRunStateUnavailableError
         ? { stopReason: transportError.stopReason }
         : {}),
+      ...(isPayloadTooLargeError(transportError)
+        ? { stopReason: 'payload_too_large' as const }
+        : {}),
     };
   } finally {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
@@ -3675,11 +3757,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // forwarder before aborting a scoped controller for normal resource
     // cleanup, otherwise that internal abort emits a spurious agent.abort.
     shellAbortController.signal.removeEventListener('abort', onShellAbort);
-    if (
-      !handedOffToLocal
-      && scopedRun
-      && !shellAbortController.signal.aborted
-    ) {
+    if (scopedRun && !shellAbortController.signal.aborted) {
       shellAbortController.abort(new Error('Scoped agent run finished'));
     }
     // Once the sidecar execution/transport has ended, no new reverse request
@@ -3687,7 +3765,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // scoped run's session, callbacks, loop context, and authorization owner
     // alive until every shell request that already entered really settles.
     session.resourceSettlement?.seal();
-    if (!handedOffToLocal && scopedRun) {
+    if (scopedRun) {
       await session.resourceSettlement?.settlement;
     }
     // The sidecar normally releases the task-scoped Computer Use lease from
@@ -3697,53 +3775,47 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // process holding the global foreground-task lease after the visible run
     // has already settled. Await it so a caller cannot start the next task in
     // the small gap between terminal settlement and lease release.
-    // A pre-commit transport failure hands this same run id to the local
-    // loop, which owns its lease from that point onward; revoking here could
-    // race with the replacement local task's first Computer Use call.
-    if (!handedOffToLocal) {
-      try {
-        const { endComputerUseTask } = await import('../tools/definitions/computerTools');
-        await endComputerUseTask(conversationId, runId);
-        traceRuntimeEvent('renderer.computer_use_task_cleanup', {
-          runId,
-          conversationId,
-          executionPath: 'sidecar',
-          stage: 'run_finally',
-          outcome: 'success',
-        });
-      } catch (error) {
-        logger.warn('shell-side Computer Use task cleanup failed', {
-          runId,
-          conversationId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        traceRuntimeEvent('renderer.computer_use_task_cleanup', {
-          runId,
-          conversationId,
-          executionPath: 'sidecar',
-          stage: 'run_finally',
-          outcome: 'error',
-          errorType: runtimeErrorType(error),
-        });
-      }
+    // Unconditional since #549: this run is never handed to a renderer-hosted
+    // loop that would inherit the same run id and its lease.
+    try {
+      const { endComputerUseTask } = await import('../tools/definitions/computerTools');
+      await endComputerUseTask(conversationId, runId);
+      traceRuntimeEvent('renderer.computer_use_task_cleanup', {
+        runId,
+        conversationId,
+        executionPath: 'sidecar',
+        stage: 'run_finally',
+        outcome: 'success',
+      });
+    } catch (error) {
+      logger.warn('shell-side Computer Use task cleanup failed', {
+        runId,
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      traceRuntimeEvent('renderer.computer_use_task_cleanup', {
+        runId,
+        conversationId,
+        executionPath: 'sidecar',
+        stage: 'run_finally',
+        outcome: 'error',
+        errorType: runtimeErrorType(error),
+      });
     }
     finishRuntimeRun(runId);
     clearSkillHooksByLoop(session.loopId);
     removeShellLoopContext(runId);
     unregisterRunSession(runId);
-    if (!handedOffToLocal) {
-      // Ownership-checked: everything above the `finally` can outlive this
-      // run's visible terminal (persistence, the Computer Use lease release
-      // over IPC), and a send made in that window now legitimately starts a
-      // new run — see `RunSession.terminalPublished`. An unconditional clear
-      // here would delete THAT run's controller and leave its Stop inert.
-      abortRegistry.clearAbortController(conversationId, shellAbortController);
-    }
-    // Settlement seal for the SIDECAR path, and for a pre-commit transport
-    // failure handed off to the local loop (which finishes inside this same
-    // `try`, so it must not also fire the in-process seal above — it does not:
-    // `runInProcessWithPersistedMessage` calls `runAgentLoop` directly, not
-    // the dispatcher). Stop arrives as an abort on `shellAbortController`,
+    // Ownership-checked: everything above the `finally` can outlive this
+    // run's visible terminal (persistence, the Computer Use lease release
+    // over IPC), and a send made in that window now legitimately starts a
+    // new run — see `RunSession.terminalPublished`. Passing the controller
+    // means only THIS run's controller is cleared, never a successor's.
+    abortRegistry.clearAbortController(conversationId, shellAbortController);
+    // Settlement seal for the SIDECAR path — the run reached this `try`, so
+    // it is this seal's, and only this seal's. (The in-process environment
+    // branch has its own seal and never reaches here.) Stop arrives as an
+    // abort on `shellAbortController`,
     // which ends the run and lands here like any other ending. The run key is
     // `main`: `contextForSession` forces every tool call on this session to
     // the conversation's own pool, nested subagents included.

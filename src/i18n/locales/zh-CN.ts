@@ -442,6 +442,8 @@ const zhCN: TranslationDict = {
     gatewayUnreachable: '无法连接企业 AI 网关。请检查网络连接，或联系管理员。\n\n客户端不会回退到个人 API key（防止预算绕过）。',
     sidecarInterrupted: '后台服务意外中断，正在自动恢复。请稍后重新发送刚才的请求。',
     sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
+    payloadTooLarge: '这段对话太长，无法继续。请新建对话继续。',
+    sidecarNotReady: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
     messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
     browserDeniedAbort: '你连续拒绝了我的浏览器操作，我停下了——可能我理解错了你的意图，说明一下我该怎么做？',
     attachmentDuringRun: '请等待当前任务结束后再发送附件，草稿已为你保留。',

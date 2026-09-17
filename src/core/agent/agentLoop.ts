@@ -719,7 +719,7 @@ interface AgentLoopResultBase {
   /** Bounded upstream fields for the failed-run terminal; never the raw body. */
   upstream?: UpstreamErrorDetails;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
-  stopReason?: 'sidecar_unavailable';
+  stopReason?: 'sidecar_unavailable' | 'payload_too_large';
   /**
    * Why the run aborted ITSELF, when `reason: 'aborted'` was not a Stop
    * click: today only the consecutive browser-denial guard. Shell-owned —

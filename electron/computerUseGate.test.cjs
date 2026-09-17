@@ -4530,3 +4530,53 @@ test('a held conversation consent does not stand in for any other approval', asy
   await turn(reloaded, 'loop-2', { permissionMode: 'autonomous' });
   assert.equal(reloaded.taskApprovalRequests.length, 2, 'asked again after the window went away');
 });
+
+// Observed in acceptance: a click declared `send` was refused (physical input
+// during approval), and the model reached the same consequence with Return
+// instead. "The click was blocked, so press Enter" must not be a route around
+// the confirmation — the keyboard action has to raise its own dialog, carrying
+// the same description, every time.
+test('reaching a consequence by keyboard asks exactly as the click did', async () => {
+  const h = harness();
+  const session = await begin(h, {
+    permissionMode: 'autonomous',
+    actionIntent: {
+      action: 'key',
+      category: 'send',
+      summary: 'Send the prepared message to Shawn in QQ',
+    },
+  });
+  await h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+    key: 'Return',
+    [COMPUTER_USE_TOKEN_ARG]: session.token,
+  });
+
+  assert.equal(h.actionApprovalRequests.length, 1, 'Return with a declared send must ask');
+  assert.deepEqual(h.actionApprovalRequests[0].consequence, {
+    category: 'send',
+    summary: 'Send the prepared message to Shawn in QQ',
+    source: 'declared-intent',
+  });
+});
+
+// And a denial has to stop it, rather than leaving the door open for the next
+// spelling of the same action.
+test('denying the keyboard route refuses it and executes nothing', async () => {
+  const h = harness({ requestActionApproval: async () => false });
+  const session = await begin(h, {
+    permissionMode: 'autonomous',
+    actionIntent: { action: 'key', category: 'send', summary: 'Send the message' },
+  });
+  await assert.rejects(
+    h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+      key: 'Return',
+      [COMPUTER_USE_TOKEN_ARG]: session.token,
+    }),
+    /not approved/,
+  );
+  assert.equal(
+    h.nativeCalls.some(({ cmd }) => cmd === 'keyboard_press'),
+    false,
+    'nothing reached the helper',
+  );
+});

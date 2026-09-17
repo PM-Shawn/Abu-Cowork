@@ -212,6 +212,8 @@
     "ordinaryAllow": [
       "explorer",
       "explorer.exe",
+      "calc",
+      "calc.exe",
       "calculator",
       "calculator.exe",
       "calculatorapp",

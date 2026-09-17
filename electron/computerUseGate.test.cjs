@@ -4647,3 +4647,40 @@ test('a changed window graph says what moved, and never says it with a title', a
     assert.equal(dispatched, false, expected);
   }
 });
+
+// Catalog verification made every built-in Windows binary report a valid
+// Microsoft signature — including the ones that must never be driven. The
+// hard-deny list is checked by name before any signature is consulted, and
+// this pins that it stays that way: a better signature must not buy access.
+test('a hard-denied Windows binary stays denied however well it is signed', async () => {
+  for (const name of ['cmd.exe', 'powershell.exe', 'regedit.exe', 'taskmgr.exe']) {
+    const h = harness({ platform: 'win32' });
+    h.setIdentity({
+      app_name: name.replace(/\.exe$/, ''),
+      bundle_id: `c:/windows/system32/${name}`,
+      app_id: `c:/windows/system32/${name}`,
+      process_id: 400,
+      window_id: 'hwnd:0x400',
+      signature_status: 'valid',
+      signer_subject: 'Microsoft Windows',
+    });
+    await assert.rejects(begin(h, { targetApp: name, permissionMode: 'autonomous' }), undefined, name);
+    assert.equal(h.approvalRequests.length, 0, `${name} is never put to the user`);
+  }
+});
+
+// The other half: a signature is what keeps an allow-listed *name* honest.
+test('an allow-listed name without a trusted signer is not ordinary', async () => {
+  const h = harness({ platform: 'win32' });
+  h.setIdentity({
+    app_name: 'notepad',
+    bundle_id: 'c:/users/pmsha/downloads/notepad.exe',
+    app_id: 'c:/users/pmsha/downloads/notepad.exe',
+    process_id: 401,
+    window_id: 'hwnd:0x401',
+    signature_status: 'untrusted',
+  });
+  await begin(h, { targetApp: 'notepad', permissionMode: 'autonomous' });
+  assert.equal(h.approvalRequests.length, 1, 'a renamed binary still has to be approved');
+  assert.equal(h.approvalRequests[0].classification, 'approval-required');
+});

@@ -28,11 +28,12 @@ import {
   onSidecarNotification,
   onSidecarRequest,
   onSidecarConnectionState,
+  registerSidecarNotifyResync,
   SidecarRequestError,
   __resetForTests,
 } from './sidecarManager';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-import { IPC_MAX_RAW_BODY_BYTES, PayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
+import { IPC_MAX_ARGS_BYTES, PayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import type { EnterpriseBinding } from '@/core/enterprise/types';
 
 type EventPayload = { payload: string };
@@ -1243,15 +1244,18 @@ describe('sidecarManager', () => {
       expect(JSON.stringify(traceRuntimeEvent.mock.calls)).not.toContain('secret');
     });
 
-    it('#549: a request over 128 MiB is refused before it reaches the IPC boundary', async () => {
-      enterElectronShell();
+    it('#549: an over-limit request is refused before it reaches the IPC boundary', async () => {
+      // Driven through the plain form's smaller 8 MiB ceiling on purpose: the
+      // 128 MiB raw-body ceiling is pinned in rawBodyInvoke.contract.test.ts
+      // (which passes a pre-encoded buffer), and allocating a 128 MiB string
+      // here peaked at ~384 MiB for the same assertion.
       mockHappyPath();
       await startSidecar();
       const callsBefore = invoke.mock.calls.length;
-      const huge = 'x'.repeat(IPC_MAX_RAW_BODY_BYTES);
+      const huge = 'x'.repeat(IPC_MAX_ARGS_BYTES);
       const err = await request('llm.chat', { callId: 'c', text: huge }, 0).catch((e: unknown) => e);
-      expect(err).toMatchObject({ name: 'PayloadTooLargeError', method: 'llm.chat', limit: IPC_MAX_RAW_BODY_BYTES });
-      expect(rawWritesAfter(callsBefore)).toHaveLength(0);
+      expect(err).toMatchObject({ name: 'PayloadTooLargeError', method: 'llm.chat', limit: IPC_MAX_ARGS_BYTES });
+      expect(invoke.mock.calls.slice(callsBefore).filter((c) => c[0] === 'mcp_write')).toHaveLength(0);
     });
 
     it('#549: notifications and responses to sidecar requests use the raw form too', async () => {
@@ -1272,6 +1276,151 @@ describe('sidecarManager', () => {
       expect(response[1]).toBeInstanceOf(Uint8Array);
       expect(response[2].headers).toEqual({ id: 'abu-sidecar' });
       expect(JSON.parse(sentMessage(response))).toEqual({ jsonrpc: '2.0', id: 'sq-9', result: { ok: true, text: '中中中中' } });
+    });
+
+    it('#549: a 9 MiB tool result is sent as one raw-body response in Electron', async () => {
+      const shell = enterElectronShell();
+      mockHappyPath();
+      await startSidecar();
+      const big = 'r'.repeat(9 * 1024 * 1024);
+      onSidecarRequest('tool.invoke', vi.fn().mockResolvedValue({ ok: true, toolResult: big }));
+      const callsBefore = invoke.mock.calls.length;
+
+      shell.deliver({ jsonrpc: '2.0', id: 'sq-big', method: 'tool.invoke', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const last = rawWritesAfter(callsBefore).at(-1)!;
+      expect(last[1]).toBeInstanceOf(Uint8Array);
+      expect(last[1].byteLength).toBeGreaterThan(9 * 1024 * 1024);
+      expect(JSON.parse(sentMessage(last))).toMatchObject({ id: 'sq-big', result: { ok: true } });
+      expect(traceRuntimeEvent.mock.calls.some((c) => c[0] === 'renderer.sidecar_response_write_failed')).toBe(false);
+    });
+  });
+
+  describe('#549 channel failures are not swallowed', () => {
+    const tooLarge = () => new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"mcp_write"}');
+
+    /** Every JSON-RPC line written since `callsBefore`, decoded. */
+    function writtenLines(callsBefore: number): Array<Record<string, unknown>> {
+      return invoke.mock.calls
+        .slice(callsBefore)
+        .filter((c) => c[0] === 'mcp_write')
+        .map((c) => JSON.parse(sentMessage(c)) as Record<string, unknown>);
+    }
+
+    it('answers the sidecar with a small -32000 error when the real response is too large', async () => {
+      mockHappyPath();
+      await startSidecar();
+      onSidecarRequest('tool.invoke', vi.fn().mockResolvedValue('x'.repeat(10)));
+      const callsBefore = invoke.mock.calls.length;
+      invoke.mockImplementation(async (cmd: string, args: unknown) => {
+        if (cmd === 'mcp_write' && sentMessage([cmd, args]).includes('"result"')) throw tooLarge();
+        return undefined;
+      });
+
+      emitMsg({ jsonrpc: '2.0', id: 'sq-9', method: 'tool.invoke', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+
+      const writes = writtenLines(callsBefore);
+      expect(writes.at(-1)).toMatchObject({
+        id: 'sq-9',
+        error: { code: -32000, data: { code: 'payload_too_large', bytes: 9, limit: 8, method: 'tool.invoke' } },
+      });
+      // The fallback carries numbers and the method name only — never the result.
+      expect(JSON.stringify(writes.at(-1))).not.toContain('xxx');
+      expect(traceRuntimeEvent).toHaveBeenCalledWith('renderer.sidecar_response_write_failed', expect.objectContaining({
+        method: 'tool.invoke', errorType: 'payload_too_large', payloadBytes: 9, limitBytes: 8,
+      }));
+    });
+
+    it('answers response_write_failed for any other send failure', async () => {
+      mockHappyPath();
+      await startSidecar();
+      onSidecarRequest('tool.list', vi.fn().mockResolvedValue([]));
+      let first = true;
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'mcp_write' && first) { first = false; throw new Error('pipe closed'); }
+        return undefined;
+      });
+      const callsBefore = invoke.mock.calls.length;
+      emitMsg({ jsonrpc: '2.0', id: 'sq-10', method: 'tool.list', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(writtenLines(callsBefore).at(-1)).toMatchObject({
+        id: 'sq-10',
+        error: { code: -32000, data: { code: 'response_write_failed', method: 'tool.list' } },
+      });
+      expect(traceRuntimeEvent).toHaveBeenCalledWith('renderer.sidecar_response_write_failed', expect.objectContaining({
+        method: 'tool.list', rpcId: 'sq-10', outcome: 'error', errorType: 'error',
+      }));
+    });
+
+    it('does not loop when the fallback error cannot be written either', async () => {
+      mockHappyPath();
+      await startSidecar();
+      onSidecarRequest('tool.list', vi.fn().mockResolvedValue([]));
+      invoke.mockImplementation(async (cmd: string) => {
+        if (cmd === 'mcp_write') throw new Error('pipe closed');
+        return undefined;
+      });
+      const callsBefore = invoke.mock.calls.length;
+      emitMsg({ jsonrpc: '2.0', id: 'sq-11', method: 'tool.list', params: {} });
+      await vi.advanceTimersByTimeAsync(0);
+      // The real response, then exactly one fallback attempt. No recursion.
+      expect(invoke.mock.calls.slice(callsBefore).filter((c) => c[0] === 'mcp_write')).toHaveLength(2);
+    });
+
+    it('records notify failures and re-pushes registered state on the next send', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const resync = vi.fn();
+      registerSidecarNotifyResync('state.settings', resync);
+      invoke.mockImplementationOnce(async () => { throw new Error('pipe closed'); });
+      notifySidecar('state.settings', { settings: {}, revision: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(traceRuntimeEvent).toHaveBeenCalledWith('renderer.sidecar_notify_failed', expect.objectContaining({
+        method: 'state.settings', outcome: 'error', errorType: 'error',
+      }));
+      expect(resync).not.toHaveBeenCalled();
+
+      void request('echo', {}, 1000).catch(() => {});
+      expect(resync).toHaveBeenCalledTimes(1);
+      void request('echo', {}, 1000).catch(() => {});
+      expect(resync).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    it('does not schedule a resync for an oversize notify (it could never succeed)', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const resync = vi.fn();
+      registerSidecarNotifyResync('state.settings', resync);
+      invoke.mockImplementationOnce(async () => { throw tooLarge(); });
+      notifySidecar('state.settings', {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(traceRuntimeEvent).toHaveBeenCalledWith('renderer.sidecar_notify_failed', expect.objectContaining({
+        method: 'state.settings', errorType: 'payload_too_large', payloadBytes: 9, limitBytes: 8,
+      }));
+      notifySidecar('llm.abort', {});
+      expect(resync).not.toHaveBeenCalled();
+    });
+
+    it('unregistering a resync stops it from running, and a throwing resync is contained', async () => {
+      mockHappyPath();
+      await startSidecar();
+      const resync = vi.fn(() => { throw new Error('resync exploded'); });
+      const unregister = registerSidecarNotifyResync('state.settings', resync);
+      invoke.mockImplementationOnce(async () => { throw new Error('pipe closed'); });
+      notifySidecar('state.settings', {});
+      await vi.advanceTimersByTimeAsync(0);
+      expect(() => notifySidecar('llm.abort', {})).not.toThrow();
+      expect(resync).toHaveBeenCalledTimes(1);
+
+      unregister();
+      invoke.mockImplementationOnce(async () => { throw new Error('pipe closed'); });
+      notifySidecar('state.settings', {});
+      await vi.advanceTimersByTimeAsync(0);
+      notifySidecar('llm.abort', {});
+      expect(resync).toHaveBeenCalledTimes(1);
     });
   });
 

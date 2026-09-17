@@ -43,6 +43,7 @@ import {
   onSidecarConnectionState,
   notifySidecar,
   getSidecarStatus,
+  registerSidecarNotifyResync,
   request as sidecarRequest,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
@@ -2161,6 +2162,18 @@ function forwardQueuedInputsForActiveSessions(): void {
 
 let queueForwardUnsub: (() => void) | undefined;
 
+/**
+ * #549: how to re-push each `state.*` mirror in full after a notify that never
+ * reached the sidecar. Held for the lifetime of the installed emitters and
+ * released with them.
+ *
+ * Deliberately NOT registered: `agent.enqueueInput`, `llm.abort`,
+ * `subagent.abort`, `state.cancelDispatch` and `state.dispatchInput` — a
+ * re-send there could duplicate the user's input, and the aborts have their own
+ * grace timers. Those failures still record `renderer.sidecar_notify_failed`.
+ */
+let resyncUnsubs: Array<() => void> = [];
+
 let emittersInstalled = false;
 
 /** Exported for tests — install() is normally driven by registerRunSession(). */
@@ -2183,6 +2196,32 @@ export function installPushEmitters(): void {
   queueForwardUnsub = subscribeToInputQueue(() => {
     forwardQueuedInputsForActiveSessions();
   });
+
+  // Each resync re-derives the mirror from scratch (the diffing caches are
+  // cleared first) so the sidecar converges even though the lost patch itself
+  // is gone (#549).
+  resyncUnsubs = [
+    registerSidecarNotifyResync('state.settings', () => scheduleSettingsPush()),
+    registerSidecarNotifyResync('state.convPatch', () => {
+      lastPushedConvSnapshot.clear();
+      pushConvPatchesForActiveSessions();
+    }),
+    registerSidecarNotifyResync('state.execPatch', () => {
+      lastPushedPlannedSteps.clear();
+      pushExecPatchesForActiveSessions();
+    }),
+    registerSidecarNotifyResync('state.planMode', () => {
+      const seen = new Set<string>();
+      for (const session of sessions.values()) {
+        if (seen.has(session.conversationId)) continue;
+        seen.add(session.conversationId);
+        notifySidecar('state.planMode', {
+          conversationId: session.conversationId,
+          mode: getPlanMode(session.conversationId),
+        });
+      }
+    }),
+  ];
 }
 
 /** Exported for tests — uninstall() is normally driven by unregisterRunSession() once the last session is gone. */
@@ -2204,6 +2243,8 @@ export function uninstallPushEmitters(): void {
   planModeUnsub = undefined;
   queueForwardUnsub?.();
   queueForwardUnsub = undefined;
+  for (const unsub of resyncUnsubs) unsub();
+  resyncUnsubs = [];
 }
 
 // ── Shell EventRouter / LoopContext-lite construction ───────────────────

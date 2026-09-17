@@ -21,6 +21,7 @@ const onSidecarNotification = vi.fn();
 const onSidecarRequest = vi.fn();
 const onSidecarConnectionState = vi.fn();
 const notifySidecar = vi.fn();
+const registerSidecarNotifyResyncMock = vi.fn(() => () => {});
 class MockSidecarRequestError extends Error {
   code: number;
   data?: unknown;
@@ -58,6 +59,7 @@ vi.mock('../sidecar/sidecarManager', () => ({
   onSidecarRequest: (...a: unknown[]) => onSidecarRequest(...a),
   onSidecarConnectionState: (...a: unknown[]) => onSidecarConnectionState(...a),
   notifySidecar: (...a: unknown[]) => notifySidecar(...a),
+  registerSidecarNotifyResync: (...a: unknown[]) => registerSidecarNotifyResyncMock(...a),
   getSidecarStatus: (...a: unknown[]) => getSidecarStatusMock(...a),
   request: (method: string, params: unknown, ...rest: unknown[]) => {
     if (method === 'agent.start') return agentStartRequestMock(params as { runId: string; clientMessageId: string }, ...rest);
@@ -564,6 +566,8 @@ describe('agentLoopRunner', () => {
     onSidecarRequest.mockReset();
     onSidecarConnectionState.mockReset();
     notifySidecar.mockReset();
+    registerSidecarNotifyResyncMock.mockReset();
+    registerSidecarNotifyResyncMock.mockImplementation(() => () => {});
     applyDeltaFramesMock.mockReset();
     applyDeltaFramesMock.mockResolvedValue(undefined);
     appendToolCallContextMock.mockReset();
@@ -2172,6 +2176,49 @@ describe('agentLoopRunner', () => {
       chatState = { conversations: {}, conversationIndex: {} };
       expect(() => capturedChatCb?.()).not.toThrow();
       expect(notifySidecar).not.toHaveBeenCalledWith('state.convPatch', expect.anything());
+    });
+  });
+
+  describe('#549 notify resyncs', () => {
+    it('registers full-state resyncs for settings/convPatch/execPatch/planMode and removes them on uninstall', async () => {
+      const mod = await importFresh();
+      const unsubs: Array<ReturnType<typeof vi.fn>> = [];
+      registerSidecarNotifyResyncMock.mockImplementation(() => {
+        const unsub = vi.fn();
+        unsubs.push(unsub);
+        return unsub;
+      });
+      mod.installPushEmitters();
+      expect(registerSidecarNotifyResyncMock.mock.calls.map((c) => c[0]).sort()).toEqual(
+        ['state.convPatch', 'state.execPatch', 'state.planMode', 'state.settings'],
+      );
+      mod.uninstallPushEmitters();
+      expect(unsubs).toHaveLength(4);
+      expect(unsubs.every((u) => u.mock.calls.length === 1)).toBe(true);
+
+      // A second install/uninstall cycle must not double-unregister.
+      mod.installPushEmitters();
+      mod.uninstallPushEmitters();
+      expect(unsubs.every((u) => u.mock.calls.length === 1)).toBe(true);
+    });
+
+    it('the planMode resync re-pushes the current mode once per live conversation', async () => {
+      const { registerRunSession, installPushEmitters } = await importFresh();
+      const resyncs = new Map<string, () => void>();
+      registerSidecarNotifyResyncMock.mockImplementation((...args: unknown[]) => {
+        resyncs.set(args[0] as string, args[1] as () => void);
+        return () => {};
+      });
+      installPushEmitters();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      registerRunSession('run-2', makeSession({ conversationId: 'conv-1', loopId: 'loop-2' }));
+      notifySidecar.mockClear();
+
+      resyncs.get('state.planMode')?.();
+
+      const planPushes = notifySidecar.mock.calls.filter((c) => c[0] === 'state.planMode');
+      expect(planPushes).toHaveLength(1);
+      expect(planPushes[0][1]).toMatchObject({ conversationId: 'conv-1' });
     });
   });
 

@@ -260,6 +260,11 @@ const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
 /** method -> handler, for sidecar→shell REQUESTS (tool.invoke, hook.emit, ...). See onSidecarRequest(). Single handler per method (unlike notifications' Set) — a request needs exactly one response. */
 const requestHandlers = new Map<string, SidecarRequestHandler>();
 
+/** method -> full-state re-push, used after a failed notify (#549). */
+const notifyResyncs = new Map<string, () => void>();
+/** Methods whose last notify was lost and whose resync has not run yet (#549). */
+const dirtyNotifyMethods = new Set<string>();
+
 /** Renderer-heartbeat state (Tauri path only — see module JSDoc "F1"). */
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let heartbeatFailures = 0;
@@ -278,12 +283,18 @@ function pushEnterpriseEntitlement(): void {
 
 function ensureEnterpriseEntitlementSync(): void {
   enterpriseEntitlementUnsub ??= useEnterpriseStore.subscribe(pushEnterpriseEntitlement);
+  // A lost entitlement push would leave the sidecar on a stale (possibly more
+  // permissive) mirror — re-push the whole snapshot on the next send (#549).
+  notifyResyncs.set('state.enterpriseEntitlement', pushEnterpriseEntitlement);
   pushEnterpriseEntitlement();
 }
 
 function stopEnterpriseEntitlementSync(): void {
   enterpriseEntitlementUnsub?.();
   enterpriseEntitlementUnsub = undefined;
+  // Released with the subscription; ensureEnterpriseEntitlementSync() puts it
+  // back on the next start (#549).
+  notifyResyncs.delete('state.enterpriseEntitlement');
 }
 
 // ── Public API ──
@@ -441,6 +452,7 @@ export function request(
   timeoutMs: number = REQUEST_DEFAULT_TIMEOUT_MS,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  drainDirtyNotifyResyncs();
   const id = nextRequestId++;
   const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
   const encoded = textEncoder.encode(payload);
@@ -518,17 +530,69 @@ export function request(
 }
 
 /**
+ * Register how to re-send the complete (small) state behind a `state.*`
+ * notification. If a notify for `method` fails for any reason other than
+ * payload_too_large, the resync runs once before the next outbound send —
+ * a dropped notification must not leave the sidecar quietly stale (#549).
+ *
+ * Returns an unregister function that only removes THIS resync (a stale
+ * unregister after a replacement cannot clobber the new one), mirroring
+ * `onSidecarRequest`'s discipline.
+ */
+export function registerSidecarNotifyResync(method: string, resync: () => void): () => void {
+  notifyResyncs.set(method, resync);
+  return () => {
+    if (notifyResyncs.get(method) === resync) notifyResyncs.delete(method);
+  };
+}
+
+/**
+ * Run (once) every resync queued by a failed notify. Called at the start of
+ * every outbound send, so the re-push rides the next line to the sidecar
+ * instead of needing a timer of its own. A throwing resync is contained: it
+ * must never break the send that triggered the drain.
+ */
+function drainDirtyNotifyResyncs(): void {
+  if (dirtyNotifyMethods.size === 0) return;
+  const methods = [...dirtyNotifyMethods];
+  dirtyNotifyMethods.clear();
+  for (const method of methods) {
+    try {
+      notifyResyncs.get(method)?.();
+    } catch (err) {
+      logger.warn('Sidecar notify resync threw', {
+        method,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+/**
  * Send a JSON-RPC notification (no `id`, no response expected) to the
  * sidecar — e.g. `llm.abort`. Fire-and-forget: failures are logged, not
- * thrown, matching the rest of this module's fail-soft contract.
+ * thrown, matching the rest of this module's fail-soft contract — but never
+ * silent (#549): the failure is a runtime event, and a method with a
+ * registered resync re-pushes its full state on the next send.
  */
 export function notifySidecar(method: string, params: unknown): void {
+  drainDirtyNotifyResyncs();
   const payload = JSON.stringify({ jsonrpc: '2.0', method, params });
   sendSidecarLine(method, payload, { method }).catch((err: unknown) => {
+    const tooLarge = parsePayloadTooLargeError(err, method);
+    traceSafely(() => traceRuntimeEvent('renderer.sidecar_notify_failed', {
+      method,
+      outcome: 'error',
+      errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(err),
+      ...(tooLarge ? { payloadBytes: tooLarge.bytes, limitBytes: tooLarge.limit } : {}),
+    }));
     logger.warn('Sidecar notify failed', {
       method,
       error: err instanceof Error ? err.message : String(err),
     });
+    // An oversize notification could never succeed on a retry, so re-pushing
+    // the same state would only burn another write (#549).
+    if (!tooLarge && notifyResyncs.has(method)) dirtyNotifyMethods.add(method);
   });
 }
 
@@ -587,6 +651,8 @@ export function __resetForTests(): void {
   pendingRequests.clear();
   notificationHandlers.clear();
   requestHandlers.clear();
+  notifyResyncs.clear();
+  dirtyNotifyMethods.clear();
   connectionHandlers.clear();
   lastSidecarSequence = 0;
   lastSidecarGeneration = 0;
@@ -1094,13 +1160,13 @@ async function handleIncomingRequest(
 ): Promise<void> {
   const handler = requestHandlers.get(method);
   if (!handler) {
-    await writeRpcMessage({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
+    await writeRpcMessage({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } }, method);
     return;
   }
 
   try {
     const result = await handler(params);
-    await writeRpcMessage({ jsonrpc: '2.0', id, result });
+    await writeRpcMessage({ jsonrpc: '2.0', id, result }, method);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const data = err instanceof SidecarRequestError ? err.data : undefined;
@@ -1109,18 +1175,57 @@ async function handleIncomingRequest(
       jsonrpc: '2.0',
       id,
       error: data !== undefined ? { code, message, data } : { code, message },
-    });
+    }, method);
   }
 }
 
-/** Write one JSON-RPC message (a response to an incoming sidecar request) back over the pipe. Fail-soft — logs, never throws. */
-async function writeRpcMessage(payload: unknown): Promise<void> {
+/**
+ * Write one JSON-RPC response to an incoming sidecar request. Fail-soft (it
+ * never throws) but never silent (#549): if the real response cannot be
+ * delivered, the sidecar still gets a small error so its awaiting request
+ * settles instead of hanging until its own timeout. The fallback carries
+ * numbers and the method name only — never any part of the result.
+ */
+async function writeRpcMessage(
+  payload: { jsonrpc: '2.0'; id: string | number | null; result?: unknown; error?: unknown },
+  method: string,
+): Promise<void> {
   try {
-    await sendSidecarLine('rpc.response', JSON.stringify(payload), {});
+    await sendSidecarLine(`${method}.response`, JSON.stringify(payload), {});
+    return;
   } catch (err) {
+    const tooLarge = parsePayloadTooLargeError(err, method);
+    traceSafely(() => traceRuntimeEvent('renderer.sidecar_response_write_failed', {
+      method,
+      rpcId: String(payload.id),
+      outcome: 'error',
+      errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(err),
+      ...(tooLarge ? { payloadBytes: tooLarge.bytes, limitBytes: tooLarge.limit } : {}),
+    }));
     logger.warn('Failed to write response to an incoming sidecar request', {
+      method,
       error: err instanceof Error ? err.message : String(err),
     });
+    if ('error' in payload) return; // already the fallback; don't loop
+    const error = tooLarge
+      ? {
+          code: -32000,
+          message: `The result of ${method} is too large to return (${tooLarge.bytes} bytes > ${tooLarge.limit} bytes).`,
+          data: { code: 'payload_too_large', bytes: tooLarge.bytes, limit: tooLarge.limit, method },
+        }
+      : {
+          code: -32000,
+          message: `The result of ${method} could not be delivered.`,
+          data: { code: 'response_write_failed', method },
+        };
+    try {
+      await sendSidecarLine(`${method}.response`, JSON.stringify({ jsonrpc: '2.0', id: payload.id, error }), {});
+    } catch (secondErr) {
+      logger.warn('Failed to write the fallback error response', {
+        method,
+        error: secondErr instanceof Error ? secondErr.message : String(secondErr),
+      });
+    }
   }
 }
 

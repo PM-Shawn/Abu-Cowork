@@ -1,4 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// #549: the module is re-imported per test (vi.resetModules), so the tracer is
+// mocked through the module registry rather than spied on a namespace object.
+const traceRuntimeEventMock = vi.fn();
+vi.mock('@/core/observability/runtimeTrace', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/core/observability/runtimeTrace')>()),
+  traceRuntimeEvent: (...a: unknown[]) => traceRuntimeEventMock(...a),
+}));
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
@@ -126,6 +134,7 @@ describe('conversationStorage', () => {
 
   beforeEach(async () => {
     memFs = createMemoryFs();
+    traceRuntimeEventMock.mockReset();
     // Reset module-level state by re-importing
     vi.resetModules();
     storage = await import('./conversationStorage');
@@ -374,6 +383,70 @@ describe('conversationStorage', () => {
       expect(calls.filter((c) => c.cmd === 'append_file_text' && c.path.includes('conv-over'))).toHaveLength(1);
       expect(calls.filter((c) => c.cmd === 'atomic_write_text' && c.path.includes('conv-over'))).toHaveLength(0);
       expect(memFs.files.has(calls.find((c) => c.cmd === 'append_file_text')!.path)).toBe(false);
+    });
+  });
+
+  describe('#549 write failures are surfaced, never silently widened', () => {
+    it('an oversize rewrite in the append fallback rejects instead of retrying with an even larger body', async () => {
+      const calls: Array<{ cmd: string; path: string }> = [];
+      const baseImpl = (invoke as ReturnType<typeof vi.fn>).getMockImplementation();
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string, args?: { path?: string }) => {
+        calls.push({ cmd, path: String(args?.path ?? '') });
+        // Native append unavailable → the read + atomic-rewrite fallback runs,
+        // and THAT write is the one the boundary refuses as oversize.
+        if (cmd === 'append_file_text') throw new Error('native append unavailable in test');
+        if (cmd === 'atomic_write_text' && String(args?.path ?? '').includes('conv-rewrite-over')) {
+          throw new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"atomic_write_text"}');
+        }
+        return baseImpl?.(cmd, args);
+      });
+
+      const err = await storage
+        .appendMessage('conv-rewrite-over', makeMsg({ id: 'ro-1', content: 'x' }))
+        .catch((e: unknown) => e);
+
+      expect(err).toMatchObject({ name: 'PayloadTooLargeError', code: 'payload_too_large', bytes: 9, limit: 8 });
+      // Exactly one rewrite attempt: the catch-and-retry path would have sent
+      // `existing + data`, which is never smaller than what just failed.
+      expect(calls.filter((c) => c.cmd === 'atomic_write_text' && c.path.includes('conv-rewrite-over'))).toHaveLength(1);
+      await expect(storage.flushWrites()).resolves.toBeUndefined();
+    });
+
+    it('a failed stream-snapshot write records a runtime event', async () => {
+      const baseImpl = (invoke as ReturnType<typeof vi.fn>).getMockImplementation();
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string, args?: { path?: string }) => {
+        if (cmd === 'atomic_write_text') throw new Error('disk full');
+        return baseImpl?.(cmd, args);
+      });
+
+      await storage.snapshotMessageRevision('conv-snap', makeMsg({ id: 's-1', role: 'assistant', content: 'partial' }));
+
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.stream_snapshot_write_failed', expect.objectContaining({
+        conversationId: 'conv-snap',
+        outcome: 'error',
+        errorType: 'error',
+      }));
+      // Numbers and ids only — never the in-flight message text.
+      expect(JSON.stringify(traceRuntimeEventMock.mock.calls)).not.toContain('partial');
+    });
+
+    it('an oversize stream-snapshot write records the byte numbers', async () => {
+      const baseImpl = (invoke as ReturnType<typeof vi.fn>).getMockImplementation();
+      (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (cmd: string, args?: { path?: string }) => {
+        if (cmd === 'atomic_write_text') {
+          throw new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"atomic_write_text"}');
+        }
+        return baseImpl?.(cmd, args);
+      });
+
+      await storage.snapshotMessageRevision('conv-snap-big', makeMsg({ id: 's-2', role: 'assistant', content: 'partial' }));
+
+      expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.stream_snapshot_write_failed', expect.objectContaining({
+        conversationId: 'conv-snap-big',
+        errorType: 'payload_too_large',
+        payloadBytes: 9,
+        limitBytes: 8,
+      }));
     });
   });
 

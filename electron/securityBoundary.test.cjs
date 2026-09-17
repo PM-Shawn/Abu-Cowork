@@ -411,12 +411,12 @@ test('invoke payload rejects malformed, oversized, and dangerous values', () => 
   );
 });
 
-test('raw bodies and headers are limited to fs write commands', () => {
+test('raw bodies and headers are limited to raw-body commands', () => {
   const record = trustedRecord();
   assert.throws(
     () =>
       validateInvokePayload(record, {
-        cmd: 'mcp_write',
+        cmd: 'run_shell_command',
         args: {},
         body: Buffer.from('x'),
       }),

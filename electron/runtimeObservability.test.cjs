@@ -568,3 +568,42 @@ test('#549 step 0: agent.start, llm.chat and subagent.run writes record payloadB
     assert.equal(started.attributes.payloadBytes, Buffer.byteLength(line));
   }
 });
+
+test('#549: raw-body writes are tracked from header metadata with the byte length', () => {
+  const h = makeHarness();
+  h.state.noteSpawnStarted('abu-sidecar', true);
+  const rpc = h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: 'agent.start', rpcId: '3', runId: 'run-3' }, 123456);
+  assert.equal(rpc.payloadBytes, 123456);
+  assert.equal(rpc.method, 'agent.start');
+  assert.equal(rpc.rpcId, '3');
+  assert.equal(rpc.runId, 'run-3');
+  assert.equal(rpc.stage, 'stdin_write');
+  assert.equal(h.state.snapshot().pendingRpcs.length, 1);
+  const started = h.events.filter((entry) => entry.event === 'main.rpc_write_started');
+  assert.equal(started.length, 1);
+  assert.equal(started[0].attributes.payloadBytes, 123456);
+
+  // The same response path closes it as for a parsed line.
+  h.state.noteRpcWriteFinished(rpc);
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 3, result: {} }));
+  assert.equal(h.state.snapshot().pendingRpcs.length, 0);
+
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: 'echo' }, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('other', { method: 'agent.start' }, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', {}, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', undefined, 1), null);
+});
+
+test('#549: header metadata is clipped like parsed metadata', () => {
+  const h = makeHarness();
+  h.state.noteSpawnStarted('abu-sidecar', true);
+  const rpc = h.state.noteRpcWriteStartedMeta('abu-sidecar', {
+    method: 'agent.run',
+    rpcId: '9'.repeat(200),
+    runId: 'r'.repeat(250),
+  }, 7);
+  assert.equal(rpc.rpcId.length, 80);
+  assert.equal(rpc.runId.length, 160);
+  // A method longer than 80 chars is not a tracked method after clipping.
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: `agent.run${'x'.repeat(100)}` }, 7), null);
+});

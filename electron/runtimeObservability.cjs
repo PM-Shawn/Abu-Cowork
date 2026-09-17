@@ -357,24 +357,43 @@ function createRuntimeState({
     });
   }
 
-  function noteRpcWriteStarted(id, message) {
-    if (id !== SIDECAR_ID) return null;
-    const metadata = parseJsonRpcMetadata(message);
-    if (!metadata?.method || !TRACKED_RPC_METHODS.has(metadata.method)) return null;
+  function startTrackedRpc(id, { method, rpcId, runId, payloadBytes }) {
     const startedAt = now();
     const rpc = {
       sidecarId: id,
       sidecarGeneration: sidecarGeneration(id),
-      runId: metadata.runId,
-      rpcId: metadata.rpcId,
-      method: metadata.method,
-      payloadBytes: metadata.payloadBytes,
+      runId,
+      rpcId,
+      method,
+      payloadBytes,
       stage: 'stdin_write',
       startedAt,
     };
-    if (metadata.rpcId) pendingRpcs.set(pendingKey(id, metadata.rpcId), rpc);
+    if (rpcId) pendingRpcs.set(pendingKey(id, rpcId), rpc);
     emitEvent('main', 'main.rpc_write_started', rpc);
     return rpc;
+  }
+
+  function noteRpcWriteStarted(id, message) {
+    if (id !== SIDECAR_ID) return null;
+    const metadata = parseJsonRpcMetadata(message);
+    if (!metadata?.method || !TRACKED_RPC_METHODS.has(metadata.method)) return null;
+    return startTrackedRpc(id, metadata);
+  }
+
+  // #549 raw-body writes: the routing facts come from the validated headers
+  // (clipped exactly like parseJsonRpcMetadata) so main never JSON.parses a
+  // body that can be 100+ MiB. payloadBytes is the body length.
+  function noteRpcWriteStartedMeta(id, meta, payloadBytes) {
+    if (id !== SIDECAR_ID || !meta || typeof meta.method !== 'string') return null;
+    const method = meta.method.slice(0, 80);
+    if (!TRACKED_RPC_METHODS.has(method)) return null;
+    return startTrackedRpc(id, {
+      method,
+      rpcId: typeof meta.rpcId === 'string' ? meta.rpcId.slice(0, 80) : undefined,
+      runId: typeof meta.runId === 'string' ? meta.runId.slice(0, MAX_STRING_CHARS) : undefined,
+      payloadBytes,
+    });
   }
 
   function noteRpcWriteFinished(rpc, errorType) {
@@ -586,6 +605,7 @@ function createRuntimeState({
     noteNativeHelperCallTimeout,
     noteCommandFinished,
     noteRpcWriteStarted,
+    noteRpcWriteStartedMeta,
     noteRpcWriteFinished,
     noteStdoutLine,
     noteRendererEvent,

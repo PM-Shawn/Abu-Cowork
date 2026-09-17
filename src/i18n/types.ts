@@ -403,11 +403,12 @@ export interface TranslationDict {
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;
-    // Enterprise model selector
-    enterpriseModelLoading: string;
-    enterpriseModelNoMatch: string;
-    enterpriseModelEmpty: string;
-    enterpriseGatewayLabel: string;
+    // Model selector — managed provider group
+    /** Header above the user's own providers, shown when a managed provider is listed. */
+    myModels: string;
+    managedModelsSyncing: string;
+    /** `{org}` = the managed provider's name. */
+    managedProviderUnreachable: string;
     // DetailBlockView
     characters: string;
     viewMore: string;
@@ -522,8 +523,8 @@ export interface TranslationDict {
     modelUnavailableReasonModelRemoved: string;
     /** Skill requires tools that aren't currently available. {missing} */
     skillMissingTools: string;
-    /** Enterprise AI gateway unreachable (shown as an error bubble). */
-    gatewayUnreachable: string;
+    /** A managed provider's request failed at the network level (error bubble). `{org}` = its name. */
+    managedProviderUnreachableInTask: string;
     /** Sidecar process exited mid-task and automatic recovery has started. */
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
@@ -1665,6 +1666,13 @@ export interface TranslationDict {
     validationSuccess: string;
     validationFailed: string;
     revalidate: string;
+    // Managed provider card. `{org}` = the provider's name, `{count}` = model count.
+    managedProviderBadge: string;
+    managedStatusConnected: string;
+    managedStatusSyncing: string;
+    managedStatusOffline: string;
+    managedStatusEmpty: string;
+    managedResync: string;
     validateConnection: string;
     statusConnected: string;
     statusFailed: string;
@@ -3905,14 +3913,12 @@ export interface TranslationDict {
     processing: string;
   };
 
-  // Enterprise runtime UI (gateway badge, policy confirm, status badge)
+  // Enterprise runtime UI (policy confirm, status badge, sign-in notice)
   enterprise: {
-    usingGateway: string;
-    gatewayDesc: string;
     organization: string;
-    gateway: string;
-    status: string;
     offline: string;
+    /** Shown once after sign-in, when the organization's models are ready. `{org}` */
+    modelsReady: string;
     /** Compact offline suffix shown in the status badge, e.g. "· Offline". */
     offlineBadge: string;
     policyConfirmTitle: string;

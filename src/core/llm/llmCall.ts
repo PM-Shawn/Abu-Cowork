@@ -50,8 +50,7 @@ export interface LLMCallResult {
 export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
   const settings = getSettingsReader().getSnapshot();
 
-  // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
-  // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+  // Resolve apiKey + baseUrl for the default provider.
   const effectiveCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settings),
     getActiveProvider(settings)?.baseUrl || undefined,

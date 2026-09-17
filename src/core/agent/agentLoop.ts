@@ -17,7 +17,7 @@ import {
   hasAnyEnabledProvider,
   providerRequiresApiKey,
 } from '../../utils/settingsSelectors';
-import { describeModelUnavailable } from '../../utils/modelUnavailableCopy';
+import { describeManagedProviderUnreachable, describeModelUnavailable } from '../../utils/modelUnavailableCopy';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
@@ -114,7 +114,7 @@ import {
   buildDeferredToolsSummary,
   promoteSearchedDeferredTools,
 } from '../tools/toolSearch';
-import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 import {
@@ -915,12 +915,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // no longer lists, must never reach an adapter: a missing provider leaves the
   // base URL empty and the adapter would fall back to a public default endpoint.
   // With no usable provider at all, keep the long-standing "configure a key" copy.
-  // Enterprise-gateway pins are virtual (never in `providers`), so they are never
-  // checked here — even when the gateway resolver is unavailable.
-  const pinnedModelIssue =
-    isEnterpriseGatewayMode || settingsForModel.activeModel.providerId === 'enterprise-gateway'
-      ? null
-      : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
+  const pinnedModelIssue = isEnterpriseGatewayMode
+    ? null
+    : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
   const blockText = isEnterpriseGatewayMode
     ? null
     : pinnedModelIssue && hasAnyEnabledProvider(settingsForModel)
@@ -1520,8 +1517,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (err instanceof LLMError && isConfigFailureCode(err.code)) {
         recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
       }
-      let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
-        ? getI18n().chat.gatewayUnreachable
+      const delegateManagedUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        err instanceof LLMError ? err.code : undefined,
+      );
+      let delegateDisplayError = delegateManagedUnreachable
+        ? delegateManagedUnreachable
         : err instanceof LLMError && err.code === 'content_policy'
         ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
@@ -2213,8 +2215,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return budgetResult;
       };
 
-      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
-      // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+      // Resolve apiKey + baseUrl for the provider this conversation is bound to.
       const effectiveCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settingsForModel),
         getActiveProvider(settingsForModel)?.baseUrl || undefined,
@@ -3136,10 +3137,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // string with actionable copy; the diagnostic path keeps the raw body,
       // while the terminal/store path keeps only the bounded provider summary.
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
-      const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const managedProviderUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        errorCode,
+      );
       const isContextBudgetError = err instanceof ContextBudgetError;
-      let displayError = isEnterpriseGatewayUnavailable
-        ? getI18n().chat.gatewayUnreachable
+      let displayError = managedProviderUnreachable
+        ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
         : isContextBudgetError

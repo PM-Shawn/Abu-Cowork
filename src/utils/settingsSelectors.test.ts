@@ -91,6 +91,38 @@ describe('getModelUnavailableReason', () => {
   it('reports model-removed when the enabled provider no longer lists the model', () => {
     expect(getModelUnavailableReason(base, { providerId: 'deepseek', modelId: 'retired-model' })).toBe('model-removed');
   });
+
+  describe('managed provider', () => {
+    const managed = {
+      ...deepseek,
+      id: 'org-models',
+      source: 'managed' as const,
+      userAdded: false,
+      models: [{ id: 'org-model', label: 'org-model' }],
+    };
+
+    it('is usable like any other provider once it is registered', () => {
+      const state = { providers: [{ ...managed, status: 'verified' as const }] };
+      expect(getModelUnavailableReason(state, { providerId: 'org-models', modelId: 'org-model' })).toBeNull();
+    });
+
+    it('reports model-removed only against a list the owning system confirmed', () => {
+      const state = { providers: [{ ...managed, status: 'verified' as const }] };
+      expect(getModelUnavailableReason(state, { providerId: 'org-models', modelId: 'revoked' })).toBe('model-removed');
+    });
+
+    it.each(['unchecked', 'checking', 'failed'] as const)(
+      'does not call a model removed while the list is %s',
+      (status) => {
+        const state = { providers: [{ ...managed, status, models: [] }] };
+        expect(getModelUnavailableReason(state, { providerId: 'org-models', modelId: 'org-model' })).toBeNull();
+      },
+    );
+
+    it('reports provider-removed once the owning system withdraws it', () => {
+      expect(getModelUnavailableReason({ providers: [] }, { providerId: 'org-models', modelId: 'org-model' })).toBe('provider-removed');
+    });
+  });
 });
 
 describe('hasAnyEnabledProvider', () => {

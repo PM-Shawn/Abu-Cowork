@@ -13,6 +13,7 @@ import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { useI18n, format } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -489,6 +490,8 @@ export default function MessageBubble({
 
   const handleSaveEdit = async (newContent: string) => {
     if (!convId) return;
+    // Refuse before anything is deleted; the editor stays open so the edit survives.
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
     setIsEditing(false);
 
@@ -521,6 +524,7 @@ export default function MessageBubble({
 
   const handleRunRetry = async () => {
     if (!convId || !activeConv || message.role !== 'user') return;
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `run-retry-${Date.now()}`);
     const routedContent = reattachRoutingPrefix(getTextContent(message.content), message);
     // Rewind semantics (plan stage 3): truncate from the retried turn's FIRST
@@ -554,6 +558,7 @@ export default function MessageBubble({
 
   const handleRegenerate = async () => {
     if (!convId || !activeConv) return;
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const messages = activeConv.messages;
 
     // Find the user message to regenerate from

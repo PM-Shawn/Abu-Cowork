@@ -658,7 +658,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const isAdmissionPendingForDraft = draftRuntimeState.pendingAdmissions > 0;
   const isStreaming = !isWelcome && isRunning;
   const isEnterpriseGatewayModel = isEnterprise && effModel.providerId === 'enterprise-gateway' && currentModel.length > 0;
-  const modelIssue = isEnterpriseGatewayModel ? null : getModelUnavailableReason({ providers }, effModel);
+  // Enterprise sends skip the availability check, so the label must not claim it either.
+  const modelIssue = isEnterprise ? null : getModelUnavailableReason({ providers }, effModel);
   const hasActiveProvider = isEnterpriseGatewayModel || !modelIssue;
   const availableModels = effProvider?.models ?? [];
   const activeModelInfo = availableModels.find((m) => m.id === currentModel);

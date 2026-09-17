@@ -3,12 +3,16 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initLanguage } from '@/i18n';
+import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import MessageBubble from './MessageBubble';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { usePreviewStore } from '@/stores/previewStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { useToastStore } from '@/stores/toastStore';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 
 vi.mock('./MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div>{content}</div>,
@@ -156,4 +160,54 @@ describe('MessageBubble user run status', () => {
     expect(usePreviewStore.getState().previewFilePath).toBeNull();
   });
 
+  describe('when the conversation pinned model is no longer usable', () => {
+    beforeEach(() => {
+      vi.mocked(runAgentLoopDispatched).mockReset();
+      useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+      useSettingsStore.setState((state) => ({
+        providers: state.providers.map((provider) =>
+          provider.id === 'anthropic' ? { ...provider, enabled: true, apiKey: 'test-key' } : provider,
+        ),
+      }));
+      useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+      useToastStore.setState(useToastStore.getInitialState(), true);
+    });
+
+    afterEach(() => {
+      useToastStore.setState(useToastStore.getInitialState(), true);
+      useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+    });
+
+    it('refuses retry before rewinding any turns', () => {
+      const failed: Message = { ...baseMessage, runState: 'failed', runError: 'boom', loopId: 'loop-1' };
+      const later: Message = { id: 'message-2', role: 'assistant', content: 'later answer', timestamp: 1, loopId: 'loop-2' };
+      setConversation(failed, 'idle');
+      useChatStore.setState((state) => {
+        const conversation = state.conversations['conversation-1'];
+        return {
+          conversations: {
+            'conversation-1': {
+              ...conversation,
+              messages: [failed, later],
+              model: { providerId: 'gone-provider', modelId: 'model-a' },
+            },
+          },
+        };
+      });
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+      const deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
+
+      render(<MessageBubble message={failed} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(useChatStore.getState().conversations['conversation-1'].messages).toBe(before);
+      expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: 'error', title: expect.stringContaining('model-a') }),
+      ]);
+      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+      deleteSpy.mockRestore();
+    });
+  });
 });

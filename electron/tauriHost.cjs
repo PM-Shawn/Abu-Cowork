@@ -133,6 +133,7 @@ const {
   officeDocumentsDispatch,
   OFFICE_DOCUMENTS_MISS,
 } = require('./officeDocumentsHost.cjs');
+const { withWindowInFront } = require('./windowShowPolicy.cjs');
 const {
   computerUsePermissionHostDispatch,
   COMPUTER_USE_PERMISSION_HOST_MISS,
@@ -1059,9 +1060,14 @@ function registerTauriHost(app, options = {}) {
         consequence,
       });
       const win = getMainWindow();
-      const result = win
-        ? await dialog.showMessageBox(win, options)
-        : await dialog.showMessageBox(options);
+      if (!win) return (await dialog.showMessageBox(options)).response === 0;
+      // Held in front for this one dialog, unlike the task and app prompts.
+      // Those are asked before Abu hands the foreground to the app it is about
+      // to drive; this one is asked in the middle of driving it, from a window
+      // that is by then behind it. The Gate puts focus back on the target
+      // afterwards (restoreWindowsFocusForAction), so raising Abu here costs
+      // the action nothing.
+      const result = await withWindowInFront(win, () => dialog.showMessageBox(win, options));
       return result.response === 0;
     },
   });

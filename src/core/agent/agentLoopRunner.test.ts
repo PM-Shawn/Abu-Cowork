@@ -5346,6 +5346,16 @@ describe('agentLoopRunner', () => {
       expect(getRunSession(runId)).toBeUndefined();
     });
 
+    it('#549: agent.start payload_too_large is not re-queried or replayed', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      agentStartRequestMock.mockRejectedValueOnce(new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"mcp_write"}'));
+
+      await runAgentLoopDispatched('conv-1', 'hello').catch(() => undefined);
+
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+      expect(runGetStateRequestMock).not.toHaveBeenCalled();
+    });
+
     it('a transport failure BEFORE the run is committed falls back to runAgentLoop in-process', async () => {
       const { runAgentLoopDispatched } = await importFresh();
       sidecarRequestMock.mockRejectedValue(new Error('sidecar process closed'));

@@ -333,4 +333,14 @@ describe('SidecarLLMAdapter', () => {
       expect(notifySidecarMock).not.toHaveBeenCalled();
     });
   });
+
+  it('#549: a payload_too_large transport failure becomes a non-retryable LLMError', async () => {
+    requestMock.mockRejectedValueOnce(new Error('Error invoking remote method \'tauri:invoke\': Error: payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"mcp_write"}'));
+    const adapter = new SidecarLLMAdapter('claude');
+    await expect(adapter.chat([], { model: 'm', apiKey: 'k' }, () => {})).rejects.toMatchObject({
+      name: 'LLMError',
+      code: 'payload_too_large',
+      retryable: false,
+    });
+  });
 });

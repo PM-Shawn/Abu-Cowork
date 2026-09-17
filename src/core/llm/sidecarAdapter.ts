@@ -24,6 +24,7 @@ import {
 } from './adapter';
 import type { Message, StreamEvent, UpstreamErrorDetails } from '../../types';
 import { request, notifySidecar, onSidecarNotification, SidecarRpcError } from '../sidecar/sidecarManager';
+import { parsePayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { createLogger } from '../logging/logger';
 
 const logger = createLogger('sidecarAdapter');
@@ -141,6 +142,10 @@ function reconstructError(err: unknown): LLMError {
   // synthesizes cancelledError() directly) — pass through unchanged, don't
   // re-wrap it as a generic network_error.
   if (err instanceof LLMError) return err;
+  const tooLarge = parsePayloadTooLargeError(err, 'llm.chat');
+  if (tooLarge) {
+    return new LLMError(tooLarge.message, 'payload_too_large', { retryable: false });
+  }
   if (err instanceof SidecarRpcError) {
     const data = err.data;
     if (isSidecarLlmErrorData(data)) {

@@ -161,6 +161,7 @@ import { emitBrowserDownloadsCard } from '../observability/browserRunReportEmitt
 import { getElectronSidecarRunFact } from '../../utils/electronHost';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
+import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import {
   createRunResourceSettlement,
   getRunResourceSettlement,
@@ -2505,6 +2506,9 @@ async function establishAgentStart(
   try {
     return accept(await sidecarRequest('agent.start', params, AGENT_START_ACK_TIMEOUT_MS));
   } catch (startError) {
+    // An oversize start can never succeed on retry: don't query state or
+    // replay the same bytes (#549 M2 — it used to cost 2 more full sends).
+    if (isPayloadTooLargeError(startError)) throw startError;
     traceRuntimeEvent('renderer.agent_start_ack_missing', {
       runId: params.runId,
       clientMessageId: params.clientMessageId,

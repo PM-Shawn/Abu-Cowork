@@ -293,3 +293,52 @@ describe('computerUseStatus — chrome status push', () => {
     expect(vi.mocked(invoke)).toHaveBeenCalledWith('computer_use_chrome_dismiss');
   });
 });
+
+/// Measured on a real run (drawing in Paint): 32 `computer` calls, close to
+/// half of them `get_window_state`, budget exhausted with the drawing never
+/// started. The check-in fired as though thirty things had happened to the
+/// user's desktop. Looking at the screen is not one of those things.
+describe('the step budget counts what Abu does, not what it looks at', () => {
+  beforeEach(() => {
+    setComputerUseActive(false);
+    setComputerUseActive(true, 'conv-budget');
+  });
+
+  it('spends nothing on reading the screen', () => {
+    for (const action of ['get_window_state', 'list_windows', 'screenshot', 'get_app_state', 'get_ui', 'wait']) {
+      incrementComputerUseStep(action);
+    }
+    expect(getCUStatusSnapshot().stepCount).toBe(0);
+    expect(checkCUSessionLimits()).toBeNull();
+  });
+
+  it('still spends on anything that touches the machine', () => {
+    for (const action of ['click', 'type', 'drag', 'key', 'scroll', 'launch_app', 'activate_app']) {
+      incrementComputerUseStep(action);
+    }
+    expect(getCUStatusSnapshot().stepCount).toBe(7);
+  });
+
+  // Raising a window rearranges the user's screen, so it is not "just looking".
+  it('treats activating a window as an action', () => {
+    incrementComputerUseStep('activate');
+    expect(getCUStatusSnapshot().stepCount).toBe(1);
+  });
+
+  it('keeps showing what it is doing while it observes', () => {
+    incrementComputerUseStep('get_window_state');
+    expect(getCUStatusSnapshot().currentAction).toBe('get_window_state');
+  });
+
+  // The whole point: a run that interleaves looking and acting reaches the
+  // check-in after thirty real actions, not after fifteen.
+  it('reaches the limit on actions alone, not on the calls around them', () => {
+    for (let i = 0; i < 29; i++) {
+      incrementComputerUseStep('click');
+      incrementComputerUseStep('get_window_state');
+    }
+    expect(checkCUSessionLimits()).toBeNull();
+    incrementComputerUseStep('click');
+    expect(checkCUSessionLimits()).toMatch(/30/);
+  });
+});

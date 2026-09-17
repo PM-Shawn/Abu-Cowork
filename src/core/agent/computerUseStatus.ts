@@ -53,6 +53,35 @@ export type CUCapabilityMode = 'full' | 'structured' | 'unsupported' | 'unknown'
 
 /** Max steps per CU session before auto-stop */
 const MAX_CU_STEPS = 30;
+
+/**
+ * Actions that only look. They change nothing on the user's machine, so they
+ * do not spend the step budget.
+ *
+ * Measured on a real run (drawing in Paint): of 32 `computer` calls, close to
+ * half were `get_window_state`, and the budget ran out with the drawing never
+ * started — the check-in fired as though thirty things had happened to the
+ * user's desktop when barely any had. The budget is there to bound how much
+ * Abu *does* before reporting back; a model stuck in an observe loop is
+ * already bounded by MAX_CU_DURATION_MS.
+ *
+ * `activate_app` and `activate` are absent on purpose: raising a window
+ * rearranges the user's screen.
+ */
+const OBSERVATION_ACTIONS: ReadonlySet<string> = new Set([
+  'list_windows',
+  'get_window_state',
+  'get_app_state',
+  'get_ui',
+  'screenshot',
+  'wait',
+]);
+
+/** Whether this action spends the step budget. Exported for the tests that
+ *  pin which actions are free. */
+export function computerActionSpendsStep(action?: string): boolean {
+  return !action || !OBSERVATION_ACTIONS.has(action);
+}
 /** Max duration per CU session (ms) */
 const MAX_CU_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -246,12 +275,20 @@ export function pauseComputerUseStatus() {
   }
 }
 
-/** Increment step count and optionally set current action description. */
+/**
+ * Advance the session for one `computer` call.
+ *
+ * The current action is always updated — the status strip should say
+ * "observing" while it observes — but only an action that changes something
+ * spends a step. See OBSERVATION_ACTIONS.
+ */
 export function incrementComputerUseStep(action?: string) {
   const current = getActive();
   if (current?.status === 'active') {
-    const newStep = current.stepCount + 1;
-    updateActive({ stepCount: newStep, currentAction: action ?? null });
+    updateActive({
+      stepCount: current.stepCount + (computerActionSpendsStep(action) ? 1 : 0),
+      currentAction: action ?? null,
+    });
   }
 }
 

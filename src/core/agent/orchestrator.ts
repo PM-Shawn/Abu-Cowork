@@ -776,6 +776,16 @@ Do not use computer to re-fetch information you already obtained through other t
 - Use show_user=true when the user asks to see the screen; omit it for automated execution (not shown to the user by default, but you can still see it)
 - After each action, a screenshot is automatically returned — no need to call screenshot again to confirm
 
+### Work in batches, not one action per reply
+Reading the screen is expensive and observing between every keystroke is what
+runs a task out of budget before it has done anything. Send the related
+actions for one intention together in a single reply — select the tool, drag,
+drag, drag — and read the state once afterwards to check the result. Only the
+last action in a batch returns a screenshot, which is the shape this is built
+for. Read again when focus, layout or element ids may have moved, when
+something you expected did not appear, or before an action you cannot undo —
+not out of habit.
+
 ### Opening apps
 ${isWindows()
   ? `- Use computer(action="launch_app", app="记事本") — by name, never by path. It

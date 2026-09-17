@@ -960,12 +960,37 @@ async function formatScreenshotResult(result: ScreenshotResult, workspacePath: s
   ];
 }
 
+/**
+ * What each effect type needs, quoted back when a call gets it wrong.
+ *
+ * The input schema lists every field flat because JSON Schema cannot easily
+ * express a discriminated union, so the model has to infer which fields go
+ * with which type — and measured in real runs, it infers wrong: an
+ * `element-disappears` with no `element_id`, an `element-value` carrying
+ * `attribute` instead of `equals`. "expected_effect has invalid fields" gave
+ * it nothing to correct, and the action was refused for good.
+ */
+const EXPECTED_EFFECT_FIELDS: Readonly<Record<string, string>> = {
+  'any-state-change': 'no other fields',
+  'element-value': 'element_id and equals (the exact expected text)',
+  'element-state': 'element_id, attribute and equals',
+  'element-appears': 'role or label (at least one, non-empty)',
+  'element-disappears': 'element_id',
+  'frontmost-app': 'bundle_id',
+};
+
 function parseExpectedEffect(value: unknown): ExpectedEffect | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('expected_effect must be an object');
   }
   const effect = value as Record<string, unknown>;
+  const declared = typeof effect.type === 'string' ? effect.type : '';
+  if (!(declared in EXPECTED_EFFECT_FIELDS)) {
+    throw new Error(
+      `expected_effect type must be one of ${Object.keys(EXPECTED_EFFECT_FIELDS).join(', ')}`,
+    );
+  }
   switch (effect.type) {
     case 'any-state-change':
       return { type: 'any-state-change' };
@@ -1005,7 +1030,9 @@ function parseExpectedEffect(value: unknown): ExpectedEffect | undefined {
       if (typeof effect.bundle_id !== 'string' || !effect.bundle_id.trim()) break;
       return { type: 'frontmost-app', bundleId: effect.bundle_id };
   }
-  throw new Error('expected_effect has invalid fields');
+  throw new Error(
+    `expected_effect "${declared}" needs ${EXPECTED_EFFECT_FIELDS[declared]}`,
+  );
 }
 
 async function makeObservation(
@@ -1217,7 +1244,7 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       },
       expected_effect: {
         type: 'object',
-        description: 'Optional machine-checkable postcondition. Consequential actions must use a specific effect, not any-state-change. element-appears requires at least one non-empty role or label.',
+        description: 'Optional machine-checkable postcondition. Each type takes its own fields: element-value needs element_id and equals; element-state needs element_id, attribute and equals; element-appears needs role or label; element-disappears needs element_id; frontmost-app needs bundle_id; any-state-change takes none. Consequential actions must use a specific effect, not any-state-change.',
         properties: {
           type: {
             type: 'string',

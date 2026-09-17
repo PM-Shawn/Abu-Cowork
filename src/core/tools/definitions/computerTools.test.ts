@@ -50,9 +50,17 @@ describe('computerTool WindowRef-first contract', () => {
     expect(computerTool.description).toContain('x/y action coordinates are relative to the referenced screenshot');
   });
 
-  it('documents that element-appears needs a non-empty role or label', () => {
-    expect(computerTool.inputSchema.properties.expected_effect.description)
-      .toContain('element-appears requires at least one non-empty role or label');
+  // JSON Schema cannot express a discriminated union here, so the fields are
+  // listed flat and the model has to infer which go with which type. Measured
+  // in real runs, it infers wrong — an element-disappears with no element_id,
+  // an element-value carrying attribute instead of equals — so the pairing is
+  // spelled out in the description instead.
+  it('documents which fields each effect type takes', () => {
+    const description = computerTool.inputSchema.properties.expected_effect.description;
+    expect(description).toContain('element-appears needs role or label');
+    expect(description).toContain('element-value needs element_id and equals');
+    expect(description).toContain('element-disappears needs element_id');
+    expect(description).toContain('frontmost-app needs bundle_id');
   });
 
   it('renders changed-without-expectation without claiming the target was achieved', () => {
@@ -2932,5 +2940,55 @@ describe('launch_app', () => {
     );
 
     expect(moveArgs).toMatchObject({ x: 120, y: 90, screenshotId: 'shot-a' });
+  });
+});
+
+/// Both shapes below are verbatim from real runs. "expected_effect has
+/// invalid fields" told the model nothing about what to change, so the action
+/// was refused for good — once while sending a QQ message, once while typing
+/// into Notepad.
+describe('a malformed expected_effect says what the type needs', () => {
+  // Earlier tests in this file leave calls on the shared mock; what matters
+  // here is that a rejected shape dispatches nothing of its own.
+  beforeEach(() => {
+    vi.mocked(invoke).mockClear();
+  });
+
+  const run = (expected_effect: unknown) => computerTool.execute({
+    action: 'activate_app',
+    app: 'Notes',
+    consequence: 'none',
+    expected_effect,
+  }, {
+    conversationId: 'effect-shape',
+    loopId: 'effect-shape-loop',
+    toolCallId: 'effect-shape-tool',
+    interactionMode: 'foreground',
+  });
+
+  it('names the missing field for element-disappears', async () => {
+    const result = String(await run({ type: 'element-disappears' }));
+    expect(result).toContain('element-disappears');
+    expect(result).toContain('element_id');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('names the missing field for element-value', async () => {
+    const result = String(await run({ type: 'element-value', element_id: 2, attribute: 'value' }));
+    expect(result).toContain('element-value');
+    expect(result).toContain('equals');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('lists the types when the type itself is not one of them', async () => {
+    const result = String(await run({ type: 'window-closes', element_id: 2 }));
+    expect(result).toContain('element-value');
+    expect(result).toContain('frontmost-app');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a well-formed effect', async () => {
+    const result = String(await run({ type: 'element-disappears', element_id: 2 }));
+    expect(result).not.toContain('expected_effect');
   });
 });

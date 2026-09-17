@@ -121,7 +121,7 @@
  * on the Rust side, which spawns it exactly as bundled).
  */
 
-import { createInterface } from 'node:readline';
+import { createStdinLineSplitter } from './stdinLineSplitter';
 import { createLlmHost } from './llmHost';
 import { fsReadTextFile, fsReadFile, fsWriteTextFile, fsReadDir, fsExists, fsStat } from './fsHost';
 import { handleSubagentRun, handleSubagentAbort, shutdownAllSubagentRuns, isSubagentDispatchActive } from './subagentHost';
@@ -177,15 +177,15 @@ const llmHost = createLlmHost({
 
 /**
  * In-flight async request counter — drives the bounded drain in the stdin
- * `close` handler below. Without it, `rl.on('close')` would `flushAndExit`
- * while fs/llm handlers are still mid-await, cutting off their work (a
+ * `end` handler below. Without it, that handler would `flushAndExit` while
+ * fs/llm handlers are still mid-await, cutting off their work (a
  * `fs.writeTextFile` in flight at app quit could leave a truncated file)
  * and dropping their responses (which is also what used to make piped CLI
  * sanity runs against this file silently produce no output).
  */
 let inFlightRequests = 0;
 
-/** Run one async request handler without blocking the readline loop; the response is written when it settles. */
+/** Run one async request handler without blocking the stdin loop; the response is written when it settles. */
 function runAsyncRequest(id: string | number | null, fn: () => Promise<unknown>): void {
   inFlightRequests += 1;
   void (async () => {
@@ -301,7 +301,7 @@ function handleMessage(raw: string): void {
 
   if (method === 'llm.chat') {
     if (isNotification) return; // must be a request — a notification has no id to respond to
-    // Async from the readline loop's perspective: chat() can run for
+    // Async from the stdin loop's perspective: chat() can run for
     // minutes, and we must keep processing incoming lines (heartbeat
     // pings, llm.abort for THIS or other calls) while it's in flight.
     runAsyncRequest(id, () => llmHost.handleChat(params));
@@ -323,7 +323,7 @@ function handleMessage(raw: string): void {
     if (isNotification) return; // must be a request — a notification has no id to respond to
     // Async, same reasoning as llm.chat above: a subagent run can take
     // minutes and itself sends/awaits reverse-RPC requests (tool.invoke,
-    // hook.emit) while in flight — the readline loop must keep processing
+    // hook.emit) while in flight — the stdin loop must keep processing
     // incoming lines (including THIS run's own tool.invoke responses,
     // and subagent.abort for this or other runs) the whole time.
     runAsyncRequest(id, () => handleSubagentRun(params));
@@ -479,9 +479,7 @@ function handleMessage(raw: string): void {
   // and JSON-RPC notifications never get responses.
 }
 
-const rl = createInterface({ input: process.stdin, terminal: false });
-
-rl.on('line', (line) => {
+const stdinLines = createStdinLineSplitter((line) => {
   const trimmed = line.trim();
   if (!trimmed) return;
   try {
@@ -497,7 +495,16 @@ rl.on('line', (line) => {
   }
 });
 
-rl.on('close', () => {
+// Raw chunks, never a string encoding: the splitter frames them on the 0x0A
+// byte and decodes each finished line itself (see stdinLineSplitter.ts).
+process.stdin.on('data', (chunk: Buffer) => {
+  stdinLines.push(chunk);
+});
+
+process.stdin.on('end', () => {
+  // A trailing line that arrived without its terminator is still a message —
+  // hand it over before anything shuts down.
+  stdinLines.end();
   // stdin closed (parent went away, or piped input ended). Abort streaming
   // LLM calls immediately (they can run for minutes — no reason to finish
   // them for a departed parent; the abort makes their handlers settle fast),

@@ -218,4 +218,29 @@ test.describe.serial('#549 IPC payload guardrails — real Electron', () => {
       matchesFailedTurn: true,
     });
   });
+
+  test('a turn carrying U+2028 and U+2029 is answered', async () => {
+    test.setTimeout(120_000);
+
+    // `JSON.stringify` leaves U+2028 and U+2029 raw inside a string, so both
+    // travel to the sidecar in the middle of the `agent.start` line. The
+    // sidecar has to frame that line on the newline byte alone; any reader
+    // that also ends a line on these two characters sees fragments instead of
+    // the request and never answers it.
+    const reply = `abu-e2e-separators-${randomUUID()}`;
+    mock = await startOpenAiMock([{ kind: 'complete', responseText: reply }]);
+    const dataRoot = createElectronDataRoot();
+    dataRoots.push(dataRoot);
+    const launch = await launchAbuElectron(dataRoot);
+    app = launch.app;
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await configureLocalMockProvider(page, mock.baseUrl);
+
+    const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
+    await input.fill('line separator paragraph');
+    await input.press('Enter');
+
+    await expect(page.getByText(reply, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  });
 });

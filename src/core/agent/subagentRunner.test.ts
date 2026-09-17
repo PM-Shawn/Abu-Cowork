@@ -48,9 +48,18 @@ vi.mock('../sidecar/sidecarManager', () => ({
 // factory-mocked module namespace is not reliable in this Vitest version).
 const inProcessEnvironmentMock = vi.fn(() => getSidecarStatus() !== 'running');
 const waitForSidecarVenueMock = vi.fn().mockResolvedValue(undefined);
+class MockSidecarUnavailableError extends Error {
+  readonly reason: 'timeout' | 'failed';
+  constructor(reason: 'timeout' | 'failed' = 'timeout') {
+    super(`Agent sidecar unavailable (${reason})`);
+    this.name = 'SidecarUnavailableError';
+    this.reason = reason;
+  }
+}
 vi.mock('../sidecar/sidecarReadiness', () => ({
   isInProcessAgentEnvironment: (...a: unknown[]) => inProcessEnvironmentMock(...a),
   waitForSidecarVenue: (...a: unknown[]) => waitForSidecarVenueMock(...a),
+  SidecarUnavailableError: MockSidecarUnavailableError,
 }));
 
 const traceRuntimeEventMock = vi.fn();
@@ -2107,23 +2116,35 @@ describe('subagentRunner', () => {
       expect(result).toMatchObject({ stopReason: 'error', text: `Error: ${PAYLOAD_TOO_LARGE_COPY}` });
       // The raw wire JSON never reaches the parent.
       expect(result.text).not.toContain('payload_too_large');
+      // Oversize gets its own stage: `errorType` is not stable for it (a
+      // renderer-side PayloadTooLargeError and a sidecar-returned
+      // SidecarRequestError both match), so Task 11 classifies on the stage.
+      const failures = traceRuntimeEventMock.mock.calls.filter((call) => call[0] === 'renderer.subagent_run_failed');
+      expect(failures).toHaveLength(1);
+      expect(failures[0][1]).toMatchObject({ stage: 'payload_too_large', reason: 'pre_first_tool' });
+      expect(JSON.stringify(failures[0][1])).not.toContain('"bytes"');
     });
 
     it('#549: a sidecar that never becomes ready fails the subagent visibly', async () => {
       getSidecarStatus.mockReturnValue('starting');
       // `starting` is still the Electron environment for this test.
       inProcessEnvironmentMock.mockReturnValue(false);
-      waitForSidecarVenueMock.mockRejectedValue(Object.assign(
-        new Error('Agent sidecar unavailable (timeout)'),
-        { name: 'SidecarUnavailableError', reason: 'timeout' },
-      ));
+      waitForSidecarVenueMock.mockRejectedValue(new MockSidecarUnavailableError('timeout'));
       const { runSubagent } = await importFresh();
 
-      const result = await runSubagent({ agent, task: 'x' });
+      const result = await runSubagent({ agent, task: 'x', parentConversationId: 'conv-1' });
 
       expect(sidecarRequestMock).not.toHaveBeenCalled();
       expect(runSubagentLoopMock).not.toHaveBeenCalled();
       expect(result).toMatchObject({ stopReason: 'error', text: `Error: ${SIDECAR_NOT_READY_COPY}` });
+      const failures = traceRuntimeEventMock.mock.calls.filter((call) => call[0] === 'renderer.subagent_run_failed');
+      expect(failures).toHaveLength(1);
+      // The cold-start reason is classifiable, like the main loop's.
+      expect(failures[0][1]).toMatchObject({
+        conversationId: 'conv-1',
+        stage: 'sidecar_unavailable',
+        errorType: 'sidecar_timeout',
+      });
     });
 
     it('#549: never spends a restart attempt from inside a parent run', async () => {
@@ -2183,12 +2204,14 @@ describe('subagentRunner', () => {
       sidecarRequestMock.mockRejectedValue(new Error('Sidecar process closed'));
       const { runSubagent } = await importFresh();
 
-      await runSubagent({ agent, task: 'do the thing' });
+      await runSubagent({ agent, task: 'do the thing', parentConversationId: 'conv-1' });
 
       const failures = traceRuntimeEventMock.mock.calls.filter((call) => call[0] === 'renderer.subagent_run_failed');
       expect(failures).toHaveLength(1);
       expect(failures[0][1]).toMatchObject({
         method: 'subagent.run',
+        // The trace layer cannot backfill a conversation for a subagent runId.
+        conversationId: 'conv-1',
         stage: 'transport_failed',
         outcome: 'error',
         reason: 'pre_first_tool',

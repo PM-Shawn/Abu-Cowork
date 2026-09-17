@@ -6,11 +6,11 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
 /**
  * Subagent run-session registry + selector — the ONLY entry point callers
  * should use to run a subagent going forward (P1-3a "正式步 3a", see
- * docs/2026-07-19-phase1-p3-loop-migration-staging.md §2). Routes to the
- * cross-process sidecar path when the sidecar is confirmed `'running'`,
- * else runs `runSubagentLoop` in-process unchanged — same zero-risk
- * open/closed selector shape as `selectChatAdapter()` (P1-1), reused here
- * for the third time.
+ * docs/2026-07-19-phase1-p3-loop-migration-staging.md §2). Dispatches to the
+ * cross-process sidecar path in the desktop shell, and runs `runSubagentLoop`
+ * in-process only in the non-desktop environment (`isInProcessAgentEnvironment()`:
+ * web preview / unit tests) — an environment choice made before any dispatch,
+ * never a reaction to a failure (#549; see "Failure discipline" below).
  *
  * ## Wire protocol (shell → sidecar)
  *
@@ -97,7 +97,11 @@ import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './to
 import { ensureHookBridgeRegistered, registerHookSignalSource } from './hookBridge';
 import { createLogger } from '../logging/logger';
 import { traceRuntimeEvent, runtimeErrorType } from '../observability/runtimeTrace';
-import { isInProcessAgentEnvironment, waitForSidecarVenue } from '../sidecar/sidecarReadiness';
+import {
+  isInProcessAgentEnvironment,
+  waitForSidecarVenue,
+  SidecarUnavailableError,
+} from '../sidecar/sidecarReadiness';
 import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
 import { paramsBuildDisplayMessage } from './paramsBuildFailure';
 import { isUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../llm/adapter';
@@ -531,10 +535,11 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
       `Tool is outside this agent's fixed tool boundary: ${params.toolName}`,
     );
   }
-  // The run becomes non-rerunnable only after every inherited/fixed roster
-  // and input constraint accepts the request. A rejected request has produced
-  // no side effect, so publishing its buffered tool-start would create a ghost
-  // step and incorrectly suppress the safe local fallback.
+  // Progress commits only after every inherited/fixed roster and input
+  // constraint accepts the request. A rejected request has produced no side
+  // effect, so publishing its buffered tool-start would create a ghost step.
+  // Since #549 the flag no longer selects a venue — it is the commit point,
+  // and the `pre_first_tool` / `after_tool` reason on the failure trace.
   if (!session.firstToolInvokeArrived) {
     session.firstToolInvokeArrived = true;
     flushBufferedProgress(session);
@@ -673,10 +678,11 @@ function ensureHandlersRegistered(): void {
  * the whole run" simplification.
  *
  * Throws if `resolveEffectiveLlmCreds` throws (e.g.
- * `EnterpriseLlmUnavailableError`) — the caller (`runSubagent`) treats that
- * as a pre-dispatch failure and falls back to `runSubagentLoop` in-process,
- * which hits the identical real error path itself rather than this
- * function duplicating its error-shaping logic.
+ * `EnterpriseLlmUnavailableError`) — the caller (`runSubagentForSignal`)
+ * treats that as a pre-dispatch failure and returns a failed
+ * `SubagentResult`; nothing is re-run in this renderer (#549). The message is
+ * shaped by the shared `paramsBuildDisplayMessage`, so this function still
+ * does not duplicate the loop's error-shaping logic.
  */
 function buildSubagentRunParams(
   runId: string,
@@ -760,20 +766,29 @@ function failedSubagentResult(message: string): SubagentResult {
   });
 }
 
-function traceSubagentRunFailed(
-  runId: string,
-  stage: string,
-  err: unknown,
-  reason?: string,
-): void {
+/**
+ * The terminal trace event for a failed subagent dispatch (#549) — numbers and
+ * method names only, never the failure text. `conversationId` is passed
+ * explicitly because the trace layer can only backfill it from the MAIN run
+ * registry, which a subagent runId is not in.
+ */
+function traceSubagentRunFailed(options: {
+  runId: string;
+  conversationId?: string;
+  stage: string;
+  err: unknown;
+  reason?: string;
+  errorType?: string;
+}): void {
   traceRuntimeEvent('renderer.subagent_run_failed', {
-    runId,
+    runId: options.runId,
+    conversationId: options.conversationId,
     method: 'subagent.run',
     executionPath: 'sidecar',
-    stage,
+    stage: options.stage,
     outcome: 'error',
-    errorType: runtimeErrorType(err),
-    ...(reason ? { reason } : {}),
+    errorType: options.errorType ?? runtimeErrorType(options.err),
+    ...(options.reason ? { reason: options.reason } : {}),
   });
 }
 
@@ -927,7 +942,15 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         runId,
         error: err instanceof Error ? err.message : String(err),
       });
-      traceSubagentRunFailed(runId, 'sidecar_unavailable', err);
+      traceSubagentRunFailed({
+        runId,
+        conversationId: options.parentConversationId,
+        stage: 'sidecar_unavailable',
+        err,
+        // Same classification the main loop stamps, so Task 11 can tell a cold
+        // start that timed out from a sidecar that gave up.
+        errorType: err instanceof SidecarUnavailableError ? `sidecar_${err.reason}` : undefined,
+      });
       return failedSubagentResult(getI18n().chat.sidecarNotReady);
     }
   }
@@ -947,7 +970,12 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       runId,
       error: err instanceof Error ? err.message : String(err),
     });
-    traceSubagentRunFailed(runId, 'params_build_failed', err);
+    traceSubagentRunFailed({
+      runId,
+      conversationId: options.parentConversationId,
+      stage: 'params_build_failed',
+      err,
+    });
     return failedSubagentResult(paramsBuildDisplayMessage(err));
   }
 
@@ -1033,15 +1061,29 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
       toolStarted: session.firstToolInvokeArrived,
       error: err instanceof Error ? err.message : String(err),
     });
-    traceSubagentRunFailed(
-      runId,
-      'transport_failed',
-      err,
-      session.firstToolInvokeArrived ? 'after_tool' : 'pre_first_tool',
-    );
+    const reason = session.firstToolInvokeArrived ? 'after_tool' : 'pre_first_tool';
     // Oversize is typed and never retryable: the parent gets the agreed copy,
-    // never the raw wire JSON.
-    if (isPayloadTooLargeError(err)) return failedSubagentResult(getI18n().chat.payloadTooLarge);
+    // never the raw wire JSON. It gets its own `stage` because `errorType` is
+    // NOT stable for it — a renderer-side pre-check throws `PayloadTooLargeError`
+    // while the sidecar returns it as a `SidecarRequestError`, and both match
+    // `isPayloadTooLargeError`. The stage is what Task 11 can classify on.
+    if (isPayloadTooLargeError(err)) {
+      traceSubagentRunFailed({
+        runId,
+        conversationId: options.parentConversationId,
+        stage: 'payload_too_large',
+        err,
+        reason,
+      });
+      return failedSubagentResult(getI18n().chat.payloadTooLarge);
+    }
+    traceSubagentRunFailed({
+      runId,
+      conversationId: options.parentConversationId,
+      stage: 'transport_failed',
+      err,
+      reason,
+    });
     return failedSubagentResult(sanitizeUntrustedLlmErrorText(
       err instanceof Error ? err.message : String(err),
       getI18n().chat.errorEmptyBody,

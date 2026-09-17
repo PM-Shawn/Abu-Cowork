@@ -459,6 +459,78 @@ test('raw bodies and headers are limited to fs write commands', () => {
   );
 });
 
+test('fs commands refuse relative paths at the boundary unless a baseDir names the anchor', () => {
+  const record = trustedRecord();
+  const refused = (payload, key) =>
+    assert.throws(
+      () => validateInvokePayload(record, payload),
+      (err) => {
+        assert.match(err.message, new RegExp(`\\b${key}\\b.*must be an absolute path`));
+        assert.equal(err.message.includes('secret-name'), false, 'error must not echo the path');
+        return true;
+      }
+    );
+  const rel = 'nested/secret-name.txt';
+  const abs = path.join(os.tmpdir(), 'abu-abs.txt');
+
+  // Bare-name commands never take a baseDir.
+  refused({ cmd: 'append_file_text', args: { path: rel, data: 'x' } }, 'path');
+  refused({ cmd: 'atomic_write_text', args: { path: rel, content: 'x' } }, 'path');
+  refused({ cmd: 'atomic_write_with_backup', args: { path: rel, content: 'x' } }, 'path');
+  refused({ cmd: 'restore_from_backup', args: { target: rel, backup: abs } }, 'target');
+  refused({ cmd: 'restore_from_backup', args: { target: abs, backup: rel } }, 'backup');
+  refused({ cmd: 'cleanup_old_backups', args: { dir: 'secret-name', ttlHours: 1 } }, 'dir');
+  // A baseDir-looking option does not re-anchor a bare-name command.
+  refused({ cmd: 'atomic_write_text', args: { path: rel, content: 'x', options: { baseDir: 12 } } }, 'path');
+
+  // plugin:fs plain-arg form.
+  refused({ cmd: 'plugin:fs|read_text_file', args: { path: rel } }, 'path');
+  refused({ cmd: 'plugin:fs|remove', args: { path: rel, options: { recursive: true } } }, 'path');
+  refused({ cmd: 'plugin:fs|rename', args: { oldPath: abs, newPath: rel, options: { oldPathBaseDir: 12 } } }, 'newPath');
+  refused({ cmd: 'plugin:fs|copy_file', args: { fromPath: rel, toPath: abs, options: { toPathBaseDir: 12 } } }, 'fromPath');
+  refused({ cmd: 'plugin:fs|watch', args: { paths: [abs, rel], options: {}, onEvent: '__CHANNEL__:1' } }, 'paths');
+  for (const paths of [[''], [['nested']], [abs, 7]]) {
+    assert.throws(
+      () => validateInvokePayload(record, { cmd: 'plugin:fs|watch', args: { paths, onEvent: '__CHANNEL__:1' } }),
+      /IPC paths must be a non-empty string/
+    );
+  }
+
+  // plugin:fs raw-body form.
+  for (const cmd of ['plugin:fs|write_file', 'plugin:fs|write_text_file']) {
+    refused(
+      { cmd, body: Buffer.from('x'), headers: { path: encodeURIComponent(rel), options: '{}' } },
+      'path header'
+    );
+    refused(
+      { cmd, body: Buffer.from('x'), headers: { path: encodeURIComponent(rel), options: undefined } },
+      'path header'
+    );
+  }
+
+  // Accepted: absolute paths, and relative paths anchored by their own baseDir.
+  for (const payload of [
+    { cmd: 'append_file_text', args: { path: abs, data: 'x' } },
+    { cmd: 'restore_from_backup', args: { target: abs, backup: abs } },
+    { cmd: 'plugin:fs|read_text_file', args: { path: rel, options: { baseDir: 12 } } },
+    { cmd: 'plugin:fs|exists', args: { path: abs } },
+    {
+      cmd: 'plugin:fs|rename',
+      args: { oldPath: rel, newPath: rel, options: { oldPathBaseDir: 12, newPathBaseDir: 12 } },
+    },
+    { cmd: 'plugin:fs|watch', args: { paths: [rel], options: { baseDir: 12 }, onEvent: '__CHANNEL__:1' } },
+    {
+      cmd: 'plugin:fs|write_file',
+      body: Buffer.from('x'),
+      headers: { path: encodeURIComponent(rel), options: '{"baseDir":12}' },
+    },
+    // Non-fs commands keep their own semantics for path-like keys.
+    { cmd: 'plugin:path|join', args: { paths: ['a', 'b'] } },
+  ]) {
+    assert.doesNotThrow(() => validateInvokePayload(record, payload), payload.cmd);
+  }
+});
+
 test('real plugin-fs writeTextFile without options produces an accepted raw request', async () => {
   const previousWindow = global.window;
   let captured;

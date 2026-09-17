@@ -52,6 +52,7 @@ import {
   getComposerDraftScopeForEnterpriseMode,
 } from './composerDraftStore';
 import { useEnterpriseStore } from './enterpriseStore';
+import { useSettingsStore } from './settingsStore';
 import { useWorkProcessFoldStore } from './workProcessFoldStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
@@ -378,6 +379,23 @@ function trackConversationPersistence(
       pendingConversationPersistence.delete(convId);
     }
   });
+}
+
+/**
+ * Write a message revision through the conversation's serial persistence
+ * queue. Every replacement must ride this queue: a bare fire-and-forget
+ * replace overtakes an older revision still queued behind an append (e.g.
+ * finishStreaming's checkpoint), and that stale revision then lands last and
+ * wins the fold — the turn-end executionSteps / plannedSteps snapshots were
+ * lost across a restart exactly this way (2026-09-16).
+ */
+function persistMessageReplacement(convId: string, message: Message): void {
+  trackConversationPersistence(
+    convId,
+    () => import('../core/session/conversationStorage').then(({ replaceMessageById }) =>
+      replaceMessageById(convId, message)
+    ),
+  );
 }
 
 /**
@@ -899,6 +917,18 @@ export const useChatStore = create<ChatStore>()(
         // project click) pass skipActivate and must neither inherit nor clear it.
         const consumePendingTeam = !options?.skipActivate;
         const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
+        // Pin the new-conversation default at creation (issue #545) so an empty
+        // conversation never drifts with later picks elsewhere. Enterprise mode
+        // skips this, mirroring agentLoop's first-run pin (gateway-scoped models).
+        // An uninitialized enterprise store also skips: enterprise builds start
+        // as 'personal' until async init() resolves, and background creators may
+        // run before that; agentLoop's first-run pin covers those conversations.
+        const ent = useEnterpriseStore.getState();
+        const isPersonal = ent.initialized && ent.mode.kind === 'personal';
+        const defaultModel = useSettingsStore.getState().activeModel;
+        const initialModel = isPersonal && defaultModel?.modelId
+          ? { providerId: defaultModel.providerId, modelId: defaultModel.modelId }
+          : undefined;
         const meta: ConversationMeta = {
           id,
           title: getDefaultConvTitle(),
@@ -911,6 +941,7 @@ export const useChatStore = create<ChatStore>()(
           ...(initialTeamId ? { teamId: initialTeamId } : {}),
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
+          ...(initialModel ? { model: initialModel } : {}),
         };
         set((state) => {
           const initialPermissionMode = state.pendingPermissionMode;
@@ -1595,9 +1626,7 @@ export const useChatStore = create<ChatStore>()(
         // used by updateToolCall above.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -1617,9 +1646,7 @@ export const useChatStore = create<ChatStore>()(
         // setToolCallNoticeCardAction above.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -1638,9 +1665,7 @@ export const useChatStore = create<ChatStore>()(
         // sees it on the next turn, which may be after a restart.
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -1713,9 +1738,7 @@ export const useChatStore = create<ChatStore>()(
         });
         const updatedMsg = get().conversations[convId]?.messages.find((m) => m.id === messageId);
         if (updatedMsg) {
-          import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-            replaceMessageById(convId, updatedMsg).catch(() => {});
-          });
+          persistMessageReplacement(convId, updatedMsg);
         }
       },
 
@@ -2041,9 +2064,7 @@ export const useChatStore = create<ChatStore>()(
         if (targetMsgId) {
           const msg = get().conversations[convId]?.messages.find((m) => m.id === targetMsgId);
           if (msg) {
-            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-              replaceMessageById(convId, msg).catch(() => {});
-            }).catch(() => {});
+            persistMessageReplacement(convId, msg);
           }
         }
       },
@@ -2081,9 +2102,7 @@ export const useChatStore = create<ChatStore>()(
         if (targetMsgId) {
           const msg = get().conversations[convId]?.messages.find((m) => m.id === targetMsgId);
           if (msg) {
-            import('../core/session/conversationStorage').then(({ replaceMessageById }) => {
-              replaceMessageById(convId, msg).catch(() => {});
-            }).catch(() => {});
+            persistMessageReplacement(convId, msg);
           }
         }
       },

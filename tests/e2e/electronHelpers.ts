@@ -254,6 +254,8 @@ export async function dismissFirstRunOverlays(page: Page): Promise<void> {
 export interface LocalMockProviderOptions {
   apiKey?: string;
   contextWindowSize?: number;
+  /** Additional models offered by the same provider, after the default one. */
+  extraModels?: ReadonlyArray<{ id: string; label: string }>;
   maxOutputTokens?: number;
   modelId?: string;
   modelLabel?: string;
@@ -273,6 +275,7 @@ export async function configureLocalMockProvider(
   const {
     apiKey = 'abu-e2e-test-key-not-a-real-secret',
     contextWindowSize,
+    extraModels = [],
     maxOutputTokens,
     modelId = 'abu-e2e-local-model',
     modelLabel = 'Abu E2E deterministic model',
@@ -304,12 +307,10 @@ export async function configureLocalMockProvider(
       apiFormat: 'openai-compatible',
       baseUrl: configuration.baseUrl,
       apiKey: configuration.apiKey,
-      models: [{
-        id: configuration.modelId,
-        label: configuration.modelLabel,
-        isCustom: true,
-        declaredCapabilities,
-      }],
+      models: [
+        { id: configuration.modelId, label: configuration.modelLabel },
+        ...configuration.extraModels,
+      ].map((model) => ({ ...model, isCustom: true, declaredCapabilities })),
       defaultModelId: configuration.modelId,
       status: 'verified',
       sortOrder: 0,
@@ -339,6 +340,7 @@ export async function configureLocalMockProvider(
     apiKey,
     baseUrl,
     contextWindowSize,
+    extraModels,
     maxOutputTokens,
     modelId,
     modelLabel,

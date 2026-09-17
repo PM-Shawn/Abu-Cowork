@@ -173,6 +173,8 @@ vi.mock('@/i18n', () => ({
       sessionExpiredHint: '',
       sessionQueueFull: '',
       errorReply: 'Abu 处理出错: {error}',
+      runPayloadTooLarge: '这段对话太长，无法继续。请发送「新对话」开启新对话后再问一次。',
+      runServiceUnavailable: '阿布的后台服务暂时不可用，请稍后再试。',
     },
   }),
   format: (t: string, v: Record<string, string>) => {
@@ -985,6 +987,77 @@ describe('IMChannelRouter', () => {
     await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
 
     expect(mockSetChannelStatus).toHaveBeenCalledWith('ch1', 'connected');
+  });
+
+  /**
+   * #549 — a run that failed before the sidecar accepted it writes no
+   * assistant message, so the reply extraction finds nothing and the sender
+   * used to get complete silence: indistinguishable from the bot being down.
+   */
+  describe('a run that ends without an assistant reply', () => {
+    it.each([
+      [
+        'payload_too_large',
+        '这段对话太长，无法继续。请发送「新对话」开启新对话后再问一次。',
+        'connected',
+      ],
+      [
+        'sidecar_unavailable',
+        '阿布的后台服务暂时不可用，请稍后再试。',
+        'error',
+      ],
+    ] as const)('#549: %s is explained to the sender', async (stopReason, reply, channelStatus) => {
+      mockRunAgentLoop.mockResolvedValue({
+        reason: 'error',
+        error: 'x',
+        messageTaken: true,
+        stopReason,
+      });
+      mockSetChannelStatus.mockClear();
+      mockSendFinal.mockClear();
+
+      await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
+
+      const contents = mockSendFinal.mock.calls.map((c) => (c[1] as { content: string }).content);
+      expect(contents).toContain(reply);
+      // The generic catch-block reply is the wrong story here: nothing threw.
+      expect(contents.some((c) => c.includes('Abu 处理出错'))).toBe(false);
+      expect(mockSetChannelStatus).toHaveBeenLastCalledWith(
+        'ch1',
+        channelStatus,
+        ...(channelStatus === 'error' ? ['阿布的后台服务暂时不可用，请稍后再试。'] : []),
+      );
+    });
+
+    it('#549: a dispatch failure with no stop reason still gets an answer', async () => {
+      mockRunAgentLoop.mockResolvedValue({
+        reason: 'error',
+        error: '发送失败',
+        messageTaken: true,
+      });
+      mockSetChannelStatus.mockClear();
+      mockSendFinal.mockClear();
+
+      await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
+
+      const contents = mockSendFinal.mock.calls.map((c) => (c[1] as { content: string }).content);
+      expect(contents).toContain('Abu 处理出错: 发送失败');
+      expect(mockSetChannelStatus).toHaveBeenLastCalledWith('ch1', 'connected');
+    });
+
+    it('#549: an error that still produced an answer delivers the answer', async () => {
+      mockRunAgentLoop.mockImplementation(async (convId: string) => {
+        mockConversations[convId]?.messages.push({ role: 'assistant', content: 'partial answer' });
+        return { reason: 'error', error: 'late failure', messageTaken: true };
+      });
+      mockSendFinal.mockClear();
+
+      await getInternal().processMessage(makeMessage(), makeChannel(), 'safe_tools');
+
+      const contents = mockSendFinal.mock.calls.map((c) => (c[1] as { content: string }).content);
+      expect(contents).toContain('partial answer');
+      expect(contents.some((c) => c.includes('Abu 处理出错'))).toBe(false);
+    });
   });
 });
 

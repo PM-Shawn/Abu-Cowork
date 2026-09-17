@@ -502,6 +502,12 @@ export interface TranslationDict {
      * it is the durable `runError` and the text headless dispatchers log.
      */
     sidecarNotReady: string;
+    /**
+     * How an unattended run's failure reads where the run itself is the only
+     * record — today the file watcher's hidden conversation (#549). Takes the
+     * run's own reason as `{error}`.
+     */
+    automationRunFailed: string;
     messageSaveFailed: string;
     /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
     browserDeniedAbort: string;
@@ -3283,6 +3289,16 @@ export interface TranslationDict {
     /** Session rolled over after hitting the per-session round cap. {rounds} */
     sessionRolledOver: string;
     sessionQueueFull: string;
+    /**
+     * What the sender is told when a run ended before the sidecar accepted it
+     * and there is no assistant reply to forward (#549). The oversize one
+     * names the reset keyword sessionMapper already listens for, because a
+     * new session is the only way that conversation continues.
+     */
+    runPayloadTooLarge: string;
+    runServiceUnavailable: string;
+    /** Any other run that ended in error without an answer. {error} */
+    errorReply: string;
     timeoutHint: string;
     groupConnection: string;
     groupBehavior: string;

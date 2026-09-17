@@ -554,7 +554,7 @@ class IMChannelRouter {
         return granted;
       };
       let ownedAbortController: AbortController | undefined;
-      await this.runWithTimeout(
+      const dispatchResult = await this.runWithTimeout(
         runAgentLoopDispatched(session.conversationId, userText, {
           // Inbound images (e.g. a WeChat photo) forwarded as real vision content
           // so the model actually sees them instead of a "[图片]" text marker.
@@ -599,6 +599,32 @@ class IMChannelRouter {
 
       // 5. Extract and send reply
       const lastAIContent = this.extractLastAIReply(session.conversationId);
+
+      // #549: a run that failed before the sidecar accepted it wrote no
+      // assistant message, so there is nothing to extract. Say what happened —
+      // silence in a chat is indistinguishable from the bot being offline.
+      if (!lastAIContent && dispatchResult.reason === 'error') {
+        const t = getI18n().imChannel;
+        const content = dispatchResult.stopReason === 'payload_too_large'
+          ? t.runPayloadTooLarge
+          : dispatchResult.stopReason === 'sidecar_unavailable'
+            ? t.runServiceUnavailable
+            : format(t.errorReply, { error: dispatchResult.error ?? dispatchResult.reason });
+        const failureReply = await sendFinal(replyHandle, { content });
+        if (!failureReply.success) {
+          console.warn(`[IMChannel] Failure reply send failed: ${failureReply.error}`);
+        }
+        // Only an unreachable backend is a channel-level fault. The other
+        // endings belong to this one run; the channel itself still works.
+        if (dispatchResult.stopReason === 'sidecar_unavailable') {
+          useIMChannelStore.getState().setChannelStatus(channel.id, 'error', t.runServiceUnavailable);
+        } else {
+          useIMChannelStore.getState().setChannelStatus(channel.id, 'connected');
+        }
+        console.log(`[IMChannel] Run failed before any reply: ${dispatchResult.stopReason ?? dispatchResult.reason}`);
+        return;
+      }
+
       if (lastAIContent) {
         const replyMessage: AbuMessage = {
           content: lastAIContent,
@@ -737,7 +763,7 @@ class IMChannelRouter {
   private async sendErrorReply(message: NormalizedIMMessage, error: string) {
     const truncated = error.length > 100 ? error.slice(0, 100) + '...' : error;
     const errorMessage: AbuMessage = {
-      content: `Abu 处理出错: ${truncated}`,
+      content: format(getI18n().imChannel.errorReply, { error: truncated }),
     };
     const handle = { platform: message.platform, supportsUpdate: false, replyContext: message.replyContext };
     await sendFinal(handle, errorMessage);

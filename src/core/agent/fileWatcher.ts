@@ -134,7 +134,20 @@ export async function handleWatchTrigger(rule: FileWatchRule, filePath: string) 
       result.reason,
       result.reason === 'aborted' && result.abortCause === BROWSER_DENIAL_ABORT_CAUSE,
     );
-    console.log(`[FileWatcher] Task completed for rule ${rule.id}: ${fileName}`);
+    if (result.reason === 'error') {
+      // No run log exists for watcher rules; this hidden conversation is the
+      // log (#549). A run that failed before the sidecar accepted it wrote
+      // nothing here at all, so the rule just looked like it never fired.
+      useChatStore.getState().addMessage(conversationId, {
+        id: `watch-failed-${Date.now().toString(36)}`,
+        role: 'assistant',
+        content: format(getI18n().chat.automationRunFailed, { error: result.error ?? result.reason }),
+        timestamp: Date.now(),
+        isSystem: true,
+        isRecoveryNotice: true,
+      });
+    }
+    console.log(`[FileWatcher] Task ${result.reason} for rule ${rule.id}: ${fileName}`);
   } catch (err) {
     console.error(`[FileWatcher] Task failed for rule ${rule.id}:`, err);
   } finally {

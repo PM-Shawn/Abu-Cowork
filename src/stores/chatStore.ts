@@ -1423,8 +1423,8 @@ export const useChatStore = create<ChatStore>()(
         // N7 — the user closing an agent's browser tab makes the host refuse to
         // open another one until they speak again; writing to the conversation
         // is them speaking. This is the one place every send path commits a user
-        // message (the sidecar dispatch in agentLoopRunner and agentLoop's
-        // in-process fallbacks all land here), so the signal is taken here
+        // message (the sidecar dispatch in agentLoopRunner and the in-process
+        // loop in agentLoop both land here), so the signal is taken here
         // rather than duplicated per path. `isSystem` messages ride the `user`
         // role but are the app waking itself up — they must not hand the browser
         // back on the user's behalf. Fire-and-forget: a send never waits on, or

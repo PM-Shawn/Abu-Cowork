@@ -537,9 +537,8 @@ export interface AgentLoopOptions {
   authorizationScopeId?: string;
   /**
    * Shell-local ownership handoff for callers that need to cancel this exact
-   * run (for example an IM timeout). Never serialized to the sidecar. The
-   * callback may be invoked again when the same dispatched call hands off to
-   * an in-process fallback or a queued continuation with a new controller.
+   * run (for example an IM timeout). Never serialized to the sidecar. Invoked
+   * once per call, with the controller that run is stopped through.
    */
   onAbortControllerReady?: (controller: AbortController) => void;
   /**

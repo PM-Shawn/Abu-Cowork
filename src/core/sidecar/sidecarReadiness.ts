@@ -67,7 +67,7 @@ function abortReason(signal: AbortSignal | undefined): Error {
 export async function waitForSidecarVenue(options: {
   signal?: AbortSignal;
   timeoutMs?: number;
-  /** User-initiated send / reconnect: may spend one restart attempt. */
+  /** User-initiated send, Retry included: may spend one restart attempt. */
   allowRestart?: boolean;
 } = {}): Promise<void> {
   if (isInProcessAgentEnvironment()) return;

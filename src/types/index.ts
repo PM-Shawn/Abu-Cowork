@@ -718,7 +718,7 @@ export interface ToolExecutionContext {
   /**
    * Local execution-only metadata channel. Functions are deliberately omitted
    * from reverse-RPC serialization; Electron's sidecar-local run_command and
-   * the in-process fallback both report through this callback.
+   * the in-process loop both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
   /**

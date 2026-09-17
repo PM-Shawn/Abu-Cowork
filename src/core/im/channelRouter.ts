@@ -448,10 +448,9 @@ class IMChannelRouter {
       // 1a. Hydrate the conversation before any run touches it. Conversations are
       // lazily loaded (and evicted by `unloadOldConversations`), so a message for
       // a session the desktop hasn't opened recently finds no in-memory record:
-      // `buildAgentRunParams` then throws "no conversation record" and the
-      // in-process fallback silently skips upgrading the persisted user message —
-      // which drops inbound image attachments and leaves the message stuck in
-      // `pending` ("发送失败" in the UI). Loading first keeps both paths whole.
+      // `buildAgentRunParams` then throws "no conversation record" and the turn
+      // ends as a visible failure before dispatch, with the inbound image
+      // attachments never sent. Loading first keeps the run whole.
       if (!useChatStore.getState().conversations[session.conversationId]) {
         await useChatStore.getState().loadConversation(session.conversationId);
       }

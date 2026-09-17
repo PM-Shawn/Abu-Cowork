@@ -721,7 +721,7 @@ describe('chatStore', () => {
   // N7 — the user closing an agent's browser tab tells the host to stop opening
   // new ones. Writing to that conversation again is them re-engaging with the
   // task, and is what lifts the window. `addMessage` is the single point every
-  // send path (sidecar dispatch and the in-process fallbacks alike) commits a
+  // send path (sidecar dispatch and the in-process loop alike) commits a
   // user message through, so the signal is taken there rather than in each.
   describe('browser reclaim window', () => {
     const runtime = globalThis as unknown as Record<string, unknown>;

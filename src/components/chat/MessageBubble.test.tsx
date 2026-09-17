@@ -243,6 +243,41 @@ describe('MessageBubble user run status', () => {
     expect(useChatStore.getState().pendingInput).toBe(baseMessage.content);
   });
 
+  it('#549: the new conversation carries the routing prefix Retry would resend', () => {
+    // An oversize turn always fails after the params build, which has already
+    // rewritten the row to the route's clean input and stamped the agent on
+    // it. Carrying the bare text would send the new turn to the default route.
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'This conversation is too long to continue.',
+      runErrorKind: 'payload_too_large',
+      delegateAgent: { name: '研究员', description: 'researcher' },
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+
+    expect(useChatStore.getState().pendingInput).toBe(`@研究员 ${baseMessage.content}`);
+  });
+
+  it('#549: the new conversation carries the skill prefix of a skill turn', () => {
+    const message: Message = {
+      ...baseMessage,
+      runState: 'failed',
+      runError: 'This conversation is too long to continue.',
+      runErrorKind: 'payload_too_large',
+      skill: { name: 'pdf', description: 'pdf skill' },
+    };
+    setConversation(message, 'idle');
+
+    render(<MessageBubble message={message} />);
+    fireEvent.click(screen.getByRole('button', { name: 'New conversation' }));
+
+    expect(useChatStore.getState().pendingInput).toBe(`/pdf ${baseMessage.content}`);
+  });
+
   it('#549: a failed conversation with no workspace starts the new one without one', () => {
     const message: Message = {
       ...baseMessage,

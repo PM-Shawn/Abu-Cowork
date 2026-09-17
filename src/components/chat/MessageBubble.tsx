@@ -469,7 +469,10 @@ export default function MessageBubble({
     // (`addPendingAttachment` carries workspace paths, not attachments), so any
     // images on the failed turn are deliberately NOT carried over. See Task 7's
     // note on `setPendingInput` if an image buffer is ever added.
-    const draft = getTextContent(message.content);
+    // The same text Retry would send: the row holds the route's clean input,
+    // so the `@expert` / `/skill` prefix has to go back on or the new turn
+    // lands on the default route.
+    const draft = reattachRoutingPrefix(getTextContent(message.content), message);
     const workspacePath = activeConv?.workspacePath;
     useChatStore.getState().startNewConversation();
     // startNewConversation() clears the workspace — right for a top-level 「新建任务」,

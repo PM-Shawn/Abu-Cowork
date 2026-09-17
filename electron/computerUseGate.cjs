@@ -724,9 +724,9 @@ function createComputerUseGate(options) {
       .digest('hex');
   }
 
-  function hashWindowGraph(graph) {
+  function normalizeWindowGraph(graph) {
     if (!graph || !Array.isArray(graph.nodes) || graph.nodes.length === 0) return null;
-    const normalized = graph.nodes.map((node) => ({
+    return graph.nodes.map((node) => ({
       window_id: typeof node?.window_id === 'string' ? node.window_id.toLowerCase() : null,
       owner_window_id: typeof node?.owner_window_id === 'string'
         ? node.owner_window_id.toLowerCase()
@@ -737,12 +737,59 @@ function createComputerUseGate(options) {
       minimized: node?.minimized === true,
       relation: typeof node?.relation === 'string' ? node.relation : null,
     })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  }
+
+  function hashWindowGraph(graph) {
+    const normalized = normalizeWindowGraph(graph);
+    if (!normalized) return null;
     // Activation can reorder the same windows without changing the input
     // boundary. Physical takeover is checked separately through input_epoch;
     // retain identity, ownership, geometry and membership in this digest.
     return crypto.createHash('sha256')
       .update(JSON.stringify(normalized))
       .digest('hex');
+  }
+
+  /**
+   * What moved between two observations, in words the model can act on.
+   *
+   * The refusal used to say only "(window-graph)", which is true of a tooltip
+   * appearing, the user dragging the window, a dialog opening and a window
+   * closing alike. Measured: asked to draw in Paint, Abu hit this three times,
+   * guessed aloud that a tooltip was to blame, and told the user to stop
+   * touching the mouse — while the same run recorded the window going from
+   * 2048 to 819 to 2560 pixels wide, which is a person dragging it. Neither
+   * the model nor a later reader could tell those apart from the message.
+   *
+   * Titles are deliberately not reported: they are user content, and the
+   * change is legible without them.
+   */
+  function describeWindowGraphChange(before, after) {
+    const previous = Array.isArray(before) ? before : [];
+    const current = Array.isArray(after) ? after : [];
+    if (!previous.length || !current.length) return 'window-graph';
+    const previousIds = new Set(previous.map((node) => node.window_id));
+    const currentIds = new Set(current.map((node) => node.window_id));
+    const opened = current.filter((node) => !previousIds.has(node.window_id));
+    const closed = previous.filter((node) => !currentIds.has(node.window_id));
+    if (opened.length && closed.length) return 'window-graph: windows opened and closed';
+    if (opened.length) {
+      return `window-graph: a window opened in ${opened[0].app_id ?? 'the target application'}`;
+    }
+    if (closed.length) return 'window-graph: a window closed';
+
+    const wasById = new Map(previous.map((node) => [node.window_id, node]));
+    for (const node of current) {
+      const was = wasById.get(node.window_id);
+      if (!was) continue;
+      if (was.minimized !== node.minimized) {
+        return `window-graph: a window was ${node.minimized ? 'minimized' : 'restored'}`;
+      }
+      if (JSON.stringify(was.bounds) !== JSON.stringify(node.bounds)) {
+        return 'window-graph: a window moved or was resized';
+      }
+    }
+    return 'window-graph: the window layout changed';
   }
 
   function noteComputerUseTrajectory(key, stage, attributes = {}) {
@@ -1880,8 +1927,13 @@ function createComputerUseGate(options) {
         : snapshot.window_id?.toLowerCase() !== state.windowId?.toLowerCase() ? 'target-window'
           : Boolean(snapshot.modal) !== observed.modal ? 'modal-boundary'
             : (snapshot.modal_window_id ?? null) !== observed.modalWindowId ? 'modal-window'
-              : observed.windowGraphRevision !== null && hashWindowGraph(snapshot.window_graph) !== observed.windowGraphRevision
-                ? 'window-graph' : null;
+              : observed.windowGraphRevision !== null
+                && hashWindowGraph(snapshot.window_graph) !== observed.windowGraphRevision
+                ? describeWindowGraphChange(
+                  observed.windowGraphNodes,
+                  normalizeWindowGraph(snapshot.window_graph),
+                )
+                : null;
       if (changedBoundary) {
         computerStates.delete(session.taskKey);
         throw hostRefusal('ui-changed', `Computer Use interface changed after observation (${changedBoundary}); observe again`);
@@ -2966,6 +3018,7 @@ function createComputerUseGate(options) {
       ) {
         throw new Error('Windows UIA observation did not include a valid physical-input epoch');
       }
+      const windowGraphNodes = normalizeWindowGraph(result.window_graph);
       const windowGraphRevision = hashWindowGraph(result.window_graph);
       const sanitizedResult = sanitizeWindowsObservation(sender, session, result);
       if (sanitizedResult?.protocol_error) {
@@ -2986,6 +3039,9 @@ function createComputerUseGate(options) {
         modal: result.modal === true,
         modalWindowId: result.modal_window_id ?? null,
         windowGraphRevision,
+        // Kept so a refusal can say what moved, not just that something did.
+        // Bounded by the helper at 32 nodes, and carries no window titles.
+        windowGraphNodes,
         observedOwners: platform === 'win32' ? observedOwnerChain(session, result) : [],
         elements: sanitizeAxElements(result),
         browserOrigin: isBrowserIdentity(platform, session.target)

@@ -4580,3 +4580,70 @@ test('denying the keyboard route refuses it and executes nothing', async () => {
     'nothing reached the helper',
   );
 });
+
+// "(window-graph)" is equally true of a tooltip appearing, the user dragging
+// the window, a dialog opening and a window closing. Measured: asked to draw
+// in Paint, Abu hit this three times, guessed aloud that a tooltip was to
+// blame and told the user to stop touching the mouse — while the same run
+// recorded the window going 2048 → 819 → 2560 pixels wide, which is a person
+// dragging it. The refusal has to say which.
+test('a changed window graph says what moved, and never says it with a title', async () => {
+  const identity = { app_name: 'Editor', bundle_id: 'editor.exe', process_id: 100, window_id: 'hwnd:0x100' };
+  const base = {
+    window_id: 'hwnd:0x100', owner_window_id: null, app_id: 'editor.exe', app_name: 'Editor',
+    process_id: 100, title: 'PRIVATE_TITLE', bounds: [0, 0, 800, 600], minimized: false,
+    z_index: 1, relation: 'exact', foreground: true,
+  };
+  const second = {
+    ...base, window_id: 'hwnd:0x200', owner_window_id: 'hwnd:0x100', title: 'PRIVATE_POPUP',
+    bounds: [10, 10, 200, 100], relation: 'owned-popup', z_index: 2, foreground: false,
+  };
+
+  for (const [after, expected] of [
+    [[{ ...base, bounds: [300, 300, 819, 600] }], 'a window moved or was resized'],
+    [[{ ...base, minimized: true }], 'a window was minimized'],
+    [[base, second], 'a window opened in editor.exe'],
+  ]) {
+    let sequence = 0;
+    let dispatched = false;
+    const h = harness({
+      platform: 'win32',
+      nativeDispatch: async (cmd) => {
+        if (cmd === 'check_macos_permissions') return { screen_recording: true, accessibility: true };
+        if (cmd === 'resolve_app_identity' || cmd === 'activate_window') return identity;
+        if (cmd.startsWith('input_lease_')) return { phase: 'observing', input_epoch: 1 };
+        if (cmd === 'ax_snapshot') {
+          sequence += 1;
+          return {
+            session_id: `ax-describe-${sequence}`, app: 'Editor', elements: [], input_epoch: 1,
+            window_id: 'hwnd:0x100', modal: false, modal_window_id: null,
+            window_graph: {
+              target_window_id: 'hwnd:0x100',
+              nodes: sequence === 1 ? [base] : after,
+            },
+          };
+        }
+        if (cmd === 'keyboard_press') dispatched = true;
+        return { ok: true };
+      },
+    });
+    h.setIdentity(identity);
+    const state = await observeState(h, { targetApp: 'Editor' });
+    const session = await begin(h, {
+      targetApp: 'Editor',
+      expectedStateId: state.state_id,
+      actionIntent: { action: 'key', category: 'none', summary: '' },
+    });
+
+    await assert.rejects(
+      h.gate.dispatch(h.record, h.sender, 'keyboard_press', {
+        key: 'Tab', expectedStateId: state.state_id, [COMPUTER_USE_TOKEN_ARG]: session.token,
+      }),
+      (error) => error.message.includes(`window-graph: ${expected}`)
+        && !error.message.includes('PRIVATE_TITLE')
+        && !error.message.includes('PRIVATE_POPUP'),
+      expected,
+    );
+    assert.equal(dispatched, false, expected);
+  }
+});

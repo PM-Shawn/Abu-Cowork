@@ -138,10 +138,15 @@ describe('pathSafety', () => {
     });
 
     it('normalizes backslashes in workspace path', async () => {
+      const cleanup = setPlatformForTest('windows');
       authorizeWorkspace('C:\\Users\\testuser\\Projects\\myapp');
-      const result = await checkReadPath('C:/Users/testuser/Projects/myapp/src/index.ts');
-      expect(result.allowed).toBe(true);
-      revokeWorkspace('C:\\Users\\testuser\\Projects\\myapp');
+      try {
+        const result = await checkReadPath('C:/Users/testuser/Projects/myapp/src/index.ts');
+        expect(result.allowed).toBe(true);
+      } finally {
+        revokeWorkspace('C:\\Users\\testuser\\Projects\\myapp');
+        cleanup();
+      }
     });
 
     it('exact workspace path is authorized', async () => {
@@ -893,6 +898,60 @@ describe('pathSafety', () => {
       const result = await checkReadPath('//?/C:/tmp/file.txt');
       // Should not get UNC error — it should be treated as C:/tmp/file.txt
       expect(result.reason ?? '').not.toContain('UNC');
+    });
+  });
+
+  // ── 相对路径 ──
+  describe('relative paths', () => {
+    const checks = [
+      ['checkReadPath', checkReadPath],
+      ['checkWritePath', checkWritePath],
+      ['checkListPath', checkListPath],
+    ] as const;
+
+    it.each(['x', './x', '../x'])('rejects %s in every check before host canonicalization', async (path) => {
+      const cleanup = setPlatformForTest('macos');
+      try {
+        for (const [, check] of checks) {
+          const result = await check(path);
+          expect(result).toEqual({ allowed: false, reason: '路径必须是绝对路径' });
+          expect(result.reason).not.toContain(path.replace(/^\.\.?\//, ''));
+        }
+        expect(canonicalizeElectronPathForPolicy).not.toHaveBeenCalled();
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('accepts a Windows drive-absolute path and rejects a drive-relative path', async () => {
+      const cleanup = setPlatformForTest('windows');
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => String(candidate));
+      try {
+        for (const [, check] of checks) {
+          expect((await check('C:\\Users\\testuser\\Documents\\report.txt')).reason).not.toBe('路径必须是绝对路径');
+          expect(await check('C:foo')).toEqual({ allowed: false, reason: '路径必须是绝对路径' });
+        }
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('does not allow a relative read that the host resolves into an authorized workspace', async () => {
+      const cleanup = setPlatformForTest('macos');
+      const ws = '/Users/testuser/Projects/myapp';
+      vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => (
+        String(candidate) === 'x' ? `${ws}/x` : String(candidate)
+      ));
+      authorizeWorkspace(ws, ['read', 'write']);
+      try {
+        const result = await checkReadPath('x');
+        expect(result.allowed).toBe(false);
+        expect(result.needsPermission).toBeUndefined();
+        expect(result.resolvedPath).toBeUndefined();
+      } finally {
+        revokeWorkspace(ws);
+        cleanup();
+      }
     });
   });
 

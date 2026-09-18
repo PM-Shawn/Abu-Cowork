@@ -335,6 +335,8 @@ function resolveValidatedPath(rawPath) {
  */
 function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
   const norm = resolveValidatedPath(rawPath);
+  // 相对路径会被接到主进程 cwd 上，与渲染进程的策略判断不一致，直接拒绝
+  if (!path.isAbsolute(rawPath)) throw new Error('fs: path must be an absolute path');
   // Windows capabilities intentionally remain broad, but policy decisions must
   // still see junction/reparse-point targets rather than the lexical spelling.
   if (process.platform === 'win32') return canonicalizeForScope(norm, followFinalSymlink);

@@ -196,6 +196,29 @@ test('path-policy canonicalization rejects malformed renderer paths', () => {
   assert.throws(() => canonicalizeForPathPolicy('x'.repeat(33 * 1024)), /too long/);
 });
 
+test('path-policy canonicalization rejects relative paths instead of resolving them against the main-process cwd', { skip: process.platform === 'win32' }, (t) => {
+  const previousCwd = process.cwd();
+  // after hook 按注册顺序执行：先恢复 cwd，再删除临时目录
+  t.after(() => process.chdir(previousCwd));
+  const dir = tempDir(t);
+  process.chdir(dir);
+  fs.writeFileSync(path.join(dir, 'inside.txt'), 'inside');
+
+  for (const relativePath of ['inside.txt', './inside.txt', 'nested/missing.txt', '../escape.txt', '\\inside.txt']) {
+    for (const followFinalSymlink of [true, false]) {
+      assert.throws(
+        () => canonicalizeForPathPolicy(relativePath, followFinalSymlink),
+        (error) => error instanceof Error && error.message === 'fs: path must be an absolute path'
+      );
+    }
+  }
+
+  assert.equal(
+    canonicalizeForPathPolicy(path.join(dir, 'inside.txt')),
+    path.join(fs.realpathSync.native(dir), 'inside.txt')
+  );
+});
+
 test('remove deletes an escaping symlink entry without following its target', { skip: process.platform === 'win32' }, (t) => {
   const dir = tempDir(t);
   const link = path.join(dir, 'outside-link');

@@ -878,11 +878,6 @@ async function queueSnapshotPromotion(convId: string, message: Message, line: st
   writtenIds.add(message.id);
 }
 
-/** Promote one buffered revision: serialize it, queue it, wait for the disk. */
-async function promoteSnapshotEntry(convId: string, message: Message): Promise<void> {
-  await queueSnapshotPromotion(convId, message, await serializeSnapshotPromotion(convId, message));
-}
-
 /**
  * Promote one conversation's buffered revisions into its ledger and drop them
  * from the snapshot; every other conversation's buffer is left alone.
@@ -904,16 +899,19 @@ export async function promoteStreamSnapshots(convId: string): Promise<number> {
   if (!entries || entries.size === 0) return 0;
   await ensureBase();
 
-  const promoted = [...entries.entries()];
   // Serialized first, queued second: a revision whose tool-result images make
   // serialization await the output manifest would otherwise reach the queue
   // after the flush below and wait for the next drain.
-  const lines = await Promise.all(
-    promoted.map(([, { message }]) => serializeSnapshotPromotion(convId, message)),
+  const promoted = await Promise.all(
+    [...entries.entries()].map(async ([id, entry]) => ({
+      id,
+      entry,
+      line: await serializeSnapshotPromotion(convId, entry.message),
+    })),
   );
   // Observed before the flush so a rejected write always has a handler.
   const outcome = Promise.allSettled(
-    promoted.map(([, { message }], i) => queueSnapshotPromotion(convId, message, lines[i])),
+    promoted.map(({ entry, line }) => queueSnapshotPromotion(convId, entry.message, line)),
   );
   await flushWrites();
   const failed = (await outcome).find(
@@ -923,7 +921,7 @@ export async function promoteStreamSnapshots(convId: string): Promise<number> {
 
   // Only what was promoted is dropped: an entry replaced while the write was
   // in flight is a newer revision the ledger does not hold.
-  for (const [id, entry] of promoted) {
+  for (const { id, entry } of promoted) {
     if (entries.get(id) === entry) entries.delete(id);
   }
   if (entries.size === 0) streamSnapshots.delete(convId);
@@ -938,13 +936,26 @@ export async function promoteStreamSnapshots(convId: string): Promise<number> {
 export async function flushStreamSnapshots(): Promise<void> {
   if (streamSnapshots.size === 0) return;
   await ensureBase();
-  const promotions: { convId: string; done: Promise<unknown> }[] = [];
+  const buffered: { convId: string; message: Message }[] = [];
   for (const [convId, entries] of [...streamSnapshots.entries()]) {
-    for (const { message } of entries.values()) {
-      promotions.push({ convId, done: promoteSnapshotEntry(convId, message) });
-    }
+    for (const { message } of entries.values()) buffered.push({ convId, message });
     streamSnapshots.delete(convId);
   }
+  // Serialized first, queued second, for the reason `promoteStreamSnapshots`
+  // gives: the flush below has to find every line already in the queue, or the
+  // promotion waits for the next drain — which a renderer being torn down at
+  // quit never reaches.
+  const serialized = await Promise.all(
+    buffered.map(async ({ convId, message }) => ({
+      convId,
+      message,
+      line: await serializeSnapshotPromotion(convId, message),
+    })),
+  );
+  const promotions = serialized.map(({ convId, message, line }) => ({
+    convId,
+    done: queueSnapshotPromotion(convId, message, line),
+  }));
   await flushWrites();
 
   // Drop a snapshot file only AFTER its revision is durably in the ledger.

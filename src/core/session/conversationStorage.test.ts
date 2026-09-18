@@ -1816,6 +1816,18 @@ describe('conversationStorage', () => {
     });
 
     describe('stream snapshot', () => {
+      /** The write queue's drain debounce — `DRAIN_INTERVAL_MS` in conversationStorage.ts. */
+      const DRAIN_DEBOUNCE_MS = 100;
+
+      /**
+       * Run the pending microtasks to exhaustion under fake timers while
+       * keeping the clock short of the drain debounce, so a line that reached
+       * the queue too late for an explicit flush stays off disk.
+       */
+      async function advanceClockBelowDrainDebounce(): Promise<void> {
+        for (let ms = 1; ms < DRAIN_DEBOUNCE_MS; ms++) await vi.advanceTimersByTimeAsync(1);
+      }
+
       it('keeps in-flight revisions out of the ledger but readable after a crash', async () => {
         await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
         await storage.flushWrites();
@@ -1859,6 +1871,43 @@ describe('conversationStorage', () => {
         expect(memFs.files.has(SNAPSHOT)).toBe(false);
         const rows = physicalLines();
         expect(rows[rows.length - 1]).toMatchObject({ id: 'm1', content: 'unflushed' });
+      });
+
+      it('writes the promoted line in the flush it performs, not on the queue debounce', async () => {
+        // The renderer is torn down right after `shutdownConversationStorage()`
+        // is fired at quit, so a promotion that only reaches disk when the
+        // write queue's debounce fires may never reach disk at all.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'unflushed' }));
+
+        let ledgerWriteLanded!: () => void;
+        const ledgerWritten = new Promise<void>((resolve) => { ledgerWriteLanded = resolve; });
+        const writeThrough = vi.mocked(invoke).getMockImplementation()!;
+        vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+          const result = await writeThrough(cmd, args);
+          if (cmd === 'atomic_write_text' && (args as { path?: string } | undefined)?.path === MESSAGES) {
+            ledgerWriteLanded();
+          }
+          return result;
+        });
+
+        vi.useFakeTimers();
+        try {
+          const flushed = storage.flushStreamSnapshots();
+          // Every microtask gets to run, while the clock stays under the write
+          // queue's debounce: the only thing that can have put the line on disk
+          // by now is the flush `flushStreamSnapshots` performs itself.
+          await Promise.race([ledgerWritten, advanceClockBelowDrainDebounce()]);
+
+          const rows = physicalLines();
+          expect(rows[rows.length - 1]).toMatchObject({ id: 'm1', content: 'unflushed' });
+
+          await flushed;
+          expect(memFs.files.has(SNAPSHOT)).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
       });
 
       it('does not resurrect a message that was deleted while buffered', async () => {
@@ -2522,10 +2571,13 @@ describe('conversationStorage', () => {
       await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '第一版' }));
 
       let releaseLedgerWrite!: () => void;
+      let ledgerWriteReached!: () => void;
       const ledgerWriteGate = new Promise<void>((resolve) => { releaseLedgerWrite = resolve; });
+      const insideLedgerWrite = new Promise<void>((resolve) => { ledgerWriteReached = resolve; });
       const writeThrough = vi.mocked(invoke).getMockImplementation()!;
       vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
         if (cmd === 'atomic_write_text' && (args as { path?: string } | undefined)?.path === MESSAGES) {
+          ledgerWriteReached();
           await ledgerWriteGate;
         }
         return writeThrough(cmd, args);
@@ -2536,8 +2588,8 @@ describe('conversationStorage', () => {
         promotionSettled = true;
         return count;
       });
-      // Let the promotion queue its line and start the append it now blocks in.
-      for (let i = 0; i < 20; i++) await Promise.resolve();
+      // The promotion has queued its line and is now blocked inside the append.
+      await insideLedgerWrite;
       await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '第二版' }));
       // The revision landed while the promotion was still inside its write.
       expect(promotionSettled).toBe(false);
@@ -2558,14 +2610,11 @@ describe('conversationStorage', () => {
       // must still put its line in the queue the flush it performs drains,
       // instead of leaving it for the queue's 100 ms debounce — which is what
       // holding the timers still proves.
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      // The clock is held still only for the promotion itself.
       vi.useFakeTimers();
       try {
-        // Every queued write is drained explicitly here: with the timers held
-        // still, nothing else ever drains the queue.
-        const appended = storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
-        for (let i = 0; i < 20; i++) await Promise.resolve();
-        await storage.flushWrites();
-        await appended;
         await storage.snapshotMessageRevision(CONV, makeMsg({
           id: 'a1',
           role: 'assistant',

@@ -2062,6 +2062,7 @@ describe('agentLoopRunner', () => {
       vi.useFakeTimers();
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession());
+      notifySidecar.mockClear();
 
       capturedSettingsCb?.();
       expect(notifySidecar).not.toHaveBeenCalled();
@@ -2080,6 +2081,7 @@ describe('agentLoopRunner', () => {
       vi.useFakeTimers();
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession());
+      notifySidecar.mockClear();
 
       capturedSettingsCb?.();
       vi.advanceTimersByTime(50);
@@ -2097,6 +2099,7 @@ describe('agentLoopRunner', () => {
       vi.useFakeTimers();
       const { registerRunSession } = await importFresh();
       registerRunSession('run-1', makeSession());
+      notifySidecar.mockClear();
 
       capturedSettingsCb?.();
       vi.advanceTimersByTime(20);
@@ -2107,6 +2110,22 @@ describe('agentLoopRunner', () => {
 
       const settingsPushes = notifySidecar.mock.calls.filter((c) => c[0] === 'state.settings');
       expect(settingsPushes).toHaveLength(1);
+    });
+
+    // Settings changed between runs never reached the sidecar: the subscription
+    // only exists while a run is registered, and agent.run only seeds an EMPTY
+    // mirror. Every registration must therefore push the current snapshot first.
+    it('pushes the current settings immediately on every run registration', async () => {
+      vi.useFakeTimers();
+      const { registerRunSession, unregisterRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession());
+      unregisterRunSession('run-1');
+      registerRunSession('run-2', makeSession({ conversationId: 'conv-2', loopId: 'loop-2' }));
+
+      const pushes = notifySidecar.mock.calls.filter((c) => c[0] === 'state.settings');
+      expect(pushes).toHaveLength(2);
+      const revisions = pushes.map((c) => (c[1] as { revision: number }).revision);
+      expect(revisions[1]).toBeGreaterThan(revisions[0] as number);
     });
   });
 
@@ -4208,6 +4227,23 @@ describe('agentLoopRunner', () => {
       expect(runAgentLoopMock).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(chatStoreUpdateUserMessageRunMock.mock.calls)).not.toContain('must not survive');
       expect(JSON.stringify(chatStoreUpdateUserMessageRunMock.mock.calls)).not.toContain(upstreamErrorDetails.traceId);
+    });
+
+    it('pushes the current settings to the sidecar before agent.start goes out', async () => {
+      const { runAgentLoopDispatched } = await importFresh();
+      sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      notifySidecar.mockClear();
+
+      await runAgentLoopDispatched('conv-1', 'hello');
+
+      expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+      const settingsPushOrders = notifySidecar.mock.calls
+        .map((call, index) => ({ method: call[0], order: notifySidecar.mock.invocationCallOrder[index] }))
+        .filter((call) => call.method === 'state.settings')
+        .map((call) => call.order);
+      expect(settingsPushOrders.length).toBeGreaterThan(0);
+      expect(Math.min(...settingsPushOrders))
+        .toBeLessThan(agentStartRequestMock.mock.invocationCallOrder[0]);
     });
 
     it('persists the user message before the bounded start handshake', async () => {

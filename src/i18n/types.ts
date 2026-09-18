@@ -484,6 +484,12 @@ export interface TranslationDict {
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
+    modelUnavailableLabel: string;
+    modelUnavailableToast: string;
+    modelUnavailableInTask: string;
+    modelUnavailableReasonProviderRemoved: string;
+    modelUnavailableReasonProviderDisabled: string;
+    modelUnavailableReasonModelRemoved: string;
     /** Skill requires tools that aren't currently available. {missing} */
     skillMissingTools: string;
     /** Enterprise AI gateway unreachable (shown as an error bubble). */

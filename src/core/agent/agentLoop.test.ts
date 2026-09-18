@@ -924,7 +924,13 @@ describe('runAgentLoop expert execution', () => {
     const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
     const originalInvoker = getToolInvoker();
     const settings = useSettingsStore.getState();
-    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } });
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
     const conversationId = useChatStore.getState().createConversation();
     const writer = { name: 'writer', description: 'writes', systemPrompt: 'write', tools: ['write_file'], filePath: '__preset__' };
@@ -972,7 +978,7 @@ describe('runAgentLoop expert execution', () => {
     } finally {
       selectAdapter.mockRestore();
       setToolInvoker(originalInvoker);
-      useSettingsStore.setState({ activeModel: settings.activeModel });
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
       vi.unstubAllGlobals();
     }
   });
@@ -982,7 +988,13 @@ describe('runAgentLoop expert execution', () => {
     const { useSettingsStore } = await import('../../stores/settingsStore');
     const runner = await import('./subagentRunner');
     const settings = useSettingsStore.getState();
-    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } });
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
     const conversationId = useChatStore.getState().createConversation();
     const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file'], filePath: '/agents/expert/AGENT.md' };
     const runSubagent = vi.spyOn(runner, 'runSubagent').mockResolvedValue({ text: 'expert done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
@@ -994,7 +1006,92 @@ describe('runAgentLoop expert execution', () => {
       expect(runSubagent).toHaveBeenCalledWith(expect.objectContaining({ agent: expert, task: '检查文档' }));
     } finally {
       runSubagent.mockRestore();
-      useSettingsStore.setState({ activeModel: settings.activeModel });
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+    }
+  });
+});
+
+describe('runAgentLoop pinned-model availability guard', () => {
+  async function setup(mutate: (p: import('../../types/provider').ProviderInstance) => import('../../types/provider').ProviderInstance | null) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getLanguageSetting, setLanguage } = await import('../../i18n');
+    const previousLanguage = getLanguageSetting();
+    setLanguage('zh-CN');
+    const settings = useSettingsStore.getState();
+    const a = { ...settings.providers[0], id: 'prov-a', source: 'custom' as const, name: 'A', enabled: true, apiKey: 'k-a', userAdded: true, models: [{ id: 'model-a', label: 'Model A' }] };
+    const b = { ...a, id: 'prov-b', name: 'B', apiKey: 'k-b', models: [{ id: 'model-b', label: 'Model B' }] };
+    useSettingsStore.setState({ providers: [a, b], activeModel: { providerId: 'prov-a', modelId: 'model-a' } });
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    useChatStore.getState().setConversationModel(conversationId, { providerId: 'prov-a', modelId: 'model-a' });
+    const next = mutate(a);
+    useSettingsStore.setState({
+      providers: next ? [next, b] : [b],
+      activeModel: { providerId: 'prov-b', modelId: 'model-b' },
+    });
+    const chat = vi.fn();
+    const spy = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const restore = () => {
+      spy.mockRestore();
+      useSettingsStore.setState({ providers: settings.providers, activeModel: settings.activeModel });
+      setLanguage(previousLanguage);
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, conversationId, chat, restore };
+  }
+
+  // The display label is only recoverable while the provider still lists the model.
+  it.each([
+    ['removed', () => null, '所属服务已删除', '「model-a」'],
+    ['disabled', (p: never) => ({ ...(p as object), enabled: false }), '所属服务已关闭', '「Model A」'],
+    ['model gone', (p: never) => ({ ...(p as object), models: [] }), '已从所属服务中移除', '「model-a」'],
+  ] as const)('blocks a conversation whose pinned provider is %s and never calls the model', async (_n, mutate, reasonText, modelText) => {
+    const { useChatStore, conversationId, chat, restore } = await setup(mutate as never);
+    try {
+      const result = await runAgentLoop(conversationId, 'hello', { orchestration: { route: { type: 'general', name: 'abu', cleanInput: 'hello' }, systemPromptSections: [] } });
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(last?.role).toBe('assistant');
+      expect(String(last?.content)).toContain(reasonText);
+      expect(String(last?.content)).toContain(modelText);
+    } finally {
+      restore();
+    }
+  });
+
+  const run = (conversationId: string) =>
+    runAgentLoop(conversationId, 'hello', { orchestration: { route: { type: 'general', name: 'abu', cleanInput: 'hello' }, systemPromptSections: [] } });
+
+  it('keeps the configure-key path for an enterprise-gateway pin when the gateway is unavailable', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'enterprise-gateway', modelId: 'gw-model' });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'API Key not configured', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+    } finally {
+      restore();
+    }
+  });
+
+  it('falls back to the configure-key copy when the pinned model is unusable and no provider is enabled', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup(() => null);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.setState({ providers: useSettingsStore.getState().providers.map((p) => ({ ...p, enabled: false })) });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(last?.role).toBe('assistant');
+      expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+    } finally {
+      restore();
     }
   });
 });

@@ -16,16 +16,42 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as tsReader from '../src/core/session/ledgerReader';
 import { loadFoldFixtures, projectFolded } from '../src/test/foldFixtures';
 import { loadLedgerReaderFixtures, snapshotTextOf } from '../src/test/ledgerReaderFixtures';
+import { isBundleCurrent } from '../scripts/gen-ledger-reader.mjs';
 
 const require_ = createRequire(import.meta.url);
 const cjs = require_('./generated/ledgerReader.cjs') as typeof tsReader;
 
+// Everything this file reaches for on disk is resolved from the file's own
+// location, so the suite says the same thing whatever directory vitest was
+// started from.
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const BUNDLE_PATH = join(ROOT, 'electron/generated/ledgerReader.cjs');
+
 describe('electron/generated/ledgerReader.cjs ↔ src/core/session/ledgerReader.ts', () => {
   it('the tracked bundle matches a fresh build', () => {
-    execFileSync(process.execPath, ['scripts/gen-ledger-reader.mjs', '--check'], { stdio: 'pipe' });
+    execFileSync(process.execPath, [join(ROOT, 'scripts/gen-ledger-reader.mjs'), '--check'], {
+      cwd: ROOT,
+      stdio: 'pipe',
+    });
+  });
+
+  it('a CRLF checkout of the tracked bundle still counts as current', () => {
+    // A machine with core.autocrlf=true checks the bundle out with \r\n while
+    // esbuild emits \n. That is the same bundle, so the freshness check must
+    // not read it as stale and send the developer regenerating a file git then
+    // reports as unchanged.
+    const tracked = readFileSync(BUNDLE_PATH, 'utf8');
+    const asCrlf = tracked.replace(/\n/g, '\r\n');
+    expect(asCrlf).not.toBe(tracked);
+    expect(isBundleCurrent(asCrlf, tracked)).toBe(true);
+    expect(isBundleCurrent(tracked, tracked)).toBe(true);
+    expect(isBundleCurrent(`${tracked}// edited by hand\n`, tracked)).toBe(false);
   });
 
   it('exports everything the main process reads a ledger with', () => {

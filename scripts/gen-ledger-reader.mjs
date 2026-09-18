@@ -33,10 +33,9 @@ async function render() {
     write: false,
     platform: 'node',
     format: 'cjs',
-    // Electron 43 (package.json) and the embedded Node runtime
-    // (electron/.runtime/node-runtime) both run Node 24; the bundle is loaded
-    // by the main process and by that runtime, so it is built for the older of
-    // the two.
+    // The bundle's only requirer is `electron/catalogDb.cjs`, which the
+    // Electron main process loads, so the syntax floor is Electron's own Node
+    // major: Electron 43 (package.json) runs Node 24.
     target: 'node24',
     charset: 'utf8',
     legalComments: 'none',
@@ -50,17 +49,35 @@ async function render() {
   return result.outputFiles[0].text;
 }
 
-const check = process.argv.includes('--check');
-const fresh = await render();
-if (check) {
-  const tracked = fs.existsSync(OUT) ? fs.readFileSync(OUT, 'utf8') : null;
-  if (tracked !== fresh) {
-    console.error('electron/generated/ledgerReader.cjs is out of date. Run: npm run gen:ledger-reader');
-    process.exit(1);
+/**
+ * Is the tracked bundle the build of the current TypeScript?
+ *
+ * The comparison normalises the tracked text's line endings because the
+ * working-tree form of a text file follows the machine's git configuration:
+ * with `core.autocrlf=true` (the Git for Windows default, and what the
+ * `windows-latest` CI runner uses) the checkout hands back `\r\n` while esbuild
+ * always emits `\n`. What is tracked is LF either way — `.gitattributes` pins
+ * it — so a CRLF working copy is the same bundle, not a stale one.
+ */
+export function isBundleCurrent(trackedText, freshText) {
+  return trackedText.replace(/\r\n/g, '\n') === freshText;
+}
+
+/** Running as a script? Only then does it build, compare and exit. */
+const invokedDirectly = process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) {
+  const fresh = await render();
+  if (process.argv.includes('--check')) {
+    const tracked = fs.existsSync(OUT) ? fs.readFileSync(OUT, 'utf8') : null;
+    if (tracked === null || !isBundleCurrent(tracked, fresh)) {
+      console.error('electron/generated/ledgerReader.cjs is out of date. Run: npm run gen:ledger-reader');
+      process.exit(1);
+    }
+    console.log('electron/generated/ledgerReader.cjs is up to date.');
+  } else {
+    fs.mkdirSync(path.dirname(OUT), { recursive: true });
+    fs.writeFileSync(OUT, fresh);
+    console.log(`wrote ${path.relative(ROOT, OUT)}`);
   }
-  console.log('electron/generated/ledgerReader.cjs is up to date.');
-} else {
-  fs.mkdirSync(path.dirname(OUT), { recursive: true });
-  fs.writeFileSync(OUT, fresh);
-  console.log(`wrote ${path.relative(ROOT, OUT)}`);
 }

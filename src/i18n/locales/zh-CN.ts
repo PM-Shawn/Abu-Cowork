@@ -3862,6 +3862,8 @@ const zhCN: TranslationDict = {
       dangerXargsRm: 'xargs 与 rm 组合可能批量删除',
       dangerFindDelete: 'find -delete 可能批量删除文件',
       dangerFindExecRm: 'find -exec rm 可能批量删除文件',
+      dangerSynthesizeInput: '这条命令会模拟键盘或鼠标输入，直接操作你屏幕上的窗口',
+      dangerDriveWindow: '这条命令会切换窗口并点击界面，绕过操作电脑的确认流程',
       // DANGEROUS_PATTERNS — warn tier
       warnSudo: '需要管理员权限',
       warnRm: '删除文件操作',

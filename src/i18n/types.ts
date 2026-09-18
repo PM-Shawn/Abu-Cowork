@@ -4723,6 +4723,8 @@ export interface TranslationDict {
       dangerXargsRm: string;
       dangerFindDelete: string;
       dangerFindExecRm: string;
+      dangerSynthesizeInput: string;
+      dangerDriveWindow: string;
       // DANGEROUS_PATTERNS — warn tier
       warnSudo: string;
       warnRm: string;

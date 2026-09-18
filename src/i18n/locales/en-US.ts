@@ -3860,6 +3860,8 @@ const enUS: TranslationDict = {
       dangerXargsRm: 'xargs combined with rm may batch-delete files',
       dangerFindDelete: 'find -delete may batch-delete files',
       dangerFindExecRm: 'find -exec rm may batch-delete files',
+      dangerSynthesizeInput: 'This command types or clicks for you, driving the windows on your screen directly',
+      dangerDriveWindow: 'This command switches windows and clicks the interface, going around the Computer Use confirmations',
       // DANGEROUS_PATTERNS — warn tier
       warnSudo: 'Requires administrator privileges',
       warnRm: 'File deletion operation',

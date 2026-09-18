@@ -33,7 +33,12 @@ export interface HistoryUnavailableData {
   reason: HistoryUnavailableReason;
   /** The watermark the shell sent. */
   uptoBytes: number;
-  /** The ledger's size as the sidecar measured it; 0 when it could not be measured. */
+  /**
+   * The ledger's size where the reader measured it — the two `watermark_*`
+   * reasons, which compare the watermark against that size. `0` where no size
+   * was reported: `ledger_unreadable` (the file could not be measured) and
+   * `current_turn_missing` (the file was read, its size is beside the point).
+   */
   fileBytes: number;
 }
 

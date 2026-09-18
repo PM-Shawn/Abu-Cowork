@@ -876,19 +876,12 @@ async function hydrateFromLedger(params: LedgerRunParams): Promise<IdentifiedRun
   return { ...params, conversationSnapshot: { ...params.conversationSnapshot, messages } };
 }
 
+/** The acknowledgement of a start that repeats one whose history is still being read. */
+async function joinPendingLedgerStart(pending: PendingLedgerStart): Promise<AgentStartAck> {
+  return toStartAck(await pending.settled, true);
+}
+
 async function startFromLedger(params: LedgerRunParams): Promise<AgentStartAck> {
-  const inFlight = pendingLedgerStarts.get(params.runId);
-  if (inFlight) {
-    if (inFlight.payloadDigest !== params.payloadDigest || inFlight.clientMessageId !== params.clientMessageId) {
-      throw new RpcError(-32602, `Conflicting replay for runId "${params.runId}"`);
-    }
-    traceSidecarRuntimeEvent('sidecar.agent_start_replayed', {
-      runId: params.runId,
-      method: 'agent.start',
-      stage: 'reading_history',
-    });
-    return toStartAck(await inFlight.settled, true);
-  }
   const cancel = { requested: false };
   const settled = hydrateFromLedger(params).then((hydrated) => registerAcceptedRun(hydrated, cancel.requested));
   pendingLedgerStarts.set(params.runId, {
@@ -915,6 +908,13 @@ async function startFromLedger(params: LedgerRunParams): Promise<AgentStartAck> 
  * history has been read and sanitised: its digest is checked on the wire form
  * (the one with no messages), a replay arriving during the read shares that
  * read, and a failed read registers nothing, so the same ids can start again.
+ *
+ * A runId whose history is still being read is already owned, in whatever form
+ * the next start for it arrives: only the identical start joins that read, and
+ * every other one is the same conflict a registered runId answers. The two
+ * forms of a start never share a digest — `history` and the messages are both
+ * part of it — so a start that carries its messages can never take a runId a
+ * ledger start is reading for.
  */
 export function handleAgentStart(rawParams: unknown): AgentStartAck | Promise<AgentStartAck> {
   const params = parseAgentRunParams(rawParams);
@@ -937,6 +937,22 @@ export function handleAgentStart(rawParams: unknown): AgentStartAck | Promise<Ag
       stage: existing.state,
     });
     return toStartAck(existing, true);
+  }
+
+  const pending = pendingLedgerStarts.get(params.runId);
+  if (pending) {
+    if (
+      pending.payloadDigest !== params.payloadDigest
+      || pending.clientMessageId !== params.clientMessageId
+    ) {
+      throw new RpcError(-32602, `Conflicting replay for runId "${params.runId}"`);
+    }
+    traceSidecarRuntimeEvent('sidecar.agent_start_replayed', {
+      runId: params.runId,
+      method: 'agent.start',
+      stage: 'reading_history',
+    });
+    return joinPendingLedgerStart(pending);
   }
 
   const identified = params as IdentifiedRunParams;
@@ -980,6 +996,10 @@ const COMPACT_RUN_KEYS = ['runId', 'clientMessageId', 'payloadDigest'] as const;
 /**
  * The three-field `agent.run`: `{ runId, clientMessageId, payloadDigest }` and
  * nothing else. Null for any other shape, which the full-params parser judges.
+ *
+ * A field added to the compact form must be added to `COMPACT_RUN_KEYS` in the
+ * same change: a request carrying any other set of keys is read as the full
+ * form and fails on the fields the full form requires.
  */
 function parseCompactAgentRunRequest(
   params: unknown,

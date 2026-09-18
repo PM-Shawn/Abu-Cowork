@@ -38,6 +38,7 @@ vi.mock('./localTools', () => ({
 
 import {
   buildAgentRunPayloadDigest,
+  handleAgentGetState,
   handleAgentRun,
   handleAgentStart,
   __resetAgentRunRegistryForTests,
@@ -198,6 +199,24 @@ describe('agent.start hydration from a real ledger file', () => {
       uptoBytes: fileBytes - 1,
       fileBytes,
     });
+  });
+
+  it('refuses a ledger it cannot read', async () => {
+    const runId = 'real-unreadable';
+    // A DIRECTORY where the ledger file belongs: reading it fails on every OS
+    // (EISDIR/EPERM — never ENOENT), which is what `strictRead` tells apart
+    // from a conversation that simply has no ledger.
+    await mkdir(join(root.path, 'conversations', `conv-${runId}`, 'messages.jsonl'), { recursive: true });
+
+    const rejected = await rejectionOf(() => handleAgentStart(startParams(runId, 128)));
+    expect(rejected.code).toBe(-32010);
+    expect(rejected.data).toEqual({
+      code: 'history_unavailable',
+      reason: 'ledger_unreadable',
+      uptoBytes: 128,
+      fileBytes: 0,
+    });
+    expect(handleAgentGetState({ runId }).state).toBe('not_found');
   });
 
   it('refuses a watermark above zero on a conversation that has no ledger file', async () => {

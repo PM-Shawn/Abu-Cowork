@@ -1761,6 +1761,24 @@ describe('agentLoopHost', () => {
       expect(loadMessagesMock).toHaveBeenCalledTimes(1);
     });
 
+    it('a start that carries its messages is refused while a ledger read for that runId is pending', async () => {
+      const params = ledgerStartParams('ledger-vs-carried');
+      const read = deferred<unknown[]>();
+      loadMessagesMock.mockReturnValue(read.promise);
+      const starting = handleAgentStart(params);
+
+      // Same clientMessageId, different form — so a different digest.
+      const rejected = await rejectionOf(() => handleAgentStart(reliableParams({ runId: 'ledger-vs-carried' })));
+      expect(rejected.code).toBe(-32602);
+      expect(rejected.message).toMatch(/Conflicting replay/);
+
+      read.resolve(ledgerRows('ledger-vs-carried'));
+      expect(await starting).toEqual(expect.objectContaining({ replay: false, state: 'accepted' }));
+      // The ledger start owns the entry: the run executes from the history it read.
+      const seen = await messagesSeenByTheLoop(params) as { id: string }[];
+      expect(seen.map((m) => m.id)).toEqual(['u0', 'a0', 'msg-ledger-vs-carried']);
+    });
+
     it('a stop that arrives while the ledger is being read cancels the run before it executes', async () => {
       const params = ledgerStartParams('ledger-cancel');
       const read = deferred<unknown[]>();

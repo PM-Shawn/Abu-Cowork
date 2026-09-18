@@ -12,11 +12,12 @@
  * makes at `agent.start`. Nothing here builds an expected history by hand.
  *
  * The differences the two views are allowed to have are folded away by
- * `normalise`, and each of them has to be observed at least once across the
- * scenarios (the last test asserts that), so the allowance cannot quietly
- * become a blanket pass. Everything else — order, ids, roles, text, tool calls,
- * the context projection, compaction boundary rows, the rows a `msg.truncate`
- * cut, and the run states of finished turns — is compared field by field.
+ * `normalise`, and every scenario asserts the exact set of allowances it used,
+ * so the fold cannot quietly become a blanket pass and every case stands on its
+ * own when it is run alone. Everything else — order, ids, roles, text, tool
+ * calls, the context projection, compaction boundary rows, the rows a
+ * `msg.truncate` cut, the run states of finished turns, and every key of a
+ * media block the fold does not name — is compared field by field.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, mkdir, readDir, readTextFile, remove, stat, writeTextFile } from '@tauri-apps/plugin-fs';
@@ -140,13 +141,19 @@ function installMemoryFs(): { files: Map<string, string>; dirs: Set<string> } {
 }
 
 /**
- * The named differences, each recorded where it is observed:
+ * The named differences, each recorded where it is observed. Each scenario
+ * asserts the exact set it produced (`expectAllowancesSeen`), so an allowance
+ * that stops occurring fails in the scenario that exists for it.
  *
  *  - `wireMediaRef` / `ledgerImageFilePath` — a user image travels as a
  *    `delegated_media_ref` on the wire and as `source.data: ''` plus the
  *    `filePath` the sidecar reads the bytes back from in the ledger.
  *  - `ledgerInlineDocument` — a document block keeps its inline base64 in the
  *    ledger view while the wire view hands over a media ref.
+ *  - `resizeNotice` — `buildUserMessageContent` writes `resized` onto a
+ *    downscaled user image; the wire form's media ref carries four keys only,
+ *    so it is dropped there, while the ledger keeps it and the model is told
+ *    the image was downscaled (`<image_resize_notice>` in `messageNormalizer`).
  *  - `bounded` — a tool result past the durable budget is the bounded one in
  *    the ledger view, which is what a restarted renderer loads too.
  *  - `isStreaming` — the sanitiser writes `isStreaming: false` on every row; a
@@ -154,33 +161,73 @@ function installMemoryFs(): { files: Map<string, string>; dirs: Set<string> } {
  *  - `pid` — the ledger line's parent id, written by `serializeLedgerPut` and
  *    read by nothing.
  */
-const seen = {
-  wireMediaRef: false,
-  ledgerImageFilePath: false,
-  ledgerInlineDocument: false,
-  bounded: false,
-  isStreaming: false,
-  pid: false,
-};
+interface Allowances {
+  wireMediaRef: boolean;
+  ledgerImageFilePath: boolean;
+  ledgerInlineDocument: boolean;
+  resizeNotice: boolean;
+  bounded: boolean;
+  isStreaming: boolean;
+  pid: boolean;
+}
 
-function mediaSignature(block: unknown): unknown {
-  if (typeof block !== 'object' || block === null) return block;
-  const record = block as {
-    type?: string;
-    filePath?: string;
-    attachment?: { mediaType?: string };
-    source?: { media_type?: string; data?: string };
+function noAllowances(): Allowances {
+  return {
+    wireMediaRef: false,
+    ledgerImageFilePath: false,
+    ledgerInlineDocument: false,
+    resizeNotice: false,
+    bounded: false,
+    isStreaming: false,
+    pid: false,
   };
-  if (record.type === 'delegated_media_ref') {
+}
+
+let seen = noAllowances();
+
+/** Exactly these allowances were folded away in this scenario, and no others. */
+function expectAllowancesSeen(...names: (keyof Allowances)[]): void {
+  const expected = noAllowances();
+  for (const name of names) expected[name] = true;
+  expect(seen).toEqual(expected);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * A media block with the named differences folded away and **every other key
+ * kept**, so `name`, `outputRef` and anything else a block carries is still
+ * compared. Folded: the payload (`source.data`), the path the sidecar reads it
+ * back from (`filePath`), the ref's identity (`originConversationId` /
+ * `attachment`, reduced to the media type the two sides share) and `resized`.
+ *
+ * `resized` is folded on every media block rather than only where the wire
+ * form built a ref: this function sees one side at a time, and a ledger image
+ * is `source.data: '' + filePath` whether its wire twin is a ref (a turn whose
+ * bytes were still in memory) or a stripped image block (a reloaded row). The
+ * scenario that owns the difference asserts the raw shapes on both sides.
+ */
+function mediaSignature(block: unknown): unknown {
+  if (!isRecord(block)) return block;
+  if (block.type === 'delegated_media_ref') {
     seen.wireMediaRef = true;
-    return { type: 'media', mediaType: record.attachment?.mediaType };
+    const { type: _type, originConversationId: _origin, attachment, ...rest } = block;
+    const mediaType = isRecord(attachment) ? attachment.mediaType : undefined;
+    return { kind: 'media', mediaType, ...rest };
   }
-  if ((record.type === 'image' || record.type === 'document') && record.source) {
-    if (record.type === 'image' && record.source.data === '' && record.filePath) {
+  if ((block.type === 'image' || block.type === 'document') && isRecord(block.source)) {
+    const source = block.source as { media_type?: string; data?: string };
+    if (block.type === 'image' && source.data === '' && typeof block.filePath === 'string') {
       seen.ledgerImageFilePath = true;
     }
-    if (record.type === 'document' && record.source.data) seen.ledgerInlineDocument = true;
-    return { type: 'media', mediaType: record.source.media_type };
+    if (block.type === 'document' && typeof source.data === 'string' && source.data !== '') {
+      seen.ledgerInlineDocument = true;
+    }
+    const { type: _type, source: _source, filePath: _filePath, resized, ...rest } = block;
+    if (resized !== undefined) seen.resizeNotice = true;
+    return { kind: 'media', mediaType: source.media_type, ...rest };
   }
   return block;
 }
@@ -313,6 +360,7 @@ async function expectEquivalent(
 describe('agent.start history: the wire snapshot and the ledger view agree (#549 P2a)', () => {
   beforeEach(() => {
     mediaCounter = 0;
+    seen = noAllowances();
   });
 
   it('text turns with a tool call', async () => {
@@ -335,6 +383,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
     expect(ledger.map((m) => m.id)).toEqual(['u1', 'a1', current]);
     expect(ledger.at(-1)).toMatchObject({ runState: 'pending', content: '再读一下 b.txt' });
     expect(ledger[1].toolCallsForContext).toEqual([{ id: 't1', name: 'read_file', input: { path: 'a.txt' }, result: '文件内容：你好' }]);
+    expectAllowancesSeen('isStreaming', 'pid');
   });
 
   it('edit-and-resend: rows cut by msg.truncate are in neither view', async () => {
@@ -354,6 +403,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
 
     expect(ledger.map((m) => m.id)).toEqual(['u1', 'a1', current]);
     expect(JSON.stringify(ledger)).not.toContain('将被截掉');
+    expectAllowancesSeen('isStreaming', 'pid');
   });
 
   it('a compaction boundary row keeps its place and payload', async () => {
@@ -378,6 +428,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
 
     expect(ledger.map((m) => m.id)).toEqual(['u1', 'a1', marker.id, current]);
     expect(ledger[2].compactBoundary).toEqual(marker.compactBoundary);
+    expectAllowancesSeen('isStreaming', 'pid');
   });
 
   it("the new turn's image and PDF: a media ref on the wire, a file path and inline bytes in the ledger", async () => {
@@ -398,6 +449,40 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
     expect(wireBlocks.map((b) => b.type)).toEqual(['delegated_media_ref', 'delegated_media_ref', 'text']);
     expect(ledgerBlocks[0]).toMatchObject({ type: 'image', filePath: '/sessions/outputs/images/a.png', source: { data: '' } });
     expect(ledgerBlocks[1]).toMatchObject({ type: 'document', source: { data: PDF } });
+    // The document's `name` is on both sides and is compared, not folded.
+    expect((wire.at(-1)!.content as { name?: string }[])[1].name).toBe('a.pdf');
+    expect((ledger.at(-1)!.content as { name?: string }[])[1].name).toBe('a.pdf');
+    // No `pid`: the dispatch row is this conversation's first ledger line.
+    expectAllowancesSeen('wireMediaRef', 'ledgerImageFilePath', 'ledgerInlineDocument', 'isStreaming');
+  });
+
+  it('a downscaled image: the wire ref drops `resized`, the ledger row keeps it', async () => {
+    const h = await freshHarness();
+    const actions = h.store.useChatStore.getState();
+    const convId = actions.createConversation();
+    const resized = { fromWidth: 4000, fromHeight: 3000, toWidth: 1568, toHeight: 1176 };
+    const content = [
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: PNG },
+        filePath: '/sessions/outputs/images/big.png',
+        resized,
+      },
+      { type: 'text', text: '这张图缩过' },
+    ] as Message['content'];
+
+    const current = await dispatchRow(h, convId, 'run-9', content);
+    const { wire, ledger } = await expectEquivalent(h, convId, current);
+
+    // The wire form's ref carries four keys only, so the flag cannot travel and
+    // `messageNormalizer` emits no <image_resize_notice>; the ledger row keeps
+    // it, so a run started from the ledger tells the model about the downscale.
+    const wireBlock = (wire.at(-1)!.content as Record<string, unknown>[])[0];
+    expect(wireBlock.type).toBe('delegated_media_ref');
+    expect(wireBlock).not.toHaveProperty('resized');
+    expect((ledger.at(-1)!.content as { resized?: unknown }[])[0].resized).toEqual(resized);
+    // No `pid`: the dispatch row is this conversation's first ledger line.
+    expectAllowancesSeen('wireMediaRef', 'ledgerImageFilePath', 'resizeNotice', 'isStreaming');
   });
 
   it('a reloaded history image: no path on the wire, the path in the ledger', async () => {
@@ -416,6 +501,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
 
     expect((wire[0].content as { filePath?: string }[])[0].filePath).toBeUndefined();
     expect((ledger[0].content as { filePath?: string }[])[0].filePath).toBe('/sessions/outputs/images/old.png');
+    expectAllowancesSeen('ledgerImageFilePath', 'isStreaming', 'pid');
   });
 
   it('a tool result beyond the durable budget is the bounded one in both views', async () => {
@@ -440,6 +526,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
     const bounded = JSON.stringify((await wireView(h, convId, true)).map(normalise));
     seen.bounded ||= unbounded !== bounded;
     expect(unbounded).not.toBe(bounded);
+    expectAllowancesSeen('bounded', 'isStreaming', 'pid');
   });
 
   it('a partial answer that lives only in the stream snapshot is in both views after the promotion', async () => {
@@ -458,6 +545,7 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
     const { ledger } = await expectEquivalent(h, convId, current);
 
     expect(ledger.find((m) => m.id === 'a1')?.content).toBe('床前明月光，疑是');
+    expectAllowancesSeen('isStreaming', 'pid');
   });
 
   it('a conversation reloaded from disk: the ghost row on disk is in neither view', async () => {
@@ -487,16 +575,67 @@ describe('agent.start history: the wire snapshot and the ledger view agree (#549
     const { ledger } = await expectEquivalent(h, convId, current);
 
     expect(ledger.map((m) => m.id)).toEqual(['u1', 'a1', current]);
+    expectAllowancesSeen('isStreaming', 'pid');
   });
 
-  it('every named difference was exercised', () => {
-    expect(seen).toEqual({
-      wireMediaRef: true,
-      ledgerImageFilePath: true,
-      ledgerInlineDocument: true,
-      bounded: true,
-      isStreaming: true,
-      pid: true,
+  /**
+   * Why a positional index one run computed still points at the same rows in
+   * the next one. `contextCache.summarizedRange` is a pair of indices into the
+   * message list (`agentLoop.ts:1982` slices by it), and the list a run reads
+   * on the ledger form is the sanitised ledger prefix, which drops
+   * non-substantive assistant rows. Two facts keep the indices meaningful, and
+   * both are asserted here:
+   *
+   *  1. a dispatch clears the conversation's `contextCache` before the snapshot
+   *     the sidecar receives is taken (`chatStore.ts` `updateUserMessageRun`,
+   *     which `buildAgentRunParams` calls just before reading the conversation),
+   *     so no range ever crosses a dispatch at all;
+   *  2. even if one did, the ledger view of a dispatch is a positional prefix
+   *     of the next dispatch's — the ledger is append-only, the fold keeps a
+   *     revised row in place, and a row the sanitiser drops is dropped at every
+   *     watermark, so nothing shifts under an index.
+   */
+  it('a later dispatch sees the earlier one\'s history position for position, and carries no context cache', async () => {
+    const h = await freshHarness();
+    const actions = h.store.useChatStore.getState();
+    const convId = actions.createConversation();
+    addUserTurn(h, convId, 'u1', '第一问', T0);
+    addAnswer(h, convId, 'a1', 'loop-u1', '第一答', T0 + 1);
+    await h.store.waitForConversationPersistence(convId);
+    // An assistant row a finished run left empty: dropped by the sanitiser at
+    // every watermark, so it can never appear or disappear between dispatches.
+    await h.storage.appendMessage(convId, {
+      id: 'ghost-1', role: 'assistant', content: '', timestamp: T0 + 2, loopId: 'loop-ghost',
     });
+    await h.storage.flushWrites();
+
+    const summary: Message = { id: 'context-summary-1', role: 'user', content: '摘要', timestamp: T0 + 3 };
+    actions.setContextCache(convId, {
+      summaryMessage: summary,
+      summarizedRange: [1, 2],
+      messageCountAtCompression: 2,
+    });
+
+    const first = await dispatchRow(h, convId, 'run-10', '第二问');
+    // Fact 1: the routed rewrite every dispatch performs clears the cache, so
+    // `conversationSnapshot.contextCache` is undefined in the params that carry
+    // this run — on either form.
+    expect(h.store.useChatStore.getState().conversations[convId].contextCache).toBeUndefined();
+    const { ledger: firstView } = await expectEquivalent(h, convId, first);
+    expect(firstView.map((m) => m.id)).toEqual(['u1', 'a1', first]);
+
+    // The run finishes and answers, then the user sends again.
+    actions.updateUserMessageRun(convId, first, { state: 'completed' });
+    addAnswer(h, convId, 'a2', first, '第二答', T0 + 10);
+    await h.store.waitForConversationPersistence(convId);
+    const second = await dispatchRow(h, convId, 'run-11', '第三问');
+    const { ledger: secondView } = await expectEquivalent(h, convId, second);
+
+    // Fact 2: position for position, the second run's history opens with the
+    // first run's — the ghost row shifts nothing and the revised user row kept
+    // its place.
+    expect(secondView.map((m) => m.id).slice(0, firstView.length)).toEqual(firstView.map((m) => m.id));
+    expect(secondView.map((m) => m.id)).toEqual(['u1', 'a1', first, 'a2', second]);
+    expectAllowancesSeen('isStreaming', 'pid');
   });
 });

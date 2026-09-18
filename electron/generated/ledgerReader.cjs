@@ -135,6 +135,10 @@ function foldMessageLog(lines) {
 
 // src/core/session/ledgerReader.ts
 var STREAM_SNAPSHOT_FILENAME = "stream-snapshot.json";
+function isMessageEntry(message) {
+  const { lk } = message;
+  return lk === void 0 || lk === LEDGER_KIND_PUT;
+}
 function parseSnapshot(snapshotText) {
   const entries = /* @__PURE__ */ new Map();
   if (snapshotText === null || snapshotText === void 0) return { entries };
@@ -150,7 +154,7 @@ function parseSnapshot(snapshotText) {
   if (Array.isArray(file.entries)) {
     for (const entry of file.entries) {
       const message = entry?.message;
-      if (message && typeof message.id === "string") {
+      if (message && typeof message.id === "string" && isMessageEntry(message)) {
         entries.set(message.id, {
           message,
           stamp: typeof entry.stamp === "number" ? entry.stamp : void 0
@@ -159,13 +163,16 @@ function parseSnapshot(snapshotText) {
     }
   } else if (Array.isArray(file.messages)) {
     for (const message of file.messages) {
-      if (message && typeof message.id === "string") entries.set(message.id, { message, stamp: void 0 });
+      if (message && typeof message.id === "string" && isMessageEntry(message)) {
+        entries.set(message.id, { message, stamp: void 0 });
+      }
     }
   }
   return { entries, ledgerBytes };
 }
+var BYTE_ORDER_MARK = String.fromCharCode(65279);
 function projectLedger(input) {
-  const { ledgerText } = input;
+  const ledgerText = input.ledgerText.startsWith(BYTE_ORDER_MARK) ? input.ledgerText.slice(BYTE_ORDER_MARK.length) : input.ledgerText;
   const fold = createLedgerFold();
   let offset = 0;
   for (const rawLine of ledgerText.split("\n")) {

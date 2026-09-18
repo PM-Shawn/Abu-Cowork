@@ -6,6 +6,9 @@ import { decodeLedgerPrefix, LedgerWatermarkError, projectLedger } from './ledge
 
 const { cases, watermarkCases } = loadLedgerReaderFixtures();
 
+/** U+FEFF, built from its code point so this file holds no invisible character. */
+const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
+
 /** What a fixture's snapshot object records in its file-level `ledgerBytes` field. */
 function recordedLedgerCharsOf(snapshot: unknown): number | undefined {
   if (typeof snapshot !== 'object' || snapshot === null) return undefined;
@@ -49,9 +52,14 @@ describe('projectLedger', () => {
   });
 
   for (const testCase of cases) {
-    it(`with no snapshot it equals foldMessageLog on the same text: ${testCase.name}`, () => {
+    it(`with no snapshot it equals foldMessageLog on the ledger's lines: ${testCase.name}`, () => {
       const projection = projectLedger({ ledgerText: testCase.ledgerText, snapshotText: null });
-      const folded = foldMessageLog(testCase.ledgerText.split('\n'));
+      // A leading byte-order mark is an encoding marker rather than the first
+      // character of a line, so the lines the fold sees are the ones after it.
+      const ledgerLines = testCase.ledgerText.startsWith(BYTE_ORDER_MARK)
+        ? testCase.ledgerText.slice(BYTE_ORDER_MARK.length)
+        : testCase.ledgerText;
+      const folded = foldMessageLog(ledgerLines.split('\n'));
       expect(JSON.stringify(projection.messages)).toBe(JSON.stringify(folded.messages));
       expect(projection.corruptCount).toBe(folded.corruptCount);
       expect(projection.totalLines).toBe(folded.totalLines);

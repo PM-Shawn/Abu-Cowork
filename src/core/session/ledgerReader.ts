@@ -23,7 +23,7 @@
  * are a separate concern handled by `decodeLedgerPrefix`.
  */
 import type { Message } from '@/types';
-import { createLedgerFold } from './messageLedger';
+import { createLedgerFold, LEDGER_KIND_PUT } from './messageLedger';
 
 /**
  * The file `projectLedger`'s `snapshotText` comes from: it sits next to
@@ -80,6 +80,21 @@ export interface LedgerProjection {
 }
 
 /**
+ * A snapshot entry holds a message, never a ledger event.
+ *
+ * Surviving entries are folded in as trailing puts, and the fold dispatches on
+ * `lk` — so an entry carrying `msg.truncate`, `msg.tomb` or `msg.loopDrop`
+ * would delete messages the durable ledger holds. The writer of
+ * `stream-snapshot.json` only ever puts real messages there, so an entry of any
+ * other shape is not a revision at all: it is left out of the snapshot
+ * entirely, which is also why it never appears among the dropped ids.
+ */
+function isMessageEntry(message: Message): boolean {
+  const { lk } = message as { lk?: unknown };
+  return lk === undefined || lk === LEDGER_KIND_PUT;
+}
+
+/**
  * Read the snapshot file's two on-disk shapes: v2 carries a per-entry `stamp`,
  * v1 carries none and is merged unconditionally. A file-level `ledgerBytes`
  * can appear on either. Anything unparseable yields no entries and no
@@ -101,7 +116,7 @@ function parseSnapshot(snapshotText: string | null | undefined): ParsedSnapshot 
   if (Array.isArray(file.entries)) {
     for (const entry of file.entries as { message?: Message; stamp?: unknown }[]) {
       const message = entry?.message;
-      if (message && typeof message.id === 'string') {
+      if (message && typeof message.id === 'string' && isMessageEntry(message)) {
         entries.set(message.id, {
           message,
           stamp: typeof entry.stamp === 'number' ? entry.stamp : undefined,
@@ -110,17 +125,32 @@ function parseSnapshot(snapshotText: string | null | undefined): ParsedSnapshot 
     }
   } else if (Array.isArray(file.messages)) {
     for (const message of file.messages as Message[]) {
-      if (message && typeof message.id === 'string') entries.set(message.id, { message, stamp: undefined });
+      if (message && typeof message.id === 'string' && isMessageEntry(message)) {
+        entries.set(message.id, { message, stamp: undefined });
+      }
     }
   }
   return { entries, ledgerBytes };
 }
 
+/** U+FEFF, built from its code point so this file holds no invisible character. */
+const BYTE_ORDER_MARK = String.fromCharCode(0xfeff);
+
 export function projectLedger(input: {
   ledgerText: string;
   snapshotText?: string | null;
 }): LedgerProjection {
-  const { ledgerText } = input;
+  // A leading byte-order mark is an encoding marker, not a ledger line's first
+  // character. A tier that decodes the file through `TextDecoder` — the
+  // renderer and the sidecar — never sees one, while `fs.readFileSync(path,
+  // 'utf8')` in the main process hands it straight through, so dropping one
+  // here is what makes the three tiers read the same bytes the same way.
+  // Everything downstream runs on the text without it: the fold, the offsets
+  // and `ledgerChars`, which is the unit the snapshot's stamps were measured in
+  // by a renderer that never had the mark.
+  const ledgerText = input.ledgerText.startsWith(BYTE_ORDER_MARK)
+    ? input.ledgerText.slice(BYTE_ORDER_MARK.length)
+    : input.ledgerText;
   const fold = createLedgerFold();
   let offset = 0;
   for (const rawLine of ledgerText.split('\n')) {

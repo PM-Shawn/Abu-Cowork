@@ -6,7 +6,9 @@
     "content of stream-snapshot.json, or \"<<damaged>>\" for unparseable text.",
     "`expected.messages` pins id + content in order; `ledgerChars`, stamps and",
     "`ledgerBytes` are JavaScript string lengths, the unit the snapshot is written in.",
-    "`watermarkCases` measure bytes: they pin the UTF-8 watermark rules."
+    "`watermarkCases` measure bytes: they pin the UTF-8 watermark rules.",
+    "One case's `ledgerText` opens with a literal U+FEFF byte-order mark. It is",
+    "invisible on purpose: that character is the input the case is about."
   ],
   "cases": [
     {
@@ -492,6 +494,49 @@
         "corruptCount": 0,
         "totalLines": 2,
         "ledgerChars": 124,
+        "mergedIds": [],
+        "droppedIds": [],
+        "discardedWhole": false
+      }
+    },
+    {
+      "name": "a snapshot entry shaped like a ledger event is not a message",
+      "ledgerText": "{\"id\":\"u1\",\"role\":\"user\",\"loopId\":\"L1\",\"content\":\"第一条消息\",\"timestamp\":1}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"第一条回复\",\"timestamp\":2}\n",
+      "snapshot": {
+        "version": 2,
+        "ledgerBytes": 135,
+        "entries": [
+          {
+            "message": { "id": "a1", "role": "assistant", "content": "流式中的最新回复", "timestamp": 2 },
+            "stamp": 135
+          },
+          { "message": { "lk": "msg.truncate", "id": "e1", "from": "u1" }, "stamp": 135 },
+          { "message": { "lk": "msg.tomb", "id": "e2", "target": "a1" }, "stamp": 135 },
+          { "message": { "lk": "msg.loopDrop", "id": "e3", "loopId": "L1" }, "stamp": 135 }
+        ]
+      },
+      "expected": {
+        "messages": [
+          { "id": "u1", "content": "第一条消息" },
+          { "id": "a1", "content": "流式中的最新回复" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 3,
+        "ledgerChars": 135,
+        "mergedIds": ["a1"],
+        "droppedIds": [],
+        "discardedWhole": false
+      }
+    },
+    {
+      "name": "a leading byte-order mark is not ledger content",
+      "ledgerText": "﻿{\"id\":\"u1\",\"role\":\"user\",\"content\":\"带字节序标记的消息\",\"timestamp\":1}\n",
+      "snapshot": null,
+      "expected": {
+        "messages": [{ "id": "u1", "content": "带字节序标记的消息" }],
+        "corruptCount": 0,
+        "totalLines": 1,
+        "ledgerChars": 62,
         "mergedIds": [],
         "droppedIds": [],
         "discardedWhole": false

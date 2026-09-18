@@ -84,6 +84,14 @@ describe('electron/generated/ledgerReader.cjs ↔ src/core/session/ledgerReader.
       expect(a.snapshot.droppedIds).toEqual(b.snapshot.droppedIds);
       expect(a.snapshot.discardedWhole).toBe(b.snapshot.discardedWhole);
       expect(a.snapshot.recordedLedgerChars).toBe(b.snapshot.recordedLedgerChars);
+      // The counts the catalog stores come from the bundle, so they are pinned
+      // against the fixture directly and not only against the TypeScript: a
+      // byte-order mark is the one input the main process sees and the other
+      // tiers do not, and it must change neither the line counts nor the length
+      // the snapshot's stamps are measured in.
+      expect(a.corruptCount).toBe(testCase.expected.corruptCount);
+      expect(a.totalLines).toBe(testCase.expected.totalLines);
+      expect(a.ledgerChars).toBe(testCase.expected.ledgerChars);
     });
   }
 

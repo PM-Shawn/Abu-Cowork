@@ -47,24 +47,36 @@
  * (`import('../session/conversationStorage')`, resolving through this SAME
  * shim redirect) once `memdirExtractorRun.ts` stopped stubbing out the real
  * extractor — a 3rd consumer beyond the 2 functions above, not previously
- * reachable. Implemented as a verbatim-ported LOCAL read (same pattern as
- * `memdirScan.ts`/`memdirPaths.ts`) rather than a `sendRequest` round trip:
- * it's a pure read with no shared mutable state to coordinate (unlike
- * `replaceMessageById`'s frame-ordering requirement), and
- * `messages.jsonl` lives on the SAME machine/disk the shell
+ * reachable. It reads the conversation's two files here and hands their text
+ * to `projectLedger` (`src/core/session/ledgerReader.ts`), the shared
+ * projection the renderer runs, so a `msg.truncate` / `msg.tomb` /
+ * `msg.loopDrop` event cuts the history on this side exactly as it does on
+ * the shell side and a revised message keeps its position.
+ *
+ * The read is LOCAL rather than a `sendRequest` round trip (same pattern as
+ * `memdirScan.ts`/`memdirPaths.ts`): it's a pure read with no shared mutable
+ * state to coordinate (unlike `replaceMessageById`'s frame-ordering
+ * requirement), and `messages.jsonl` lives on the SAME machine/disk the shell
  * writes to — `appDataDir()` here resolves through the existing
  * `@tauri-apps/api/path` bare-specifier shim (`tauriPathRun.ts`), which reads
  * the identical spawn-time bootstrap value the shell's own Tauri
  * `appDataDir()` call resolves to (see that shim's doc), so
  * `<appDataDir>/conversations/<convId>/messages.jsonl` is byte-identical on
- * both sides. Path construction (`ensureBase`/`messagesPath`) and parsing
- * (per-line tolerant JSON.parse + `dedupMessagesById`) are ported verbatim
- * from the real `conversationStorage.ts` — `populateWrittenIds` is
- * intentionally NOT replicated: that mutates the SHELL's own module-level
- * `writtenIds` Set, so a sidecar-local copy of that state would just be dead
- * — nothing sidecar-side reads it.
+ * both sides.
+ *
+ * `stream-snapshot.json` is merged READ-ONLY: the shell is that file's only
+ * writer, so this side acts on none of the projection's verdicts — it neither
+ * rewrites the file with the surviving entries nor deletes it. For the same
+ * reason `populateWrittenIds` is NOT replicated: that mutates the SHELL's own
+ * module-level `writtenIds` Set, so a sidecar-local copy of that state would
+ * just be dead — nothing sidecar-side reads it.
+ *
+ * `uptoBytes` cuts the ledger's bytes at a watermark the shell measured after
+ * a flush, so a caller can pin exactly the prefix the writer had made durable
+ * and never see a half-written tail.
  */
 import type { Message } from '@/types';
+import { decodeLedgerPrefix, projectLedger } from '@/core/session/ledgerReader';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import * as fs from 'node:fs/promises';
 import { appDataDir } from '@tauri-apps/api/path';
@@ -101,22 +113,40 @@ function messagesPath(convId: string): string {
   return joinPath(basePath!, convId, 'messages.jsonl');
 }
 
-/** Verbatim port of the real module's dedupMessagesById. */
-function dedupMessagesById(messages: Message[]): Message[] {
-  const lastIndex = new Map<string, number>();
-  messages.forEach((m, i) => lastIndex.set(m.id, i));
-  if (lastIndex.size === messages.length) return messages; // no dupes, fast path
-  return messages.filter((m, i) => lastIndex.get(m.id) === i);
+function streamSnapshotPath(convId: string): string {
+  return joinPath(basePath!, convId, 'stream-snapshot.json');
 }
 
-/** Verbatim-ported (minus `populateWrittenIds`, see module doc) copy of the real `loadMessages`. */
-export async function loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
-  await ensureBase();
-  const path = messagesPath(convId);
-
-  let raw: string;
+/**
+ * The snapshot file's text, or null when there is none or it cannot be read.
+ * This process only ever reads it (see the module doc); a conversation without
+ * an in-flight revision has no such file at all, which is why an unreadable one
+ * leaves the ledger alone instead of failing the read.
+ */
+async function readSnapshotText(convId: string): Promise<string | null> {
   try {
-    raw = await fs.readFile(path, 'utf-8');
+    return await fs.readFile(streamSnapshotPath(convId), 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The conversation's messages, as the renderer would show them.
+ *
+ * `uptoBytes` reads the ledger only up to that byte offset; a value that does
+ * not match the file throws a `LedgerWatermarkError`, which is deliberately not
+ * caught — a caller that passes a watermark must learn that it is wrong.
+ */
+export async function loadMessages(
+  convId: string,
+  options?: { strictRead?: boolean; uptoBytes?: number },
+): Promise<Message[]> {
+  await ensureBase();
+
+  let bytes: Buffer;
+  try {
+    bytes = await fs.readFile(messagesPath(convId));
   } catch (err) {
     // A missing file/dir is an empty ledger, same contract as the real module.
     // Every other read failure stays tolerant unless the caller asked to tell
@@ -125,14 +155,6 @@ export async function loadMessages(convId: string, options?: { strictRead?: bool
     return [];
   }
 
-  const lines = raw.trimEnd().split('\n').filter((l) => l.length > 0);
-  const messages: Message[] = [];
-  for (const line of lines) {
-    try {
-      messages.push(JSON.parse(line) as Message);
-    } catch {
-      // Corrupt line: skip, keep the rest (same tolerance as the real module).
-    }
-  }
-  return dedupMessagesById(messages);
+  const ledgerText = decodeLedgerPrefix(bytes, options?.uptoBytes);
+  return projectLedger({ ledgerText, snapshotText: await readSnapshotText(convId) }).messages;
 }

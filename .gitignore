@@ -37,9 +37,6 @@ _archive/
 # Claude Code agent workspace
 .agent/
 
-# Session scratch output (intermediate results, probe logs, generated inputs)
-.scratch/
-
 # Other agent tools (local artifacts, not Abu code)
 .agents/
 

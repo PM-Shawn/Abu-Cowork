@@ -178,6 +178,39 @@ describe('createFrameChatDelta', () => {
     expect(wire).not.toContain('/Users/alice/Desktop/secret-shot.png');
   });
 
+  it('a frame queued behind media transport carries its args as they were when sent', async () => {
+    let resolvePersist!: (ref: {
+      id: string;
+      sha256: string;
+      mediaType: string;
+      bytes: number;
+    }) => void;
+    delegatedMediaStoreMocks.persistDelegatedMedia.mockReturnValueOnce(
+      new Promise((resolve) => { resolvePersist = resolve; }),
+    );
+    const frames: PortFrame[] = [];
+    const delta = createFrameChatDelta((frame) => frames.push(frame));
+
+    delta.updateToolCall('conv-1', 'm1', 'tc1', imageResultText, imageResult, false);
+    const message = { id: 'm2', role: 'assistant' as const, content: '', timestamp: 0, isStreaming: true };
+    delta.addMessage('conv-1', message);
+    delta.pushTransportFrame({ p: 'session', m: 'replaceMessageById', a: ['conv-1', message] });
+    // The run mirror keeps mutating the very object it handed to the sender.
+    message.content = 'streamed later';
+
+    resolvePersist({
+      id: 'media_snapshot_probe',
+      sha256: 'e'.repeat(64),
+      mediaType: 'image/png',
+      bytes: pngBytes.byteLength,
+    });
+    await delta.drain();
+
+    expect(frames.map((frame) => frame.m)).toEqual(['updateToolCall', 'addMessage', 'replaceMessageById']);
+    expect((frames[1].a[1] as { content: string }).content).toBe('');
+    expect((frames[2].a[1] as { content: string }).content).toBe('');
+  });
+
   it('keeps drain pending when another media frame is enqueued while it waits', async () => {
     let resolveFirst!: (ref: {
       id: string;

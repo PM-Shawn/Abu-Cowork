@@ -1,10 +1,11 @@
 import { useCallback, useState } from 'react';
 import { Check, X, AlertTriangle, Loader2, Pencil, RefreshCw, Trash2 } from 'lucide-react';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Toggle } from '@/components/ui/toggle';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkProviderHealth } from '@/core/llm/healthCheck';
+import { refreshManagedProvider } from '@/core/llm/managedProviderRefresh';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import type { ProviderInstance } from '@/types/provider';
 import { SECRET_KEYS } from '@/utils/secretStore';
@@ -52,7 +53,7 @@ function StatusBadge({ provider, t }: { provider: ProviderInstance; t: ReturnTyp
   }
 }
 
-export default function ProviderCard({ provider, isActive, onEdit }: ProviderCardProps) {
+function UserProviderCard({ provider, isActive, onEdit }: ProviderCardProps) {
   const { t } = useI18n();
   const { removeProvider, updateProvider, toggleProvider, setProviderStatus } = useSettingsStore();
   // True when bootstrapSecrets detected a prior ciphertext for this
@@ -210,4 +211,73 @@ export default function ProviderCard({ provider, isActive, onEdit }: ProviderCar
       />
     </div>
   );
+}
+
+function managedStatusText(provider: ProviderInstance, t: ReturnType<typeof useI18n>['t']): string {
+  if (provider.status === 'failed') return t.settings.managedStatusOffline;
+  if (provider.status !== 'verified') return t.settings.managedStatusSyncing;
+  return provider.models.length === 0
+    ? t.settings.managedStatusEmpty
+    : format(t.settings.managedStatusConnected, { count: provider.models.length });
+}
+
+/**
+ * Read-only card for a provider an external system registered. The user can
+ * neither edit, switch off nor delete it; the only action asks the owning
+ * system for a fresh model list. Endpoint and credential are never rendered.
+ */
+function ManagedProviderCard({ provider, isActive }: Pick<ProviderCardProps, 'provider' | 'isActive'>) {
+  const { t } = useI18n();
+  const syncing = provider.status === 'checking';
+  const modelNames = provider.models.map(m => m.label || m.id);
+  const modelsSummary = modelNames.length > 2
+    ? `${modelNames.slice(0, 2).join(', ')} +${modelNames.length - 2}`
+    : modelNames.join(', ');
+
+  return (
+    <div
+      className={cn(
+        'group rounded-xl border px-4 py-2.5 transition-colors',
+        'border-[var(--abu-border)] hover:border-[var(--abu-clay-ring)]',
+        isActive && 'ring-1 ring-[var(--abu-clay-ring)]',
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-body font-medium text-[var(--abu-text-primary)] truncate min-w-0">
+          {provider.name}
+        </span>
+        <span className="shrink-0 rounded px-1.5 py-0.5 text-caption bg-[var(--abu-clay-bg)] text-[var(--abu-clay)]">
+          {format(t.settings.managedProviderBadge, { org: provider.name })}
+        </span>
+        <span
+          className={cn(
+            'ml-auto shrink-0 text-caption',
+            provider.status === 'failed' ? 'text-[var(--abu-warning)]' : 'text-[var(--abu-text-muted)]',
+          )}
+        >
+          {managedStatusText(provider, t)}
+        </span>
+      </div>
+
+      <div className="flex items-center gap-2 mt-1.5">
+        <div className="text-caption text-[var(--abu-text-muted)] truncate min-w-0 flex-1" title={modelNames.join('\n')}>
+          {modelsSummary}
+        </div>
+        <button
+          onClick={() => { void refreshManagedProvider(provider.id); }}
+          disabled={syncing}
+          className="p-1 rounded shrink-0 text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)] transition-colors disabled:opacity-40"
+          title={t.settings.managedResync}
+        >
+          <RefreshCw className={cn('h-3.5 w-3.5', syncing && 'animate-spin')} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function ProviderCard(props: ProviderCardProps) {
+  return props.provider.source === 'managed'
+    ? <ManagedProviderCard provider={props.provider} isActive={props.isActive} />
+    : <UserProviderCard {...props} />;
 }

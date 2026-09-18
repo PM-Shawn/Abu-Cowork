@@ -63,4 +63,10 @@ describe('reviewer', () => {
     mockLlmCall.mockRejectedValueOnce(new Error('network down'));
     await expect(reviewAction(ctx)).resolves.toMatchObject({ decision: 'escalate' });
   });
+
+  it('reviews on the conversation\'s own model, not the default', async () => {
+    mockLlmCall.mockResolvedValue({ text: '{"risk":"low","reason":"ok"}', toolCalls: [] });
+    await reviewAction({ ...ctx, conversationId: 'conv-42' });
+    expect(mockLlmCall).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'conv-42' }));
+  });
 });

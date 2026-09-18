@@ -2,8 +2,8 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initLanguage } from '@/i18n';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
+import { getI18n, initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import type { Conversation, Message } from '@/types';
 import MessageBubble from './MessageBubble';
@@ -12,6 +12,8 @@ import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { useToastStore } from '@/stores/toastStore';
 
 vi.mock('./MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <div>{content}</div>,
@@ -62,6 +64,7 @@ describe('MessageBubble user run status', () => {
     useImageLightboxStore.getState().close();
     usePreviewStore.setState(usePreviewStore.getInitialState(), true);
     useWorkspaceStore.setState({ currentPath: null });
+    useSettingsStore.setState(useSettingsStore.getInitialState(), true);
   });
 
   afterEach(() => {
@@ -168,6 +171,20 @@ describe('MessageBubble user run status', () => {
       runErrorKind: 'sidecar_unavailable',
     };
     setConversation(message, 'idle');
+    // Retry goes through the same pre-send model check as the composer, so the
+    // conversation's model has to belong to a configured provider.
+    useSettingsStore.setState((state) => ({
+      providers: state.providers.map((provider) =>
+        provider.id === state.activeModel.providerId
+          ? {
+              ...provider,
+              enabled: true,
+              apiKey: 'test-key',
+              models: [{ id: state.activeModel.modelId, label: state.activeModel.modelId }],
+            }
+          : provider,
+      ),
+    }));
 
     render(<MessageBubble message={message} />);
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
@@ -343,4 +360,119 @@ describe('MessageBubble user run status', () => {
     expect(usePreviewStore.getState().previewFilePath).toBeNull();
   });
 
+  describe('when the conversation pinned model is no longer usable', () => {
+    const GONE_PIN = { providerId: 'gone-provider', modelId: 'model-a' };
+    const USABLE_PIN = { providerId: 'anthropic', modelId: 'model-a' };
+
+    beforeEach(() => {
+      vi.mocked(runAgentLoopDispatched).mockReset();
+      useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+      useSettingsStore.setState((state) => ({
+        providers: state.providers.map((provider) =>
+          provider.id === 'anthropic'
+            ? { ...provider, enabled: true, apiKey: 'test-key', models: [...provider.models, { ...provider.models[0], id: 'model-a', label: '' }] }
+            : provider,
+        ),
+      }));
+      useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+      useToastStore.setState(useToastStore.getInitialState(), true);
+    });
+
+    let deleteSpy: MockInstance | undefined;
+
+    afterEach(() => {
+      deleteSpy?.mockRestore();
+      deleteSpy = undefined;
+      useToastStore.setState(useToastStore.getInitialState(), true);
+      useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+      useEnterpriseStore.setState(useEnterpriseStore.getInitialState(), true);
+    });
+
+    /** A conversation with the given turns, pinned to `model`; returns a delete spy. */
+    function seedConversation(messages: Message[], model: { providerId: string; modelId: string }): MockInstance {
+      setConversation(messages[0], 'idle');
+      useChatStore.setState((state) => ({
+        conversations: {
+          'conversation-1': { ...state.conversations['conversation-1'], messages, model },
+        },
+      }));
+      deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
+      return deleteSpy;
+    }
+
+    function expectNothingSent(spy: MockInstance, before: Message[]): void {
+      expect(spy).not.toHaveBeenCalled();
+      expect(useChatStore.getState().conversations['conversation-1'].messages).toBe(before);
+      expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: 'error', title: expect.stringContaining('model-a') }),
+      ]);
+    }
+
+    const laterTurn: Message = { id: 'message-later', role: 'assistant', content: 'later answer', timestamp: 3, loopId: 'loop-2' };
+
+    it('refuses retry before rewinding any turns', () => {
+      const failed: Message = { ...baseMessage, runState: 'failed', runError: 'boom', loopId: 'loop-1' };
+      const spy = seedConversation([failed, laterTurn], GONE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={failed} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+      expectNothingSent(spy, before);
+      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+    });
+
+    it('re-checks when the provider is removed while the rewind confirm is open', () => {
+      const failed: Message = { ...baseMessage, runState: 'failed', runError: 'boom', loopId: 'loop-1' };
+      const spy = seedConversation([failed, laterTurn], USABLE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={failed} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(screen.getByText(getI18n().chat.rewindConfirmTitle)).toBeInTheDocument();
+      expect(useToastStore.getState().toasts).toEqual([]);
+
+      useSettingsStore.setState((state) => ({
+        providers: state.providers.map((provider) =>
+          provider.id === 'anthropic' ? { ...provider, enabled: false } : provider,
+        ),
+      }));
+      // Another provider stays usable, so the refusal is a toast, not Settings.
+      useSettingsStore.setState((state) => ({
+        providers: [...state.providers, { ...state.providers.find((p) => p.id === 'anthropic')!, id: 'other', enabled: true }],
+      }));
+      fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
+
+      expectNothingSent(spy, before);
+    });
+
+    it('refuses edit-resend and keeps the editor open', () => {
+      const sent: Message = { ...baseMessage, loopId: 'loop-1' };
+      const spy = seedConversation([sent, laterTurn], GONE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={sent} />);
+      fireEvent.click(screen.getByRole('button', { name: getI18n().chat.edit }));
+      fireEvent.change(screen.getByRole('textbox'), { target: { value: 'edited text' } });
+      fireEvent.click(screen.getByRole('button', { name: getI18n().chat.saveAndResend }));
+
+      expectNothingSent(spy, before);
+      expect(screen.getByRole('textbox')).toHaveValue('edited text');
+      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+    });
+
+    it('refuses regenerate before rewinding any turns', () => {
+      const question: Message = { ...baseMessage, loopId: 'loop-1' };
+      const answer: Message = { id: 'message-answer', role: 'assistant', content: 'first answer', timestamp: 1, loopId: 'loop-1' };
+      const spy = seedConversation([question, answer, laterTurn], GONE_PIN);
+      const before = useChatStore.getState().conversations['conversation-1'].messages;
+
+      render(<MessageBubble message={answer} />);
+      fireEvent.click(screen.getByRole('button', { name: getI18n().chat.regenerate }));
+
+      expectNothingSent(spy, before);
+      expect(screen.queryByText(getI18n().chat.rewindConfirmTitle)).not.toBeInTheDocument();
+    });
+  });
 });

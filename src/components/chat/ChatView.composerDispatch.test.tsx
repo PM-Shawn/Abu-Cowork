@@ -12,7 +12,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { agentRegistry } from '@/core/agent/registry';
-import { getI18n } from '@/i18n';
+import { getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 import type { SubagentDefinition } from '@/types';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { teamIdentity, expertIdentity } from '@/core/team/expertContact';
@@ -315,6 +315,43 @@ describe('ChatView welcome composer dispatch ownership', () => {
       systemSettingsOpen: true,
       activeSystemTab: 'ai-services',
     });
+  });
+
+  it('blocks sending in a conversation whose pinned provider was removed, keeps the text, and names the model', async () => {
+    configureApiKey();
+    const previousLanguage = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationModel(convId, { providerId: 'gone-provider', modelId: 'model-a' });
+      useChatStore.setState({ activeConversationId: convId });
+
+      render(<ChatView />);
+      const user = userEvent.setup();
+      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      await user.type(textarea, 'hello');
+      await user.keyboard('{Enter}');
+
+      expect(dispatchMock).not.toHaveBeenCalled();
+      expect(textarea.value).toBe('hello');
+      expect(useToastStore.getState().toasts.at(-1)?.title).toBe('模型「model-a」所属服务已删除，请换一个模型再发送');
+      expect(screen.getByText('model-a（不可用）')).toBeInTheDocument();
+      expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+    } finally {
+      setLanguage(previousLanguage);
+    }
+  });
+
+  it('still opens settings when no provider is usable at all', async () => {
+    const convId = useChatStore.getState().createConversation();
+    useChatStore.getState().setConversationModel(convId, { providerId: 'gone-provider', modelId: 'model-a' });
+    useChatStore.setState({ activeConversationId: convId });
+    render(<ChatView />);
+    const user = userEvent.setup();
+    await user.type(screen.getByRole('textbox'), 'hello');
+    await user.keyboard('{Enter}');
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
   });
 
   describe('team welcome identity', () => {

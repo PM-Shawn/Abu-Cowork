@@ -5,8 +5,15 @@
 import type { ApiFormat, ProviderCapabilities } from './index';
 import type { WebSearchProviderType } from '../core/search/providers';
 
-/** Provider source */
-export type ProviderSource = 'builtin' | 'custom';
+/**
+ * Provider source.
+ *
+ * `managed` marks a provider whose endpoint, credential and model list are
+ * supplied at runtime by an external system rather than by the user. The host
+ * does not know which system that is; it only knows the entry is read-only and
+ * must never reach the persistence layer.
+ */
+export type ProviderSource = 'builtin' | 'custom' | 'managed';
 
 /** Provider connection status */
 export type ProviderStatus = 'unchecked' | 'checking' | 'verified' | 'failed';
@@ -90,6 +97,18 @@ export interface ProviderInstance {
    */
   userAdded?: boolean;
   declaredCapabilities?: DeclaredCapabilities;
+}
+
+/**
+ * What an external system supplies when it registers a managed provider.
+ * Everything else on `ProviderInstance` is derived by the store.
+ */
+export interface ManagedProviderInput {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  models: ModelInfo[];
 }
 
 /** Currently active model selection */

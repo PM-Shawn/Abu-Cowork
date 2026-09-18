@@ -951,15 +951,14 @@ export const useChatStore = create<ChatStore>()(
         const consumePendingTeam = !options?.skipActivate;
         const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
         // Pin the new-conversation default at creation (issue #545) so an empty
-        // conversation never drifts with later picks elsewhere. Enterprise mode
-        // skips this, mirroring agentLoop's first-run pin (gateway-scoped models).
-        // An uninitialized enterprise store also skips: enterprise builds start
-        // as 'personal' until async init() resolves, and background creators may
-        // run before that; agentLoop's first-run pin covers those conversations.
-        const ent = useEnterpriseStore.getState();
-        const isPersonal = ent.initialized && ent.mode.kind === 'personal';
+        // conversation never drifts with later picks elsewhere. An uninitialized
+        // enterprise store skips this: until its async init() resolves, a
+        // managed provider may not be registered yet and the default may still
+        // be about to change; background creators can run that early, and
+        // agentLoop's first-run pin covers those conversations.
+        const accountReady = useEnterpriseStore.getState().initialized;
         const defaultModel = useSettingsStore.getState().activeModel;
-        const initialModel = isPersonal && defaultModel?.modelId
+        const initialModel = accountReady && defaultModel?.modelId
           ? { providerId: defaultModel.providerId, modelId: defaultModel.modelId }
           : undefined;
         const meta: ConversationMeta = {

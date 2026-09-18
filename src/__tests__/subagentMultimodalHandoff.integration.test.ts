@@ -207,8 +207,15 @@ describe('multimodal delegation route × runtime matrix', () => {
     registerBuiltinTools();
     // The real agentLoop performs its provider-key gate before it reaches the
     // direct @agent branch. Use its built-in local-provider exemption; the
-    // adapter itself remains the deterministic provider double above.
-    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } } as never);
+    // adapter itself remains the deterministic provider double above. The
+    // pinned-model guard also requires ollama to be on and to list the model.
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: useSettingsStore.getState().providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    } as never);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 

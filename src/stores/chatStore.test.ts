@@ -157,13 +157,13 @@ describe('chatStore', () => {
       }
     });
 
-    it('does not pin in enterprise mode (gateway-scoped models)', () => {
+    it('pins the same way when signed in to an organization', () => {
       const prevMode = useEnterpriseStore.getState().mode;
       useEnterpriseStore.setState({ mode: { kind: 'offline', binding: TEST_BINDING, lastConfig: null, reason: 'test' } });
       try {
         useSettingsStore.setState({ activeModel: { providerId: 'p1', modelId: 'm1' } });
         const id = useChatStore.getState().createConversation();
-        expect(useChatStore.getState().conversations[id].model).toBeUndefined();
+        expect(useChatStore.getState().conversations[id].model).toEqual({ providerId: 'p1', modelId: 'm1' });
       } finally {
         useEnterpriseStore.setState({ mode: prevMode });
       }

@@ -1,8 +1,7 @@
 {
   "$comment": [
-    "Shared ledger-reader fixtures: the contract every tier that reads a",
-    "conversation replays, so their readers can never drift. Replayed by",
-    "src/core/session/ledgerReader.test.ts.",
+    "Shared ledger-reader fixtures: the contract a reader of a conversation is",
+    "held to. Replayed by src/core/session/ledgerReader.test.ts.",
     "`ledgerText` is the content of messages.jsonl; `snapshot` is null, the parsed",
     "content of stream-snapshot.json, or \"<<damaged>>\" for unparseable text.",
     "`expected.messages` pins id + content in order; `ledgerChars`, stamps and",
@@ -406,6 +405,97 @@
         "droppedIds": ["a2"],
         "discardedWhole": false
       }
+    },
+    {
+      "name": "a removal before the stamp leaves the entry alive and appends it at the end",
+      "ledgerText": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"第一句\",\"timestamp\":1}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"被删掉的回复\",\"timestamp\":2}\n{\"lk\":\"msg.truncate\",\"id\":\"ev1\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"timestamp\":3,\"from\":\"a1\"}\n",
+      "snapshot": {
+        "version": 2,
+        "entries": [
+          {
+            "message": { "id": "a1", "role": "assistant", "content": "截断之后才捕获的回复", "timestamp": 4 },
+            "stamp": 224
+          }
+        ],
+        "ledgerBytes": 224
+      },
+      "expected": {
+        "messages": [
+          { "id": "u1", "content": "第一句" },
+          { "id": "a1", "content": "截断之后才捕获的回复" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 4,
+        "ledgerChars": 224,
+        "mergedIds": ["a1"],
+        "droppedIds": [],
+        "discardedWhole": false
+      }
+    },
+    {
+      "name": "a file-level watermark that is not a number leaves every entry to its own stamp",
+      "ledgerText": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"提问\",\"timestamp\":1}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"写到一半的回复\",\"timestamp\":2}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"落到账本的最终回复\",\"timestamp\":3}\n",
+      "snapshot": {
+        "version": 2,
+        "entries": [
+          {
+            "message": { "id": "a1", "role": "assistant", "content": "快照里的过期回复", "timestamp": 2 },
+            "stamp": 120
+          },
+          {
+            "message": { "id": "a2", "role": "assistant", "content": "还在流式输出的下一条", "timestamp": 4 },
+            "stamp": 187
+          }
+        ],
+        "ledgerBytes": "999999"
+      },
+      "expected": {
+        "messages": [
+          { "id": "u1", "content": "提问" },
+          { "id": "a1", "content": "落到账本的最终回复" },
+          { "id": "a2", "content": "还在流式输出的下一条" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 4,
+        "ledgerChars": 187,
+        "mergedIds": ["a2"],
+        "droppedIds": ["a1"],
+        "discardedWhole": false
+      }
+    },
+    {
+      "name": "a snapshot with neither an entries nor a messages array contributes nothing",
+      "ledgerText": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"快照里什么都没有\",\"timestamp\":1}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"账本自己就够了\",\"timestamp\":2}\n",
+      "snapshot": { "version": 2 },
+      "expected": {
+        "messages": [
+          { "id": "u1", "content": "快照里什么都没有" },
+          { "id": "a1", "content": "账本自己就够了" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 2,
+        "ledgerChars": 126,
+        "mergedIds": [],
+        "droppedIds": [],
+        "discardedWhole": false
+      }
+    },
+    {
+      "name": "a snapshot that parses to a primitive contributes nothing",
+      "ledgerText": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"快照是个数字\",\"timestamp\":1}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"账本照常读出来\",\"timestamp\":2}\n",
+      "snapshot": 42,
+      "expected": {
+        "messages": [
+          { "id": "u1", "content": "快照是个数字" },
+          { "id": "a1", "content": "账本照常读出来" }
+        ],
+        "corruptCount": 0,
+        "totalLines": 2,
+        "ledgerChars": 124,
+        "mergedIds": [],
+        "droppedIds": [],
+        "discardedWhole": false
+      }
     }
   ],
   "watermarkCases": [
@@ -461,6 +551,13 @@
       "name": "a negative watermark is refused",
       "ledgerText": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"第一条\",\"timestamp\":1}\n",
       "uptoBytes": -1,
+      "expectedText": null,
+      "expectedError": "watermark_not_at_line_end"
+    },
+    {
+      "name": "a watermark at the size of a file whose last line is torn is refused",
+      "ledgerText": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"第一条\",\"timestamp\":1}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"第二条写到一半",
+      "uptoBytes": 124,
       "expectedText": null,
       "expectedError": "watermark_not_at_line_end"
     },

@@ -8,7 +8,7 @@ const { cases, watermarkCases } = loadLedgerReaderFixtures();
 
 describe('projectLedger', () => {
   it('covers every rule the fixture file promises', () => {
-    expect(cases.length).toBeGreaterThanOrEqual(17);
+    expect(cases.length).toBeGreaterThanOrEqual(21);
     expect(cases.some((c) => c.expected.discardedWhole)).toBe(true);
     expect(cases.some((c) => c.expected.droppedIds.length > 0)).toBe(true);
     expect(cases.some((c) => c.expected.mergedIds.length > 0)).toBe(true);
@@ -30,15 +30,15 @@ describe('projectLedger', () => {
     });
   }
 
-  it('with no snapshot it equals foldMessageLog on the same text', () => {
-    for (const testCase of cases) {
+  for (const testCase of cases) {
+    it(`with no snapshot it equals foldMessageLog on the same text: ${testCase.name}`, () => {
       const projection = projectLedger({ ledgerText: testCase.ledgerText, snapshotText: null });
       const folded = foldMessageLog(testCase.ledgerText.split('\n'));
       expect(JSON.stringify(projection.messages)).toBe(JSON.stringify(folded.messages));
       expect(projection.corruptCount).toBe(folded.corruptCount);
       expect(projection.totalLines).toBe(folded.totalLines);
-    }
-  });
+    });
+  }
 });
 
 describe('decodeLedgerPrefix', () => {
@@ -54,10 +54,27 @@ describe('decodeLedgerPrefix', () => {
         }
         expect(thrown).toBeInstanceOf(LedgerWatermarkError);
         expect((thrown as LedgerWatermarkError).code).toBe(testCase.expectedError);
+        expect((thrown as LedgerWatermarkError).uptoBytes).toBe(testCase.uptoBytes);
         expect((thrown as LedgerWatermarkError).fileBytes).toBe(bytes.byteLength);
       } else {
         expect(decodeLedgerPrefix(bytes, testCase.uptoBytes)).toBe(testCase.expectedText);
       }
     });
   }
+
+  // NaN cannot be written into the fixture file, so the case that a watermark
+  // is not a number at all lives here.
+  it('refuses a NaN watermark', () => {
+    const bytes = new TextEncoder().encode('{"id":"u1","role":"user","content":"第一条","timestamp":1}\n');
+    let thrown: unknown;
+    try {
+      decodeLedgerPrefix(bytes, Number.NaN);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(LedgerWatermarkError);
+    expect((thrown as LedgerWatermarkError).code).toBe('watermark_not_at_line_end');
+    expect((thrown as LedgerWatermarkError).uptoBytes).toBeNaN();
+    expect((thrown as LedgerWatermarkError).fileBytes).toBe(bytes.byteLength);
+  });
 });

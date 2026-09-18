@@ -2,11 +2,10 @@
  * Loader for the shared ledger-reader fixtures.
  *
  * The fixture file (`src/core/session/__fixtures__/ledgerReader.fixtures.json`)
- * is the contract that keeps every tier's reader in step: the renderer's
- * `projectLedger`, the Electron-main bundle generated from it, and the Node
- * sidecar reader all replay the same cases. Each case pairs a ledger text with
- * an optional `stream-snapshot.json` payload and pins the projection they must
- * produce, down to which snapshot entries survive.
+ * is the contract a reader of a conversation is held to; `ledgerReader.test.ts`
+ * replays every case through `projectLedger`. Each case pairs a ledger text
+ * with an optional `stream-snapshot.json` payload and pins the projection it
+ * must produce, down to which snapshot entries survive.
  *
  * Read from disk as raw bytes rather than imported as a module so every replay
  * reads literally the same file.

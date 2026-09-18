@@ -133,9 +133,9 @@ export interface LedgerFold {
   /** Apply one physical line. `charOffset` is the line's start in the ledger text; omit it for lines that are not part of the ledger text. */
   apply(rawLine: string, charOffset?: number): void;
   result(): FoldResult;
-  /** Offset of the put line that currently establishes each live string id. */
+  /** Offset of the put line that currently establishes each live string id. A snapshot of the fold's state; later `apply` calls do not change it. */
   putOffsetById(): ReadonlyMap<string, number>;
-  /** Offset of the event that most recently removed each string id that is not live. */
+  /** Offset of the event that most recently removed each string id that is not live. A snapshot of the fold's state; later `apply` calls do not change it. */
   removedOffsetById(): ReadonlyMap<string, number>;
 }
 
@@ -252,8 +252,12 @@ export function createLedgerFold(): LedgerFold {
       }
     },
     result: () => ({ messages: state as Message[], corruptCount, totalLines }),
-    putOffsetById: () => putOffsets,
-    removedOffsetById: () => removedOffsets,
+    // Copies, not the live maps: `ReadonlyMap` is a compile-time promise only,
+    // and a caller that keeps reading its map while applying more lines would
+    // otherwise see the offsets move under it. One copy per call is cheap —
+    // `projectLedger` takes each map once per projection.
+    putOffsetById: () => new Map(putOffsets),
+    removedOffsetById: () => new Map(removedOffsets),
   };
 }
 

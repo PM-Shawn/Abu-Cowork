@@ -31,7 +31,16 @@ interface ParsedSnapshot {
 
 export interface LedgerProjection {
   messages: Message[];
+  /**
+   * Lines that were not parseable JSON objects, over everything the fold saw:
+   * the ledger's lines plus the merged snapshot entries applied as trailing
+   * puts.
+   */
   corruptCount: number;
+  /**
+   * Non-blank lines the fold saw, corrupt ones included — again the ledger's
+   * lines plus the merged snapshot entries applied as trailing puts.
+   */
   totalLines: number;
   /** JavaScript string length of the ledger text that was folded. */
   ledgerChars: number;

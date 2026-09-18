@@ -3,17 +3,20 @@
  * event log to the current `Message[]` projection.
  *
  * Design: `docs/abu-message-ledger-plan.md` §3.1 (event envelope) and §3.3
- * (fold spec). Three consumers must agree byte-for-byte on the result:
+ * (fold spec). Four consumers must agree byte-for-byte on the result:
  *
- *   1. `loadMessages()` in `conversationStorage.ts` (this implementation)
- *   2. `scanConversationFile()` in `electron/messageLedgerFold.cjs`
- *   3. `scan_conversation_file()` in `src-tauri/src/catalog_db.rs` (legacy Tauri)
+ *   1. `loadMessages()` in `conversationStorage.ts` (the renderer)
+ *   2. `loadMessages()` in `sidecar/src/shims/conversationStorageRun.ts`
+ *   3. `scanConversationFile()` in `electron/catalogDb.cjs` (the Electron main
+ *      process, through `electron/generated/ledgerReader.cjs`)
+ *   4. `scan_conversation_file()` in `src-tauri/src/catalog_db.rs` (legacy Tauri)
  *
- * They cannot share a module (renderer / Electron main / Rust), so they are
- * pinned to each other by a shared fixture file —
- * `__fixtures__/messageLedgerFold.fixtures.json` — replayed by contract tests
- * on every side. Change the fold? Change the fixtures, and every port turns
- * red until it agrees again.
+ * The first three run this very file: `ledgerReader.ts` builds on it, the
+ * sidecar bundles that module and the main process requires a CommonJS bundle
+ * generated from it. The Rust one cannot share a module, so it is pinned by a
+ * shared fixture file — `__fixtures__/messageLedgerFold.fixtures.json` —
+ * replayed by contract tests on both sides. Change the fold? Change the
+ * fixtures, and every port turns red until it agrees again.
  *
  * `foldMessageLog` is the one-shot form. `createLedgerFold` is the same fold
  * as a resumable object that also tracks, per message id, where the ledger

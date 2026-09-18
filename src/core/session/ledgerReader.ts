@@ -2,16 +2,21 @@
  * The single reader of a conversation's message ledger.
  *
  * `projectLedger` turns the text of `messages.jsonl`, and optionally the text
- * of `stream-snapshot.json`, into the message list a caller shows or sends:
- * the renderer through `conversationStorage.ts`, the Node sidecar through
- * `sidecar/src/shims/conversationStorageRun.ts`. It performs no I/O and writes
- * nothing — each caller fetches the two files the way its own process can, and
- * a caller that owns the snapshot file acts on `snapshot.droppedIds` /
- * `snapshot.discardedWhole` itself.
+ * of `stream-snapshot.json`, into the message list a caller shows or sends.
+ * All three tiers run this module: the renderer through
+ * `conversationStorage.ts`, the Node sidecar through
+ * `sidecar/src/shims/conversationStorageRun.ts` (which bundles this file), and
+ * the Electron main process through `electron/generated/ledgerReader.cjs`, the
+ * CommonJS bundle `scripts/gen-ledger-reader.mjs` generates from it. It
+ * performs no I/O and writes nothing — each caller fetches the two files the
+ * way its own process can, and a caller that owns the snapshot file acts on
+ * `snapshot.droppedIds` / `snapshot.discardedWhole` itself.
  *
- * The snapshot is optional by design. A caller that only asks what the durable
- * ledger holds passes none; a caller that restores the conversation passes it
- * so it sees the in-flight revision a crash would otherwise hide.
+ * The snapshot is optional by design. The catalog in the main process
+ * (`scanConversationFile` in `electron/catalogDb.cjs`) indexes the durable
+ * ledger and passes none, so a revision reaches the catalog when its
+ * checkpoint reaches the ledger; the renderer and the sidecar pass it so they
+ * see the in-flight revision a crash would otherwise hide.
  *
  * Offsets and `ledgerChars` are JavaScript string lengths, the unit the
  * snapshot's `stamp` and `ledgerBytes` fields are written in. Byte watermarks
@@ -224,3 +229,9 @@ export function decodeLedgerPrefix(bytes: Uint8Array, uptoBytes?: number): strin
   }
   return decoder.decode(bytes.subarray(0, uptoBytes));
 }
+
+// The fold itself, re-exported so a tier that bundles this module gets the
+// whole reader from one entry point — `electron/generated/ledgerReader.cjs`
+// is built from this file alone and the catalog's contract test replays the
+// fold fixtures through it.
+export { createLedgerFold, foldMessageLog } from './messageLedger';

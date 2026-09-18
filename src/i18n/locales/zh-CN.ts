@@ -1596,8 +1596,6 @@ const zhCN: TranslationDict = {
     agentSkillsEmpty: '没有匹配的技能',
     title: '工具箱',
     skills: '技能',
-    agents: '专家',
-    mcp: '连接器',
     searchPlaceholder: '搜索...',
     footerDescription: '技能、专家、连接器统一管理',
     // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
@@ -1673,7 +1671,6 @@ const zhCN: TranslationDict = {
     pluginsRemoveMarketplace: '移除市场',
     pluginsRemoveMarketplaceTitle: '移除插件市场',
     pluginsRemoveMarketplaceMessage: '确定要移除「{name}」吗？已经装好的插件不受影响，只是不再能从这里浏览新插件。',
-    pluginsCategoryAll: '全部分类',
     pluginsNoMatches: '没有匹配的插件',
     pluginsEntryCount: '共 {count} 个插件',
     pluginsInstall: '安装',
@@ -1798,7 +1795,6 @@ const zhCN: TranslationDict = {
     add: '添加',
     install: '安装',
     deleteItem: '删除',
-    installed: '已安装',
     installAndConnect: '安装并连接',
     popularMCPServices: '常用 MCP 服务',
     setupWithAbu: '使用阿布配置',
@@ -1814,10 +1810,6 @@ const zhCN: TranslationDict = {
     systemSkills: '系统 Skills',
     customSkills: '自定义 Skills',
     noCustomSkills: '暂无自定义 Skills',
-    // Customize Panel
-    customize: '自定义',
-    customizeFooter: '技能、专家、MCP 统一管理',
-    models: '模型',
     // ModelsSection
     currentConfig: '当前配置',
     quickSwitch: '快速切换',
@@ -2011,8 +2003,6 @@ const zhCN: TranslationDict = {
     // Server logs
     viewLogs: '查看日志',
     noLogs: '暂无日志',
-    // MarketplaceCard i18n
-    installing: '安装中',
     aiCreateAgentPrompt: '/create-agent 帮我创建一个专家，我的需求是：',
     aiCreateSkillPrompt: '帮我创建一个 Skill，我的需求是：',
     agentTestPrompt: '请使用 {name} 专家来帮我完成一个简单任务，测试一下它是否正常工作。',

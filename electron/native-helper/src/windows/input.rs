@@ -564,17 +564,47 @@ pub fn mouse_scroll_impl(
     Ok(format!("scrolled {direction} at ({x}, {y})"))
 }
 
+/// The most waypoints one drag may follow.
+///
+/// A shape drawn by hand is a few dozen points; anything beyond this is a
+/// caller looping rather than drawing, and every waypoint costs a target
+/// check plus the same wall-clock interpolation a person would take.
+pub const MAX_DRAG_WAYPOINTS: usize = 64;
+
+/// Drag the pointer from a point, through an ordered path, and release.
+///
+/// A path rather than a single segment because drawing is what needs this:
+/// every write consumes the observation it was authorized against, so a
+/// curve made of twenty separate drags costs twenty observations and twenty
+/// authorizations for one gesture a person performs without lifting a finger.
+/// One authorized action covering the whole gesture is the same trade
+/// `keyboard_type` already makes by typing a string instead of a key.
+///
+/// Every waypoint is checked against the target window, not only the ends: a
+/// path that starts and finishes inside the target can still pass over
+/// somebody else's window in between, and the button is down the whole way.
 pub fn mouse_drag_impl(
     start_x: i32,
     start_y: i32,
-    end_x: i32,
-    end_y: i32,
+    path: &[(i32, i32)],
     screenshot_id: String,
     app_id: String,
     process_id: u32,
     window_id: String,
     expected_input_epoch: u64,
 ) -> Result<String, HelperError> {
+    if path.is_empty() {
+        return Err(HelperError::not_executed(
+            "invalid-params",
+            "a drag needs at least one point to travel to",
+        ));
+    }
+    if path.len() > MAX_DRAG_WAYPOINTS {
+        return Err(HelperError::not_executed(
+            "invalid-params",
+            "a drag may follow at most 64 points",
+        ));
+    }
     assert_point(
         start_x,
         start_y,
@@ -584,15 +614,17 @@ pub fn mouse_drag_impl(
         &window_id,
         expected_input_epoch,
     )?;
-    assert_point(
-        end_x,
-        end_y,
-        &screenshot_id,
-        &app_id,
-        process_id,
-        &window_id,
-        expected_input_epoch,
-    )?;
+    for &(x, y) in path {
+        assert_point(
+            x,
+            y,
+            &screenshot_id,
+            &app_id,
+            process_id,
+            &window_id,
+            expected_input_epoch,
+        )?;
+    }
     let start_move = move_event(start_x, start_y)?;
     {
         let _guard = held_input_lock()
@@ -604,21 +636,30 @@ pub fn mouse_drag_impl(
             return Err(error);
         }
     }
-    for step in 1..=16 {
-        if super::interaction::input_epoch() != expected_input_epoch {
-            let _ = release_held_inputs();
-            return Err(HelperError::outcome_unknown("physical-input", "physical user input interrupted the drag"));
+    let mut from = (start_x, start_y);
+    for &(to_x, to_y) in path {
+        for step in 1..=16 {
+            if super::interaction::input_epoch() != expected_input_epoch {
+                let _ = release_held_inputs();
+                return Err(HelperError::outcome_unknown("physical-input", "physical user input interrupted the drag"));
+            }
+            let x = from.0 + (to_x - from.0) * step / 16;
+            let y = from.1 + (to_y - from.1) * step / 16;
+            if let Err(error) = send(&[move_event(x, y).map_err(HelperError::after_dispatch)?]) {
+                let _ = release_held_inputs();
+                return Err(error.after_dispatch());
+            }
+            thread::sleep(Duration::from_millis(8));
         }
-        let x = start_x + (end_x - start_x) * step / 16;
-        let y = start_y + (end_y - start_y) * step / 16;
-        if let Err(error) = send(&[move_event(x, y).map_err(HelperError::after_dispatch)?]) {
-            let _ = release_held_inputs();
-            return Err(error.after_dispatch());
-        }
-        thread::sleep(Duration::from_millis(8));
+        from = (to_x, to_y);
     }
     release_held_inputs().map_err(HelperError::after_dispatch)?;
-    Ok(format!("dragged to ({end_x}, {end_y})"))
+    let (end_x, end_y) = from;
+    Ok(if path.len() == 1 {
+        format!("dragged to ({end_x}, {end_y})")
+    } else {
+        format!("dragged through {} points, ending at ({end_x}, {end_y})", path.len())
+    })
 }
 
 pub fn keyboard_type_impl(

@@ -716,6 +716,39 @@ export function handoffText(
     : format(t.actionNotExecutedHandoff, { msg: message });
 }
 
+/** The most waypoints one drag may follow; matches the helper's own limit. */
+const MAX_DRAG_WAYPOINTS = 64;
+
+/**
+ * The waypoints a drag travels through on its way to the end point.
+ *
+ * Drawing is what needs this: a curve made of twenty separate drags costs
+ * twenty observations and twenty authorizations for one gesture a person
+ * performs without lifting a finger. A malformed path is refused rather than
+ * silently dropped — a drag that quietly loses its middle is a straight line
+ * across somebody's canvas.
+ */
+export function parseDragPath(value: unknown): [number, number][] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('drag path must be a list of [x, y] pairs');
+  }
+  if (value.length > MAX_DRAG_WAYPOINTS) {
+    throw new Error(`drag path may hold at most ${MAX_DRAG_WAYPOINTS} points`);
+  }
+  return value.map((point) => {
+    if (
+      !Array.isArray(point)
+      || point.length !== 2
+      || !Number.isFinite(point[0])
+      || !Number.isFinite(point[1])
+    ) {
+      throw new Error('drag path must be a list of [x, y] pairs');
+    }
+    return [Math.round(point[0] as number), Math.round(point[1] as number)];
+  });
+}
+
 const OBSERVE_AGAIN_PROTOCOL_CODES: ReadonlySet<string> = new Set([
   'window-ref-invalid',
   'window-ref-expired',
@@ -1205,7 +1238,7 @@ export const computerTool: ToolDefinition = {
 ② Every write must carry window_ref, the exact state_id as expected_state_id, and screenshot_id for coordinate actions. Add expected_effect when the result is machine-checkable.
 ③ Abu consumes state_id once and automatically observes the app again, returning separate observation evidence (changed/unchanged/unavailable) and expectation evidence (not-requested/satisfied/not-satisfied/unverifiable). A UI change without a specific expected_effect does not prove the target was achieved.
 ④ Evidence that a task is done must come from an action you took. State that was already present when you first observed the app proves nothing: the app may have restored a previous session, an earlier attempt may have left it behind, or the user may have done it themselves. If what the user asked for is already there before you act, say so and ask — do not report it as your result. A task in which no action of yours changed the target is not a completed task.
-⑤ Send the related actions of one intention in a single reply — pick the tool, drag, drag, drag — and read the state once afterwards. Only the last action of a batch returns a screenshot, which is what this is built for. Observing between every keystroke is what runs a task out of budget before it has done anything. Read again when focus, layout or element ids may have moved, when something you expected did not appear, or before an action you cannot undo.
+⑤ A write consumes the observation it was authorized against, so two writes in the same reply cannot both be valid — the second one's state_id is already spent. Observing is cheap and does not spend the step budget; acting is what spends it. Cover more ground per action instead: type a whole string rather than a key at a time, and give drag a path rather than one segment.
 
 COORDINATE CONTRACT: AX element bounds are screen coordinates. x/y action coordinates are relative to the referenced screenshot and must carry that screenshot's screenshot_id. Never copy screen-coordinate bounds into x/y.
 
@@ -1255,7 +1288,7 @@ Two cases that read as harmless and are not:
 
 ⌨️ Low-level operations (when AX is unavailable)
 • move            Move mouse. Parameters: x, y.
-• drag            Drag. Parameters: startX, startY, endX, endY.
+• drag            Drag with the button held down. Parameters: startX, startY, endX, endY, and optional path ([[x,y],…], up to 64 points travelled through on the way). Draw a whole shape in one drag rather than one segment per action — every write costs its own observation, and the button stays down across the path.
 • key             Press a named key or a modifier chord. Parameters: key (Return/Tab/Escape/Space/ArrowUp/Home/F1…), modifiers ([ctrl/shift/alt/meta]). A single plain character is injected as text (IME-safe); for words use type.
 • wait            Wait. Parameters: duration (ms, default 1000, max 10000).
 
@@ -1318,6 +1351,11 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       startY: { type: 'number', description: 'Drag start Y' },
       endX: { type: 'number', description: 'Drag end X' },
       endY: { type: 'number', description: 'Drag end Y' },
+      path: {
+        type: 'array',
+        description: 'Drag only. Ordered points travelled through on the way to endX/endY, as [[x, y], …], at most 64. Use it to draw a whole shape in one drag; every point must sit inside the target window, because the button is held down the whole way.',
+        items: { type: 'array' },
+      },
       // Screenshot crop
       width: { type: 'number', description: 'Crop width (screenshot only)' },
       height: { type: 'number', description: 'Crop height (screenshot only)' },
@@ -2154,9 +2192,16 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
         case 'drag': {
           const start = toScreenCoords(runKey, input.startX as number, input.startY as number);
           const end = toScreenCoords(runKey, input.endX as number, input.endY as number);
+          // Waypoints travel in the same screenshot coordinate system as the
+          // ends, so they are mapped the same way.
+          const path = parseDragPath(input.path).map((point) => {
+            const mapped = toScreenCoords(runKey, point[0], point[1]);
+            return [mapped.x, mapped.y];
+          });
           actionResult = await invokeComputerUse<string>(invocation, 'mouse_drag', {
             startX: start.x, startY: start.y,
             endX: end.x, endY: end.y,
+            ...(path.length ? { path } : {}),
             ...screenshotGuardArgs(runKey, input, coordinateBinding),
           });
           break;

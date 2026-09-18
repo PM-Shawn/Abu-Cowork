@@ -362,6 +362,35 @@ fn opt_i32(params: &Value, key: &str) -> Option<i32> {
     params.get(key).and_then(Value::as_i64).map(|v| v as i32)
 }
 
+/// The ordered points a drag travels through, ending at `end_x`/`end_y`.
+///
+/// `path` carries the waypoints before the final point, as `[[x, y], …]`. A
+/// caller that sends none is dragging a single segment, which is this list
+/// with nothing in front of the end point.
+#[cfg(target_os = "windows")]
+fn drag_path(params: &Value, end_x: i32, end_y: i32) -> Result<Vec<(i32, i32)>, HelperError> {
+    let invalid = || {
+        HelperError::not_executed(
+            "invalid-params",
+            "drag path must be a list of [x, y] integer pairs",
+        )
+    };
+    let mut points = Vec::new();
+    if let Some(raw) = params.get("path") {
+        for entry in raw.as_array().ok_or_else(invalid)? {
+            let pair = entry.as_array().ok_or_else(invalid)?;
+            if pair.len() != 2 {
+                return Err(invalid());
+            }
+            let x = pair[0].as_i64().ok_or_else(invalid)? as i32;
+            let y = pair[1].as_i64().ok_or_else(invalid)? as i32;
+            points.push((x, y));
+        }
+    }
+    points.push((end_x, end_y));
+    Ok(points)
+}
+
 /// Optional u32 param.
 fn opt_u32(params: &Value, key: &str) -> Option<u32> {
     params.get(key).and_then(Value::as_u64).map(|v| v as u32)
@@ -1089,11 +1118,14 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
             let end_y = require_i32(params, "end_y")?;
             #[cfg(target_os = "windows")]
             {
+                // `end_x`/`end_y` name the last point of the gesture, and
+                // `path` the ones before it. A caller with no path is dragging
+                // one segment, which is the same thing with an empty prefix.
+                let path = drag_path(params, end_x, end_y)?;
                 let msg = windows_backend::mouse_drag_impl(
                     start_x,
                     start_y,
-                    end_x,
-                    end_y,
+                    &path,
                     require_str(params, "screenshot_id")?,
                     require_str(params, "expected_bundle_id")?,
                     u32::try_from(require_i32(params, "expected_process_id")?)
@@ -1269,5 +1301,35 @@ mod protocol_tests {
         assert_eq!(v1.params["legacy"], true);
         assert!(v1.context.is_none());
         assert!(parse_wire_request(&json!({ "id": 2 })).is_err());
+    }
+
+    /// A drag carries the points it travels through. Drawing is what needs
+    /// this: a curve made of twenty separate drags costs twenty observations
+    /// and twenty authorizations for one gesture a person performs without
+    /// lifting a finger.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_drag_path_ends_where_the_caller_said_it_ends() {
+        let with_path = drag_path(&json!({ "path": [[10, 20], [30, 40]] }), 50, 60).unwrap();
+        assert_eq!(with_path, vec![(10, 20), (30, 40), (50, 60)]);
+
+        // No path at all is one segment, which is the same list with nothing
+        // in front of the end point.
+        assert_eq!(drag_path(&json!({}), 50, 60).unwrap(), vec![(50, 60)]);
+        assert_eq!(drag_path(&json!({ "path": [] }), 50, 60).unwrap(), vec![(50, 60)]);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_malformed_drag_path_is_refused_rather_than_guessed_at() {
+        for malformed in [
+            json!({ "path": "10,20" }),
+            json!({ "path": [[10]] }),
+            json!({ "path": [[10, 20, 30]] }),
+            json!({ "path": [["10", "20"]] }),
+            json!({ "path": [null] }),
+        ] {
+            assert!(drag_path(&malformed, 1, 2).is_err(), "{malformed}");
+        }
     }
 }

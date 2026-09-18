@@ -63,6 +63,7 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
       "key",
       "method",
       "modifiers",
+      "path",
       "screenshot_id",
       "show_user",
       "startX",

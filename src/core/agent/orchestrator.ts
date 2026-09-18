@@ -776,15 +776,13 @@ Do not use computer to re-fetch information you already obtained through other t
 - Use show_user=true when the user asks to see the screen; omit it for automated execution (not shown to the user by default, but you can still see it)
 - After each action, a screenshot is automatically returned — no need to call screenshot again to confirm
 
-### Work in batches, not one action per reply
-Reading the screen is expensive and observing between every keystroke is what
-runs a task out of budget before it has done anything. Send the related
-actions for one intention together in a single reply — select the tool, drag,
-drag, drag — and read the state once afterwards to check the result. Only the
-last action in a batch returns a screenshot, which is the shape this is built
-for. Read again when focus, layout or element ids may have moved, when
-something you expected did not appear, or before an action you cannot undo —
-not out of habit.
+### One action, as much ground as it can cover
+Every write consumes the observation it was authorized against, so the next
+write needs a fresh one — two writes in the same reply cannot both be valid.
+Observing is cheap and does not spend the step budget; what spends it is
+acting. So cover more ground per action rather than per reply: type a whole
+string instead of a key at a time, and give drag a path instead of one
+segment.
 
 ### Opening apps
 ${isWindows()

@@ -15,6 +15,7 @@ import {
   formatComputerVerification,
   selectAxElementsForModel,
   handoffText,
+  parseDragPath,
 } from './computerTools';
 import enUS from '../../../i18n/locales/en-US';
 import zhCN from '../../../i18n/locales/zh-CN';
@@ -3049,6 +3050,47 @@ describe('a stale reference is answered, not thrown', () => {
   // throwing is how the turn stops rather than wandering to another app.
   it('still throws for a target that is not there', async () => {
     await expect(failWith('target-not-found')).rejects.toThrow();
+  });
+});
+
+/// Drawing is what needs a path: a curve made of twenty separate drags costs
+/// twenty observations and twenty authorizations for one gesture a person
+/// performs without lifting a finger. Every write consumes the observation it
+/// was authorized against, so the way to do more is a bigger action.
+describe('parseDragPath', () => {
+  it('keeps the points in the order they were given', () => {
+    expect(parseDragPath([[10, 20], [30, 40]])).toEqual([[10, 20], [30, 40]]);
+  });
+
+  it('treats a missing path as a plain single-segment drag', () => {
+    expect(parseDragPath(undefined)).toEqual([]);
+    expect(parseDragPath(null)).toEqual([]);
+    expect(parseDragPath([])).toEqual([]);
+  });
+
+  it('rounds to whole pixels', () => {
+    expect(parseDragPath([[10.4, 20.6]])).toEqual([[10, 21]]);
+  });
+
+  // A drag that quietly loses its middle draws a straight line across
+  // somebody's canvas, so a malformed path is refused rather than dropped.
+  it('refuses a path it cannot read', () => {
+    for (const malformed of [
+      '10,20',
+      [[10]],
+      [[10, 20, 30]],
+      [['10', '20']],
+      [null],
+      [[Number.NaN, 2]],
+      [[1, Number.POSITIVE_INFINITY]],
+    ]) {
+      expect(() => parseDragPath(malformed), JSON.stringify(malformed)).toThrow(/\[x, y\]/);
+    }
+  });
+
+  it('refuses a path longer than the helper will follow', () => {
+    const tooMany = Array.from({ length: 65 }, (_, index) => [index, index]);
+    expect(() => parseDragPath(tooMany)).toThrow(/at most 64/);
   });
 });
 

@@ -9,11 +9,20 @@ import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { getToolInvoker, type ToolInvoker, type FilePermissionCallback } from './ports/toolInvoker';
 import type { ConfirmationInfo } from '../tools/commandSafety';
 import type { ToolDefinition } from '../../types';
-import { getActiveApiKey, getActiveProvider, providerRequiresApiKey } from '../../utils/settingsSelectors';
+import {
+  getActiveApiKey,
+  getActiveProvider,
+  getModelDisplayLabel,
+  getModelUnavailableReason,
+  hasAnyEnabledProvider,
+  providerRequiresApiKey,
+} from '../../utils/settingsSelectors';
+import { describeManagedProviderUnreachable, describeModelUnavailable } from '../../utils/modelUnavailableCopy';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
+import { settingsForConversation } from './conversationSettings';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getCapsPort } from './ports/capsPort';
 import { getExecutionPort } from './ports/executionPort';
@@ -106,7 +115,7 @@ import {
   buildDeferredToolsSummary,
   promoteSearchedDeferredTools,
 } from '../tools/toolSearch';
-import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 import {
@@ -870,12 +879,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // one. Pinned onto the conversation on first run (below) so it also survives
   // later global switches for display + future runs.
   const pinnedConv = getConversationReader().getConversation(conversationId);
-  const baseModel =
-    pinnedConv?.model ??
-    getConversationReader().getIndexEntry(conversationId)?.model ??
-    settings.activeModel;
-  const settingsForModel: typeof settings =
-    baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
+  const settingsForModel = settingsForConversation(conversationId, settings);
+  const baseModel = settingsForModel.activeModel;
   const entrySettingsReader: SettingsReader = { getSnapshot: () => settingsForModel };
 
   // Generate a unique loopId for this agent loop - all messages in this loop share it.
@@ -903,7 +908,25 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     catch { return { forceOpenAiCompatible: false } }
   })()
   const isEnterpriseGatewayMode = _startForce
-  if (!isEnterpriseGatewayMode && providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel)) {
+  // A pinned model whose provider was deleted/turned off, or which its provider
+  // no longer lists, must never reach an adapter: a missing provider leaves the
+  // base URL empty and the adapter would fall back to a public default endpoint.
+  // With no usable provider at all, keep the long-standing "configure a key" copy.
+  const pinnedModelIssue = isEnterpriseGatewayMode
+    ? null
+    : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
+  const blockText = isEnterpriseGatewayMode
+    ? null
+    : pinnedModelIssue && hasAnyEnabledProvider(settingsForModel)
+      ? describeModelUnavailable(
+          getI18n().chat,
+          pinnedModelIssue,
+          getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+        ).inTask
+      : pinnedModelIssue || (providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel))
+        ? getI18n().chat.configureApiKey
+        : null;
+  if (blockText) {
     // Persist the user's input first so the chat history isn't an orphan warning.
     // Use raw userMessage (orchestrator hasn't run); skill metadata is intentionally omitted —
     // the user needs to configure a key before any skill/agent routing takes effect.
@@ -922,11 +945,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     chatDelta.addMessage(conversationId, {
       id: generateId(),
       role: 'assistant',
-      content: getI18n().chat.configureApiKey,
+      content: blockText,
       timestamp: Date.now(),
       loopId,
     });
-    return { reason: 'error', error: 'API Key not configured', messageTaken: true };
+    return {
+      reason: 'error',
+      error: pinnedModelIssue ? 'Model unavailable' : 'API Key not configured',
+      messageTaken: true,
+    };
   }
 
   // Create TaskExecution for this agent loop (after apiKey check to avoid leaking executions)
@@ -1487,8 +1514,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (err instanceof LLMError && isConfigFailureCode(err.code)) {
         recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
       }
-      let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
-        ? getI18n().chat.gatewayUnreachable
+      const delegateManagedUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        err instanceof LLMError ? err.code : undefined,
+      );
+      let delegateDisplayError = delegateManagedUnreachable
+        ? delegateManagedUnreachable
         : err instanceof LLMError && err.code === 'content_policy'
         ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
@@ -2180,8 +2212,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return budgetResult;
       };
 
-      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
-      // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+      // Resolve apiKey + baseUrl for the provider this conversation is bound to.
       const effectiveCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settingsForModel),
         getActiveProvider(settingsForModel)?.baseUrl || undefined,
@@ -3103,10 +3134,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // string with actionable copy; the diagnostic path keeps the raw body,
       // while the terminal/store path keeps only the bounded provider summary.
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
-      const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const managedProviderUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        errorCode,
+      );
       const isContextBudgetError = err instanceof ContextBudgetError;
-      let displayError = isEnterpriseGatewayUnavailable
-        ? getI18n().chat.gatewayUnreachable
+      let displayError = managedProviderUnreachable
+        ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
         : isContextBudgetError

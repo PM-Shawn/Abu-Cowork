@@ -785,6 +785,9 @@ function App() {
     let cancel = false
     ;(async () => {
       await useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
+      // init() is where a managed provider gets registered, so a saved model
+      // selection that still has no provider after it really has none.
+      useSettingsStore.getState().markManagedProvidersReady()
       if (cancel) return
       if (useEnterpriseStore.getState().mode.kind !== 'personal') {
         const { activateEnterpriseRuntime } = await import('@/core/enterprise/runtime')

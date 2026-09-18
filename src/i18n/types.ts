@@ -373,11 +373,12 @@ export interface TranslationDict {
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;
-    // Enterprise model selector
-    enterpriseModelLoading: string;
-    enterpriseModelNoMatch: string;
-    enterpriseModelEmpty: string;
-    enterpriseGatewayLabel: string;
+    // Model selector — managed provider group
+    /** Header above the user's own providers, shown when a managed provider is listed. */
+    myModels: string;
+    managedModelsSyncing: string;
+    /** `{org}` = the managed provider's name. */
+    managedProviderUnreachable: string;
     // DetailBlockView
     characters: string;
     viewMore: string;
@@ -484,10 +485,16 @@ export interface TranslationDict {
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
+    modelUnavailableLabel: string;
+    modelUnavailableToast: string;
+    modelUnavailableInTask: string;
+    modelUnavailableReasonProviderRemoved: string;
+    modelUnavailableReasonProviderDisabled: string;
+    modelUnavailableReasonModelRemoved: string;
     /** Skill requires tools that aren't currently available. {missing} */
     skillMissingTools: string;
-    /** Enterprise AI gateway unreachable (shown as an error bubble). */
-    gatewayUnreachable: string;
+    /** A managed provider's request failed at the network level (error bubble). `{org}` = its name. */
+    managedProviderUnreachableInTask: string;
     /** Sidecar process exited mid-task and automatic recovery has started. */
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
@@ -1629,6 +1636,13 @@ export interface TranslationDict {
     validationSuccess: string;
     validationFailed: string;
     revalidate: string;
+    // Managed provider card. `{org}` = the provider's name, `{count}` = model count.
+    managedProviderBadge: string;
+    managedStatusConnected: string;
+    managedStatusSyncing: string;
+    managedStatusOffline: string;
+    managedStatusEmpty: string;
+    managedResync: string;
     validateConnection: string;
     statusConnected: string;
     statusFailed: string;
@@ -1983,9 +1997,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    /** Follow-up chips under a finished team turn. */
-    followUpRedoStep: string;
-    followUpMemberRevise: string;
+    /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;
     confirmationSeparator: string;
@@ -2010,7 +2022,6 @@ export interface TranslationDict {
     stallStoppedNotice: string;
     resumeAfterRestart: string;
     resumeAfterRestartFailed: string;
-    followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
     chatReceiptEmptyGoal: string;
@@ -2036,16 +2047,12 @@ export interface TranslationDict {
     agentSkillsEmpty: string;
     title: string;
     skills: string;
-    agents: string;
-    mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
     // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: string;
     pluginsEmptyState: string;
-    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
-     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
-     *  literally "MCP", not a Connectors-flavored label. */
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. */
     connectors: string;
     // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
     pluginsMarketplaceTab: string;
@@ -2119,7 +2126,6 @@ export interface TranslationDict {
     pluginsRemoveMarketplace: string;
     pluginsRemoveMarketplaceTitle: string;
     pluginsRemoveMarketplaceMessage: string;
-    pluginsCategoryAll: string;
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;
@@ -2259,7 +2265,6 @@ export interface TranslationDict {
     install: string;
     /** Danger action on items the user owns (their own experts / skills): they are deleted, not uninstalled. */
     deleteItem: string;
-    installed: string;
     installAndConnect: string;
     popularMCPServices: string;
     setupWithAbu: string;
@@ -2277,10 +2282,6 @@ export interface TranslationDict {
     systemSkills: string;
     customSkills: string;
     noCustomSkills: string;
-    // Customize Panel
-    customize: string;
-    customizeFooter: string;
-    models: string;
     // ModelsSection
     currentConfig: string;
     quickSwitch: string;
@@ -2496,8 +2497,6 @@ export interface TranslationDict {
     // Server logs
     viewLogs: string;
     noLogs: string;
-    // MarketplaceCard i18n
-    installing: string;
     aiCreateAgentPrompt: string;
     aiCreateSkillPrompt: string;
     agentTestPrompt: string;
@@ -2868,7 +2867,6 @@ export interface TranslationDict {
     teamAppendInstruction: string;
     teamStalledFor: string;
     teamDispatchInterrupted: string;
-    teamDispatchNoToolCalls: string;
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
@@ -3867,14 +3865,12 @@ export interface TranslationDict {
     processing: string;
   };
 
-  // Enterprise runtime UI (gateway badge, policy confirm, status badge)
+  // Enterprise runtime UI (policy confirm, status badge, sign-in notice)
   enterprise: {
-    usingGateway: string;
-    gatewayDesc: string;
     organization: string;
-    gateway: string;
-    status: string;
     offline: string;
+    /** Shown once after sign-in, when the organization's models are ready. `{org}` */
+    modelsReady: string;
     /** Compact offline suffix shown in the status badge, e.g. "· Offline". */
     offlineBadge: string;
     policyConfirmTitle: string;

@@ -443,6 +443,7 @@ export function registerRunSession(runId: string, session: RunSession): void {
   registerRunResourceSettlement(runId, session.resourceSettlement);
   sessions.set(runId, session);
   installPushEmitters();
+  pushSettingsNow();
 }
 
 /** The live session for a conversationId, or undefined — P1-3B-3B's concurrency guard (`runAgentLoopDispatched`) and the `state.execPatch` emitter both need this conversationId→runId lookup. Linear scan — the sessions map is bounded by concurrently-running conversations (small in practice, same discipline as `pushConvPatchesForActiveSessions` below). */
@@ -1984,6 +1985,23 @@ function scheduleSettingsPush(): void {
   }, SETTINGS_DEBOUNCE_MS);
 }
 
+/**
+ * Push the current snapshot right now, cancelling any pending debounced push.
+ * Called on every run registration, before agent.start goes out on the same
+ * ordered mcp_write channel, so the sidecar mirror never starts a run on
+ * settings from a previous run.
+ */
+function pushSettingsNow(): void {
+  if (settingsDebounceTimer) {
+    clearTimeout(settingsDebounceTimer);
+    settingsDebounceTimer = undefined;
+  }
+  notifySidecar('state.settings', {
+    settings: getSettingsReader().getSnapshot(),
+    revision: settingsPushRevision++,
+  });
+}
+
 /** The 4 scalar fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */
 interface ConvPatchSnapshot {
   workspacePath?: string | null;
@@ -2626,8 +2644,7 @@ async function waitForReattachedTerminal(
  * time (anti-bleed discipline — same principle as subagentRunner.ts's
  * `buildSubagentRunParams`) — frozen for the whole run.
  *
- * Throws if `resolveEffectiveLlmCreds` throws (enterprise gateway
- * unavailable — `EnterpriseLlmUnavailableError`) or if the conversation
+ * Throws if `resolveEffectiveLlmCreds` throws or if the conversation
  * record is missing — the caller (`runAgentLoopDispatched`) treats either
  * as a pre-dispatch failure and falls back to `runAgentLoop` in-process,
  * which hits the identical real error path itself rather than this
@@ -2703,8 +2720,7 @@ async function buildAgentRunParams(
   }
   const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settingsForModel);
 
-  // May throw (EnterpriseLlmUnavailableError) — propagates to the caller,
-  // see this function's doc.
+  // May throw — propagates to the caller, see this function's doc.
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsForModel),
     getActiveProvider(settingsForModel)?.baseUrl || undefined,
@@ -2849,7 +2865,7 @@ async function buildAgentRunParams(
  *      surfaces as `{reason:'error', error:...}` instead. NO rerun (would
  *      double-execute tool side effects / duplicate streamed text).
  * `buildAgentRunParams` itself failing (thrown before ANY dispatch — e.g.
- * `EnterpriseLlmUnavailableError`, or a missing conversation record) is
+ * a missing conversation record) is
  * ALSO pre-commit by construction — same in-process fallback.
  */
 async function runSingleAgentLoopDispatchedWithOwnership(

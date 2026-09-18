@@ -1,7 +1,9 @@
 {
   "$comment": [
     "Shared ledger-reader fixtures: the contract a reader of a conversation is",
-    "held to. Replayed by src/core/session/ledgerReader.test.ts.",
+    "held to. Replayed by src/core/session/ledgerReader.test.ts (the TypeScript),",
+    "electron/ledgerReader.contract.test.ts (the generated main-process bundle) and",
+    "sidecar/src/shims/conversationStorageRun.loadMessages.test.ts (the sidecar reader).",
     "`ledgerText` is the content of messages.jsonl; `snapshot` is null, the parsed",
     "content of stream-snapshot.json, or \"<<damaged>>\" for unparseable text.",
     "`expected.messages` pins id + content in order; `ledgerChars`, stamps and",

@@ -35,10 +35,13 @@ const BUNDLE_PATH = join(ROOT, 'electron/generated/ledgerReader.cjs');
 
 describe('electron/generated/ledgerReader.cjs ↔ src/core/session/ledgerReader.ts', () => {
   it('the tracked bundle matches a fresh build', () => {
-    execFileSync(process.execPath, [join(ROOT, 'scripts/gen-ledger-reader.mjs'), '--check'], {
+    const stdout = execFileSync(process.execPath, [join(ROOT, 'scripts/gen-ledger-reader.mjs'), '--check'], {
       cwd: ROOT,
       stdio: 'pipe',
+      encoding: 'utf8',
     });
+    // A run that compared nothing prints nothing and also exits 0.
+    expect(stdout).toContain('is up to date');
   });
 
   it('a CRLF checkout of the tracked bundle still counts as current', () => {

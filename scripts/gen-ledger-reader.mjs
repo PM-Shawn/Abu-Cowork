@@ -63,9 +63,13 @@ export function isBundleCurrent(trackedText, freshText) {
   return trackedText.replace(/\r\n/g, '\n') === freshText;
 }
 
-/** Running as a script? Only then does it build, compare and exit. */
-const invokedDirectly = process.argv[1]
-  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+/**
+ * Running as a script? Only then does it build, compare and exit. Node gives
+ * the module its real path while `argv[1]` keeps the path as it was typed, so
+ * both sides are resolved through symlinks before they are compared.
+ */
+const invokedDirectly = Boolean(process.argv[1])
+  && fs.realpathSync(path.resolve(process.argv[1])) === fs.realpathSync(fileURLToPath(import.meta.url));
 if (invokedDirectly) {
   const fresh = await render();
   if (process.argv.includes('--check')) {

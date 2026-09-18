@@ -22,6 +22,9 @@ describe('projectLedger', () => {
     expect(cases.some((c) => c.expected.discardedWhole)).toBe(true);
     expect(cases.some((c) => c.expected.droppedIds.length > 0)).toBe(true);
     expect(cases.some((c) => c.expected.mergedIds.length > 0)).toBe(true);
+    // The byte-order-mark case holds an invisible character; without it the
+    // case would still pass, because its expected length is the mark-free one.
+    expect(cases.some((c) => c.ledgerText.startsWith(BYTE_ORDER_MARK))).toBe(true);
   });
 
   for (const testCase of cases) {

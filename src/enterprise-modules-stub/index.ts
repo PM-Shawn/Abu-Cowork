@@ -38,21 +38,6 @@ export async function activateEnterpriseRuntime(): Promise<void> {}
 export function isEnterprise(): boolean { return false }
 export function getBinding(): EnterpriseBinding | null { return null }
 
-export interface ResolvedEnterpriseLlm {
-  baseUrl: string
-  apiKey: string
-}
-
-export class EnterpriseLlmUnavailableError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'EnterpriseLlmUnavailableError'
-  }
-}
-
-export function resolveEnterpriseLlm(): ResolvedEnterpriseLlm | null { return null }
-export function isEnterpriseLlmEnforced(): boolean { return false }
-export function canCallEnterpriseLlm(): boolean { return false }
 export function resolveEffectiveLlmCreds(
   personalApiKey: string,
   personalBaseUrl: string | undefined,
@@ -104,7 +89,6 @@ export function checkMcp(_policy: unknown, _registryId: string): ToolCheckResult
 export function checkFilePath(_policy: unknown, _path: string): ToolCheckResult { return ALLOW }
 export function showPolicyConfirm(_message: string): Promise<boolean> { return Promise.resolve(true) }
 
-export function useEnterpriseModels(): string[] | null { return null }
 export interface PendingEnroll {
   serverUrl: string
   enrollmentToken?: string
@@ -123,4 +107,3 @@ export function BindToEnterpriseFlow(_props: {
   initialServerUrl?: string
 }): null { return null }
 export function PolicyConfirmModal(): null { return null }
-export function EnterpriseLlmBadge(): null { return null }

@@ -2644,8 +2644,7 @@ async function waitForReattachedTerminal(
  * time (anti-bleed discipline — same principle as subagentRunner.ts's
  * `buildSubagentRunParams`) — frozen for the whole run.
  *
- * Throws if `resolveEffectiveLlmCreds` throws (enterprise gateway
- * unavailable — `EnterpriseLlmUnavailableError`) or if the conversation
+ * Throws if `resolveEffectiveLlmCreds` throws or if the conversation
  * record is missing — the caller (`runAgentLoopDispatched`) treats either
  * as a pre-dispatch failure and falls back to `runAgentLoop` in-process,
  * which hits the identical real error path itself rather than this
@@ -2721,8 +2720,7 @@ async function buildAgentRunParams(
   }
   const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settingsForModel);
 
-  // May throw (EnterpriseLlmUnavailableError) — propagates to the caller,
-  // see this function's doc.
+  // May throw — propagates to the caller, see this function's doc.
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsForModel),
     getActiveProvider(settingsForModel)?.baseUrl || undefined,
@@ -2867,7 +2865,7 @@ async function buildAgentRunParams(
  *      surfaces as `{reason:'error', error:...}` instead. NO rerun (would
  *      double-execute tool side effects / duplicate streamed text).
  * `buildAgentRunParams` itself failing (thrown before ANY dispatch — e.g.
- * `EnterpriseLlmUnavailableError`, or a missing conversation record) is
+ * a missing conversation record) is
  * ALSO pre-commit by construction — same in-process fallback.
  */
 async function runSingleAgentLoopDispatchedWithOwnership(

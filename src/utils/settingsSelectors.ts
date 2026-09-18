@@ -54,7 +54,12 @@ export interface ModelRef { providerId: string; modelId: string }
  * Whether a conversation's pinned model can still be used. Mirrors the
  * settings page's own visibility rule (AIServicesSection `visibleProviders`):
  * a builtin the user trashed stays in the array but is hidden, so it reads as
- * removed, not merely switched off. Callers skip enterprise-gateway models.
+ * removed, not merely switched off.
+ *
+ * A managed provider's model list is pulled at runtime. Until a pull has
+ * succeeded (`status === 'verified'`) the list on hand says nothing about what
+ * the owning system allows, so a model missing from it is not reported as
+ * removed; the request itself settles the question.
  */
 export function getModelUnavailableReason(
   state: Pick<SettingsState, 'providers'>,
@@ -64,6 +69,7 @@ export function getModelUnavailableReason(
   const visible = !!p && (p.userAdded || p.enabled || p.apiKey.trim().length > 0);
   if (!p || !visible) return 'provider-removed';
   if (!p.enabled) return 'provider-disabled';
+  if (p.source === 'managed' && p.status !== 'verified') return null;
   if (!p.models.some((m) => m.id === ref.modelId)) return 'model-removed';
   return null;
 }

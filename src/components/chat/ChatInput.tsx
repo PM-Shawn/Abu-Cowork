@@ -638,7 +638,6 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
   const globalActiveModel = useSettingsStore((s) => s.activeModel);
   const providers = useSettingsStore((s) => s.providers);
-  const isEnterprise = useEnterpriseStore((s) => s.mode.kind !== 'personal');
   // The model shown/edited here is the active conversation's pinned model when it
   // has one, else the global selection — keeps the picker label in sync with what
   // this specific conversation actually runs on (see per-conversation model pin).
@@ -657,17 +656,18 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const isRunning = activeConv?.status === 'running';
   const isAdmissionPendingForDraft = draftRuntimeState.pendingAdmissions > 0;
   const isStreaming = !isWelcome && isRunning;
-  const isEnterpriseGatewayModel = isEnterprise && effModel.providerId === 'enterprise-gateway' && currentModel.length > 0;
-  // Enterprise sends skip the availability check, so the label must not claim it either.
-  const modelIssue = isEnterprise ? null : getModelUnavailableReason({ providers }, effModel);
-  const hasActiveProvider = isEnterpriseGatewayModel || !modelIssue;
+  // A managed provider names its models itself; show the id as given even
+  // before its list has been pulled.
+  const isManagedModel = effProvider?.source === 'managed' && currentModel.length > 0;
+  const modelIssue = getModelUnavailableReason({ providers }, effModel);
+  const hasActiveProvider = !modelIssue;
   const availableModels = effProvider?.models ?? [];
   const activeModelInfo = availableModels.find((m) => m.id === currentModel);
   const modelDisplay = modelIssue
     ? (providers.some((p) => p.enabled)
         ? describeModelUnavailable(t.chat, modelIssue, getModelDisplayLabel({ providers }, effModel)).label
         : t.chat.noModelConfigured)
-    : isEnterpriseGatewayModel
+    : isManagedModel && !activeModelInfo
       ? currentModel
       : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
   const [showModelPicker, setShowModelPicker] = useState(false);

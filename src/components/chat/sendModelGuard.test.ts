@@ -86,15 +86,36 @@ describe('ensureConversationModelUsable', () => {
     expect(useToastStore.getState().toasts).toEqual([]);
   });
 
-  it('always lets enterprise mode through', () => {
+  it('lets a managed provider through while its model list is still being pulled', () => {
+    setProviders([
+      provider('org-models', { source: 'managed', userAdded: false, status: 'checking', models: [] }),
+      provider('prov-b'),
+    ]);
+    const ok = ensureConversationModelUsable({ model: { providerId: 'org-models', modelId: 'org-model' } }, getI18n().chat);
+    expect(ok).toBe(true);
+    expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it('blocks a model the managed provider confirmed it no longer offers', () => {
+    withZhCN(() => {
+      setProviders([
+        provider('org-models', { source: 'managed', userAdded: false, status: 'verified' }),
+        provider('prov-b'),
+      ]);
+      const ok = ensureConversationModelUsable({ model: { providerId: 'org-models', modelId: 'revoked' } }, getI18n().chat);
+      expect(ok).toBe(false);
+      expect(useToastStore.getState().toasts.at(-1)?.title).toContain('已从所属服务中移除');
+    });
+  });
+
+  it('applies the same check whatever account the user is signed in to', () => {
     useEnterpriseStore.setState({
       mode: { kind: 'enterprise', binding: {} as EnterpriseBinding, config: null },
     });
     setProviders([provider('prov-b')]);
     const ok = ensureConversationModelUsable({ model: { providerId: 'gone-provider', modelId: 'model-a' } }, getI18n().chat);
-    expect(ok).toBe(true);
-    expect(useToastStore.getState().toasts).toEqual([]);
-    expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+    expect(ok).toBe(false);
+    expect(useToastStore.getState().toasts).toHaveLength(1);
   });
 
   it('checks the global model when there is no conversation', () => {

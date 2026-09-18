@@ -14,6 +14,7 @@ import { ClaudeAdapter } from './claude';
 import { OpenAICompatibleAdapter } from './openai-compatible';
 import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../stores/settingsStore';
 import { getSettingsReader } from '../agent/ports/settingsReader';
+import { settingsForConversation } from '../agent/conversationSettings';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 
 export interface LLMCallOptions {
@@ -27,6 +28,12 @@ export interface LLMCallOptions {
   maxTokens?: number;
   /** Abort signal */
   signal?: AbortSignal;
+  /**
+   * The conversation this call is made for. With it, the call runs on that
+   * conversation's model and provider; without it, on the new-conversation
+   * default.
+   */
+  conversationId?: string;
 }
 
 export interface LLMCallToolCall {
@@ -48,7 +55,10 @@ export interface LLMCallResult {
  * that any tool or script can use without going through the agent loop.
  */
 export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
-  const settings = getSettingsReader().getSnapshot();
+  const snapshot = getSettingsReader().getSnapshot();
+  const settings = options.conversationId
+    ? settingsForConversation(options.conversationId, snapshot)
+    : snapshot;
 
   // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
   // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.

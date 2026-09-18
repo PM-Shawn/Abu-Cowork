@@ -14,6 +14,7 @@ import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
+import { settingsForConversation } from './conversationSettings';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getCapsPort } from './ports/capsPort';
 import { getExecutionPort } from './ports/executionPort';
@@ -870,12 +871,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // one. Pinned onto the conversation on first run (below) so it also survives
   // later global switches for display + future runs.
   const pinnedConv = getConversationReader().getConversation(conversationId);
-  const baseModel =
-    pinnedConv?.model ??
-    getConversationReader().getIndexEntry(conversationId)?.model ??
-    settings.activeModel;
-  const settingsForModel: typeof settings =
-    baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
+  const settingsForModel = settingsForConversation(conversationId, settings);
+  const baseModel = settingsForModel.activeModel;
   const entrySettingsReader: SettingsReader = { getSnapshot: () => settingsForModel };
 
   // Generate a unique loopId for this agent loop - all messages in this loop share it.

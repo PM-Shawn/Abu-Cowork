@@ -7,7 +7,7 @@ vi.mock('@/core/observability/runtimeTrace', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/observability/runtimeTrace')>()),
   traceRuntimeEvent: (...a: unknown[]) => traceRuntimeEventMock(...a),
 }));
-import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
+import { exists, readTextFile, writeTextFile, mkdir, remove, readDir, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
 import { APP_VERSION } from '@/utils/version';
@@ -81,6 +81,13 @@ function createMemoryFs() {
       throw new Error('native append unavailable in test');
     }
     return undefined;
+  });
+
+  // `size` is the file's UTF-8 byte length, the unit a real fs reports — the
+  // whole point of the ledger watermark being bytes rather than characters.
+  (stat as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
+    if (!files.has(path)) throw new Error(`File not found: ${path}`);
+    return { size: new TextEncoder().encode(files.get(path)!).byteLength };
   });
 
   (mkdir as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
@@ -2291,6 +2298,33 @@ describe('conversationStorage', () => {
 
       const loaded = await storage.loadMessages('conv-1');
       expect(loaded.map((m) => m.content)).toEqual(['hello']);
+    });
+  });
+
+  describe('flushAndGetLedgerWatermark (#549 P1)', () => {
+    function messagesPathFor(convId: string): string {
+      return `/Users/testuser/.abu/conversations/${convId}/messages.jsonl`;
+    }
+
+    it('returns the true UTF-8 byte size of the ledger after the queue has drained', async () => {
+      const convId = 'wm-conv';
+      await storage.appendMessage(convId, makeMsg({ id: 'u1', role: 'user', content: '你好，世界' }));
+      await storage.appendMessage(convId, makeMsg({ id: 'a1', role: 'assistant', content: 'ok' }));
+
+      const watermark = await storage.flushAndGetLedgerWatermark(convId);
+
+      const onDisk = memFs.files.get(messagesPathFor(convId))!;
+      expect(watermark).toBe(new TextEncoder().encode(onDisk).byteLength);
+      // Chinese content makes the byte count exceed the character count — the
+      // reason the watermark is measured in bytes and not in string length.
+      expect(watermark).toBeGreaterThan(onDisk.length);
+      // The watermark is only usable as a cut point because it lands on a line
+      // boundary, which holds exactly while every queued write ends in '\n'.
+      expect(onDisk.endsWith('\n')).toBe(true);
+    });
+
+    it('returns 0 for a conversation with no ledger file', async () => {
+      expect(await storage.flushAndGetLedgerWatermark('wm-missing')).toBe(0);
     });
   });
 });

@@ -20,7 +20,13 @@ import { createLedgerFold } from './messageLedger';
 
 export interface StreamSnapshotEntry {
   message: Message;
-  /** Ledger length (string length) the entry was captured against; absent on legacy files. */
+  /**
+   * Ledger length (string length) the entry was captured against. Absent on a
+   * legacy file, written before the field existed; that must keep the
+   * unconditional-merge behaviour rather than be read as "stamp zero", which
+   * would make every legacy entry look supersede-able by literally any ledger
+   * content.
+   */
   stamp?: number;
 }
 
@@ -110,8 +116,15 @@ export function projectLedger(input: {
   const merged = new Map<string, StreamSnapshotEntry>();
   const droppedIds: string[] = [];
   // File-level shrink guard: the ledger is SHORTER than the watermark this
-  // snapshot was written against. An append-only ledger never shrinks on its
-  // own, so the whole snapshot is untrustworthy and none of it is merged.
+  // snapshot was written against. An append-only ledger's length only grows,
+  // so a shorter one means something outside this fold rewrote the file in
+  // place since the snapshot was taken — the classic case being a downgrade to
+  // a build that knows nothing of snapshots and rewrites the whole file,
+  // followed by a re-upgrade. The snapshot's revisions are then relative to a
+  // ledger tail that no longer exists, and merging them would overlay stale
+  // content on the user's edited history, so none of it is merged. The
+  // per-entry rule below only ever drops individual ids, which is why this
+  // coarser check runs first and short-circuits it.
   const discardedWhole = parsed.ledgerBytes !== undefined && ledgerText.length < parsed.ledgerBytes;
 
   if (!discardedWhole) {
@@ -119,14 +132,22 @@ export function projectLedger(input: {
     const removedOffsets = fold.removedOffsetById();
     for (const [id, entry] of parsed.entries) {
       if (entry.stamp === undefined) {
+        // Nothing to compare against the ledger, so the entry merges — the
+        // behaviour every entry had before stamps existed.
         merged.set(id, entry);
         continue;
       }
-      // Per-entry supersede rule: at or after the offset the entry was
-      // stamped against, the ledger either put the same id again or removed
-      // it, so the ledger's version is the newer one. A stamp that outreaches
-      // the current ledger is stale for the same reason the file-level guard
-      // exists — something outside this fold rewrote the file.
+      // Per-entry supersede rule: at or after the offset the entry was stamped
+      // against, the ledger either put the same id again (a durable checkpoint
+      // landed and the process that wrote it never got to delete the
+      // now-superseded snapshot) or removed the id with a truncate / tomb /
+      // loopDrop (a stale entry must not revive a message the user already
+      // deleted). Either way the ledger holds the newer version. A stamp that
+      // outreaches the current ledger is stale for the same reason the
+      // file-level guard exists — something outside this fold rewrote the
+      // file — and is caught per entry even when the file-level watermark is
+      // missing. An entry the ledger has genuinely not touched since capture
+      // survives: that is the crash protection the snapshot exists for.
       const putOffset = putOffsets.get(id);
       const removedOffset = removedOffsets.get(id);
       const stale =

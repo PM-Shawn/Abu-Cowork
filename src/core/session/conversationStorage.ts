@@ -25,9 +25,11 @@
  * Write strategy:
  *   - messages.jsonl is a fully append-only ledger (plan stage 3): a revision
  *     is a second line carrying the same id, and removal is a `msg.truncate`
- *     event line (messageLedger.ts) rather than a rewrite. `foldMessageLog`
- *     keeps the last put per id and applies truncate/tomb events strictly in
- *     the order they were written. Nothing rewrites an existing line anymore
+ *     event line (messageLedger.ts) rather than a rewrite. The read side
+ *     (`projectLedger` in ledgerReader.ts) keeps the last put per id and
+ *     applies truncate/tomb events strictly in the order they were written,
+ *     then folds in whatever the stream snapshot still holds that the ledger
+ *     has not superseded. Nothing rewrites an existing line anymore
  *     except `appendToFile`'s fallback (read+rewrite only when the native
  *     O(1) append command itself is unavailable).
  *   - WriteQueue batches writes per file (100ms debounce) and collapses queued
@@ -40,7 +42,7 @@
  *     for why that budget matters
  */
 
-import { exists, readTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
+import { exists, readTextFile, mkdir, remove, readDir, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
@@ -48,7 +50,8 @@ import { atomicWrite } from '@/utils/atomicFs';
 import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
 import { isPayloadTooLargeError, parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtimeTrace';
-import { foldMessageLog, createLedgerEvent, LEDGER_KIND_PUT, type LedgerLine } from './messageLedger';
+import { createLedgerEvent, type LedgerLine } from './messageLedger';
+import { projectLedger, type StreamSnapshotEntry } from './ledgerReader';
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
 import type { Message, MessageContent, SandboxRecoveryAction, ToolCall, ToolCallForContext, ToolResultContent } from '@/types';
 import { APP_VERSION } from '@/utils/version';
@@ -425,6 +428,20 @@ export async function flushWrites(): Promise<void> {
   await drainAll();
 }
 
+/**
+ * Flush the write queue and report the ledger's size in bytes. This process is
+ * the ledger's only writer, so after the flush the size is the offset up to
+ * which every line is durable and complete — the watermark a reader in another
+ * process is given (`decodeLedgerPrefix` in `ledgerReader.ts`).
+ */
+export async function flushAndGetLedgerWatermark(convId: string): Promise<number> {
+  await ensureBase();
+  await flushWrites();
+  const path = messagesPath(convId);
+  if (!(await exists(path))) return 0;
+  return (await stat(path)).size;
+}
+
 // ════════════════════════════════════════════════════════════
 // UUID dedup — prevents double-writing on restart/replay
 // ════════════════════════════════════════════════════════════
@@ -480,23 +497,11 @@ const lastMessageIdByConv = new Map<string, string>();
  * Per conversation, the byte length of `messages.jsonl` this process last
  * confirmed durable — either by reading it (`loadMessages`) or by appending
  * to it (`drainAll`). This is the ledger byte watermark (RB-03 fix, plan §3.6
- * addendum), and it feeds TWO independent guards in `loadMessages`:
- *
- *  - File-level shrink guard (plan §3.6 addendum): an append-only ledger's
- *    length can only grow, so a load that finds the file SHORTER than a
- *    stream snapshot's recorded file-level `ledgerBytes` watermark means some
- *    other process rewrote `messages.jsonl` in place between that snapshot's
- *    write and this load — the classic case being a downgrade to a
- *    pre-ledger build (which knows nothing of snapshots or `persistRev` and
- *    rewrites the whole file) followed by a re-upgrade. The whole snapshot is
- *    discarded when this fires.
- *  - Per-entry supersede pass (RB-03 fix): stamping a stream-snapshot entry
- *    with this value at capture time (see `snapshotMessageRevision`) gives
- *    `loadMessages` a byte offset it can compare against the ledger's later
- *    state for that one id — a "has anything durable happened to this id
- *    since the snapshot was taken" check — instead of blindly folding every
- *    surviving snapshot entry in as a trailing put regardless of how stale it
- *    is.
+ * addendum), and it is what this process writes into a stream snapshot twice
+ * over: once per file as `ledgerBytes` and once per entry as `stamp` (see
+ * `writeStreamSnapshot` and `snapshotMessageRevision`). Both numbers exist so
+ * that a later load can tell a snapshot the ledger has moved past from one it
+ * has not touched; the rules that read them are in `ledgerReader.ts`.
  */
 const ledgerBytesByConv = new Map<string, number>();
 
@@ -579,19 +584,6 @@ function serializeLedgerPut(
 
 const STREAM_SNAPSHOT_FILENAME = 'stream-snapshot.json';
 
-/**
- * One buffered revision plus the ledger byte watermark (RB-03 fix) it was
- * captured against. `stamp` is `undefined` for an entry read back from a
- * legacy (pre-fix) on-disk file — see `readStreamSnapshot` — which must keep
- * the old unconditional-merge behavior rather than being misread as "stamp
- * zero" (that would make every legacy entry look supersede-able by literally
- * any ledger content).
- */
-interface StreamSnapshotEntry {
-  message: Message;
-  stamp?: number;
-}
-
 interface StreamSnapshotFile {
   version: 1 | 2;
   /** v1 (legacy on-disk shape, still parsed for back-compat): flat array, no per-entry stamp. */
@@ -672,8 +664,8 @@ export async function snapshotMessageRevision(convId: string, message: Message):
     message: stripForDisk(message, convId, { allowToolResultDehydration }),
     // RB-03 fix: how much of this conversation's ledger this process had
     // confirmed durable at the moment this revision was captured. See
-    // `ledgerBytesByConv`'s doc comment and `loadMessages`' snapshot-merge
-    // step, which is what this stamp exists for.
+    // `ledgerBytesByConv`'s doc comment, and the per-entry supersede rule in
+    // `ledgerReader.ts`, which is what this stamp exists for.
     stamp: ledgerBytesByConv.get(convId) ?? 0,
   });
   streamSnapshots.set(convId, entries);
@@ -692,71 +684,29 @@ async function dropStreamSnapshotEntry(convId: string, messageId: string): Promi
   await writeStreamSnapshot(convId, entries);
 }
 
-interface StreamSnapshotReadResult {
-  /** Per-entry map, each carrying its own RB-03 `stamp` (undefined for a legacy entry). */
-  entries: Map<string, StreamSnapshotEntry>;
-  /**
-   * The snapshot's recorded FILE-LEVEL ledger byte watermark (plan §3.6
-   * addendum), or `undefined` for a snapshot written before that field
-   * existed — callers must treat `undefined` as "no watermark available" and
-   * keep the pre-existing unconditional-merge behavior for entries that are
-   * themselves also unstamped.
-   */
-  ledgerBytes?: number;
-}
-
 /**
- * Read the snapshot file back, WITHOUT re-arming the in-memory buffer — the
- * caller (`loadMessages`) must run the stale-entry guards first (the
- * file-level shrink check, then the RB-03 per-entry supersede pass) and only
- * then decide what actually gets armed, or a superseded entry would be
- * written straight back into memory before it's ever filtered.
+ * The snapshot file's text, or null when there is none or it cannot be read.
+ * Handed to `projectLedger`, which owns the parsing and the stale-entry rules;
+ * the in-memory buffer is re-armed by `loadMessages` from what that projection
+ * says survived, never straight from the file.
  */
-async function readStreamSnapshot(convId: string): Promise<StreamSnapshotReadResult> {
+async function readStreamSnapshotText(convId: string): Promise<string | null> {
   const path = streamSnapshotPath(convId);
   try {
-    if (!(await exists(path))) return { entries: new Map() };
-    const parsed = JSON.parse(await readTextFile(path)) as StreamSnapshotFile;
-    const ledgerBytes = typeof parsed?.ledgerBytes === 'number' ? parsed.ledgerBytes : undefined;
-    const entries = new Map<string, StreamSnapshotEntry>();
-    if (Array.isArray(parsed?.entries)) {
-      // v2 (current) shape: per-entry watermark.
-      for (const entry of parsed.entries) {
-        const message = entry?.message;
-        if (message && typeof message.id === 'string') {
-          entries.set(message.id, {
-            message,
-            stamp: typeof entry.stamp === 'number' ? entry.stamp : undefined,
-          });
-        }
-      }
-    } else if (Array.isArray(parsed?.messages)) {
-      // v1 (legacy) shape: no per-entry watermark, though it may still carry
-      // the file-level `ledgerBytes` field (an already-shipped build wrote it
-      // before the per-entry `stamp` addendum existed).
-      for (const message of parsed.messages) {
-        if (message && typeof message.id === 'string') {
-          entries.set(message.id, { message, stamp: undefined });
-        }
-      }
-    }
-    return { entries, ledgerBytes };
+    if (!(await exists(path))) return null;
+    return await readTextFile(path);
   } catch {
     // A damaged snapshot must never take the conversation down with it — the
     // ledger alone is still a complete, if slightly older, history.
-    return { entries: new Map() };
+    return null;
   }
 }
 
 /**
  * Discard a stream snapshot outright — drop the in-memory buffer and delete
- * the file — rather than merging it. Used by `loadMessages` when the ledger
- * byte watermark check (plan §3.6 addendum) finds the ledger SHORTER than the
- * snapshot's recorded watermark: append-only ledgers never shrink on their
- * own, so a shrink means a foreign or older build rewrote `messages.jsonl` in
- * place since this snapshot was taken, and the snapshot's revisions are
- * relative to a ledger tail that no longer exists. Best-effort delete — if it
- * fails, the same (still-stale) snapshot is simply re-evaluated (and again
+ * the file — rather than merging it. Used by `loadMessages` when the
+ * projection reports that the whole snapshot was discarded. Best-effort
+ * delete: if it fails, the same snapshot is simply re-evaluated (and again
  * discarded) on the next load.
  */
 async function discardStreamSnapshot(convId: string): Promise<void> {
@@ -839,208 +789,6 @@ async function sweepStaleStreamSnapshotsOnVersionChange(): Promise<void> {
   }
 }
 
-/**
- * Companion pass to `messageLedger.ts`'s `foldMessageLog`: walks the same raw
- * ledger lines in the same order and applies the same put/tomb/truncate/
- * loopDrop state transitions, but tracks each line's BYTE OFFSET into `raw`
- * instead of building `Message` objects. Deliberately NOT merged into
- * `foldMessageLog` itself — that function is pinned byte-for-byte to
- * `electron/messageLedgerFold.cjs` and `src-tauri/src/catalog_db.rs` via a
- * shared fixture file (see `messageLedger.ts`'s module doc), and byte offsets
- * are a TypeScript-only concern for the stream-snapshot supersede guard below
- * with no equivalent on the other two ports.
- *
- * Must mirror `foldMessageLog`'s survivorship decisions exactly (same
- * id-collapsing on `undefined`, same in-place-not-move-to-end put semantics,
- * same corrupt/non-object line skipping) — see `loadMessages`' snapshot-merge
- * step for why a divergence here would silently mis-classify a snapshot
- * entry as stale or as still-valid.
- */
-interface LedgerOffsetInfo {
-  /** id → offset of the put line that currently establishes its presence
-   * (the LAST put for that id, since a revision lands in place — only set
-   * for ids the ledger-only fold still contains). */
-  putOffsetById: Map<string, number>;
-  /** id → offset of the removal event (tomb/truncate/loopDrop) that most
-   * recently removed the id, for ids the ledger-only fold does NOT currently
-   * contain. A later revival put clears this entry, mirroring the fold's own
-   * put-after-tomb resurrection rule (messageLedger.ts module doc). */
-  removedOffsetById: Map<string, number>;
-}
-
-function computeLedgerOffsetInfo(raw: string): LedgerOffsetInfo {
-  const putOffsetById = new Map<string, number>();
-  const removedOffsetById = new Map<string, number>();
-  let liveIds: string[] = [];
-  let liveLoopIds: (string | undefined)[] = [];
-  let indexOf = new Map<string, number>();
-
-  const reindex = (): void => {
-    indexOf = new Map<string, number>();
-    for (let i = 0; i < liveIds.length; i++) indexOf.set(liveIds[i], i);
-  };
-
-  let offset = 0;
-  for (const rawLine of raw.split('\n')) {
-    // `String.prototype.split('\n')` eats exactly one '\n' between segments,
-    // so re-adding it per segment reconstructs each segment's true starting
-    // offset in `raw` — see this function's tests for the boundary check.
-    const consumed = rawLine.length + 1;
-    const lineOffset = offset;
-    offset += consumed;
-
-    if (rawLine.trim() === '') continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawLine);
-    } catch {
-      continue;
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
-    const line = parsed as LedgerLine;
-    const kind: string = typeof line.lk === 'string' ? line.lk : LEDGER_KIND_PUT;
-
-    switch (kind) {
-      case LEDGER_KIND_PUT: {
-        if (typeof line.id !== 'string') break;
-        const id = line.id;
-        const at = indexOf.get(id);
-        if (at === undefined) {
-          indexOf.set(id, liveIds.length);
-          liveIds.push(id);
-          liveLoopIds.push(line.loopId);
-        } else {
-          liveLoopIds[at] = line.loopId; // in place — a revision, not a reorder
-        }
-        putOffsetById.set(id, lineOffset);
-        removedOffsetById.delete(id); // put-after-removal revives it
-        break;
-      }
-      case 'msg.tomb': {
-        if (typeof line.target !== 'string') break;
-        const at = indexOf.get(line.target);
-        if (at === undefined) break;
-        liveIds.splice(at, 1);
-        liveLoopIds.splice(at, 1);
-        reindex();
-        putOffsetById.delete(line.target);
-        removedOffsetById.set(line.target, lineOffset);
-        break;
-      }
-      case 'msg.truncate': {
-        if (typeof line.from !== 'string') break;
-        const at = indexOf.get(line.from);
-        if (at === undefined) break;
-        const cut = liveIds.slice(at);
-        liveIds.length = at;
-        liveLoopIds.length = at;
-        reindex();
-        for (const cutId of cut) {
-          putOffsetById.delete(cutId);
-          removedOffsetById.set(cutId, lineOffset);
-        }
-        break;
-      }
-      case 'msg.loopDrop': {
-        if (typeof line.loopId !== 'string') break;
-        const dropLoopId = line.loopId;
-        const keepIds: string[] = [];
-        const keepLoopIds: (string | undefined)[] = [];
-        const droppedIds: string[] = [];
-        for (let i = 0; i < liveIds.length; i++) {
-          if (liveLoopIds[i] === dropLoopId) droppedIds.push(liveIds[i]);
-          else {
-            keepIds.push(liveIds[i]);
-            keepLoopIds.push(liveLoopIds[i]);
-          }
-        }
-        if (droppedIds.length === 0) break;
-        liveIds = keepIds;
-        liveLoopIds = keepLoopIds;
-        reindex();
-        for (const droppedId of droppedIds) {
-          putOffsetById.delete(droppedId);
-          removedOffsetById.set(droppedId, lineOffset);
-        }
-        break;
-      }
-      default:
-        // Unknown kind — written by a newer build. Ignored, same as the fold.
-        break;
-    }
-  }
-
-  return { putOffsetById, removedOffsetById };
-}
-
-/**
- * RB-03 fix: drop any stream-snapshot entry the ledger has already made
- * stale, instead of always folding every buffered revision in as a trailing
- * put. An entry is stale when, at or after the byte offset it was stamped
- * against (`entry.stamp` — see `snapshotMessageRevision`), the ledger either
- * (a) contains a newer `msg.put` for the SAME id (a durable checkpoint landed
- * and this process just never got to delete the now-superseded snapshot
- * file), or (b) was cut by a truncate/tomb/loopDrop event whose fold-time
- * effect removed that id (a stale snapshot must not revive a message the
- * user already deleted). An entry with no stamp (`undefined` — a legacy
- * on-disk file predating this fix) keeps the previous unconditional-merge
- * behavior, same as an entry the ledger has genuinely not touched since it
- * was captured (the crash-protection purpose this buffer exists for).
- *
- * `raw.length < entry.stamp` is a defensive third case: an append-only
- * ledger's length only grows, so a *current* length shorter than what this
- * entry was stamped against means something OUTSIDE this fold rewrote
- * `messages.jsonl` since capture (e.g. a downgrade-then-reupgrade across a
- * pre-ledger build, the scenario `feat/snapshot-watermark` guards at the
- * whole-file level) — per-entry, a stamp that outreaches the current ledger
- * is definitionally stale too, regardless of whether either offset check
- * above fires.
- *
- * Best-effort: when anything is dropped, the filtered set is written back to
- * disk (and the in-memory buffer re-armed from it — see `loadMessages`) so
- * the stale entry does not resurface on a future load if this call's own
- * `writeStreamSnapshot` never lands; either way the guard re-evaluates fresh
- * on every load, so a delete failure just gets filtered again next time
- * (audit RB-03 close condition: delete-failure tolerance follows free).
- */
-async function filterStaleSnapshotEntries(
-  convId: string,
-  raw: string,
-  snapshotEntries: Map<string, StreamSnapshotEntry>,
-): Promise<Map<string, StreamSnapshotEntry>> {
-  if (snapshotEntries.size === 0) return snapshotEntries;
-  const anyStamped = [...snapshotEntries.values()].some((entry) => entry.stamp !== undefined);
-  if (!anyStamped) return snapshotEntries;
-
-  const { putOffsetById, removedOffsetById } = computeLedgerOffsetInfo(raw);
-  const survivors = new Map<string, StreamSnapshotEntry>();
-  const droppedIds: string[] = [];
-  for (const [id, entry] of snapshotEntries) {
-    if (entry.stamp === undefined) {
-      survivors.set(id, entry);
-      continue;
-    }
-    const stamp = entry.stamp;
-    const putOffset = putOffsetById.get(id);
-    const removedOffset = removedOffsetById.get(id);
-    const stale =
-      (putOffset !== undefined && putOffset >= stamp)
-      || (removedOffset !== undefined && removedOffset >= stamp)
-      || raw.length < stamp;
-    if (stale) droppedIds.push(id);
-    else survivors.set(id, entry);
-  }
-
-  if (droppedIds.length > 0) {
-    console.warn(
-      `[conversationStorage] loadMessages(${convId}): dropping ${droppedIds.length} stale ` +
-        `stream-snapshot entr${droppedIds.length === 1 ? 'y' : 'ies'} superseded by the ledger ` +
-        `(ids: ${droppedIds.join(', ')}).`,
-    );
-    await writeStreamSnapshot(convId, survivors);
-  }
-  return survivors;
-}
 
 /**
  * Promote every buffered revision into the ledger and drop the snapshot files.
@@ -1693,7 +1441,7 @@ async function ledgerContainsMessage(path: string, messageId: string): Promise<b
   try {
     const raw = await readTextFile(path);
     if (!raw.includes(`"${messageId}"`)) return false;
-    const present = foldMessageLog(raw.split('\n')).messages.some((m) => m.id === messageId);
+    const present = projectLedger({ ledgerText: raw }).messages.some((m) => m.id === messageId);
     if (present) writtenIds.add(messageId);
     return present;
   } catch {
@@ -1849,52 +1597,43 @@ export async function loadMessages(convId: string, options?: { strictRead?: bool
   // `ledgerBytesByConv`'s doc comment.
   ledgerBytesByConv.set(convId, raw.length);
 
-  // The whole read is one fold (see messageLedger.ts for the spec). It keeps
-  // the previous damage-reduction behaviour — a corrupt line is skipped, not
-  // fatal — and the previous keep-last-by-id dedup, which a non-idempotent
+  // The whole read is one projection (`projectLedger` in ledgerReader.ts): the
+  // ledger folded line by line, then whatever the stream snapshot still holds
+  // that the ledger has not superseded, folded on top as trailing puts. It
+  // keeps the previous damage-reduction behaviour — a corrupt line is skipped,
+  // not fatal — and the previous keep-last-by-id dedup, which a non-idempotent
   // append fallback can produce: if the native O(1) append durably writes a
   // line but its invoke promise still rejects (IPC teardown / shutdown race),
   // appendToFile falls through to read+rewrite and appends the same line again.
   // The fold additionally makes a repeated id an in-place revision rather than
   // a reorder, which is what lets the write side express "replace" as "append".
   // Revisions that a crash caught between checkpoints live in the stream
-  // snapshot, not the ledger. Folding them in as trailing puts applies them
-  // with exactly the ledger's own last-write-wins-in-place rule — MINUS
-  // anything either stale-snapshot guard below determines the ledger has
-  // already superseded.
-  const snapshotResult = await readStreamSnapshot(convId);
-  let rawSnapshotEntries = snapshotResult.entries;
-  if (snapshotResult.ledgerBytes !== undefined && raw.length < snapshotResult.ledgerBytes) {
-    // File-level shrink guard (plan §3.6 addendum): the ledger is SHORTER
-    // than the watermark this snapshot was written against. Append-only
-    // ledgers never shrink on their own — this means a foreign or older
-    // build rewrote messages.jsonl in place since the snapshot was taken
-    // (e.g. a downgrade to a pre-ledger version that knows nothing of
-    // snapshots/persistRev, followed by a re-upgrade). Merging the
-    // snapshot's revisions on top of that rewritten ledger risks overlaying
-    // stale content over the user's edited history, so discard the WHOLE
-    // snapshot instead — the ledger alone is the trustworthy source once its
-    // own length no longer matches what this process last saw. (The
-    // per-entry pass below only ever drops individual ids, so this coarser
-    // check has to run first and short-circuit it.)
+  // snapshot, not the ledger.
+  const snapshotText = await readStreamSnapshotText(convId);
+  const projection = projectLedger({ ledgerText: raw, snapshotText });
+  // This process is the only writer of `stream-snapshot.json`, so acting on
+  // the projection's verdict is its job alone.
+  if (projection.snapshot.discardedWhole) {
     console.warn(
       `[conversationStorage] loadMessages(${convId}): ledger shrank below its stream-snapshot ` +
-        `watermark (${raw.length} < ${snapshotResult.ledgerBytes}) — discarding the snapshot instead of merging it.`,
+        `watermark — discarding the snapshot instead of merging it.`,
     );
     await discardStreamSnapshot(convId);
-    rawSnapshotEntries = new Map();
+  } else if (projection.snapshot.droppedIds.length > 0) {
+    const dropped = projection.snapshot.droppedIds;
+    console.warn(
+      `[conversationStorage] loadMessages(${convId}): dropping ${dropped.length} stale ` +
+        `stream-snapshot entr${dropped.length === 1 ? 'y' : 'ies'} superseded by the ledger ` +
+        `(ids: ${dropped.join(', ')}).`,
+    );
+    // Write the survivors back so a dropped entry cannot resurface on a later
+    // load. Best-effort: the projection re-runs on every load, so a write-back
+    // that never lands only means the same entry is filtered again next time.
+    await writeStreamSnapshot(convId, projection.snapshot.merged);
   }
-  // Per-entry supersede pass (RB-03 fix): drop any surviving entry the
-  // ledger has already superseded individually (a newer put for the same
-  // id, or a truncate/tomb/loopDrop that removed it, at or after the
-  // entry's byte-offset stamp).
-  const snapshotEntries = await filterStaleSnapshotEntries(convId, raw, rawSnapshotEntries);
-  if (snapshotEntries.size > 0) streamSnapshots.set(convId, snapshotEntries);
+  if (projection.snapshot.merged.size > 0) streamSnapshots.set(convId, projection.snapshot.merged);
   else streamSnapshots.delete(convId);
-  const { messages, corruptCount, totalLines } = foldMessageLog([
-    ...raw.split('\n'),
-    ...[...snapshotEntries.values()].map((entry) => JSON.stringify(entry.message)),
-  ]);
+  const { messages, corruptCount, totalLines } = projection;
   if (corruptCount > 0) {
     console.warn(
       `[conversationStorage] loadMessages(${convId}): skipped ${corruptCount}/${totalLines} corrupt line(s). ` +

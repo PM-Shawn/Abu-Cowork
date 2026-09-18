@@ -6701,6 +6701,140 @@ describe('agentLoopRunner', () => {
         expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
       });
 
+      it('a stop while the history point is pending ends the send before anything is dispatched', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const controller = new AbortController();
+        getAbortControllerMock.mockReturnValue(controller);
+        const point = deferred<{ ledgerWatermark: number; promotedSnapshotEntries: number }>();
+        takeLedgerHistoryPointMock.mockReturnValue(point.promise);
+
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(takeLedgerHistoryPointMock);
+        controller.abort();
+        // The point settles after the stop: a watermark nobody asked for any more.
+        point.resolve({ ledgerWatermark: 4096, promotedSnapshotEntries: 0 });
+
+        await expect(running).resolves.toEqual({ reason: 'aborted' });
+        expect(agentStartRequestMock).not.toHaveBeenCalled();
+        expect(sidecarRequestMock).not.toHaveBeenCalled();
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
+          state: 'interrupted',
+        });
+        expect(clearAbortControllerMock).toHaveBeenLastCalledWith('conv-1');
+        expect(chatDeltaSetConversationStatusMock).toHaveBeenLastCalledWith('conv-1', 'idle');
+        expect(finishRuntimeRunMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('a stop while the v2 agent.start is unanswered aborts that run', async () => {
+        const { runAgentLoopDispatched, getRunSession } = await importFresh();
+        const controller = new AbortController();
+        getAbortControllerMock.mockReturnValue(controller);
+        const start = deferred<unknown>();
+        agentStartRequestMock.mockReturnValue(start.promise);
+        sidecarRequestMock.mockImplementation((method: string) => (method === 'agent.abort'
+          ? Promise.resolve({ accepted: true, state: 'aborting' })
+          : Promise.resolve({ reason: 'completed' })));
+
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(agentStartRequestMock);
+        const runId = (agentStartRequestMock.mock.calls[0][0] as { runId: string }).runId;
+        controller.abort();
+        for (let i = 0; i < 30 && !sidecarRequestMock.mock.calls.some((c) => c[0] === 'agent.abort'); i++) {
+          await Promise.resolve();
+        }
+        // The transport gives up on the unanswered start after the stop.
+        start.reject(new Error('Sidecar request "agent.start" aborted'));
+
+        await expect(running).resolves.toMatchObject({ reason: 'aborted' });
+        expect(sidecarRequestMock).toHaveBeenCalledWith('agent.abort', { runId }, 1_000);
+        expect(sidecarRequestMock.mock.calls.some((call) => call[0] === 'agent.run')).toBe(false);
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(chatStoreUpdateUserMessageRunMock).toHaveBeenCalledWith('conv-1', expect.any(String), expect.objectContaining({
+          state: 'interrupted',
+        }));
+        expect(getRunSession(runId)).toBeUndefined();
+        expect(finishRuntimeRunMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('transport recovery re-sends the same start and then the compact run', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockRejectedValueOnce(new Error('Sidecar process closed'));
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+        runGetStateRequestMock.mockImplementation((params: { runId: string }) => Promise.resolve({
+          version: 1,
+          runId: params.runId,
+          state: 'not_found',
+        }));
+
+        await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({ reason: 'completed' });
+
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(2);
+        const [first, second] = agentStartRequestMock.mock.calls.map((call) => call[0] as unknown as {
+          history: { source: string; ledgerWatermark: number }; payloadDigest: string;
+        });
+        // The frozen params, sent again: the same watermark and the same digest,
+        // so the replacement process starts the turn from the same history.
+        expect(second).toBe(first);
+        expect(second.history).toEqual({ source: 'ledger', ledgerWatermark: 4096 });
+        expect(second.payloadDigest).toBe(first.payloadDigest);
+        expect(takeLedgerHistoryPointMock).toHaveBeenCalledTimes(1);
+        const runs = sidecarRequestMock.mock.calls.filter((call) => call[0] === 'agent.run').map((call) => call[1]);
+        expect(runs).toHaveLength(2);
+        for (const run of runs) {
+          expect(Object.keys(run as Record<string, unknown>).sort()).toEqual(['clientMessageId', 'payloadDigest', 'runId']);
+        }
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+      });
+
+      it('payload_too_large on a v2 start gives the oversize row, unqueried and unreplayed', async () => {
+        // Still reachable on this form: `userMessage` and the route's clean
+        // input carry the turn's own text.
+        const { runAgentLoopDispatched } = await importFresh();
+        agentStartRequestMock.mockRejectedValue(new Error('payload_too_large {"code":"payload_too_large","bytes":9,"limit":8,"method":"agent.start"}'));
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(result).toMatchObject({
+          reason: 'error',
+          error: '这段对话太长，无法继续。',
+          messageTaken: true,
+          runErrorKind: 'payload_too_large',
+          stopReason: 'payload_too_large',
+        });
+        expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
+          state: 'failed', error: '这段对话太长，无法继续。', errorKind: 'payload_too_large',
+        });
+        expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({
+          stage: 'payload_too_large', errorType: 'payload_too_large',
+        }));
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+        expect(runGetStateRequestMock).not.toHaveBeenCalled();
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(finishRuntimeRunMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('history_unavailable leaves queued follow-ups paused and releases ownership', async () => {
+        const { runAgentLoopDispatched, getRunSession } = await importFresh();
+        agentStartRequestMock.mockRejectedValue(historyUnavailableRejection());
+        dequeueNextUserInputMock.mockReturnValue({ id: 'q1', text: 'queued follow-up', timestamp: 1 });
+        getQueuedInputsMock.mockReturnValue([{ id: 'q1', text: 'queued follow-up', timestamp: 1 }]);
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello', { initiatedBy: 'user' });
+
+        expect(result.reason).toBe('error');
+        expect(dequeueNextUserInputMock).not.toHaveBeenCalled();
+        expect(pauseUserInputQueueMock).toHaveBeenCalledWith('conv-1');
+        expect(chatStoreAddMessageMock).toHaveBeenCalledTimes(1);
+        expect(chatStoreAddMessageMock).toHaveBeenCalledWith('conv-1', expect.objectContaining({ content: 'hello' }));
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        // The failed run's session and controller are gone, so the next send
+        // starts a real run instead of joining a dead one.
+        const failedRunId = (chatStoreAddMessageMock.mock.calls[0][1] as { runId: string }).runId;
+        expect(getRunSession(failedRunId)).toBeUndefined();
+        expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1', expect.any(AbortController));
+      });
+
       it('budgets the acknowledgement for the ledger the sidecar has to read', async () => {
         const { agentStartAckBudgetMs } = await importFresh();
         const MIB = 1024 * 1024;

@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * Builds the CommonJS bundle the Electron main process uses to read a
  * conversation ledger, from the same TypeScript the renderer and the sidecar
@@ -11,6 +10,11 @@
  * The output must be byte-identical on every machine, so every option below is
  * a constant and the build reads nothing but the entry point's import graph.
  * esbuild's own version is pinned by package-lock.json.
+ *
+ * Run it with `node` (the npm scripts do). The file carries no hashbang line:
+ * `electron/ledgerReader.contract.test.ts` imports it, and Vite's SSR transform
+ * only removes a hashbang that ends in a bare `\n`, which a CRLF checkout does
+ * not have.
  */
 import { build } from 'esbuild';
 import fs from 'node:fs';

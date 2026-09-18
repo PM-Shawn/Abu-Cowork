@@ -6835,6 +6835,23 @@ describe('agentLoopRunner', () => {
         expect(clearAbortControllerMock).toHaveBeenCalledWith('conv-1', expect.any(AbortController));
       });
 
+      it('a ledger that cannot be brought level is traced as the same root cause with its own reason', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        takeLedgerHistoryPointMock.mockRejectedValue(Object.assign(
+          new Error('ledger history point: "conv-1" armed a new revision in each of 3 rounds'),
+          { name: 'LedgerHistoryPointError' },
+        ));
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        const failure = traceRuntimeEventMock.mock.calls
+          .find((call) => call[0] === 'renderer.agent_run_failed')?.[1] as Record<string, unknown>;
+        expect(failure).toMatchObject({ stage: 'history_unavailable', reason: 'ledger_not_level', outcome: 'error' });
+        // Nothing was measured on this side, so no byte count is reported.
+        expect(failure).not.toHaveProperty('ledgerWatermarkBytes');
+        expect(failure).not.toHaveProperty('ledgerFileBytes');
+      });
+
       it('budgets the acknowledgement for the ledger the sidecar has to read', async () => {
         const { agentStartAckBudgetMs } = await importFresh();
         const MIB = 1024 * 1024;

@@ -896,7 +896,9 @@ async function finalizePreAcceptFailure(params: {
   displayMessage: string;
   stage: 'sidecar_unavailable' | 'payload_too_large' | 'params_build_failed' | 'history_unavailable';
   errorType: string;
-  /** Present for `stage: 'history_unavailable'`: the sidecar's typed reason, numbers only. */
+  /** Fixed vocabulary, never free text: which variant of the stage this is. */
+  reason?: string;
+  /** Present when the sidecar measured the ledger (`history_unavailable`): numbers only. */
   historyUnavailable?: HistoryUnavailableData;
   /** Present only once a RunSession exists; its own `finally` owns teardown. */
   session?: RunSession;
@@ -925,8 +927,8 @@ async function finalizePreAcceptFailure(params: {
     stage: params.stage,
     outcome: 'error',
     errorType: params.errorType,
+    ...(params.reason ? { reason: params.reason } : {}),
     ...(params.historyUnavailable ? {
-      reason: params.historyUnavailable.reason,
       ledgerWatermarkBytes: params.historyUnavailable.uptoBytes,
       ledgerFileBytes: params.historyUnavailable.fileBytes,
     } : {}),
@@ -3358,6 +3360,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       conversationId,
       error: err instanceof Error ? err.message : String(err),
     });
+    // A ledger that could not be brought level with what the user sees is the
+    // same root cause as a history the sidecar could not read; the reason tells
+    // the two apart. No byte counts: nothing was measured on this side.
+    const ledgerNotLevel = err instanceof Error && err.name === 'LedgerHistoryPointError';
     return finalizePreAcceptFailure({
       conversationId,
       clientMessageId,
@@ -3365,8 +3371,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runtimeStartedAt,
       kind: 'dispatch_failed',
       displayMessage: paramsBuildDisplayMessage(err),
-      stage: 'params_build_failed',
+      stage: ledgerNotLevel ? 'history_unavailable' : 'params_build_failed',
       errorType: runtimeErrorType(err),
+      ...(ledgerNotLevel ? { reason: 'ledger_not_level' } : {}),
       userMessage,
       images: options?.images,
     });
@@ -3784,7 +3791,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         errorType: tooLarge
           ? 'payload_too_large'
           : historyUnavailable ? 'history_unavailable' : runtimeErrorType(transportError),
-        ...(historyUnavailable ? { historyUnavailable } : {}),
+        ...(historyUnavailable ? { reason: historyUnavailable.reason, historyUnavailable } : {}),
         userMessage,
         images: options?.images,
       });

@@ -847,6 +847,91 @@ async function sweepStaleStreamSnapshotsOnVersionChange(): Promise<void> {
 }
 
 /**
+ * Turn one buffered revision into the ledger line it promotes to.
+ *
+ * Both promotions serialize through here — the one conversation a dispatch
+ * asks for (`promoteStreamSnapshots`) and every conversation at shutdown
+ * (`flushStreamSnapshots`) — so a buffered revision becomes the same ledger
+ * line whichever one reaches it.
+ */
+async function serializeSnapshotPromotion(convId: string, message: Message): Promise<string> {
+  const allowToolResultDehydration = hasInlineToolResultImages(message)
+    ? await refreshOutputManifestForToolResultImages(convId)
+    : true;
+  return serializeLedgerPut(
+    convId,
+    message,
+    parentIdByMessage.get(message.id),
+    allowToolResultDehydration,
+  );
+}
+
+/**
+ * Queue one promoted line and claim its id once the line is durable. The
+ * returned promise settles with the write: resolved means the line is on disk.
+ *
+ * The queue keeps the merge key, so a revision still queued for the same id is
+ * overwritten in place rather than appended twice.
+ */
+async function queueSnapshotPromotion(convId: string, message: Message, line: string): Promise<void> {
+  await enqueueWrite(messagesPath(convId), line, message.id);
+  writtenIds.add(message.id);
+}
+
+/** Promote one buffered revision: serialize it, queue it, wait for the disk. */
+async function promoteSnapshotEntry(convId: string, message: Message): Promise<void> {
+  await queueSnapshotPromotion(convId, message, await serializeSnapshotPromotion(convId, message));
+}
+
+/**
+ * Promote one conversation's buffered revisions into its ledger and drop them
+ * from the snapshot; every other conversation's buffer is left alone.
+ *
+ * A reader given a byte watermark gets the ledger prefix alone, with no
+ * snapshot merged on top. A revision that lives only in the snapshot — the
+ * partial answer a crash left behind, re-armed by `loadMessages` — is part of
+ * what the user sees, so it has to be a ledger line before the watermark of a
+ * new run is taken (`takeLedgerHistoryPoint` in `ledgerHistoryPoint.ts`).
+ *
+ * Every line is queued before the flush, so they reach the file in one append.
+ * A failed append rejects and leaves the entries armed, in memory and on disk:
+ * the dispatch that asked for the promotion fails visibly, and the next
+ * attempt promotes them. The snapshot file is rewritten only after the ledger
+ * holds the revisions, so no crash window has neither copy.
+ */
+export async function promoteStreamSnapshots(convId: string): Promise<number> {
+  const entries = streamSnapshots.get(convId);
+  if (!entries || entries.size === 0) return 0;
+  await ensureBase();
+
+  const promoted = [...entries.entries()];
+  // Serialized first, queued second: a revision whose tool-result images make
+  // serialization await the output manifest would otherwise reach the queue
+  // after the flush below and wait for the next drain.
+  const lines = await Promise.all(
+    promoted.map(([, { message }]) => serializeSnapshotPromotion(convId, message)),
+  );
+  // Observed before the flush so a rejected write always has a handler.
+  const outcome = Promise.allSettled(
+    promoted.map(([, { message }], i) => queueSnapshotPromotion(convId, message, lines[i])),
+  );
+  await flushWrites();
+  const failed = (await outcome).find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failed) throw failed.reason;
+
+  // Only what was promoted is dropped: an entry replaced while the write was
+  // in flight is a newer revision the ledger does not hold.
+  for (const [id, entry] of promoted) {
+    if (entries.get(id) === entry) entries.delete(id);
+  }
+  if (entries.size === 0) streamSnapshots.delete(convId);
+  await writeStreamSnapshot(convId, entries);
+  return promoted.length;
+}
+
+/**
  * Promote every buffered revision into the ledger and drop the snapshot files.
  * Called on shutdown so a snapshot never outlives the session that wrote it.
  */
@@ -856,22 +941,7 @@ export async function flushStreamSnapshots(): Promise<void> {
   const promotions: { convId: string; done: Promise<unknown> }[] = [];
   for (const [convId, entries] of [...streamSnapshots.entries()]) {
     for (const { message } of entries.values()) {
-      promotions.push({
-        convId,
-        done: (async () => {
-          const allowToolResultDehydration = hasInlineToolResultImages(message)
-            ? await refreshOutputManifestForToolResultImages(convId)
-            : true;
-          const line = serializeLedgerPut(
-            convId,
-            message,
-            parentIdByMessage.get(message.id),
-            allowToolResultDehydration,
-          );
-          await enqueueWrite(messagesPath(convId), line, message.id);
-          writtenIds.add(message.id);
-        })(),
-      });
+      promotions.push({ convId, done: promoteSnapshotEntry(convId, message) });
     }
     streamSnapshots.delete(convId);
   }

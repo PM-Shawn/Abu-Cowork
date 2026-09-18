@@ -649,6 +649,9 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     sendSync: () => null,
   };
   const context = {
+    // A sandboxed preload sees the shell's webPreferences.additionalArguments
+    // through process.argv; that is how it learns the registered deep-link scheme.
+    process: { argv: ['electron', '--abu-deep-link-scheme=abu-dev'] },
     require(id) {
       assert.equal(id, 'electron');
       return {
@@ -671,6 +674,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
   assert.deepEqual(Object.keys(shellBridge).sort(), [
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
+    'deepLinkScheme',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
@@ -688,6 +692,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'selectUserAttachments',
     'subscribeSidecarEvents',
   ]);
+  assert.equal(shellBridge.deepLinkScheme, 'abu-dev');
   assert.equal(
     await shellBridge.canonicalizePathForPolicy('/native/report.png'),
     '/canonical/native/report.png',

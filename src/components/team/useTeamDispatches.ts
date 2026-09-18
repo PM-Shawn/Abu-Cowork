@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
+import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { resolveTeamRouteContext } from '@/core/team/teamRouteResolver';
@@ -33,15 +34,18 @@ export function useConversationTeam(conversationId: string): TeamRouteContext | 
 /**
  * Every hand-off of a conversation (live executions first, then the message
  * snapshots) plus the per-member summary — computed once and shared by the
- * member bar, the follow-up chips and the team tab.
+ * member bar and the team tab.
  */
 export function useTeamDispatches(conversationId: string): { team: TeamRouteContext | null; dispatches: MemberDispatch[]; members: MemberSummary[] } {
   const team = useConversationTeam(conversationId);
   const messages = useChatStore((s) => s.conversations[conversationId]?.messages);
   const executions = useTaskExecutionStore((s) => s.executions);
+  const batches = useBatchProgressStore((s) => s.batches);
   const dispatches = useMemo(
-    () => (team ? collectMemberDispatches({ conversationId, executions: Object.values(executions), messages: messages ?? [] }) : []),
-    [team, conversationId, executions, messages],
+    () => (team
+      ? collectMemberDispatches({ conversationId, executions: Object.values(executions), messages: messages ?? [], batches: Object.values(batches) })
+      : []),
+    [team, conversationId, executions, messages, batches],
   );
   const members = useMemo(() => summarizeByMember(team?.members.map((m) => m.name) ?? [], dispatches), [team, dispatches]);
   return { team, dispatches, members };

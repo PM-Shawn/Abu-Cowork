@@ -34,6 +34,8 @@ const SAFE_ATTRIBUTE_KEYS = new Set([
   'durationMs',
   'payloadBytes',
   'limitBytes',
+  'ledgerWatermarkBytes',
+  'ledgerFileBytes',
   'fieldMessagesTextBytes',
   'fieldUserMessageBytes',
   'fieldRouteBytes',

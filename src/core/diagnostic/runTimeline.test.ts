@@ -107,6 +107,17 @@ describe('#549 root causes', () => {
     expect(timeline.runs[0].rootCause).toBe('payload_too_large');
   });
 
+  it('classifies an unreadable history before the generic causes', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.agent_run_failed', stage: 'history_unavailable', errorType: 'history_unavailable' },
+    ]), [
+      JSON.stringify({ schemaVersion: 1, timestamp: 5, process: 'main', event: 'main.sidecar_closed', runId: 'run-1' }),
+    ], 10);
+
+    expect(timeline.runs[0]).toMatchObject({ terminalOutcome: 'failed', rootCause: 'history_unavailable' });
+    expect(timeline.rootCauseCounts.history_unavailable).toBe(1);
+  });
+
   it('classifies an unavailable sidecar', () => {
     const timeline = buildDiagnosticRunTimeline(snapshot([
       { event: 'renderer.agent_run_failed', stage: 'sidecar_unavailable', errorType: 'sidecar_timeout' },

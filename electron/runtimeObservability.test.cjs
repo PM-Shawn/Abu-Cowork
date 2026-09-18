@@ -637,3 +637,10 @@ test('#549: the pending-RPC map is capped and evicts the oldest entry', () => {
   assert.deepEqual(responses.map((entry) => entry.attributes.rpcId), ['rpc-4']);
   assert.equal(h.state.snapshot().pendingRpcs.length, 2);
 });
+
+test('#549 P2a: the ledger watermark attributes survive sanitization as non-negative integers', () => {
+  assert.deepEqual(
+    sanitizeAttributes({ reason: 'watermark_beyond_file', ledgerWatermarkBytes: 4096.4, ledgerFileBytes: -3 }),
+    { reason: 'watermark_beyond_file', ledgerWatermarkBytes: 4096, ledgerFileBytes: 0 },
+  );
+});

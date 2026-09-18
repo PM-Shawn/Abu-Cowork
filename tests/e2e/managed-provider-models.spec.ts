@@ -58,6 +58,8 @@ interface Organization {
   accountLabel: string;
   chats: RecordedChat[];
   modelListAuthorizations: string[];
+  /** Replaces the grant the next model-list pull returns. */
+  setModels: (ids: string[]) => void;
   close: () => Promise<void>;
 }
 
@@ -176,9 +178,14 @@ async function showSidebar(page: Page): Promise<void> {
   }
 }
 
+// The sidebar account trigger shows the managed account's name when the build
+// displays one, and the default nickname otherwise.
+const DEFAULT_ACCOUNT_LABEL = /^(我|Me)$/;
+
 async function openModelSettings(page: Page, accountLabel: string): Promise<Locator> {
   await showSidebar(page);
-  await page.locator('button[aria-haspopup="menu"]').filter({ hasText: accountLabel }).first().click();
+  const triggers = page.locator('button[aria-haspopup="menu"]');
+  await triggers.filter({ hasText: accountLabel }).or(triggers.filter({ hasText: DEFAULT_ACCOUNT_LABEL })).first().click();
   await page.getByText('设置', { exact: true }).last().click();
   const dialog = page.locator('[data-abu-settings-dialog]');
   await expect(dialog).toBeVisible({ timeout: READY_TIMEOUT });
@@ -352,18 +359,44 @@ test.describe('managed provider models', () => {
       expect(taskChats(org, marker).map((c) => c.model)).toEqual([org.models[1]]);
     });
 
-    await test.step('when the managed provider cannot be reached the error names it, and the user\'s own model still works', async () => {
+    await test.step('a model the organization withdraws is blocked before the next send, and the picker opens', async () => {
+      org.setModels([org.models[0]]);
+      // The list on hand is re-pulled when a turn ends, so the turn in flight still runs.
+      await send(page, 'mpm-revoked-turn', 'ORG-REPLY');
+      await expect(composerModelButton(page, `${org.models[1]}（不可用）`)).toBeVisible({ timeout: READY_TIMEOUT });
+
+      const input = composerInput(page);
+      await input.fill('mpm-revoked-blocked');
+      await input.press('Enter');
+      await expect(page.getByText(`模型「${org.models[1]}」已不可用，请重新选择`).first()).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(pickerRow(page, org.models[0])).toBeVisible();
+      await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'managed-models-04-revoked.png') });
+      expect(taskChats(org, 'mpm-revoked-blocked')).toEqual([]);
+
+      await pickerRow(page, org.models[0]).click();
+      await expect(composerModelButton(page, org.models[0])).toBeVisible();
+      await send(page, 'mpm-after-revoke', 'ORG-REPLY');
+      expect(taskChats(org, 'mpm-after-revoke').map((c) => c.model)).toEqual([org.models[0]]);
+    });
+
+    await test.step('when the managed provider cannot be reached the composer says so and offers the user\'s own model', async () => {
       await org.close();
       const input = composerInput(page);
       await input.fill('mpm-unreachable');
       await input.press('Enter');
       await expect(page.getByText(`暂时连不上 ${org.name} 的模型服务`, { exact: false }).first()).toBeVisible({ timeout: READY_TIMEOUT });
       await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: READY_TIMEOUT });
-      await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'managed-models-03-unreachable.png') });
       expect(taskChats(mine, 'mpm-unreachable')).toEqual([]);
 
-      await composerModelButton(page, org.models[1]).click();
-      await pickerRow(page, PERSONAL.modelLabel).click();
+      const notice = page.getByTestId('managed-provider-offline');
+      await expect(notice).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(notice).toContainText(`暂时连不上 ${org.name} 的模型服务`);
+      await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'managed-models-03-unreachable.png') });
+
+      // The switch happens only on the click, and only for this conversation.
+      await notice.getByRole('button', { name: '用我自己的模型' }).click();
+      await expect(composerModelButton(page, PERSONAL.modelLabel)).toBeVisible();
+      await expect(notice).toHaveCount(0);
       await send(page, 'mpm-own-after-outage', 'OWN-REPLY');
       expect(taskChats(mine, 'mpm-own-after-outage').map((c) => c.authorization)).toEqual([`Bearer ${PERSONAL_KEY}`]);
     });

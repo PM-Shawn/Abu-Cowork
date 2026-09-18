@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import zhCN from '@/i18n/locales/zh-CN';
-import { describeManagedProviderUnreachable, describeModelUnavailable } from './modelUnavailableCopy';
+import { describeManagedModelRevoked, describeManagedProviderUnreachable, describeModelUnavailable } from './modelUnavailableCopy';
+
+describe('describeManagedModelRevoked', () => {
+  it('asks for another pick without naming a service', () => {
+    const copy = describeManagedModelRevoked(zhCN.chat, 'org-model-b');
+    expect(copy.toast).toBe('模型「org-model-b」已不可用，请重新选择');
+    expect(copy.inTask).toBe('这个任务使用的模型「org-model-b」已不可用，没有发送。请在输入框里重新选择一个模型。');
+  });
+});
 
 describe('describeModelUnavailable', () => {
   it('fills model and reason into all three surfaces', () => {

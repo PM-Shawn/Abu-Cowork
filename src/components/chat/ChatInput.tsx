@@ -5,6 +5,9 @@ import { Input } from '@/components/ui/input';
 import { InlineSkillInput, type InlineSkillInputHandle } from '@/components/ui/inline-skill-input';
 import { splitInputCommand, mergeDraftPrefill } from '@/utils/inputCommand';
 import { ModelSelector } from '@/components/chat/ModelSelector';
+import { ManagedProviderOfflineBar } from '@/components/chat/ManagedProviderOfflineBar';
+import { useManagedProviderLiveness } from '@/components/chat/useManagedProviderLiveness';
+import { subscribeModelPickerRequest } from '@/components/chat/modelPickerRequest';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import AgentAvatar from '@/components/common/AgentAvatar';
@@ -672,6 +675,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
       : (activeModelInfo?.label ?? (currentModel ? currentModel.split('/').pop()?.split('-').slice(0, 2).join(' ') : 'Claude'));
   const [showModelPicker, setShowModelPicker] = useState(false);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  useManagedProviderLiveness(effProvider, isRunning);
+  // A send guard elsewhere may ask for the picker (a model the organization withdrew).
+  useEffect(() => subscribeModelPickerRequest(() => setShowModelPicker(true)), []);
+  const managedProviderOffline = effProvider?.source === 'managed' && effProvider.status === 'failed';
 
   const showAttachmentAdmissionFailed = useCallback((error?: unknown) => {
     useToastStore.getState().addToast({
@@ -1901,6 +1908,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
               },
             } : undefined}
           />
+        )}
+
+        {managedProviderOffline && effProvider && (
+          <ManagedProviderOfflineBar provider={effProvider} conversationId={activeConv?.id ?? null} />
         )}
 
         {/* Input Card */}

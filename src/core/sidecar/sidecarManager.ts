@@ -20,6 +20,20 @@
  * throw out of `startSidecar()` / `stopSidecar()`, and nothing here may
  * surface an error to the UI.
  *
+ * ## Start-up
+ *
+ * Spawn, then `handshake` (`SIDECAR_HANDSHAKE_METHOD`, 10 s budget), then
+ * `running`. A spawned process is not yet a sidecar this shell can talk to:
+ * the status stays `starting` / `restarting` while the handshake is out, so a
+ * send waits (`sidecarReadiness.ts`) instead of dispatching into a process
+ * whose protocol is unknown. An answer names the protocol version and the
+ * capability list, which `sidecarHasCapability()` reports for as long as that
+ * process is `running`. A sidecar without the method (`-32601`), on another
+ * protocol version, with a malformed answer, or silent past the budget is a
+ * spawn failure: the process is killed and the restart policy below decides
+ * what happens next. `selfTestEcho` stays a best-effort latency probe issued
+ * after `running`.
+ *
  * ## Restart policy (documented per P1-0 spec)
  *
  * A single fixed process id (`abu-sidecar`) is reused across the sidecar's
@@ -132,6 +146,13 @@ import { FIELD_BREAKDOWN_MIN_BYTES, MEASURED_RPC_METHODS, measurePayloadFields }
 import { reportError } from '@/utils/consoleError';
 import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
 import { parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
+import { APP_VERSION } from '@/utils/version';
+import {
+  SIDECAR_HANDSHAKE_METHOD,
+  SIDECAR_PROTOCOL_VERSION,
+  SidecarHandshakeError,
+  parseSidecarHandshakeResult,
+} from './sidecarProtocol';
 
 const logger = createLogger('sidecar');
 
@@ -157,6 +178,12 @@ const HEARTBEAT_FAILURE_THRESHOLD = 3;
 // handleClose().
 const HEARTBEAT_JANK_MARGIN_MS = 5_000;
 const REQUEST_DEFAULT_TIMEOUT_MS = 5_000;
+/**
+ * How long the post-spawn handshake may take. It covers the Node process
+ * start and the evaluation of the sidecar bundle on a cold disk, and it runs
+ * inside the 60 s readiness wait of a send (`sidecarReadiness.ts`).
+ */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
 const CRASH_LOOP_WINDOW_MS = 60_000;
 const CRASH_LOOP_MAX_RESTARTS = 3;
 /** Small fixed delay before a respawn attempt, to avoid a tight spawn loop. */
@@ -256,6 +283,9 @@ let lastSidecarGeneration = 0;
 let sidecarEventChain: Promise<void> = Promise.resolve();
 let lastConnectionEvent: SidecarConnectionEvent | null = null;
 
+/** Capabilities the running sidecar announced in its handshake; empty whenever it is not `running`. */
+let sidecarCapabilities: ReadonlySet<string> = new Set();
+
 /** method -> handlers, for sidecar→shell notifications (llm.event, llm.chatMeta, ...). See onSidecarNotification(). */
 const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
 
@@ -304,6 +334,11 @@ function stopEnterpriseEntitlementSync(): void {
 /** Current supervisor state. Exported for future use/tests. */
 export function getSidecarStatus(): SidecarStatus {
   return status;
+}
+
+/** True while the sidecar is `running` and its handshake listed `capability`. */
+export function sidecarHasCapability(capability: string): boolean {
+  return status === 'running' && sidecarCapabilities.has(capability);
 }
 
 /**
@@ -399,6 +434,7 @@ export async function stopSidecar(): Promise<void> {
   rejectAllPending(new Error('Sidecar stopped'));
   restartTimestamps = [];
   crashLoopWarned = false;
+  sidecarCapabilities = new Set();
   setStatus('stopped');
 
   for (const unlisten of unlisteners) {
@@ -718,6 +754,7 @@ export function __resetForTests(): void {
   lastSidecarGeneration = 0;
   sidecarEventChain = Promise.resolve();
   lastConnectionEvent = null;
+  sidecarCapabilities = new Set();
   if (heartbeatTimer) {
     clearInterval(heartbeatTimer);
     heartbeatTimer = null;
@@ -869,6 +906,7 @@ async function ensureListeners(): Promise<void> {
 
 async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
   setStatus(kind === 'initial' ? 'starting' : 'restarting');
+  sidecarCapabilities = new Set();
 
   // Listeners must be live before we spawn, so we never miss an early
   // stdout line or an immediate crash.
@@ -938,6 +976,33 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     return;
   }
 
+  // The process exists; whether it is a sidecar this shell can talk to is only
+  // known once it answers the handshake. Until then the status stays
+  // `starting` / `restarting`, so a send keeps waiting (sidecarReadiness.ts).
+  const handshakeStartedAt = Date.now();
+  try {
+    const answer = parseSidecarHandshakeResult(await request(
+      SIDECAR_HANDSHAKE_METHOD,
+      { protocolVersion: SIDECAR_PROTOCOL_VERSION, shellVersion: APP_VERSION },
+      HANDSHAKE_TIMEOUT_MS,
+    ));
+    sidecarCapabilities = new Set(answer.capabilities);
+  } catch (err) {
+    // Same ending as a failed spawn: no half-started process is left behind,
+    // and the restart policy decides what happens next. The close event this
+    // kill produces arrives while the status is `starting` / `restarting`,
+    // which `handleClose` reads as the echo of our own kill.
+    await invoke('mcp_kill', { id: SIDECAR_ID }).catch(() => {});
+    handleSpawnFailure(err, handshakeFailureReason(err));
+    return;
+  }
+  traceRuntimeEvent('renderer.sidecar_handshake_completed', {
+    sidecarId: SIDECAR_ID,
+    stage: 'running',
+    outcome: 'success',
+    durationMs: Date.now() - handshakeStartedAt,
+  });
+
   setStatus('running');
   publishConnectionState({ state: 'connected', reason: 'ready' });
   // Seed after every spawn/restart, then stream heartbeat/store changes.
@@ -949,6 +1014,14 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     startHeartbeat();
   }
   void selfTestEcho();
+}
+
+function handshakeFailureReason(err: unknown): string {
+  if (err instanceof SidecarRpcError && err.code === -32601) return 'handshake-unsupported';
+  if (err instanceof SidecarHandshakeError) {
+    return err.code === 'protocol_incompatible' ? 'handshake-incompatible' : 'handshake-malformed';
+  }
+  return 'handshake-failed';
 }
 
 function handleSpawnFailure(err: unknown, reason: string): void {
@@ -1294,6 +1367,7 @@ async function writeRpcMessage(
 }
 
 function handleClose(): void {
+  sidecarCapabilities = new Set();
   stopHeartbeat();
   rejectAllPending(new Error('Sidecar process closed'));
 

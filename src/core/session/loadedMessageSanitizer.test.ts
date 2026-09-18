@@ -22,7 +22,7 @@ function asJson<T>(value: T): unknown {
 
 describe('sanitizeLoadedLedgerMessages', () => {
   it('the fixture file covers every rule', () => {
-    expect(cases.length).toBeGreaterThanOrEqual(8);
+    expect(cases.length).toBeGreaterThanOrEqual(9);
     expect(cases.some((c) => c.currentRunMessageId !== undefined)).toBe(true);
   });
 

@@ -94,6 +94,24 @@
       ]
     },
     {
+      "name": "a structured run error with a provider projection is replaced by that projection's summary",
+      "input": [
+        {
+          "id": "u1", "role": "user", "content": "x", "timestamp": 1, "runState": "failed",
+          "runError": "{\"error\":{\"message\":\"body\"}}",
+          "runErrorDetails": { "status": 403, "summary": "content policy" }
+        }
+      ],
+      "expected": [
+        {
+          "id": "u1", "role": "user", "content": "x", "timestamp": 1, "runState": "failed",
+          "runError": "content policy",
+          "runErrorDetails": { "status": 403, "summary": "content policy" },
+          "isStreaming": false
+        }
+      ]
+    },
+    {
       "name": "thinking or tool context makes an assistant row substantive; whitespace text does not; other roles are kept",
       "input": [
         { "id": "t1", "role": "assistant", "content": "", "timestamp": 1, "thinking": "想一想" },

@@ -115,6 +115,20 @@ describe('sidecar loadMessages', () => {
       .rejects.toMatchObject({ code: 'watermark_not_at_line_end' });
   });
 
+  it('refuses a watermark above zero on a conversation that has no ledger', async () => {
+    const { loadMessages } = await import('./conversationStorageRun');
+    // The watermark is a size the shell measured on this very file, so a file
+    // that is not there contradicts it — the same disagreement a watermark past
+    // the end of an existing file is refused for.
+    await expect(loadMessages('conv-none-wm', { uptoBytes: 10 })).rejects.toMatchObject({
+      code: 'watermark_beyond_file',
+      uptoBytes: 10,
+      fileBytes: 0,
+    });
+    // A zero watermark measured nothing, so it agrees with a missing file.
+    expect(await loadMessages('conv-none-wm', { uptoBytes: 0 })).toEqual([]);
+  });
+
   it('treats a missing ledger as empty even under strictRead', async () => {
     const { loadMessages } = await import('./conversationStorageRun');
     expect(await loadMessages('conv-none')).toEqual([]);

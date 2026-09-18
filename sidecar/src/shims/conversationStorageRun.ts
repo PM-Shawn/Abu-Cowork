@@ -81,10 +81,19 @@
  * a flush, so a caller can pin exactly the prefix the writer had made durable
  * and never see a half-written tail. Such a read returns that prefix alone: the
  * snapshot's stamps are measured against the whole ledger, so merging it into a
- * cut ledger would hand back content the watermark deliberately excludes.
+ * cut ledger would hand back content the watermark deliberately excludes. The
+ * watermark is also what a missing ledger is judged against: a value above zero
+ * says the shell measured this file, so finding no file at all is a
+ * disagreement about the path and is refused instead of read as an empty
+ * conversation.
  */
 import type { Message } from '@/types';
-import { decodeLedgerPrefix, projectLedger, STREAM_SNAPSHOT_FILENAME } from '@/core/session/ledgerReader';
+import {
+  decodeLedgerPrefix,
+  LedgerWatermarkError,
+  projectLedger,
+  STREAM_SNAPSHOT_FILENAME,
+} from '@/core/session/ledgerReader';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import * as fs from 'node:fs/promises';
 import { appDataDir } from '@tauri-apps/api/path';
@@ -154,10 +163,19 @@ async function readLedgerText(
   try {
     bytes = await fs.readFile(messagesPath(convId));
   } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    // A watermark above zero is a size the shell measured on this very file, so
+    // a file that is not there contradicts it: the two sides disagree about
+    // which conversation directory they are looking at, and answering "empty"
+    // would start a run on a history the caller's own measurement rules out.
+    // Refused exactly like a watermark past the end of a file that does exist.
+    if (code === 'ENOENT' && options?.uptoBytes !== undefined && options.uptoBytes > 0) {
+      throw new LedgerWatermarkError('watermark_beyond_file', options.uptoBytes, 0);
+    }
     // A missing file/dir is an empty ledger, same contract as the real module.
     // Every other read failure stays tolerant unless the caller asked to tell
     // the two apart (`strictRead`, used by first-contact receipt recovery).
-    if (options?.strictRead && (err as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw err;
+    if (options?.strictRead && code !== 'ENOENT') throw err;
     return null;
   }
   return decodeLedgerPrefix(bytes, options?.uptoBytes);
@@ -169,7 +187,9 @@ async function readLedgerText(
  * `uptoBytes` reads the ledger only up to that byte offset and returns that
  * prefix alone, with no stream snapshot merged on top. A value that does not
  * match the file throws a `LedgerWatermarkError`, which is deliberately not
- * caught — a caller that passes a watermark must learn that it is wrong.
+ * caught — a caller that passes a watermark must learn that it is wrong. That
+ * includes a value above zero on a conversation with no ledger file, which a
+ * read without a watermark still reports as an empty conversation.
  */
 export async function loadMessages(
   convId: string,

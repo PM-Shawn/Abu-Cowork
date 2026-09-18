@@ -58,7 +58,19 @@ import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
 import { clearBrowserReclaim, disposeOwnedBrowserViews } from '../core/browser/browserViewLifecycle';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
-import { normalizeUpstreamErrorDetails, sanitizeUntrustedLlmErrorText } from '../core/llm/adapter';
+import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
+import {
+  ACTIVE_RUN_STATES,
+  RUN_FAILURE_STATES,
+  TERMINAL_RUN_STATES,
+  collectAnsweredLoopIds,
+  enforceRunErrorState,
+  recoverInterruptedUserRun,
+  sanitizeLoadedLedgerMessages,
+  sanitizeRunErrorKind,
+  sanitizeRunErrorText,
+  type LoadedMessageSanitizerText,
+} from '../core/session/loadedMessageSanitizer';
 import { clearBrowserToolTrackers } from '../core/observability/browserSignals';
 
 enableMapSet();
@@ -98,81 +110,21 @@ function truncateUtf8(text: string, maxBytes: number): string {
   return out;
 }
 
-const ACTIVE_RUN_STATES = new Set<Message['runState']>(['pending', 'accepted', 'running', 'recovering']);
-const TERMINAL_RUN_STATES = new Set<Message['runState']>([
-  'completed',
-  'failed',
-  'connection-failed',
-  'interrupted',
-]);
-const RUN_FAILURE_STATES = new Set<Message['runState']>(['failed', 'connection-failed']);
-/**
- * #549: the closed set of pre-accept failure causes a failed user row may
- * carry. Anything else (including a value hand-edited into the ledger) is
- * dropped — the field drives UI affordances, so it is never trusted from disk.
- */
-const RUN_ERROR_KINDS = new Set<NonNullable<Message['runErrorKind']>>([
-  'payload_too_large',
-  'sidecar_unavailable',
-  'dispatch_failed',
-]);
-
-function sanitizeRunErrorKind(value: unknown): Message['runErrorKind'] {
-  return RUN_ERROR_KINDS.has(value as NonNullable<Message['runErrorKind']>)
-    ? value as Message['runErrorKind']
-    : undefined;
-}
+export { collectAnsweredLoopIds };
 
 function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
   return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
     || batchSummaryHasNonSuccess(tc.batchTerminalSummary);
 }
 
-function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<string>): Message {
-  if (msg.role !== 'user' || !ACTIVE_RUN_STATES.has(msg.runState)) return msg;
-  // A stale-active row whose loop demonstrably produced a substantive reply
-  // did complete — only its terminal runState revision was lost (the immer
-  // draft-leak fixed alongside this shipped every image-carrying row that
-  // way, including all of v0.40.0's). Branding those rows "发送失败" invites
-  // a retry of a turn that already succeeded.
-  if (msg.loopId && answeredLoopIds?.has(msg.loopId)) {
-    return { ...msg, runState: 'completed' };
-  }
-  // `runErrorKind` is dropped on purpose (#549): a row branded failed by
-  // restart recovery is not one of the pre-accept causes, so it must not
-  // inherit their affordances (e.g. the oversize 「新建对话」 button) from a
-  // kind that happened to be sitting in the ledger.
-  const { runErrorKind: _recoveredKind, ...withoutKind } = msg;
-  return {
-    ...withoutKind,
-    runState: 'failed',
-    runError: getI18n().chat.runRecoveredAfterRestart,
-  };
-}
-
-function safeRunErrorFallback(errorDetails?: UpstreamErrorDetails): string {
-  const statusFallback = errorDetails
-    ? `HTTP ${errorDetails.status}`
-    : getI18n().chat.errorEmptyBody;
-  return errorDetails?.summary
-    ? sanitizeUntrustedLlmErrorText(errorDetails.summary, statusFallback)
-    : statusFallback;
+/** The two strings the shared sanitiser writes into a row, in the UI's locale. */
+function loadedMessageSanitizerText(): LoadedMessageSanitizerText {
+  const { chat } = getI18n();
+  return { runRecoveredAfterRestart: chat.runRecoveredAfterRestart, errorEmptyBody: chat.errorEmptyBody };
 }
 
 function sanitizeRunError(value: unknown, errorDetails?: UpstreamErrorDetails): string | undefined {
-  if (typeof value !== 'string' || value.trim() === '') return undefined;
-  return sanitizeUntrustedLlmErrorText(value, safeRunErrorFallback(errorDetails));
-}
-
-function enforceRunErrorState(message: Message): Message {
-  if (RUN_FAILURE_STATES.has(message.runState)) return message;
-  const {
-    runError: _runError,
-    runErrorDetails: _runErrorDetails,
-    runErrorKind: _runErrorKind,
-    ...withoutRunError
-  } = message;
-  return withoutRunError as Message;
+  return sanitizeRunErrorText(value, errorDetails, getI18n().chat.errorEmptyBody);
 }
 
 /** Extra safety net for messages coming in via import — ensures no streaming
@@ -204,80 +156,15 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
       } = tc;
       return { ...safeToolCall, isExecuting: false };
     }),
-  }, answeredLoopIds));
+  }, { recoveredText: getI18n().chat.runRecoveredAfterRestart, answeredLoopIds }));
 }
 
-/** A non-ghost assistant row: real text, tool activity, or thinking. Shared
- * by the ghost filter below and the completed-run inference above it. */
-function isSubstantiveAssistant(msg: Message): boolean {
-  if (msg.role !== 'assistant') return false;
-  const text = typeof msg.content === 'string'
-    ? msg.content
-    : msg.content.filter(c => c.type === 'text').map(c => (c as { type: 'text'; text: string }).text).join('');
-  return text.trim().length > 0
-    || (msg.toolCalls?.length ?? 0) > 0
-    || (msg.toolCallsForContext?.length ?? 0) > 0
-    || !!msg.thinking;
-}
-
-/** Strip ghost assistant messages and clear stale isStreaming flags after loading from disk.
- * Ghost messages are empty assistant placeholders written before content arrived
- * (crash / network failure before streaming started). They must not reach the LLM. */
-/** loopIds whose turn demonstrably finished: a substantive assistant reply
- * bearing `usage`. Substantive text alone is not proof — a stream that died
- * mid-sentence leaves non-empty text too, and inferring 'completed' there
- * would hide the retry affordance behind a half reply. `usage` is only
- * written at a clean stream end (message_stop), so it separates the two:
- * every normally-finished turn carries it (verified across the draft-leak
- * era's ledgers), a crashed stream never does. Shared by the disk-load and
- * import paths so the same ledger sanitizes identically through either. */
-export function collectAnsweredLoopIds(messages: readonly Message[]): ReadonlySet<string> {
-  const answeredLoopIds = new Set<string>();
-  for (const msg of messages) {
-    if (msg.loopId && msg.role === 'assistant' && msg.usage && isSubstantiveAssistant(msg)) {
-      answeredLoopIds.add(msg.loopId);
-    }
-  }
-  return answeredLoopIds;
-}
-
+/**
+ * Messages loaded from disk, cleaned by the shared sanitiser
+ * (`core/session/loadedMessageSanitizer.ts`) with the UI locale's strings.
+ */
 export function sanitizeLoadedMessages(messages: Message[]): Message[] {
-  const answeredLoopIds = collectAnsweredLoopIds(messages);
-  return messages
-    .map((msg) => {
-      const {
-        runErrorDetails: untrustedRunErrorDetails,
-        runError: untrustedRunError,
-        runErrorKind: untrustedRunErrorKind,
-        ...messageWithoutErrorDetails
-      } = msg;
-      const runErrorDetails = normalizeUpstreamErrorDetails(untrustedRunErrorDetails);
-      const runError = sanitizeRunError(untrustedRunError, runErrorDetails);
-      const runErrorKind = sanitizeRunErrorKind(untrustedRunErrorKind);
-      const toolCalls = msg.toolCalls?.map((tc) => {
-        const safeToRetryRecovery =
-          tc.sandboxRecoveryAction === 'pending'
-          || tc.sandboxRecoveryAction === 'enqueued';
-        return {
-          ...tc,
-          isExecuting: false,
-          sandboxRecoveryAction: tc.sandboxRecoveryAction === 'started'
-            ? 'needs-review' as const
-            : safeToRetryRecovery
-            ? 'failed' as const
-            : tc.sandboxRecoveryAction,
-        };
-      });
-      return enforceRunErrorState(recoverInterruptedUserRun({
-        ...messageWithoutErrorDetails,
-        ...(runError ? { runError } : {}),
-        ...(runErrorDetails ? { runErrorDetails } : {}),
-        ...(runErrorKind ? { runErrorKind } : {}),
-        isStreaming: false,
-        toolCalls,
-      }, answeredLoopIds));
-    })
-    .filter(msg => msg.role !== 'assistant' || isSubstantiveAssistant(msg));
+  return sanitizeLoadedLedgerMessages(messages, { text: loadedMessageSanitizerText() });
 }
 
 /** Build an in-memory Conversation + Meta from a validated ShareBundle.

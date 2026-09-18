@@ -1,7 +1,8 @@
 import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { getModelUnavailableReason, hasAnyEnabledProvider, getModelDisplayLabel } from '@/utils/settingsSelectors';
-import { describeModelUnavailable } from '@/utils/modelUnavailableCopy';
+import { describeManagedModelRevoked, describeModelUnavailable } from '@/utils/modelUnavailableCopy';
+import { requestModelPicker } from './modelPickerRequest';
 import type { TranslationDict } from '@/i18n/types';
 import type { Conversation } from '@/types';
 
@@ -21,7 +22,16 @@ export function ensureConversationModelUsable(
   const effState = { ...currentState, activeModel: effModel };
   const modelIssue = getModelUnavailableReason(currentState, effModel);
   if (modelIssue && hasAnyEnabledProvider(currentState)) {
-    const copy = describeModelUnavailable(chat, modelIssue, getModelDisplayLabel(currentState, effModel));
+    const label = getModelDisplayLabel(currentState, effModel);
+    const provider = currentState.providers.find((p) => p.id === effModel.providerId);
+    if (modelIssue === 'model-removed' && provider?.source === 'managed') {
+      // The organization withdrew this model: say so and put the picker in
+      // front of the user, since the next pick is the only way forward.
+      useToastStore.getState().addToast({ type: 'error', title: describeManagedModelRevoked(chat, label).toast });
+      requestModelPicker();
+      return false;
+    }
+    const copy = describeModelUnavailable(chat, modelIssue, label);
     useToastStore.getState().addToast({ type: 'error', title: copy.toast });
     return false;
   }

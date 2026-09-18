@@ -379,6 +379,8 @@ export interface TranslationDict {
     managedModelsSyncing: string;
     /** `{org}` = the managed provider's name. */
     managedProviderUnreachable: string;
+    /** Button on the offline notice: switch this conversation to the user's own model. */
+    useMyOwnModel: string;
     // DetailBlockView
     characters: string;
     viewMore: string;
@@ -495,6 +497,9 @@ export interface TranslationDict {
     skillMissingTools: string;
     /** A managed provider's request failed at the network level (error bubble). `{org}` = its name. */
     managedProviderUnreachableInTask: string;
+    /** The organization withdrew the model a conversation is bound to. `{model}` = its label. */
+    managedModelRevokedToast: string;
+    managedModelRevokedInTask: string;
     /** Sidecar process exited mid-task and automatic recovery has started. */
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */

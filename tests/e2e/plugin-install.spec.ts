@@ -273,6 +273,8 @@ test.describe('plugin install loop', () => {
     const entry = page.getByTestId('plugin-marketplace-entry')
       .filter({ hasText: 'e2e-weather' }).first();
     await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
+    // Entries carry a category, but the market offers no category filter.
+    await expect(page.getByLabel(/^(全部分类|All categories):/)).toHaveCount(0);
 
     // Different-height card rows must remain reachable through virtualization.
     // Virtuoso hands scrolling to PluginsTab's own container (customScrollParent),

@@ -1,7 +1,9 @@
-import type { BatchIdentity, Message } from '@/types';
+import type { BatchIdentity, BatchTaskTerminalStatus, Message, SubagentStopReason, ToolCall } from '@/types';
 import type { ExecutionStep, ExecutionStepSnapshot, TaskExecution } from '@/types/execution';
+import type { BatchEntry, BatchTaskStatus } from '@/stores/batchProgressStore';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { MEMBER_INSTRUCTION_STEP } from '@/core/agent/dispatchInput';
+import { normalizeBatchTerminalSummary } from '@/core/agent/batchTerminalSummary';
 
 export type DispatchStatus = 'running' | 'completed' | 'error' | 'unknown' | 'interrupted';
 
@@ -20,15 +22,6 @@ export interface MemberDispatch {
   /** Latest child step start/end seen (live source only) — drives the stall hint. */
   lastActivityAt?: number;
   live: boolean;
-}
-
-/**
- * A member that finished without a single tool call had nothing it could have
- * checked — the same signal the leader gets as a note in the tool result
- * (delegateNoToolCallsNote / batchNoToolCallsNote), here for the UI.
- */
-export function isUnverifiedDispatch(d: Pick<MemberDispatch, 'status' | 'stepCount'>): boolean {
-  return d.status === 'completed' && d.stepCount === 0;
 }
 
 function stepStatus(status: ExecutionStep['status'] | ExecutionStepSnapshot['status']): DispatchStatus {
@@ -54,12 +47,68 @@ function lastActivity(children: readonly (ExecutionStep | ExecutionStepSnapshot)
   return latest;
 }
 
+function fromBatchTaskStatus(status: BatchTaskStatus): DispatchStatus {
+  switch (status) {
+    case 'queued':
+    case 'running': return 'running';
+    case 'succeeded': return 'completed';
+    case 'failed': return 'error';
+    case 'stopped': return 'interrupted';
+    default: return 'unknown';
+  }
+}
+
+/** A run_agent_batch call's own record: its input tasks and whatever says it ran. */
+interface BatchSources {
+  tasks: Array<{ agent?: string; label: string }>;
+  live?: BatchEntry;
+  summary?: Map<number, BatchTaskTerminalStatus>;
+}
+
+const NO_BATCH: BatchSources = { tasks: [] };
+
+/** Same label the batch tool gives a task (orchestrationTools: first 60 chars). */
+function batchTaskLabel(task: string): string {
+  return task.slice(0, 60) + (task.length > 60 ? '…' : '');
+}
+
+function batchInputTasks(input: Record<string, unknown> | undefined): BatchSources['tasks'] {
+  const raw = input?.tasks;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => {
+    const record = typeof item === 'object' && item !== null ? item as Record<string, unknown> : {};
+    const task = typeof record.task === 'string' ? record.task : '';
+    // Preset-type tasks are not team members.
+    const agent = typeof record.agent_name === 'string' && record.agent_name && !record.type ? record.agent_name : undefined;
+    return { agent, label: batchTaskLabel(task) };
+  });
+}
+
+function batchSources(
+  step: ExecutionStep | ExecutionStepSnapshot,
+  conversationId: string,
+  toolCalls: ReadonlyMap<string, ToolCall>,
+  batches: readonly BatchEntry[],
+): BatchSources {
+  if (step.toolName !== TOOL_NAMES.RUN_AGENT_BATCH || !step.toolCallId) return NO_BATCH;
+  const toolCall = toolCalls.get(step.toolCallId);
+  const liveInput = (step as Partial<ExecutionStep>).toolInput;
+  const tasks = batchInputTasks(liveInput && Object.keys(liveInput).length > 0 ? liveInput : toolCall?.input);
+  const live = batches.find((entry) => entry.identity.conversationId === conversationId && entry.identity.batchToolCallId === step.toolCallId);
+  const normalized = toolCall ? normalizeBatchTerminalSummary(toolCall.batchTerminalSummary) : undefined;
+  const summary = normalized && normalized.batch.conversationId === conversationId && normalized.batch.batchToolCallId === step.toolCallId
+    ? new Map(normalized.tasks.map((task) => [task.taskIndex, task.status]))
+    : undefined;
+  return { tasks, live, summary };
+}
+
 function fromStep(
   step: ExecutionStep | ExecutionStepSnapshot,
   conversationId: string,
   assistantMessageId: string | undefined,
   live: boolean,
   startTime: number | undefined,
+  batch: BatchSources,
   interrupted = false,
 ): MemberDispatch[] {
   if (step.type !== 'delegate' || !step.toolCallId) return [];
@@ -73,16 +122,36 @@ function fromStep(
     .filter((child) => child.toolName !== MEMBER_INSTRUCTION_STEP);
   if (step.toolName === TOOL_NAMES.RUN_AGENT_BATCH) {
     const byIndex = new Map<number, { agent: string; label: string; count: number; anyRunning: boolean; anyError: boolean }>();
+    // The call itself is the ledger: once the batch is known to have started
+    // (a live progress entry or a persisted terminal summary), every task in its
+    // input is a hand-off, even one whose member never called a tool.
+    const started = batch.live !== undefined || batch.summary !== undefined;
+    if (started) {
+      batch.tasks.forEach((task, index) => {
+        if (task.agent) byIndex.set(index, { agent: task.agent, label: task.label, count: 0, anyRunning: false, anyError: false });
+      });
+    }
     for (const child of children) {
       const ref = child.batchTask;
       if (!ref) continue;
-      const entry = byIndex.get(ref.index) ?? { agent: ref.agent ?? ref.label, label: ref.label, count: 0, anyRunning: false, anyError: false };
+      const existing = byIndex.get(ref.index);
+      const entry = existing ?? { agent: ref.agent ?? ref.label, label: ref.label, count: 0, anyRunning: false, anyError: false };
+      if (ref.agent) entry.agent = ref.agent;
       entry.count += 1;
       if (child.status === 'running') entry.anyRunning = true;
       if (child.status === 'error') entry.anyError = true;
       byIndex.set(ref.index, entry);
     }
     const parentStatus = stepStatus(step.status);
+    const taskStatus = (taskIndex: number, anyError: boolean): DispatchStatus => {
+      if (interrupted) return 'interrupted';
+      const liveStatus = batch.live?.tasks[taskIndex]?.status;
+      if (liveStatus) return fromBatchTaskStatus(liveStatus);
+      if (parentStatus === 'running') return 'running';
+      const terminal = batch.summary?.get(taskIndex);
+      if (terminal) return fromBatchTaskStatus(terminal);
+      return anyError ? 'error' : parentStatus;
+    };
     return Array.from(byIndex.entries()).map(([taskIndex, entry]) => ({
       key: `${step.toolCallId}:${taskIndex}`,
       agent: entry.agent,
@@ -90,7 +159,7 @@ function fromStep(
       identity,
       taskIndex,
       label: entry.label,
-      status: interrupted ? 'interrupted' : parentStatus === 'running' ? 'running' : entry.anyError ? 'error' : parentStatus,
+      status: taskStatus(taskIndex, entry.anyError),
       stepCount: entry.count,
       startTime,
       lastActivityAt: live ? lastActivity(children.filter((child) => child.batchTask?.index === taskIndex), startTime) : undefined,
@@ -114,6 +183,51 @@ function fromStep(
   }];
 }
 
+function fromSubagentStopReason(reason: SubagentStopReason): DispatchStatus {
+  if (reason === 'completed') return 'completed';
+  if (reason === 'aborted') return 'interrupted';
+  if (reason === 'error') return 'error';
+  return 'unknown';
+}
+
+function fromToolCall(call: ToolCall, conversationId: string, message: Message, interrupted: boolean): MemberDispatch[] {
+  const identity: BatchIdentity = { conversationId, assistantMessageId: message.id, batchToolCallId: call.id };
+  const base = { identity, stepCount: 0, startTime: call.startTime ?? message.timestamp, live: false };
+  if (call.name === TOOL_NAMES.RUN_AGENT_BATCH) {
+    const summary = normalizeBatchTerminalSummary(call.batchTerminalSummary, { conversationId, batchToolCallId: call.id });
+    if (!summary) return [];
+    const terminal = new Map(summary.tasks.map((task) => [task.taskIndex, task.status]));
+    return batchInputTasks(call.input).flatMap((task, taskIndex) => {
+      if (!task.agent) return [];
+      const status = terminal.get(taskIndex);
+      return [{
+        ...base,
+        key: `${call.id}:${taskIndex}`,
+        agent: task.agent,
+        kind: 'batch' as const,
+        taskIndex,
+        label: task.label,
+        status: interrupted ? 'interrupted' : status ? fromBatchTaskStatus(status) : 'unknown',
+      }];
+    });
+  }
+  if (call.name === TOOL_NAMES.DELEGATE_TO_AGENT && call.subagentStopReason) {
+    const agent = call.input?.agent_name;
+    if (typeof agent !== 'string' || !agent) return [];
+    const task = call.input?.task;
+    return [{
+      ...base,
+      key: `${call.id}:0`,
+      agent,
+      kind: 'delegate',
+      taskIndex: 0,
+      label: typeof task === 'string' && task.trim() ? task.trim() : agent,
+      status: interrupted ? 'interrupted' : fromSubagentStopReason(call.subagentStopReason),
+    }];
+  }
+  return [];
+}
+
 /**
  * Every hand-off in a conversation, live first (taskExecutionStore) then the
  * persisted message snapshots, de-duplicated by tool call + task index.
@@ -122,12 +236,22 @@ export function collectMemberDispatches(params: {
   conversationId: string;
   executions: readonly TaskExecution[];
   messages: readonly Message[];
+  /** Live run_agent_batch progress (batchProgressStore). */
+  batches?: readonly BatchEntry[];
 }): MemberDispatch[] {
   const seen = new Map<string, MemberDispatch>();
+  const batches = params.batches ?? [];
+  const toolCalls = new Map<string, ToolCall>();
+  for (const message of params.messages) {
+    for (const call of message.toolCalls ?? []) {
+      if (call.name === TOOL_NAMES.RUN_AGENT_BATCH) toolCalls.set(call.id, call);
+    }
+  }
+  const sourcesOf = (step: ExecutionStep | ExecutionStepSnapshot) => batchSources(step, params.conversationId, toolCalls, batches);
   for (const exec of params.executions) {
     if (exec.conversationId !== params.conversationId) continue;
     for (const step of exec.steps) {
-      for (const d of fromStep(step, params.conversationId, undefined, true, step.startTime ?? exec.startTime)) {
+      for (const d of fromStep(step, params.conversationId, undefined, true, step.startTime ?? exec.startTime, sourcesOf(step))) {
         seen.set(d.key, d);
       }
     }
@@ -138,11 +262,22 @@ export function collectMemberDispatches(params: {
   const interruptedLoops = new Set(
     params.messages.filter((m) => m.role === 'user' && m.runState === 'interrupted' && m.loopId).map((m) => m.loopId as string),
   );
+  const interruptedOf = (message: Message) => message.isStreaming === true || (!!message.loopId && interruptedLoops.has(message.loopId));
   for (const message of params.messages) {
     if (message.role !== 'assistant' || !message.executionSteps) continue;
-    const interrupted = message.isStreaming === true || (!!message.loopId && interruptedLoops.has(message.loopId));
     for (const step of message.executionSteps) {
-      for (const d of fromStep(step, params.conversationId, message.id, false, message.timestamp, interrupted)) {
+      for (const d of fromStep(step, params.conversationId, message.id, false, message.timestamp, sourcesOf(step), interruptedOf(message))) {
+        if (!seen.has(d.key)) seen.set(d.key, d);
+      }
+    }
+  }
+  // Last resort: the finished call itself. A message's execution-step snapshot
+  // can be missing after a reload; the call's input and terminal metadata are
+  // enough to say who was handed what.
+  for (const message of params.messages) {
+    if (message.role !== 'assistant') continue;
+    for (const call of message.toolCalls ?? []) {
+      for (const d of fromToolCall(call, params.conversationId, message, interruptedOf(message))) {
         if (!seen.has(d.key)) seen.set(d.key, d);
       }
     }

@@ -17,6 +17,7 @@
 // this is the same substitution `agentLoop.ts` already made for the same reason.
 import { getActiveApiKey, getActiveProvider, getEffectiveModel } from '../../utils/settingsSelectors';
 import { getSettingsReader } from '../agent/ports/settingsReader';
+import { settingsForConversation } from '../agent/conversationSettings';
 // P1-3d-2: route the LLM call through `selectChatAdapter` (already sidecar-ized,
 // P1-1 — has its own sidecar-local shim `selectChatAdapterRun.ts`) instead of
 // constructing `ClaudeAdapter`/`OpenAICompatibleAdapter` directly. Matches the
@@ -189,8 +190,8 @@ export async function extractMemoriesFromConversation(
 
     if (transcript.length < 50) return; // too little content
 
-    // Create adapter
-    const settings = getSettingsReader().getSnapshot();
+    // Create adapter on the conversation's own model and provider.
+    const settings = settingsForConversation(conversationId, getSettingsReader().getSnapshot());
     const activeApiKey = getActiveApiKey(settings);
     if (!activeApiKey) {
       console.warn('[Memory] Auto-extraction skipped: no API key configured');

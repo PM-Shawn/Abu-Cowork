@@ -553,3 +553,160 @@ test('renderer reload cleanup closes every fs watch owned by that sender', (t) =
     })
   );
 });
+
+// A relative path with no baseDir used to be resolved against main's cwd, so
+// it was readable/writable whenever that cwd sat under an allowed root (a dev
+// launch from the repo). These run with cwd inside a temp dir to reproduce it.
+function chdirTemp(t) {
+  const previous = process.cwd();
+  // Registered first so cwd is restored before tempDir's cleanup removes it.
+  t.after(() => process.chdir(previous));
+  const dir = tempDir(t);
+  process.chdir(dir);
+  return dir;
+}
+
+const RELATIVE = 'abu-relative-probe/secret-name.txt';
+const REFUSED = /must be an absolute path/;
+
+function assertRefusedWithoutEcho(fn, key) {
+  assert.throws(fn, (err) => {
+    assert.match(err.message, REFUSED);
+    assert.match(err.message, new RegExp(`\\b${key}\\b`));
+    assert.equal(err.message.includes('secret-name'), false, 'error must not echo the path');
+    return true;
+  });
+}
+
+test(
+  'bare-name write commands refuse a relative path instead of resolving it against cwd',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const cwd = chdirTemp(t);
+    fs.mkdirSync(path.join(cwd, 'abu-relative-probe'));
+    fs.writeFileSync(path.join(cwd, 'abu-relative-probe', '.x.backup.1'), 'old');
+    const utimeOld = new Date(0);
+    fs.utimesSync(path.join(cwd, 'abu-relative-probe', '.x.backup.1'), utimeOld, utimeOld);
+
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'append_file_text', { args: { path: RELATIVE, data: 'x' } }),
+      'path'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'atomic_write_text', { args: { path: RELATIVE, content: 'x' } }),
+      'path'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'atomic_write_with_backup', { args: { path: RELATIVE, content: 'x' } }),
+      'path'
+    );
+    assertRefusedWithoutEcho(
+      () =>
+        fsDispatch(app, 'restore_from_backup', {
+          args: { target: RELATIVE, backup: path.join(cwd, 'abu-relative-probe', '.x.backup.1') },
+        }),
+      'target'
+    );
+    assertRefusedWithoutEcho(
+      () =>
+        fsDispatch(app, 'restore_from_backup', {
+          args: { target: path.join(cwd, 'restored.txt'), backup: RELATIVE },
+        }),
+      'backup'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'cleanup_old_backups', { args: { dir: 'abu-relative-probe', ttlHours: 0 } }),
+      'dir'
+    );
+
+    assert.equal(fs.existsSync(path.join(cwd, RELATIVE)), false);
+    assert.equal(fs.existsSync(path.join(cwd, 'abu-relative-probe', '.x.backup.1')), true);
+  }
+);
+
+test(
+  'plugin:fs raw writes refuse a relative path header when no baseDir is given',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const cwd = chdirTemp(t);
+    for (const cmd of ['plugin:fs|write_file', 'plugin:fs|write_text_file']) {
+      assertRefusedWithoutEcho(
+        () =>
+          fsDispatch(app, cmd, {
+            body: Buffer.from('blocked'),
+            headers: { path: encodeURIComponent('secret-name.txt'), options: '{}' },
+          }),
+        'path'
+      );
+    }
+    assert.equal(fs.existsSync(path.join(cwd, 'secret-name.txt')), false);
+  }
+);
+
+test(
+  'plugin:fs plain-arg commands refuse relative paths when no baseDir is given',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const cwd = chdirTemp(t);
+    fs.writeFileSync(path.join(cwd, 'secret-name.txt'), 'inside cwd');
+    const abs = path.join(cwd, 'other.txt');
+    fs.writeFileSync(abs, 'other');
+
+    for (const cmd of [
+      'plugin:fs|read_text_file',
+      'plugin:fs|read_file',
+      'plugin:fs|stat',
+      'plugin:fs|lstat',
+      'plugin:fs|read_dir',
+      'plugin:fs|mkdir',
+      'plugin:fs|remove',
+    ]) {
+      assertRefusedWithoutEcho(
+        () => fsDispatch(app, cmd, { args: { path: 'secret-name.txt' } }),
+        'path'
+      );
+    }
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'plugin:fs|rename', { args: { oldPath: abs, newPath: 'secret-name.txt' } }),
+      'newPath'
+    );
+    assertRefusedWithoutEcho(
+      () => fsDispatch(app, 'plugin:fs|copy_file', { args: { fromPath: 'secret-name.txt', toPath: abs } }),
+      'fromPath'
+    );
+    assertRefusedWithoutEcho(
+      () =>
+        fsWatchDispatch(app, 'plugin:fs|watch', {
+          args: { paths: ['secret-name.txt'], options: {}, onEvent: '__CHANNEL__:9' },
+          event: { sender: null },
+        }),
+      'path'
+    );
+    // exists stays a probe: a refused path simply "doesn't exist".
+    assert.equal(fsDispatch(app, 'plugin:fs|exists', { args: { path: 'secret-name.txt' } }), false);
+    assert.equal(fs.readFileSync(path.join(cwd, 'secret-name.txt'), 'utf8'), 'inside cwd');
+    assert.equal(fs.readFileSync(abs, 'utf8'), 'other');
+  }
+);
+
+test(
+  'a relative path is still resolved against an explicit baseDir',
+  { skip: process.platform === 'win32' },
+  (t) => {
+    const home = tempDir(t);
+    const homeApp = { getPath: (name) => (name === 'home' ? home : os.tmpdir()) };
+    const HOME_BASE_DIR = 21; // Tauri BaseDirectory.Home
+    fsDispatch(homeApp, 'plugin:fs|write_text_file', {
+      body: Buffer.from('via baseDir'),
+      headers: {
+        path: encodeURIComponent('relative.txt'),
+        options: JSON.stringify({ baseDir: HOME_BASE_DIR }),
+      },
+    });
+    const bytes = fsDispatch(homeApp, 'plugin:fs|read_text_file', {
+      args: { path: 'relative.txt', options: { baseDir: HOME_BASE_DIR } },
+    });
+    assert.equal(bytes.toString('utf8'), 'via baseDir');
+    assert.equal(fs.readFileSync(path.join(home, 'relative.txt'), 'utf8'), 'via baseDir');
+  }
+);

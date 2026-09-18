@@ -2644,5 +2644,20 @@ describe('conversationStorage', () => {
       const { takeLedgerHistoryPoint } = await import('./ledgerHistoryPoint');
       expect(await takeLedgerHistoryPoint('hp-missing')).toEqual({ ledgerWatermark: 0, promotedSnapshotEntries: 0 });
     });
+
+    it('reports whether a conversation still has a revision waiting for its ledger', async () => {
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(false);
+
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(false);
+
+      await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '半截回答' }));
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(true);
+      expect(storage.hasArmedStreamSnapshot('hp-other')).toBe(false);
+
+      await storage.promoteStreamSnapshots(CONV);
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(false);
+    });
   });
 });

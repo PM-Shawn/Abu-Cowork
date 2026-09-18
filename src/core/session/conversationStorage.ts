@@ -930,6 +930,18 @@ export async function promoteStreamSnapshots(convId: string): Promise<number> {
 }
 
 /**
+ * Whether this conversation holds a revision that is not a ledger line yet.
+ *
+ * Read-only: a dispatch taking its history point (`ledgerHistoryPoint.ts`)
+ * asks after the watermark, because a frame that lands during the promotion
+ * arms a revision the watermark it just took cannot cover.
+ */
+export function hasArmedStreamSnapshot(convId: string): boolean {
+  const entries = streamSnapshots.get(convId);
+  return entries !== undefined && entries.size > 0;
+}
+
+/**
  * Promote every buffered revision into the ledger and drop the snapshot files.
  * Called on shutdown so a snapshot never outlives the session that wrote it.
  */

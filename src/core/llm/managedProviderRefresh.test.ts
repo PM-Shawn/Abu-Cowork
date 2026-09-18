@@ -1,5 +1,26 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { refreshManagedProvider, setManagedProviderRefresher } from './managedProviderRefresh';
+import {
+  readManagedProviderPersonalFallback,
+  refreshManagedProvider,
+  setManagedProviderPersonalFallback,
+  setManagedProviderRefresher,
+} from './managedProviderRefresh';
+
+describe('managed provider personal fallback', () => {
+  afterEach(() => setManagedProviderPersonalFallback('org', null));
+
+  it('returns what the registered reader reports', () => {
+    setManagedProviderPersonalFallback('org', () => ({ providerId: 'deepseek', modelId: 'deepseek-chat' }));
+    expect(readManagedProviderPersonalFallback('org')).toEqual({ providerId: 'deepseek', modelId: 'deepseek-chat' });
+  });
+
+  it('is null for a provider nobody registered, and again once the reader is cleared', () => {
+    expect(readManagedProviderPersonalFallback('unknown')).toBeNull();
+    setManagedProviderPersonalFallback('org', () => ({ providerId: 'deepseek', modelId: 'deepseek-chat' }));
+    setManagedProviderPersonalFallback('org', null);
+    expect(readManagedProviderPersonalFallback('org')).toBeNull();
+  });
+});
 
 describe('managed provider refresh', () => {
   afterEach(() => setManagedProviderRefresher('org', null));

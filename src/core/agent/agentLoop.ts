@@ -17,7 +17,7 @@ import {
   hasAnyEnabledProvider,
   providerRequiresApiKey,
 } from '../../utils/settingsSelectors';
-import { describeManagedProviderUnreachable, describeModelUnavailable } from '../../utils/modelUnavailableCopy';
+import { describeManagedModelRevoked, describeManagedProviderUnreachable, describeModelUnavailable } from '../../utils/modelUnavailableCopy';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
@@ -918,11 +918,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const blockText = isEnterpriseGatewayMode
     ? null
     : pinnedModelIssue && hasAnyEnabledProvider(settingsForModel)
-      ? describeModelUnavailable(
-          getI18n().chat,
-          pinnedModelIssue,
-          getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
-        ).inTask
+      ? (pinnedModelIssue === 'model-removed' && getActiveProvider(settingsForModel)?.source === 'managed'
+          ? describeManagedModelRevoked(
+              getI18n().chat,
+              getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+            ).inTask
+          : describeModelUnavailable(
+              getI18n().chat,
+              pinnedModelIssue,
+              getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+            ).inTask)
       : pinnedModelIssue || (providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel))
         ? getI18n().chat.configureApiKey
         : null;

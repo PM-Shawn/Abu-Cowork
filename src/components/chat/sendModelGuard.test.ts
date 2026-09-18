@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensureConversationModelUsable } from './sendModelGuard';
+import { subscribeModelPickerRequest } from './modelPickerRequest';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useToastStore } from '@/stores/toastStore';
@@ -96,16 +97,36 @@ describe('ensureConversationModelUsable', () => {
     expect(useToastStore.getState().toasts).toEqual([]);
   });
 
-  it('blocks a model the managed provider confirmed it no longer offers', () => {
-    withZhCN(() => {
-      setProviders([
-        provider('org-models', { source: 'managed', userAdded: false, status: 'verified' }),
-        provider('prov-b'),
-      ]);
-      const ok = ensureConversationModelUsable({ model: { providerId: 'org-models', modelId: 'revoked' } }, getI18n().chat);
-      expect(ok).toBe(false);
-      expect(useToastStore.getState().toasts.at(-1)?.title).toContain('已从所属服务中移除');
-    });
+  it('blocks a model the managed provider confirmed it no longer offers and opens the picker', () => {
+    const pickerRequests = vi.fn();
+    const stop = subscribeModelPickerRequest(pickerRequests);
+    try {
+      withZhCN(() => {
+        setProviders([
+          provider('org-models', { source: 'managed', userAdded: false, status: 'verified' }),
+          provider('prov-b'),
+        ]);
+        const ok = ensureConversationModelUsable({ model: { providerId: 'org-models', modelId: 'revoked' } }, getI18n().chat);
+        expect(ok).toBe(false);
+        expect(useToastStore.getState().toasts.at(-1)?.title).toBe('模型「revoked」已不可用，请重新选择');
+        expect(pickerRequests).toHaveBeenCalledTimes(1);
+        expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+      });
+    } finally {
+      stop();
+    }
+  });
+
+  it('keeps the picker closed when the user\'s own provider dropped the model', () => {
+    const pickerRequests = vi.fn();
+    const stop = subscribeModelPickerRequest(pickerRequests);
+    try {
+      setProviders([provider('prov-a'), provider('prov-b')]);
+      expect(ensureConversationModelUsable({ model: { providerId: 'prov-a', modelId: 'gone' } }, getI18n().chat)).toBe(false);
+      expect(pickerRequests).not.toHaveBeenCalled();
+    } finally {
+      stop();
+    }
   });
 
   it('applies the same check whatever account the user is signed in to', () => {

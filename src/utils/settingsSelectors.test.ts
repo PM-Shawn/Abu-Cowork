@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SettingsState } from '@/stores/settingsStore';
 import {
+  findPersonalFallbackModel,
   getModelDisplayLabel,
   getModelUnavailableReason,
   hasAnyEnabledProvider,
@@ -112,10 +113,19 @@ describe('getModelUnavailableReason', () => {
     });
 
     it.each(['unchecked', 'checking', 'failed'] as const)(
-      'does not call a model removed while the list is %s',
+      'does not call a model removed while there is no confirmed list and the pull is %s',
       (status) => {
         const state = { providers: [{ ...managed, status, models: [] }] };
         expect(getModelUnavailableReason(state, { providerId: 'org-models', modelId: 'org-model' })).toBeNull();
+      },
+    );
+
+    it.each(['checking', 'failed'] as const)(
+      'keeps judging by the list on hand while the next pull is %s',
+      (status) => {
+        const state = { providers: [{ ...managed, status }] };
+        expect(getModelUnavailableReason(state, { providerId: 'org-models', modelId: 'org-model' })).toBeNull();
+        expect(getModelUnavailableReason(state, { providerId: 'org-models', modelId: 'revoked' })).toBe('model-removed');
       },
     );
 
@@ -132,6 +142,47 @@ describe('hasAnyEnabledProvider', () => {
   });
   it('is true when one provider is on', () => {
     expect(hasAnyEnabledProvider(makeSettings())).toBe(true);
+  });
+});
+
+describe('findPersonalFallbackModel', () => {
+  function own(id: string, modelIds: string[], overrides: Partial<SettingsState['providers'][number]> = {}): SettingsState['providers'][number] {
+    return {
+      id,
+      name: id,
+      source: 'custom',
+      apiFormat: 'openai-compatible',
+      enabled: true,
+      apiKey: `key-${id}`,
+      baseUrl: `https://${id}.example.net`,
+      models: modelIds.map((m) => ({ id: m, label: m })),
+      status: 'verified',
+      sortOrder: 1,
+      userAdded: true,
+      ...overrides,
+    };
+  }
+  const managed = own('org-models', ['org-model'], { source: 'managed', userAdded: false });
+
+  it('prefers the recorded model while it is still usable', () => {
+    const state = { providers: [managed, own('a', ['a-1']), own('b', ['b-1', 'b-2'])] };
+    expect(findPersonalFallbackModel(state, { providerId: 'b', modelId: 'b-2' })).toEqual({ providerId: 'b', modelId: 'b-2' });
+  });
+
+  it.each([
+    ['its provider is gone', { providerId: 'gone', modelId: 'x' }],
+    ['its provider is off', { providerId: 'off', modelId: 'off-1' }],
+    ['the model was removed', { providerId: 'a', modelId: 'a-9' }],
+    ['it points at the managed provider', { providerId: 'org-models', modelId: 'org-model' }],
+    ['nothing was recorded', null],
+  ])('takes the first of the user\'s own models when %s', (_n, preferred) => {
+    const state = { providers: [managed, own('off', ['off-1'], { enabled: false }), own('a', ['a-1', 'a-2'])] };
+    expect(findPersonalFallbackModel(state, preferred)).toEqual({ providerId: 'a', modelId: 'a-1' });
+  });
+
+  it('is null when the user owns no usable model', () => {
+    const state = { providers: [managed, own('off', ['off-1'], { enabled: false }), own('empty', [])] };
+    expect(findPersonalFallbackModel(state, { providerId: 'off', modelId: 'off-1' })).toBeNull();
   });
 });
 

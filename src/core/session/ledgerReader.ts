@@ -20,6 +20,13 @@
 import type { Message } from '@/types';
 import { createLedgerFold } from './messageLedger';
 
+/**
+ * The file `projectLedger`'s `snapshotText` comes from: it sits next to
+ * `messages.jsonl` in the conversation's directory, and every tier that reads
+ * or writes it names it from here.
+ */
+export const STREAM_SNAPSHOT_FILENAME = 'stream-snapshot.json';
+
 export interface StreamSnapshotEntry {
   message: Message;
   /**

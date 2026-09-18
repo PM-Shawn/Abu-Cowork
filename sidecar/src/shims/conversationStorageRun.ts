@@ -54,9 +54,15 @@
  * the shell side and a revised message keeps its position.
  *
  * The read is LOCAL rather than a `sendRequest` round trip (same pattern as
- * `memdirScan.ts`/`memdirPaths.ts`): it's a pure read with no shared mutable
- * state to coordinate (unlike `replaceMessageById`'s frame-ordering
- * requirement), and `messages.jsonl` lives on the SAME machine/disk the shell
+ * `memdirScan.ts`/`memdirPaths.ts`): both files are written by the shell while
+ * this side may be reading them, and the projection is built to survive that
+ * without coordination. `messages.jsonl` only ever grows, so a concurrent
+ * append lands after the prefix this read already has. The ledger is read
+ * BEFORE the snapshot, so a snapshot entry written against a longer ledger than
+ * the one just read is stale by `ledgerText.length < stamp` and is dropped
+ * rather than overlaid on an older history. A snapshot caught half-written, or
+ * unparsable for any other reason, yields the ledger alone. And
+ * `messages.jsonl` lives on the SAME machine/disk the shell
  * writes to — `appDataDir()` here resolves through the existing
  * `@tauri-apps/api/path` bare-specifier shim (`tauriPathRun.ts`), which reads
  * the identical spawn-time bootstrap value the shell's own Tauri
@@ -73,10 +79,12 @@
  *
  * `uptoBytes` cuts the ledger's bytes at a watermark the shell measured after
  * a flush, so a caller can pin exactly the prefix the writer had made durable
- * and never see a half-written tail.
+ * and never see a half-written tail. Such a read returns that prefix alone: the
+ * snapshot's stamps are measured against the whole ledger, so merging it into a
+ * cut ledger would hand back content the watermark deliberately excludes.
  */
 import type { Message } from '@/types';
-import { decodeLedgerPrefix, projectLedger } from '@/core/session/ledgerReader';
+import { decodeLedgerPrefix, projectLedger, STREAM_SNAPSHOT_FILENAME } from '@/core/session/ledgerReader';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import * as fs from 'node:fs/promises';
 import { appDataDir } from '@tauri-apps/api/path';
@@ -114,7 +122,7 @@ function messagesPath(convId: string): string {
 }
 
 function streamSnapshotPath(convId: string): string {
-  return joinPath(basePath!, convId, 'stream-snapshot.json');
+  return joinPath(basePath!, convId, STREAM_SNAPSHOT_FILENAME);
 }
 
 /**
@@ -132,18 +140,16 @@ async function readSnapshotText(convId: string): Promise<string | null> {
 }
 
 /**
- * The conversation's messages, as the renderer would show them.
+ * The ledger's text, or null when there is no ledger to read.
  *
- * `uptoBytes` reads the ledger only up to that byte offset; a value that does
- * not match the file throws a `LedgerWatermarkError`, which is deliberately not
- * caught — a caller that passes a watermark must learn that it is wrong.
+ * The file's bytes stay inside this function: on a long conversation they are
+ * a copy of tens of megabytes, and the caller only needs the decoded text, so
+ * the buffer becomes collectable before the projection starts allocating.
  */
-export async function loadMessages(
+async function readLedgerText(
   convId: string,
   options?: { strictRead?: boolean; uptoBytes?: number },
-): Promise<Message[]> {
-  await ensureBase();
-
+): Promise<string | null> {
   let bytes: Buffer;
   try {
     bytes = await fs.readFile(messagesPath(convId));
@@ -152,9 +158,31 @@ export async function loadMessages(
     // Every other read failure stays tolerant unless the caller asked to tell
     // the two apart (`strictRead`, used by first-contact receipt recovery).
     if (options?.strictRead && (err as NodeJS.ErrnoException | null)?.code !== 'ENOENT') throw err;
-    return [];
+    return null;
   }
+  return decodeLedgerPrefix(bytes, options?.uptoBytes);
+}
 
-  const ledgerText = decodeLedgerPrefix(bytes, options?.uptoBytes);
-  return projectLedger({ ledgerText, snapshotText: await readSnapshotText(convId) }).messages;
+/**
+ * The conversation's messages, as the renderer would show them.
+ *
+ * `uptoBytes` reads the ledger only up to that byte offset and returns that
+ * prefix alone, with no stream snapshot merged on top. A value that does not
+ * match the file throws a `LedgerWatermarkError`, which is deliberately not
+ * caught — a caller that passes a watermark must learn that it is wrong.
+ */
+export async function loadMessages(
+  convId: string,
+  options?: { strictRead?: boolean; uptoBytes?: number },
+): Promise<Message[]> {
+  await ensureBase();
+
+  const ledgerText = await readLedgerText(convId, options);
+  if (ledgerText === null) return [];
+
+  // A watermark pins exactly what the writer had made durable at that offset,
+  // while the snapshot's `stamp`s are measured against the whole ledger — an
+  // entry judged against the full file has no meaning over a cut one.
+  const snapshotText = options?.uptoBytes === undefined ? await readSnapshotText(convId) : null;
+  return projectLedger({ ledgerText, snapshotText }).messages;
 }

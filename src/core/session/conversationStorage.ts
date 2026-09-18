@@ -51,7 +51,7 @@ import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
 import { isPayloadTooLargeError, parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtimeTrace';
 import { createLedgerEvent, type LedgerLine } from './messageLedger';
-import { projectLedger, type StreamSnapshotEntry } from './ledgerReader';
+import { projectLedger, STREAM_SNAPSHOT_FILENAME, type StreamSnapshotEntry } from './ledgerReader';
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
 import type { Message, MessageContent, SandboxRecoveryAction, ToolCall, ToolCallForContext, ToolResultContent } from '@/types';
 import { APP_VERSION } from '@/utils/version';
@@ -567,8 +567,9 @@ const ledgerCharsByConv = new Map<string, number>();
  * `messagesPath`. Every `enqueueWrite` call in this module targets that path
  * (never `index.json` or the stream snapshot file, which use their own write
  * paths), so a drained write can always be attributed back to its
- * conversation for the byte watermark above without threading `convId`
- * through the write-queue machinery itself.
+ * conversation for `ledgerCharsByConv` above — the ledger watermark in string
+ * length — without threading `convId` through the write-queue machinery
+ * itself.
  */
 function convIdFromMessagesFilePath(filePath: string): string | undefined {
   const parts = filePath.split('/');
@@ -638,8 +639,6 @@ function serializeLedgerPut(
 // top of the ledger so crash recovery still sees the newest state. The ledger
 // only collects a revision at a stable checkpoint (tool batch done, turn end,
 // stop), which is what keeps revision lines per turn in the single digits.
-
-const STREAM_SNAPSHOT_FILENAME = 'stream-snapshot.json';
 
 interface StreamSnapshotFile {
   version: 1 | 2;
@@ -1649,9 +1648,9 @@ export async function loadMessages(convId: string, options?: { strictRead?: bool
   }
   // Free the next append from re-reading the file just to check its tail.
   noteTailFromRead(path, raw);
-  // Ledger byte watermark (RB-03 fix, plan §3.6 addendum): this read is now
-  // the freshest known-durable length for this conversation's ledger — see
-  // `ledgerCharsByConv`'s doc comment.
+  // Ledger watermark in string length (RB-03 fix, plan §3.6 addendum): this
+  // read is now the freshest known-durable length for this conversation's
+  // ledger — see `ledgerCharsByConv`'s doc comment.
   ledgerCharsByConv.set(convId, raw.length);
 
   // The whole read is one projection (`projectLedger` in ledgerReader.ts): the

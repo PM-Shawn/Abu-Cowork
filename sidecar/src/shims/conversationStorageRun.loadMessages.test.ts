@@ -7,8 +7,9 @@
  *
  * On top of that it pins what belongs to this side alone: the snapshot file is
  * only ever read, a byte watermark cuts the ledger at the offset the shell
- * reported after a flush, and the `strictRead` option first-contact receipt
- * recovery relies on still tells a missing ledger from an unreadable one.
+ * reported after a flush and returns that prefix alone, and the `strictRead`
+ * option first-contact receipt recovery relies on still tells a missing ledger
+ * from an unreadable one.
  * `shimSurfaceTypes.ts` pins the signature; this pins the behaviour.
  *
  * Real temp files, like the other sidecar shim tests. The unreadable case is a
@@ -76,6 +77,32 @@ describe('sidecar loadMessages', () => {
     // characters, so a character count here would land inside it.
     expect(upto).toBeGreaterThan(first.length);
     expect((await loadMessages('conv-wm', { uptoBytes: upto })).map((m) => m.id)).toEqual(['u1']);
+  });
+
+  it('a watermarked read returns the ledger prefix alone, with no snapshot merged', async () => {
+    const first = JSON.stringify({ id: 'u1', role: 'user', content: '第一条', timestamp: 1 }) + '\n';
+    const second = JSON.stringify({ id: 'a1', role: 'assistant', content: '第二条', timestamp: 2 }) + '\n';
+    const ledgerText = first + second;
+    // Stamped at the full ledger length, so a read of the whole file without a
+    // watermark merges it in place over the ledger's own `a1`.
+    const snapshotText = JSON.stringify({
+      version: 2,
+      ledgerBytes: ledgerText.length,
+      entries: [
+        { message: { id: 'a1', role: 'assistant', content: '流式中的最新内容', timestamp: 2 }, stamp: ledgerText.length },
+      ],
+    });
+    await seed('conv-wm-snap', ledgerText, snapshotText);
+    const { loadMessages } = await import('./conversationStorageRun');
+
+    const contentOf = (messages: { id?: string; content?: unknown }[]): unknown[] =>
+      messages.map((m) => m.content);
+
+    expect(contentOf(await loadMessages('conv-wm-snap'))).toEqual(['第一条', '流式中的最新内容']);
+    expect(contentOf(await loadMessages('conv-wm-snap', { uptoBytes: Buffer.byteLength(ledgerText, 'utf8') })))
+      .toEqual(['第一条', '第二条']);
+    expect(contentOf(await loadMessages('conv-wm-snap', { uptoBytes: Buffer.byteLength(first, 'utf8') })))
+      .toEqual(['第一条']);
   });
 
   it('refuses a watermark beyond the file or inside a line', async () => {

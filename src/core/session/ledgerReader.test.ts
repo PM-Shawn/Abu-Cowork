@@ -39,18 +39,13 @@ describe('projectLedger', () => {
     });
   }
 
-  it('reports no recorded length for a snapshot that carries none', () => {
-    // A damaged file, a file-level watermark that is not a number, and a
-    // snapshot with no watermark field at all all read the same way.
-    const withoutRecorded = cases.filter((c) => recordedLedgerCharsOf(c.snapshot) === undefined);
-    expect(withoutRecorded.length).toBeGreaterThanOrEqual(3);
-    for (const testCase of withoutRecorded) {
-      const projection = projectLedger({
-        ledgerText: testCase.ledgerText,
-        snapshotText: snapshotTextOf(testCase.snapshot),
-      });
-      expect(projection.snapshot.recordedLedgerChars).toBeUndefined();
-    }
+  it('has fixtures on both sides of the file-level watermark field', () => {
+    // Each case's own `recordedLedgerChars` is asserted in the loop above; this
+    // keeps both shapes represented there — snapshots that record a length, and
+    // the ones that record none (damaged file, non-number value, field absent).
+    const withRecorded = cases.filter((c) => recordedLedgerCharsOf(c.snapshot) !== undefined);
+    expect(withRecorded.length).toBeGreaterThanOrEqual(1);
+    expect(cases.length - withRecorded.length).toBeGreaterThanOrEqual(3);
   });
 
   for (const testCase of cases) {

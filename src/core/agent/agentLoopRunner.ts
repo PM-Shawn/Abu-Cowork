@@ -36,7 +36,7 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, Message, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
@@ -45,8 +45,12 @@ import {
   getSidecarStatus,
   registerSidecarNotifyResync,
   request as sidecarRequest,
+  sidecarHasCapability,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
+import { CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER } from '../sidecar/sidecarProtocol';
+import { takeLedgerHistoryPoint } from '../session/ledgerHistoryPoint';
+import { parseHistoryUnavailableError, type HistoryUnavailableData } from '../ipc/historyUnavailable';
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
@@ -202,17 +206,25 @@ const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
 
 /**
  * How long the `agent.start` acknowledgement may take, as a function of the
- * encoded request size. The clock starts before the write, so the budget has
- * to cover the IPC transfer, the boundary validation, the stdin pipe, the
- * sidecar's framing and `JSON.parse`, and the digest check — all of which
- * scale with the body. A base allowance plus a per-started-MiB allowance
- * gives 3 000 ms for an ordinary turn and 15 800 ms at the 128 MiB raw-body
- * ceiling. Passed to `sidecarRequest` as a function so the encoded length is
- * taken from the bytes that request already produced (#549).
+ * two sizes the sidecar works through before it answers.
+ *
+ * The clock starts before the write, so the budget has to cover the IPC
+ * transfer, the boundary validation, the stdin pipe, the sidecar's framing and
+ * `JSON.parse`, and the digest check — all of which scale with the request
+ * body. A start that names a ledger watermark hands the sidecar a tiny request
+ * and a whole ledger prefix to read, fold and sanitise before it acknowledges,
+ * so those bytes are paid for at the same rate: a 45 MiB history is 4 500 ms on
+ * top of the base allowance. A base allowance plus a per-started-MiB allowance
+ * for each size gives 3 000 ms for an ordinary turn and 15 800 ms at the
+ * 128 MiB raw-body ceiling. Exported for the table test; production passes
+ * `agentStartAckBudget` to `sidecarRequest` so the encoded length is taken from
+ * the bytes that request already produced (#549).
  */
-function agentStartAckBudgetMs(encodedBytes: number): number {
-  const startedMib = Math.ceil(encodedBytes / (1024 * 1024));
-  return AGENT_START_ACK_BASE_TIMEOUT_MS + startedMib * AGENT_START_ACK_MS_PER_MIB;
+export function agentStartAckBudgetMs(encodedBytes: number, ledgerWatermarkBytes = 0): number {
+  const startedMib = (bytes: number): number => Math.ceil(bytes / (1024 * 1024));
+  return AGENT_START_ACK_BASE_TIMEOUT_MS
+    + startedMib(encodedBytes) * AGENT_START_ACK_MS_PER_MIB
+    + startedMib(ledgerWatermarkBytes) * AGENT_START_ACK_MS_PER_MIB;
 }
 const MAX_REATTACH_UNAVAILABLE_CHECKS = 3;
 const AGENT_LOOP_EXIT_REASONS = new Set<AgentLoopExitReason>([
@@ -882,8 +894,10 @@ async function finalizePreAcceptFailure(params: {
   runtimeStartedAt: number;
   kind: PreAcceptFailureKind;
   displayMessage: string;
-  stage: 'sidecar_unavailable' | 'payload_too_large' | 'params_build_failed';
+  stage: 'sidecar_unavailable' | 'payload_too_large' | 'params_build_failed' | 'history_unavailable';
   errorType: string;
+  /** Present for `stage: 'history_unavailable'`: the sidecar's typed reason, numbers only. */
+  historyUnavailable?: HistoryUnavailableData;
   /** Present only once a RunSession exists; its own `finally` owns teardown. */
   session?: RunSession;
   userMessage?: string;
@@ -911,6 +925,11 @@ async function finalizePreAcceptFailure(params: {
     stage: params.stage,
     outcome: 'error',
     errorType: params.errorType,
+    ...(params.historyUnavailable ? {
+      reason: params.historyUnavailable.reason,
+      ledgerWatermarkBytes: params.historyUnavailable.uptoBytes,
+      ledgerFileBytes: params.historyUnavailable.fileBytes,
+    } : {}),
     durationMs: Date.now() - params.runtimeStartedAt,
   });
   try {
@@ -2421,7 +2440,8 @@ export function removeShellLoopContext(runId: string): void {
 // ── Dispatch entrypoint (P1-3B-3B) ───────────────────────────────────────
 
 /**
- * Wire params for `agent.run` — mirrors `sidecar/src/agentLoopHost.ts`'s
+ * Wire params for `agent.start` (and, for a start that carries its messages,
+ * for `agent.run`) — mirrors `sidecar/src/agentLoopHost.ts`'s
  * `AgentRunParams` field-for-field. NEVER imported from there — `src/` must
  * never import from `sidecar/` (same discipline `frameApplier.ts`'s
  * independently-declared `PortFrame` type documents, P1-3b-2). Kept in sync
@@ -2470,6 +2490,13 @@ interface AgentRunParams {
    * cross this boundary; the shell starts them as independent runs.
    */
   queuedInputs?: { id: string; text: string; isSystem?: boolean }[];
+  /**
+   * Present when the sidecar reads this run's history from the conversation's
+   * ledger: `conversationSnapshot.messages` is then empty on the wire and the
+   * sidecar reads `messages.jsonl` up to this byte watermark
+   * (`takeLedgerHistoryPoint`). Absent when the params carry the messages.
+   */
+  history?: { source: 'ledger'; ledgerWatermark: number };
 }
 
 /** Defensive validation of the `agent.run` response before trusting it as an `AgentLoopResult` — same discipline as subagentRunner.ts's `isSerializableSubagentResult`. A malformed response is treated identically to any other transport failure by the caller (same committed-flag fallback decision). */
@@ -2629,12 +2656,15 @@ async function establishAgentStart(
     return raw;
   };
 
+  const ackBudget = agentStartAckBudget(params);
   try {
-    return accept(await sidecarRequest('agent.start', params, agentStartAckBudgetMs));
+    return accept(await sidecarRequest('agent.start', params, ackBudget));
   } catch (startError) {
-    // An oversize start can never succeed on retry: don't query state or
-    // replay the same bytes (#549 M2 — it used to cost 2 more full sends).
-    if (isPayloadTooLargeError(startError)) throw startError;
+    // Neither of these can succeed by asking again with the same bytes: an
+    // oversize start, and a start whose history the sidecar could not read at
+    // the watermark it was given. No state query, no replay (#549 M2 — the
+    // oversize case used to cost 2 more full sends).
+    if (isPayloadTooLargeError(startError) || parseHistoryUnavailableError(startError)) throw startError;
     traceRuntimeEvent('renderer.agent_start_ack_missing', {
       runId: params.runId,
       clientMessageId: params.clientMessageId,
@@ -2673,7 +2703,7 @@ async function establishAgentStart(
 
     // Same runId/clientMessageId/payloadDigest: the sidecar either accepts it
     // once or replays the existing fact. It can never execute twice.
-    return accept(await sidecarRequest('agent.start', params, agentStartAckBudgetMs));
+    return accept(await sidecarRequest('agent.start', params, ackBudget));
   }
 }
 
@@ -2752,6 +2782,49 @@ async function waitForReattachedTerminal(
 }
 
 /**
+ * Whether this dispatch lets the sidecar read the history from the ledger.
+ * One rule, asked once per dispatch: the running sidecar announced the
+ * capability in its handshake. A sidecar that does not announce it — an older
+ * build, or one started with `ABU_AGENT_START_PROTOCOL=1`
+ * (`sidecar/src/handshake.ts`) — gets the form that carries the messages. A
+ * failure of the chosen form is never answered by sending the other one.
+ */
+function agentStartReadsHistoryFromLedger(): boolean {
+  return sidecarHasCapability(CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER);
+}
+
+/**
+ * A user image reaches a sidecar that reads the ledger only through the file
+ * its `filePath` names: the ledger row keeps the path and drops the bytes.
+ * `buildUserMessageContent` leaves `filePath` undefined when the file could
+ * not be written, and such a turn is refused here, before anything is
+ * dispatched, with the same reason a failed message write gives.
+ */
+function assertUserImagesAreOnDisk(content: string | MessageContent[]): void {
+  if (typeof content === 'string') return;
+  if (content.some((block) => block.type === 'image' && !block.filePath)) {
+    throw new Error(getI18n().chat.messageSaveFailed);
+  }
+}
+
+/** What `agent.run` carries: three ids for a ledger start, the start's own params otherwise. */
+function agentRunRequestFor(params: AgentRunParams): unknown {
+  return params.history
+    ? { runId: params.runId, clientMessageId: params.clientMessageId, payloadDigest: params.payloadDigest }
+    : params;
+}
+
+/**
+ * The acknowledgement budget of one `agent.start`, closed over the ledger this
+ * start asks the sidecar to read. Both sends of a start use the same instance,
+ * so the replay is judged by the budget the first send was judged by.
+ */
+function agentStartAckBudget(params: AgentRunParams): (encodedBytes: number) => number {
+  const ledgerWatermarkBytes = params.history?.ledgerWatermark ?? 0;
+  return (encodedBytes: number) => agentStartAckBudgetMs(encodedBytes, ledgerWatermarkBytes);
+}
+
+/**
  * Build the `agent.run` wire params — the shell-side "frozen snapshot"
  * projection of everything `runAgentLoop` would otherwise resolve
  * in-process (design doc §4's `AgentRunParams` contract,
@@ -2760,8 +2833,10 @@ async function waitForReattachedTerminal(
  * `buildSubagentRunParams`) — frozen for the whole run.
  *
  * Throws if `resolveEffectiveLlmCreds` throws (enterprise gateway
- * unavailable — `EnterpriseLlmUnavailableError`) or if the conversation
- * record is missing. The caller (`runAgentLoopDispatched`) treats either as
+ * unavailable — `EnterpriseLlmUnavailableError`), if the conversation record
+ * is missing, if the history point cannot be taken, or if the turn carries an
+ * image that never reached disk on the ledger path. The caller
+ * (`runAgentLoopDispatched`) treats each of them as
  * a pre-accept failure (#549): the user row ends `failed` with the reason
  * from `paramsBuildDisplayMessage` and the existing Retry. Nothing is re-run
  * in this renderer, so this function still does not duplicate the loop's
@@ -2864,6 +2939,8 @@ async function buildAgentRunParams(
     orchestration.route.cleanInput,
     options?.images,
   );
+  const historyFromLedger = agentStartReadsHistoryFromLedger();
+  if (historyFromLedger) assertUserImagesAreOnDisk(userContent);
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
     state: 'pending',
     content: userContent,
@@ -2886,6 +2963,13 @@ async function buildAgentRunParams(
     conversationSnapshot,
     getWorkspaceReader().getCurrentPath(),
   );
+
+  // The watermark covers all prior history, any promoted stream-snapshot
+  // revision, and this turn's user row in its routed form: the barrier above
+  // has awaited that row's write, and a rejected write has already thrown.
+  const history = historyFromLedger
+    ? { source: 'ledger' as const, ledgerWatermark: (await takeLedgerHistoryPoint(conversationId)).ledgerWatermark }
+    : undefined;
 
   // Snapshot only internal system wake-ups for this conversation at dispatch
   // time. User follow-ups remain shell-side until the current run terminates.
@@ -2914,11 +2998,13 @@ async function buildAgentRunParams(
     // Freeze the entry provider/model onto the wire snapshot. A model switch
     // while message persistence is in flight belongs to the next run and must
     // not be combined with this run's already-resolved credentials.
-    conversationSnapshot: await prepareConversationSnapshotForSidecarWire({
-      ...conversationSnapshot,
-      workspacePath: workspacePathSnapshot,
-      model: settingsForModel.activeModel,
-    } as Conversation, abortSignal),
+    conversationSnapshot: history
+      ? { ...conversationSnapshot, workspacePath: workspacePathSnapshot, model: settingsForModel.activeModel, messages: [] } as Conversation
+      : await prepareConversationSnapshotForSidecarWire({
+          ...conversationSnapshot,
+          workspacePath: workspacePathSnapshot,
+          model: settingsForModel.activeModel,
+        } as Conversation, abortSignal),
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
     settingsSnapshot: settingsForModel,
     capsSnapshot,
@@ -2927,6 +3013,7 @@ async function buildAgentRunParams(
     planMode: getPlanMode(conversationId),
     locale: getLocale(),
     queuedInputs,
+    ...(history ? { history } : {}),
   };
   const payloadDigest = buildAgentRunPayloadDigest(paramsWithoutDigest);
   return { ...paramsWithoutDigest, payloadDigest };
@@ -2975,7 +3062,10 @@ async function buildAgentRunParams(
  *
  * Nothing is ever re-run in-process. Before the sidecar accepts the run
  * (params build failure, sidecar unavailable, transport failure, oversize
- * payload) the user row ends `failed` with a reason and Retry. After accept,
+ * payload, unreadable history) the user row ends `failed` with a reason and
+ * Retry. The form of `agent.start` is chosen once per dispatch from the
+ * sidecar's capability list, and a failed start is never repeated in the other
+ * form. After accept,
  * the existing recovery (state query, one replay while uncommitted,
  * reattach) runs; if it cannot settle, the run ends with a visible error.
  * The user's turn is never resent automatically.
@@ -3244,6 +3334,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runId,
       executionPath: 'sidecar',
       stage: 'params_built',
+      ...(params.history ? { ledgerWatermarkBytes: params.history.ledgerWatermark } : {}),
       durationMs: Date.now() - runtimeStartedAt,
     });
   } catch (err) {
@@ -3474,7 +3565,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
 
     const rpcOutcome = sidecarRequest(
       'agent.run',
-      params,
+      agentRunRequestFor(params),
       0,
       session.transportAbortController!.signal,
     ).then((raw) => ({ source: 'rpc' as const, raw }));
@@ -3621,7 +3712,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
           });
           const replayRpc = sidecarRequest(
             'agent.run',
-            params,
+            agentRunRequestFor(params),
             0,
             session.transportAbortController!.signal,
           ).then((raw) => ({ source: 'rpc' as const, raw }));
@@ -3671,6 +3762,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       // happened anywhere: end the row visibly and retryably instead of
       // silently re-running the turn in this renderer (#549).
       const tooLarge = isPayloadTooLargeError(transportError);
+      const historyUnavailable = tooLarge ? null : parseHistoryUnavailableError(transportError);
       logger.warn('agent-loop transport failed before the sidecar accepted the run', {
         runId,
         conversationId,
@@ -3682,10 +3774,17 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runId,
         runtimeStartedAt,
         session,
-        kind: tooLarge ? 'payload_too_large' : 'sidecar_unavailable',
-        displayMessage: tooLarge ? getI18n().chat.payloadTooLarge : getI18n().chat.sidecarInterrupted,
-        stage: tooLarge ? 'payload_too_large' : 'sidecar_unavailable',
-        errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(transportError),
+        kind: tooLarge ? 'payload_too_large' : historyUnavailable ? 'dispatch_failed' : 'sidecar_unavailable',
+        displayMessage: tooLarge
+          ? getI18n().chat.payloadTooLarge
+          : historyUnavailable
+            ? getI18n().chat.historyUnavailable
+            : getI18n().chat.sidecarInterrupted,
+        stage: tooLarge ? 'payload_too_large' : historyUnavailable ? 'history_unavailable' : 'sidecar_unavailable',
+        errorType: tooLarge
+          ? 'payload_too_large'
+          : historyUnavailable ? 'history_unavailable' : runtimeErrorType(transportError),
+        ...(historyUnavailable ? { historyUnavailable } : {}),
         userMessage,
         images: options?.images,
       });

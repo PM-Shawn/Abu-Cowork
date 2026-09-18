@@ -32,6 +32,7 @@ class MockSidecarRequestError extends Error {
   }
 }
 const getSidecarStatusMock = vi.fn().mockReturnValue('running');
+const sidecarHasCapabilityMock = vi.fn().mockReturnValue(false);
 const sidecarRequestMock = vi.fn();
 const agentStartRequestMock = vi.fn((_params: { runId: string; clientMessageId: string }) => Promise.resolve({
   version: 1,
@@ -61,6 +62,7 @@ vi.mock('../sidecar/sidecarManager', () => ({
   notifySidecar: (...a: unknown[]) => notifySidecar(...a),
   registerSidecarNotifyResync: (...a: unknown[]) => registerSidecarNotifyResyncMock(...a),
   getSidecarStatus: (...a: unknown[]) => getSidecarStatusMock(...a),
+  sidecarHasCapability: (...a: unknown[]) => sidecarHasCapabilityMock(...a),
   request: (method: string, params: unknown, ...rest: unknown[]) => {
     if (method === 'agent.start') return agentStartRequestMock(params as { runId: string; clientMessageId: string }, ...rest);
     if (method === 'run.getState') return runGetStateRequestMock(params as { runId: string }, ...rest);
@@ -438,6 +440,11 @@ const chatSubscribeMock = vi.fn((cb: () => void) => {
   capturedChatCb = cb;
   return chatUnsubMock;
 });
+const takeLedgerHistoryPointMock = vi.fn();
+vi.mock('../session/ledgerHistoryPoint', () => ({
+  takeLedgerHistoryPoint: (...a: unknown[]) => takeLedgerHistoryPointMock(...a),
+}));
+
 const waitForConversationPersistenceMock = vi.fn().mockResolvedValue(undefined);
 const chatStoreAddMessageMock = vi.fn();
 const chatStoreUpdateUserMessageRunMock = vi.fn();
@@ -481,6 +488,7 @@ vi.mock('../../i18n', () => ({
       conversationBusy: '当前会话已有任务在运行，请等待结束后再启动新任务。',
       errorEmptyBody: '请求失败但无详情',
       payloadTooLarge: '这段对话太长，无法继续。',
+      historyUnavailable: '读取对话记录失败',
       sidecarNotReady: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
       gatewayUnreachable: '无法连接企业 AI 网关。',
     },
@@ -702,6 +710,12 @@ describe('agentLoopRunner', () => {
     capturedQueueCb = undefined;
     getSidecarStatusMock.mockReset();
     getSidecarStatusMock.mockReturnValue('running');
+    // Absent by default, so every test that does not opt in exercises the form
+    // that carries the conversation's messages.
+    sidecarHasCapabilityMock.mockReset();
+    sidecarHasCapabilityMock.mockReturnValue(false);
+    takeLedgerHistoryPointMock.mockReset();
+    takeLedgerHistoryPointMock.mockResolvedValue({ ledgerWatermark: 4096, promotedSnapshotEntries: 0 });
     waitForSidecarVenueMock.mockReset();
     waitForSidecarVenueMock.mockResolvedValue(undefined);
     sidecarRequestMock.mockReset();
@@ -6435,6 +6449,311 @@ describe('agentLoopRunner', () => {
           error: '当前会话已有任务在运行，请等待结束后再启动新任务。',
           messageTaken: false,
         });
+      });
+    });
+
+    describe('agent.start from the ledger (#549 P2a)', () => {
+      const LONG_HISTORY = [
+        { id: 'old-u', role: 'user', content: '很长的历史'.repeat(2_000), timestamp: 1 },
+        { id: 'old-a', role: 'assistant', content: '很长的回答'.repeat(2_000), timestamp: 2 },
+      ];
+
+      function historyUnavailableRejection(reason = 'watermark_beyond_file') {
+        return Object.assign(new Error('Sidecar error -32010: history_unavailable'), {
+          code: -32010,
+          data: { code: 'history_unavailable', reason, uptoBytes: 4096, fileBytes: 1024 },
+        });
+      }
+
+      beforeEach(() => {
+        sidecarHasCapabilityMock.mockReturnValue(true);
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'idle', messages: LONG_HISTORY });
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+      });
+
+      it('sends no messages, names the ledger watermark, and digests the wire form', async () => {
+        const { runAgentLoopDispatched, buildAgentRunPayloadDigest } = await importFresh();
+
+        await expect(runAgentLoopDispatched('conv-1', 'hello')).resolves.toEqual({ reason: 'completed' });
+
+        const start = agentStartRequestMock.mock.calls[0][0] as unknown as {
+          payloadDigest: string;
+          history?: unknown;
+          conversationSnapshot: { id: string; title: string; messages: unknown[] };
+          userMessage: string;
+        };
+        expect(start.conversationSnapshot.messages).toEqual([]);
+        expect(start.conversationSnapshot).toMatchObject({ id: 'conv-1', title: 't' });
+        expect(start.history).toEqual({ source: 'ledger', ledgerWatermark: 4096 });
+        expect(start.userMessage).toBe('hello');
+        expect(start.payloadDigest).toBe(buildAgentRunPayloadDigest(start));
+        expect(JSON.stringify(start)).not.toContain('很长的历史');
+        expect(takeLedgerHistoryPointMock).toHaveBeenCalledWith('conv-1');
+        expect(delegatedMediaStoreMocks.persistDelegatedMedia).not.toHaveBeenCalled();
+        expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_params_build_completed', expect.objectContaining({
+          ledgerWatermarkBytes: 4096,
+        }));
+      });
+
+      it('takes the history point after the routed user row has been persisted', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const order: string[] = [];
+        chatStoreUpdateUserMessageRunMock.mockImplementation((_conv: string, _id: string, patch: { state: string }) => {
+          order.push(`row:${patch.state}`);
+        });
+        waitForConversationPersistenceMock.mockImplementation(async () => { order.push('barrier'); });
+        takeLedgerHistoryPointMock.mockImplementation(async () => {
+          order.push('history-point');
+          return { ledgerWatermark: 4096, promotedSnapshotEntries: 0 };
+        });
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        const routedRow = order.indexOf('row:pending');
+        const point = order.indexOf('history-point');
+        expect(routedRow).toBeGreaterThan(-1);
+        expect(order.slice(routedRow, point)).toContain('barrier');
+        expect(order.filter((entry) => entry === 'history-point')).toHaveLength(1);
+      });
+
+      it('agent.run carries three ids and nothing else', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        await runAgentLoopDispatched('conv-1', 'hello');
+        const start = agentStartRequestMock.mock.calls[0][0] as unknown as { runId: string; clientMessageId: string; payloadDigest: string };
+        const run = sidecarRequestMock.mock.calls.find((call) => call[0] === 'agent.run')?.[1];
+        expect(run).toEqual({ runId: start.runId, clientMessageId: start.clientMessageId, payloadDigest: start.payloadDigest });
+        expect(new TextEncoder().encode(JSON.stringify(run)).byteLength).toBeLessThan(1024);
+      });
+
+      it('replays agent.run in the same compact form the start chose', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        sidecarRequestMock.mockRejectedValueOnce(new Error('Sidecar process closed'));
+        sidecarRequestMock.mockResolvedValue({ reason: 'completed' });
+        runGetStateRequestMock.mockImplementation((params: { runId: string }) => Promise.resolve({
+          version: 1,
+          runId: params.runId,
+          state: 'accepted',
+        }));
+
+        await runAgentLoopDispatched('conv-1', 'hello');
+
+        const runs = sidecarRequestMock.mock.calls.filter((call) => call[0] === 'agent.run').map((call) => call[1]);
+        expect(runs).toHaveLength(2);
+        for (const run of runs) {
+          expect(Object.keys(run as Record<string, unknown>).sort()).toEqual(['clientMessageId', 'payloadDigest', 'runId']);
+        }
+      });
+
+      // Contract with the sidecar's support switch (Task 3): a sidecar started
+      // with ABU_AGENT_START_PROTOCOL=1 announces no ledger-history capability,
+      // and the capability is the only thing this side looks at.
+      it('without the capability it sends the form that carries the messages', async () => {
+        sidecarHasCapabilityMock.mockReturnValue(false);
+        const { runAgentLoopDispatched } = await importFresh();
+        await runAgentLoopDispatched('conv-1', 'hello');
+        const start = agentStartRequestMock.mock.calls[0][0] as unknown as { history?: unknown; conversationSnapshot: { messages: unknown[] } };
+        expect(start.history).toBeUndefined();
+        expect(start.conversationSnapshot.messages).toHaveLength(2);
+        expect(takeLedgerHistoryPointMock).not.toHaveBeenCalled();
+        const run = sidecarRequestMock.mock.calls.find((call) => call[0] === 'agent.run')?.[1];
+        expect(run).toBe(agentStartRequestMock.mock.calls[0][0]);
+        expect(sidecarHasCapabilityMock).toHaveBeenCalledWith('agent.start.history-from-ledger');
+      });
+
+      it('asks for the capability once per dispatch, so one dispatch never mixes the two forms', async () => {
+        // The capability disappears (a sidecar restart) right after the form was chosen.
+        sidecarHasCapabilityMock.mockReturnValueOnce(true).mockReturnValue(false);
+        const { runAgentLoopDispatched } = await importFresh();
+        await runAgentLoopDispatched('conv-1', 'hello');
+        const start = agentStartRequestMock.mock.calls[0][0] as unknown as { runId: string; history?: unknown };
+        const run = sidecarRequestMock.mock.calls.find((call) => call[0] === 'agent.run')?.[1] as Record<string, unknown>;
+        expect(start.history).toEqual({ source: 'ledger', ledgerWatermark: 4096 });
+        expect(Object.keys(run).sort()).toEqual(['clientMessageId', 'payloadDigest', 'runId']);
+        expect(sidecarHasCapabilityMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('history_unavailable ends the send as a dispatch failure with the reason line, asked once', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        agentStartRequestMock.mockRejectedValue(historyUnavailableRejection());
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(result).toEqual({
+          reason: 'error',
+          error: '读取对话记录失败',
+          messageTaken: true,
+          runErrorKind: 'dispatch_failed',
+        });
+        expect(chatStoreUpdateUserMessageRunMock).toHaveBeenLastCalledWith('conv-1', expect.any(String), {
+          state: 'failed', error: '读取对话记录失败', errorKind: 'dispatch_failed',
+        });
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+        expect(runGetStateRequestMock).not.toHaveBeenCalled();
+        expect(sidecarRequestMock.mock.calls.some((call) => call[0] === 'agent.run')).toBe(false);
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+        expect(traceRuntimeEventMock).toHaveBeenCalledWith('renderer.agent_run_failed', expect.objectContaining({
+          stage: 'history_unavailable',
+          errorType: 'history_unavailable',
+          reason: 'watermark_beyond_file',
+          ledgerWatermarkBytes: 4096,
+          ledgerFileBytes: 1024,
+        }));
+        expect(finishRuntimeRunMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('after history_unavailable the next send starts a fresh run with a fresh history point', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        agentStartRequestMock.mockRejectedValueOnce(historyUnavailableRejection('ledger_unreadable'));
+        await runAgentLoopDispatched('conv-1', 'hello', { initiatedBy: 'user' });
+        takeLedgerHistoryPointMock.mockResolvedValue({ ledgerWatermark: 8192, promotedSnapshotEntries: 0 });
+
+        const retried = await runAgentLoopDispatched('conv-1', 'hello', { initiatedBy: 'user' });
+
+        expect(retried).toEqual({ reason: 'completed' });
+        const [first, second] = agentStartRequestMock.mock.calls.map((call) => call[0] as unknown as {
+          runId: string; history: { ledgerWatermark: number };
+        });
+        expect(second.runId).not.toBe(first.runId);
+        expect(second.history.ledgerWatermark).toBe(8192);
+      });
+
+      it('a rejected write of the routed user row fails the dispatch before any history point is taken', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        waitForConversationPersistenceMock
+          .mockResolvedValueOnce(undefined) // the pending row added before the venue wait
+          .mockRejectedValueOnce(new Error('disk unavailable')); // the routed row, inside buildAgentRunParams
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(result).toMatchObject({ reason: 'error', messageTaken: true, runErrorKind: 'dispatch_failed' });
+        expect(takeLedgerHistoryPointMock).not.toHaveBeenCalled();
+        expect(agentStartRequestMock).not.toHaveBeenCalled();
+      });
+
+      it('a rejected history point is a dispatch failure; nothing is sent', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        takeLedgerHistoryPointMock.mockRejectedValue(new Error('disk full'));
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+        expect(result).toMatchObject({ reason: 'error', runErrorKind: 'dispatch_failed', error: 'disk full' });
+        expect(agentStartRequestMock).not.toHaveBeenCalled();
+      });
+
+      it('a ledger that cannot be brought level ends the send with the same reason line', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        takeLedgerHistoryPointMock.mockRejectedValue(Object.assign(
+          new Error('ledger history point: "conv-1" armed a new revision in each of 3 rounds'),
+          { name: 'LedgerHistoryPointError' },
+        ));
+
+        const result = await runAgentLoopDispatched('conv-1', 'hello');
+
+        expect(result).toMatchObject({
+          reason: 'error',
+          runErrorKind: 'dispatch_failed',
+          error: '读取对话记录失败',
+        });
+        expect(agentStartRequestMock).not.toHaveBeenCalled();
+      });
+
+      it('an image that never reached disk is refused before dispatch', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        buildUserMessageContentMock.mockResolvedValue([
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'text', text: 'look' },
+        ]);
+
+        const result = await runAgentLoopDispatched('conv-1', 'look', {
+          images: [{ id: 'image-1', data: 'AAAA', mediaType: 'image/png' }],
+        });
+
+        expect(result).toMatchObject({
+          reason: 'error',
+          runErrorKind: 'dispatch_failed',
+          error: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',
+        });
+        expect(takeLedgerHistoryPointMock).not.toHaveBeenCalled();
+        expect(agentStartRequestMock).not.toHaveBeenCalled();
+      });
+
+      it('an image with a file on disk is dispatched, and its bytes stay off the wire', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        buildUserMessageContentMock.mockResolvedValue([
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' }, filePath: '/sessions/conv-1/outputs/images/a.png' },
+          { type: 'text', text: 'look' },
+        ]);
+        await runAgentLoopDispatched('conv-1', 'look', { images: [{ id: 'image-1', data: 'AAAA', mediaType: 'image/png' }] });
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(agentStartRequestMock.mock.calls[0][0])).not.toContain('AAAA');
+      });
+
+      it('an image without a file on disk still reaches the sidecar on the form that carries the messages', async () => {
+        sidecarHasCapabilityMock.mockReturnValue(false);
+        const { runAgentLoopDispatched } = await importFresh();
+        buildUserMessageContentMock.mockResolvedValue([
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'text', text: 'look' },
+        ]);
+
+        await runAgentLoopDispatched('conv-1', 'look', {
+          images: [{ id: 'image-1', data: 'AAAA', mediaType: 'image/png' }],
+        });
+
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+      });
+
+      it('budgets the acknowledgement for the ledger the sidecar has to read', async () => {
+        const { agentStartAckBudgetMs } = await importFresh();
+        const MIB = 1024 * 1024;
+
+        expect([0, 1, MIB, 45 * MIB, 128 * MIB].map((watermark) => agentStartAckBudgetMs(1024, watermark)))
+          .toEqual([3_100, 3_200, 3_200, 7_600, 15_900]);
+        // The request's own bytes and the ledger's bytes are both paid for.
+        expect(agentStartAckBudgetMs(8 * MIB, 45 * MIB)).toBe(8_300);
+        // A start that carries its messages names no ledger.
+        expect(agentStartAckBudgetMs(8 * MIB)).toBe(3_800);
+      });
+
+      it('a start answered after 5 s is accepted for a 45 MiB ledger and times out for a small one', async () => {
+        // Stands in for sidecarManager.request: apply the caller's budget to the
+        // encoded size the request carries, then race the reply against it.
+        const answerAfter5s = (params: { runId: string; clientMessageId: string }, budget: unknown) =>
+          new Promise((resolve, reject) => {
+            const budgetMs = typeof budget === 'function'
+              ? (budget as (bytes: number) => number)(1024)
+              : (budget as number);
+            setTimeout(() => resolve({
+              version: 1,
+              runId: params.runId,
+              clientMessageId: params.clientMessageId,
+              acceptedAt: 1,
+              state: 'accepted',
+              replay: false,
+            }), 5_000);
+            setTimeout(() => reject(new Error(`Sidecar request "agent.start" timed out after ${budgetMs}ms`)), budgetMs);
+          });
+
+        vi.useFakeTimers();
+        const { runAgentLoopDispatched } = await importFresh();
+        agentStartRequestMock.mockImplementation(answerAfter5s);
+        takeLedgerHistoryPointMock.mockResolvedValue({ ledgerWatermark: 45 * 1024 * 1024, promotedSnapshotEntries: 0 });
+
+        const large = runAgentLoopDispatched('conv-1', 'hello');
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(large).resolves.toEqual({ reason: 'completed' });
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(1);
+
+        agentStartRequestMock.mockClear();
+        takeLedgerHistoryPointMock.mockResolvedValue({ ledgerWatermark: 4096, promotedSnapshotEntries: 0 });
+
+        // 3 100 ms for a small ledger, then the state query and one replay on
+        // the same budget — past 5 000 ms, so the reply never wins.
+        const small = runAgentLoopDispatched('conv-1', 'hello');
+        await vi.advanceTimersByTimeAsync(15_000);
+        await expect(small).resolves.toMatchObject({
+          reason: 'error',
+          runErrorKind: 'sidecar_unavailable',
+        });
+        expect(agentStartRequestMock).toHaveBeenCalledTimes(2);
       });
     });
   });

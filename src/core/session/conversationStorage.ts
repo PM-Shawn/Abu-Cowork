@@ -45,6 +45,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '@/utils/pathUtils';
 import { atomicWrite } from '@/utils/atomicFs';
+import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
+import { isPayloadTooLargeError, parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
+import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtimeTrace';
 import { foldMessageLog, createLedgerEvent, LEDGER_KIND_PUT, type LedgerLine } from './messageLedger';
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
 import type { Message, MessageContent, SandboxRecoveryAction, ToolCall, ToolCallForContext, ToolResultContent } from '@/types';
@@ -365,11 +368,14 @@ async function appendToFile(filePath: string, rawData: string): Promise<void> {
   return withFileLock(filePath, async () => {
     const data = await repairTornTail(filePath, rawData);
     try {
-      // Native O(1) append (Part B1). Falls back to read+atomic-rewrite below
-      // if the command is unavailable or fails.
-      await invoke('append_file_text', { path: filePath, data });
+      // Native O(1) append (Part B1) — raw-body in Electron (#549). Falls back
+      // to read+atomic-rewrite below if the command is unavailable or fails.
+      await invokeTextCommand('append_file_text', { path: filePath }, data);
       return;
-    } catch {
+    } catch (err) {
+      // An oversize line can never be written by rewriting the whole file
+      // (that body is even larger) — surface it instead (#549 M2).
+      if (isPayloadTooLargeError(err)) throw err;
       // Fall through to the read + atomic-write path. NOTE: this fallback is not
       // idempotent — if the native append durably wrote `data` but its promise
       // still rejected (IPC teardown / shutdown race), we re-append the same
@@ -384,7 +390,12 @@ async function appendToFile(filePath: string, rawData: string): Promise<void> {
         // atomicWrite creates parent dirs as needed — no pre-mkdir required.
         await atomicWrite(filePath, data);
       }
-    } catch {
+    } catch (rewriteErr) {
+      // The retry below writes `existing + data`, which is never SMALLER than
+      // the body that was just refused — an oversize rewrite can only fail
+      // again, more expensively. Surface it instead (#549 M2), mirroring the
+      // native-append rethrow above.
+      if (isPayloadTooLargeError(rewriteErr)) throw rewriteErr;
       // Retry: ensure directory exists, then re-read existing content to preserve it.
       // Previous implementation wrote only `data` here, which would overwrite the
       // entire file and destroy all existing messages — a catastrophic data loss bug.
@@ -629,9 +640,18 @@ async function writeStreamSnapshot(
       ledgerBytes: ledgerBytesByConv.get(convId) ?? 0,
     };
     await atomicWrite(path, JSON.stringify(payload));
-  } catch {
-    // Best-effort crash protection. The ledger checkpoint is the durable write;
-    // losing a snapshot only costs the in-flight revision.
+  } catch (err) {
+    // Best-effort crash protection — but never silent (#549). Losing a snapshot
+    // only costs the in-flight revision, yet a snapshot that never lands is
+    // exactly what makes a long turn end with nothing on screen, so the failure
+    // is recorded (numbers and ids only, never the buffered content).
+    const tooLarge = parsePayloadTooLargeError(err);
+    traceRuntimeEvent('renderer.stream_snapshot_write_failed', {
+      conversationId: convId,
+      outcome: 'error',
+      errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(err),
+      ...(tooLarge ? { payloadBytes: tooLarge.bytes, limitBytes: tooLarge.limit } : {}),
+    });
   }
 }
 

@@ -721,7 +721,7 @@ describe('chatStore', () => {
   // N7 — the user closing an agent's browser tab tells the host to stop opening
   // new ones. Writing to that conversation again is them re-engaging with the
   // task, and is what lifts the window. `addMessage` is the single point every
-  // send path (sidecar dispatch and the in-process fallbacks alike) commits a
+  // send path (sidecar dispatch and the in-process loop alike) commits a
   // user message through, so the signal is taken there rather than in each.
   describe('browser reclaim window', () => {
     const runtime = globalThis as unknown as Record<string, unknown>;
@@ -3882,5 +3882,97 @@ describe('prefill intent', () => {
     useChatStore.getState().setPendingInput('suggested question');
     expect(useChatStore.getState().pendingInputStartsTask).toBe(false);
     useChatStore.getState().setPendingInput(null);
+  });
+});
+
+describe('#549 runErrorKind', () => {
+  it('keeps a valid kind on failed rows and drops it otherwise', () => {
+    const conv = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(conv, {
+      id: 'u1',
+      role: 'user',
+      content: 'hi',
+      timestamp: 1,
+      runState: 'pending',
+    });
+    useChatStore.getState().updateUserMessageRun(conv, 'u1', {
+      state: 'failed',
+      error: 'too long',
+      errorKind: 'payload_too_large',
+    });
+    let row = useChatStore.getState().conversations[conv].messages.find((m) => m.id === 'u1')!;
+    expect(row).toMatchObject({ runState: 'failed', runError: 'too long', runErrorKind: 'payload_too_large' });
+
+    useChatStore.getState().updateUserMessageRun(conv, 'u1', { state: 'running' });
+    row = useChatStore.getState().conversations[conv].messages.find((m) => m.id === 'u1')!;
+    expect(row.runErrorKind).toBeUndefined();
+  });
+
+  it('sanitizes an unknown kind from disk', () => {
+    const [row] = sanitizeLoadedMessages([
+      {
+        id: 'u2',
+        role: 'user',
+        content: 'x',
+        timestamp: 1,
+        runState: 'failed',
+        runError: 'e',
+        runErrorKind: 'rm -rf' as never,
+      },
+    ]);
+    expect(row.runErrorKind).toBeUndefined();
+
+    const [kept] = sanitizeLoadedMessages([
+      {
+        id: 'u3',
+        role: 'user',
+        content: 'x',
+        timestamp: 1,
+        runState: 'failed',
+        runError: 'e',
+        runErrorKind: 'sidecar_unavailable',
+      },
+    ]);
+    expect(kept.runErrorKind).toBe('sidecar_unavailable');
+  });
+
+  it('drops an unknown kind on import too', () => {
+    const imported = sanitizeImportedMessage({
+      id: 'u4',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: 'e',
+      runErrorKind: 'whatever' as never,
+    });
+    expect(imported.runErrorKind).toBeUndefined();
+
+    const keptImport = sanitizeImportedMessage({
+      id: 'u5',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: 'e',
+      runErrorKind: 'dispatch_failed',
+    });
+    expect(keptImport.runErrorKind).toBe('dispatch_failed');
+  });
+
+  it('strips a kind that survived on a non-failure row loaded from disk', () => {
+    const [row] = sanitizeLoadedMessages([
+      {
+        id: 'u6',
+        role: 'user',
+        content: 'x',
+        timestamp: 1,
+        runState: 'completed',
+        runError: 'e',
+        runErrorKind: 'payload_too_large',
+      },
+    ]);
+    expect(row.runErrorKind).toBeUndefined();
+    expect(row.runError).toBeUndefined();
   });
 });

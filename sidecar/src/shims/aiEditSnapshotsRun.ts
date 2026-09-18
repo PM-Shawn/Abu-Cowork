@@ -47,6 +47,7 @@
  */
 import { sendRequest } from '../rpcClient';
 import { getCurrentAgentRunContext } from '../agentRunContext';
+import { sidecarRuntimeErrorType, traceSidecarRuntimeEvent } from '../runtimeTrace';
 
 export async function snapshotBeforeAiEdit(
   path: string,
@@ -58,10 +59,20 @@ export async function snapshotBeforeAiEdit(
   } catch (err) {
     // Fail-open, matches the real function's own never-throws contract (see
     // module doc) — a transport failure here degrades to "no snapshot this
-    // turn", never a blocked write. console.warn is safe here: main.ts
-    // redirects console.log/info/debug to console.error (stdout is the
-    // JSON-RPC channel), but console.warn already writes to stderr by
-    // Node's own default, same as console.error — no redirect needed.
+    // turn", never a blocked write. Fail-open must not mean invisible (#549):
+    // the reverse RPC is now bounded (60s), so this also fires on a timeout,
+    // and a turn that quietly lost its revertable "before" state has to be
+    // diagnosable afterwards. The event carries the error CLASS only — never
+    // `path`, which is the user's own content.
+    traceSidecarRuntimeEvent('sidecar.ai_edit_snapshot_failed', {
+      runId,
+      method: 'snapshot.beforeAiEdit',
+      outcome: 'error',
+      errorType: sidecarRuntimeErrorType(err),
+    });
+    // console.warn is safe here: main.ts redirects console.log/info/debug to
+    // console.error (stdout is the JSON-RPC channel), but console.warn already
+    // writes to stderr by Node's own default, same as console.error.
     console.warn('[sidecar] snapshot.beforeAiEdit request failed (non-blocking)', path, err);
   }
 }

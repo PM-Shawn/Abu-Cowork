@@ -622,14 +622,19 @@ function fsDispatch(app, cmd, payload) {
     case 'append_file_text': {
       // Native O(1) append: mkdir parent + open in append mode + write only
       // `data`. Mirrors append_file.rs::append_sync. The message-JSONL hot path.
+      // Raw form (#549): the validated UTF-8 bytes arrive in `body` — it is a
+      // Buffer only when securityBoundary's validateTextRawBody produced it.
       const resolved = resolveScoped(app, a.path, undefined);
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
-      fs.appendFileSync(resolved, String(a.data));
+      fs.appendFileSync(resolved, Buffer.isBuffer(body) ? body : String(a.data));
       return null;
     }
 
     case 'atomic_write_text': {
-      writeAtomic(resolveScoped(app, a.path, undefined), String(a.content));
+      writeAtomic(
+        resolveScoped(app, a.path, undefined),
+        Buffer.isBuffer(body) ? body : String(a.content),
+      );
       return null;
     }
 

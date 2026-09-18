@@ -294,6 +294,8 @@ export interface TranslationDict {
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
+    /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
+    newConversationAction: string;
     noModelConfigured: string;
     scrollToBottom: string;
     compressingContext: string;
@@ -495,15 +497,31 @@ export interface TranslationDict {
     modelUnavailableReasonModelRemoved: string;
     /** Skill requires tools that aren't currently available. {missing} */
     skillMissingTools: string;
+    /** Enterprise AI gateway unreachable while resolving a dispatch's credentials. */
+    gatewayUnreachable: string;
     /** A managed provider's request failed at the network level (error bubble). `{org}` = its name. */
     managedProviderUnreachableInTask: string;
     /** The organization withdrew the model a conversation is bound to. `{model}` = its label. */
     managedModelRevokedToast: string;
     managedModelRevokedInTask: string;
-    /** Sidecar process exited mid-task and automatic recovery has started. */
+    /** Sidecar process exited mid-task, leaving the turn for the user to retry. */
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
     sidecarUnavailable: string;
+    /** The turn was too big for the shell→sidecar channel; the only way forward is a new conversation (#549). */
+    payloadTooLarge: string;
+    /**
+     * The sidecar never reached `running`, so the message was never sent (#549).
+     * The chat row says 「发送失败」 and offers Retry instead of this sentence;
+     * it is the durable `runError` and the text headless dispatchers log.
+     */
+    sidecarNotReady: string;
+    /**
+     * How an unattended run's failure reads where the run itself is the only
+     * record — today the file watcher's hidden conversation (#549). Takes the
+     * run's own reason as `{error}`.
+     */
+    automationRunFailed: string;
     messageSaveFailed: string;
     /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
     browserDeniedAbort: string;
@@ -3276,6 +3294,16 @@ export interface TranslationDict {
     /** Session rolled over after hitting the per-session round cap. {rounds} */
     sessionRolledOver: string;
     sessionQueueFull: string;
+    /**
+     * What the sender is told when a run ended before the sidecar accepted it
+     * and there is no assistant reply to forward (#549). The oversize one
+     * names the reset keyword sessionMapper already listens for, because a
+     * new session is the only way that conversation continues.
+     */
+    runPayloadTooLarge: string;
+    runServiceUnavailable: string;
+    /** Any other run that ended in error without an answer. {error} */
+    errorReply: string;
     timeoutHint: string;
     groupConnection: string;
     groupBehavior: string;

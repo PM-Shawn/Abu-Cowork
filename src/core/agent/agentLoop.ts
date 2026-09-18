@@ -546,9 +546,8 @@ export interface AgentLoopOptions {
   authorizationScopeId?: string;
   /**
    * Shell-local ownership handoff for callers that need to cancel this exact
-   * run (for example an IM timeout). Never serialized to the sidecar. The
-   * callback may be invoked again when the same dispatched call hands off to
-   * an in-process fallback or a queued continuation with a new controller.
+   * run (for example an IM timeout). Never serialized to the sidecar. Invoked
+   * once per call, with the controller that run is stopped through.
    */
   onAbortControllerReady?: (controller: AbortController) => void;
   /**
@@ -728,13 +727,20 @@ interface AgentLoopResultBase {
   /** Bounded upstream fields for the failed-run terminal; never the raw body. */
   upstream?: UpstreamErrorDetails;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
-  stopReason?: 'sidecar_unavailable';
+  stopReason?: 'sidecar_unavailable' | 'payload_too_large';
   /**
    * Why the run aborted ITSELF, when `reason: 'aborted'` was not a Stop
    * click: today only the consecutive browser-denial guard. Shell-owned —
    * a sidecar terminal never carries it (see agentRunTerminal.ts's key set).
    */
   abortCause?: BrowserDenialAbortCause;
+  /**
+   * The kind stamped on the failed user row for a run the sidecar never
+   * accepted (#549), so a caller can tell that the row already explains the
+   * failure and offers its own action. Shell-owned, like `abortCause`: a
+   * sidecar terminal never carries it (see agentRunTerminal.ts's key set).
+   */
+  runErrorKind?: NonNullable<Message['runErrorKind']>;
 }
 
 /**

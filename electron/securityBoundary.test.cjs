@@ -411,12 +411,12 @@ test('invoke payload rejects malformed, oversized, and dangerous values', () => 
   );
 });
 
-test('raw bodies and headers are limited to fs write commands', () => {
+test('raw bodies and headers are limited to raw-body commands', () => {
   const record = trustedRecord();
   assert.throws(
     () =>
       validateInvokePayload(record, {
-        cmd: 'mcp_write',
+        cmd: 'run_shell_command',
         args: {},
         body: Buffer.from('x'),
       }),
@@ -528,6 +528,37 @@ test('fs commands refuse relative paths at the boundary unless a baseDir names t
     { cmd: 'plugin:path|join', args: { paths: ['a', 'b'] } },
   ]) {
     assert.doesNotThrow(() => validateInvokePayload(record, payload), payload.cmd);
+  }
+});
+
+test('raw-body text writes need an absolute path header, like their plain-args form', () => {
+  const record = trustedRecord();
+  const rel = 'nested/secret-name.txt';
+  const abs = path.join(os.tmpdir(), 'abu-raw-text-abs.txt');
+
+  // The raw form carries no options header, so there is no baseDir to anchor
+  // a relative path against — it is refused for the same reason #556 refuses
+  // the plain-args form.
+  for (const cmd of ['append_file_text', 'atomic_write_text']) {
+    assert.throws(
+      () => validateInvokePayload(record, {
+        cmd,
+        body: Buffer.from('hello'),
+        headers: { path: encodeURIComponent(rel) },
+      }),
+      (err) => {
+        assert.match(err.message, new RegExp(`\\bpath header\\b.*must be an absolute path`));
+        assert.equal(err.message.includes('secret-name'), false, 'error must not echo the path');
+        return true;
+      },
+      cmd
+    );
+    const accepted = validateInvokePayload(record, {
+      cmd,
+      body: Buffer.from('hello'),
+      headers: { path: encodeURIComponent(abs) },
+    });
+    assert.equal(accepted.args.path, abs, cmd);
   }
 });
 

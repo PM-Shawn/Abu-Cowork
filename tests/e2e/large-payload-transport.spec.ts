@@ -4,10 +4,12 @@
  * lands in the conversation ledger (append_file_text raw body).
  *
  * The plain-args form refuses anything over 8 MiB with payload_too_large, so
- * sidecar-side acceptance of >9 MiB agent.start/agent.run lines plus a >9 MiB
- * ledger line is only possible through the renderer's raw-body transport. The
- * model endpoint is a loopback mock; the turn itself then ends with the
- * model-context error, which is outside this transport check.
+ * sidecar-side acceptance of a >9 MiB agent.start line plus a >9 MiB ledger
+ * line is only possible through the renderer's raw-body transport. `agent.run`
+ * carries three ids and says nothing about transport size — the sidecar reads
+ * the turn back from the ledger the renderer just wrote. The model endpoint is
+ * a loopback mock; the turn itself then ends with the model-context error,
+ * which is outside this transport check.
  */
 import { expect, test } from '@playwright/test';
 import { createServer, type Server, type ServerResponse } from 'node:http';
@@ -22,6 +24,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { parseRuntimeEventLines, readRuntimeEventLines } from './runtimeEvents';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -153,36 +156,30 @@ test.describe.serial('#549 large payload transport — real Electron', () => {
     await expect.poll(() => largestLedgerWithMarker(dataRoot!.rootDir), { timeout: 60_000 })
       .toBeGreaterThan(9 * MIB);
 
-    // The sidecar parsed the >9 MiB agent.start / agent.run lines (mcp_write raw
-    // body). What the loop does next is model-side: a 3.2 M-character turn
+    // The sidecar parsed the >9 MiB agent.start line (mcp_write raw body) and
+    // then ran from the ledger, which is why `agent.run` is a few hundred bytes
+    // here. What the loop does next is model-side: a 3.2 M-character turn
     // exceeds the model context, which is the expected, visible outcome here —
     // the point is that it is NOT a transport failure.
     const readEvents = async (): Promise<Array<Record<string, unknown>>> => {
-      const diagnostics = await page.evaluate(async () => {
-        const shell = (window as unknown as {
-          __ABU_SHELL__: { getRuntimeDiagnostics: () => Promise<{ recentEventLines: string[] }> };
-        }).__ABU_SHELL__;
-        return shell.getRuntimeDiagnostics();
-      });
-      expect(diagnostics.recentEventLines.join('\n')).not.toContain('中中中中');
-      return diagnostics.recentEventLines.flatMap((line) => {
-        try {
-          return [JSON.parse(line) as Record<string, unknown>];
-        } catch {
-          return [];
-        }
-      });
+      const lines = await readRuntimeEventLines(page);
+      expect(lines.join('\n')).not.toContain('中中中中');
+      return parseRuntimeEventLines(lines) as Array<Record<string, unknown>>;
     };
     const bigWrite = (events: Array<Record<string, unknown>>, method: string) => events.find((event) =>
       event.event === 'main.rpc_write_completed'
       && event.method === method
       && typeof event.payloadBytes === 'number'
       && event.payloadBytes > 9 * MIB);
+    const runWrite = (events: Array<Record<string, unknown>>) => events.find((event) =>
+      event.event === 'main.rpc_write_completed'
+      && event.method === 'agent.run'
+      && typeof event.payloadBytes === 'number');
     await expect.poll(async () => {
       const events = await readEvents();
       return {
         startWritten: Boolean(bigWrite(events, 'agent.start')),
-        runWritten: Boolean(bigWrite(events, 'agent.run')),
+        runWritten: Boolean(runWrite(events)),
         startAccepted: events.some((event) => event.event === 'sidecar.agent_start_accepted'),
         runParsed: events.some((event) => event.event === 'sidecar.agent_run_received'),
       };
@@ -194,7 +191,18 @@ test.describe.serial('#549 large payload transport — real Electron', () => {
     expect(rendererSent.length).toBeGreaterThanOrEqual(2);
     for (const event of rendererSent) {
       expect(event).toMatchObject({ outcome: 'success' });
-      expect(event.payloadBytes as number).toBeGreaterThan(9 * MIB);
+      if (event.method === 'agent.start') {
+        expect(
+          event.payloadBytes as number,
+          `agent.start put ${String(event.payloadBytes)} bytes on the wire; the raw-body channel is only`
+          + ' proven by a line above the 8 MiB plain-args cap',
+        ).toBeGreaterThan(9 * MIB);
+      } else {
+        expect(
+          event.payloadBytes as number,
+          `agent.run put ${String(event.payloadBytes)} bytes on the wire; the compact form is three ids`,
+        ).toBeLessThan(1024);
+      }
     }
     expect(events.some((event) => String(event.event).includes('payload_too_large'))).toBe(false);
     expect(events.some((event) => event.errorType === 'payload_too_large')).toBe(false);

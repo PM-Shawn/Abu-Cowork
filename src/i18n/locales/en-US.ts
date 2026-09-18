@@ -1598,8 +1598,6 @@ const enUS: TranslationDict = {
     agentSkillsEmpty: 'No matching skills',
     title: 'Toolbox',
     skills: 'Skills',
-    agents: 'Experts',
-    mcp: 'MCP',
     searchPlaceholder: 'Search...',
     // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: 'Plugins',
@@ -1674,7 +1672,6 @@ const enUS: TranslationDict = {
     pluginsRemoveMarketplace: 'Remove marketplace',
     pluginsRemoveMarketplaceTitle: 'Remove plugin marketplace',
     pluginsRemoveMarketplaceMessage: 'Remove "{name}"? Plugins you already installed keep working — you just cannot browse this marketplace here anymore.',
-    pluginsCategoryAll: 'All categories',
     pluginsNoMatches: 'No plugins match',
     pluginsEntryCount: '{count} plugins',
     pluginsInstall: 'Install',
@@ -1800,7 +1797,6 @@ const enUS: TranslationDict = {
     add: 'Add',
     install: 'Install',
     deleteItem: 'Delete',
-    installed: 'Installed',
     installAndConnect: 'Install & Connect',
     popularMCPServices: 'Popular MCP Services',
     setupWithAbu: 'Setup with Abu',
@@ -1816,10 +1812,6 @@ const enUS: TranslationDict = {
     systemSkills: 'System Skills',
     customSkills: 'Custom Skills',
     noCustomSkills: 'No custom skills yet',
-    // Customize Panel
-    customize: 'Customize',
-    customizeFooter: 'Manage Skills, Experts, and MCP',
-    models: 'Models',
     // ModelsSection
     currentConfig: 'Current Config',
     quickSwitch: 'Quick Switch',
@@ -2012,8 +2004,6 @@ const enUS: TranslationDict = {
     // Server logs
     viewLogs: 'View Logs',
     noLogs: 'No logs',
-    // MarketplaceCard i18n
-    installing: 'Installing',
     aiCreateAgentPrompt: '/create-agent Help me create an expert. My requirements are:',
     aiCreateSkillPrompt: 'Help me create a Skill. My requirements are:',
     agentTestPrompt: 'Use the {name} expert to help me with a simple task to test if it works correctly.',

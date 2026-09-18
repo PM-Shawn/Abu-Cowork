@@ -2027,9 +2027,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    /** Follow-up chips under a finished team turn. */
-    followUpRedoStep: string;
-    followUpMemberRevise: string;
+    /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;
     confirmationSeparator: string;
@@ -2054,7 +2052,6 @@ export interface TranslationDict {
     stallStoppedNotice: string;
     resumeAfterRestart: string;
     resumeAfterRestartFailed: string;
-    followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
     chatReceiptEmptyGoal: string;
@@ -2080,16 +2077,12 @@ export interface TranslationDict {
     agentSkillsEmpty: string;
     title: string;
     skills: string;
-    agents: string;
-    mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
     // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: string;
     pluginsEmptyState: string;
-    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
-     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
-     *  literally "MCP", not a Connectors-flavored label. */
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. */
     connectors: string;
     // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
     pluginsMarketplaceTab: string;
@@ -2163,7 +2156,6 @@ export interface TranslationDict {
     pluginsRemoveMarketplace: string;
     pluginsRemoveMarketplaceTitle: string;
     pluginsRemoveMarketplaceMessage: string;
-    pluginsCategoryAll: string;
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;
@@ -2303,7 +2295,6 @@ export interface TranslationDict {
     install: string;
     /** Danger action on items the user owns (their own experts / skills): they are deleted, not uninstalled. */
     deleteItem: string;
-    installed: string;
     installAndConnect: string;
     popularMCPServices: string;
     setupWithAbu: string;
@@ -2321,10 +2312,6 @@ export interface TranslationDict {
     systemSkills: string;
     customSkills: string;
     noCustomSkills: string;
-    // Customize Panel
-    customize: string;
-    customizeFooter: string;
-    models: string;
     // ModelsSection
     currentConfig: string;
     quickSwitch: string;
@@ -2540,8 +2527,6 @@ export interface TranslationDict {
     // Server logs
     viewLogs: string;
     noLogs: string;
-    // MarketplaceCard i18n
-    installing: string;
     aiCreateAgentPrompt: string;
     aiCreateSkillPrompt: string;
     agentTestPrompt: string;
@@ -2912,7 +2897,6 @@ export interface TranslationDict {
     teamAppendInstruction: string;
     teamStalledFor: string;
     teamDispatchInterrupted: string;
-    teamDispatchNoToolCalls: string;
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;

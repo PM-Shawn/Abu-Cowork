@@ -37,7 +37,6 @@ import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
-import TeamFollowUpChips from './TeamFollowUpChips';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
@@ -1714,7 +1713,6 @@ export default function ChatView({
               silent dead wait above the composer. */}
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
-          {activeConv.teamId && <TeamFollowUpChips conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}

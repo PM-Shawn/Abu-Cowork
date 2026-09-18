@@ -142,12 +142,25 @@ export function createFrameChatDelta(push: Push, onLocalApply?: (m: string, a: u
     });
   }
 
+  /**
+   * A frame pushed straight through is serialized on the spot, so its args
+   * are the caller's snapshot. A frame that has to wait behind an in-flight
+   * media transport is different: `send()` and `pushTransportFrame` hand
+   * over the LIVE objects the run mirror keeps (a message just added, the
+   * checkpointed message of a `session` frame), and the mirror keeps
+   * mutating those objects while the frame waits (`appendText` writes the
+   * streamed tokens into the same message the pending `addMessage` frame
+   * points at). The deferred frame therefore carries a clone taken at push
+   * time, so what crosses the wire is what the caller sent, in the same
+   * order the shell replays it.
+   */
   function pushWireFrame(frame: PortFrame): void {
     if (!transportBusy) {
       push(frame);
       return;
     }
-    enqueueTransport(() => push(frame));
+    const snapshot: PortFrame = { ...frame, a: cloneWireValue(frame.a) };
+    enqueueTransport(() => push(snapshot));
   }
 
   function send(m: string, a: unknown[]): void {

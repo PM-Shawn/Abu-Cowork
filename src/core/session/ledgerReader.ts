@@ -2,14 +2,16 @@
  * The single reader of a conversation's message ledger.
  *
  * `projectLedger` turns the text of `messages.jsonl`, and optionally the text
- * of `stream-snapshot.json`, into the message list a tier shows or sends. It
- * performs no I/O and writes nothing: each caller fetches the two files the
- * way its own process can, and a caller that owns the snapshot file acts on
- * `snapshot.droppedIds` / `snapshot.discardedWhole` itself.
+ * of `stream-snapshot.json`, into the message list a caller shows or sends:
+ * the renderer through `conversationStorage.ts`, the Node sidecar through
+ * `sidecar/src/shims/conversationStorageRun.ts`. It performs no I/O and writes
+ * nothing — each caller fetches the two files the way its own process can, and
+ * a caller that owns the snapshot file acts on `snapshot.droppedIds` /
+ * `snapshot.discardedWhole` itself.
  *
- * The snapshot is optional by design. A caller that indexes the durable ledger
- * passes no snapshot; a caller that renders the conversation passes it so it
- * sees the in-flight revision a crash would otherwise hide.
+ * The snapshot is optional by design. A caller that only asks what the durable
+ * ledger holds passes none; a caller that restores the conversation passes it
+ * so it sees the in-flight revision a crash would otherwise hide.
  *
  * Offsets and `ledgerChars` are JavaScript string lengths, the unit the
  * snapshot's `stamp` and `ledgerBytes` fields are written in. Byte watermarks
@@ -57,6 +59,11 @@ export interface LedgerProjection {
     droppedIds: string[];
     /** The file-level shrink guard fired: nothing from the snapshot was merged. */
     discardedWhole: boolean;
+    /**
+     * The ledger length (string length) the snapshot file recorded in its
+     * `ledgerBytes` field, when it carries one.
+     */
+    recordedLedgerChars?: number;
   };
 }
 
@@ -168,7 +175,7 @@ export function projectLedger(input: {
     corruptCount,
     totalLines,
     ledgerChars: ledgerText.length,
-    snapshot: { merged, droppedIds, discardedWhole },
+    snapshot: { merged, droppedIds, discardedWhole, recordedLedgerChars: parsed.ledgerBytes },
   };
 }
 

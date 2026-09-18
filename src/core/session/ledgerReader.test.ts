@@ -6,6 +6,13 @@ import { decodeLedgerPrefix, LedgerWatermarkError, projectLedger } from './ledge
 
 const { cases, watermarkCases } = loadLedgerReaderFixtures();
 
+/** What a fixture's snapshot object records in its file-level `ledgerBytes` field. */
+function recordedLedgerCharsOf(snapshot: unknown): number | undefined {
+  if (typeof snapshot !== 'object' || snapshot === null) return undefined;
+  const recorded = (snapshot as { ledgerBytes?: unknown }).ledgerBytes;
+  return typeof recorded === 'number' ? recorded : undefined;
+}
+
 describe('projectLedger', () => {
   it('covers every rule the fixture file promises', () => {
     expect(cases.length).toBeGreaterThanOrEqual(21);
@@ -27,8 +34,24 @@ describe('projectLedger', () => {
       expect([...projection.snapshot.merged.keys()]).toEqual(testCase.expected.mergedIds);
       expect(projection.snapshot.droppedIds).toEqual(testCase.expected.droppedIds);
       expect(projection.snapshot.discardedWhole).toBe(testCase.expected.discardedWhole);
+      expect(projection.snapshot.recordedLedgerChars)
+        .toBe(recordedLedgerCharsOf(testCase.snapshot));
     });
   }
+
+  it('reports no recorded length for a snapshot that carries none', () => {
+    // A damaged file, a file-level watermark that is not a number, and a
+    // snapshot with no watermark field at all all read the same way.
+    const withoutRecorded = cases.filter((c) => recordedLedgerCharsOf(c.snapshot) === undefined);
+    expect(withoutRecorded.length).toBeGreaterThanOrEqual(3);
+    for (const testCase of withoutRecorded) {
+      const projection = projectLedger({
+        ledgerText: testCase.ledgerText,
+        snapshotText: snapshotTextOf(testCase.snapshot),
+      });
+      expect(projection.snapshot.recordedLedgerChars).toBeUndefined();
+    }
+  });
 
   for (const testCase of cases) {
     it(`with no snapshot it equals foldMessageLog on the same text: ${testCase.name}`, () => {

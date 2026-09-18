@@ -275,16 +275,17 @@ async function drainAll(): Promise<void> {
       flightKeys.forEach((k) => inFlightPutKeys.add(k));
       try {
         await appendToFile(filePath, data);
-        // Ledger byte watermark (RB-03 fix, plan §3.6 addendum): the append
-        // that just landed durably grew messages.jsonl by exactly
-        // `data.length` bytes (repairTornTail's rare leading-newline byte is
-        // a bounded, accepted exception — see its doc comment — immaterial to
-        // the >= / strictly-less-than comparisons this watermark feeds in
-        // loadMessages, both the file-level shrink guard and the per-entry
-        // supersede pass). Advance before claiming ids below so a snapshot
-        // written moments later already reflects this append's offset.
+        // Ledger watermark (RB-03 fix, plan §3.6 addendum): the append that
+        // just landed durably grew messages.jsonl by exactly `data.length`
+        // characters (repairTornTail's rare leading newline is a bounded,
+        // accepted exception — see its doc comment — immaterial to the >= /
+        // strictly-less-than comparisons this watermark feeds in
+        // `projectLedger` (ledgerReader.ts), both the file-level shrink guard
+        // and the per-entry supersede rule). Advance before claiming ids below
+        // so a snapshot written moments later already reflects this append's
+        // offset.
         const watermarkConvId = convIdFromMessagesFilePath(filePath);
-        if (watermarkConvId) advanceLedgerBytes(watermarkConvId, data.length);
+        if (watermarkConvId) advanceLedgerChars(watermarkConvId, data.length);
         // Claim the ids HERE, synchronously with the drain settling — not in
         // the callers' microtask continuations — so there is no instant where
         // a durably-landed put is in neither writtenIds nor the in-flight set
@@ -369,52 +370,66 @@ function noteTailFromRead(filePath: string, raw: string): void {
  */
 async function appendToFile(filePath: string, rawData: string): Promise<void> {
   return withFileLock(filePath, async () => {
-    const data = await repairTornTail(filePath, rawData);
-    try {
-      // Native O(1) append (Part B1) — raw-body in Electron (#549). Falls back
-      // to read+atomic-rewrite below if the command is unavailable or fails.
-      await invokeTextCommand('append_file_text', { path: filePath }, data);
-      return;
-    } catch (err) {
-      // An oversize line can never be written by rewriting the whole file
-      // (that body is even larger) — surface it instead (#549 M2).
-      if (isPayloadTooLargeError(err)) throw err;
-      // Fall through to the read + atomic-write path. NOTE: this fallback is not
-      // idempotent — if the native append durably wrote `data` but its promise
-      // still rejected (IPC teardown / shutdown race), we re-append the same
-      // line here, producing a DUPLICATE (not a corrupt line). loadMessages
-      // dedups by id on read, so the duplicate never surfaces.
+    await appendRawLocked(filePath, await repairTornTail(filePath, rawData));
+  });
+}
+
+/**
+ * Write `data` at the end of `filePath`, native append first and read +
+ * atomic rewrite as the fallback — the body of `appendToFile` above, minus the
+ * lock and the torn-tail repair.
+ *
+ * The caller must already hold the path's `withFileLock`, which is NOT
+ * re-entrant: a second `withFileLock` on the same path waits for the first to
+ * release, so calling `appendToFile` from inside the lock would deadlock.
+ * `flushAndGetLedgerWatermark` writes its tail terminator through here for
+ * exactly that reason.
+ */
+async function appendRawLocked(filePath: string, data: string): Promise<void> {
+  try {
+    // Native O(1) append (Part B1) — raw-body in Electron (#549). Falls back
+    // to read+atomic-rewrite below if the command is unavailable or fails.
+    await invokeTextCommand('append_file_text', { path: filePath }, data);
+    return;
+  } catch (err) {
+    // An oversize line can never be written by rewriting the whole file
+    // (that body is even larger) — surface it instead (#549 M2).
+    if (isPayloadTooLargeError(err)) throw err;
+    // Fall through to the read + atomic-write path. NOTE: this fallback is not
+    // idempotent — if the native append durably wrote `data` but its promise
+    // still rejected (IPC teardown / shutdown race), we re-append the same
+    // line here, producing a DUPLICATE (not a corrupt line). loadMessages
+    // dedups by id on read, so the duplicate never surfaces.
+  }
+  try {
+    if (await exists(filePath)) {
+      const current = await readTextFile(filePath);
+      await atomicWrite(filePath, current + data);
+    } else {
+      // atomicWrite creates parent dirs as needed — no pre-mkdir required.
+      await atomicWrite(filePath, data);
     }
+  } catch (rewriteErr) {
+    // The retry below writes `existing + data`, which is never SMALLER than
+    // the body that was just refused — an oversize rewrite can only fail
+    // again, more expensively. Surface it instead (#549 M2), mirroring the
+    // native-append rethrow above.
+    if (isPayloadTooLargeError(rewriteErr)) throw rewriteErr;
+    // Retry: ensure directory exists, then re-read existing content to preserve it.
+    // Previous implementation wrote only `data` here, which would overwrite the
+    // entire file and destroy all existing messages — a catastrophic data loss bug.
+    const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+    if (dir) await mkdir(dir, { recursive: true });
+    let existing = '';
     try {
       if (await exists(filePath)) {
-        const current = await readTextFile(filePath);
-        await atomicWrite(filePath, current + data);
-      } else {
-        // atomicWrite creates parent dirs as needed — no pre-mkdir required.
-        await atomicWrite(filePath, data);
+        existing = await readTextFile(filePath);
       }
-    } catch (rewriteErr) {
-      // The retry below writes `existing + data`, which is never SMALLER than
-      // the body that was just refused — an oversize rewrite can only fail
-      // again, more expensively. Surface it instead (#549 M2), mirroring the
-      // native-append rethrow above.
-      if (isPayloadTooLargeError(rewriteErr)) throw rewriteErr;
-      // Retry: ensure directory exists, then re-read existing content to preserve it.
-      // Previous implementation wrote only `data` here, which would overwrite the
-      // entire file and destroy all existing messages — a catastrophic data loss bug.
-      const dir = filePath.substring(0, filePath.lastIndexOf('/'));
-      if (dir) await mkdir(dir, { recursive: true });
-      let existing = '';
-      try {
-        if (await exists(filePath)) {
-          existing = await readTextFile(filePath);
-        }
-      } catch {
-        // If we still can't read, at least don't destroy what's there — let it throw
-      }
-      await atomicWrite(filePath, existing + data);
+    } catch {
+      // If we still can't read, at least don't destroy what's there — let it throw
     }
-  });
+    await atomicWrite(filePath, existing + data);
+  }
 }
 
 /**
@@ -429,17 +444,51 @@ export async function flushWrites(): Promise<void> {
 }
 
 /**
- * Flush the write queue and report the ledger's size in bytes. This process is
- * the ledger's only writer, so after the flush the size is the offset up to
- * which every line is durable and complete — the watermark a reader in another
- * process is given (`decodeLedgerPrefix` in `ledgerReader.ts`).
+ * Terminate a crash-torn tail so the file ends after a `\n`, writing the same
+ * newline the next append would have prefixed (`repairTornTail`) and marking
+ * the tail confirmed so that append does not write a second one.
+ *
+ * The caller must hold the path's file lock and must have established that the
+ * file exists. Common path: `loadMessages` and every append already confirm
+ * the tail through `tailCheckedPaths`, so this costs nothing and reads
+ * nothing. Only a tail this process has never seen — or one a read reported
+ * torn — pays for one read, and only a genuinely torn one for a one-byte
+ * append. That append's byte is not counted into `ledgerCharsByConv`, the same
+ * bounded exception `repairTornTail`'s own newline has.
+ */
+async function terminateTornTailLocked(filePath: string): Promise<void> {
+  if (tailCheckedPaths.has(filePath)) return;
+  const raw = await readTextFile(filePath);
+  if (raw.length > 0 && !raw.endsWith('\n')) await appendRawLocked(filePath, '\n');
+  tailCheckedPaths.add(filePath);
+}
+
+/**
+ * Flush the write queue and report the ledger's size in bytes — the offset up
+ * to which every line is durable and complete, which is what makes it usable
+ * as a cut point by a reader in another process (`decodeLedgerPrefix` in
+ * `ledgerReader.ts`).
+ *
+ * Two things stand between the flush and that guarantee, and both are handled
+ * under the ledger's own file lock:
+ *
+ *  - A drain the 100 ms debounce started is not awaited by anyone, so
+ *    `flushWrites` can find an empty queue while that drain is still inside
+ *    its append. Taking the lock queues this read behind it, because
+ *    `appendToFile` registers the lock synchronously when `drainAll` calls it.
+ *  - A crash mid-append leaves the file ending in a partial line, and nothing
+ *    repairs it until the next append. A size that does not sit after a `\n`
+ *    is refused by every reader, so the tail is terminated first.
  */
 export async function flushAndGetLedgerWatermark(convId: string): Promise<number> {
   await ensureBase();
   await flushWrites();
   const path = messagesPath(convId);
-  if (!(await exists(path))) return 0;
-  return (await stat(path)).size;
+  return withFileLock(path, async () => {
+    if (!(await exists(path))) return 0;
+    await terminateTornTailLocked(path);
+    return (await stat(path)).size;
+  });
 }
 
 // ════════════════════════════════════════════════════════════
@@ -494,16 +543,24 @@ const parentIdByMessage = new Map<string, string>();
 const lastMessageIdByConv = new Map<string, string>();
 
 /**
- * Per conversation, the byte length of `messages.jsonl` this process last
- * confirmed durable — either by reading it (`loadMessages`) or by appending
- * to it (`drainAll`). This is the ledger byte watermark (RB-03 fix, plan §3.6
- * addendum), and it is what this process writes into a stream snapshot twice
- * over: once per file as `ledgerBytes` and once per entry as `stamp` (see
- * `writeStreamSnapshot` and `snapshotMessageRevision`). Both numbers exist so
- * that a later load can tell a snapshot the ledger has moved past from one it
- * has not touched; the rules that read them are in `ledgerReader.ts`.
+ * Per conversation, the length of `messages.jsonl` this process last confirmed
+ * durable — either by reading it (`loadMessages`) or by appending to it
+ * (`drainAll`). It counts JavaScript string length, not UTF-8 bytes: it is
+ * compared against, and written into, numbers measured the same way.
+ *
+ * This is what this process writes into a stream snapshot twice over: once per
+ * file as `ledgerBytes` and once per entry as `stamp` (see
+ * `writeStreamSnapshot` and `snapshotMessageRevision`). Those two field names
+ * are part of the on-disk format and stay as they are, whatever the unit is
+ * called here. Both numbers exist so that a later load can tell a snapshot the
+ * ledger has moved past from one it has not touched; the rules that read them
+ * are in `ledgerReader.ts`.
+ *
+ * `flushAndGetLedgerWatermark`'s byte watermark is a different number for a
+ * different purpose — real UTF-8 bytes from `stat`, handed to a reader in
+ * another process as a cut point.
  */
-const ledgerBytesByConv = new Map<string, number>();
+const ledgerCharsByConv = new Map<string, number>();
 
 /**
  * Extract the conversation id from a `messages.jsonl` path built by
@@ -519,8 +576,8 @@ function convIdFromMessagesFilePath(filePath: string): string | undefined {
   return parts[parts.length - 2];
 }
 
-function advanceLedgerBytes(convId: string, delta: number): void {
-  ledgerBytesByConv.set(convId, (ledgerBytesByConv.get(convId) ?? 0) + delta);
+function advanceLedgerChars(convId: string, delta: number): void {
+  ledgerCharsByConv.set(convId, (ledgerCharsByConv.get(convId) ?? 0) + delta);
 }
 
 function rememberPersistedMessage(message: Message): void {
@@ -595,7 +652,7 @@ interface StreamSnapshotFile {
    * `messages.jsonl` this process had last confirmed durable at the moment
    * this snapshot was written. `loadMessages` compares this against the
    * freshly-read ledger's actual length to detect a shrink — see
-   * `ledgerBytesByConv`'s doc comment. Present on both the v1 shape (an
+   * `ledgerCharsByConv`'s doc comment. Present on both the v1 shape (an
    * already-shipped build wrote it before the per-entry `stamp` addendum
    * existed) and the current v2 shape; absent only on the oldest snapshots
    * written before either addendum, which are merged unconditionally.
@@ -629,7 +686,7 @@ async function writeStreamSnapshot(
       // alongside the per-entry `stamp`s so the file-level shrink guard
       // (plan §3.6 addendum) and the per-entry supersede pass (RB-03 fix)
       // can both run off the same on-disk payload.
-      ledgerBytes: ledgerBytesByConv.get(convId) ?? 0,
+      ledgerBytes: ledgerCharsByConv.get(convId) ?? 0,
     };
     await atomicWrite(path, JSON.stringify(payload));
   } catch (err) {
@@ -664,9 +721,9 @@ export async function snapshotMessageRevision(convId: string, message: Message):
     message: stripForDisk(message, convId, { allowToolResultDehydration }),
     // RB-03 fix: how much of this conversation's ledger this process had
     // confirmed durable at the moment this revision was captured. See
-    // `ledgerBytesByConv`'s doc comment, and the per-entry supersede rule in
+    // `ledgerCharsByConv`'s doc comment, and the per-entry supersede rule in
     // `ledgerReader.ts`, which is what this stamp exists for.
-    stamp: ledgerBytesByConv.get(convId) ?? 0,
+    stamp: ledgerCharsByConv.get(convId) ?? 0,
   });
   streamSnapshots.set(convId, entries);
   await writeStreamSnapshot(convId, entries);
@@ -696,8 +753,9 @@ async function readStreamSnapshotText(convId: string): Promise<string | null> {
     if (!(await exists(path))) return null;
     return await readTextFile(path);
   } catch {
-    // A damaged snapshot must never take the conversation down with it — the
-    // ledger alone is still a complete, if slightly older, history.
+    // An unreadable snapshot must never take the conversation down with it —
+    // the ledger alone is still a complete, if slightly older, history.
+    // (Damaged CONTENT is `projectLedger`'s business, not this read's.)
     return null;
   }
 }
@@ -729,9 +787,9 @@ const SNAPSHOT_SWEEP_MARKER_FILENAME = '.snapshot-sweep-version';
  * `stream-snapshot.json`, then rewrite the marker to the current version.
  * Plan §3.6 addendum, part B.
  *
- * Why this exists alongside the ledger byte watermark (part A, above, which
- * covers both the file-level `ledgerBytes` shrink guard and the RB-03
- * per-entry `stamp` supersede pass): those checks only protect a snapshot
+ * Why this exists alongside the ledger watermark (part A, whose `ledgerBytes`
+ * shrink guard and RB-03 per-entry `stamp` supersede rule are both in
+ * `projectLedger`, `ledgerReader.ts`): those checks only protect a snapshot
  * whose entries actually carry a watermark. That covers the
  * downgrade-then-reupgrade case precisely because a pre-ledger build knows
  * nothing about `stream-snapshot.json` and never touches it — it only
@@ -739,8 +797,8 @@ const SNAPSHOT_SWEEP_MARKER_FILENAME = '.snapshot-sweep-version';
  * detects. This sweep is a coarser, independent second guard: it guarantees
  * no snapshot ever survives an app-version change at all, regardless of
  * whether it happens to carry a watermark, so a legacy snapshot from before
- * either field existed (merged unconditionally by `loadMessages`) cannot
- * outlive the version that wrote it either.
+ * either field existed (merged unconditionally) cannot outlive the version
+ * that wrote it either.
  *
  * Follows the one-shot marker-gated sweep precedent in
  * `src/core/memdir/secretSweep.ts`: a marker file gates repeat work down to
@@ -788,7 +846,6 @@ async function sweepStaleStreamSnapshotsOnVersionChange(): Promise<void> {
     console.warn('[conversationStorage] snapshot sweep failed:', err);
   }
 }
-
 
 /**
  * Promote every buffered revision into the ledger and drop the snapshot files.
@@ -1594,8 +1651,8 @@ export async function loadMessages(convId: string, options?: { strictRead?: bool
   noteTailFromRead(path, raw);
   // Ledger byte watermark (RB-03 fix, plan §3.6 addendum): this read is now
   // the freshest known-durable length for this conversation's ledger — see
-  // `ledgerBytesByConv`'s doc comment.
-  ledgerBytesByConv.set(convId, raw.length);
+  // `ledgerCharsByConv`'s doc comment.
+  ledgerCharsByConv.set(convId, raw.length);
 
   // The whole read is one projection (`projectLedger` in ledgerReader.ts): the
   // ledger folded line by line, then whatever the stream snapshot still holds
@@ -1616,7 +1673,8 @@ export async function loadMessages(convId: string, options?: { strictRead?: bool
   if (projection.snapshot.discardedWhole) {
     console.warn(
       `[conversationStorage] loadMessages(${convId}): ledger shrank below its stream-snapshot ` +
-        `watermark — discarding the snapshot instead of merging it.`,
+        `watermark (${raw.length} < ${projection.snapshot.recordedLedgerChars}) — discarding the ` +
+        `snapshot instead of merging it.`,
     );
     await discardStreamSnapshot(convId);
   } else if (projection.snapshot.droppedIds.length > 0) {
@@ -1654,7 +1712,7 @@ export async function deleteConversationFiles(convId: string): Promise<void> {
   // later flush recreate the conversation directory we are deleting.
   streamSnapshots.delete(convId);
   lastMessageIdByConv.delete(convId);
-  ledgerBytesByConv.delete(convId);
+  ledgerCharsByConv.delete(convId);
   // Remove new path
   const dir = convDir(convId);
   try {

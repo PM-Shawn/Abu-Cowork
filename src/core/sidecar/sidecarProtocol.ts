@@ -8,6 +8,13 @@
  * protocol version (`sidecarManager.ts`), and picks the form of a request from
  * the capability list.
  *
+ * Which of the two moves: anything a peer can ignore is announced as a
+ * capability and leaves `SIDECAR_PROTOCOL_VERSION` where it is. The number
+ * changes only for a change an older peer cannot ignore, and the shell then
+ * accepts equality alone. Both tiers ship in one package, so a mismatch means
+ * a broken install rather than a version to negotiate, and the shell ends it
+ * the way it ends any other unusable sidecar.
+ *
  * Pure and import-free: the renderer and the sidecar bundle this same file.
  */
 export const SIDECAR_PROTOCOL_VERSION = 2;

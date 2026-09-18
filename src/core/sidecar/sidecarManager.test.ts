@@ -1740,10 +1740,21 @@ describe('sidecarManager', () => {
         .filter((message) => message.method === 'handshake');
     }
 
-    function restartReasons(): unknown[] {
+    type ShellEvent = {
+      type: 'message' | 'error' | 'close' | 'hung';
+      payload: string;
+      sequence: number;
+      generation: number;
+    };
+
+    function restartEvents(): unknown[] {
       return traceRuntimeEvent.mock.calls
         .filter((call) => call[0] === 'renderer.sidecar_restart_scheduled')
-        .map((call) => (call[1] as { reason?: string }).reason);
+        .map((call) => call[1]);
+    }
+
+    function restartReasons(): unknown[] {
+      return restartEvents().map((event) => (event as { reason?: string }).reason);
     }
 
     /**
@@ -1800,16 +1811,136 @@ describe('sidecarManager', () => {
       expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
     });
 
-    it('an unanswered handshake times out after 10 s and is a spawn failure', async () => {
+    it('an unanswered handshake times out after 30 s and is a spawn failure', async () => {
       mockSilentSidecar();
       const starting = startSidecar();
       await untilHandshakeSent();
-      await vi.advanceTimersByTimeAsync(9_999);
+      await vi.advanceTimersByTimeAsync(29_999);
       expect(getSidecarStatus()).toBe('starting');
       await vi.advanceTimersByTimeAsync(1);
       await starting;
       expect(getSidecarStatus()).toBe('restarting');
       expect(restartReasons()).toEqual(['handshake-failed']);
+    });
+
+    it('a sidecar that keeps timing out ends failed, though its failures are further apart than the crash-loop window', async () => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+
+      // One 30 s budget plus the 500 ms backoff per attempt: only two of these
+      // ever sit inside the 60 s window, so the window alone would restart for
+      // ever.
+      for (let attempt = 0; attempt < 4; attempt++) await vi.advanceTimersByTimeAsync(30_500);
+      await starting;
+
+      expect(getSidecarStatus()).toBe('failed');
+      expect(spawnCallCount()).toBe(4);
+      expect(restartReasons()).toEqual(['handshake-failed', 'handshake-failed', 'handshake-failed']);
+      expect(reportError).toHaveBeenCalledTimes(1);
+      expect(reportError).toHaveBeenCalledWith(
+        'sidecar_crash',
+        'handshake-failed',
+        undefined,
+        undefined,
+        'Sidecar crash-looped: 4 starts in a row whose handshake failed',
+      );
+    });
+
+    it('a process that closes during the handshake counts as one failure, not two', async () => {
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+
+      emitClose();
+      await starting;
+
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(restartEvents()).toEqual([{
+        sidecarId: 'abu-sidecar',
+        reason: 'handshake-failed',
+        attemptCount: 1,
+        stage: 'restarting',
+        outcome: 'error',
+      }]);
+    });
+
+    it('a handshake line that cannot be written is a spawn failure', async () => {
+      mockSilentSidecar();
+      invoke.mockImplementation((cmd: string) => cmd === 'mcp_write'
+        ? Promise.reject(new Error('pipe closed'))
+        : Promise.resolve(undefined));
+
+      await startSidecar();
+
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(restartEvents()).toEqual([{
+        sidecarId: 'abu-sidecar',
+        reason: 'handshake-failed',
+        attemptCount: 1,
+        stage: 'restarting',
+        outcome: 'error',
+      }]);
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+    });
+
+    it('a close that arrives in the same batch as the answer keeps the sidecar out of running', async () => {
+      let dedicatedHandler: ((event: ShellEvent) => void) | undefined;
+      const getSidecarBridgeSnapshot = vi.fn();
+      (window as Window & { __ABU_SHELL__?: unknown }).__ABU_SHELL__ = {
+        mainSupervisesSidecar: true,
+        subscribeSidecarEvents: (handler: (event: ShellEvent) => void) => {
+          dedicatedHandler = handler;
+          return () => {};
+        },
+        getSidecarBridgeSnapshot,
+      };
+      mockSilentSidecar();
+      const starting = startSidecar();
+      await untilHandshakeSent();
+
+      // A first event sets the cursor; the next one leaves a gap, so main's
+      // replay hands both the answer and the close to one synchronous loop.
+      dedicatedHandler?.({ type: 'error', payload: '[sidecar:test] [info] boot', sequence: 1, generation: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      getSidecarBridgeSnapshot.mockResolvedValue({
+        version: 1,
+        sidecarId: 'abu-sidecar',
+        generation: 1,
+        bridgeStatus: 'running',
+        firstAvailableSequence: 2,
+        lastSequence: 4,
+        truncated: false,
+        events: [
+          {
+            type: 'message',
+            payload: JSON.stringify({ jsonrpc: '2.0', id: handshakeWrites()[0].id, result: HANDSHAKE_OK }),
+            sequence: 2,
+            generation: 1,
+          },
+          { type: 'close', payload: '', sequence: 3, generation: 1 },
+        ],
+        runs: [],
+      });
+      dedicatedHandler?.({ type: 'error', payload: '[sidecar:test] [info] live', sequence: 4, generation: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      await starting;
+
+      expect(getSidecarStatus()).toBe('restarting');
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(false);
+      expect(restartReasons()).toEqual(['handshake-failed']);
+    });
+
+    it('a throwing tracer never holds a healthy sidecar short of running', async () => {
+      mockHappyPath();
+      traceRuntimeEvent.mockImplementation((name: string) => {
+        if (name === 'renderer.sidecar_handshake_completed') throw new Error('tracer exploded');
+      });
+
+      await startSidecar();
+
+      expect(getSidecarStatus()).toBe('running');
+      expect(sidecarHasCapability('agent.start.history-from-ledger')).toBe(true);
     });
 
     it('a sidecar that never completes a handshake ends failed through the crash-loop policy', async () => {

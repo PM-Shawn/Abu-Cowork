@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createLedgerEvent, foldMessageLog, type LedgerLine } from './messageLedger';
+import { createLedgerEvent, createLedgerFold, foldMessageLog, type LedgerLine } from './messageLedger';
 import { loadFoldFixtures, projectFolded } from '@/test/foldFixtures';
 import type { Message } from '@/types';
 
@@ -104,6 +104,40 @@ describe('messageLedger', () => {
       // Same set, same survivors — only the order differs.
       expect(new Set(foldMessageLog(lines).messages.map((m) => m.content)))
         .toEqual(new Set(legacyLoad(lines).map((m) => m.content)));
+    });
+  });
+
+  describe('createLedgerFold', () => {
+    it('hands out offset maps that later lines cannot change under the caller', () => {
+      const fold = createLedgerFold();
+      const put = JSON.stringify({ id: 'm1', role: 'user', content: 'a', timestamp: 1 });
+      const truncate = JSON.stringify(
+        createLedgerEvent('msg.truncate', { id: 'ev1', timestamp: 2, from: 'm1' }),
+      );
+      fold.apply(put, 0);
+
+      const puts = fold.putOffsetById();
+      const removals = fold.removedOffsetById();
+      expect([...puts.entries()]).toEqual([['m1', 0]]);
+      expect([...removals.entries()]).toEqual([]);
+
+      fold.apply(truncate, put.length + 1);
+
+      // The maps taken before the truncate still describe the fold as it was.
+      expect([...puts.entries()]).toEqual([['m1', 0]]);
+      expect([...removals.entries()]).toEqual([]);
+      expect([...fold.putOffsetById().entries()]).toEqual([]);
+      expect([...fold.removedOffsetById().entries()]).toEqual([['m1', put.length + 1]]);
+    });
+
+    it('is not corrupted by a caller that writes into a map it was handed', () => {
+      const fold = createLedgerFold();
+      const put = JSON.stringify({ id: 'm1', role: 'user', content: 'a', timestamp: 1 });
+      fold.apply(put, 0);
+
+      (fold.putOffsetById() as Map<string, number>).set('m1', 999);
+
+      expect([...fold.putOffsetById().entries()]).toEqual([['m1', 0]]);
     });
   });
 

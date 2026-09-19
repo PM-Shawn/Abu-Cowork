@@ -7,9 +7,10 @@ vi.mock('@/core/observability/runtimeTrace', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/core/observability/runtimeTrace')>()),
   traceRuntimeEvent: (...a: unknown[]) => traceRuntimeEventMock(...a),
 }));
-import { exists, readTextFile, writeTextFile, mkdir, remove, readDir } from '@tauri-apps/plugin-fs';
+import { exists, readTextFile, writeTextFile, mkdir, remove, readDir, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
+import { decodeLedgerPrefix } from './ledgerReader';
 import { APP_VERSION } from '@/utils/version';
 import type { Message, ToolResultContent } from '@/types';
 import { DURABLE_TOOL_RESULT_MAX_BYTES_PER_LIST } from './durableToolResultContent';
@@ -81,6 +82,13 @@ function createMemoryFs() {
       throw new Error('native append unavailable in test');
     }
     return undefined;
+  });
+
+  // `size` is the file's UTF-8 byte length, the unit a real fs reports — the
+  // whole point of the ledger watermark being bytes rather than characters.
+  (stat as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
+    if (!files.has(path)) throw new Error(`File not found: ${path}`);
+    return { size: new TextEncoder().encode(files.get(path)!).byteLength };
   });
 
   (mkdir as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
@@ -2291,6 +2299,125 @@ describe('conversationStorage', () => {
 
       const loaded = await storage.loadMessages('conv-1');
       expect(loaded.map((m) => m.content)).toEqual(['hello']);
+    });
+  });
+
+  describe('flushAndGetLedgerWatermark (#549 P1)', () => {
+    function messagesPathFor(convId: string): string {
+      return `/Users/testuser/.abu/conversations/${convId}/messages.jsonl`;
+    }
+
+    it('returns the true UTF-8 byte size of the ledger after the queue has drained', async () => {
+      const convId = 'wm-conv';
+      await storage.appendMessage(convId, makeMsg({ id: 'u1', role: 'user', content: '你好，世界' }));
+      await storage.appendMessage(convId, makeMsg({ id: 'a1', role: 'assistant', content: 'ok' }));
+
+      const watermark = await storage.flushAndGetLedgerWatermark(convId);
+
+      const onDisk = memFs.files.get(messagesPathFor(convId))!;
+      expect(watermark).toBe(new TextEncoder().encode(onDisk).byteLength);
+      // Chinese content makes the byte count exceed the character count — the
+      // reason the watermark is measured in bytes and not in string length.
+      expect(watermark).toBeGreaterThan(onDisk.length);
+      // The watermark is only usable as a cut point because it lands on a line
+      // boundary, which holds exactly while every queued write ends in '\n'.
+      expect(onDisk.endsWith('\n')).toBe(true);
+    });
+
+    it('returns 0 for a conversation with no ledger file', async () => {
+      expect(await storage.flushAndGetLedgerWatermark('wm-missing')).toBe(0);
+    });
+
+    it('waits for a timer-started drain that is still inside its append', async () => {
+      vi.useFakeTimers();
+      try {
+        const convId = 'wm-race';
+        const path = messagesPathFor(convId);
+        let releaseAppend!: () => void;
+        const appendGate = new Promise<void>((r) => { releaseAppend = r; });
+        let appendCalls = 0;
+        (invoke as ReturnType<typeof vi.fn>).mockImplementation(async (
+          cmd: string,
+          args?: { path?: string; data?: string },
+        ) => {
+          if (cmd === 'append_file_text') {
+            appendCalls++;
+            if (appendCalls === 1) await appendGate;
+            memFs.files.set(args!.path!, (memFs.files.get(args!.path!) ?? '') + (args!.data ?? ''));
+            return undefined;
+          }
+          return undefined;
+        });
+
+        const put = storage.appendMessage(convId, makeMsg({ id: 'u1', content: '你好，世界' }));
+        // Let appendMessage's async preamble finish enqueueing before the
+        // debounce fires.
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        // The 100 ms debounce starts a drain nobody awaits; its append then
+        // blocks on the gate, so the queue is empty while the file is not
+        // yet written.
+        await vi.advanceTimersByTimeAsync(100);
+
+        const watermarkPromise = storage.flushAndGetLedgerWatermark(convId);
+        for (let i = 0; i < 20; i++) await Promise.resolve();
+        expect(memFs.files.has(path)).toBe(false);
+
+        releaseAppend();
+        const watermark = await watermarkPromise;
+        await put;
+
+        const onDisk = memFs.files.get(path)!;
+        expect(watermark).toBe(new TextEncoder().encode(onDisk).byteLength);
+        expect(onDisk.endsWith('\n')).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('terminates a crash-torn tail before measuring, so the value is a usable cut point', async () => {
+      const convId = 'wm-torn';
+      const path = messagesPathFor(convId);
+      memFs.files.set(
+        path,
+        JSON.stringify({ id: 'm1', role: 'user', content: '第一条', timestamp: 1 }) + '\n'
+          + '{"id":"m2","role":"user","content":"写到一半',
+      );
+
+      const watermark = await storage.flushAndGetLedgerWatermark(convId);
+
+      const onDisk = memFs.files.get(path)!;
+      expect(onDisk.endsWith('\n')).toBe(true);
+      expect(watermark).toBe(new TextEncoder().encode(onDisk).byteLength);
+      // The whole point of the value: a Node reader must accept it.
+      expect(decodeLedgerPrefix(new TextEncoder().encode(onDisk), watermark)).toBe(onDisk);
+
+      await storage.appendMessage(convId, makeMsg({ id: 'm3', content: '崩溃之后写的一条' }));
+      await storage.flushWrites();
+
+      const after = memFs.files.get(path)!;
+      // One empty segment only — the trailing one every '\n'-terminated file
+      // has. A second newline (or a line glued onto the stump) shows up here.
+      expect(after.split('\n').filter((line) => line === '')).toHaveLength(1);
+      expect((await storage.loadMessages(convId)).map((m) => m.id)).toEqual(['m1', 'm3']);
+    });
+
+    it('terminates a tail a load has already reported torn', async () => {
+      const convId = 'wm-torn-loaded';
+      const path = messagesPathFor(convId);
+      memFs.files.set(
+        path,
+        JSON.stringify({ id: 'm1', role: 'user', content: '第一条', timestamp: 1 }) + '\n'
+          + '{"id":"m2","role":"user","content":"写到一半',
+      );
+
+      expect((await storage.loadMessages(convId)).map((m) => m.id)).toEqual(['m1']);
+
+      const watermark = await storage.flushAndGetLedgerWatermark(convId);
+
+      const onDisk = memFs.files.get(path)!;
+      expect(onDisk.endsWith('\n')).toBe(true);
+      expect(watermark).toBe(new TextEncoder().encode(onDisk).byteLength);
+      expect(decodeLedgerPrefix(new TextEncoder().encode(onDisk), watermark)).toBe(onDisk);
     });
   });
 });

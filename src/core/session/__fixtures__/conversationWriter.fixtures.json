@@ -1,0 +1,68 @@
+{
+  "cases": [
+    {
+      "name": "append, snapshot, checkpoint, truncate, re-answer, index row",
+      "convId": "conv-golden",
+      "now": 1700000000000,
+      "randomSuffix": "i",
+      "ops": [
+        { "op": "appendMessage", "message": { "id": "u1", "role": "user", "content": "你好", "timestamp": 1700000000000 } },
+        { "op": "appendMessage", "message": { "id": "a1", "role": "assistant", "content": "收到", "timestamp": 1700000000000 } },
+        { "op": "flushWrites" },
+        { "op": "expectFiles", "files": {
+          "conv-golden/messages.jsonl": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"你好\",\"timestamp\":1700000000000}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"收到\",\"timestamp\":1700000000000,\"pid\":\"u1\"}\n",
+          "conv-golden/stream-snapshot.json": null
+        } },
+        { "op": "snapshotMessageRevision", "message": { "id": "a1", "role": "assistant", "content": "收到，正在处理", "timestamp": 1700000000000, "isStreaming": true } },
+        { "op": "expectFiles", "files": {
+          "conv-golden/stream-snapshot.json": "{\"version\":2,\"entries\":[{\"message\":{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"收到，正在处理\",\"timestamp\":1700000000000,\"isStreaming\":false},\"stamp\":150}],\"ledgerBytes\":150}"
+        } },
+        { "op": "replaceMessageById", "message": { "id": "a1", "role": "assistant", "content": "收到，处理完成", "timestamp": 1700000000000 } },
+        { "op": "flushWrites" },
+        { "op": "appendTruncateEvent", "from": "a1", "pid": "u1", "removedIds": ["a1"] },
+        { "op": "appendMessage", "message": { "id": "a2", "role": "assistant", "content": "重新回答", "timestamp": 1700000000000 } },
+        { "op": "flushWrites" },
+        { "op": "updateIndexEntry", "meta": { "id": "conv-golden", "title": "你好", "createdAt": 1700000000000, "updatedAt": 1700000000000, "messageCount": 2 } },
+        { "op": "flushIndex" },
+        { "op": "expectFiles", "files": {
+          "conv-golden/messages.jsonl": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"你好\",\"timestamp\":1700000000000}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"收到\",\"timestamp\":1700000000000,\"pid\":\"u1\"}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"收到，处理完成\",\"timestamp\":1700000000000,\"pid\":\"u1\"}\n{\"lk\":\"msg.truncate\",\"id\":\"trunc_loyw3v28i\",\"role\":\"system\",\"content\":\"\",\"isSystem\":true,\"timestamp\":1700000000000,\"pid\":\"u1\",\"from\":\"a1\"}\n{\"id\":\"a2\",\"role\":\"assistant\",\"content\":\"重新回答\",\"timestamp\":1700000000000,\"pid\":\"u1\"}\n",
+          "conv-golden/stream-snapshot.json": null,
+          "index.json": "{\n  \"version\": 1,\n  \"entries\": {\n    \"conv-golden\": {\n      \"id\": \"conv-golden\",\n      \"title\": \"你好\",\n      \"createdAt\": 1700000000000,\n      \"updatedAt\": 1700000000000,\n      \"messageCount\": 2\n    }\n  }\n}"
+        } }
+      ]
+    },
+    {
+      "name": "queued revisions of one message collapse into one line",
+      "convId": "conv-merge",
+      "now": 1700000000000,
+      "randomSuffix": "i",
+      "ops": [
+        { "op": "appendMessage", "message": { "id": "u1", "role": "user", "content": "问", "timestamp": 1700000000000 } },
+        { "op": "flushWrites" },
+        { "op": "replaceMessageById", "message": { "id": "u1", "role": "user", "content": "问 v2", "timestamp": 1700000000000 } },
+        { "op": "replaceMessageById", "message": { "id": "u1", "role": "user", "content": "问 v3", "timestamp": 1700000000000 } },
+        { "op": "flushWrites" },
+        { "op": "expectFiles", "files": {
+          "conv-merge/messages.jsonl": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"问\",\"timestamp\":1700000000000}\n{\"id\":\"u1\",\"role\":\"user\",\"content\":\"问 v3\",\"timestamp\":1700000000000}\n"
+        } }
+      ]
+    },
+    {
+      "name": "an armed snapshot is promoted into the ledger and its file removed",
+      "convId": "conv-promote",
+      "now": 1700000000000,
+      "randomSuffix": "i",
+      "ops": [
+        { "op": "appendMessage", "message": { "id": "u1", "role": "user", "content": "问", "timestamp": 1700000000000 } },
+        { "op": "appendMessage", "message": { "id": "a1", "role": "assistant", "content": "", "timestamp": 1700000000000 } },
+        { "op": "flushWrites" },
+        { "op": "snapshotMessageRevision", "message": { "id": "a1", "role": "assistant", "content": "半句", "timestamp": 1700000000000, "isStreaming": true } },
+        { "op": "promoteStreamSnapshots" },
+        { "op": "expectFiles", "files": {
+          "conv-promote/messages.jsonl": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"问\",\"timestamp\":1700000000000}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"\",\"timestamp\":1700000000000,\"pid\":\"u1\"}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"半句\",\"timestamp\":1700000000000,\"isStreaming\":false,\"pid\":\"u1\"}\n",
+          "conv-promote/stream-snapshot.json": null
+        } }
+      ]
+    }
+  ]
+}

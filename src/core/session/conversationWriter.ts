@@ -195,9 +195,14 @@ export interface ConversationWriter {
    * actions, armed snapshots and the containment check. Write entries of the
    * conversation that are still running are awaited and the queue is flushed
    * first. The next write entry for the conversation re-derives all of it from
-   * one strict read of the ledger and the snapshot file, resolves the
-   * conversation directory again, and rejects when either fails. Files are not
-   * touched.
+   * one strict read of the ledger, whatever the snapshot file still holds, and
+   * a fresh resolution of the conversation directory; it rejects when the
+   * ledger read or that resolution fails, while an unreadable snapshot file
+   * reads as an absent one. Files are not touched.
+   *
+   * The caller has already stopped issuing writes for this conversation: an
+   * entry that begins while this call is between its own awaits is neither
+   * waited for nor made to re-derive.
    */
   forgetConversation(convId: string): Promise<void>;
   deleteConversationFiles(convId: string): Promise<void>;
@@ -692,6 +697,16 @@ export function createConversationWriter(deps: {
       idsByConv.set(convId, ids);
     }
     ids.add(id);
+  }
+
+  /**
+   * The mirror of `claimWritten`: an id this instance no longer treats as
+   * durable. Both containers move together, so the per-conversation index never
+   * names an id the flat set has already dropped.
+   */
+  function releaseWritten(convId: string, id: string): void {
+    writtenIds.delete(id);
+    idsByConv.get(convId)?.delete(id);
   }
 
   /**
@@ -1368,7 +1383,7 @@ export function createConversationWriter(deps: {
     // cache and any buffered stream-snapshot revision must forget these ids, or
     // the next load would resurrect exactly what the ledger just cut.
     for (const id of opts.removedIds) {
-      writtenIds.delete(id);
+      releaseWritten(convId, id);
       await dropStreamSnapshotEntry(convId, id);
     }
 
@@ -1545,7 +1560,7 @@ export function createConversationWriter(deps: {
       // Leave the id unclaimed so a later appendMessage can still get the
       // message onto disk — the same recovery the old fallback provided, minus
       // the second write path.
-      writtenIds.delete(message.id);
+      releaseWritten(convId, message.id);
     }
   }
 
@@ -1559,11 +1574,34 @@ export function createConversationWriter(deps: {
    * `forgetConversation` relies on it as the one way state comes back.
    */
   async function deriveFromDisk(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
+    // A release while this read is in flight hands the conversation to another
+    // process: everything read here then describes the conversation as it was
+    // before the hand-over. `stillOurs` is what keeps such a read from putting
+    // that picture back and counting the conversation as derived — it would
+    // leave the writer believing stale facts, which is the whole failure
+    // `forgetConversation` exists to remove.
+    const generation = conversationGeneration(convId);
+    const stillOurs = (): boolean => conversationGeneration(convId) === generation;
     await ensureConversation(convId);
     const path = paths!.messagesPath(convId);
     if (!(await fs.exists(path))) {
-      // Nothing on disk is a complete answer, so the conversation is derived.
-      forgotten.delete(convId);
+      // A ledger that is not on disk says nothing about the snapshot file beside
+      // it: another writer can have armed a revision there before writing its
+      // first ledger line. Reading it is what keeps the next
+      // `snapshotMessageRevision` from rewriting that file from an empty buffer.
+      // The projection's repair verdicts are left to the full derivation below;
+      // this path writes no file.
+      const armed = projectLedger({
+        ledgerText: '',
+        snapshotText: await readStreamSnapshotText(convId),
+      }).snapshot.merged;
+      if (stillOurs()) {
+        if (armed.size > 0) streamSnapshots.set(convId, armed);
+        else streamSnapshots.delete(convId);
+        // Nothing but that snapshot is on disk, which is a complete answer, so
+        // the conversation is derived.
+        forgotten.delete(convId);
+      }
       return [];
     }
 
@@ -1579,13 +1617,6 @@ export function createConversationWriter(deps: {
       );
       return [];
     }
-    // Free the next append from re-reading the file just to check its tail.
-    noteTailFromRead(path, raw);
-    // Ledger watermark in string length (RB-03 fix, plan §3.6 addendum): this
-    // read is now the freshest known-durable length for this conversation's
-    // ledger — see `ledgerCharsByConv`'s doc comment.
-    ledgerCharsByConv.set(convId, raw.length);
-
     // The whole read is one projection (`projectLedger` in ledgerReader.ts): the
     // ledger folded line by line, then whatever the stream snapshot still holds
     // that the ledger has not superseded, folded on top as trailing puts. It
@@ -1599,6 +1630,15 @@ export function createConversationWriter(deps: {
     // checkpoints live in the stream snapshot, not the ledger.
     const snapshotText = await readStreamSnapshotText(convId);
     const projection = projectLedger({ ledgerText: raw, snapshotText });
+    // Answer the caller with what was read, and put nothing back, once the
+    // conversation has been released underneath this read.
+    if (!stillOurs()) return projection.messages;
+    // Free the next append from re-reading the file just to check its tail.
+    noteTailFromRead(path, raw);
+    // Ledger watermark in string length (RB-03 fix, plan §3.6 addendum): this
+    // read is now the freshest known-durable length for this conversation's
+    // ledger — see `ledgerCharsByConv`'s doc comment.
+    ledgerCharsByConv.set(convId, raw.length);
     // This process is the only writer of `stream-snapshot.json`, so acting on
     // the projection's verdict is its job alone.
     if (projection.snapshot.discardedWhole) {
@@ -1620,6 +1660,9 @@ export function createConversationWriter(deps: {
       // that never lands only means the same entry is filtered again next time.
       await writeStreamSnapshot(convId, projection.snapshot.merged);
     }
+    // The repair above is the last await this derivation takes, so it is the
+    // last point at which the conversation can be released underneath it.
+    if (!stillOurs()) return projection.messages;
     if (projection.snapshot.merged.size > 0) streamSnapshots.set(convId, projection.snapshot.merged);
     else streamSnapshots.delete(convId);
     const { messages, corruptCount, totalLines } = projection;
@@ -1660,11 +1703,24 @@ export function createConversationWriter(deps: {
   const forgotten = new Set<string>();
 
   /**
+   * How many times each conversation's state has been released. A derivation
+   * captures this at its start and compares it again before it writes anything
+   * back, which is how a read that straddles a release is recognised as
+   * describing the conversation before the hand-over.
+   */
+  const releasesByConv = new Map<string, number>();
+
+  function conversationGeneration(convId: string): number {
+    return releasesByConv.get(convId) ?? 0;
+  }
+
+  /**
    * Drop every piece of per-conversation state this instance holds, including
    * the record that this conversation's directory was found inside the root, so
    * the next method to touch it resolves the directory again. Touches no file.
    */
   function releaseConversationState(convId: string): void {
+    releasesByConv.set(convId, conversationGeneration(convId) + 1);
     containedConversations.delete(convId);
     for (const id of idsByConv.get(convId) ?? []) {
       writtenIds.delete(id);
@@ -1678,6 +1734,16 @@ export function createConversationWriter(deps: {
   }
 
   /**
+   * Re-derivations in flight, one per conversation. Writes are dispatched
+   * without being serialized against each other, so a burst right after a
+   * hand-over reaches `ensureDerived` together; they share one read here. Two
+   * reads would otherwise each rebuild `lastMessageIdByConv` from the ledger
+   * tail, and the one that finished last would overwrite the id the first
+   * write had already claimed — two messages with the same parent.
+   */
+  const derivations = new Map<string, Promise<Message[]>>();
+
+  /**
    * Re-derive a forgotten conversation, once, before its next write. Answers
    * whether a re-derivation ran, which an append needs in order to re-check the
    * dedup it already decided against the older set. A conversation that was
@@ -1685,7 +1751,18 @@ export function createConversationWriter(deps: {
    */
   async function ensureDerived(convId: string): Promise<boolean> {
     if (!forgotten.has(convId)) return false;
-    await deriveFromDisk(convId, { strictRead: true });
+    const inFlight = derivations.get(convId);
+    if (inFlight) {
+      await inFlight;
+      return true;
+    }
+    const running = deriveFromDisk(convId, { strictRead: true });
+    derivations.set(convId, running);
+    const settle = (): void => {
+      if (derivations.get(convId) === running) derivations.delete(convId);
+    };
+    running.then(settle, settle);
+    await running;
     return true;
   }
 
@@ -1715,9 +1792,16 @@ export function createConversationWriter(deps: {
    * actions, armed snapshots and the containment check. Write entries of the
    * conversation that are still running are awaited and the queue is flushed
    * first. The next write entry for the conversation re-derives all of it from
-   * one strict read of the ledger and the snapshot file, resolves the
-   * conversation directory again, and rejects when either fails. Files are not
-   * touched.
+   * one strict read of the ledger, whatever the snapshot file still holds, and
+   * a fresh resolution of the conversation directory; it rejects when the
+   * ledger read or that resolution fails, while an unreadable snapshot file
+   * reads as an absent one. Files are not touched.
+   *
+   * The caller has already stopped issuing writes for this conversation —
+   * step 2's ownership rules are what guarantee it. The running entries are
+   * read once, before the awaits below, so an entry that begins inside them is
+   * neither waited for nor marked, and would write against state this call has
+   * just dropped.
    */
   async function forgetConversation(convId: string): Promise<void> {
     const { messagesPath } = await ensureConversation(convId);

@@ -414,6 +414,80 @@ describe('createConversationWriter', () => {
       const { writer } = await setup();
       await expect(writer.forgetConversation('../c1')).rejects.toMatchObject({ code: 'conversation_id_invalid' });
     });
+
+    it('a load that straddles a forget leaves the conversation forgotten, and the next write re-derives', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      const read = fs.readTextFile.bind(fs);
+      let reachedRead = (): void => {};
+      let releaseRead = (): void => {};
+      const atRead = new Promise<void>((resolve) => { reachedRead = resolve; });
+      const readGate = new Promise<void>((resolve) => { releaseRead = resolve; });
+      let gated = false;
+      fs.readTextFile = async (path) => {
+        const content = await read(path);
+        if (path === LEDGER && !gated) {
+          gated = true;
+          reachedRead();
+          await readGate;
+        }
+        return content;
+      };
+
+      const loading = writer.loadMessages('c1');
+      await atRead;
+      // The hand-over happens between the load's read of the ledger and the
+      // state it would derive from it.
+      otherWriterAppends(line({ id: 'x1', role: 'assistant', content: 'y', timestamp: 1, pid: 'm1' }));
+      await writer.forgetConversation('c1');
+      releaseRead();
+      expect((await loading).map((m) => m.id)).toEqual(['m1']);
+
+      await writer.appendMessage('c1', msg('m3', 'third'));
+      await writer.flushWrites();
+      const lines = fs.files.get(LEDGER)!.trim().split('\n').map((l) => JSON.parse(l) as { id: string; pid?: string });
+      expect(lines.find((l) => l.id === 'm3')!.pid).toBe('x1');
+    });
+
+    it('two writes dispatched together after a forget share one re-derivation and one chain', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      otherWriterAppends(line({ id: 'x1', role: 'assistant', content: 'y', timestamp: 1, pid: 'm1' }));
+      await writer.forgetConversation('c1');
+      const read = fs.readTextFile.bind(fs);
+      let ledgerReads = 0;
+      fs.readTextFile = async (path) => {
+        const content = await read(path);
+        // A second read of the same ledger comes back later than the first, the
+        // way two IPC round trips do.
+        if (path === LEDGER && ++ledgerReads === 2) {
+          for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+        }
+        return content;
+      };
+      const readsBefore = fs.calls.filter((c) => c === `readTextFile ${LEDGER}`).length;
+      await Promise.all([
+        writer.appendMessage('c1', msg('m2', 'second')),
+        writer.appendMessage('c1', msg('m3', 'third')),
+      ]);
+      await writer.flushWrites();
+      const lines = fs.files.get(LEDGER)!.trim().split('\n').map((l) => JSON.parse(l) as { id: string; pid?: string });
+      expect(lines.find((l) => l.id === 'm2')!.pid).toBe('x1');
+      expect(lines.find((l) => l.id === 'm3')!.pid).toBe('m2');
+      expect(fs.calls.filter((c) => c === `readTextFile ${LEDGER}`).length).toBe(readsBefore + 1);
+    });
+
+    it('a snapshot armed before the first ledger line survives the re-derivation of a conversation with no ledger', async () => {
+      const { fs, writer } = await setup();
+      const snapshotPath = `${ROOT}/c3/stream-snapshot.json`;
+      fs.files.set(snapshotPath, JSON.stringify({
+        version: 2,
+        entries: [{ message: { id: 'x9', role: 'assistant', content: '半句', timestamp: 1 }, stamp: 0 }],
+        ledgerBytes: 0,
+      }));
+      await writer.forgetConversation('c3');
+      await writer.snapshotMessageRevision('c3', msg('m9', 'partial'));
+      const entries = (JSON.parse(fs.files.get(snapshotPath)!) as { entries: { message: { id: string } }[] }).entries;
+      expect(entries.map((e) => e.message.id)).toEqual(['x9', 'm9']);
+    });
   });
 
   describe('containment', () => {

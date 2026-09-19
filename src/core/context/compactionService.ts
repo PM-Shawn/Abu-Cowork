@@ -96,6 +96,8 @@ function resolveSummarizeConfig(convId: string): CompressionConfig {
     model: getEffectiveModel(scoped),
     apiKey: creds.apiKey,
     baseUrl: creds.baseUrl,
+    conversationId: convId,
+    providerInstanceId: provider?.id ?? 'unknown',
   };
 }
 

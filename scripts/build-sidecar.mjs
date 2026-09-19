@@ -152,8 +152,7 @@ export const SHIM_TARGETS = [
   // rejected import at its sole call site, so throwing is a safe, documented
   // feature gap, not a crash. See each shim's own doc for the specific
   // reasoning (memdir/extractor.ts is a design doc §6 explicit exclusion;
-  // usageTracker.ts and computerTools.ts's closeAxSession are new findings,
-  // flagged in the report).
+  // computerTools.ts's closeAxSession is a new finding, flagged in the report).
   { real: path.resolve(srcDir, 'core/memdir/extractor.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/memdirExtractorRun.ts') },
   // P1-3B-3A finding: P1-3a's assumption ("nothing imports memdir/paths.ts
   // directly once memdir/scan.ts is redirected — memdirScan.ts uses its own
@@ -168,7 +167,9 @@ export const SHIM_TARGETS = [
   // caller, verified by grep) — real module's export surface is a superset,
   // this shim intentionally covers only what's used.
   { real: path.resolve(srcDir, 'core/memdir/paths.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/memdirPaths.ts') },
-  { real: path.resolve(srcDir, 'core/llm/usageTracker.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/usageTrackerRun.ts') },
+  // 真转发：用量快照在 sidecar 里编成 stdout 帧直接交给主进程，不经过 renderer。
+  // 见 usageSinkRun.ts。
+  { real: path.resolve(srcDir, 'core/llm/usageSink.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/usageSinkRun.ts') },
   { real: path.resolve(srcDir, 'core/tools/definitions/computerTools.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/computerToolsAxRun.ts') },
   // Legitimate no-op — enterprise error telemetry, same class as langfuseRun.ts. Reached via agentLoop.ts's reportError -> consoleError.ts -> getTelemetryTarget() -> useEnterpriseStore.
   { real: path.resolve(srcDir, 'utils/consoleTelemetryTarget.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/consoleTelemetryTargetRun.ts') },

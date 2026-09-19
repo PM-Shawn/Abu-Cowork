@@ -412,7 +412,6 @@ export interface TranslationDict {
     imageLoading: string;
     imageUnavailable: string;
     imageRetry: string;
-    inputTokens: string;
     outputTokens: string;
     addAttachment: string;
     /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
@@ -3829,6 +3828,12 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     cacheHitRate: string;
+    statsOrigin: string;
+    statsOriginEmpty: string;
+    unrecorded: string;
+    unavailable: string;
+    stale: string;
+    unknownUsage: string;
     bySkill: string;
     byModel: string;
     noData: string;

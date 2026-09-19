@@ -52,6 +52,19 @@
  * always numeric (or string ids minted by the child itself, per its own
  * protocol — see the interception guard in the stdout loop below for why
  * that still can't collide).
+ *
+ * ## 用量帧拦截（用量记账修复，期 1 第 2 步）
+ *
+ * sidecar 在跑的时候，agent 主循环就在 sidecar 里，用量也只有它知道。这些数字
+ * 经由 stdout 上的用量帧直接交给 main 写进 `usage.sqlite`
+ * （`electron/usageDb.cjs`），**不经过 renderer**。
+ *
+ * 不经过 renderer 是这次故障的直接教训：renderer 一旦刷新、卡住或者没有订阅，
+ * 这条链就断了，而用户此刻的对话仍在 sidecar 里正常进行。同一个失效模式还写成了
+ * 验收断言（任务书 V05）。
+ *
+ * 拦截只对 `SIDECAR_ID` 生效。这个桥同时给第三方 MCP stdio 服务用，它们是外部
+ * 进程，不能让它们往用户的用量账本里写东西。
  */
 'use strict';
 
@@ -81,6 +94,8 @@ const {
   SIDECAR_ID,
   sidecarRunRegistry,
 } = require('./sidecarRunRegistry.cjs');
+const { decodeUsageFrame, USAGE_FRAME_PREFIX } = require('./usageAttemptFrame.cjs');
+const { recordValidatedAttempt, noteRejectedFrame } = require('./usageDb.cjs');
 
 /** id -> ChildProcess */
 const children = new Map();
@@ -241,6 +256,29 @@ function consumeHeartbeatAck(id, line) {
     state.pendingId = null;
     state.failures = 0;
   }
+  return true;
+}
+
+/**
+ * Called from the stdout line loop BEFORE `emit('mcp-msg-{id}', line)`.
+ * Returns true iff `line` was a usage frame (in which case the caller must
+ * NOT emit it as a regular message).
+ *
+ * 只认 `SIDECAR_ID`：这个桥同时承载第三方 MCP 服务的 stdio，它们无权写用户账本。
+ * 判据是**顶层键**，不是"这行里含有标记串"——RPC 载荷里可以出现任意文本，
+ * 含标记串的普通行由 `decodeUsageFrame` 判为 `not-a-frame` 后照常投递。
+ *
+ * 写失败与坏帧都只累加健康计数：用量记账不得打断正在进行的回答（任务书 U05）。
+ */
+function consumeUsageFrame(app, id, line) {
+  if (id !== SIDECAR_ID) return false;
+  const decoded = decodeUsageFrame(line);
+  if (decoded.kind === 'not-a-frame') return false;
+  if (decoded.kind === 'rejected') {
+    noteRejectedFrame(decoded.reason);
+    return true;
+  }
+  recordValidatedAttempt(app, decoded.attempt);
   return true;
 }
 
@@ -514,6 +552,8 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
       // Heartbeat ack interception — see consumeHeartbeatAck()'s JSDoc for
       // why this can never swallow a real RPC response.
       if (line.includes('__mcphb-') && consumeHeartbeatAck(id, line)) continue;
+      // 用量帧拦截 — 见 consumeUsageFrame() 的说明。
+      if (line.startsWith(USAGE_FRAME_PREFIX) && consumeUsageFrame(app, id, line)) continue;
       runtimeState.noteStdoutLine(id, line);
       emit(`mcp-msg-${id}`, line);
     }

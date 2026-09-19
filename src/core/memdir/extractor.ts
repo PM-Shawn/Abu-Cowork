@@ -244,6 +244,12 @@ export async function extractMemoriesFromConversation(
         baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
         maxTokens: 1024,
+        accounting: {
+          source: 'memory' as const,
+          conversationId,
+          skill: null,
+          providerInstanceId: getActiveProvider(settings)?.id ?? 'unknown',
+        },
       },
       (event: StreamEvent) => {
         if (event.type === 'text') {

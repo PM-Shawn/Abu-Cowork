@@ -63,6 +63,29 @@ describe('SidecarLLMAdapter', () => {
     vi.useRealTimers();
   });
 
+  describe('记账身份随请求进 sidecar', () => {
+    it('accounting 原样传给 llm.chat，转发器自己不记账', async () => {
+      // sidecar 在跑的时候真正发 HTTP 的是它那一侧的适配器，记账也在那里。
+      // 这个类只是转发器：身份必须传过去，它自己一条账都不记，否则同一次请求
+      // 会在账本里出现两次（任务书 U02）。
+      let captured: { options?: { accounting?: unknown } } = {};
+      requestMock.mockImplementation((_method: string, params: { callId: string; options?: { accounting?: unknown } }) => {
+        captured = params;
+        return Promise.resolve({ ok: true });
+      });
+
+      const accounting = {
+        source: 'main' as const,
+        conversationId: 'conv-1',
+        skill: null,
+        providerInstanceId: 'provider-1',
+      };
+      await new SidecarLLMAdapter('claude').chat([], { model: 'm', apiKey: 'k', accounting }, () => {});
+
+      expect(captured.options?.accounting).toEqual(accounting);
+    });
+  });
+
   describe('event forwarding', () => {
     it('forwards llm.event notifications to onEvent in arrival order', async () => {
       // request() resolves only after we've fired both events, mirroring the

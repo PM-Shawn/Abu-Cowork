@@ -832,11 +832,11 @@ export default function MessageBubble({
         )}
         {message.isStreaming && <span className="streaming-cursor" />}
 
-        {/* Token usage display */}
-        {message.usage && !message.isStreaming && (
+        {/* 只显示输出：这条消息上的数字来自旧口径，用量页读的是新账本，
+            同屏显示两个输入数会对不上（任务书 U08）。输出两边含义一致。 */}
+        {message.usage && !message.isStreaming && message.usage.outputTokens != null && (
           <div className="mt-2 text-caption text-[var(--abu-text-muted)]">
-            {message.usage.inputTokens != null && `${t.chat.inputTokens}: ${message.usage.inputTokens.toLocaleString()}`}
-            {message.usage.outputTokens != null && ` · ${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
+            {`${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
           </div>
         )}
 
@@ -887,11 +887,11 @@ export default function MessageBubble({
         )}
         {message.isStreaming && <span className="streaming-cursor" />}
 
-        {/* Token usage display */}
-        {message.usage && !message.isStreaming && (
+        {/* 只显示输出：这条消息上的数字来自旧口径，用量页读的是新账本，
+            同屏显示两个输入数会对不上（任务书 U08）。输出两边含义一致。 */}
+        {message.usage && !message.isStreaming && message.usage.outputTokens != null && (
           <div className="mt-2 text-caption text-[var(--abu-text-muted)]">
-            {message.usage.inputTokens != null && `${t.chat.inputTokens}: ${message.usage.inputTokens.toLocaleString()}`}
-            {message.usage.outputTokens != null && ` · ${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
+            {`${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
           </div>
         )}
 

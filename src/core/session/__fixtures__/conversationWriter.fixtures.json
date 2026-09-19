@@ -36,6 +36,7 @@
       "convId": "conv-merge",
       "now": 1700000000000,
       "randomSuffix": "i",
+      "concurrentRevisionBurst": true,
       "ops": [
         { "op": "appendMessage", "message": { "id": "u1", "role": "user", "content": "问", "timestamp": 1700000000000 } },
         { "op": "flushWrites" },
@@ -131,6 +132,79 @@
         } },
         { "op": "expectFiles", "files": {
           "conv-tools/stream-snapshot.json": "{\"version\":2,\"entries\":[{\"message\":{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"已读取，正在总结\",\"timestamp\":1700000000000,\"toolCalls\":[{\"id\":\"toolu_img\",\"name\":\"read_file\",\"input\":{\"path\":\"result.png\"},\"result\":\"Image result\",\"resultContent\":[{\"type\":\"text\",\"text\":\"Image result\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"QUJDRA==\"}}],\"isExecuting\":false,\"startTime\":1700000000000,\"endTime\":1700000000001}],\"isStreaming\":false},\"stamp\":694}],\"ledgerBytes\":694}"
+        } }
+      ]
+    },
+    {
+      "name": "a tool-result image whose snapshot is already on disk is dehydrated to an outputRef",
+      "convId": "conv-dehydrated",
+      "now": 1700000000000,
+      "randomSuffix": "i",
+      "seedFiles": {
+        "conv-dehydrated/outputs/manifest.json": "{\"version\":1,\"entries\":{\"tool-result://toolu_dehy\":{\"originalPath\":\"tool-result://toolu_dehy\",\"basename\":\"chart.png\",\"snapshotRelPath\":\"files/9b1c2d3e/chart.png\",\"size\":4,\"originalMtime\":0,\"snapshottedAt\":1700000000000,\"source\":\"tool-output\",\"refId\":\"toolu_dehy\",\"refKind\":\"result-image\"}}}"
+      },
+      "ops": [
+        { "op": "appendMessage", "message": { "id": "u1", "role": "user", "content": "画个图", "timestamp": 1700000000000 } },
+        { "op": "appendMessage", "message": {
+          "id": "a1",
+          "role": "assistant",
+          "content": "画好了",
+          "timestamp": 1700000000000,
+          "toolCalls": [
+            {
+              "id": "toolu_dehy",
+              "name": "run_command",
+              "input": { "command": "plot" },
+              "result": "Image result",
+              "resultContent": [
+                { "type": "text", "text": "Image result" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "QUJDRA==" } }
+              ],
+              "isExecuting": false,
+              "startTime": 1700000000000,
+              "endTime": 1700000000001
+            }
+          ],
+          "toolCallsForContext": [
+            {
+              "id": "toolu_dehy",
+              "name": "run_command",
+              "input": { "command": "plot" },
+              "result": "Image result",
+              "resultContent": [
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "QUJDRA==" } }
+              ]
+            }
+          ]
+        } },
+        { "op": "flushWrites" },
+        { "op": "expectFiles", "files": {
+          "conv-dehydrated/messages.jsonl": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"画个图\",\"timestamp\":1700000000000}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"画好了\",\"timestamp\":1700000000000,\"toolCalls\":[{\"id\":\"toolu_dehy\",\"name\":\"run_command\",\"input\":{\"command\":\"plot\"},\"result\":\"Image result\",\"resultContent\":[{\"type\":\"text\",\"text\":\"Image result\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"\"},\"outputRef\":{\"relPath\":\"files/9b1c2d3e/chart.png\",\"basename\":\"chart.png\",\"sizeBytes\":4}}],\"isExecuting\":false,\"startTime\":1700000000000,\"endTime\":1700000000001}],\"toolCallsForContext\":[{\"id\":\"toolu_dehy\",\"name\":\"run_command\",\"input\":{\"command\":\"plot\"},\"result\":\"Image result\",\"resultContent\":[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"\"},\"outputRef\":{\"relPath\":\"files/9b1c2d3e/chart.png\",\"basename\":\"chart.png\",\"sizeBytes\":4}}]}],\"pid\":\"u1\"}\n"
+        } }
+      ]
+    },
+    {
+      "name": "a finished revision, a truncate of a message that was never written, and an index row removed",
+      "convId": "conv-upkeep",
+      "now": 1700000000000,
+      "randomSuffix": "i",
+      "ops": [
+        { "op": "appendMessage", "message": { "id": "u1", "role": "user", "content": "问", "timestamp": 1700000000000 } },
+        { "op": "appendMessage", "message": { "id": "a1", "role": "assistant", "content": "答", "timestamp": 1700000000000 } },
+        { "op": "flushWrites" },
+        { "op": "updateLastMessage", "message": { "id": "a1", "role": "assistant", "content": "答完了", "timestamp": 1700000000000, "isStreaming": true } },
+        { "op": "appendTruncateEvent", "from": "never-written", "pid": "u1", "removedIds": ["never-written"] },
+        { "op": "flushWrites" },
+        { "op": "updateIndexEntry", "meta": { "id": "conv-upkeep", "title": "问", "createdAt": 1700000000000, "updatedAt": 1700000000000, "messageCount": 2 } },
+        { "op": "flushIndex" },
+        { "op": "expectFiles", "files": {
+          "conv-upkeep/messages.jsonl": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"问\",\"timestamp\":1700000000000}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"答\",\"timestamp\":1700000000000,\"pid\":\"u1\"}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"答完了\",\"timestamp\":1700000000000,\"isStreaming\":false,\"pid\":\"u1\"}\n",
+          "index.json": "{\n  \"version\": 1,\n  \"entries\": {\n    \"conv-upkeep\": {\n      \"id\": \"conv-upkeep\",\n      \"title\": \"问\",\n      \"createdAt\": 1700000000000,\n      \"updatedAt\": 1700000000000,\n      \"messageCount\": 2\n    }\n  }\n}"
+        } },
+        { "op": "removeIndexEntry" },
+        { "op": "flushIndex" },
+        { "op": "expectFiles", "files": {
+          "index.json": "{\n  \"version\": 1,\n  \"entries\": {}\n}"
         } }
       ]
     }

@@ -60,6 +60,10 @@ describe('conversationStorage writes the bytes the shared fixtures record', () =
         testCase,
         storage,
         async (relativePath) => files.get(`${ROOT}/${relativePath}`) ?? null,
+        // A seeded `outputs/manifest.json` is read back by the real
+        // `outputSnapshots.ts`, which shares this memory fs through the
+        // `@tauri-apps/plugin-fs` mock — the renderer's own dehydration path.
+        async (relativePath, content) => { files.set(`${ROOT}/${relativePath}`, content); },
       );
       expect(mismatches).toEqual([]);
     });

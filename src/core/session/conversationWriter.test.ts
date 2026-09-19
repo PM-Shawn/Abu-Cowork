@@ -3,6 +3,7 @@ import { createMemoryConversationFs } from '@/test/conversationWriterMemoryFs';
 import { loadConversationWriterFixtures, replayWriterFixture } from '@/test/conversationWriterFixtures';
 import { STREAM_SNAPSHOT_FILENAME } from './ledgerReader';
 import { createConversationPaths } from './conversationPaths';
+import type { FindToolResultImageSnapshot, ToolResultImageSnapshotRef } from './ledgerLineSerializer';
 import {
   ConversationWriterCapabilityError,
   createConversationWriter,
@@ -32,16 +33,40 @@ function makeEnv(overrides: Partial<ConversationWriterEnv> = {}): ConversationWr
 const msg = (id: string, content: string, extra: Partial<Message> = {}): Message =>
   ({ id, role: 'assistant', content, timestamp: 1_700_000_000_000, ...extra });
 
+/**
+ * This tier has no `outputSnapshots.ts`: its env answers the manifest lookup
+ * from the `outputs/manifest.json` a fixture case seeded into the memory fs,
+ * by the same key the real module uses. A tier that reads the real module
+ * instead must agree byte for byte, which is what the shared fixtures hold.
+ */
+function seededSnapshotLookup(files: Map<string, string>): FindToolResultImageSnapshot {
+  return (convId, toolCallId) => {
+    const raw = convId ? files.get(`${ROOT}/${convId}/outputs/manifest.json`) : undefined;
+    if (!raw) return null;
+    const manifest = JSON.parse(raw) as { entries: Record<string, ToolResultImageSnapshotRef> };
+    return manifest.entries[`tool-result://${toolCallId}`] ?? null;
+  };
+}
+
 describe('createConversationWriter', () => {
   for (const testCase of loadConversationWriterFixtures()) {
     it(`shared fixture: ${testCase.name}`, async () => {
       const fs = createMemoryConversationFs();
       const writer = createConversationWriter({
         fs,
-        env: makeEnv({ now: () => testCase.now, randomSuffix: () => testCase.randomSuffix }),
+        env: makeEnv({
+          now: () => testCase.now,
+          randomSuffix: () => testCase.randomSuffix,
+          outputManifest: { refresh: async () => ({}), findToolResultImageSnapshot: seededSnapshotLookup(fs.files) },
+        }),
         capabilities: ALL,
       });
-      const mismatches = await replayWriterFixture(testCase, writer, async (p) => fs.files.get(`${ROOT}/${p}`) ?? null);
+      const mismatches = await replayWriterFixture(
+        testCase,
+        writer,
+        async (p) => fs.files.get(`${ROOT}/${p}`) ?? null,
+        async (p, content) => { fs.files.set(`${ROOT}/${p}`, content); },
+      );
       expect(mismatches).toEqual([]);
     });
   }

@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * `batch` at the permission gate — through the REAL entry, `checkToolApproval`.
  *
@@ -16,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import type { ToolDefinition } from '../../types';
 
@@ -84,7 +85,7 @@ describe('browser permission gate — batch', () => {
     (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set('abu-browser', fakeServer);
 
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard', browserSitePermissions: {} });
+    setMigratedBrowserSettings({ permissionMode: 'standard', browserSitePermissions: {} });
     __resetBrowserGrantsForTests();
   });
 
@@ -113,7 +114,7 @@ describe('browser permission gate — batch', () => {
       expect(asked[0].command).not.toContain('提交');
     });
 
-    it('leaves a batch of nothing but page reads ungated, exactly like those reads on their own', async () => {
+    it('applies browse confirmation to a read-only batch too', async () => {
       const decision = await checkToolApproval(
         'abu-browser__batch',
         batchInput(READS_ONLY),
@@ -122,7 +123,8 @@ describe('browser permission gate — batch', () => {
       );
 
       expect(decision.decision).toBe('allow');
-      expect(asked).toEqual([]);
+      expect(asked).toHaveLength(1);
+      expect(asked[0].browserPermissionResource).toBe('browse');
     });
 
     it('does not let a read-only-looking batch smuggle a state-changing step past the gate', async () => {
@@ -183,7 +185,7 @@ describe('browser permission gate — batch', () => {
     });
 
     it('refuses it on a site the user ALWAYS allows — a site grant never buys a script run', async () => {
-      useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'allowed' } });
+      setMigratedBrowserSettings({ browserPermissionConfigV2: { ...createBrowserPermissionConfig(), sites: { [SITE]: { ...emptyBrowserSiteRule(), browse: 'allow' } } } });
       const decision = await checkToolApproval(
         'abu-browser__batch',
         batchInput(JSON.stringify([{ action: 'execute_js', code: '1' }])),
@@ -251,7 +253,7 @@ describe('browser permission gate — batch', () => {
 
   describe('the rest of the gate applies unchanged', () => {
     it('denies a batch on a site the user blocked', async () => {
-      useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'denied' } });
+      setMigratedBrowserSettings({ browserSitePermissions: { [SITE]: 'denied' } });
       const decision = await checkToolApproval(
         'abu-browser__batch',
         batchInput(FILL_AND_SUBMIT),
@@ -264,7 +266,7 @@ describe('browser permission gate — batch', () => {
     });
 
     it('runs without asking on a site the user always allows', async () => {
-      useSettingsStore.setState({ browserSitePermissions: { [SITE]: 'allowed' } });
+      setMigratedBrowserSettings({ browserPermissionConfigV2: { ...createBrowserPermissionConfig(), sites: { [SITE]: { ...emptyBrowserSiteRule(), browse: 'allow' } } } });
       const decision = await checkToolApproval(
         'abu-browser__batch',
         batchInput(FILL_AND_SUBMIT),

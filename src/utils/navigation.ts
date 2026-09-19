@@ -8,5 +8,5 @@ import { useSettingsStore } from '@/stores/settingsStore';
 export function navigateToChatWithInput(pendingInput: string): void {
   useChatStore.getState().startNewConversation();
   useSettingsStore.getState().setViewMode('chat');
-  useChatStore.getState().setPendingInput(pendingInput);
+  useChatStore.getState().setPendingInput(pendingInput, { startsTask: true });
 }

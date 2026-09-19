@@ -331,18 +331,19 @@ function App() {
   //
   // `ownerId` is the conversation main created the view for. It is what keeps a
   // background conversation's adoption out of whatever conversation happens to
-  // be on screen; absent (legacy owner) means "any conversation may see it".
+  // be on screen. Native user popups inherit their renderer source tab owner.
   useEffect(() => {
     if (!isTauriEnv()) return;
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
-    listen<{ id: string; url: string; ownerId?: string }>('browser://automation-open', (event) => {
-      const { id, url, ownerId } = event.payload ?? {};
+    listen<{ id: string; url: string; ownerId?: string; sourceViewId?: string }>('browser://automation-open', (event) => {
+      const { id, url, ownerId, sourceViewId } = event.payload ?? {};
       if (typeof id !== 'string' || !id.startsWith('__abu-browser-automation__')) return;
       usePreviewStore.getState().openBrowser(
         typeof url === 'string' ? url : 'about:blank',
         id,
         typeof ownerId === 'string' && ownerId ? ownerId : undefined,
+        typeof sourceViewId === 'string' && sourceViewId ? sourceViewId : undefined,
       );
     }).then((fn) => {
       if (cancelled) fn();
@@ -784,6 +785,9 @@ function App() {
     let cancel = false
     ;(async () => {
       await useEnterpriseStore.getState().init().catch(e => console.warn('[enterprise] init failed', e))
+      // init() is where a managed provider gets registered, so a saved model
+      // selection that still has no provider after it really has none.
+      useSettingsStore.getState().markManagedProvidersReady()
       if (cancel) return
       if (useEnterpriseStore.getState().mode.kind !== 'personal') {
         const { activateEnterpriseRuntime } = await import('@/core/enterprise/runtime')

@@ -171,6 +171,7 @@ export async function reviewAction(ctx: ReviewContext, signal?: AbortSignal): Pr
       messages: [{ role: 'user', content: buildUserMessage(ctx, recentUserIntent(ctx.conversationId)) }],
       maxTokens: 200,
       signal: controller.signal,
+      conversationId: ctx.conversationId,
     });
     return parseVerdict(text);
   } catch {

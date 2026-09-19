@@ -33,7 +33,7 @@ interface RegisteredTool {
 type ServerArg = Parameters<typeof registerTools>[0];
 
 /** Captures what registerTools() registers, without a real MCP server. */
-function collectTools(): { registered: RegisteredTool[]; transport: BrowserTransport } {
+function collectTools(backend: 'chrome' | 'built-in' = 'chrome'): { registered: RegisteredTool[]; transport: BrowserTransport } {
   const registered: RegisteredTool[] = [];
   const server = {
     tool(
@@ -57,7 +57,7 @@ function collectTools(): { registered: RegisteredTool[]; transport: BrowserTrans
     getConnectionError: vi.fn(() => 'not connected'),
   } as unknown as BrowserTransport;
 
-  registerTools(server as unknown as ServerArg, transport);
+  registerTools(server as unknown as ServerArg, transport, { backend });
   return { registered, transport };
 }
 
@@ -92,6 +92,59 @@ describe('tool surface', () => {
       'upload_file',
       'wait_for',
     ]);
+  });
+
+  it('adds a non-provisioning list only to the built-in backend', async () => {
+    const chromeNames = collectTools().registered.map((tool) => tool.name);
+    const { registered, transport } = collectTools('built-in');
+    expect(registered.map((tool) => tool.name).sort()).toEqual([...chromeNames, 'list_tabs', 'create_tab', 'close_tab', 'retain_tab'].sort());
+    const list = registered.find((tool) => tool.name === 'list_tabs')!;
+    const signal = new AbortController().signal;
+    await list.handler({ signal, _meta: {
+      [ABU_CONVERSATION_META_KEY]: 'conversation',
+      [ABU_RUN_META_KEY]: 'child-run',
+      [ABU_CREATE_IF_EMPTY_META_KEY]: true,
+    } });
+    expect(transport.send).toHaveBeenCalledWith('get_tabs', {
+      ownerId: 'conversation', runId: 'child-run', createIfEmpty: false,
+    }, undefined, { signal });
+  });
+
+  it('passes trusted owner and approval metadata to built-in creation', async () => {
+    const { registered, transport } = collectTools('built-in');
+    const create = registered.find((tool) => tool.name === 'create_tab')!;
+    await create.handler({ url: 'https://example.com/' }, { _meta: {
+      [ABU_CONVERSATION_META_KEY]: 'conversation',
+      [ABU_RUN_META_KEY]: 'run',
+      [ABU_EXPECTED_ORIGIN_META_KEY]: 'https://example.com',
+    } });
+    expect(transport.send).toHaveBeenCalledWith('create_tab', {
+      url: 'https://example.com/', ownerId: 'conversation', runId: 'run', expectedOrigin: 'https://example.com',
+    }, undefined, { signal: undefined });
+  });
+
+  it('passes trusted ownership and origin to built-in close', async () => {
+    const { registered, transport } = collectTools('built-in');
+    const close = registered.find((tool) => tool.name === 'close_tab')!;
+    await close.handler({ tabId: 12 }, { _meta: {
+      [ABU_CONVERSATION_META_KEY]: 'conversation',
+      [ABU_RUN_META_KEY]: 'run',
+      [ABU_EXPECTED_ORIGIN_META_KEY]: 'https://example.com',
+    } });
+    expect(transport.send).toHaveBeenCalledWith('close_tab', {
+      tabId: 12, ownerId: 'conversation', runId: 'run', expectedOrigin: 'https://example.com',
+    }, undefined, { signal: undefined });
+  });
+
+  it('forwards a popup lease from metadata only, never from model arguments', async () => {
+    const { registered, transport } = collectTools('built-in');
+    const click = registered.find((tool) => tool.name === 'click')!;
+    await click.handler({ tabId: 12, locator: JSON.stringify({ ref: 'e1' }), popupOrigin: 'https://forged.example' }, { _meta: {
+      'abu/popupOrigin': 'https://example.com',
+    } });
+    expect(transport.send.mock.calls.at(-1)?.[1]).toMatchObject({ popupOrigin: 'https://example.com' });
+    await click.handler({ tabId: 12, locator: JSON.stringify({ ref: 'e1' }), popupOrigin: 'https://forged.example' }, {});
+    expect(transport.send.mock.calls.at(-1)?.[1]).not.toHaveProperty('popupOrigin');
   });
 
   it('keeps every state-changing tool named exactly as browserToolPolicy expects', () => {

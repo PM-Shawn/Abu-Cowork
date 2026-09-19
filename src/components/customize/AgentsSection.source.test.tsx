@@ -107,7 +107,7 @@ describe('AgentsSection — what the detail says about provenance', () => {
   });
 
   it('says 市场 for a shipped expert', () => {
-    // The shipped roster IS the OSS market shelf since v0.43 — 「内置」 would
+    // The shipped roster IS the OSS market shelf since v0.50 — 「内置」 would
     // name a third place the UI no longer has.
     renderShelf('market', [builtinMeta]);
     fireEvent.click(screen.getByText('产品经理'));

@@ -3,9 +3,11 @@
  *
  * The fixture file (`src/core/session/__fixtures__/messageLedgerFold.fixtures.json`)
  * is the contract that keeps every port of `foldMessageLog` in step — the
- * renderer TS one, the Electron-main CJS one, and eventually the Rust one in
+ * TypeScript one in `src/core/session/messageLedger.ts`, the CommonJS bundle
+ * the Electron main process requires (`electron/generated/ledgerReader.cjs`,
+ * replayed by `electron/ledgerReader.contract.test.ts`), and the Rust one in
  * `src-tauri/src/catalog_db.rs`. It is read from disk as raw bytes rather than
- * imported as a module so that all three read literally the same file.
+ * imported as a module so that every side reads literally the same file.
  *
  * Lives under `src/test/` because it uses `node:fs`, which the renderer
  * tsconfig (and the renderer boundary rule) rightly does not allow in `src/`

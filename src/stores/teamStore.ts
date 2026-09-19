@@ -121,7 +121,7 @@ export function mergeTeamState(persisted: unknown, current: TeamStore): TeamStor
 
 /**
  * The third door onto a duplicate name, and the only one the user does not
- * open themselves: the shipped roster grows between versions (v0.43 added
+ * open themselves: the shipped roster grows between versions (v0.50 added
  * 财务对账专家团 and 招聘专家团), so a team the user named first can collide
  * with a built-in that did not exist when they created it. Left alone, the two
  * render identically, `save_team` can only ever reach one of them, and the

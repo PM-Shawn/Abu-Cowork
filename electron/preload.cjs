@@ -138,7 +138,7 @@ const pendingSidecarEvents = [];
 const MAX_PENDING_SIDECAR_EVENTS = 128;
 const MAX_PENDING_SIDECAR_CHARS = 16 * 1024 * 1024;
 let pendingSidecarChars = 0;
-const MAX_ARGS_JSON_CHARS = 8 * 1024 * 1024;
+const MAX_ARGS_BYTES = 8 * 1024 * 1024;
 const MAX_RAW_BODY_BYTES = 128 * 1024 * 1024;
 const MAX_DELEGATED_MEDIA_BYTES = Math.floor(3.75 * 1024 * 1024);
 
@@ -179,6 +179,29 @@ function utf8ByteLength(value) {
     else bytes += 4;
   }
   return bytes;
+}
+
+// #549: same accounting as securityBoundary.cjs assertJsonValue — UTF-8 bytes
+// of every string value and object key (numbers, booleans and null count 0,
+// so preload is never stricter than main). Keep the message identical to
+// electron/ipcPayloadError.cjs (a sandboxed preload cannot require it);
+// ipcRawBody.test.cjs and payloadTooLarge.contract.test.ts pin them together.
+function payloadTooLargeError(bytes, limit, method) {
+  return new Error(`payload_too_large ${JSON.stringify({ code: 'payload_too_large', bytes, limit, method })}`);
+}
+
+function countArgsBytes(value, depth = 0) {
+  if (typeof value === 'string') return utf8ByteLength(value);
+  if (!value || typeof value !== 'object' || depth > 32) return 0;
+  let total = 0;
+  if (Array.isArray(value)) {
+    for (const item of value) total += countArgsBytes(item, depth + 1);
+    return total;
+  }
+  for (const key of Object.keys(value)) {
+    total += utf8ByteLength(key) + countArgsBytes(value[key], depth + 1);
+  }
+  return total;
 }
 
 function invokeSaveImageAttachment(request) {
@@ -302,7 +325,7 @@ function invokeSelectUserAttachments(request = {}) {
     request.mediaTypes !== undefined
     && (!Array.isArray(request.mediaTypes)
       || request.mediaTypes.length === 0
-      || request.mediaTypes.some((mediaType) => !USER_ATTACHMENT_MEDIA_TYPES.has(mediaType)))
+      || request.mediaTypes.some((mediaType) => !USER_ATTACHMENT_MEDIA_TYPES.has(mediaType) && mediaType !== 'application/pdf'))
   ) {
     throw new Error('selectUserAttachments media types are unsupported');
   }
@@ -356,12 +379,12 @@ function invokeReadDelegatedMedia(request) {
 
 // Guard against exotic/non-JSON-serializable args (functions, DOM nodes, etc.)
 // so the structured-clone IPC boundary doesn't throw before we even dispatch.
-function safeArgs(args) {
+function safeArgs(args, cmd) {
+  let parsed;
   try {
     const json = JSON.stringify(args ?? null);
     if (json === undefined) throw new Error('value is not JSON serializable');
-    if (json.length > MAX_ARGS_JSON_CHARS) throw new Error('serialized args are too large');
-    return JSON.parse(json);
+    parsed = JSON.parse(json);
   } catch (err) {
     throw new Error(
       `Tauri invoke args are not JSON serializable: ${
@@ -369,6 +392,9 @@ function safeArgs(args) {
       }`
     );
   }
+  const bytes = countArgsBytes(parsed);
+  if (bytes > MAX_ARGS_BYTES) throw payloadTooLargeError(bytes, MAX_ARGS_BYTES, cmd);
+  return parsed;
 }
 
 // Tauri's real invoke serializer replaces any arg value exposing a
@@ -458,7 +484,7 @@ const invoke = (cmd, args, options) => {
   // intact) and forward the headers.
   const isBinary = args instanceof ArrayBuffer || ArrayBuffer.isView(args);
   if (isBinary && args.byteLength > MAX_RAW_BODY_BYTES) {
-    throw new Error('Tauri invoke raw body is too large');
+    throw payloadTooLargeError(args.byteLength, MAX_RAW_BODY_BYTES, cmd);
   }
   const headers = options && options.headers ? options.headers : undefined;
   if (isBinary || headers) {
@@ -467,11 +493,11 @@ const invoke = (cmd, args, options) => {
       body: isBinary ? args : undefined,
       // isBinary args skip serializeChannels/safeArgs entirely (body carries
       // the raw bytes) — the existing raw-body detection path is untouched.
-      args: isBinary ? undefined : safeArgs(serializeChannels(args)),
+      args: isBinary ? undefined : safeArgs(serializeChannels(args), cmd),
       headers,
     });
   }
-  return ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(serializeChannels(args)) });
+  return ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(serializeChannels(args), cmd) });
 };
 
 // Main delivers a callback invocation by id — see tauriHost.cjs `deliver()`.

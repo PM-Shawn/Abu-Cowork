@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from './browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearLogs, getRecentLogs } from '../logging/logger';
 import {
@@ -8,8 +10,6 @@ import {
   resolveUnattendedConfirmation,
   setUnattendedConfirmationResolver,
 } from './unattendedConfirmation';
-import { useSettingsStore } from '../../stores/settingsStore';
-import { DEFAULT_BROWSER_OPERATION_POLICY } from './browserToolPolicy';
 import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 
 const command = { command: 'ls', level: 'safe' as const, reason: '' };
@@ -271,82 +271,31 @@ describe('denial notices (accounting without a vote)', () => {
 
 describe('mayUnattendedTierApproveBrowser', () => {
   beforeEach(() => {
-    useSettingsStore.setState({
-      browserSitePermissions: { 'https://allowed.com': 'allowed', 'https://evil.com': 'denied' },
-      browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
-      allowUnattendedBrowser: true,
-    });
+    const config = createBrowserPermissionConfig();
+    config.sites['https://evil.com'] = { ...emptyBrowserSiteRule(), blocked: true };
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
   });
-
-  const browserInfo = (overrides: Record<string, unknown> = {}) => ({
-    command: 'Browser action',
-    level: 'warn' as const,
-    reason: '',
-    kind: 'browser' as const,
-    browserOrigin: 'https://allowed.com',
-    ...overrides,
+  const info = { command: 'Browser action', level: 'warn' as const, reason: '', kind: 'browser' as const,
+    browserOrigin: 'https://allowed.com', browserOperationClass: 'interactive' as const,
+    browserPermissionResource: 'browse' as const, browserPermissionTargets: [{ origin: 'https://allowed.com' }],
+  };
+  it('allows the configured browse resource', () => expect(mayUnattendedTierApproveBrowser(info)).toBe(true));
+  it.each(['ask', 'deny'] as const)('cannot turn %s into an approval', (decision) => {
+    const config = createBrowserPermissionConfig(); config.defaults.browse = decision;
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+    expect(mayUnattendedTierApproveBrowser(info)).toBe(false);
   });
-
-  it('refuses scripting under the default policy — that row ships as ask, and ask is not approval', () => {
-    expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'scripting' }))).toBe(false);
+  it('refuses mismatched, missing, and unverifiable metadata', () => {
+    expect(mayUnattendedTierApproveBrowser({ ...info, browserOperationClass: undefined })).toBe(false);
+    expect(mayUnattendedTierApproveBrowser({ ...info, browserPermissionResource: 'script' })).toBe(false);
+    expect(mayUnattendedTierApproveBrowser({ ...info, browserPermissionTargets: [] })).toBe(false);
+    expect(mayUnattendedTierApproveBrowser({ ...info, browserPermissionTargets: [{ origin: null }] })).toBe(false);
   });
-
-  /**
-   * A browser confirmation that names no operation class refuses on its own.
-   * It used to be enough to default the missing class to `'scripting'`,
-   * because that cell had no allow tier at all; since the 2026-09-04 ruling a
-   * user may set scripting to `allow`, so an unclassified call would
-   * otherwise inherit it.
-   */
-  it('refuses an unclassified browser confirmation even when scripting is allowed', () => {
-    expect(mayUnattendedTierApproveBrowser(browserInfo())).toBe(false);
-
-    useSettingsStore.setState({
-      browserOperationPolicy: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-    });
-    expect(mayUnattendedTierApproveBrowser(browserInfo())).toBe(false);
-    // ...while the class the user actually allowed IS approved by the tier.
-    expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'scripting' })))
-      .toBe(true);
-  });
-
-  // The tier reports what the policy says; scripting's site scoping lives in
-  // `decideBrowserOperation` and must show through here unchanged.
-  it('refuses an allowed script on a site with no standing grant', () => {
-    useSettingsStore.setState({
-      browserOperationPolicy: { readOnly: 'allow', interactive: 'allow', scripting: 'allow' },
-    });
-
-    expect(mayUnattendedTierApproveBrowser(browserInfo({
-      browserOperationClass: 'scripting',
-      browserOrigin: 'https://never-granted.example',
-    }))).toBe(false);
-    expect(mayUnattendedTierApproveBrowser(browserInfo({
-      browserOperationClass: 'scripting',
-      browserOrigin: 'https://evil.com',
-    }))).toBe(false);
-  });
-
-  it('allows an interactive action the policy allows', () => {
-    expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'interactive' }))).toBe(true);
-  });
-
-  it('refuses everything when the master switch is off', () => {
-    useSettingsStore.setState({ allowUnattendedBrowser: false });
-    expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'read-only' }))).toBe(false);
-  });
-
-  it('refuses on a site the user blocked', () => {
-    expect(mayUnattendedTierApproveBrowser(browserInfo({
-      browserOperationClass: 'interactive',
-      browserOrigin: 'https://evil.com',
-    }))).toBe(false);
-  });
-
-  it('refuses an "ask" row — the tier is not an approval channel', () => {
-    useSettingsStore.setState({
-      browserOperationPolicy: { ...DEFAULT_BROWSER_OPERATION_POLICY, interactive: 'ask' },
-    });
-    expect(mayUnattendedTierApproveBrowser(browserInfo({ browserOperationClass: 'interactive' }))).toBe(false);
+  it('refuses blocked sites and does not promote embedded scope', () => {
+    expect(mayUnattendedTierApproveBrowser({ ...info, browserPermissionTargets: [{ origin: 'https://evil.com' }] })).toBe(false);
+    const config = createBrowserPermissionConfig(); config.defaults.browse = 'ask';
+    config.embeddedSites = { 'https://host.com': { 'https://allowed.com': { ...emptyBrowserSiteRule(), browse: 'allow' } } };
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+    expect(mayUnattendedTierApproveBrowser(info)).toBe(false);
   });
 });

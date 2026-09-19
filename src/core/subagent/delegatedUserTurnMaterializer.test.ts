@@ -808,6 +808,21 @@ describe('delegated user turn materializer', () => {
     })).resolves.toBe('Describe it.\n\nUse terse prose.');
   });
 
+  it('carries only file reference lines from a text turn and does not duplicate task references', async () => {
+    const reference = '[Attachment: `C:/报告/季度.PDF`]';
+    const other = '[Attachment: `/workspace/notes.txt`]';
+    const result = await buildInitialSubagentUserContent({
+      task: `${reference}\nSummarize.`,
+      delegatedUserTurn: {
+        schemaVersion: 1,
+        origin: { conversationId: 'conv-1', loopId: 'loop-1', messageId: 'user-source' },
+        content: [{ type: 'text', text: `Unrelated parent instruction\n${reference}\n${other}\n${other}` }],
+      },
+    });
+    expect(result).toBe(`${other}\n\n${reference}\nSummarize.`);
+    expect(result).not.toContain('Unrelated parent instruction');
+  });
+
   it('stops provider-request media materialization after a mid-read abort', async () => {
     const controller = new AbortController();
     const mediaTurn = {

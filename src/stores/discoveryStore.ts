@@ -125,12 +125,52 @@ export function getLastDiscoveryRefreshAt(): number {
   return lastRefreshAt;
 }
 
+/**
+ * Re-discover when the organization's skill blacklist changes.
+ *
+ * The policy arrives with the enterprise heartbeat, so the store changes far
+ * more often than the policy does; only a change in which scanned skills are
+ * hidden rescans. Registered once per process — but from the first scan, NOT
+ * at module scope the way the workspace subscription below is.
+ *
+ * `enterpriseStore` is a bare re-export of `@enterprise-modules`, which in an
+ * enterprise build is the private overlay: its entrypoint side-effect-imports
+ * the mount-point components, and those reach back into this graph
+ * (`core/tools/builtins` → `definitions/agentTools` → this module). So this
+ * module can be evaluated *inside* `enterpriseStore`'s own evaluation, with
+ * the re-exported binding not yet initialized — reading it at module scope
+ * then throws `Cannot read properties of undefined`. OSS resolves the alias to
+ * a stub with no edge back into `src/`, so the cycle — and the crash — exists
+ * only in enterprise builds and under `vitest.enterprise.config.ts`.
+ *
+ * Deferring the read to the first scan is enough: the cycle has long settled
+ * by the time anything discovers. Same shape as `sidecarManager`'s
+ * `ensureEnterpriseEntitlementSync`, which shares the cycle and is safe for
+ * exactly this reason.
+ */
+let enterprisePolicyUnsub: (() => void) | undefined;
+function ensureEnterprisePolicySubscription(): void {
+  enterprisePolicyUnsub ??= useEnterpriseStore.subscribe(() => {
+    // Look again once the running scan lands, rather than start a second one
+    // on the same loader.
+    if (useDiscoveryStore.getState().isLoading) {
+      policyChangedMidScan = true;
+      return;
+    }
+    const next = blockedSkillSignature();
+    if (next === lastBlockedSkills) return;
+    lastBlockedSkills = next;
+    void useDiscoveryStore.getState().refresh();
+  });
+}
+
 export const useDiscoveryStore = create<DiscoveryStore>()((set) => ({
   skills: [],
   agents: [],
   isLoading: false,
 
   refresh: async (workspaceOverride, options) => {
+    ensureEnterprisePolicySubscription();
     lastRefreshAt = Date.now();
     set({ isLoading: true });
     try {
@@ -184,22 +224,4 @@ useWorkspaceStore.subscribe((state) => {
     lastWorkspaceForDiscovery = state.currentPath;
     void useDiscoveryStore.getState().refresh();
   }
-});
-
-// ── Re-discover when the organization's skill blacklist changes ─────────
-//
-// The policy arrives with the enterprise heartbeat, so the store changes far
-// more often than the policy does; only a change in which scanned skills are
-// hidden rescans. Registered once per process, like the workspace one above.
-useEnterpriseStore.subscribe(() => {
-  // Look again once the running scan lands, rather than start a second one
-  // on the same loader.
-  if (useDiscoveryStore.getState().isLoading) {
-    policyChangedMidScan = true;
-    return;
-  }
-  const next = blockedSkillSignature();
-  if (next === lastBlockedSkills) return;
-  lastBlockedSkills = next;
-  void useDiscoveryStore.getState().refresh();
 });

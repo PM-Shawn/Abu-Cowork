@@ -1,0 +1,6 @@
+# electron/generated/*.cjs is esbuild output that scripts/gen-ledger-reader.mjs
+# rewrites and compares against the tracked file. esbuild always emits LF, so
+# the working copy has to be LF on every platform — otherwise a checkout with
+# core.autocrlf=true hands the check a CRLF file and regenerating it produces a
+# diff git then reports as no change at all.
+electron/generated/*.cjs text eol=lf

@@ -114,7 +114,9 @@ async function handleRequest(req, res) {
   try {
     const { action, payload } = await readJsonBody(req);
     const { performBrowserAutomation } = require('./browserHost.cjs');
-    const data = await performBrowserAutomation(action, payload, { signal: controller.signal });
+    const { browserRunRegistry } = require('./browserRunRegistry.cjs');
+    const signal = browserRunRegistry.signalFor(payload, controller.signal);
+    const data = await performBrowserAutomation(action, payload, { signal });
     res.off('close', onClose);
     // On a premature disconnect `res.writableEnded` is actually still FALSE
     // here (the response body was never written), so this guard does not

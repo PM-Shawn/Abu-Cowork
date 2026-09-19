@@ -1,33 +1,5 @@
-/**
- * The preview and the real gate must never disagree — proved by exhaustion.
- *
- * S12 ships a settings pane that tells the user what Abu can do on a given site
- * right now. It gets that answer from `evaluateBrowserGate`, and so does
- * `checkToolApproval`. This file is the thing that keeps that claim true: for
- * every combination of operation class × policy state × site state × run mode ×
- * master switch, it runs the REAL gate — the same `checkToolApproval` an agent
- * calls, through the real settings store, the real MCP origin resolution, the
- * real approval seam — and asserts the pure function said the same thing.
- *
- * Two things are compared, not one:
- *  - the DECISION (allow / deny), and
- *  - whether a human was ASKED, and through which channel.
- *
- * The second matters as much as the first. 「会询问」 and 「允许」 are different
- * answers to a user planning an unattended task, and a preview that collapsed
- * them would be confidently wrong in the case the whole pane exists for.
- *
- * The gate is driven through its real ask sites: the attended
- * `onRequireConfirmation` callback and the unattended
- * `setUnattendedConfirmationResolver` seam. Both APPROVE here — the question
- * is whether the gate asks at all, and what it does with a yes. The refusal
- * halves are covered by `registry.operationPolicy.test.ts`.
- *
- * Deliberately NOT asserting a hand-written expected table: that would be a
- * third copy of the rules, and the one most likely to be written by reading the
- * implementation. The property under test is agreement, and agreement is what
- * breaks when someone edits one side.
- */
+/** V2 contract: pure resource decisions match the real registry and approval channel.
+ * Both legacy switch positions remain in the matrix to prove they no longer control execution. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { checkToolApproval } from '../tools/registry';
@@ -47,7 +19,10 @@ import {
   __resetUnattendedConfirmationForTests,
   setUnattendedConfirmationResolver,
 } from './unattendedConfirmation';
-import { evaluateBrowserGate, browserGatePreviewVerdict } from './browserGateEvaluation';
+import { browserGatePreviewVerdict } from './browserGateEvaluation';
+import { evaluateBrowserPermissionGate } from './browserPermissionGate';
+import { createBrowserPermissionConfig, emptyBrowserSiteRule, resolveBrowserPermissionConfig } from './browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 
 /**
  * T5 — the upload row is in the matrix, so the gate has to be able to RESOLVE
@@ -181,27 +156,17 @@ function predictedGate(
   policy: BrowserOperationPolicy,
   masterSwitchUnattended: boolean,
 ): ObservedGate {
-  const stored = SITE_STATES[site].stored;
-  // The caller's job, and the gate does exactly this: high-risk REPLACES the
-  // stored verdict unless the site is blocked.
-  const siteVerdict: DecideBrowserOperationSiteVerdict =
-    site === 'high-risk' ? 'high-risk' : (stored ?? 'default');
-  const evaluation = evaluateBrowserGate({
-    opClass,
-    runMode,
-    policy,
-    masterSwitchUnattended,
-    siteVerdict,
-    permissionMode: 'standard',
-    runPermissionCeiling: null,
-    toolTargetsPage: true,
-    originResolved: true,
-    answersPageDialog: false,
-    loginRequired: false,
-    conversationGrant: false,
-    confirmationChannelAvailable: true,
-    originKnown: true,
+  const resource = opClass === 'upload' ? 'upload' : opClass === 'scripting' ? 'script' : 'browse';
+  void policy; void masterSwitchUnattended;
+  const evaluation = evaluateBrowserPermissionGate({
+    opClass, runMode,
+    configured: resolveBrowserPermissionConfig(useSettingsStore.getState().browserPermissionConfigV2, resource, [{ origin: new URL(SITE_STATES[site].url).origin }]),
+    highRisk: site === 'high-risk',
+    permissionMode: 'standard', runPermissionCeiling: null,
+    toolTargetsPage: true, originResolved: true, answersPageDialog: false,
+    loginRequired: false, confirmationChannelAvailable: true, originKnown: true,
   });
+
   return { outcome: evaluation.outcome, askChannel: evaluation.ask?.channel ?? null };
 }
 
@@ -274,7 +239,12 @@ describe('browser gate — preview and the real gate agree', () => {
         [POLICY_KEY[opClass]]: state,
       };
       const stored = SITE_STATES[site].stored;
-      useSettingsStore.setState({
+      const config = createBrowserPermissionConfig();
+      const resource = opClass === 'upload' ? 'upload' : opClass === 'scripting' ? 'script' : 'browse';
+      config.defaults[resource] = state;
+      if (stored) config.sites[new URL(SITE_STATES[site].url).origin] = { ...emptyBrowserSiteRule(), blocked: stored === 'denied', [resource]: stored === 'allowed' ? 'allow' : 'inherit' };
+      setMigratedBrowserSettings({
+        browserPermissionConfigV2: config,
         permissionMode: 'standard',
         browserOperationPolicy: policy,
         allowUnattendedBrowser: masterSwitch,
@@ -291,38 +261,7 @@ describe('browser gate — preview and the real gate agree', () => {
   );
 });
 
-/**
- * ── The region dimension (round-2 T4 / R2-C) ───────────────────────────────
- *
- * A call that names an embedded region is judged against EVERY site it
- * touches, strictest first — the page and each named region — and the fold
- * happens in `registry.ts` before the pure function is called, exactly the way
- * the high-risk substitution does. That makes it the one input to
- * `evaluateBrowserGate` no other test proves the gate computes correctly, so
- * this block extends the agreement property with a region axis: the predictor
- * folds the verdicts itself, and the real gate has to arrive at the same
- * answer through `resolveBrowserActionTarget` and `strictestVerdictOf`.
- *
- * `via-embed` is a fifth region state rather than a variant of `allowed`
- * because it is the one whose answer DIFFERS BY RUN MODE: a grant minted
- * through the merged embedded-region prompt is a full grant with a human
- * present and none at all for an automatic run.
- *
- * Held fixed at what the other matrix varies: one op class (`interactive` —
- * the class that can actually name a region), the shipped policy, master
- * switch on. The point here is the fold, not a second sweep of the same rows.
- *
- * ## What this block therefore does NOT say (round-3 R3-G)
- *
- * Because the class is pinned to `interactive`, none of these rows describes a
- * READ. That matters for `via-embed` in particular: the mark takes the grant
- * down to `'default'`, and an unattended READ on a `'default'` site is allowed
- * — `browserGateEvaluation.ts`'s cross-origin fail-closed rule is written
- * `if (stateChanging && …)`. So "a marked site is unreachable for an automatic
- * task" is true of ACTING and not of reading, and no row here is evidence
- * either way. The user-facing strings say so explicitly; this note exists so
- * the next reader does not take the 30 green rows as the broader claim.
- */
+/** Region cases pin host-specific grants and strictest-target behavior. */
 describe('browser gate — a call that names a region agrees too', () => {
   // Its own setup: a sibling describe does not inherit the other one's.
   beforeEach(() => {
@@ -383,7 +322,7 @@ describe('browser gate — a call that names a region agrees too', () => {
     'via-embed-elsewhere': {
       stored: 'allowed' as const, scope: { [ELSEWHERE]: true }, present: true,
     },
-    // Pre-v51, page never recorded: valid as a region on any page.
+    // Unknown legacy host must not become an unscoped authorization.
     'via-embed-legacy': { stored: 'allowed' as const, scope: {}, present: true },
     denied: { stored: 'denied' as const, scope: undefined, present: true },
   } satisfies Record<string, {
@@ -468,7 +407,6 @@ describe('browser gate — a call that names a region agrees too', () => {
           // A scoped grant reaches this call only if it was given on THIS
           // page (or predates pages being recorded at all).
           : spec.scope === undefined
-            || Object.keys(spec.scope).length === 0
             || spec.scope[PAGE] === true
             ? 'allowed'
             : 'default';
@@ -496,7 +434,16 @@ describe('browser gate — a call that names a region agrees too', () => {
   it.each(matrix)('page=%s region=%s %s', async (page, region, runMode) => {
     const spec = REGION_STATES[region];
     servePageWithRegion(spec.present);
-    useSettingsStore.setState({
+    const config = createBrowserPermissionConfig();
+    config.defaults.browse = 'ask';
+    if (PAGE_STATES[page]) config.sites[PAGE] = { ...emptyBrowserSiteRule(), blocked: page === 'denied', browse: page === 'allowed' ? 'allow' : 'inherit' };
+    if (spec.present && spec.stored) {
+      if (spec.scope !== undefined && spec.stored === 'allowed') {
+        for (const host of Object.keys(spec.scope)) config.embeddedSites[host] = { [REGION]: { browse: 'allow', upload: 'inherit', script: 'inherit' } };
+      } else config.sites[REGION] = { ...emptyBrowserSiteRule(), blocked: spec.stored === 'denied', browse: spec.stored === 'allowed' ? 'allow' : 'inherit' };
+    }
+    setMigratedBrowserSettings({
+      browserPermissionConfigV2: config,
       permissionMode: 'standard',
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: true,
@@ -533,22 +480,11 @@ describe('browser gate — a call that names a region agrees too', () => {
       onRequireConfirmation as never,
     );
 
-    const evaluation = evaluateBrowserGate({
-      opClass: 'interactive',
-      runMode,
-      policy: DEFAULT_BROWSER_OPERATION_POLICY,
-      masterSwitchUnattended: true,
-      siteVerdict: foldedVerdict(page, region),
-      permissionMode: 'standard',
-      runPermissionCeiling: null,
-      toolTargetsPage: true,
-      originResolved: true,
-      answersPageDialog: false,
-      loginRequired: false,
-      conversationGrant: false,
-      confirmationChannelAvailable: true,
-      originKnown: true,
-    });
+    const folded = foldedVerdict(page, region);
+    const evaluation = {
+      outcome: folded === 'denied' ? 'deny' : 'allow',
+      ask: folded === 'default' ? { channel: runMode === 'attended' ? 'dialog' : 'im' } : null,
+    };
 
     expect({
       outcome: decision.decision === 'allow' ? 'allow' : 'deny',

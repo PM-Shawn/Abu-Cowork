@@ -1103,3 +1103,21 @@ describe('browser tool policy', () => {
     });
   });
 });
+
+// Built-in-only tools are deliberately absent from Chrome's legacy roster.
+describe('built-in tab discovery', () => {
+  it('lists without page access or interactive approval', () => {
+    expect(classifyBrowserTool('abu-browser__list_tabs')).toBe('read-only');
+    expect(browserToolTargetsPage('abu-browser__list_tabs')).toBe(false);
+  });
+});
+
+
+describe('built-in tab mutations', () => {
+  it.each(['create_tab', 'close_tab'])('gates %s as an interactive operation', (name) => {
+    expect(classifyBrowserTool(`abu-browser__${name}`)).toBe('interactive');
+  });
+  it('resolves the page for close authorization', () => {
+    expect(browserToolTargetsPage('abu-browser__close_tab')).toBe(true);
+  });
+});

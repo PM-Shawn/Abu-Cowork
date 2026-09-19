@@ -69,7 +69,9 @@ export function getLanguageSetting(): LanguageSetting {
  * Called during app startup
  */
 export function initLanguage(setting: LanguageSetting) {
-  currentLanguageSetting = setting;
+  // Hydration can finish after React has subscribed (for example, while a
+  // migrated settings write waits for its lock). Notify those consumers too.
+  setLanguage(setting);
 }
 
 // External store for React

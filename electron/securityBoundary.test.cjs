@@ -702,6 +702,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
   assert.deepEqual(Object.keys(shellBridge).sort(), [
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
+    'deepLinkScheme',
     'getPathForFile',
     'getRuntimeDiagnostics',
     'getSidecarBridgeSnapshot',
@@ -719,6 +720,10 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'selectUserAttachments',
     'subscribeSidecarEvents',
   ]);
+  // This sandbox has no `process`, which is the point: assembling the bridge
+  // must never depend on a Node global. Without the launch flag the scheme
+  // stays on the production default rather than throwing at preload eval.
+  assert.equal(shellBridge.deepLinkScheme, 'abu');
   assert.equal(
     await shellBridge.canonicalizePathForPolicy('/native/report.png'),
     '/canonical/native/report.png',

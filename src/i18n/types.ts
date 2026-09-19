@@ -194,6 +194,32 @@ export interface TranslationDict {
     searchNoResults: string;
   };
 
+  account: {
+    title: string;
+    description: string;
+    personalLogin: string;
+    enterpriseLogin: string;
+    localWithoutLogin: string;
+    loginRegister: string;
+    accountSettings: string;
+    waitingBrowser: string;
+    completingLogin: string;
+    cancelled: string;
+    timedOut: string;
+    protocolNotReady: string;
+    protocolStatusUnknown: string;
+    serverUnavailable: string;
+    loginFailed: string;
+    retry: string;
+    sessionExpired: string;
+    profileLoading: string;
+    profileUnavailable: string;
+    reloadProfile: string;
+    name: string;
+    email: string;
+    signOut: string;
+  };
+
   // Todos
   todos: {
     title: string;

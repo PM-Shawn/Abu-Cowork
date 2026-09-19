@@ -180,7 +180,7 @@ async function showSidebar(page: Page): Promise<void> {
 
 // The sidebar account trigger shows the managed account's name when the build
 // displays one, and the default nickname otherwise.
-const DEFAULT_ACCOUNT_LABEL = /^(我|Me)$/;
+const DEFAULT_ACCOUNT_LABEL = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 
 async function openModelSettings(page: Page, accountLabel: string): Promise<Locator> {
   await showSidebar(page);

@@ -162,7 +162,7 @@ async function seedUsage(page: Page, specs: SeedSpec[]): Promise<unknown[]> {
 async function openUsagePage(page: Page): Promise<void> {
   // 用键盘打开菜单：进了会话之后输入区会盖住侧栏底部的这个按钮，指针点不到，
   // 而键盘操作在欢迎页和会话页都走得通。
-  const me = page.getByRole('button', { name: /^(我|Me)$/ }).first();
+  const me = page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first();
   await me.focus();
   await me.press('Enter');
   const settings = page.getByRole('menuitem', { name: /^(设置|Settings)$/ });

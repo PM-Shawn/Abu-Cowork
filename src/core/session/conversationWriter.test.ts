@@ -265,4 +265,154 @@ describe('createConversationWriter', () => {
       expect(fs.calls).toContain(`remove ${ROOT}/c1 recursive`);
     });
   });
+
+  describe('forgetConversation', () => {
+    const LEDGER = `${ROOT}/c1/messages.jsonl`;
+    const SNAPSHOT = `${ROOT}/c1/stream-snapshot.json`;
+    const line = (m: Record<string, unknown>): string => `${JSON.stringify(m)}\n`;
+
+    async function setup() {
+      const fs = createMemoryConversationFs();
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      await writer.appendMessage('c1', msg('m1', 'first'));
+      await writer.flushWrites();
+      const otherWriterAppends = (text: string): void => { fs.files.set(LEDGER, fs.files.get(LEDGER)! + text); };
+      return { fs, writer, otherWriterAppends };
+    }
+
+    it('control: without forget, a stump another writer left is glued to the next line', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      otherWriterAppends('{"id":"torn","role":"assis');
+      await writer.appendMessage('c1', msg('m2', 'second'));
+      await writer.flushWrites();
+      expect(fs.files.get(LEDGER)).toContain('"assis{"id":"m2"');
+    });
+
+    it('after forget, the stump is terminated before the next line', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      otherWriterAppends('{"id":"torn","role":"assis');
+      await writer.forgetConversation('c1');
+      await writer.appendMessage('c1', msg('m2', 'second'));
+      await writer.flushWrites();
+      expect(fs.files.get(LEDGER)).toContain('"assis\n{"id":"m2"');
+      expect((await writer.loadMessages('c1')).map((m) => m.id)).toEqual(['m1', 'm2']);
+    });
+
+    it('after forget, a snapshot is stamped with the length of the ledger on disk', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      otherWriterAppends(line({ id: 'x1', role: 'assistant', content: '另一个写入者写的一行', timestamp: 1, pid: 'm1' }));
+      await writer.forgetConversation('c1');
+      await writer.snapshotMessageRevision('c1', msg('x1', 'newer', { isStreaming: true }));
+      const snapshot = JSON.parse(fs.files.get(SNAPSHOT)!) as { ledgerBytes: number; entries: { stamp: number }[] };
+      expect(snapshot.ledgerBytes).toBe(fs.files.get(LEDGER)!.length);
+      expect(snapshot.entries[0].stamp).toBe(fs.files.get(LEDGER)!.length);
+    });
+
+    it('control: without forget, the stamp is the stale shorter length', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      const before = fs.files.get(LEDGER)!.length;
+      otherWriterAppends(line({ id: 'x1', role: 'assistant', content: 'y', timestamp: 1 }));
+      await writer.snapshotMessageRevision('c1', msg('x1', 'newer'));
+      expect((JSON.parse(fs.files.get(SNAPSHOT)!) as { ledgerBytes: number }).ledgerBytes).toBe(before);
+    });
+
+    it('after forget, an id the other writer wrote is known: no duplicate append, and a strict replace succeeds', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      otherWriterAppends(line({ id: 'x1', role: 'assistant', content: 'y', timestamp: 1, pid: 'm1' }));
+      await writer.forgetConversation('c1');
+      await writer.appendMessage('c1', msg('x1', 'y'));
+      await writer.flushWrites();
+      expect(fs.files.get(LEDGER)!.split('\n').filter((l) => l.includes('"x1"'))).toHaveLength(1);
+      await expect(writer.replaceMessageByIdStrict('c1', msg('x1', 'revised'))).resolves.toBeUndefined();
+    });
+
+    it('after forget, the next message is parented to the tail the other writer left, and a revision keeps the parent on disk', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      otherWriterAppends(line({ id: 'x1', role: 'assistant', content: 'y', timestamp: 1, pid: 'm1' }));
+      await writer.forgetConversation('c1');
+      await writer.appendMessage('c1', msg('m3', 'third'));
+      await writer.replaceMessageById('c1', msg('x1', 'revised'));
+      await writer.flushWrites();
+      const lines = fs.files.get(LEDGER)!.trim().split('\n').map((l) => JSON.parse(l) as { id: string; pid?: string });
+      expect(lines.find((l) => l.id === 'm3')!.pid).toBe('x1');
+      expect(lines.filter((l) => l.id === 'x1').at(-1)!.pid).toBe('m1');
+    });
+
+    it('after forget, a settled sandbox action the other writer recorded is not regressed', async () => {
+      const { fs, writer, otherWriterAppends } = await setup();
+      const toolCall = { id: 't1', name: 'run_command', input: {}, sandboxRecoveryAction: 'completed' };
+      otherWriterAppends(line({ id: 'x1', role: 'assistant', content: '', timestamp: 1, toolCalls: [toolCall] }));
+      await writer.forgetConversation('c1');
+      await writer.replaceMessageById('c1', {
+        ...msg('x1', ''),
+        toolCalls: [{ ...toolCall, sandboxRecoveryAction: 'pending' }],
+      } as Message);
+      await writer.flushWrites();
+      const last = JSON.parse(fs.files.get(LEDGER)!.trim().split('\n').at(-1)!) as { toolCalls: { sandboxRecoveryAction: string }[] };
+      expect(last.toolCalls[0].sandboxRecoveryAction).toBe('completed');
+    });
+
+    it('after forget, a snapshot the other writer armed is promoted by the next promotion', async () => {
+      const { fs, writer } = await setup();
+      const ledgerLength = fs.files.get(LEDGER)!.length;
+      fs.files.set(SNAPSHOT, JSON.stringify({
+        version: 2,
+        entries: [{ message: { id: 'x9', role: 'assistant', content: '半句', timestamp: 1 }, stamp: ledgerLength }],
+        ledgerBytes: ledgerLength,
+      }));
+      await writer.forgetConversation('c1');
+      expect(writer.hasArmedStreamSnapshot('c1')).toBe(false);
+      expect(await writer.promoteStreamSnapshots('c1')).toBe(1);
+      expect(fs.files.get(LEDGER)).toContain('"x9"');
+      expect(fs.files.has(SNAPSHOT)).toBe(false);
+    });
+
+    it('drops an armed snapshot from memory without touching its file', async () => {
+      const { fs, writer } = await setup();
+      await writer.snapshotMessageRevision('c1', msg('m1', 'partial'));
+      const before = fs.files.get(SNAPSHOT);
+      await writer.forgetConversation('c1');
+      expect(writer.hasArmedStreamSnapshot('c1')).toBe(false);
+      expect(fs.files.get(SNAPSHOT)).toBe(before);
+    });
+
+    it('flushes queued writes before it forgets', async () => {
+      const { fs, writer } = await setup();
+      const pending = writer.appendMessage('c1', msg('m2', 'queued'));
+      await writer.forgetConversation('c1');
+      await pending;
+      expect(fs.files.get(LEDGER)).toContain('"m2"');
+      expect(writer.isMessageWrittenToDisk('m2')).toBe(false);
+      await writer.appendMessage('c1', msg('m2', 'queued'));
+      await writer.flushWrites();
+      expect(fs.files.get(LEDGER)!.split('\n').filter((l) => l.includes('"m2"'))).toHaveLength(1);
+    });
+
+    it('leaves every other conversation alone and adds no read to a conversation that was never forgotten', async () => {
+      const { fs, writer } = await setup();
+      await writer.appendMessage('c2', msg('n1', 'other'));
+      await writer.flushWrites();
+      await writer.forgetConversation('c1');
+      expect(writer.isMessageWrittenToDisk('n1')).toBe(true);
+      const readsBefore = fs.calls.filter((c) => c.startsWith('readTextFile')).length;
+      await writer.appendMessage('c2', msg('n2', 'other 2'));
+      await writer.flushWrites();
+      expect(fs.calls.filter((c) => c.startsWith('readTextFile')).length).toBe(readsBefore);
+    });
+
+    it('a write after forget rejects when the ledger cannot be read, and writes nothing', async () => {
+      const { fs, writer } = await setup();
+      await writer.forgetConversation('c1');
+      const size = fs.files.get(LEDGER)!.length;
+      const read = fs.readTextFile.bind(fs);
+      fs.readTextFile = async (path) => { if (path === LEDGER) throw new Error('EIO'); return read(path); };
+      await expect(writer.appendMessage('c1', msg('m2', 'x'))).rejects.toThrow('EIO');
+      expect(fs.files.get(LEDGER)!.length).toBe(size);
+    });
+
+    it('refuses an invalid id', async () => {
+      const { writer } = await setup();
+      await expect(writer.forgetConversation('../c1')).rejects.toMatchObject({ code: 'conversation_id_invalid' });
+    });
+  });
 });

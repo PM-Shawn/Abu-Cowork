@@ -186,6 +186,16 @@ export interface ConversationWriter {
   replaceMessageByIdStrict(convId: string, message: Message): Promise<void>;
   updateLastMessage(convId: string, message: Message): Promise<void>;
   loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]>;
+  /**
+   * Drops everything this instance knows about one conversation: tail check,
+   * written ids, ledger length, last message id, parent ids, settled sandbox
+   * actions and armed snapshots. Write entries of the conversation that are
+   * still running are awaited and the queue is flushed first. The next write
+   * entry for the conversation re-derives all of it from one strict read of the
+   * ledger and the snapshot file, and rejects when that read fails. Files are
+   * not touched.
+   */
+  forgetConversation(convId: string): Promise<void>;
   deleteConversationFiles(convId: string): Promise<void>;
   dailyBackup(): Promise<void>;
 }
@@ -424,8 +434,10 @@ export function createConversationWriter(deps: {
           // the callers' microtask continuations — so there is no instant where
           // a durably-landed put is in neither writtenIds nor the in-flight set
           // (appendMessage's own later add is then redundant but harmless).
+          // A drained path that is not a conversation's ledger never carries a
+          // merge key, so the two conditions below are one condition.
           pending.forEach((p) => {
-            if (p.mergeKey !== undefined) writtenIds.add(p.mergeKey);
+            if (p.mergeKey !== undefined && watermarkConvId) claimWritten(watermarkConvId, p.mergeKey);
           });
           pending.forEach((p) => p.settlers.forEach((s) => s.resolve()));
         } catch (err) {
@@ -566,12 +578,31 @@ export function createConversationWriter(deps: {
   const writingIds = new Map<string, Promise<void>>();
 
   /**
+   * The ids claimed above, grouped by conversation. `writtenIds` is one flat
+   * set because a message id is unique across conversations; this index is what
+   * lets `forgetConversation` release one conversation's ids without walking
+   * every id this process has ever claimed.
+   */
+  const idsByConv = new Map<string, Set<string>>();
+
+  /** Every claim of a durable id goes through here, so a conversation's ids can be released together. */
+  function claimWritten(convId: string, id: string): void {
+    writtenIds.add(id);
+    let ids = idsByConv.get(convId);
+    if (!ids) {
+      ids = new Set();
+      idsByConv.set(convId, ids);
+    }
+    ids.add(id);
+  }
+
+  /**
    * Clear the dedup cache. Call when loading messages from disk
    * to populate the set with already-persisted message IDs.
    */
   function populateWrittenIds(convId: string, messages: Message[]): void {
     for (const msg of messages) {
-      writtenIds.add(msg.id);
+      claimWritten(convId, msg.id);
       rememberPersistedMessage(msg);
       const pid = (msg as LedgerLine).pid;
       if (typeof pid === 'string') parentIdByMessage.set(msg.id, pid);
@@ -721,6 +752,7 @@ export function createConversationWriter(deps: {
    */
   async function snapshotMessageRevision(convId: string, message: Message): Promise<void> {
     await ensureBase();
+    await ensureDerived(convId);
     const allowToolResultDehydration = hasInlineToolResultImages(message)
       ? await refreshOutputManifestForToolResultImages(convId)
       : true;
@@ -884,7 +916,7 @@ export function createConversationWriter(deps: {
    */
   async function queueSnapshotPromotion(convId: string, message: Message, line: string): Promise<void> {
     await enqueueWrite(paths!.messagesPath(convId), line, message.id);
-    writtenIds.add(message.id);
+    claimWritten(convId, message.id);
   }
 
   /**
@@ -904,6 +936,12 @@ export function createConversationWriter(deps: {
    * holds the revisions, so no crash window has neither copy.
    */
   async function promoteStreamSnapshots(convId: string): Promise<number> {
+    // A forgotten conversation may have a snapshot on disk this process does not
+    // hold, so the buffer is re-derived before it is read as empty.
+    if (forgotten.has(convId)) {
+      await ensureBase();
+      await ensureDerived(convId);
+    }
     const entries = streamSnapshots.get(convId);
     if (!entries || entries.size === 0) return 0;
     await ensureBase();
@@ -1114,6 +1152,9 @@ export function createConversationWriter(deps: {
 
     const write = (async () => {
       await ensureBase();
+      // A forgotten conversation re-derives first, and the dedup check above ran
+      // against a set that did not yet know what the previous owner wrote.
+      if ((await ensureDerived(convId)) && writtenIds.has(message.id)) return;
       // `pid` = the ledger tail at append time (plan §3.2). Claimed synchronously
       // so two appends racing through `ensureBase` still chain in write order.
       const pid = lastMessageIdByConv.get(convId);
@@ -1128,7 +1169,7 @@ export function createConversationWriter(deps: {
       // Only claim the id after the append has actually succeeded. Marking it
       // before I/O made a transient disk failure permanently suppress retry and
       // allowed Reliable Run to execute without a durable user message.
-      writtenIds.add(message.id);
+      claimWritten(convId, message.id);
       rememberPersistedMessage(message);
 
       // The catalog is a rebuildable projection; JSONL success above is the
@@ -1183,6 +1224,7 @@ export function createConversationWriter(deps: {
     opts: { pid?: string; removedIds: string[] },
   ): Promise<boolean> {
     await ensureBase();
+    await ensureDerived(convId);
     const path = paths!.messagesPath(convId);
 
     // Skip guard (plan stage 3): see this function's doc comment and
@@ -1264,12 +1306,12 @@ export function createConversationWriter(deps: {
    * grepping means a message that a later event removed correctly reads as
    * absent.
    */
-  async function ledgerContainsMessage(path: string, messageId: string): Promise<boolean> {
+  async function ledgerContainsMessage(convId: string, path: string, messageId: string): Promise<boolean> {
     try {
       const raw = await fs.readTextFile(path);
       if (!raw.includes(`"${messageId}"`)) return false;
       const present = projectLedger({ ledgerText: raw }).messages.some((m) => m.id === messageId);
-      if (present) writtenIds.add(messageId);
+      if (present) claimWritten(convId, messageId);
       return present;
     } catch {
       return false;
@@ -1296,6 +1338,9 @@ export function createConversationWriter(deps: {
     strict: boolean,
   ): Promise<boolean> {
     await ensureBase();
+    // Outside the `try` below, so a re-derivation that fails rejects the
+    // non-strict variant too rather than being read as "nothing to replace".
+    await ensureDerived(convId);
     const path = paths!.messagesPath(convId);
 
     // An append is an upsert by nature; the old rewrite was not. Replacing an id
@@ -1309,7 +1354,7 @@ export function createConversationWriter(deps: {
         if (strict) throw new Error(`Conversation messages file does not exist: ${convId}`);
         return false;
       }
-      if (!writtenIds.has(message.id) && !(await ledgerContainsMessage(path, message.id))) {
+      if (!writtenIds.has(message.id) && !(await ledgerContainsMessage(convId, path, message.id))) {
         if (strict) throw new Error(`Message "${message.id}" was not found in conversation "${convId}"`);
         return false;
       }
@@ -1332,7 +1377,7 @@ export function createConversationWriter(deps: {
         serializeLedgerPut(convId, merged, parentIdByMessage.get(message.id), diskOptions(allowToolResultDehydration)),
         message.id,
       );
-      writtenIds.add(message.id);
+      claimWritten(convId, message.id);
       rememberPersistedMessage(merged);
       // The ledger now carries this revision, so the crash-protection buffer
       // must stop claiming a newer one.
@@ -1372,6 +1417,7 @@ export function createConversationWriter(deps: {
    */
   async function updateLastMessage(convId: string, message: Message): Promise<void> {
     await ensureBase();
+    await ensureDerived(convId);
     const path = paths!.messagesPath(convId);
     // Preserved from the rewrite era: with no conversation file there is nothing
     // to finish, and this must not conjure one.
@@ -1390,7 +1436,7 @@ export function createConversationWriter(deps: {
         serializeLedgerPut(convId, merged, parentIdByMessage.get(message.id), diskOptions(allowToolResultDehydration)),
         message.id,
       );
-      writtenIds.add(message.id);
+      claimWritten(convId, message.id);
       rememberPersistedMessage(merged);
       await dropStreamSnapshotEntry(convId, message.id);
     } catch {
@@ -1402,13 +1448,22 @@ export function createConversationWriter(deps: {
   }
 
   /**
-   * Load all messages from a conversation JSONL file.
-   * Populates the dedup cache so subsequent writes skip already-persisted messages.
+   * Read the conversation from disk and rebuild every piece of bookkeeping a
+   * write needs from what the read says: the confirmed tail, the claimed ids,
+   * the ledger watermark, the last message id, the parent pointers, the settled
+   * sandbox actions and the armed stream snapshot.
+   *
+   * This is what `loadMessages` has always done as a side effect of reading;
+   * `forgetConversation` relies on it as the one way state comes back.
    */
-  async function loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
+  async function deriveFromDisk(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
     await ensureBase();
     const path = paths!.messagesPath(convId);
-    if (!(await fs.exists(path))) return [];
+    if (!(await fs.exists(path))) {
+      // Nothing on disk is a complete answer, so the conversation is derived.
+      forgotten.delete(convId);
+      return [];
+    }
 
     // Display reads keep the tolerant contract; receipt recovery must distinguish a read failure from an empty ledger.
     let raw: string;
@@ -1473,7 +1528,103 @@ export function createConversationWriter(deps: {
       );
     }
     populateWrittenIds(convId, messages);
+    forgotten.delete(convId);
     return messages;
+  }
+
+  /**
+   * Load all messages from a conversation JSONL file.
+   * Populates the dedup cache so subsequent writes skip already-persisted messages.
+   */
+  async function loadMessages(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
+    return deriveFromDisk(convId, options);
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // Forgetting one conversation
+  // ════════════════════════════════════════════════════════════
+  //
+  // Everything above assumes this process is the only writer of a
+  // conversation's files, and the bookkeeping it keeps is only true while that
+  // holds. When the conversation is handed to another process and back, every
+  // one of those facts can have moved on disk: the tail can be a stump the
+  // other writer's crash left, the ledger can be longer than the watermark
+  // says, ids and parent pointers and settled sandbox actions can exist that
+  // this process never wrote, and a revision can be armed in a snapshot file
+  // this process never buffered. So the whole conversation is dropped in one
+  // step and re-derived from one read before the next write.
+
+  /** Conversations whose state was dropped and not yet re-derived. */
+  const forgotten = new Set<string>();
+
+  /** Drop every piece of per-conversation state this instance holds. Touches no file. */
+  function releaseConversationState(convId: string): void {
+    for (const id of idsByConv.get(convId) ?? []) {
+      writtenIds.delete(id);
+      persistedSandboxActions.delete(id);
+      parentIdByMessage.delete(id);
+    }
+    idsByConv.delete(convId);
+    ledgerCharsByConv.delete(convId);
+    lastMessageIdByConv.delete(convId);
+    streamSnapshots.delete(convId);
+  }
+
+  /**
+   * Re-derive a forgotten conversation, once, before its next write. Answers
+   * whether a re-derivation ran, which an append needs in order to re-check the
+   * dedup it already decided against the older set. A conversation that was
+   * never forgotten costs one `Set.has` and no read.
+   */
+  async function ensureDerived(convId: string): Promise<boolean> {
+    if (!forgotten.has(convId)) return false;
+    await deriveFromDisk(convId, { strictRead: true });
+    return true;
+  }
+
+  /** Write entries that have started and not settled, per conversation. */
+  const activeWrites = new Map<string, Set<Promise<unknown>>>();
+
+  function tracked<T>(convId: string, run: () => Promise<T>): Promise<T> {
+    const running = run();
+    let set = activeWrites.get(convId);
+    if (!set) {
+      set = new Set();
+      activeWrites.set(convId, set);
+    }
+    const entries = set;
+    entries.add(running);
+    const done = (): void => {
+      entries.delete(running);
+      if (entries.size === 0 && activeWrites.get(convId) === entries) activeWrites.delete(convId);
+    };
+    running.then(done, done);
+    return running;
+  }
+
+  /**
+   * Drop everything this instance knows about one conversation: tail check,
+   * written ids, ledger length, last message id, parent ids, settled sandbox
+   * actions and armed snapshots. Write entries of the conversation that are
+   * still running are awaited and the queue is flushed first. The next write
+   * entry for the conversation re-derives all of it from one strict read of the
+   * ledger and the snapshot file, and rejects when that read fails. Files are
+   * not touched.
+   */
+  async function forgetConversation(convId: string): Promise<void> {
+    const { messagesPath } = await ensureBase();
+    const path = messagesPath(convId);
+    // An entry that has started may not have reached the queue yet; it settles
+    // once its line is durable (or refused), so waiting for it covers both.
+    await Promise.allSettled([...(activeWrites.get(convId) ?? [])]);
+    await flushWrites();
+    // Behind any drain the debounce started: `appendToFile` takes this lock
+    // synchronously when `drainAll` calls it.
+    await withFileLock(path, async () => {
+      tailCheckedPaths.delete(path);
+      releaseConversationState(convId);
+      forgotten.add(convId);
+    });
   }
 
   /**
@@ -1483,10 +1634,12 @@ export function createConversationWriter(deps: {
   async function deleteConversationFiles(convId: string): Promise<void> {
     await ensureBase();
     // Drop the crash-protection buffer first: leaving it armed would have a
-    // later flush recreate the conversation directory we are deleting.
-    streamSnapshots.delete(convId);
-    lastMessageIdByConv.delete(convId);
-    ledgerCharsByConv.delete(convId);
+    // later flush recreate the conversation directory we are deleting. The rest
+    // of the conversation's state goes with it — the files it describes are
+    // about to be gone — and the conversation counts as derived, because an
+    // absent conversation is what the next read would find.
+    releaseConversationState(convId);
+    forgotten.delete(convId);
     // Remove new path
     const dir = paths!.conversationDir(convId);
     try {
@@ -1593,8 +1746,12 @@ export function createConversationWriter(deps: {
     conversationsRoot: () => paths?.root ?? null,
     flushWrites,
     flushAndGetLedgerWatermark,
-    snapshotMessageRevision,
-    promoteStreamSnapshots,
+    // The seven conversation-scoped write entries are tracked, so
+    // `forgetConversation` can wait for the ones that have started. `tracked`
+    // hands back the entry's own promise, so a caller settles exactly when and
+    // with what it settled before.
+    snapshotMessageRevision: (convId, message) => tracked(convId, () => snapshotMessageRevision(convId, message)),
+    promoteStreamSnapshots: (convId) => tracked(convId, () => promoteStreamSnapshots(convId)),
     hasArmedStreamSnapshot,
     flushStreamSnapshots,
     isMessageWrittenToDisk,
@@ -1603,12 +1760,13 @@ export function createConversationWriter(deps: {
     updateIndexEntry,
     removeIndexEntry,
     flushIndex,
-    appendMessage,
-    appendTruncateEvent,
-    replaceMessageById,
-    replaceMessageByIdStrict,
-    updateLastMessage,
+    appendMessage: (convId, message) => tracked(convId, () => appendMessage(convId, message)),
+    appendTruncateEvent: (convId, fromMessageId, opts) => tracked(convId, () => appendTruncateEvent(convId, fromMessageId, opts)),
+    replaceMessageById: (convId, message) => tracked(convId, () => replaceMessageById(convId, message)),
+    replaceMessageByIdStrict: (convId, message) => tracked(convId, () => replaceMessageByIdStrict(convId, message)),
+    updateLastMessage: (convId, message) => tracked(convId, () => updateLastMessage(convId, message)),
     loadMessages,
+    forgetConversation,
     deleteConversationFiles,
     dailyBackup,
   };

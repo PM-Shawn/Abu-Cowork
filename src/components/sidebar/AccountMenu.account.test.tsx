@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import AccountMenu from './AccountMenu';
@@ -162,5 +162,54 @@ describe('AccountMenu identity', () => {
     fireEvent.click(screen.getByText('切换到企业账号'));
 
     expect(mocks.startEnterpriseLogin).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the local identity head separate from the signed-out login action', () => {
+    const onEditProfile = vi.fn();
+    mocks.settings = { ...mocks.settings, userNickname: '' };
+    mocks.account = {
+      ...mocks.account,
+      status: 'signed_out',
+      account: null,
+      profileStatus: 'idle',
+    };
+
+    render(<AccountMenu onEditProfile={onEditProfile} />);
+    fireEvent.click(screen.getByRole('button', { name: '我' }));
+
+    expect(screen.getAllByText('我')).toHaveLength(2);
+    expect(screen.getByText('本地模式')).toBeInTheDocument();
+    const menuItems = within(screen.getByRole('menu')).getAllByRole('menuitem');
+    expect(menuItems.at(-1)).toHaveAccessibleName('登录');
+    expect(screen.queryByRole('menuitem', { name: '编辑资料' })).toBeNull();
+
+    const editProfile = screen.getByRole('button', { name: '编辑资料' });
+    expect(editProfile).toHaveClass('group-hover:opacity-100', 'focus-visible:opacity-100');
+    fireEvent.click(editProfile);
+    expect(onEditProfile).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('places sign-out last, after update, behind its own divider', () => {
+    mocks.account = {
+      ...mocks.account,
+      account: {
+        serverUrl: 'https://accounts.example.com',
+        userId: 'user-1',
+        kind: 'personal',
+        name: 'Ada',
+        email: 'ada@example.com',
+      },
+      profileStatus: 'ready',
+    };
+
+    render(<AccountMenu onEditProfile={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Ada' }));
+
+    const menuItems = within(screen.getByRole('menu')).getAllByRole('menuitem');
+    const signOut = screen.getByRole('menuitem', { name: '退出个人账号' });
+    expect(menuItems.at(-1)).toBe(signOut);
+    expect(menuItems.at(-2)).toHaveAccessibleName(/更新/);
+    expect(signOut.previousElementSibling).toHaveClass('h-px');
   });
 });

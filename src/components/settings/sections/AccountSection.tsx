@@ -88,7 +88,7 @@ export default function AccountSection() {
                 {t.account.retry}
               </Button>
             )}
-            <Button variant="destructive" onClick={() => void signOut()}>
+            <Button variant="subtle" onClick={() => void signOut()}>
               <LogOut aria-hidden="true" />
               {t.account.signOut}
             </Button>

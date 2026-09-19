@@ -60,6 +60,7 @@ describe('AccountSection', () => {
     expect(screen.getByText('Ada')).toBeInTheDocument();
     expect(screen.getByText('ada@example.com')).toBeInTheDocument();
     expect(screen.queryByText('user-1')).toBeNull();
+    expect(screen.getByRole('button', { name: '退出登录' })).toHaveAttribute('data-variant', 'subtle');
   });
 
   it('offers both recovery paths when the stored session has expired', () => {

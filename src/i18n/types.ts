@@ -200,6 +200,7 @@ export interface TranslationDict {
     personalLogin: string;
     enterpriseLogin: string;
     localWithoutLogin: string;
+    signIn: string;
     loginRegister: string;
     accountSettings: string;
     switchAccount: string;

@@ -43,6 +43,7 @@ import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
   const { t, locale } = useI18n();
+  const userNickname = useSettingsStore((s) => s.userNickname);
   const userAvatar = useSettingsStore((s) => s.userAvatar);
   const theme = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -213,6 +214,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const UpdateIcon = updateRow.icon;
   const signedIn = accountStatus === 'signed_in' && account !== null;
   const expired = accountStatus === 'expired' && account !== null;
+  const localLabel = userNickname || t.sidebar.defaultNickname;
   const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
     ? enterpriseMode.binding
     : null;
@@ -222,9 +224,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     ? enterpriseBinding.userName || enterpriseBinding.userEmail || enterpriseBinding.orgName
     : signedIn
       ? account.name || account.email || t.account.title
-    : expired
-      ? t.account.retry
-      : t.account.loginRegister;
+      : localLabel;
   const accountDetail = enterpriseBinding
     ? [enterpriseBinding.userEmail, enterpriseBinding.orgName].filter(Boolean).join(' · ')
     : signedIn
@@ -233,8 +233,6 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
         : profileStatus === 'error'
           ? t.account.profileUnavailable
           : account.email || t.account.title
-    : expired
-      ? t.account.sessionExpired
       : t.sidebar.localMode;
 
   return (
@@ -400,7 +398,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             <MenuRow icon={LogOut} label={IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
               onClick={() => run(() => void signOut())} />
           ) : (
-            <MenuRow icon={LogIn} label={expired ? t.account.retry : t.account.loginRegister}
+            <MenuRow icon={LogIn} label={expired ? t.account.retry : t.account.signIn}
               onClick={() => run(openAccountLogin)} />
           )}
         </div>

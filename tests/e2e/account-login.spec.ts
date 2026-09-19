@@ -1,4 +1,4 @@
-import { expect, test, type TestInfo } from '@playwright/test';
+import { expect, test, type Locator, type TestInfo } from '@playwright/test';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -17,22 +17,28 @@ const ACCOUNT_SERVER_URL = process.env.VITE_PERSONAL_ACCOUNT_SERVER_URL || 'http
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 const BROWSER_TIMEOUT_MS = 10 * 60 * 1000;
 
-type ServerMode = 'success' | 'unavailable' | 'profile-unauthorized';
+type ServerMode = 'success' | 'unavailable' | 'refresh-required' | 'profile-unauthorized';
 
-function tokenFor(userId: string): string {
+function tokenFor(userId: string, generation = 'initial'): string {
   return [
     Buffer.from('{"alg":"none"}').toString('base64url'),
-    Buffer.from(JSON.stringify({ sub: userId })).toString('base64url'),
+    Buffer.from(JSON.stringify({ sub: userId, generation })).toString('base64url'),
     'e2e-signature',
   ].join('.');
 }
 
-function startAccountServer(mode: () => ServerMode, onLogout: () => void): Promise<http.Server> {
+function startAccountServer(
+  mode: () => ServerMode,
+  onLogout: () => void,
+  onRefresh: () => void,
+): Promise<http.Server> {
   const origin = new URL(ACCOUNT_SERVER_URL);
   if (origin.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(origin.hostname)) {
     throw new Error('Account E2E server must use a loopback origin');
   }
   const port = Number(origin.port || (origin.protocol === 'https:' ? 443 : 80));
+  const initialAccessToken = tokenFor('user-1');
+  const rotatedAccessToken = tokenFor('user-1', 'rotated');
   const server = http.createServer((request, response) => {
     request.resume();
     request.on('end', () => {
@@ -50,10 +56,29 @@ function startAccountServer(mode: () => ServerMode, onLogout: () => void): Promi
       if (request.method === 'POST' && request.url === '/api/client/v1/auth/exchange') {
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify({
-          access_token: tokenFor('user-1'),
+          access_token: initialAccessToken,
           token_type: 'Bearer',
           expires_in: 900,
           refresh_token: 'e2e-refresh-token',
+          refresh_idle_expires_at: '2026-09-28T00:00:00Z',
+          refresh_absolute_expires_at: '2026-12-13T00:00:00Z',
+          family_id: 'e2e-family',
+        }));
+        return;
+      }
+      if (request.method === 'POST' && request.url === '/api/client/v1/auth/refresh') {
+        onRefresh();
+        if (mode() === 'profile-unauthorized') {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'expired_token' }));
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          access_token: rotatedAccessToken,
+          token_type: 'Bearer',
+          expires_in: 900,
+          refresh_token: 'e2e-rotated-refresh-token',
           refresh_idle_expires_at: '2026-09-28T00:00:00Z',
           refresh_absolute_expires_at: '2026-12-13T00:00:00Z',
           family_id: 'e2e-family',
@@ -64,6 +89,14 @@ function startAccountServer(mode: () => ServerMode, onLogout: () => void): Promi
         if (mode() === 'profile-unauthorized') {
           response.writeHead(401, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ error: 'unauthorized' }));
+          return;
+        }
+        if (
+          mode() === 'refresh-required' &&
+          request.headers.authorization !== `Bearer ${rotatedAccessToken}`
+        ) {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'unauthenticated' }));
           return;
         }
         response.writeHead(200, { 'content-type': 'application/json' });
@@ -143,8 +176,27 @@ async function captureLightAndDark(page: Page, testInfo: TestInfo, name: string)
   await page.screenshot({ path: screenshotPath(testInfo, `${name}-dark`), animations: 'disabled' });
 }
 
+async function captureHoveredLightAndDark(
+  page: Page,
+  testInfo: TestInfo,
+  name: string,
+  hoverTarget: Locator,
+  revealedTarget: Locator,
+): Promise<void> {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await hoverTarget.hover();
+  await expect(page.locator('html')).not.toHaveClass(/(^|\s)dark(\s|$)/);
+  await expect(revealedTarget).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: screenshotPath(testInfo, `${name}-light`), animations: 'disabled' });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await hoverTarget.hover();
+  await expect(page.locator('html')).toHaveClass(/(^|\s)dark(\s|$)/);
+  await expect(revealedTarget).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: screenshotPath(testInfo, `${name}-dark`), animations: 'disabled' });
+}
+
 async function useSystemTheme(page: Page): Promise<void> {
-  await page.getByRole('button', { name: '登录 / 注册', exact: true }).first().click();
+  await page.getByRole('button', { name: '我', exact: true }).click();
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
   const settings = page.locator('[data-abu-settings-dialog]');
   await expect(settings).toBeVisible();
@@ -160,8 +212,8 @@ async function useSystemTheme(page: Page): Promise<void> {
   await expect(settings).toBeHidden();
 }
 
-async function openLoginDialogFromSidebar(page: Page, label: '登录 / 注册' | '重新登录') {
-  await page.getByRole('button', { name: label, exact: true }).first().click();
+async function openLoginDialogFromSidebar(page: Page, label: '登录' | '重新登录') {
+  await page.getByRole('button', { name: '我', exact: true }).click();
   await page.getByRole('menuitem', { name: label, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '登录 / 注册' });
   await expect(dialog).toBeVisible();
@@ -186,8 +238,11 @@ test.describe.serial('personal account login UI', () => {
     const testInfo = test.info();
     let serverMode: ServerMode = 'success';
     let logoutRequests = 0;
+    let refreshRequests = 0;
     server = await startAccountServer(() => serverMode, () => {
       logoutRequests += 1;
+    }, () => {
+      refreshRequests += 1;
     });
     dataRoot = createElectronDataRoot();
     const launched = await launchAbuElectron(dataRoot);
@@ -199,10 +254,29 @@ test.describe.serial('personal account login UI', () => {
     await installMainBoundaryFixture(app);
     await useSystemTheme(page);
 
-    await captureLightAndDark(page, testInfo, '01-sidebar-signed-out');
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    const localMenu = page.getByRole('menu');
+    await expect(localMenu.getByText('本地模式', { exact: true })).toBeVisible();
+    await expect(localMenu.getByRole('menuitem').last()).toHaveAccessibleName('登录');
+    await expect(localMenu.getByRole('menuitem', { name: '编辑资料', exact: true })).toHaveCount(0);
+    const editProfileButton = localMenu.getByTitle('编辑资料');
+    await captureLightAndDark(page, testInfo, '01-local-menu-signed-out');
+    await captureHoveredLightAndDark(
+      page,
+      testInfo,
+      '01b-profile-edit-hover',
+      editProfileButton.locator('..'),
+      editProfileButton,
+    );
+    await editProfileButton.click();
+    const editProfileHeading = page.getByRole('heading', { name: '编辑资料', exact: true });
+    await expect(editProfileHeading).toBeVisible();
+    await captureLightAndDark(page, testInfo, '01c-profile-editor');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(editProfileHeading).toBeHidden();
 
-    await page.getByRole('button', { name: '登录 / 注册', exact: true }).first().click();
-    await page.getByRole('menuitem', { name: '登录 / 注册', exact: true }).click();
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    await page.getByRole('menuitem', { name: '登录', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '登录 / 注册' });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole('button', { name: '个人账号登录' })).toBeVisible();
@@ -248,8 +322,23 @@ test.describe.serial('personal account login UI', () => {
     await expect(page.getByRole('button', { name: 'Ada', exact: true }).first()).toBeVisible();
     await captureLightAndDark(page, testInfo, '08-sidebar-signed-in');
 
+    // A real renderer restart restores safeStorage, rotates exactly once after
+    // profile rejects the old access token, and persists the replacement pair.
+    serverMode = 'refresh-required';
+    await page.reload();
+    await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByRole('button', { name: 'Ada', exact: true }).first()).toBeVisible();
+    await expect.poll(() => refreshRequests).toBe(1);
+    await page.reload();
+    await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByRole('button', { name: 'Ada', exact: true }).first()).toBeVisible();
+    expect(refreshRequests).toBe(1);
+
     await page.getByRole('button', { name: 'Ada', exact: true }).first().click();
-    await page.getByRole('menuitem', { name: '账号设置', exact: true }).click();
+    const signedInMenu = page.getByRole('menu');
+    await expect(signedInMenu.getByRole('menuitem').last()).toHaveAccessibleName('退出登录');
+    await captureLightAndDark(page, testInfo, '08b-signed-in-menu');
+    await signedInMenu.getByRole('menuitem', { name: '账号设置', exact: true }).click();
     const settings = page.locator('[data-abu-settings-dialog]');
     await expect(settings.getByRole('heading', { name: '账号' })).toBeVisible();
     await expect(settings.getByText('ada@example.com')).toBeVisible();
@@ -266,10 +355,12 @@ test.describe.serial('personal account login UI', () => {
     // A 401 from the authenticated profile endpoint expires the stored login.
     serverMode = 'profile-unauthorized';
     let openCount = await openedUrlCount(app);
-    let recoveryDialog = await openLoginDialogFromSidebar(page, '登录 / 注册');
+    let recoveryDialog = await openLoginDialogFromSidebar(page, '登录');
     await recoveryDialog.getByRole('button', { name: '个人账号登录' }).click();
     await emitNextAuthReturn(app, openCount);
-    await expect(page.getByRole('button', { name: '重新登录', exact: true }).first()).toBeVisible();
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: '重新登录', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
 
     // The expired-session dialog offers a real local+remote sign-out path.
     recoveryDialog = await openLoginDialogFromSidebar(page, '重新登录');
@@ -282,10 +373,12 @@ test.describe.serial('personal account login UI', () => {
 
     // Reproduce the 401 once more, then recover by completing a fresh login.
     openCount = await openedUrlCount(app);
-    recoveryDialog = await openLoginDialogFromSidebar(page, '登录 / 注册');
+    recoveryDialog = await openLoginDialogFromSidebar(page, '登录');
     await recoveryDialog.getByRole('button', { name: '个人账号登录' }).click();
     await emitNextAuthReturn(app, openCount);
-    await expect(page.getByRole('button', { name: '重新登录', exact: true }).first()).toBeVisible();
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: '重新登录', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
 
     serverMode = 'success';
     openCount = await openedUrlCount(app);

@@ -325,7 +325,7 @@ export function createConversationWriter(deps: {
     return known !== undefined ? known : fs.canonicalPath(path);
   }
 
-  /** Rejects unless `dir` canonically is a direct child of `rootDir`. */
+  /** Rejects unless `dir` canonically is a direct child of `canonicalRootDir`. */
   async function assertDirectChild(canonicalRootDir: string | null, dir: string): Promise<void> {
     if (canonicalRootDir === null) return;
     const canonicalDir = await fs.canonicalPath(dir);

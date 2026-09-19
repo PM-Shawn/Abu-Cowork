@@ -3,7 +3,9 @@
  * write guarantees the Electron main process gives the renderer
  * (`electron/fsHost.cjs`):
  *   - append: `O_APPEND`, so the kernel places every write at the end — never
- *     a size read followed by a positional write. Not atomic, not fsynced.
+ *     a size read followed by a positional write. Each remaining span is asked
+ *     for in one write call, so a whole line reaches the kernel at once and two
+ *     appenders interleave lines, never halves of one. Not atomic, not fsynced.
  *   - atomic write: exclusive random temp file beside the target, write, fsync,
  *     rename, then fsync of the directory so the rename itself survives a power
  *     loss. The directory fsync is skipped on Windows, which has no such
@@ -20,6 +22,15 @@
  *     missing path.
  * The sidecar's `node:fs` calls pass no scope check, so which paths reach this
  * adapter is decided by the writer (`conversationPaths.ts`, containment).
+ *
+ * The no-follow open covers the FINAL component only, and this tier has no
+ * per-operation backstop for an intermediate one: a `mkdir -p` accepts an
+ * existing link as a parent, and nothing here re-resolves the path an operation
+ * was handed. So between the writer's containment check and the operation that
+ * follows it, a swap of an intermediate component is unguarded — containment is
+ * decided by the writer's canonical check, which is why that check exists. The
+ * renderer tier is different: `electron/fsHost.cjs`'s `assertAllowed`
+ * re-resolves and scope-checks every operation.
  */
 import { constants as fsConstants } from 'node:fs';
 import * as nodeFs from 'node:fs/promises';
@@ -130,7 +141,17 @@ export function createNodeConversationFs(overrides: Partial<NodeConversationFsIo
         0o666,
       );
       try {
-        await handle.writeFile(data, 'utf-8');
+        // One write call per remaining span, the shape `writeAll` uses in
+        // `electron/fsHost.cjs`: with `O_APPEND` each write call lands
+        // atomically at the end, so a line issued as a single call is a line no
+        // second appender can get inside.
+        const bytes = Buffer.from(data, 'utf-8');
+        let offset = 0;
+        while (offset < bytes.length) {
+          const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+          if (bytesWritten <= 0) throw new Error(`conversation fs: write made no progress: ${target}`);
+          offset += bytesWritten;
+        }
       } finally {
         await handle.close();
       }
@@ -166,6 +187,9 @@ export function createNodeConversationFs(overrides: Partial<NodeConversationFsIo
     },
 
     async canonicalPath(target) {
+      if (!path.isAbsolute(target)) {
+        throw new Error(`conversation fs: path must be absolute: ${target}`);
+      }
       let cursor = path.resolve(target);
       const missingTail: string[] = [];
       for (;;) {

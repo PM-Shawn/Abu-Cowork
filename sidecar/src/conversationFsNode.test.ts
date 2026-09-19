@@ -40,6 +40,27 @@ const msg = (id: string, content: string): Message => ({
   timestamp: NOW,
 });
 
+/** A line well past Node's 512 KiB `writeFile` chunk, the size ledger lines reach. */
+const BIG_LINE_BYTES = 1024 * 1024;
+
+/** A real `open` whose handle records the length every `write` asks the kernel for. */
+function recordingWriteOpen(requested: number[]): typeof nodeFs.open {
+  return (async (target: never, flags: never, mode: never) => {
+    const handle = await nodeFs.open(target, flags, mode);
+    const write = handle.write.bind(handle) as (
+      buffer: Buffer,
+      offset: number,
+      length: number,
+    ) => Promise<{ bytesWritten: number }>;
+    return Object.assign(handle, {
+      write: (buffer: Buffer, offset: number, length: number) => {
+        requested.push(length);
+        return write(buffer, offset, length);
+      },
+    });
+  }) as typeof nodeFs.open;
+}
+
 describe('sidecar conversation fs primitives', () => {
   let dir: string;
   beforeEach(async () => {
@@ -86,6 +107,33 @@ describe('sidecar conversation fs primitives', () => {
       const lines = (await nodeFs.readFile(path, 'utf-8')).trim().split('\n');
       expect(lines).toHaveLength(50);
       expect(new Set(lines).size).toBe(50);
+    });
+
+    // `O_APPEND` makes each write syscall land at the end atomically, so a line
+    // that reaches the kernel as one write is a line no other appender can get
+    // inside. Node's `writeFile` on a handle chops the payload into 512 KiB
+    // calls, which would put the interleaving unit below the line.
+    it('asks one write for the whole remaining length instead of chopping a large line', async () => {
+      const requested: number[] = [];
+      const fs = createNodeConversationFs({ open: recordingWriteOpen(requested) });
+      const target = join(dir, 'big.jsonl');
+      const line = `${'x'.repeat(BIG_LINE_BYTES)}\n`;
+      await fs.appendText(target, line);
+      expect(requested[0]).toBe(BIG_LINE_BYTES + 1);
+      expect((await nodeFs.stat(target)).size).toBe(BIG_LINE_BYTES + 1);
+    });
+
+    it('two appenders of a line larger than that chunk never split a line', async () => {
+      const a = createNodeConversationFs();
+      const b = createNodeConversationFs();
+      const target = join(dir, 'big-race.jsonl');
+      await Promise.all([
+        a.appendText(target, `${'a'.repeat(BIG_LINE_BYTES)}\n`),
+        b.appendText(target, `${'b'.repeat(BIG_LINE_BYTES)}\n`),
+      ]);
+      const lines = (await nodeFs.readFile(target, 'utf-8')).split('\n').filter((line) => line.length > 0);
+      const shape = lines.map((line) => (/^(?:a+|b+)$/.test(line) ? `${line[0]}×${line.length}` : 'mixed'));
+      expect(shape.sort()).toEqual([`a×${BIG_LINE_BYTES}`, `b×${BIG_LINE_BYTES}`]);
     });
 
     posixOnly('refuses a ledger that is a symbolic link and leaves its target alone', async () => {
@@ -210,6 +258,15 @@ describe('sidecar conversation fs primitives', () => {
     it('keeps a missing tail as written under the resolved ancestor', async () => {
       const fs = createNodeConversationFs();
       expect(await fs.canonicalPath(join(dir, 'conversations', 'c1'))).toBe(join(dir, 'conversations', 'c1'));
+    });
+
+    // Main refuses a relative path at its entry point (`fsHost.cjs`'s
+    // `canonicalizeForPathPolicy`) before anything is canonicalised; anchoring
+    // one at the sidecar process's working directory would decide containment
+    // from a root the caller never named.
+    it('refuses a relative path instead of anchoring it at the working directory', async () => {
+      const fs = createNodeConversationFs();
+      await expect(fs.canonicalPath(join('conversations', 'c1'))).rejects.toThrow(/path must be absolute/);
     });
 
     posixOnly('resolves a linked directory to where it points', async () => {

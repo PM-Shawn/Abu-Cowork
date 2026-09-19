@@ -1759,7 +1759,7 @@ describe('sidecarManager', () => {
 
     /**
      * Let the spawn chain run up to the handshake write without moving the
-     * clock — the handshake's own 10 s budget is what several of these tests
+     * clock — the handshake's own 30 s budget is what several of these tests
      * measure, so nothing here may spend part of it.
      */
     async function untilHandshakeSent(): Promise<void> {

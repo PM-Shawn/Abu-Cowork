@@ -121,7 +121,7 @@ export function enforceRunErrorState(message: Message): Message {
 
 /** A non-ghost assistant row: real text, tool activity, or thinking. Shared
  * by the ghost filter below and the completed-run inference above it. */
-export function isSubstantiveAssistant(msg: Message): boolean {
+function isSubstantiveAssistant(msg: Message): boolean {
   if (msg.role !== 'assistant') return false;
   const text = typeof msg.content === 'string'
     ? msg.content

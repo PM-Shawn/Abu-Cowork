@@ -57,12 +57,15 @@ const MEASURED_FROM_TURN = 1;
 /**
  * How far two measured `agent.start` requests of equal-length turns may differ:
  * ids, timestamps, the title, the context-usage numbers a finished turn leaves
- * on the conversation, and the one prompt section that varies per turn
- * (observed spread: 514 bytes). One turn of history is 30,000 bytes plus its
- * reply, so a start that carried the history would exceed this after a single
- * turn.
+ * on the conversation, and the one prompt section that varies per turn.
+ * Measured on macOS, 2026-09-19: 514 bytes across this journey's four measured
+ * dispatches, and 514 bytes again over the twenty-turn acceptance run
+ * (214,423 to 214,937). 4 KiB is eight times that and a small fraction of the
+ * 30,000 bytes one turn of history would add, so a start that carried the
+ * conversation is caught after a single turn and a leak of a few hundred bytes
+ * per turn is caught within a few.
  */
-const FLAT_MARGIN_BYTES = 16 * 1024;
+const FLAT_MARGIN_BYTES = 4 * 1024;
 
 let app: ElectronApplication | undefined;
 let dataRoots: ElectronDataRoot[] = [];

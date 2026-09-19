@@ -59,6 +59,7 @@ const ALLOWED_MEMBERS: &[&str] = &[
     "Item",
     "FullName",
     "Name",
+    "Path",
     "Saved",
 ];
 
@@ -87,8 +88,9 @@ struct OfficeHost {
 /// the user looking for an application they may not even have installed. The
 /// reverse never happens: Microsoft Office does not register under `Ket`.
 ///
-/// Identical objects are then dropped by COM identity in `collect_documents`,
-/// so the first host to claim an instance is the one that names it.
+/// A second sighting of the same running product is then dropped in
+/// `collect_documents`, so the first host to claim an instance is the one that
+/// names it.
 const OFFICE_HOSTS: &[OfficeHost] = &[
     OfficeHost { prog_id: "Ket.Application", app: "wps-spreadsheets", collection: "Workbooks" },
     OfficeHost { prog_id: "Kwps.Application", app: "wps-writer", collection: "Documents" },
@@ -192,19 +194,33 @@ fn worker_loop(rx: Receiver<InspectRequest>) {
 fn collect_documents() -> Vec<OfficeDocument> {
     let mut documents = Vec::new();
     // One running application can answer to several ProgIDs — see the note on
-    // OFFICE_HOSTS. COM's identity rule is the reliable way to notice: for the
-    // same object, `QueryInterface(IID_IUnknown)` returns the same pointer,
-    // and it does so regardless of which name got us there.
-    let mut seen: Vec<*mut std::ffi::c_void> = Vec::new();
+    // OFFICE_HOSTS — and each ProgID is a separate CLSID, so each attach hands
+    // back its own proxy with its own COM identity. What the proxies agree on
+    // is `Application.Path`, the directory the product runs from: measured on
+    // a machine running WPS and Microsoft Office side by side, `Ket`, `Kwps`
+    // and `Excel` all answer with the WPS install directory, and `Word`
+    // answers with Office's.
+    //
+    // The directory alone says "same product", which is not yet "same
+    // application": WPS Writer and WPS Spreadsheets share an install
+    // directory and hold entirely different documents. The collection name is
+    // what separates them, so the pair is the identity — and the pair is
+    // exactly what repeats when WPS answers `Excel.Application`: same
+    // directory, same `Workbooks`.
+    //
+    // An instance that will not say where it runs from is left out, because
+    // reporting its documents a second time under the wrong application name
+    // is what this comparison exists to prevent.
+    let mut seen: Vec<(String, &str)> = Vec::new();
     for host in OFFICE_HOSTS {
         // Not installed and not running are both "nothing to report".
         let Some(application) = attach_to(host.prog_id) else { continue };
-        let Ok(identity) = application.cast::<IUnknown>() else { continue };
-        let pointer = identity.as_raw();
-        if seen.contains(&pointer) {
+        let Some(home) = get_string(&application, "Path") else { continue };
+        let instance = (home.to_lowercase(), host.collection);
+        if seen.contains(&instance) {
             continue;
         }
-        seen.push(pointer);
+        seen.push(instance);
         documents.extend(documents_of(&application, host));
     }
     documents
@@ -358,6 +374,36 @@ mod tests {
                 "{} would be refused by invoke()",
                 host.collection
             );
+        }
+    }
+
+    /// `collect_documents` tells two attachments of one running product apart
+    /// by the directory it runs from. Drop `Path` from the list and `invoke()`
+    /// refuses it, every attach reads as a product of its own, and a WPS
+    /// document is reported a second time under Microsoft's name.
+    #[test]
+    fn the_install_directory_is_a_member_this_module_may_ask_for() {
+        assert!(is_allowed_member("Path"));
+    }
+
+    /// The identity `collect_documents` compares is the pair (install
+    /// directory, collection). WPS Writer and WPS Spreadsheets run from one
+    /// directory, so the collection is the half that keeps them apart; WPS
+    /// answering Microsoft's ProgID repeats both halves, which is the case
+    /// that collapses. Both readings need each collection to name exactly one
+    /// application per suite.
+    #[test]
+    fn each_collection_names_one_application_per_suite() {
+        for collection in ["Workbooks", "Documents", "Presentations"] {
+            let count = |wps: bool| {
+                OFFICE_HOSTS
+                    .iter()
+                    .filter(|host| {
+                        host.collection == collection && host.app.starts_with("wps-") == wps
+                    })
+                    .count()
+            };
+            assert_eq!((count(true), count(false)), (1, 1), "{collection} once per suite");
         }
     }
 

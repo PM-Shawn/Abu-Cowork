@@ -92,8 +92,8 @@ import {
   decodeLedgerPrefix,
   LedgerWatermarkError,
   projectLedger,
-  STREAM_SNAPSHOT_FILENAME,
 } from '@/core/session/ledgerReader';
+import { createConversationPaths, type ConversationPaths } from '@/core/session/conversationPaths';
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import * as fs from 'node:fs/promises';
 import { appDataDir } from '@tauri-apps/api/path';
@@ -106,32 +106,13 @@ export async function snapshotMessageRevision(convId: string, message: Message):
   getCurrentAgentRunContext().pushFrame({ p: 'session', m: 'snapshotMessageRevision', a: [convId, message] });
 }
 
-// joinPath copied verbatim from src/utils/pathUtils.ts (same inlining
-// rationale memdirPaths.ts documents: avoids dragging that file's OTHER,
-// Tauri-coupled exports into the bundle for a two-line dependency).
-function joinPath(...segments: string[]): string {
-  return segments
-    .map((s) => s.replace(/\\/g, '/'))
-    .join('/')
-    .replace(/\/{2,}/g, '/');
-}
+let cachedPaths: ConversationPaths | null = null;
 
-let basePath: string | null = null;
-
-async function ensureBase(): Promise<string> {
-  if (!basePath) {
-    const appData = await appDataDir();
-    basePath = joinPath(appData, 'conversations');
+async function ensurePaths(): Promise<ConversationPaths> {
+  if (!cachedPaths) {
+    cachedPaths = createConversationPaths(await appDataDir());
   }
-  return basePath;
-}
-
-function messagesPath(convId: string): string {
-  return joinPath(basePath!, convId, 'messages.jsonl');
-}
-
-function streamSnapshotPath(convId: string): string {
-  return joinPath(basePath!, convId, STREAM_SNAPSHOT_FILENAME);
+  return cachedPaths;
 }
 
 /**
@@ -140,9 +121,9 @@ function streamSnapshotPath(convId: string): string {
  * an in-flight revision has no such file at all, which is why an unreadable one
  * leaves the ledger alone instead of failing the read.
  */
-async function readSnapshotText(convId: string): Promise<string | null> {
+async function readSnapshotText(snapshotPath: string): Promise<string | null> {
   try {
-    return await fs.readFile(streamSnapshotPath(convId), 'utf-8');
+    return await fs.readFile(snapshotPath, 'utf-8');
   } catch {
     return null;
   }
@@ -156,12 +137,12 @@ async function readSnapshotText(convId: string): Promise<string | null> {
  * the buffer becomes collectable before the projection starts allocating.
  */
 async function readLedgerText(
-  convId: string,
+  ledgerPath: string,
   options?: { strictRead?: boolean; uptoBytes?: number },
 ): Promise<string | null> {
   let bytes: Buffer;
   try {
-    bytes = await fs.readFile(messagesPath(convId));
+    bytes = await fs.readFile(ledgerPath);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | null)?.code;
     // A watermark above zero is a size the shell measured on this very file, so
@@ -195,14 +176,20 @@ export async function loadMessages(
   convId: string,
   options?: { strictRead?: boolean; uptoBytes?: number },
 ): Promise<Message[]> {
-  await ensureBase();
+  const paths = await ensurePaths();
+  // Both paths are built here, outside the tolerant reads below: those answer
+  // "no ledger" with an empty conversation, and an id the grammar refuses is
+  // not an empty conversation — it is a read that must not happen at all.
+  const ledgerPath = paths.messagesPath(convId);
 
-  const ledgerText = await readLedgerText(convId, options);
+  const ledgerText = await readLedgerText(ledgerPath, options);
   if (ledgerText === null) return [];
 
   // A watermark pins exactly what the writer had made durable at that offset,
   // while the snapshot's `stamp`s are measured against the whole ledger — an
   // entry judged against the full file has no meaning over a cut one.
-  const snapshotText = options?.uptoBytes === undefined ? await readSnapshotText(convId) : null;
+  const snapshotText = options?.uptoBytes === undefined
+    ? await readSnapshotText(paths.streamSnapshotPath(convId))
+    : null;
   return projectLedger({ ledgerText, snapshotText }).messages;
 }

@@ -43,6 +43,9 @@ const electronHostMocks = vi.hoisted(() => ({
   hasElectronUserAttachmentReleaseHost: vi.fn(() => false),
   releaseElectronUserAttachment: vi.fn(),
   getElectronFilePath: vi.fn(() => null),
+  // #549: the conversation writer resolves the conversations root through this
+  // one; null is what a tier without the Electron bridge answers.
+  canonicalizeElectronPathForPolicy: vi.fn(async () => null),
 }));
 
 vi.mock('@/utils/electronHost', () => electronHostMocks);

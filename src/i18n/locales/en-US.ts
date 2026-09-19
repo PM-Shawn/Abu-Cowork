@@ -452,6 +452,7 @@ const enUS: TranslationDict = {
     sidecarInterrupted: 'Connection interrupted. Click Retry to try again.',
     sidecarUnavailable: 'The background service could not confirm this task\'s state during recovery. Abu stopped waiting and will not replay it automatically, but cannot confirm whether the original task is still running. Check the existing result before deciding to retry.',
     payloadTooLarge: 'This conversation is too long to continue.',
+    historyUnavailable: "Couldn't read this conversation's history.",
     sidecarNotReady: 'The background service did not start, so this message was not sent. Click Retry to try again.',
     automationRunFailed: 'The automated task did not finish: {error}',
     messageSaveFailed: 'The message could not be saved to disk, so Abu did not start the task. Check disk access and retry.',

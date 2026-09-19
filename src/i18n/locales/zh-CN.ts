@@ -452,6 +452,7 @@ const zhCN: TranslationDict = {
     sidecarInterrupted: '连接中断，可点重试',
     sidecarUnavailable: '后台服务恢复期间无法确认本次任务状态。阿布已停止等待且不会自动重跑，但无法确认原任务是否仍在执行；请先检查已有结果，再决定是否重试。',
     payloadTooLarge: '这段对话太长，无法继续。',
+    historyUnavailable: '读取对话记录失败',
     sidecarNotReady: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
     automationRunFailed: '自动任务没有完成：{error}',
     messageSaveFailed: '消息未能写入磁盘，阿布没有启动任务。请检查磁盘权限后重试。',

@@ -510,6 +510,14 @@ export interface TranslationDict {
     /** The turn was too big for the shell→sidecar channel; the only way forward is a new conversation (#549). */
     payloadTooLarge: string;
     /**
+     * This conversation's history could not be read from disk, so the run never
+     * started (#549). One sentence for every surface: the reason line next to
+     * 「发送失败」 and 「重试」 in the chat row, the text an IM reply wraps in
+     * `imChannel.errorReply`, and the text an automation's run log quotes. It
+     * names what happened and carries no instruction.
+     */
+    historyUnavailable: string;
+    /**
      * The sidecar never reached `running`, so the message was never sent (#549).
      * The chat row says 「发送失败」 and offers Retry instead of this sentence;
      * it is the durable `runError` and the text headless dispatchers log.

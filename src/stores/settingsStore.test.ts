@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { reconcileActiveProvider, useSettingsStore, getDefaultImageBackend, getUsableImageBackend, bootstrapSecrets, __resetBrowserConfigPersistenceForTests } from './settingsStore';
 import type { ProviderInstance, ActiveModel, ImageGenBackend } from '@/types/provider';
@@ -9,6 +9,13 @@ import {
 } from '@/core/permissions/browserToolPolicy';
 
 // ─── Test fixture helpers ─────────────────────────────────────
+
+// These synchronous legacy-store tests have no competing window. Concurrency
+// is exercised with queued lock callbacks in settingsStore.browserPermissions.
+beforeEach(() => {
+  vi.stubGlobal('navigator', { locks: { request: (_name: string, callback: () => unknown) => Promise.resolve(callback()) } });
+});
+afterEach(() => { vi.unstubAllGlobals(); });
 
 function makeProvider(overrides: Partial<ProviderInstance> = {}): ProviderInstance {
   return {
@@ -1734,5 +1741,33 @@ describe('default activeModel stays in the curated list', () => {
     const provider = PROVIDER_CONFIGS[activeModel.providerId as keyof typeof PROVIDER_CONFIGS];
     expect(provider).toBeDefined();
     expect(provider.models.map((m) => m.id)).toContain(activeModel.modelId);
+  });
+});
+
+describe('touchRecentModel', () => {
+  it('moves the model to the front of recents without changing activeModel', () => {
+    useSettingsStore.setState({
+      activeModel: { providerId: 'p-default', modelId: 'm-default' },
+      recentModels: [
+        { providerId: 'p1', modelId: 'a' },
+        { providerId: 'p2', modelId: 'b' },
+      ],
+    });
+    useSettingsStore.getState().touchRecentModel('p2', 'b');
+    const s = useSettingsStore.getState();
+    expect(s.activeModel).toEqual({ providerId: 'p-default', modelId: 'm-default' });
+    expect(s.recentModels).toEqual([
+      { providerId: 'p2', modelId: 'b' },
+      { providerId: 'p1', modelId: 'a' },
+    ]);
+  });
+
+  it('caps recents at 5 entries', () => {
+    useSettingsStore.setState({
+      recentModels: ['1', '2', '3', '4', '5'].map((m) => ({ providerId: 'p', modelId: m })),
+    });
+    useSettingsStore.getState().touchRecentModel('p', '6');
+    const ids = useSettingsStore.getState().recentModels.map((r) => r.modelId);
+    expect(ids).toEqual(['6', '1', '2', '3', '4']);
   });
 });

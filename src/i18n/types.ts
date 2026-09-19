@@ -294,6 +294,8 @@ export interface TranslationDict {
     runInterrupted: string;
     runRecoveredAfterRestart: string;
     runRetry: string;
+    /** Escape hatch on an oversize failure row — opens a new conversation carrying the text (#549). */
+    newConversationAction: string;
     noModelConfigured: string;
     scrollToBottom: string;
     compressingContext: string;
@@ -373,11 +375,14 @@ export interface TranslationDict {
     // show_widget inline card status rows (invalid input / cancelled call)
     widgetCardError: string;
     widgetCardCancelled: string;
-    // Enterprise model selector
-    enterpriseModelLoading: string;
-    enterpriseModelNoMatch: string;
-    enterpriseModelEmpty: string;
-    enterpriseGatewayLabel: string;
+    // Model selector — managed provider group
+    /** Header above the user's own providers, shown when a managed provider is listed. */
+    myModels: string;
+    managedModelsSyncing: string;
+    /** `{org}` = the managed provider's name. */
+    managedProviderUnreachable: string;
+    /** Button on the offline notice: switch this conversation to the user's own model. */
+    useMyOwnModel: string;
     // DetailBlockView
     characters: string;
     viewMore: string;
@@ -407,7 +412,6 @@ export interface TranslationDict {
     imageLoading: string;
     imageUnavailable: string;
     imageRetry: string;
-    inputTokens: string;
     outputTokens: string;
     addAttachment: string;
     /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
@@ -484,14 +488,47 @@ export interface TranslationDict {
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
+    modelUnavailableLabel: string;
+    modelUnavailableToast: string;
+    modelUnavailableInTask: string;
+    modelUnavailableReasonProviderRemoved: string;
+    modelUnavailableReasonProviderDisabled: string;
+    modelUnavailableReasonModelRemoved: string;
     /** Skill requires tools that aren't currently available. {missing} */
     skillMissingTools: string;
-    /** Enterprise AI gateway unreachable (shown as an error bubble). */
+    /** Enterprise AI gateway unreachable while resolving a dispatch's credentials. */
     gatewayUnreachable: string;
-    /** Sidecar process exited mid-task and automatic recovery has started. */
+    /** A managed provider's request failed at the network level (error bubble). `{org}` = its name. */
+    managedProviderUnreachableInTask: string;
+    /** The organization withdrew the model a conversation is bound to. `{model}` = its label. */
+    managedModelRevokedToast: string;
+    managedModelRevokedInTask: string;
+    /** Sidecar process exited mid-task, leaving the turn for the user to retry. */
     sidecarInterrupted: string;
     /** Recovery could not prove the run state, so execution stopped to avoid a duplicate replay. */
     sidecarUnavailable: string;
+    /** The turn was too big for the shell→sidecar channel; the only way forward is a new conversation (#549). */
+    payloadTooLarge: string;
+    /**
+     * This conversation's history could not be read from disk, so the run never
+     * started (#549). One sentence for every surface: the reason line next to
+     * 「发送失败」 and 「重试」 in the chat row, the text an IM reply wraps in
+     * `imChannel.errorReply`, and the text an automation's run log quotes. It
+     * names what happened and carries no instruction.
+     */
+    historyUnavailable: string;
+    /**
+     * The sidecar never reached `running`, so the message was never sent (#549).
+     * The chat row says 「发送失败」 and offers Retry instead of this sentence;
+     * it is the durable `runError` and the text headless dispatchers log.
+     */
+    sidecarNotReady: string;
+    /**
+     * How an unattended run's failure reads where the run itself is the only
+     * record — today the file watcher's hidden conversation (#549). Takes the
+     * run's own reason as `{error}`.
+     */
+    automationRunFailed: string;
     messageSaveFailed: string;
     /** Closing assistant message when the run stopped itself after consecutive browser-authorization refusals. */
     browserDeniedAbort: string;
@@ -530,6 +567,7 @@ export interface TranslationDict {
     /** Toast after a direct instruction was queued for a running team member. */
     memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
+    attachmentInvalidFileName: string;
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;
@@ -972,6 +1010,63 @@ export interface TranslationDict {
 
   // Settings Modal
   settings: {
+    browserResourceGrantBrowse: string;
+    browserResourceGrantUpload: string;
+    browserRequestOnce: string;
+    browserDownloadsCompleted: string;
+    browserDownloadsUnavailable: string;
+    browserDownloadsUnknown: string;
+    browserResourceAlwaysAllow: string;
+    browserBrowseDesc: string;
+    browserBrowseLabel: string;
+    browserConfigInvalid: string;
+    browserDefaultAllowDesc: string;
+    browserDownloadsChecking: string;
+    browserDownloadsClearSearch: string;
+    browserDownloadsDesc: string;
+    browserDownloadsEmpty: string;
+    browserDownloadsEntryDesc: string;
+    browserDownloadsLoading: string;
+    browserDownloadsNoResults: string;
+    browserDownloadsOmitted: string;
+    browserDownloadsOpenFileLabel: string;
+    browserDownloadsOpenTaskLabel: string;
+    browserDownloadsPartialRead: string;
+    browserDownloadsReadAgain: string;
+    browserDownloadsReadFailed: string;
+    browserDownloadsReveal: string;
+    browserDownloadsRevealLabel: string;
+    browserDownloadsSearchLabel: string;
+    browserDownloadsSearchPlaceholder: string;
+    browserDownloadsTaskUnavailable: string;
+    browserDownloadsTitle: string;
+    browserInherit: string;
+    browserPermissionsSharedDesc: string;
+    browserPermissionsTitle: string;
+    browserScriptActionDesc: string;
+    browserSiteAccess: string;
+    browserSiteAccessBlock: string;
+    browserSiteAddHint: string;
+    browserSiteAddTitle: string;
+    browserSiteAllowBrowse: string;
+    browserSiteAlreadyAdded: string;
+    browserSiteCustom: string;
+    browserSiteCustomTitle: string;
+    browserSiteDefaultState: string;
+    browserSiteDeleteButton: string;
+    browserSiteDeleteLabel: string;
+    browserSiteDeleteMessage: string;
+    browserSiteDeleteTitle: string;
+    browserSitePermsAddCredentials: string;
+    browserSitePermsEffectiveOrigin: string;
+    browserSitePermsSave: string;
+    browserSiteRuleConflict: string;
+    browserSiteRulesDesc: string;
+    browserSiteRulesFootnote: string;
+    browserSiteRulesSummary: string;
+    browserSiteUnblockOnSave: string;
+    browserUploadActionDesc: string;
+    browserEmbeddedScope: string;
     title: string;
     apiConfig: string;
     modelSelect: string;
@@ -1138,6 +1233,19 @@ export interface TranslationDict {
     capabilityWebTitle: string;
     capabilityBuiltinBrowser: string;
     capabilityMyChrome: string;
+    capabilityChromeWaitingForBrowser: string;
+    capabilityChromeSetupHelp: string;
+    capabilityChromeOpenFolder: string;
+    capabilityChromeOpenExtensions: string;
+    capabilityChromeNotInstalled: string;
+    capabilityChromeInstalled: string;
+    capabilityChromeInstallationUnknown: string;
+    capabilityChromeInstallExtension: string;
+    capabilityChromeGuidePage: string;
+    capabilityChromeGuideIntro: string;
+    capabilityChromeGuideFolder: string;
+    capabilityChromeGuideDeveloper: string;
+    capabilityChromeExtension: string;
     capabilityMyChromeDesc: string;
     /** The one consent clause the My Chrome page keeps: it sits on the status
      *  row while the channel is connected, in place of the footer paragraph
@@ -1558,6 +1666,13 @@ export interface TranslationDict {
     validationSuccess: string;
     validationFailed: string;
     revalidate: string;
+    // Managed provider card. `{org}` = the provider's name, `{count}` = model count.
+    managedProviderBadge: string;
+    managedStatusConnected: string;
+    managedStatusSyncing: string;
+    managedStatusOffline: string;
+    managedStatusEmpty: string;
+    managedResync: string;
     validateConnection: string;
     statusConnected: string;
     statusFailed: string;
@@ -1865,6 +1980,7 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
+    nameTakenHint: string;
     fieldDescription: string;
     fieldDescriptionPlaceholder: string;
     fieldIntro: string;
@@ -1911,9 +2027,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    /** Follow-up chips under a finished team turn. */
-    followUpRedoStep: string;
-    followUpMemberRevise: string;
+    /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;
     confirmationSeparator: string;
@@ -1938,7 +2052,6 @@ export interface TranslationDict {
     stallStoppedNotice: string;
     resumeAfterRestart: string;
     resumeAfterRestartFailed: string;
-    followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
     chatReceiptEmptyGoal: string;
@@ -1964,16 +2077,12 @@ export interface TranslationDict {
     agentSkillsEmpty: string;
     title: string;
     skills: string;
-    agents: string;
-    mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
     // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: string;
     pluginsEmptyState: string;
-    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
-     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
-     *  literally "MCP", not a Connectors-flavored label. */
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. */
     connectors: string;
     // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
     pluginsMarketplaceTab: string;
@@ -2047,7 +2156,6 @@ export interface TranslationDict {
     pluginsRemoveMarketplace: string;
     pluginsRemoveMarketplaceTitle: string;
     pluginsRemoveMarketplaceMessage: string;
-    pluginsCategoryAll: string;
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;
@@ -2187,13 +2295,12 @@ export interface TranslationDict {
     install: string;
     /** Danger action on items the user owns (their own experts / skills): they are deleted, not uninstalled. */
     deleteItem: string;
-    installed: string;
     installAndConnect: string;
     popularMCPServices: string;
     setupWithAbu: string;
     aiAssistedMCPSetup: string;
     // Source labels
-    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.43: built-ins are the OSS market shelf. */
+    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.50: built-ins are the OSS market shelf. */
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;
@@ -2205,10 +2312,6 @@ export interface TranslationDict {
     systemSkills: string;
     customSkills: string;
     noCustomSkills: string;
-    // Customize Panel
-    customize: string;
-    customizeFooter: string;
-    models: string;
     // ModelsSection
     currentConfig: string;
     quickSwitch: string;
@@ -2424,8 +2527,6 @@ export interface TranslationDict {
     // Server logs
     viewLogs: string;
     noLogs: string;
-    // MarketplaceCard i18n
-    installing: string;
     aiCreateAgentPrompt: string;
     aiCreateSkillPrompt: string;
     agentTestPrompt: string;
@@ -2796,7 +2897,6 @@ export interface TranslationDict {
     teamAppendInstruction: string;
     teamStalledFor: string;
     teamDispatchInterrupted: string;
-    teamDispatchNoToolCalls: string;
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
@@ -2821,6 +2921,12 @@ export interface TranslationDict {
       reload: string;
       openExternal: string;
       addressPlaceholder: string;
+      takeControl: string;
+      handBack: string;
+      yielding: string;
+      humanControl: string;
+      controlFailed: string;
+      popupBlocked: string;
       startPrompt: string;
       framingHint: string;
       dismissHint: string;
@@ -3195,6 +3301,16 @@ export interface TranslationDict {
     /** Session rolled over after hitting the per-session round cap. {rounds} */
     sessionRolledOver: string;
     sessionQueueFull: string;
+    /**
+     * What the sender is told when a run ended before the sidecar accepted it
+     * and there is no assistant reply to forward (#549). The oversize one
+     * names the reset keyword sessionMapper already listens for, because a
+     * new session is the only way that conversation continues.
+     */
+    runPayloadTooLarge: string;
+    runServiceUnavailable: string;
+    /** Any other run that ended in error without an answer. {error} */
+    errorReply: string;
     timeoutHint: string;
     groupConnection: string;
     groupBehavior: string;
@@ -3712,6 +3828,12 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     cacheHitRate: string;
+    statsOrigin: string;
+    statsOriginEmpty: string;
+    unrecorded: string;
+    unavailable: string;
+    stale: string;
+    unknownUsage: string;
     bySkill: string;
     byModel: string;
     noData: string;
@@ -3789,14 +3911,12 @@ export interface TranslationDict {
     processing: string;
   };
 
-  // Enterprise runtime UI (gateway badge, policy confirm, status badge)
+  // Enterprise runtime UI (policy confirm, status badge, sign-in notice)
   enterprise: {
-    usingGateway: string;
-    gatewayDesc: string;
     organization: string;
-    gateway: string;
-    status: string;
     offline: string;
+    /** Shown once after sign-in, when the organization's models are ready. `{org}` */
+    modelsReady: string;
     /** Compact offline suffix shown in the status badge, e.g. "· Offline". */
     offlineBadge: string;
     policyConfirmTitle: string;

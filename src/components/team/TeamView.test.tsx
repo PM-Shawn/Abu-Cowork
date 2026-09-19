@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
+import { clearAllComposerDrafts, readComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
@@ -222,6 +222,31 @@ describe('TeamView', () => {
     expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
   });
 
+  it('team dialog: renaming onto another team\u2019s name is refused before it can be saved', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('\u5206\u6790\u5e08', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '\u5206\u6790\u5e08' }];
+    useTeamStore.setState({ teams: [
+      { id: 't1', name: '\u6570\u636e\u5c0f\u961f', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 },
+      { id: 't2', name: '\u589e\u957f\u5c0f\u961f', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-\u589e\u957f\u5c0f\u961f'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    // Its own name is fine — re-saving a dialog untouched must not be blocked.
+    expect(screen.queryByTestId('team-name-taken')).toBeNull();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '\u6570\u636e\u5c0f\u961f' } });
+    expect(screen.getByTestId('team-name-taken')).toBeTruthy();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '\u589e\u957f\u5c0f\u961f 2' } });
+    expect(screen.queryByTestId('team-name-taken')).toBeNull();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('renders the two tabs 专家·专家团 (the task board is gone)', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>
@@ -422,7 +447,8 @@ describe('TeamView', () => {
     expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
     expect(chatState.setPendingAgent).toHaveBeenCalledWith(null);
     // Nothing prefilled: the user says what they want in their own words.
-    expect(chatState.setPendingInput).toHaveBeenCalledWith('');
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(null);
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');
   });
 
   it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 专家 detail', () => {
@@ -453,7 +479,7 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId(trigger));
     fireEvent.click(screen.getByText('使用阿布创建'));
     expect(chatState.startNewConversation).toHaveBeenCalledOnce();
-    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt);
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt, { startsTask: true });
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -612,7 +638,8 @@ describe('TeamView', () => {
     expect(chatState.createConversation).not.toHaveBeenCalled();
     expect(chatState.startNewConversation).toHaveBeenCalled();
     expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
-    expect(chatState.setPendingInput).toHaveBeenCalledWith('帮我看上季度销量');
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(null);
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('帮我看上季度销量');
     expect(settingsState.closeTeam).toHaveBeenCalledOnce();
     expect(dispatch).not.toHaveBeenCalled();
     expect(screen.queryByTestId('team-detail-start-chat')).toBeNull();

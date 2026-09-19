@@ -136,6 +136,7 @@ const { guiDispatch, GUI_MISS, initGuiHost, teardownGuiHost } = require('./guiHo
 const { previewDispatch, PREVIEW_MISS } = require('./previewServer.cjs');
 const { catalogDispatch, CATALOG_MISS } = require('./catalogDb.cjs');
 const { noticeDispatch, NOTICE_MISS } = require('./noticeDb.cjs');
+const { usageDispatch, USAGE_MISS } = require('./usageDb.cjs');
 const { commandDispatch, COMMAND_MISS, teardownCommandHost } = require('./commandHost.cjs');
 const { triggerDispatch, TRIGGER_MISS } = require('./triggerServer.cjs');
 const { networkProxyDispatch, NETWORK_PROXY_MISS } = require('./networkProxy.cjs');
@@ -1338,7 +1339,7 @@ function registerTauriHost(app, options = {}) {
       // kill) the frontend uses to drive MCP servers AND the agent sidecar;
       // stdout/stderr/close re-emitted as mcp-msg/err/close-{id} events.
       // Returns undefined for non-mcp commands.
-      const mcpResult = mcpDispatch(app, cmd, a);
+      const mcpResult = mcpDispatch(app, cmd, a, { body, headers });
       if (mcpResult !== undefined) return mcpResult;
       // Desktop-misc family (F2) — LAN IP, fullscreen, sleep prevention, OS
       // trash, clipboard, dialogs, opener, notification permission, process
@@ -1371,6 +1372,12 @@ function registerTauriHost(app, options = {}) {
       // node:sqlite (electron/noticeDb.cjs).
       const noticeResult = noticeDispatch(app, cmd, a);
       if (noticeResult !== NOTICE_MISS) return noticeResult;
+      // 用量账本（用量记账修复，期 1 第 2 步）—— usage_record / usage_query_range /
+      // usage_query_conversation / usage_health，backed by node:sqlite
+      // (electron/usageDb.cjs)。renderer 自己发起的请求和用量页的读取走这里；
+      // sidecar 在跑时用量走 stdout 帧直接进 main（mcpBridge.cjs），不经过 renderer。
+      const usageResult = usageDispatch(app, cmd, a);
+      if (usageResult !== USAGE_MISS) return usageResult;
       // Command execution (slice F3) — run_shell_command/run_argv_command
       // (macOS-seatbelt-sandboxed child_process spawn, port of
       // src-tauri/src/lib.rs + sandbox.rs) + get_env_vars (whitelist-filtered

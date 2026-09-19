@@ -39,6 +39,12 @@ export interface LaunchedApp extends ElectronDataRoot {
 
 export interface LaunchOptions {
   /**
+   * Extra main-process env for a single launch. Only for the gated #549 test
+   * hooks (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`),
+   * which electron/e2eTestHooks.cjs reads only in an unpackaged build.
+   */
+  extraEnv?: Record<string, string>;
+  /**
    * Inject tests/e2e/mainProcessRecorder.cjs into the main process ahead of
    * electron/main.cjs, so `firstShowRecordFor()` can report where a window was
    * the moment it was first revealed and `windowListenerRegistered()` can read
@@ -91,7 +97,10 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
  * NO_PROXY) also covers HTTP clients that honor `http_proxy` but not
  * `no_proxy`. CI runners set no proxy vars, so this is a no-op there.
  */
-function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
+function buildLaunchEnv(
+  dataRoot: ElectronDataRoot,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     if (/_proxy$/i.test(key)) delete env[key];
@@ -110,7 +119,7 @@ function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
   // machine. Windows are still real and rendered: drag-region and
   // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
   env.ABU_E2E_QUIET_WINDOW = '1';
-  return env;
+  return { ...env, ...extraEnv };
 }
 
 /**
@@ -152,7 +161,7 @@ export async function launchAbuElectron(
       '--lang=zh-CN',
     ],
     cwd: REPO_ROOT,
-    env: buildLaunchEnv(dataRoot),
+    env: buildLaunchEnv(dataRoot, options.extraEnv),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
@@ -231,32 +240,31 @@ export async function windowListenerRegistered(
   }, { suffix: urlSuffix, name: event });
 }
 
-async function reloadAndWaitForApp(page: Page): Promise<void> {
-  await page.reload();
-  await page.waitForLoadState('domcontentloaded');
-  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-}
-
 /** Persist the common first-run acknowledgements used by Electron E2E journeys. */
 export async function dismissFirstRunOverlays(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    const raw = window.localStorage.getItem('abu-settings');
-    if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
-    const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
-    Object.assign(persisted.state, {
-      guideShown: true,
-      guideOpen: false,
-      hasAcknowledgedDisclaimer: true,
-      hasRunSensitiveAudit_v015: true,
+  // Settings writes are serialized now. Seed under the same lock and reload
+  // before returning control, so a queued pre-seed save cannot restore overlays.
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async () => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
+      const raw = window.localStorage.getItem('abu-settings');
+      if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
+      const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
+      Object.assign(persisted.state, {
+        guideShown: true, guideOpen: false,
+        hasAcknowledgedDisclaimer: true, hasRunSensitiveAudit_v015: true,
+      });
+      window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+      window.location.reload();
     });
-    window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(/^(想让阿布帮你做点什么？|What can Abu help you with\?)$/)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 export interface LocalMockProviderOptions {
   apiKey?: string;
   contextWindowSize?: number;
+  /** Additional models offered by the same provider, after the default one. */
+  extraModels?: ReadonlyArray<{ id: string; label: string }>;
   maxOutputTokens?: number;
   modelId?: string;
   modelLabel?: string;
@@ -276,6 +284,7 @@ export async function configureLocalMockProvider(
   const {
     apiKey = 'abu-e2e-test-key-not-a-real-secret',
     contextWindowSize,
+    extraModels = [],
     maxOutputTokens,
     modelId = 'abu-e2e-local-model',
     modelLabel = 'Abu E2E deterministic model',
@@ -286,7 +295,8 @@ export async function configureLocalMockProvider(
     supportsTools = false,
   } = options;
 
-  await page.evaluate((configuration) => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async (configuration) => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
@@ -306,12 +316,10 @@ export async function configureLocalMockProvider(
       apiFormat: 'openai-compatible',
       baseUrl: configuration.baseUrl,
       apiKey: configuration.apiKey,
-      models: [{
-        id: configuration.modelId,
-        label: configuration.modelLabel,
-        isCustom: true,
-        declaredCapabilities,
-      }],
+      models: [
+        { id: configuration.modelId, label: configuration.modelLabel },
+        ...configuration.extraModels,
+      ].map((model) => ({ ...model, isCustom: true, declaredCapabilities })),
       defaultModelId: configuration.modelId,
       status: 'verified',
       sortOrder: 0,
@@ -335,10 +343,13 @@ export async function configureLocalMockProvider(
     // reload below — so a future migrate branch that rewrites one of these
     // fields would silently clobber every spec's provider setup.
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
+    window.location.reload();
+    });
   }, {
     apiKey,
     baseUrl,
     contextWindowSize,
+    extraModels,
     maxOutputTokens,
     modelId,
     modelLabel,
@@ -347,8 +358,8 @@ export async function configureLocalMockProvider(
     providerName,
     supportsReasoning,
     supportsTools,
-  });
-  await reloadAndWaitForApp(page);
+  })]);
+  await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 /**

@@ -30,7 +30,8 @@ async function waitForApp(page: Page): Promise<void> {
 /** Same localStorage priming as diagnostic-export.spec.ts, plus the migrated
  *  chat-endpoint backend exactly as the V41 migration produced it. */
 async function primeMigratedChatEndpointBackend(page: Page): Promise<void> {
-  await page.evaluate(() => {
+  await Promise.all([page.waitForEvent('load'), page.evaluate(async () => {
+    await navigator.locks.request('abu-browser-permission-config-v2', () => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized before E2E configuration');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
@@ -52,8 +53,9 @@ async function primeMigratedChatEndpointBackend(page: Page): Promise<void> {
       },
     });
     window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
-  });
-  await page.reload();
+    window.location.reload();
+    });
+  })]);
   await waitForApp(page);
 }
 

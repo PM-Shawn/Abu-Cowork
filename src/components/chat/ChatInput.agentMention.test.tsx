@@ -2,7 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import ChatInput from './ChatInput';
-import { clearAllComposerDrafts, writeComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
+import { navigateToChatWithInput } from '@/utils/navigation';
+import { prepareExpertEntry } from '@/core/team/expertEntry';
+import { clearAllComposerDrafts, readComposerDraft, getComposerDraftKey, writeComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -29,6 +31,24 @@ function typeAtCaret(textarea: HTMLTextAreaElement, value: string, caret = value
   fireEvent.change(textarea, { target: { value } });
   textarea.setSelectionRange(caret, caret);
   fireEvent.select(textarea);
+}
+
+function beforeSkillText(atom: HTMLElement): string {
+  const range = document.createRange();
+  range.selectNodeContents(atom.parentElement!);
+  range.setEndBefore(atom);
+  const copy = range.cloneContents();
+  copy.querySelectorAll<HTMLElement>('[data-skill-boundary]').forEach((node) => { node.textContent = node.dataset.skillBoundary === 'before' ? node.textContent!.replace(/\u200b$/, '') : node.textContent!.replace(/^\u200b/, ''); });
+  return copy.textContent ?? '';
+}
+
+function composerBody(): string {
+  const input = document.querySelector('[data-chat-composer]')!;
+  if (input instanceof HTMLTextAreaElement) return input.value;
+  const copy = input.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll<HTMLElement>('[data-skill-boundary]').forEach((node) => { node.textContent = node.dataset.skillBoundary === 'before' ? node.textContent!.replace(/\u200b$/, '') : node.textContent!.replace(/^\u200b/, ''); });
+        copy.querySelectorAll('[data-inline-skill], [data-editor-tail]').forEach((node) => node.remove());
+  return copy.textContent ?? '';
 }
 
 function expectAgentPicker(open: boolean): void {
@@ -108,7 +128,7 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(screen.getByRole('option', { name: /planner/ })).toBeTruthy();
   });
 
-  // Experts carry an AgentAvatar since v0.43, so the @ rows and the chip show it
+  // Experts carry an AgentAvatar since v0.50, so the @ rows and the chip show it
   // the way team rows already do — the literal `@` mark is gone from both.
   it('renders every expert candidate row with its avatar instead of an @ mark', () => {
     useDiscoveryStore.setState({
@@ -362,12 +382,13 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(useChatStore.getState().pendingInput).toBeNull();
   });
 
-  it('does not offer a slash picker for an inline skill token in message prose', () => {
+  it('offers a slash picker at the caret inside message prose', () => {
     useDiscoveryStore.setState({ skills: SKILLS });
     render(<ChatInput variant="welcome" onSend={vi.fn()} />);
     typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '正文 /brief');
-
-    expect(screen.queryByRole('option', { name: /brief/ })).toBeNull();
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    expect(composerBody()).toBe('正文 ');
+    expect(beforeSkillText(screen.getByRole('button', { name: '/brief' }))).toBe('正文 ');
   });
 
   it('continues to offer and select a leading slash skill command', () => {
@@ -529,4 +550,251 @@ describe('ChatInput inline @mention boundaries', () => {
     expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
     expect(textarea.value).toBe('A body');
   });
+  it('audit: selecting a skill preserves body', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, '/br first line\nsecond line');
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    expect(composerBody()).toBe('first line\nsecond line');
+  });
+  it('audit: skill menu searches independently of existing prose', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, 'existing prose');
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    expect(screen.queryByRole('option', { name: /brief/ })).not.toBeNull();
+  });
+  it('audit: skill menu works with an existing expert', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '@pub');
+    fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    expect(screen.queryByRole('option', { name: /brief/ })).not.toBeNull();
+  });
+  it('audit: cancelling expert picker preserves the previous choice and prose', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, '@pub');
+    fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+    typeAtCaret(box, 'existing prose');
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-team'));
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search' }), { key: 'Escape' });
+    expect(screen.queryByRole('button', { name: '@publisher' })).not.toBeNull();
+    expect(composerBody()).toBe('existing prose');
+  });
+  it('audit: expert menu works at the start of existing prose', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, 'existing prose', 0);
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-team'));
+    expect(screen.queryByRole('option', { name: /publisher/ })).not.toBeNull();
+  });
+  it('audit: new-task prefill preserves an existing welcome draft', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, 'unsent welcome draft');
+    act(() => {
+      useChatStore.getState().startNewConversation();
+      useChatStore.getState().setPendingInput('new template');
+    });
+    expect(composerBody()).toContain('unsent welcome draft');
+  });
+  it('audit: inline expert selection preserves multiline prose', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, 'first @pub last\nsecond', 10);
+    fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+    expect(composerBody()).toBe('first  last\nsecond');
+  });
+  it('audit: widget append preserves existing prose', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, 'existing prose');
+    act(() => useChatStore.getState().appendPendingInput('widget followup'));
+    expect(composerBody()).toBe('existing prose\nwidget followup');
+  });
+
+  it('selects a skill from the menu without losing multiline prose or the previous expert on cancel', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, '@pub');
+    fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+    typeAtCaret(box, 'first\n  second', 0);
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    const search = screen.getByRole('textbox', { name: 'Search' });
+    fireEvent.change(search, { target: { value: 'not-found' } });
+    expect(screen.queryByRole('option')).toBeNull();
+    expect(composerBody()).toBe('first\n  second');
+    fireEvent.keyDown(search, { key: 'Escape' });
+    expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search' }), { target: { value: 'bri' } });
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search' }), { key: 'Enter' });
+    expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull();
+    expect(composerBody()).toBe('first\n  second');
+  });
+
+  it('prefills the welcome draft without copying or overwriting a different conversation draft', () => {
+    const id = useChatStore.getState().createConversation();
+    writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, { text: 'welcome task', images: [], files: [], references: [], selectedAgent: null, selectedSkill: null });
+    render(<ChatInput variant="chat" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, 'conversation task');
+    act(() => {
+      useChatStore.getState().startNewConversation();
+      useChatStore.getState().setPendingInput('new template');
+    });
+    expect(composerBody()).toBe('welcome task\nnew template');
+    expect(readComposerDraft(getComposerDraftKey(id)).text).toBe('conversation task');
+  });
+
+  it('skill trial preserves the welcome text and attachments', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, { text: 'my task', images: [], files: [{ id: 'f', name: 'a.csv', path: '/a.csv' }], references: [], selectedAgent: null, selectedSkill: null });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    act(() => {
+      useChatStore.getState().startNewConversation();
+      useChatStore.getState().setPendingInput('/brief ');
+    });
+    expect(composerBody()).toBe('my task');
+    expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
+    expect(screen.getByText('a.csv')).toBeTruthy();
+  });
+  it('preserves leading line breaks and indentation when auto-selecting an expert', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, '@publisher\n  first\n    second');
+    expect(screen.getByRole('button', { name: '@publisher' })).toBeTruthy();
+    expect(composerBody()).toBe('\n  first\n    second');
+  });
+  it('expert entry treats an existing slash-prefixed body as text, not a skill trial', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    writeComposerDraft(WELCOME_COMPOSER_DRAFT_KEY, { text: '/brief task', images: [], files: [], references: [], selectedAgent: { name: 'publisher', description: '' }, selectedSkill: null });
+    prepareExpertEntry({ identity: { key: 'agent:planner', kind: 'agent', name: 'Planner', agentName: 'planner' }, introduction: 'Plan' });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    expect(screen.getByRole('button', { name: '@planner' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '/brief' })).toBeNull();
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('/brief task');
+  });
+
+  it('skill prefill remains selectable when discovery completes after the prefill', () => {
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, 'original task');
+    act(() => useChatStore.getState().setPendingInput('/brief '));
+    act(() => useDiscoveryStore.setState({ skills: SKILLS }));
+    expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
+    expect(composerBody()).toBe('original task');
+  });
+  it('new-task templates preserve text but do not inherit a previous skill route', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    const box = screen.getByRole('textbox') as HTMLTextAreaElement;
+    typeAtCaret(box, '/brief original task');
+    expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
+    act(() => navigateToChatWithInput('create a schedule'));
+    expect(composerBody()).toBe('original task\ncreate a schedule');
+    expect(screen.queryByRole('button', { name: '/brief' })).toBeNull();
+  });
+  it.each([0, 2, 4])('menu insertion at offset %i preserves text and serializes the skill once', (offset) => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    const send = vi.fn();
+    render(<ChatInput variant="welcome" onSend={send} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '前文后文', offset);
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    const atom = screen.getByRole('button', { name: '/brief' });
+    expect(beforeSkillText(atom)).toBe('前文后文'.slice(0, offset));
+    expect(composerBody()).toBe('前文后文');
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(send.mock.calls[0][0]).toBe('/brief 前文后文');
+  });
+  it('replaces only a slash trigger in the middle, preserving both sides', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '前文 /br 后文', 6);
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    expect(composerBody()).toBe('前文  后文');
+    expect(beforeSkillText(screen.getByRole('button', { name: '/brief' }))).toBe('前文 ');
+  });
+  it('does not undo a different conversation into the current draft', async () => {
+    const a = useChatStore.getState().createConversation();
+    const b = useChatStore.getState().createConversation();
+    await useChatStore.getState().switchConversation(a);
+    render(<ChatInput variant="chat" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, 'private A');
+    await act(async () => { await useChatStore.getState().switchConversation(b); });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'z', metaKey: true });
+    expect(composerBody()).toBe('');
+  });
+
+  it('consumes the matching suffix when selecting midway through a skill name', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, 'before /brief after', 10);
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    expect(composerBody()).toBe('before  after');
+  });
+  it('pressing Enter on the inline skill removes it without sending', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    const send = vi.fn();
+    render(<ChatInput variant="welcome" onSend={send} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '/br text');
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    fireEvent.keyDown(screen.getByRole('button', { name: '/brief' }), { key: 'Enter' });
+    expect(send).not.toHaveBeenCalled();
+    expect(composerBody()).toBe('text');
+  });
+
+  it('undoing a skill removal cannot leave an expert silently overriding that skill', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    const send = vi.fn();
+    render(<ChatInput variant="welcome" onSend={send} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '/br body');
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-team'));
+    fireEvent.click(screen.getByRole('option', { name: /publisher/ }));
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'z', ctrlKey: true });
+    expect(screen.getByRole('button', { name: '/brief' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '@publisher' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(send.mock.calls[0][0]).toBe('/brief body');
+  });
+  it('restores the inline skill position after a rejected send in an existing conversation', async () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    useChatStore.getState().createConversation();
+    const send = vi.fn().mockResolvedValue(false);
+    render(<ChatInput variant="chat" onSend={send} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '前文后文', 2);
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(screen.getByTestId('composer-menu-skill'));
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    await act(async () => { fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' }); });
+    expect(composerBody()).toBe('前文后文');
+    expect(beforeSkillText(screen.getByRole('button', { name: '/brief' }))).toBe('前文');
+  });
+
+  it('allows slash references immediately after Chinese prose without treating URL paths as skills', () => {
+    useDiscoveryStore.setState({ skills: SKILLS });
+    render(<ChatInput variant="welcome" onSend={vi.fn()} />);
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, 'https://example.com/br');
+    expect(screen.queryByRole('option')).toBeNull();
+    typeAtCaret(screen.getByRole('textbox') as HTMLTextAreaElement, '请用/br整理', 5);
+    fireEvent.click(screen.getByRole('option', { name: /brief/ }));
+    expect(composerBody()).toBe('请用整理');
+    expect(beforeSkillText(screen.getByRole('button', { name: '/brief' }))).toBe('请用');
+  });
+
 });

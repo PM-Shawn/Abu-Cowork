@@ -1,3 +1,4 @@
+import { mergeDraftPrefill } from '@/utils/inputCommand';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, readComposerDraft, writeComposerDraft } from '@/stores/composerDraftStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -8,7 +9,7 @@ export function prepareExpertEntry(contact: ExpertContact, prompt?: string): voi
   const chat = useChatStore.getState();
   const key = getComposerDraftKey(null, getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode));
   const draft = readComposerDraft(key);
-  const task = prompt ?? draft.text;
+  const task = prompt === undefined ? draft.text : mergeDraftPrefill(draft.text, prompt);
   const hasTask = !!task.trim() || draft.images.length > 0 || draft.files.length > 0
     || draft.references.length > 0 || chat.pendingReferences.length > 0
     || chat.pendingAttachmentRequests.some((request) => request.draftKey === key);
@@ -22,6 +23,7 @@ export function prepareExpertEntry(contact: ExpertContact, prompt?: string): voi
   chat.startNewConversation();
   chat.setPendingTeamId(contact.identity.kind === 'team' ? contact.identity.key.slice('team:'.length) : undefined);
   chat.setPendingAgent(agent ?? null);
-  chat.setPendingInput(task);
+  // The scoped draft already carries text and identity; do not reinterpret its body as a command.
+  chat.setPendingInput(null);
   if (!hasTask && !chat.expertContactReceipts[contact.identity.key]?.confirmed) chat.setPendingExpertContact(contact);
 }

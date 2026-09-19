@@ -20,7 +20,7 @@ const calls: string[] = [];
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     startNewConversation: () => { calls.push('startNewConversation'); startNewConversation(); },
-    setPendingInput: (text: string | null) => { calls.push('setPendingInput'); setPendingInput(text); },
+    setPendingInput: (text: string | null, options?: { startsTask?: boolean }) => { calls.push('setPendingInput'); setPendingInput(text, options); },
   }),
 }));
 
@@ -69,20 +69,20 @@ describe('useTrialLauncher', () => {
     expect(setPendingInput).toHaveBeenCalledTimes(1);
     expect(closeExtensions).toHaveBeenCalledTimes(1);
     expect(calls).toEqual(['startNewConversation', 'setPendingInput', 'closeExtensions']);
-    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：Create, review, edit designs');
+    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：Create, review, edit designs', { startsTask: true });
   });
 
   it('collapses whitespace runs in the description', () => {
     launch({ name: 'canva', description: '  Create,\n\n  review,\tedit designs  ' });
 
-    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：Create, review, edit designs');
+    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：Create, review, edit designs', { startsTask: true });
   });
 
   it('truncates a long description to 80 code points plus an ellipsis', () => {
     const long = 'a'.repeat(200);
     launch({ name: 'canva', description: long });
 
-    expect(setPendingInput).toHaveBeenCalledWith(`试试用「canva」：${'a'.repeat(80)}…`);
+    expect(setPendingInput).toHaveBeenCalledWith(`试试用「canva」：${'a'.repeat(80)}…`, { startsTask: true });
   });
 
   it('counts code points, not UTF-16 units, when truncating', () => {
@@ -90,7 +90,7 @@ describe('useTrialLauncher', () => {
     const emoji = '🙂'.repeat(80);
     launch({ name: 'canva', description: emoji });
 
-    expect(setPendingInput).toHaveBeenCalledWith(`试试用「canva」：${emoji}`);
+    expect(setPendingInput).toHaveBeenCalledWith(`试试用「canva」：${emoji}`, { startsTask: true });
   });
 
   it('truncates a long name to 60 code points plus an ellipsis', () => {
@@ -99,25 +99,25 @@ describe('useTrialLauncher', () => {
     // able to push the actual instruction out of the composer.
     launch({ name: 'n'.repeat(200), description: 'ok' });
 
-    expect(setPendingInput).toHaveBeenCalledWith(`试试用「${'n'.repeat(60)}…」：ok`);
+    expect(setPendingInput).toHaveBeenCalledWith(`试试用「${'n'.repeat(60)}…」：ok`, { startsTask: true });
   });
 
   it('collapses whitespace runs in the name', () => {
     launch({ name: '  my\n\n  great\tplugin  ', description: 'ok' });
 
-    expect(setPendingInput).toHaveBeenCalledWith('试试用「my great plugin」：ok');
+    expect(setPendingInput).toHaveBeenCalledWith('试试用「my great plugin」：ok', { startsTask: true });
   });
 
   it('falls back to the generic hint when the description is missing or blank', () => {
     launch({ name: 'canva' });
-    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：帮我看看它能做什么');
+    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：帮我看看它能做什么', { startsTask: true });
 
     setPendingInput.mockClear();
     launch({ name: 'canva', description: '   ' });
-    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：帮我看看它能做什么');
+    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：帮我看看它能做什么', { startsTask: true });
 
     setPendingInput.mockClear();
     launch({ name: 'canva', description: null });
-    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：帮我看看它能做什么');
+    expect(setPendingInput).toHaveBeenCalledWith('试试用「canva」：帮我看看它能做什么', { startsTask: true });
   });
 });

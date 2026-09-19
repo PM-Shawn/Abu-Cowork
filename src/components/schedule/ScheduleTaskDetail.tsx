@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { summarizeBrowserAuthorization } from '@/core/permissions/browserAuthorizationSummary';
 import { useI18n, format } from '@/i18n';
 import { schedulerEngine } from '@/core/scheduler/scheduler';
 import {
@@ -20,7 +19,6 @@ import ScheduleRunHistory from './ScheduleRunHistory';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 
 /** Keep the chip row one or two lines; the rest is a "+N more" trailer. */
-const MAX_LISTED_AUTH_ORIGINS = 6;
 
 function getFrequencyLabel(
   freq: ScheduleFrequency,
@@ -48,18 +46,7 @@ export default function ScheduleTaskDetail() {
     openEditor,
   } = useScheduleStore();
 
-  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
-  const viaEmbedGrants = useSettingsStore((s) => s.browserSiteGrantViaEmbed);
-  const allowUnattendedBrowser = useSettingsStore((s) => s.allowUnattendedBrowser);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
-  // A grant minted through the merged embedded-region prompt is not one this
-  // task can act on (R2-C-②), so the page that answers "where may this run
-  // go?" must not count it.
-  const browserAuth = summarizeBrowserAuthorization(
-    sitePermissions,
-    allowUnattendedBrowser,
-    viaEmbedGrants,
-  );
 
   const [isRunning, setIsRunning] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -197,9 +184,7 @@ export default function ScheduleTaskDetail() {
                   {t.schedule.browserAuthTitle}
                 </div>
                 <p className="mt-1 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-                  {browserAuth.masterSwitchOn
-                    ? t.schedule.browserAuthDesc
-                    : t.schedule.browserAuthOff}
+                  {t.settings.browserPermissionsSharedDesc}
                 </p>
               </div>
               <button
@@ -210,34 +195,7 @@ export default function ScheduleTaskDetail() {
                 {t.schedule.browserAuthManage}
               </button>
             </div>
-            {browserAuth.masterSwitchOn && (
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
-                {browserAuth.reachableUnattended.length === 0 ? (
-                  <span className="text-minor text-[var(--abu-text-tertiary)]">
-                    {t.schedule.browserAuthNone}
-                  </span>
-                ) : (
-                  <>
-                    {browserAuth.reachableUnattended.slice(0, MAX_LISTED_AUTH_ORIGINS).map((origin) => (
-                      <span
-                        key={origin}
-                        title={origin}
-                        className="max-w-full truncate rounded-md bg-[var(--abu-success-bg)] px-1.5 py-0.5 text-caption text-[var(--abu-success)]"
-                      >
-                        {origin}
-                      </span>
-                    ))}
-                    {browserAuth.reachableUnattended.length > MAX_LISTED_AUTH_ORIGINS && (
-                      <span className="rounded-md px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]">
-                        {format(t.schedule.browserAuthMore, {
-                          count: browserAuth.reachableUnattended.length - MAX_LISTED_AUTH_ORIGINS,
-                        })}
-                      </span>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
+
           </div>
 
           {/* Description */}

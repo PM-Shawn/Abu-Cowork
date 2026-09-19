@@ -40,7 +40,7 @@ export function useTrialLauncher(): (item: { name: string; description?: string 
     setPendingInput(format(t.toolbox.trialPrompt, {
       name: clamp(item.name, NAME_MAX),
       hint,
-    }));
+    }), { startsTask: true });
     closeExtensions();
   }, [t, startNewConversation, setPendingInput, closeExtensions]);
 }

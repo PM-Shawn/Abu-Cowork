@@ -90,6 +90,38 @@ describe('BrowserTab native overlay visibility', () => {
     vi.restoreAllMocks();
   });
 
+  it('restores a failed handover as retryable failure instead of human control', async () => {
+    invoke.mockImplementation(async (command) => command === 'browser_control' ? 'yield-failed' : undefined);
+    const { getByRole } = render(<TooltipProvider><BrowserTab tabId="failed-handoff" url="https://example.com/" /></TooltipProvider>);
+    await waitFor(() => expect(getByRole('status')).toHaveTextContent('Could not change control'));
+    expect(getByRole('button', { name: 'Take control' })).toBeEnabled();
+  });
+
+  it('keeps the document while taking and returning control through the host', async () => {
+    invoke.mockImplementation(async (command, args) => command === 'browser_control' ? (args.action === 'take' ? 'human' : 'ai') : undefined);
+    const { getByRole } = render(<TooltipProvider><BrowserTab tabId="handoff" url="https://example.com/" /></TooltipProvider>);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('browser_control', { id: 'handoff' }));
+    const before = invoke.mock.calls.filter(([command]) => ['browser_create', 'browser_navigate', 'browser_reload'].includes(command)).length;
+    fireEvent.click(getByRole('button', { name: 'Take control' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Hand back to Abu' })).toBeEnabled());
+    expect(getByRole('status')).toHaveTextContent('You are in control');
+    fireEvent.click(getByRole('button', { name: 'Hand back to Abu' }));
+    await waitFor(() => expect(getByRole('button', { name: 'Take control' })).toBeEnabled());
+    expect(invoke.mock.calls.filter(([command]) => ['browser_create', 'browser_navigate', 'browser_reload'].includes(command))).toHaveLength(before);
+  });
+
+  it('shows and dismisses a host-reported blocked popup without replaying navigation', async () => {
+    const { getByRole, queryByRole } = render(<TooltipProvider><BrowserTab tabId="popup-notice" url="https://example.com/" /></TooltipProvider>);
+    await waitFor(() => expect(listen).toHaveBeenCalledWith('browser://popup-blocked/popup-notice', expect.any(Function)));
+    const handler = listen.mock.calls.find(([event]) => event === 'browser://popup-blocked/popup-notice')![1] as () => void;
+    const priorNavigations = invoke.mock.calls.filter(([command]) => command === 'browser_navigate').length;
+    act(handler);
+    expect(getByRole('status')).toHaveTextContent('Popup blocked');
+    fireEvent.click(getByRole('button', { name: 'Dismiss hint' }));
+    expect(queryByRole('status')).toBeNull();
+    expect(invoke.mock.calls.filter(([command]) => command === 'browser_navigate')).toHaveLength(priorNavigations);
+  });
+
   it('hides the native view for an active-conversation approval and restores it afterwards', async () => {
     render(
       <TooltipProvider>

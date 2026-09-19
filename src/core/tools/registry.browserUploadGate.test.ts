@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * `upload_file` at the REAL gate (T5), under the 2026-09-07 ruling.
  *
@@ -26,7 +27,6 @@ import { lstat } from '@tauri-apps/plugin-fs';
 import { checkToolApproval, executeAnyTool } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { testSiteVerdicts } from '../../test/browserSiteVerdicts';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
@@ -165,7 +165,7 @@ describe('upload_file at the real gate', () => {
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserSitePermissions: testSiteVerdicts({ [ALLOWED_SITE]: 'allowed' }),
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -190,7 +190,7 @@ describe('upload_file at the real gate', () => {
    * 「始终允许」. That IS the authorization. No dialog.
    */
   it('runs with no dialog at all when the row says 允许 and the site is 始终允许', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'allow') });
     const { asks, confirm } = dialogRecorder();
 
     const decision = await checkToolApproval(
@@ -203,7 +203,7 @@ describe('upload_file at the real gate', () => {
 
   it('asks on a site with no standing grant even when the row says 允许 — the grant is per site', async () => {
     withTabOrigin(UNKNOWN_URL);
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'allow') });
     const { asks, confirm } = dialogRecorder();
 
     const decision = await checkToolApproval(
@@ -231,7 +231,7 @@ describe('upload_file at the real gate', () => {
    */
   describe('what the upload confirmation is asked with', () => {
     it('is an upload ask, carrying the file count, with no tool name in it', async () => {
-      useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+      setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
       const { asks, confirm } = dialogRecorder();
 
       await checkToolApproval('abu-browser__upload_file', uploadInput(), attended, confirm);
@@ -246,7 +246,7 @@ describe('upload_file at the real gate', () => {
 
     /** The names and sizes still travel — that is the body of the question. */
     it('still carries the file list and its size', async () => {
-      useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+      setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
       const { asks, confirm } = dialogRecorder();
 
       await checkToolApproval('abu-browser__upload_file', uploadInput(), attended, confirm);
@@ -260,7 +260,7 @@ describe('upload_file at the real gate', () => {
     /** The target site still reaches the dialog — the title is built from it. */
     it('still names the site the files are going to', async () => {
       withTabOrigin(UNKNOWN_URL);
-      useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+      setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
       const { asks, confirm } = dialogRecorder();
 
       await checkToolApproval('abu-browser__upload_file', uploadInput(), attended, confirm);
@@ -286,8 +286,8 @@ describe('upload_file at the real gate', () => {
     });
   });
 
-  it('asks every single time under 每次询问, and never offers a standing grant', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+  it('asks every time until the user explicitly saves an upload-specific site rule', async () => {
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
     const { asks, confirm } = dialogRecorder();
 
     for (let i = 0; i < 3; i += 1) {
@@ -298,11 +298,11 @@ describe('upload_file at the real gate', () => {
     }
 
     expect(asks).toHaveLength(3);
-    expect(asks.every((a) => a.allowPersistentGrant !== true)).toBe(true);
+    expect(asks.every((a) => a.allowPersistentGrant === true)).toBe(true);
   });
 
   it('refuses when the user answers no, and sends nothing', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
     const { confirm } = dialogRecorder(false);
 
     const decision = await checkToolApproval(
@@ -314,7 +314,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('refuses outright when the row says 拒绝', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'deny') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'deny') });
     const { asks, confirm } = dialogRecorder();
 
     const decision = await checkToolApproval(
@@ -331,7 +331,7 @@ describe('upload_file at the real gate', () => {
    * uses, and a yes there runs it.
    */
   it('asks over the unattended approval seam instead of refusing itself', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
     const seen: string[] = [];
     setUnattendedConfirmationResolver(async ({ info }) => {
       seen.push(info.command);
@@ -350,7 +350,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('refuses when the remote approver says no', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
     setUnattendedConfirmationResolver(async () => ({ approved: false, reason: 'declined' }));
 
     const decision = await checkToolApproval(
@@ -361,7 +361,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('runs an automatic upload with nobody asked when the row says 允许 on an allowed site', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'allow') });
     const asked: string[] = [];
     setUnattendedConfirmationResolver(async ({ info }) => {
       asked.push(info.command);
@@ -378,7 +378,7 @@ describe('upload_file at the real gate', () => {
 
   it('still fails closed unattended on a site with no standing grant', async () => {
     withTabOrigin(UNKNOWN_URL);
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'allow') });
 
     const decision = await checkToolApproval(
       'abu-browser__upload_file', uploadInput(), unattended, (async () => true) as never,
@@ -388,7 +388,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('still refuses unattended when the master switch is off', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       allowUnattendedBrowser: false,
       browserOperationPolicy: policyWith('upload', 'allow'),
     });
@@ -401,7 +401,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('forces a confirmation on a money-movement page even when the row says 允许 and the site is allowed', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: testSiteVerdicts({ 'https://www.paypal.com': 'allowed' }),
       browserOperationPolicy: policyWith('upload', 'allow'),
     });
@@ -418,7 +418,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('refuses an upload to a blocked site whatever the row says', async () => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: testSiteVerdicts({ [ALLOWED_SITE]: 'denied' }),
       browserOperationPolicy: policyWith('upload', 'allow'),
     });
@@ -441,7 +441,7 @@ describe('upload_file at the real gate', () => {
    */
   describe('the silent path (row=允许, site=始终允许) still refuses a bad file', () => {
     beforeEach(() => {
-      useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+      setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'allow') });
     });
 
     it('refuses a path outside every authorized workspace', async () => {
@@ -535,7 +535,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('refuses a bad file on the ASKING path too, without asking about it first', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
     fsMocks.checkReadPath.mockResolvedValue({ allowed: false, resolvedPath: undefined });
     const { asks, confirm } = dialogRecorder();
 
@@ -549,7 +549,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('does not touch the filesystem for an upload the gate already refused', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'deny') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'deny') });
 
     await checkToolApproval(
       'abu-browser__upload_file', uploadInput(), attended, (async () => true) as never,
@@ -566,7 +566,7 @@ describe('upload_file at the real gate', () => {
    * canonical path — not the string the model wrote — has to be what travels.
    */
   it('freezes the resolved file into the approval, canonical path and all', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'allow') });
     fsMocks.checkReadPath.mockResolvedValue({ allowed: true, resolvedPath: FILE_PATH });
 
     const decision = await checkToolApproval(
@@ -586,7 +586,7 @@ describe('upload_file at the real gate', () => {
   });
 
   it('puts the file name and size in the question, and the directory nowhere', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'ask') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'ask') });
     const { asks, confirm } = dialogRecorder();
 
     await checkToolApproval('abu-browser__upload_file', uploadInput(), attended, confirm);
@@ -616,7 +616,7 @@ describe('upload_file at the real gate', () => {
    * `registry.browserOriginPin.test.ts`, which pins the origin half.
    */
   it('carries the frozen file list down to callTool over _meta, field for field', async () => {
-    useSettingsStore.setState({ browserOperationPolicy: policyWith('upload', 'allow') });
+    setMigratedBrowserSettings({ browserOperationPolicy: policyWith('upload', 'allow') });
     fsMocks.checkReadPath.mockResolvedValue({ allowed: true, resolvedPath: FILE_PATH });
 
     await executeAnyTool(
@@ -701,7 +701,7 @@ describe('upload_file at the real gate', () => {
         };
       };
 
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserSitePermissions: testSiteVerdicts({
           [ALLOWED_SITE]: 'allowed',
           'https://www.paypal.com': 'allowed',

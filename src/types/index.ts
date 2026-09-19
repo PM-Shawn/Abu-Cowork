@@ -395,6 +395,8 @@ export interface Message {
   runError?: string;
   /** Structured provider fields retained for the failed-run error card. */
   runErrorDetails?: UpstreamErrorDetails;
+  /** Why a run failed before the sidecar accepted it (#549); drives the failed-row UI. */
+  runErrorKind?: 'payload_too_large' | 'sidecar_unavailable' | 'dispatch_failed';
   toolCalls?: ToolCall[];
   // Extended thinking content
   thinking?: string;
@@ -511,7 +513,7 @@ export interface Conversation {
   activeSkills?: string[];  // Skill names active in this conversation
   activeSkillArgs?: Record<string, string>;  // Per-skill invocation arguments
   workspacePath?: string | null;  // Workspace bound to this conversation
-  model?: { providerId: string; modelId: string };  // Model pinned to this conversation (undefined = inherit global activeModel; pinned on first run)
+  model?: { providerId: string; modelId: string };  // Model pinned to this conversation (set at creation in personal mode; undefined = legacy/enterprise → inherit global activeModel, pinned on first run)
   permissionMode?: import('../core/permissions/permissionMode').PermissionMode;  // Per-conversation override (undefined = inherit global permissionMode)
   enabledMCPServers?: string[];  // Per-session MCP server filter (undefined = all enabled)
   scheduledTaskId?: string;  // If set, this conversation was created by a scheduled task
@@ -716,7 +718,7 @@ export interface ToolExecutionContext {
   /**
    * Local execution-only metadata channel. Functions are deliberately omitted
    * from reverse-RPC serialization; Electron's sidecar-local run_command and
-   * the in-process fallback both report through this callback.
+   * the in-process loop both report through this callback.
    */
   reportMetadata?: (metadata: ToolExecutionMetadata) => void;
   /**

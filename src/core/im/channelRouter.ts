@@ -10,7 +10,7 @@
 
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { useChatStore } from '../../stores/chatStore';
-import { runAgentLoopDispatched } from '../agent/agentLoopRunner';
+import { runAgentLoopDispatched, type AgentLoopDispatchResult } from '../agent/agentLoopRunner';
 import { buildIMRunPermissionCeiling } from '../permissions/runPermissionCeiling';
 import { createAuthorizationScope, disposeAuthorizationScope, scopedAuthorizeWorkspace } from '../tools/pathSafety';
 import type { NormalizedIMMessage } from './inboundRouter';
@@ -101,6 +101,27 @@ function mergeInboundMessages(
     text: [buffered.text.trim(), next.text.trim()].filter(Boolean).join('\n') || next.text,
     images: [...(buffered.images ?? []), ...(next.images ?? [])],
   };
+}
+
+/** Longest error text a reply quotes back; the rest is in the desktop log. */
+const MAX_ERROR_REPLY_CHARS = 100;
+
+function truncateForReply(error: string): string {
+  return error.length > MAX_ERROR_REPLY_CHARS
+    ? error.slice(0, MAX_ERROR_REPLY_CHARS) + '...'
+    : error;
+}
+
+/**
+ * What the sender is told when a run ended in error without producing an
+ * answer (#549). The two pre-accept endings have their own copy because the
+ * sender can act on them: start a new conversation, or wait and retry.
+ */
+function failureReplyFor(result: AgentLoopDispatchResult): string {
+  const t = getI18n().imChannel;
+  if (result.stopReason === 'payload_too_large') return t.runPayloadTooLarge;
+  if (result.stopReason === 'sidecar_unavailable') return t.runServiceUnavailable;
+  return format(t.errorReply, { error: truncateForReply(result.error ?? result.reason) });
 }
 
 class IMChannelRouter {
@@ -427,10 +448,9 @@ class IMChannelRouter {
       // 1a. Hydrate the conversation before any run touches it. Conversations are
       // lazily loaded (and evicted by `unloadOldConversations`), so a message for
       // a session the desktop hasn't opened recently finds no in-memory record:
-      // `buildAgentRunParams` then throws "no conversation record" and the
-      // in-process fallback silently skips upgrading the persisted user message —
-      // which drops inbound image attachments and leaves the message stuck in
-      // `pending` ("发送失败" in the UI). Loading first keeps both paths whole.
+      // `buildAgentRunParams` then throws "no conversation record" and the turn
+      // ends as a visible failure before dispatch, with the inbound image
+      // attachments never sent. Loading first keeps the run whole.
       if (!useChatStore.getState().conversations[session.conversationId]) {
         await useChatStore.getState().loadConversation(session.conversationId);
       }
@@ -553,8 +573,13 @@ class IMChannelRouter {
         }
         return granted;
       };
+      // Where this run's own messages begin. An IM session reuses one
+      // conversation across turns (sessionMapper), so without this boundary
+      // "the last assistant message" is the PREVIOUS turn's answer whenever
+      // this run produces none (#549).
+      const priorMessageCount = this.conversationMessageCount(session.conversationId);
       let ownedAbortController: AbortController | undefined;
-      await this.runWithTimeout(
+      const dispatchResult = await this.runWithTimeout(
         runAgentLoopDispatched(session.conversationId, userText, {
           // Inbound images (e.g. a WeChat photo) forwarded as real vision content
           // so the model actually sees them instead of a "[图片]" text marker.
@@ -598,7 +623,32 @@ class IMChannelRouter {
       );
 
       // 5. Extract and send reply
-      const lastAIContent = this.extractLastAIReply(session.conversationId);
+      const lastAIContent = this.extractLastAIReply(session.conversationId, priorMessageCount);
+
+      // #549: a run that failed before the sidecar accepted it wrote no
+      // assistant message, so there is nothing to extract. Say what happened —
+      // silence in a chat is indistinguishable from the bot being offline.
+      if (!lastAIContent && dispatchResult.reason === 'error') {
+        const content = failureReplyFor(dispatchResult);
+        const failureReply = await sendFinal(replyHandle, { content });
+        if (!failureReply.success) {
+          console.warn(`[IMChannel] Failure reply send failed: ${failureReply.error}`);
+        }
+        // Only an unreachable backend is a channel-level fault. The other
+        // endings belong to this one run; the channel itself still works.
+        if (dispatchResult.stopReason === 'sidecar_unavailable') {
+          useIMChannelStore.getState().setChannelStatus(
+            channel.id,
+            'error',
+            getI18n().imChannel.runServiceUnavailable,
+          );
+        } else {
+          useIMChannelStore.getState().setChannelStatus(channel.id, 'connected');
+        }
+        console.log(`[IMChannel] Run failed before any reply: ${dispatchResult.stopReason ?? dispatchResult.reason}`);
+        return;
+      }
+
       if (lastAIContent) {
         const replyMessage: AbuMessage = {
           content: lastAIContent,
@@ -735,9 +785,8 @@ class IMChannelRouter {
    * Best-effort: try to notify the user that an error occurred.
    */
   private async sendErrorReply(message: NormalizedIMMessage, error: string) {
-    const truncated = error.length > 100 ? error.slice(0, 100) + '...' : error;
     const errorMessage: AbuMessage = {
-      content: `Abu 处理出错: ${truncated}`,
+      content: format(getI18n().imChannel.errorReply, { error: truncateForReply(error) }),
     };
     const handle = { platform: message.platform, supportsUpdate: false, replyContext: message.replyContext };
     await sendFinal(handle, errorMessage);
@@ -801,11 +850,25 @@ class IMChannelRouter {
     }
   }
 
-  private extractLastAIReply(conversationId: string): string | null {
+  private conversationMessageCount(conversationId: string): number {
+    return useChatStore.getState().conversations[conversationId]?.messages.length ?? 0;
+  }
+
+  /**
+   * The assistant answer produced from `sinceIndex` onward — i.e. this run's
+   * own answer, given the message count taken before it started.
+   *
+   * The window matters because an IM session reuses one conversation across
+   * turns: scanning the whole conversation would hand back the previous
+   * turn's answer for a run that produced nothing, re-sending a stale reply
+   * to a new question and hiding the failure (#549).
+   */
+  private extractLastAIReply(conversationId: string, sinceIndex: number): string | null {
     const conv = useChatStore.getState().conversations[conversationId];
     if (!conv) return null;
 
-    const lastAI = [...conv.messages].reverse().find((m) => m.role === 'assistant');
+    // slice() already copies, so reverse() cannot touch the store's array.
+    const lastAI = conv.messages.slice(sinceIndex).reverse().find((m) => m.role === 'assistant');
     if (!lastAI) return null;
 
     if (typeof lastAI.content === 'string') return lastAI.content;

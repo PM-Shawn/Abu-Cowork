@@ -1,9 +1,11 @@
-import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare } from 'lucide-react';
+import { ChevronDown, ChevronRight, ChevronUp, Copy, Pencil, RefreshCw, Check, Brain, Wand2, AtSign, FileText, FolderOpen, ImageOff, ThumbsUp, ThumbsDown, CheckSquare, MessageSquarePlus } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import type { Message, MessageContent } from '@/types';
 import MarkdownRenderer from './MarkdownRenderer';
 import ToolCallsGroup, { InlineToolResultImages } from './ToolCallsGroup';
 import { useChatStore, useActiveConversation } from '@/stores/chatStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { sendFeedback } from '@/utils/consoleFeedback';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -13,6 +15,7 @@ import { useTodosStore } from '@/stores/todosStore';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_TODOS_INBOX } from '@/core/labs/registry';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { useI18n, format } from '@/i18n';
 import { getBaseName, loadLocalImage } from '@/utils/pathUtils';
@@ -454,6 +457,33 @@ export default function MessageBubble({
   const activeConv = useActiveConversation();
   const isConvRunning = activeConv?.status === 'running';
   const hasRunFailure = message.runState === 'failed' || message.runState === 'connection-failed';
+  // #549: an oversize turn can never succeed by retrying — the only way forward
+  // is a fresh conversation, so the row swaps Retry for 「新建对话」.
+  const isOversizeFailure = hasRunFailure && message.runErrorKind === 'payload_too_large';
+  // #549: an oversize row states the limit in the label position, so only a
+  // dispatch failure still needs a second line for its cause. 'sidecar_unavailable'
+  // and a kind-less failure are 「发送失败」 + Retry alone; raw upstream `runError`
+  // text stays hidden either way.
+  const showFailureReason = hasRunFailure && message.runErrorKind === 'dispatch_failed';
+  const handleNewConversationWithDraft = () => {
+    // Text only: the store has no one-shot buffer for inline base64 images
+    // (`addPendingAttachment` carries workspace paths, not attachments), so any
+    // images on the failed turn are deliberately NOT carried over. See Task 7's
+    // note on `setPendingInput` if an image buffer is ever added.
+    // The same text Retry would send: the row holds the route's clean input,
+    // so the `@expert` / `/skill` prefix has to go back on or the new turn
+    // lands on the default route.
+    const draft = reattachRoutingPrefix(getTextContent(message.content), message);
+    const workspacePath = activeConv?.workspacePath;
+    useChatStore.getState().startNewConversation();
+    // startNewConversation() clears the workspace — right for a top-level 「新建任务」,
+    // wrong here: this conversation is the same piece of work, and the text being
+    // carried over can name paths inside that project. Restore it through the same
+    // setter the workspace picker uses, so authorization is re-granted too.
+    if (workspacePath) useWorkspaceStore.getState().setWorkspace(workspacePath);
+    useSettingsStore.getState().setViewMode('chat');
+    useChatStore.getState().setPendingInput(draft);
+  };
 
   // Rewind (edit-resend / regenerate / run-retry) truncates the conversation
   // from the redone turn onward via deleteMessagesFrom, durably discarding
@@ -489,10 +519,14 @@ export default function MessageBubble({
 
   const handleSaveEdit = async (newContent: string) => {
     if (!convId) return;
+    // Refuse before anything is deleted; the editor stays open so the edit survives.
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `edit-${Date.now()}`);
     setIsEditing(false);
 
     const proceed = async () => {
+      // Re-check: the provider may have been removed while the confirm was open.
+      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
       // Delete this message and all subsequent messages, then runAgentLoopDispatched creates a fresh one
       useChatStore.getState().deleteMessagesFrom(convId, message.id);
       // Re-attach the original routing prefix (@expert or /skill) so the
@@ -521,6 +555,7 @@ export default function MessageBubble({
 
   const handleRunRetry = async () => {
     if (!convId || !activeConv || message.role !== 'user') return;
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const imageAttachments = rebuildImageAttachments(message.content, `run-retry-${Date.now()}`);
     const routedContent = reattachRoutingPrefix(getTextContent(message.content), message);
     // Rewind semantics (plan stage 3): truncate from the retried turn's FIRST
@@ -535,6 +570,8 @@ export default function MessageBubble({
       : message.id;
 
     const proceed = async () => {
+      // Re-check: the provider may have been removed while the confirm was open.
+      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
       useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
       announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
       await runAgentLoopDispatched(
@@ -554,6 +591,7 @@ export default function MessageBubble({
 
   const handleRegenerate = async () => {
     if (!convId || !activeConv) return;
+    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
     const messages = activeConv.messages;
 
     // Find the user message to regenerate from
@@ -592,6 +630,8 @@ export default function MessageBubble({
       const imageAttachments = rebuildImageAttachments(targetUserMsg.content, `regen-${Date.now()}`);
 
       const proceed = async () => {
+        // Re-check: the provider may have been removed while the confirm was open.
+        if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
         // Delete from user message onwards and regenerate
         useChatStore.getState().deleteMessagesFrom(convId, targetUserMsg.id);
         announceChatTurnScrollIntent({ conversationId: convId, source: 'regenerate' });
@@ -737,20 +777,33 @@ export default function MessageBubble({
                   })()}
                 </div>
               )}
-              {/* Reliable-run progress is internal. The assistant activity row already
-                  communicates that work is in progress; only actionable failures belong
-                  under the user's message. */}
+              {/* Reliable-run progress is internal (existing ruling, kept for #549):
+                  waiting for the sidecar shows only the 「思考中」 activity row, and
+                  only actionable failures belong under the user's message. */}
               {hasRunFailure && (
-                <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
-                  <span>
-                    {message.runState === 'failed' && t.chat.runFailed}
-                    {message.runState === 'connection-failed' && t.chat.runConnectionFailed}
-                  </span>
-                  {!isConvRunning && (
-                    <Button variant="ghost" size="xs" onClick={handleRunRetry}>
-                      <RefreshCw className="h-3 w-3" />
-                      {t.chat.runRetry}
-                    </Button>
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-center gap-1.5 text-caption text-[var(--abu-danger)]">
+                    <span>
+                      {isOversizeFailure && t.chat.payloadTooLarge}
+                      {!isOversizeFailure && message.runState === 'failed' && t.chat.runFailed}
+                      {!isOversizeFailure && message.runState === 'connection-failed' && t.chat.runConnectionFailed}
+                    </span>
+                    {!isConvRunning && (isOversizeFailure ? (
+                      <Button variant="ghost" size="xs" onClick={handleNewConversationWithDraft}>
+                        <MessageSquarePlus className="h-3 w-3" />
+                        {t.chat.newConversationAction}
+                      </Button>
+                    ) : (
+                      <Button variant="ghost" size="xs" onClick={handleRunRetry}>
+                        <RefreshCw className="h-3 w-3" />
+                        {t.chat.runRetry}
+                      </Button>
+                    ))}
+                  </div>
+                  {showFailureReason && message.runError && (
+                    <p className="max-w-2xl break-words text-caption text-[var(--abu-text-secondary)]">
+                      {message.runError}
+                    </p>
                   )}
                 </div>
               )}
@@ -821,11 +874,11 @@ export default function MessageBubble({
         )}
         {message.isStreaming && <span className="streaming-cursor" />}
 
-        {/* Token usage display */}
-        {message.usage && !message.isStreaming && (
+        {/* 只显示输出：这条消息上的数字来自旧口径，用量页读的是新账本，
+            同屏显示两个输入数会对不上（任务书 U08）。输出两边含义一致。 */}
+        {message.usage && !message.isStreaming && message.usage.outputTokens != null && (
           <div className="mt-2 text-caption text-[var(--abu-text-muted)]">
-            {message.usage.inputTokens != null && `${t.chat.inputTokens}: ${message.usage.inputTokens.toLocaleString()}`}
-            {message.usage.outputTokens != null && ` · ${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
+            {`${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
           </div>
         )}
 
@@ -876,11 +929,11 @@ export default function MessageBubble({
         )}
         {message.isStreaming && <span className="streaming-cursor" />}
 
-        {/* Token usage display */}
-        {message.usage && !message.isStreaming && (
+        {/* 只显示输出：这条消息上的数字来自旧口径，用量页读的是新账本，
+            同屏显示两个输入数会对不上（任务书 U08）。输出两边含义一致。 */}
+        {message.usage && !message.isStreaming && message.usage.outputTokens != null && (
           <div className="mt-2 text-caption text-[var(--abu-text-muted)]">
-            {message.usage.inputTokens != null && `${t.chat.inputTokens}: ${message.usage.inputTokens.toLocaleString()}`}
-            {message.usage.outputTokens != null && ` · ${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
+            {`${t.chat.outputTokens}: ${message.usage.outputTokens.toLocaleString()}`}
           </div>
         )}
 

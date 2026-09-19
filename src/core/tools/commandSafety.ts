@@ -92,6 +92,8 @@ export interface ConfirmationInfo {
    * treats that as the strictest class.
    */
   browserOperationClass?: BrowserOperationClass;
+  browserPermissionResource?: import('../permissions/browserPermissionDefaults').BrowserPermissionResource;
+  browserPermissionTargets?: import('../permissions/browserPermissionConfig').BrowserPermissionTarget[];
   /**
    * Set when the requester has ALREADY refused this action and is calling the
    * callback only so the run can ACCOUNT for the refusal — the scheduler turns

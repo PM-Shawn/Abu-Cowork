@@ -26,11 +26,8 @@ import type { ConfirmationInfo } from '../tools/commandSafety';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { getLoopContext } from '../agent/permissionBridge';
 import { createLogger } from '../logging/logger';
-import {
-  DEFAULT_BROWSER_OPERATION_POLICY,
-  decideBrowserOperation,
-  getSiteVerdict,
-} from './browserToolPolicy';
+import { browserPermissionResourceFor, resolveBrowserPermissionConfig } from './browserPermissionConfig';
+import { isHighRiskUrl } from './highRiskSites';
 
 /**
  * Structurally identical to `registry.ts`'s `CommandConfirmCallback`, spelled
@@ -476,26 +473,9 @@ export async function notifyUnattendedDenial(
  */
 export function mayUnattendedTierApproveBrowser(info: ConfirmationInfo): boolean {
   const opClass = info.browserOperationClass;
-  if (opClass === undefined) return false;
-  const settings = getSettingsReader().getSnapshot();
-  return (
-    decideBrowserOperation({
-      opClass,
-      runMode: 'unattended',
-      policy: settings.browserOperationPolicy ?? DEFAULT_BROWSER_OPERATION_POLICY,
-      masterSwitchUnattended: settings.allowUnattendedBrowser === true,
-      siteVerdict: getSiteVerdict(
-        info.browserOrigin ?? null,
-        settings.browserSitePermissions ?? {},
-        // `browserPageOrigin` is set exactly when the action lands somewhere
-        // other than the top page — i.e. it IS the "which page is this region
-        // inside" answer a scoped via-embed grant is measured against. Absent,
-        // the origin is the page itself and no scoped grant covers it.
-        {
-          viaEmbed: settings.browserSiteGrantViaEmbed ?? {},
-          embeddedIn: info.browserPageOrigin ?? null,
-        },
-      ),
-    }) === 'allow'
-  );
+  const resource = info.browserPermissionResource;
+  const targets = info.browserPermissionTargets;
+  if (!opClass || !resource || resource !== browserPermissionResourceFor(opClass) || !targets?.length) return false;
+  if (targets.some(({ origin, embeddedIn }) => isHighRiskUrl(origin) || isHighRiskUrl(embeddedIn ?? null))) return false;
+  return resolveBrowserPermissionConfig(getSettingsReader().getSnapshot().browserPermissionConfigV2, resource, targets).decision === 'allow';
 }

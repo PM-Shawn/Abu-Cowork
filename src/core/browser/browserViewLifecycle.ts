@@ -1,3 +1,4 @@
+import { endBrowserRun } from './browserRunLifecycle';
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
 
@@ -63,24 +64,13 @@ export function disposeOwnedBrowserViews(conversationId: string): void {
 }
 
 /**
- * Tear down the browser views ONE subagent run owns, leaving the conversation's
- * own loop and every sibling run untouched (N6/A2).
- *
- * A subagent's tabs are owned by the pair `{conversationId, runKey}` and are
- * invisible to every other run, so when the run ends nothing else can ever list
- * or close them: without this they would sit in main until the whole
- * conversation is deleted — one live `WebContentsView` per finished delegation,
- * for the rest of the session. Called at the run's settlement seal, the point
- * after which the run can no longer start another tool.
- *
- * Fire-and-forget and best-effort, like its siblings: a run must never fail, or
- * be held open by, its own resource cleanup.
+ * Revoke a finished child run before settling its pages. The host retains user
+ * pages, drafts and deliverables for the conversation, and safely closes unused
+ * background pages. Registration races are drained before host revocation;
+ * failure is surfaced rather than silently leaving an ended run authorized.
  */
-export function disposeRunBrowserViews(conversationId?: string, runKey?: string): void {
-  if (!conversationId || !runKey || !isTauriEnv()) return;
-  void Promise.resolve(
-    invoke('browser_dispose_owner', { conversationId, runKey })
-  ).catch(() => {});
+export function disposeRunBrowserViews(conversationId?: string, runKey?: string): Promise<void> {
+  return endBrowserRun(conversationId, runKey);
 }
 
 /**

@@ -44,6 +44,7 @@ vi.mock('../../stores/workspaceStore', () => ({
 }));
 
 vi.mock('../../stores/settingsStore', () => ({
+  readConfirmedBrowserPermissionConfig: vi.fn(() => null),
   useSettingsStore: {
     getState: vi.fn().mockReturnValue({
       computerUseEnabled: false,
@@ -245,8 +246,9 @@ describe('buildSystemPrompt - structure', () => {
   it('routes web interaction to the built-in Electron browser instead of Computer Use', async () => {
     const prompt = await buildSystemPrompt(generalRoute, basePrompt, 'test-conv');
     expect(prompt).toContain('Abu-Browser and Abu-Chrome-Bridge are different capabilities');
-    expect(prompt).toContain('continue immediately with `abu-browser__get_tabs`');
-    expect(prompt).toContain('creates a visible tab in Abu');
+    expect(prompt).toContain('continue immediately with `abu-browser__list_tabs`');
+    expect(prompt).toContain('abu-browser__create_tab');
+    expect(prompt).toContain('each page that should remain separately visible');
     expect(prompt).toContain('existing Chrome tabs, cookies, extensions, or signed-in state');
     expect(prompt).toContain('Do not substitute the `computer` tool or launch a system browser');
   });
@@ -729,5 +731,20 @@ describe('buildSystemPrompt - memory index under concurrency', () => {
 
     expect(a).toContain('CONCURRENT-INDEX-MARKER');
     expect(b).toContain('CONCURRENT-INDEX-MARKER');
+  });
+});
+
+describe('audit: routing preserves user body', () => {
+  it('preserves multiline expert input', () => {
+    vi.mocked(agentRegistry.getAgent).mockReturnValueOnce({ name: 'expert', description: 'specialist', systemPrompt: 'help', tools: [], filePath: '/agents/expert/AGENT.md' });
+    expect(routeInput('@expert first\n  second').cleanInput).toBe('first\n  second');
+  });
+  it('preserves multiline skill input', () => {
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce({ name: 'brief', description: 'Brief', content: '', filePath: '/skills/brief/SKILL.md', skillDir: '/skills/brief' });
+    expect(routeInput('/brief first\n  second').cleanInput).toBe('first\n  second');
+  });
+  it('keeps the default skill instruction when its body contains only whitespace', () => {
+    vi.mocked(skillLoader.getSkill).mockReturnValueOnce({ name: 'brief', description: 'Brief', content: '', filePath: '/skills/brief/SKILL.md', skillDir: '/skills/brief' });
+    expect(routeInput('/brief  \n ').cleanInput).toBe('Execute the brief skill');
   });
 });

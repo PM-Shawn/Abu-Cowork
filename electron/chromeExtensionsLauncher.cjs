@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
 
 const CHROME_EXTENSIONS_URL = 'chrome://extensions/';
 
@@ -75,6 +75,19 @@ async function openChromeExtensionsPage(options = {}) {
   const executable = candidates.find((candidate) => existsSync(candidate));
   if (!executable) {
     throw new Error('Google Chrome executable was not found');
+  }
+  if (platform === 'darwin') {
+    // Chrome filters chrome://extensions from its command-line startup URLs.
+    // Deliver it as a macOS open-URL event to the explicit Chrome app instead.
+    // Wait for Launch Services to finish; a spawned `open` process can still
+    // fail, and that failure must reach the installation guide.
+    const execFileImpl = options.execFileImpl || execFile;
+    const appBundle = path.dirname(path.dirname(path.dirname(executable)));
+    await new Promise((resolve, reject) => {
+      execFileImpl('/usr/bin/open', ['-a', appBundle, CHROME_EXTENSIONS_URL],
+        { timeout: 10_000 }, (error) => error ? reject(error) : resolve());
+    });
+    return null;
   }
   await spawnDetached(
     executable,

@@ -924,7 +924,13 @@ describe('runAgentLoop expert execution', () => {
     const { getToolInvoker, setToolInvoker } = await import('./ports/toolInvoker');
     const originalInvoker = getToolInvoker();
     const settings = useSettingsStore.getState();
-    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } });
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
     const conversationId = useChatStore.getState().createConversation();
     const writer = { name: 'writer', description: 'writes', systemPrompt: 'write', tools: ['write_file'], filePath: '__preset__' };
@@ -972,7 +978,7 @@ describe('runAgentLoop expert execution', () => {
     } finally {
       selectAdapter.mockRestore();
       setToolInvoker(originalInvoker);
-      useSettingsStore.setState({ activeModel: settings.activeModel });
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
       vi.unstubAllGlobals();
     }
   });
@@ -982,7 +988,13 @@ describe('runAgentLoop expert execution', () => {
     const { useSettingsStore } = await import('../../stores/settingsStore');
     const runner = await import('./subagentRunner');
     const settings = useSettingsStore.getState();
-    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } });
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
     const conversationId = useChatStore.getState().createConversation();
     const expert = { name: '专家', description: 'specialist', systemPrompt: 'help', tools: ['read_file'], filePath: '/agents/expert/AGENT.md' };
     const runSubagent = vi.spyOn(runner, 'runSubagent').mockResolvedValue({ text: 'expert done', toolCallCount: 0, turnCount: 1, tokenUsage: { input: 0, output: 0 }, duration: 1, stopReason: 'completed' });
@@ -994,7 +1006,191 @@ describe('runAgentLoop expert execution', () => {
       expect(runSubagent).toHaveBeenCalledWith(expect.objectContaining({ agent: expert, task: '检查文档' }));
     } finally {
       runSubagent.mockRestore();
-      useSettingsStore.setState({ activeModel: settings.activeModel });
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+    }
+  });
+});
+
+describe('runAgentLoop 用量合并', () => {
+  it('结束事件只报输出时，流内拿到的缓存读写仍然留在本轮用量里', async () => {
+    // Anthropic 的 message_start 带输入与缓存，message_delta 只带输出。结束分支
+    // 整体替换整个用量对象，缓存读写就会每轮归零——用户看到的缓存命中率恒为 0。
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({
+          type: 'usage',
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 1,
+            cacheReadInputTokens: 800,
+            cacheCreationInputTokens: 200,
+          },
+        });
+        onEvent({ type: 'text', text: '好' });
+        onEvent({ type: 'done', stopReason: 'end_turn', usage: { inputTokens: 1000, outputTokens: 500 } });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    try {
+      await runAgentLoop(conversationId, '你好');
+      // 结束事件不带缓存字段，合并之后它们仍在；整体替换会把这两项抹成 undefined。
+      expect(useChatStore.getState().currentUsage).toMatchObject({
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadInputTokens: 800,
+        cacheCreationInputTokens: 200,
+      });
+    } finally {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('runAgentLoop pinned-model availability guard', () => {
+  async function setup(mutate: (p: import('../../types/provider').ProviderInstance) => import('../../types/provider').ProviderInstance | null) {
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const { getLanguageSetting, setLanguage } = await import('../../i18n');
+    const previousLanguage = getLanguageSetting();
+    setLanguage('zh-CN');
+    const settings = useSettingsStore.getState();
+    const a = { ...settings.providers[0], id: 'prov-a', source: 'custom' as const, name: 'A', enabled: true, apiKey: 'k-a', userAdded: true, models: [{ id: 'model-a', label: 'Model A' }] };
+    const b = { ...a, id: 'prov-b', name: 'B', apiKey: 'k-b', models: [{ id: 'model-b', label: 'Model B' }] };
+    useSettingsStore.setState({ providers: [a, b], activeModel: { providerId: 'prov-a', modelId: 'model-a' } });
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    useChatStore.getState().setConversationModel(conversationId, { providerId: 'prov-a', modelId: 'model-a' });
+    const next = mutate(a);
+    useSettingsStore.setState({
+      providers: next ? [next, b] : [b],
+      activeModel: { providerId: 'prov-b', modelId: 'model-b' },
+    });
+    const chat = vi.fn();
+    const spy = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    const restore = () => {
+      spy.mockRestore();
+      useSettingsStore.setState({ providers: settings.providers, activeModel: settings.activeModel });
+      setLanguage(previousLanguage);
+      vi.unstubAllGlobals();
+    };
+    return { useChatStore, conversationId, chat, restore };
+  }
+
+  // The display label is only recoverable while the provider still lists the model.
+  it.each([
+    ['removed', () => null, '所属服务已删除', '「model-a」'],
+    ['disabled', (p: never) => ({ ...(p as object), enabled: false }), '所属服务已关闭', '「Model A」'],
+    ['model gone', (p: never) => ({ ...(p as object), models: [] }), '已从所属服务中移除', '「model-a」'],
+  ] as const)('blocks a conversation whose pinned provider is %s and never calls the model', async (_n, mutate, reasonText, modelText) => {
+    const { useChatStore, conversationId, chat, restore } = await setup(mutate as never);
+    try {
+      const result = await runAgentLoop(conversationId, 'hello', { orchestration: { route: { type: 'general', name: 'abu', cleanInput: 'hello' }, systemPromptSections: [] } });
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(last?.role).toBe('assistant');
+      expect(String(last?.content)).toContain(reasonText);
+      expect(String(last?.content)).toContain(modelText);
+    } finally {
+      restore();
+    }
+  });
+
+  const run = (conversationId: string) =>
+    runAgentLoop(conversationId, 'hello', { orchestration: { route: { type: 'general', name: 'abu', cleanInput: 'hello' }, systemPromptSections: [] } });
+
+  it('blocks a pin to a managed provider that is no longer registered, like any removed provider', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model' });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(String(last?.content)).toContain('所属服务已删除');
+      expect(String(last?.content)).toContain('「org-model」');
+    } finally {
+      restore();
+    }
+  });
+
+  it('blocks a pin to a model the managed provider confirmed it withdrew, asking for another pick', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.getState().upsertManagedProvider({
+        id: 'org-models',
+        name: 'MAZG',
+        baseUrl: 'https://abu.example.net/api/gateway',
+        apiKey: 'sk-virtual',
+        models: [{ id: 'org-model-a', label: 'org-model-a' }],
+      });
+      useSettingsStore.getState().setProviderStatus('org-models', 'verified');
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model-b' });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(String(last?.content)).toBe('这个任务使用的模型「org-model-b」已不可用，没有发送。请在输入框里重新选择一个模型。');
+    } finally {
+      restore();
+    }
+  });
+
+  it('runs a pin to a registered managed provider whose model list is not confirmed yet', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.getState().upsertManagedProvider({
+        id: 'org-models',
+        name: 'MAZG',
+        baseUrl: 'https://abu.example.net/api/gateway',
+        apiKey: 'sk-virtual',
+        models: [],
+      });
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model' });
+      chat.mockRejectedValue(new Error('stop after the first call'));
+      await run(conversationId);
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(chat.mock.calls[0][1]).toMatchObject({
+        model: 'org-model',
+        apiKey: 'sk-virtual',
+        baseUrl: 'https://abu.example.net/api/gateway',
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it('falls back to the configure-key copy when the pinned model is unusable and no provider is enabled', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup(() => null);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.setState({ providers: useSettingsStore.getState().providers.map((p) => ({ ...p, enabled: false })) });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(last?.role).toBe('assistant');
+      expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+    } finally {
+      restore();
     }
   });
 });

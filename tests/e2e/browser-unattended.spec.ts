@@ -946,13 +946,13 @@ async function seedUnattendedRun(page: Page, seed: UnattendedSeed): Promise<void
     if (!raw) throw new Error('abu-settings was not initialized before seeding the unattended run');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };
     Object.assign(persisted.state, {
-      allowUnattendedBrowser: payload.allowUnattendedBrowser,
-      browserSitePermissions: payload.sitePermissions,
-      browserOperationPolicy: {
-        readOnly: 'allow',
-        interactive: 'allow',
-        scripting: 'ask',
-        ...payload.operationPolicy,
+      browserPermissionConfigV2: {
+        schemaVersion: 2,
+        defaults: { browse: 'ask', upload: 'ask', script: payload.operationPolicy.scripting ?? 'ask' },
+        sites: Object.fromEntries(Object.entries(payload.sitePermissions).map(([origin, decision]) => [origin, {
+          blocked: decision === 'denied', browse: decision === 'allowed' ? (payload.operationPolicy.interactive ?? 'allow') : 'inherit',
+          upload: 'inherit', script: 'inherit',
+        }])), embeddedSites: {},
       },
       activeAutomationTab: 'schedule',
       viewMode: 'automation',
@@ -1160,15 +1160,15 @@ const OUTCOME_COMPLETED_WITH_REFUSALS = /^(已完成，但有操作被拒|Comple
 const OUTCOME_ABORTED_DENIALS = /^(连续被拒后已终止|Stopped after repeated refusals)$/;
 const NEXT_STEPS_TITLE = /^(接下来可以做什么|What you can do next)$/;
 const DENIED_TITLE = /^(被拦下的动作|Blocked actions)$/;
-const REASON_SITE_NOT_ALLOWED = /^(该站点没有你的常驻授权|No standing grant for this site)$/;
+
 const REASON_POLICY_DENIED = /^(这类操作被你设为拒绝|You set this class of action to deny)$/;
 /** The script-run line (2026-09-04 opt-in). Anchored and count-specific, so a
  *  card reporting a DIFFERENT number of scripts fails instead of matching. */
 const SCRIPT_RUNS_ONE = /^(在页面里运行了 1 次脚本|Page scripts run: 1)$/;
 const REASON_APPROVAL_REFUSED = /^(审批被拒绝或没等到回复|The approval was declined or never answered)$/;
-const STEP_ALLOW_SITE = /始终允许此站点|always allow this site/;
-const STEP_RELAX_POLICY = /操作权限 把对应档位改掉|change its setting in Settings/;
-const STEP_ANSWER_APPROVAL = /审批请求发到了你的 IM|An approval was sent to your IM/;
+
+const STEP_RELAX_POLICY = /浏览器权限 调整对应设置|change its setting in Settings/;
+const STEP_ANSWER_APPROVAL = /此操作未获得批准|This action was not approved/;
 const DENIED_ABORT_MESSAGE = /你连续拒绝了我的浏览器操作|You declined my browser actions several times in a row/;
 
 function reportCard(page: Page) {
@@ -1402,7 +1402,7 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
       /无法确认这次操作所在的网站|The site this action targets could not be determined/,
     );
     expect(clickResult).toMatch(
-      /无人值守运行只能在你已明确允许的网站上操作|may only act on sites you explicitly allowed/,
+      /这次运行需要你确认，但该会话没有绑定可回复的 IM 频道|no reply-capable IM channel/,
     );
 
     // No click side effect on the page the tab actually landed on.
@@ -1415,12 +1415,12 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
     await openScheduledRunConversation(page, taskName);
     const card = await waitForReportCard(page);
     await expect(card.getByText(DENIED_TITLE)).toBeVisible();
-    await expect(card.getByText(REASON_SITE_NOT_ALLOWED)).toBeVisible();
+    await expect(card.getByText(REASON_APPROVAL_REFUSED)).toBeVisible();
     // The refused origin is named, as plain text.
     await expect(card.getByText(destination.origin, { exact: true })).toBeVisible();
     // ...and the card tells the user what to do about it.
     await expect(card.getByText(NEXT_STEPS_TITLE)).toBeVisible();
-    await expect(card.getByText(STEP_ALLOW_SITE)).toBeVisible();
+    await expect(card.getByText(STEP_ANSWER_APPROVAL)).toBeVisible();
     // The BADGE, not only the section under it. The run reached `completed`
     // (the model produced a final answer), but the only thing it was asked to
     // change was refused — a green "done" stamp on that is the silent false

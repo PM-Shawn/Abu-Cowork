@@ -78,6 +78,14 @@ export async function checkProviderHealth(
         baseUrl: provider.baseUrl,
         maxTokens: 1,
         temperature: 0,
+        // 自检也是一次真实的模型请求，同样记账。用户看到的请求数里包含它，
+        // 这正是"我什么都没做，怎么多了一次"需要能解释清楚的部分。
+        accounting: {
+          source: 'diagnostic' as const,
+          conversationId: null,
+          skill: null,
+          providerInstanceId: provider.id,
+        },
       },
       () => {} // ignore stream events
     );

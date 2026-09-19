@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { useSettingsStore } from './settingsStore';
 import { invoke } from '@tauri-apps/api/core';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import {
@@ -21,6 +22,7 @@ function reset() {
     fileTreeMode: false,
     currentConversationId: null,
     lastActiveTabByConversation: {},
+    panelStateByConversation: {},
   });
   useBatchProgressStore.setState({
     batches: {},
@@ -626,32 +628,33 @@ describe('previewStore', () => {
       expect(invokeMock).toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: kept }));
     });
 
-    it('closeTabsForConversationSwitch keeps browser tabs and their views alive', () => {
+    it('switching conversations keeps all tab records and native views alive but hides them', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('a');
       const browserId = usePreviewStore.getState().openBrowser('https://example.com');
       usePreviewStore.getState().openPreview('/a/1.md');
       usePreviewStore.getState().openSummary();
       usePreviewStore.getState().openTerminal();
-
-      usePreviewStore.getState().closeTabsForConversationSwitch();
-
-      const s = usePreviewStore.getState();
-      expect(s.tabs.map((t) => t.id)).toEqual([browserId]);
-      expect(s.activeTabId).toBe(browserId);
-      expect(s.previewFilePath).toBeNull();
+      const before = usePreviewStore.getState().tabs;
+      usePreviewStore.getState().closeTabsForConversationSwitch('b');
+      expect(usePreviewStore.getState().tabs).toEqual(before);
+      expect(before.some(tab => tab.id === browserId)).toBe(true);
+      expect(getVisibleTabs()).toEqual([]);
+      expect(usePreviewStore.getState().activeTabId).toBeNull();
       expect(invokeMock).not.toHaveBeenCalled();
     });
 
-    it('closeTabsForConversationSwitch clears everything when no browser tab is open', () => {
+    it('switching with only a preview restores its document and width on return', () => {
+      usePreviewStore.getState().closeTabsForConversationSwitch('a');
       usePreviewStore.getState().openPreview('/a/1.md');
       usePreviewStore.setState({ chatWidth: 400 });
-
-      usePreviewStore.getState().closeTabsForConversationSwitch();
-
-      const s = usePreviewStore.getState();
-      expect(s.tabs).toHaveLength(0);
-      expect(s.activeTabId).toBeNull();
-      expect(s.chatWidth).toBeNull();
+      usePreviewStore.getState().closeTabsForConversationSwitch('b');
+      expect(getVisibleTabs()).toEqual([]);
+      expect(usePreviewStore.getState().chatWidth).toBeNull();
+      usePreviewStore.getState().closeTabsForConversationSwitch('a');
+      expect(usePreviewStore.getState().previewFilePath).toBe('/a/1.md');
+      expect(usePreviewStore.getState().chatWidth).toBe(400);
     });
+
   });
 
   // An adopted agent browser tab belongs to the conversation that asked for it.
@@ -726,12 +729,14 @@ describe('previewStore', () => {
       expect(ids(s.tabs)).toEqual(['agent-a-4']);
     });
 
-    it('an adopted tab with no owner (legacy) stays visible in every conversation', () => {
+    it('an adopted tab without an explicit owner belongs to the current conversation', () => {
       usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
       usePreviewStore.getState().openBrowser('about:blank', 'legacy-view');
 
       usePreviewStore.getState().closeTabsForConversationSwitch('conv-b');
 
+      expect(ids(getVisibleTabs())).toEqual([]);
+      usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
       expect(ids(getVisibleTabs())).toEqual(['legacy-view']);
     });
 
@@ -805,18 +810,17 @@ describe('previewStore', () => {
       expect(invokeMock).not.toHaveBeenCalledWith('browser_close', expect.objectContaining({ id: paneTab }));
     });
 
-    it('closeOwnedTabsForConversation lands the active tab on a visible survivor', () => {
+    it('deleting the current owner closes its summary as well as its browser', () => {
       usePreviewStore.getState().closeTabsForConversationSwitch('conv-a');
       usePreviewStore.getState().openSummary();
-      const summaryId = usePreviewStore.getState().activeTabId!;
       usePreviewStore.getState().openBrowser('https://a.example', 'agent-a-active', 'conv-a');
       usePreviewStore.getState().activateTab('agent-a-active');
 
       usePreviewStore.getState().closeOwnedTabsForConversation('conv-a');
 
       const s = usePreviewStore.getState();
-      expect(ids(s.tabs)).toEqual([summaryId]);
-      expect(s.activeTabId).toBe(summaryId);
+      expect(ids(s.tabs)).toEqual([]);
+      expect(s.activeTabId).toBeNull();
     });
 
     it('closeOwnedTabsForConversation is a no-op when that conversation owns nothing', () => {
@@ -1006,5 +1010,88 @@ describe('previewStore', () => {
       usePreviewStore.getState().openBrowser('about:blank', '__abu-browser-automation__x');
       expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
     });
+  });
+});
+
+
+describe('conversation workspace restoration', () => {
+  beforeEach(() => {
+    reset();
+    let id = 0;
+    vi.spyOn(Date, 'now').mockImplementation(() => 1000 + id++);
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('restores each conversation’s tabs, selection, width and explicit collapse without closing views', () => {
+    const store = () => usePreviewStore.getState();
+    store().closeTabsForConversationSwitch('a');
+    const browser = store().openBrowser('https://example.com');
+    store().openTerminal();
+    const terminal = store().activeTabId;
+    store().setChatWidth(430);
+    const aTabs = getVisibleTabs().map(tab => tab.id);
+    store().closeTabsForConversationSwitch('b');
+    expect(getVisibleTabs()).toEqual([]);
+    expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+    const bBrowser = store().openBrowser('https://example.com');
+    expect(bBrowser).not.toBe(browser);
+    store().closeTabsForConversationSwitch('a');
+    expect(getVisibleTabs().map(tab => tab.id)).toEqual(aTabs);
+    expect(store().activeTabId).toBe(terminal);
+    expect(store().chatWidth).toBe(430);
+    expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    useSettingsStore.getState().setRightPanelCollapsed(true);
+    store().closeTabsForConversationSwitch('b');
+    expect(store().activeTabId).toBe(bBrowser);
+    expect(useSettingsStore.getState().rightPanelCollapsed).toBe(false);
+    store().closeAllTabs();
+    store().closeTabsForConversationSwitch('a');
+    expect(getVisibleTabs().map(tab => tab.id)).toEqual(aTabs);
+    expect(useSettingsStore.getState().rightPanelCollapsed).toBe(true);
+  });
+
+  it('deduplicates previews and summaries only within their own conversation and cleans deleted owners', () => {
+    const store = () => usePreviewStore.getState();
+    store().closeTabsForConversationSwitch('a');
+    store().openSummary();
+    store().openPreview('/shared.md');
+    const aIds = getVisibleTabs().map(tab => tab.id);
+    store().closeTabsForConversationSwitch('b');
+    store().openSummary();
+    store().openPreview('/shared.md');
+    const bIds = getVisibleTabs().map(tab => tab.id);
+    expect(bIds.every(id => !aIds.includes(id))).toBe(true);
+    store().closeOwnedTabsForConversation('a');
+    expect(store().tabs.map(tab => tab.id)).toEqual(bIds);
+    expect(store().panelStateByConversation.a).toBeUndefined();
+    expect(store().lastActiveTabByConversation.a).toBeUndefined();
+  });
+});
+
+
+describe('delayed popup ownership', () => {
+  beforeEach(reset);
+  it('inherits the source owner after a conversation switch and rejects a deleted source', () => {
+    const store = () => usePreviewStore.getState();
+    store().closeTabsForConversationSwitch('a');
+    const source = store().openBrowser('https://source.example');
+    store().closeTabsForConversationSwitch('b');
+    store().openBrowser('https://child.example', '__abu-browser-automation__child', undefined, source);
+    expect(store().tabs.find(tab => tab.id === '__abu-browser-automation__child')?.ownerConversationId).toBe('a');
+    expect(getVisibleTabs()).toEqual([]);
+    store().closeOwnedTabsForConversation('a');
+    store().openBrowser('https://late.example', '__abu-browser-automation__late', undefined, source);
+    expect(store().tabs).toEqual([]);
+  });
+  it('does not recreate a deleted current conversation snapshot on the next switch', () => {
+    const store = () => usePreviewStore.getState();
+    store().closeTabsForConversationSwitch('a');
+    store().openTerminal();
+    store().closeOwnedTabsForConversation('a');
+    store().closeTabsForConversationSwitch('b');
+    expect(store().panelStateByConversation.a).toBeUndefined();
+    expect(store().lastActiveTabByConversation.a).toBeUndefined();
+    expect(store().tabs).toEqual([]);
   });
 });

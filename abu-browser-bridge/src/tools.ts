@@ -249,10 +249,12 @@ function ownerPayloadFromExtra(extra: unknown): Record<string, unknown> {
   const expectedOrigin = metaString(extra, ABU_EXPECTED_ORIGIN_META_KEY);
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
   const unattended = meta?.[ABU_UNATTENDED_META_KEY] === true;
+  const popupOrigin = metaString(extra, 'abu/popupOrigin');
   return {
     ...(ownerId ? { ownerId } : {}),
     ...(runId ? { runId } : {}),
     ...(expectedOrigin ? { expectedOrigin } : {}),
+    ...(popupOrigin ? { popupOrigin } : {}),
     ...(unattended ? { unattended: true } : {}),
   };
 }
@@ -531,7 +533,62 @@ function formatResult(response: BrowserTransportResponse): string {
 
 // --- Register all tools ---
 
-export function registerTools(server: McpServer, transport: BrowserTransport = chromeWsTransport): void {
+export interface BrowserToolRegistrationOptions {
+  backend: 'chrome' | 'built-in';
+}
+
+export function registerTools(
+  server: McpServer,
+  transport: BrowserTransport = chromeWsTransport,
+  options: BrowserToolRegistrationOptions = { backend: 'chrome' },
+): void {
+  if (options.backend === 'built-in') {
+    server.tool(
+      'retain_tab',
+      'Keep a result or handoff tab for the user after this child task ends. Use before finishing for pages the user should inspect or continue. Only marks this run’s own tab; does not navigate or transfer another run’s page.',
+      { tabId: z.coerce.number().int().positive().describe('An existing task tab ID') },
+      async ({ tabId }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'retain_tab', { tabId, ...ownerPayloadFromExtra(extra) }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+    server.tool(
+      'close_tab',
+      'Close an unused tab owned only by this task. Pages shown to or used by the user, shared with other runs, or preventing unload are retained. On requires_user_action, leave the page open; never force-close it. On closing, do not retry.',
+      { tabId: z.coerce.number().int().positive().describe('An existing task tab ID') },
+      async ({ tabId }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'close_tab', { tabId, ...ownerPayloadFromExtra(extra) }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+    server.tool(
+      'create_tab',
+      'Open an HTTP(S) URL in a NEW visible tab without replacing existing pages. Use separate tabs for pages the user wants to compare or revisit. Returns the new tab ID. To navigate an existing tab, use navigate instead.',
+      { url: z.string().url().refine((url) => /^https?:/i.test(url), 'Only HTTP(S) URLs are allowed') },
+      async ({ url }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'create_tab', {
+          url, ...ownerPayloadFromExtra(extra),
+        }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+    server.tool(
+      'list_tabs',
+      'List existing tabs available to this browser task, grouped by window. Never creates or navigates a tab. Use the returned tab IDs to select a target; do not guess IDs.',
+      async (extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'get_tabs', {
+          ...ownerPayloadFromExtra(extra),
+          createIfEmpty: false,
+        }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+  }
+
 
   // 1. browser_get_tabs
   server.tool(

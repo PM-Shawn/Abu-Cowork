@@ -1,30 +1,8 @@
 'use strict';
 
-/**
- * browserHost — embedded regions (iframes) in the built-in browser.
- *
- * This channel's automation runs in ONE isolated world, in the main frame
- * (Electron 43's `WebFrameMain` has no isolated-world entry point, and the
- * browser view deliberately ships no preload), so the runtime reaches child
- * documents through `contentDocument` — granted for same-origin frames,
- * refused for the rest. That shape decides what this file has to pin:
- *
- *  1. `get_tabs` carries the tab's frame list, because the approval gate's
- *     only probe is `get_tabs` and a frame-targeted action is authorized
- *     against the FRAME's origin.
- *  2. The list is computed for at most two tabs — the caller's current one and
- *     the one the gate names — since each costs a round trip into the page.
- *  3. **The origin of a region the runtime cannot see into is cross-checked
- *     against the browser's own frame tree, and dropped when it does not
- *     match.** That region's address can only come from the `src` ATTRIBUTE,
- *     which the EMBEDDING PAGE writes: without this check a page could name
- *     any site it liked as "the region embedded here" and have the merged
- *     grant written against it. `webContents.mainFrame.framesInSubtree` is the
- *     main process's own view, which no page authors.
- *
- * Loaded the way `browserHost.dialogs.test.cjs` loads it: a fresh module
- * instance with the `electron` and `tauriHost` cache slots pre-filled by fakes.
- */
+/** Native CDP frame identities and isolated per-frame execution. A page-authored
+ * iframe src never supplies an approval origin. Only the requested tab is
+ * probed, and opaque origins remain inaccessible. */
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
@@ -57,12 +35,32 @@ class FakeWebContents {
     this.destroyed = false;
     this.listeners = new Map();
     this.navigationHistory = { goBack() {}, goForward() {} };
+    const debugHandlers = [];
+    let attached = false;
     this.debugger = {
-      isAttached: () => false,
-      attach() {},
-      detach() {},
-      on() { return this; },
-      async sendCommand() { return {}; },
+      isAttached: () => attached,
+      attach() { attached = true; },
+      detach() { attached = false; for (const [event, handler] of debugHandlers) if (event === 'detach') handler(); },
+      on(event, handler) { debugHandlers.push([event, handler]); return this; },
+      sendCommand: async (method, params) => {
+        if (method === 'Page.getFrameTree') return {frameTree: {
+          frame: {id: 'main', loaderId: 'main-doc', url: this.url, securityOrigin: originOfUrl(this.url)},
+          childFrames: this.realFrames.map((value, i) => {
+            const frame = typeof value === 'string' ? {url:value, origin:originOfUrl(value)} : value;
+            return {frame: {id: `child-${i}`, loaderId: 'child-doc', url:frame.url, securityOrigin:frame.origin}};
+          }),
+        }};
+        if (method === 'Page.createIsolatedWorld') {
+          for (const [event, handler] of debugHandlers) if (event === 'message') handler({}, 'Runtime.executionContextCreated', {context: {id:10, uniqueId:'unique-' + params.frameId, name:params.worldName, auxData:{frameId:params.frameId}}});
+          return {executionContextId: 10};
+        }
+        if (method === 'Runtime.evaluate') {
+          const call = /handleAction\(\s*"([a-z_]+)"/.exec(params.expression);
+          if (call) this.domActions.push(call[1]);
+          return {result: {value: {success:true}}};
+        }
+        return {};
+      },
     };
     /** What the injected runtime answers `frames` with. */
     this.runtimeFrames = [];
@@ -97,6 +95,9 @@ class FakeWebContents {
   }
 
   once(event, handler) { return this.on(event, handler); }
+  removeListener(event, handler) {
+    this.listeners.set(event, (this.listeners.get(event) || []).filter(value => value !== handler));
+  }
   fire(event, ...args) {
     for (const handler of this.listeners.get(event) || []) handler(...args);
   }
@@ -152,7 +153,7 @@ function fakeSession() {
     setDevicePermissionHandler() {},
     setDisplayMediaRequestHandler() {},
     on() {},
-    webRequest: { onHeadersReceived() {} },
+    webRequest: { onBeforeRequest() {}, onHeadersReceived() {} },
   };
 }
 
@@ -254,7 +255,9 @@ test('get_tabs carries the regions of the tab the GATE names, so it has somethin
 
     const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
 
-    assert.deepEqual(tabRow(listing, tabId).frames, [main, REGION_SAME]);
+    const frames = tabRow(listing, tabId).frames;
+    assert.match(frames[1].frameId, /^f\d+$/);
+    assert.deepEqual(frames, [main, {...REGION_SAME, frameId: frames[1].frameId}]);
   } finally {
     restore();
   }
@@ -338,7 +341,7 @@ test('an unreachable region keeps its origin only when the BROWSER agrees it is 
   }
 });
 
-test('a src the browser cannot confirm is dropped — the page does not get to name the region\'s site', async () => {
+test('native origin replaces a forged src — the page cannot name the region\'s site', async () => {
   const { host, restore } = loadHost();
   try {
     // The page writes `src="https://bank.example.com/..."` while the frame is
@@ -354,11 +357,9 @@ test('a src the browser cannot confirm is dropped — the page does not get to n
     const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
 
     const region = tabRow(listing, tabId).frames[1];
-    // Still listed — a refusal has to be able to name it — but with no origin
-    // anything could be authorized against.
-    assert.equal(region.frameId, 'f2');
-    assert.equal(region.origin, null);
-    assert.equal(region.accessible, false);
+    assert.match(region.frameId, /^f\d+$/);
+    assert.equal(region.origin, 'https://tracker.example.org');
+    assert.equal(region.accessible, true);
   } finally {
     restore();
   }
@@ -373,7 +374,7 @@ test('a REACHABLE region\'s origin is left alone: same-origin access already pro
       // The browser knows the frame is there, but its address is `about:srcdoc`
       // — a region that INHERITS its parent's origin and so has no row the url
       // cross-check could ever match.
-      realFrames: ['about:srcdoc'],
+      realFrames: [{url: 'about:srcdoc', origin:'https://oa.example.com'}],
     });
 
     const listing = await host.performBrowserAutomation('get_tabs', { ownerId: OWNER, framesForTabId: tabId });
@@ -420,7 +421,7 @@ test('a snapshot\'s region list gets the same cross-check as the listing\'s', as
 
     const shot = await host.performBrowserAutomation('snapshot', { ownerId: OWNER, tabId });
 
-    assert.equal(shot.frames[1].origin, null);
+    assert.equal(shot.frames, undefined, 'a runtime list cannot invent a native region');
   } finally {
     restore();
   }
@@ -445,7 +446,7 @@ test('a listing still answers for a tab frozen by a dialog, instead of waiting o
     ]);
 
     assert.notEqual(listing, 'TIMED OUT');
-    assert.equal('frames' in tabRow(listing, tabId), false);
+    assert.equal(tabRow(listing, tabId).frames.length, 2, 'native frame metadata does not need page script execution');
   } finally {
     restore();
   }
@@ -455,10 +456,12 @@ test('a frame-targeted action reaches the runtime with the region on it', async 
   const { host, restore } = loadHost();
   try {
     const main = { frameId: 'f0', origin: 'https://oa.example.com', url: PAGE, sameOriginAsTop: true, accessible: true };
-    const { tabId, contents } = await openTab(host, { runtimeFrames: [main, REGION_SAME] });
+    const { tabId, contents } = await openTab(host, { runtimeFrames: [main, REGION_SAME], realFrames: [REGION_SAME.url] });
+    const listing = await host.performBrowserAutomation('get_tabs', {ownerId:OWNER, framesForTabId:tabId});
+    const frameId = tabRow(listing, tabId).frames[1].frameId;
 
     await host.performBrowserAutomation('fill', {
-      ownerId: OWNER, tabId, frameId: 'f1', locator: { css: '#name' }, value: '张三',
+      ownerId: OWNER, tabId, frameId, expectedOrigin: REGION_SAME.origin, locator: { css: '#name' }, value: '张三',
     });
 
     // The runtime resolves the document itself — this channel has one copy of
@@ -467,4 +470,23 @@ test('a frame-targeted action reaches the runtime with the region on it', async 
   } finally {
     restore();
   }
+});
+
+test('a cancelled frame permission probe never dispatches after runtime initialization', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { tabId } = await openTab(host, { runtimeFrames: [REGION_SAME], realFrames: [REGION_SAME.url] });
+    const contents = contentsRegistry.get(tabId);
+    const controller = new AbortController();
+    const send = contents.debugger.sendCommand;
+    contents.debugger.sendCommand = async (method, params) => {
+      const result = await send(method, params);
+      if (method === 'Page.getFrameTree') controller.abort();
+      return result;
+    };
+    await assert.rejects(host.performBrowserAutomation('get_tabs', {
+      ownerId: OWNER, framesForTabId: tabId, createIfEmpty: false,
+    }, { signal: controller.signal }), /cancelled|stopped/);
+    assert.equal(contents.domActions.includes('frames'), false);
+  } finally { restore(); }
 });

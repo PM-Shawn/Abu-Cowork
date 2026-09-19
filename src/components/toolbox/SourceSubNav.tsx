@@ -51,7 +51,13 @@ export default function SourceSubNav({
             className={cn(
               'rounded-lg px-3 py-1 text-body transition-colors',
               active
-                ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)] font-medium'
+                // Clay tint, the same pill TopTabNav's active tab uses. The
+                // grey this used to be was `--abu-bg-hover` — byte-identical to
+                // the hover state on the line below, so an inactive tab under
+                // the pointer read exactly like the selected one, and the two
+                // rows of the same nav stack disagreed on what "selected" looks
+                // like.
+                ? 'bg-[var(--abu-clay-bg)] text-[var(--abu-clay)] font-medium'
                 : 'text-[var(--abu-text-tertiary)] hover:text-[var(--abu-text-primary)] hover:bg-[var(--abu-bg-hover)]',
             )}
           >

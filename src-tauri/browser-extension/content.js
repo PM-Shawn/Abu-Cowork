@@ -35,7 +35,20 @@
   var MAX_SNAPSHOT_CHARS = 3e4;
   var electronBrowserRuntime = globalThis.__ABU_ELECTRON_BROWSER_RUNTIME__;
   if (electronBrowserRuntime) {
-    electronBrowserRuntime.handleAction = handleAction;
+    const activeActions = /* @__PURE__ */ new Map();
+    electronBrowserRuntime.cancelAction = (id) => activeActions.get(id)?.abort();
+    electronBrowserRuntime.handleAction = async (action, payload) => {
+      const id = payload.__abuOperationId;
+      if (typeof id !== "string") return handleAction(action, payload);
+      if (activeActions.has(id)) throw new Error("Browser operation identity was reused");
+      const controller = new AbortController();
+      activeActions.set(id, controller);
+      try {
+        return await handleAction(action, payload, controller.signal);
+      } finally {
+        activeActions.delete(id);
+      }
+    };
   } else {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const { action, payload } = message;
@@ -45,11 +58,14 @@
   }
   var refByElement = /* @__PURE__ */ new WeakMap();
   var elementByRef = /* @__PURE__ */ new Map();
-  var refCounter = 0;
+  var referenceBase = electronBrowserRuntime?.referenceBase ?? 0;
+  var referenceLimit = electronBrowserRuntime?.referenceBase === void 0 ? Number.MAX_SAFE_INTEGER : referenceBase + 1e6;
+  var refCounter = referenceBase;
   function refFor(el) {
     const frameId = frameIdOfElement(el);
     const existing = refByElement.get(el);
     if (existing && elementByRef.get(existing)?.deref() === el) return qualifyRef(frameId, existing);
+    if (refCounter + 1 >= referenceLimit) throw new Error("Page reference capacity reached. Reload and observe the page again.");
     const ref = `e${++refCounter}`;
     refByElement.set(el, ref);
     elementByRef.set(ref, new WeakRef(el));
@@ -79,7 +95,7 @@
   var MAX_FRAME_DEPTH = 8;
   var MAX_FRAMES = 40;
   var MAX_SHADOW_DEPTH = 10;
-  var LOCAL_FRAME_WALK = !!electronBrowserRuntime;
+  var LOCAL_FRAME_WALK = !!electronBrowserRuntime && !electronBrowserRuntime.nativeFrames;
   var hostFrameId = MAIN_FRAME_REF;
   var frameListTruncated = false;
   function hostScope() {
@@ -90,11 +106,12 @@
   var frameIdByFrameEl = /* @__PURE__ */ new WeakMap();
   var frameElByFrameId = /* @__PURE__ */ new Map();
   var frameNodeById = /* @__PURE__ */ new Map();
-  var frameCounter = 0;
+  var frameCounter = referenceBase;
   function frameIdForDoc(doc) {
     if (doc === document) return hostFrameId;
     const existing = frameIdByDoc.get(doc);
     if (existing && docByFrameId.get(existing)?.deref() === doc) return existing;
+    if (frameCounter + 1 >= referenceLimit) throw new Error("Page frame capacity reached. Reload and observe again.");
     const id = `f${++frameCounter}`;
     frameIdByDoc.set(doc, id);
     docByFrameId.set(id, new WeakRef(doc));
@@ -103,6 +120,7 @@
   function frameIdForCrossOriginEl(el) {
     const existing = frameIdByFrameEl.get(el);
     if (existing && frameElByFrameId.get(existing)?.deref() === el) return existing;
+    if (frameCounter + 1 >= referenceLimit) throw new Error("Page frame capacity reached. Reload and observe again.");
     const id = `f${++frameCounter}`;
     frameIdByFrameEl.set(el, id);
     frameElByFrameId.set(id, new WeakRef(el));
@@ -376,7 +394,7 @@
     // straight back to scripting the page.
     "upload_file"
   ]);
-  async function handleAction(action, payload) {
+  async function handleAction(action, payload, signal) {
     const stamped = payload?.__abuFrameId;
     if (isFrameRef(stamped)) hostFrameId = stamped;
     if (!FRAME_SCOPED_ACTIONS.has(action) && payload?.frameId !== void 0) {
@@ -391,9 +409,9 @@
     } else if (ORIGIN_PINNED_READ_ACTIONS.has(action)) {
       assertOriginPin(action, payload, scope);
     }
-    return annotateAdvisory(action, await dispatchAction(action, payload, scope));
+    return annotateAdvisory(action, await dispatchAction(action, payload, scope, signal));
   }
-  async function dispatchAction(action, payload, scope) {
+  async function dispatchAction(action, payload, scope, signal) {
     switch (action) {
       case "snapshot":
         return takeSnapshot(
@@ -416,7 +434,7 @@
       case "upload_file":
         return uploadFiles(scope, payload.locator, payload.files);
       case "wait_for":
-        return waitFor(scope, payload.condition, payload.timeout);
+        return waitFor(scope, payload.condition, payload.timeout, signal);
       case "get_html":
         return getHtml(payload.selector);
       case "extract_text":
@@ -1592,7 +1610,7 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
       target: targetInfo(chosen)
     };
   }
-  async function waitFor(scope, condition, timeout = 3e4) {
+  async function waitFor(scope, condition, timeout = 3e4, signal) {
     const start = Date.now();
     const condType = condition.type;
     const describeCurrentState = () => {
@@ -1655,6 +1673,7 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
     };
     const staleRefMessage = (err) => err instanceof Error && err.name === "StaleRefError" ? err.message : null;
     const frameGone = () => scope.doc.defaultView === null;
+    if (signal?.aborted) return { success: false, message: "Browser wait cancelled.", timedOut: false, elapsed: 0 };
     try {
       if (check()) {
         return { success: true, message: `Condition met immediately`, timedOut: false, elapsed: 0 };
@@ -1673,6 +1692,7 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
         observer.disconnect();
         clearInterval(pollTimer);
         clearTimeout(timeoutTimer);
+        signal?.removeEventListener("abort", onAbort);
         const elapsed = Date.now() - start;
         resolve({
           success: !timedOut && failure === void 0,
@@ -1715,8 +1735,11 @@ Pick one by ref, or call find to search by text.` : ` Call find to search the pa
           attributes: true
         });
       }
+      const onAbort = () => complete(false, "Browser wait cancelled.");
       const pollTimer = setInterval(tryCheck, 500);
       const timeoutTimer = setTimeout(() => complete(true), timeout);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
   function sameOriginFrameHtml(frame) {

@@ -75,7 +75,7 @@ export const testSkillTriggerTool: ToolDefinition = {
     },
     required: ['skill_name', 'skill_description', 'queries'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const skillName = input.skill_name as string;
     const skillDescription = input.skill_description as string;
     const rawQueries = input.queries as Array<{ query: string; should_trigger: string | boolean }>;
@@ -123,6 +123,7 @@ ${skillsList}
           messages: [{ role: 'user', content: q.query }],
           tools: [useSkillToolDef],
           maxTokens: 256,
+          conversationId: context?.conversationId,
         });
 
         const didTrigger = response.toolCalls.some(
@@ -181,7 +182,7 @@ export const improveSkillDescriptionTool: ToolDefinition = {
     },
     required: ['skill_name', 'current_description', 'eval_results'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const skillName = input.skill_name as string;
     const currentDescription = input.current_description as string;
     const skillContent = (input.skill_content as string) || '';
@@ -237,6 +238,7 @@ ${skillContent ? `技能内容（供参考）：\n${skillContent.slice(0, 2000)}
       const response = await llmCall({
         messages: [{ role: 'user', content: prompt }],
         maxTokens: 1024,
+        conversationId: context?.conversationId,
       });
 
       const newDescription = response.text.trim().replace(/^["']|["']$/g, '');

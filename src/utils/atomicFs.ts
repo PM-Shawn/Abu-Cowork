@@ -11,6 +11,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
 
 /** Result of an atomic write with backup. */
 export interface AtomicWriteResult {
@@ -37,7 +38,9 @@ interface RawAtomicWriteResult {
  * @throws If the write fails at any stage. The target is untouched on failure.
  */
 export async function atomicWrite(path: string, content: string): Promise<void> {
-  await invoke<void>('atomic_write_text', { path, content });
+  // #549: conversation-sized content travels on the 128 MiB raw-body channel
+  // in the Electron renderer; elsewhere (incl. the sidecar shim) the plain form.
+  await invokeTextCommand('atomic_write_text', { path }, content);
 }
 
 /**

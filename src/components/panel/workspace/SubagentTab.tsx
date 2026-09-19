@@ -121,8 +121,14 @@ function findLiveDispatch(
 
 /**
  * After the live batch store is gone (app restart, conversation reopened, TTL
- * eviction) the member's process is read back from the owning assistant
- * message: the run_agent_batch step's children tagged with this task index.
+ * eviction) the member's process is read back from disk-backed messages: the
+ * run_agent_batch step's children tagged with this task index.
+ *
+ * The two halves live on different messages of the same loop: the tool call
+ * (and its terminal summary) on the dispatching assistant message named by
+ * `identity.assistantMessageId`, the execution-steps snapshot on the loop's
+ * LAST assistant message (persistExecutionSnapshot). Provider tool-call ids
+ * can repeat across loops, so the snapshot search stays inside that loop.
  */
 function findPersistedBatchTask(
   messages: readonly Message[] | undefined,
@@ -132,14 +138,19 @@ function findPersistedBatchTask(
   t: TranslationDict,
 ): PersistedBatchTask | null {
   if (!messages) return null;
-  const candidates = identity.assistantMessageId
-    ? messages.filter((m) => m.id === identity.assistantMessageId)
-    : messages.filter((m) => m.role === 'assistant');
-  for (const message of candidates) {
+  const ownsCall = (m: Message) => m.role === 'assistant' && !!m.toolCalls?.some((call) => call.id === identity.batchToolCallId);
+  const dispatchMessage = identity.assistantMessageId
+    ? messages.find((m) => m.id === identity.assistantMessageId)
+    : messages.find(ownsCall);
+  if (identity.assistantMessageId && !dispatchMessage) return null;
+  const loopId = dispatchMessage?.loopId;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== 'assistant' || (loopId !== undefined && message.loopId !== loopId)) continue;
     const batchStep = message.executionSteps?.find((step) => step.toolCallId === identity.batchToolCallId);
     if (!batchStep) continue;
     const children = childrenForTask(snapshotToExecutionSteps(batchStep.childSteps ?? []), taskIndex);
-    const toolCall = message.toolCalls?.find((call) => call.id === identity.batchToolCallId);
+    const toolCall = (dispatchMessage ?? message).toolCalls?.find((call) => call.id === identity.batchToolCallId);
     const row = toolCall ? rowsFromPersistedSummary(identity, toolCall, t)?.[taskIndex] : undefined;
     return { steps: children.map((child) => convertExecutionStep(child, locale)), row };
   }
@@ -179,9 +190,6 @@ function PersistedTaskView({ title, persisted, locale, t, dispatchKey }: { title
               </span>
             )}
             <span>{format(t.workspace.agentTools, { count: steps.length })}</span>
-            {rowStatus === 'succeeded' && steps.length === 0 && (
-              <span className="text-[var(--abu-warning)]" data-testid="dispatch-unverified">{t.workspace.teamDispatchNoToolCalls}</span>
-            )}
             <span>{liveStatus === 'running' ? t.workspace.teamLiveProcess : t.workspace.agentPersistedProcess}</span>
             {liveStatus === 'running' && dispatchKey && (
               <button

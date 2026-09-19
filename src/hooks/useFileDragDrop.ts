@@ -111,8 +111,6 @@ export function useFileDragDrop(
       let admissionFailed = false;
       try {
         for (const file of files) {
-          const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-          if (isPdf) { admissionFailed = true; continue; }
           try {
             const path = getElectronFilePath(file);
             if (path) paths.push(path);

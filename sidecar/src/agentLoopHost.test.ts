@@ -1,10 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RpcError } from './protocol';
 import type { SubagentLoopOptions, SubagentProgressEvent } from '@/core/agent/subagentLoop';
 import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
 import { firstImageContent } from '@/core/tools/toolResultContent';
 import { FAILED_AGENT_TERMINAL_CONTRACT_FIXTURE } from '@/core/agent/__contractFixtures__/agentRunTerminalFixture';
 import { LLMError } from '@/core/llm/adapter';
+import { LedgerWatermarkError } from '@/core/session/ledgerReader';
+import { HISTORY_UNAVAILABLE_RPC_CODE, historyUnavailableData } from '@/core/ipc/historyUnavailable';
+import { expectedForText, loadLoadedMessageSanitizerFixtures } from '@/test/loadedMessageSanitizerFixtures';
+import enUS from '@/i18n/locales/en-US';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -66,6 +70,14 @@ vi.mock('./localTools', () => ({
   executeLocalTool: (...a: unknown[]) => executeLocalToolMock(...a),
 }));
 
+// The start path's ledger read. Mocked here so this file can drive the read's
+// timing and its failures; `agentStartHistoryLedger.test.ts` runs the same
+// path against real files on disk.
+const loadMessagesMock = vi.hoisted(() => vi.fn());
+vi.mock('./shims/conversationStorageRun', () => ({
+  loadMessages: (...a: unknown[]) => loadMessagesMock(...a),
+}));
+
 import {
   handleAgentRun,
   handleAgentStart,
@@ -79,6 +91,7 @@ import {
   shutdownAllAgentRuns,
   __getActiveAgentRunCount,
   __resetAgentRunRegistryForTests,
+  __RUN_REGISTRY_ACCEPTED_TTL_MS,
   buildAgentRunPayloadDigest,
 } from './agentLoopHost';
 import { getCurrentAgentRunContext } from './agentRunContext';
@@ -187,6 +200,7 @@ describe('agentLoopHost', () => {
     executeLocalToolMock.mockReset();
     delegatedMediaStoreMocks.persistDelegatedMedia.mockReset();
     delegatedMediaStoreMocks.readDelegatedMedia.mockReset();
+    loadMessagesMock.mockReset();
     __resetAgentRunRegistryForTests();
   });
 
@@ -250,6 +264,74 @@ describe('agentLoopHost', () => {
 
       await expect(handleAgentRun(params)).rejects.toMatchObject({ code: -32602 });
       expect(runAgentLoopMock).not.toHaveBeenCalled();
+    });
+
+    describe('stale accepted entries', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-09-17T00:00:00Z'));
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('prunes an accepted run that never received agent.run and reports not_found', () => {
+        const params = reliableParams({ runId: 'accepted-orphan' });
+        handleAgentStart(params);
+
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'accepted' }));
+        expect(traceSidecarRuntimeEventMock).not.toHaveBeenCalledWith(
+          'sidecar.agent_start_pruned',
+          expect.anything(),
+        );
+
+        vi.advanceTimersByTime(1);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual({
+          version: 1,
+          runId: params.runId,
+          state: 'not_found',
+        });
+        expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith('sidecar.agent_start_pruned', {
+          runId: params.runId,
+          stage: 'accepted',
+          outcome: 'expired',
+        });
+      });
+
+      it('lets agent.abort-cancelled accepted runs expire too', async () => {
+        const params = reliableParams({ runId: 'accepted-cancelled-orphan' });
+        handleAgentStart(params);
+        await expect(handleAgentAbort({ runId: params.runId })).resolves.toEqual({ accepted: true, state: 'aborting' });
+
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS + 1);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'not_found' }));
+        await expect(handleAgentAbort({ runId: params.runId })).resolves.toEqual({ accepted: false, state: 'not_found' });
+      });
+
+      it('accepts a fresh start for the same runId after its stale acceptance was pruned', () => {
+        const params = reliableParams({ runId: 'accepted-restart' });
+        handleAgentStart(params);
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS + 1);
+
+        expect(handleAgentStart(params)).toEqual(expect.objectContaining({ state: 'accepted', replay: false }));
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+      });
+
+      it('does not prune a run that is still executing past the accepted TTL', async () => {
+        const params = reliableParams({ runId: 'long-running' });
+        handleAgentStart(params);
+        const loop = deferred<{ reason: string }>();
+        runAgentLoopMock.mockReturnValueOnce(loop.promise);
+        const run = handleAgentRun(params);
+
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS * 3);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'running' }));
+
+        loop.resolve({ reason: 'completed' });
+        await expect(run).resolves.toEqual({ reason: 'completed' });
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'terminal' }));
+      });
     });
 
     it('rejects agent.run when executable params are tampered after start', async () => {
@@ -1542,6 +1624,239 @@ describe('agentLoopHost', () => {
       expect(capturedSignal?.aborted).toBe(false);
       shutdownAllAgentRuns();
       expect(capturedSignal?.aborted).toBe(true);
+    });
+  });
+
+  describe('agent.start with a ledger history (#549 P2a)', () => {
+    function ledgerStartParams(runId: string, ledgerWatermark = 128) {
+      const params = baseParams({ runId });
+      const clientMessageId = `msg-${runId}`;
+      const withIdentity = {
+        ...params,
+        clientMessageId,
+        options: { ...(params.options as Record<string, unknown>), prePersistedUserMessageId: clientMessageId },
+        history: { source: 'ledger', ledgerWatermark },
+      };
+      return { ...withIdentity, payloadDigest: buildAgentRunPayloadDigest(withIdentity) };
+    }
+
+    function compactRun(params: { runId: string; clientMessageId: string; payloadDigest: string }) {
+      return { runId: params.runId, clientMessageId: params.clientMessageId, payloadDigest: params.payloadDigest };
+    }
+
+    function currentRow(runId: string) {
+      return {
+        id: `msg-${runId}`, role: 'user', content: '新问题', timestamp: 99,
+        runId, clientMessageId: `msg-${runId}`, loopId: runId, runState: 'pending',
+      };
+    }
+
+    function ledgerRows(runId: string) {
+      return [
+        { id: 'u0', role: 'user', content: '旧问题', timestamp: 1, runState: 'accepted' },
+        { id: 'g0', role: 'assistant', content: '', timestamp: 2, isStreaming: true },
+        { id: 'a0', role: 'assistant', content: '旧回答', timestamp: 3 },
+        currentRow(runId),
+      ];
+    }
+
+    /** Run the started loop once and return the messages its conversation reader serves. */
+    async function messagesSeenByTheLoop(params: ReturnType<typeof ledgerStartParams>): Promise<unknown[]> {
+      let seen: unknown[] = [];
+      runAgentLoopMock.mockImplementation(async () => {
+        seen = getCurrentAgentRunContext().conversationReader.getConversation(params.conversationId)?.messages ?? [];
+        return { reason: 'completed' };
+      });
+      await handleAgentRun(compactRun(params));
+      return JSON.parse(JSON.stringify(seen));
+    }
+
+    async function rejectionOf(run: () => unknown): Promise<RpcError> {
+      try {
+        await run();
+      } catch (err) {
+        return err as RpcError;
+      }
+      throw new Error('expected a rejection');
+    }
+
+    it('reads the ledger up to the watermark, sanitises it, and the compact agent.run executes from it', async () => {
+      const params = ledgerStartParams('ledger-ok', 4096);
+      loadMessagesMock.mockResolvedValue(ledgerRows('ledger-ok'));
+
+      const ack = await handleAgentStart(params);
+
+      expect(ack).toEqual(expect.objectContaining({ version: 1, runId: 'ledger-ok', state: 'accepted', replay: false }));
+      expect(loadMessagesMock).toHaveBeenCalledWith(params.conversationId, { strictRead: true, uptoBytes: 4096 });
+      expect(handleAgentGetState({ runId: 'ledger-ok' }).state).toBe('accepted');
+      const seen = await messagesSeenByTheLoop(params) as { id: string; runState?: string }[];
+      expect(seen.map((m) => [m.id, m.runState ?? null])).toEqual([
+        ['u0', 'failed'],
+        ['a0', null],
+        ['msg-ledger-ok', 'pending'],
+      ]);
+    });
+
+    it('a start that carries its messages is acknowledged synchronously and reads nothing', () => {
+      const ack = handleAgentStart(reliableParams({ runId: 'carried-sync' }));
+      expect(ack).not.toBeInstanceOf(Promise);
+      expect(ack).toEqual(expect.objectContaining({ state: 'accepted', replay: false }));
+      expect(loadMessagesMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['watermark_beyond_file', () => new LedgerWatermarkError('watermark_beyond_file', 4096, 100), 100],
+      ['watermark_not_at_line_end', () => new LedgerWatermarkError('watermark_not_at_line_end', 4096, 9000), 9000],
+      ['ledger_unreadable', () => Object.assign(new Error('EISDIR: illegal operation on a directory'), { code: 'EISDIR' }), 0],
+    ] as const)('%s is a typed history_unavailable error and registers nothing', async (reason, failure, fileBytes) => {
+      const params = ledgerStartParams(`ledger-${reason}`, 4096);
+      loadMessagesMock.mockRejectedValueOnce(failure());
+
+      const rejected = await rejectionOf(() => handleAgentStart(params));
+
+      expect(rejected).toBeInstanceOf(RpcError);
+      expect(rejected.code).toBe(HISTORY_UNAVAILABLE_RPC_CODE);
+      expect(rejected.message).toBe('history_unavailable');
+      expect(rejected.data).toEqual(historyUnavailableData(reason, 4096, fileBytes));
+      expect(JSON.stringify(rejected.data)).not.toContain('EISDIR');
+      expect(handleAgentGetState({ runId: params.runId }).state).toBe('not_found');
+
+      // Nothing was registered, so the same ids start clean once the read works.
+      loadMessagesMock.mockResolvedValue(ledgerRows(params.runId));
+      expect(await handleAgentStart(params)).toEqual(expect.objectContaining({ state: 'accepted', replay: false }));
+    });
+
+    it('a ledger prefix without the run\'s own user row is refused', async () => {
+      const params = ledgerStartParams('ledger-no-turn', 512);
+      loadMessagesMock.mockResolvedValue(ledgerRows('some-other-run'));
+      const rejected = await rejectionOf(() => handleAgentStart(params));
+      expect(rejected.data).toEqual(historyUnavailableData('current_turn_missing', 512, 0));
+      expect(handleAgentGetState({ runId: 'ledger-no-turn' }).state).toBe('not_found');
+    });
+
+    it('a replay that arrives while the ledger is being read shares that read', async () => {
+      const params = ledgerStartParams('ledger-inflight');
+      const read = deferred<unknown[]>();
+      loadMessagesMock.mockReturnValue(read.promise);
+
+      const first = handleAgentStart(params);
+      const second = handleAgentStart(params);
+      expect(handleAgentGetState({ runId: 'ledger-inflight' }).state).toBe('not_found');
+      read.resolve(ledgerRows('ledger-inflight'));
+
+      expect(await first).toEqual(expect.objectContaining({ replay: false, state: 'accepted' }));
+      expect(await second).toEqual(expect.objectContaining({ replay: true, state: 'accepted' }));
+      expect(loadMessagesMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('a different start for the same runId is refused while the first is being read', async () => {
+      const read = deferred<unknown[]>();
+      loadMessagesMock.mockReturnValue(read.promise);
+      const first = handleAgentStart(ledgerStartParams('ledger-conflict', 128));
+      const rejected = await rejectionOf(() => handleAgentStart(ledgerStartParams('ledger-conflict', 256)));
+      expect(rejected.code).toBe(-32602);
+      expect(rejected.message).toMatch(/Conflicting replay/);
+      read.resolve(ledgerRows('ledger-conflict'));
+      await first;
+      expect(loadMessagesMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('a start that carries its messages is refused while a ledger read for that runId is pending', async () => {
+      const params = ledgerStartParams('ledger-vs-carried');
+      const read = deferred<unknown[]>();
+      loadMessagesMock.mockReturnValue(read.promise);
+      const starting = handleAgentStart(params);
+
+      // Same clientMessageId, different form — so a different digest.
+      const rejected = await rejectionOf(() => handleAgentStart(reliableParams({ runId: 'ledger-vs-carried' })));
+      expect(rejected.code).toBe(-32602);
+      expect(rejected.message).toMatch(/Conflicting replay/);
+
+      read.resolve(ledgerRows('ledger-vs-carried'));
+      expect(await starting).toEqual(expect.objectContaining({ replay: false, state: 'accepted' }));
+      // The ledger start owns the entry: the run executes from the history it read.
+      const seen = await messagesSeenByTheLoop(params) as { id: string }[];
+      expect(seen.map((m) => m.id)).toEqual(['u0', 'a0', 'msg-ledger-vs-carried']);
+    });
+
+    it('a stop that arrives while the ledger is being read cancels the run before it executes', async () => {
+      const params = ledgerStartParams('ledger-cancel');
+      const read = deferred<unknown[]>();
+      loadMessagesMock.mockReturnValue(read.promise);
+      const starting = handleAgentStart(params);
+
+      expect(handleAgentGetState({ runId: 'ledger-cancel' }).state).toBe('not_found');
+      expect(await handleAgentAbort({ runId: 'ledger-cancel' })).toEqual({ accepted: true, state: 'aborting' });
+      read.resolve(ledgerRows('ledger-cancel'));
+      await starting;
+      expect(handleAgentGetState({ runId: 'ledger-cancel' }).state).toBe('accepted');
+
+      expect(await handleAgentRun(compactRun(params))).toEqual(expect.objectContaining({ reason: 'aborted' }));
+      expect(runAgentLoopMock).not.toHaveBeenCalled();
+      expect(handleAgentGetState({ runId: 'ledger-cancel' })).toEqual(expect.objectContaining({
+        state: 'terminal',
+        terminal: expect.objectContaining({ state: 'interrupted' }),
+      }));
+    });
+
+    it('refuses a history field with messages, a malformed watermark, or an unknown locale', async () => {
+      const good = ledgerStartParams('ledger-parse');
+      const redigest = (value: Record<string, unknown>) => {
+        const { payloadDigest: _old, ...rest } = value;
+        return { ...rest, payloadDigest: buildAgentRunPayloadDigest(rest) };
+      };
+      for (const bad of [
+        redigest({ ...good, conversationSnapshot: { ...good.conversationSnapshot, messages: [{ id: 'm', role: 'user', content: 'x', timestamp: 1 }] } }),
+        redigest({ ...good, history: { source: 'ledger', ledgerWatermark: -1 } }),
+        redigest({ ...good, history: { source: 'ledger', ledgerWatermark: 1.5 } }),
+        redigest({ ...good, history: { source: 'memory', ledgerWatermark: 1 } }),
+        redigest({ ...good, locale: 'fr-FR' }),
+      ]) {
+        const rejected = await rejectionOf(() => handleAgentStart(bad));
+        expect(rejected.code).toBe(-32602);
+      }
+      expect(loadMessagesMock).not.toHaveBeenCalled();
+      expect(handleAgentGetState({ runId: 'ledger-parse' }).state).toBe('not_found');
+    });
+
+    it('agent.run: the compact form needs a ledger start and matching ids; the full form stays accepted', async () => {
+      const ledger = ledgerStartParams('run-forms');
+      loadMessagesMock.mockResolvedValue(ledgerRows('run-forms'));
+      await handleAgentStart(ledger);
+      expect((await rejectionOf(() => handleAgentRun({ ...compactRun(ledger), payloadDigest: 'rrp1-0-0' }))).message)
+        .toMatch(/Conflicting agent\.run/);
+      expect((await rejectionOf(() => handleAgentRun({ runId: 'run-forms', clientMessageId: '', payloadDigest: ledger.payloadDigest }))).code)
+        .toBe(-32602);
+
+      const carried = reliableParams({ runId: 'run-forms-carried' });
+      handleAgentStart(carried);
+      expect((await rejectionOf(() => handleAgentRun(compactRun(carried)))).message)
+        .toMatch(/compact agent\.run/);
+
+      runAgentLoopMock.mockResolvedValue({ reason: 'completed' });
+      await expect(handleAgentRun(ledger)).resolves.toEqual(expect.objectContaining({ reason: 'completed' }));
+    });
+
+    describe('the shared sanitiser fixtures through agent.start', () => {
+      const { cases } = loadLoadedMessageSanitizerFixtures();
+      for (const [index, testCase] of cases.entries()) {
+        it(`fixture: ${testCase.name}`, async () => {
+          const runId = testCase.currentRunMessageId?.replace(/^msg-/, '') ?? `fixture-${index}`;
+          const ownsCurrentRow = testCase.currentRunMessageId !== undefined;
+          const params = ledgerStartParams(runId);
+          loadMessagesMock.mockResolvedValue(ownsCurrentRow ? testCase.input : [...testCase.input, currentRow(runId)]);
+
+          await handleAgentStart(params);
+
+          const expected = ownsCurrentRow
+            ? testCase.expected
+            : [...testCase.expected, { ...currentRow(runId), isStreaming: false }];
+          expect(await messagesSeenByTheLoop(params)).toEqual(expectedForText(expected, {
+            runRecoveredAfterRestart: enUS.chat.runRecoveredAfterRestart,
+            errorEmptyBody: enUS.chat.errorEmptyBody,
+          }));
+        });
+      }
     });
   });
 });

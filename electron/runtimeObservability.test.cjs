@@ -19,7 +19,7 @@ const {
   sanitizeAttributes,
 } = require('./runtimeObservability.cjs');
 
-function makeHarness() {
+function makeHarness(overrides = {}) {
   let now = 1_000;
   let nextTimerId = 1;
   const timers = new Map();
@@ -34,6 +34,7 @@ function makeHarness() {
     },
     clearTimer: (id) => timers.delete(id),
     bridgeAckTimeoutMs: 3_000,
+    ...overrides,
   });
   return {
     state,
@@ -530,4 +531,116 @@ test('events recorded before the log path is known are backfilled to disk', (t) 
   assert.equal(written[0].event, 'main.uncaught_exception');
   assert.equal(written[0].process, 'main');
   assert.ok(written[0].timestamp <= written[1].timestamp);
+});
+
+test('#549 step 0: payload byte breakdown keys survive sanitization as numbers', () => {
+  const safe = sanitizeAttributes({
+    limitBytes: 134217728,
+    fieldMessagesTextBytes: 10.4,
+    fieldUserMessageBytes: 7,
+    fieldRouteBytes: 8,
+    fieldToolResultsBytes: 1,
+    fieldToolContextResultsBytes: 2,
+    fieldMediaBase64Bytes: 3,
+    fieldToolListBytes: 4,
+    fieldSystemPromptBytes: 5,
+    fieldSettingsBytes: 6,
+  });
+  assert.deepEqual(safe, {
+    limitBytes: 134217728,
+    fieldMessagesTextBytes: 10,
+    fieldUserMessageBytes: 7,
+    fieldRouteBytes: 8,
+    fieldToolResultsBytes: 1,
+    fieldToolContextResultsBytes: 2,
+    fieldMediaBase64Bytes: 3,
+    fieldToolListBytes: 4,
+    fieldSystemPromptBytes: 5,
+    fieldSettingsBytes: 6,
+  });
+});
+
+test('#549 step 0: agent.start, llm.chat and subagent.run writes record payloadBytes', () => {
+  for (const method of ['agent.start', 'llm.chat', 'subagent.run']) {
+    const h = makeHarness();
+    h.state.noteSpawnStarted('abu-sidecar', true);
+    const line = JSON.stringify({ jsonrpc: '2.0', id: 7, method, params: { runId: 'run-9', userMessage: '中文' } });
+    const rpc = h.state.noteRpcWriteStarted('abu-sidecar', line);
+    assert.ok(rpc, `${method} must be tracked`);
+    assert.equal(rpc.payloadBytes, Buffer.byteLength(line));
+    const started = h.events.find((entry) => entry.event === 'main.rpc_write_started');
+    assert.equal(started.attributes.method, method);
+    assert.equal(started.attributes.payloadBytes, Buffer.byteLength(line));
+  }
+});
+
+test('#549: raw-body writes are tracked from header metadata with the byte length', () => {
+  const h = makeHarness();
+  h.state.noteSpawnStarted('abu-sidecar', true);
+  const rpc = h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: 'agent.start', rpcId: '3', runId: 'run-3' }, 123456);
+  assert.equal(rpc.payloadBytes, 123456);
+  assert.equal(rpc.method, 'agent.start');
+  assert.equal(rpc.rpcId, '3');
+  assert.equal(rpc.runId, 'run-3');
+  assert.equal(rpc.stage, 'stdin_write');
+  assert.equal(h.state.snapshot().pendingRpcs.length, 1);
+  const started = h.events.filter((entry) => entry.event === 'main.rpc_write_started');
+  assert.equal(started.length, 1);
+  assert.equal(started[0].attributes.payloadBytes, 123456);
+
+  // The same response path closes it as for a parsed line.
+  h.state.noteRpcWriteFinished(rpc);
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 3, result: {} }));
+  assert.equal(h.state.snapshot().pendingRpcs.length, 0);
+
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: 'echo' }, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('other', { method: 'agent.start' }, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', {}, 1), null);
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', undefined, 1), null);
+});
+
+test('#549: header metadata is clipped like parsed metadata', () => {
+  const h = makeHarness();
+  h.state.noteSpawnStarted('abu-sidecar', true);
+  const rpc = h.state.noteRpcWriteStartedMeta('abu-sidecar', {
+    method: 'agent.run',
+    rpcId: '9'.repeat(200),
+    runId: 'r'.repeat(250),
+  }, 7);
+  assert.equal(rpc.rpcId.length, 80);
+  assert.equal(rpc.runId.length, 160);
+  // A method longer than 80 chars is not a tracked method after clipping.
+  assert.equal(h.state.noteRpcWriteStartedMeta('abu-sidecar', { method: `agent.run${'x'.repeat(100)}` }, 7), null);
+});
+
+test('#549: the pending-RPC map is capped and evicts the oldest entry', () => {
+  const h = makeHarness({ maxPendingRpcs: 3 });
+  h.state.noteSpawnStarted('abu-sidecar', true);
+
+  for (let i = 1; i <= 5; i += 1) {
+    h.state.noteRpcWriteStartedMeta('abu-sidecar', {
+      method: 'agent.run',
+      rpcId: `rpc-${i}`,
+      runId: `run-${i}`,
+    }, 7);
+  }
+
+  const pending = h.state.snapshot().pendingRpcs;
+  assert.equal(pending.length, 3);
+  assert.deepEqual(pending.map((rpc) => rpc.rpcId), ['rpc-3', 'rpc-4', 'rpc-5']);
+
+  // An evicted entry no longer answers its response, but a retained one still
+  // completes normally — the cap drops bookkeeping, never the live RPC.
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 'rpc-1', result: {} }));
+  h.state.noteStdoutLine('abu-sidecar', JSON.stringify({ jsonrpc: '2.0', id: 'rpc-4', result: {} }));
+  const responses = h.events.filter((entry) => entry.event === 'main.rpc_response_received');
+  assert.deepEqual(responses.map((entry) => entry.attributes.rpcId), ['rpc-4']);
+  assert.equal(h.state.snapshot().pendingRpcs.length, 2);
+});
+
+test('#549 P2a: the ledger watermark attributes survive sanitization as non-negative integers', () => {
+  assert.deepEqual(
+    sanitizeAttributes({ reason: 'watermark_beyond_file', ledgerWatermarkBytes: 4096.4, ledgerFileBytes: -3 }),
+    { reason: 'watermark_beyond_file', ledgerWatermarkBytes: 4096, ledgerFileBytes: 0 },
+  );
 });

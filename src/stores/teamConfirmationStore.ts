@@ -37,6 +37,8 @@ export interface TeamConfirmation {
    */
   browserOrigin?: string;
   browserOperationClass?: BrowserOperationClass;
+  browserPermissionResource?: import('@/core/permissions/browserPermissionDefaults').BrowserPermissionResource;
+  browserPermissionTargets?: import('@/core/permissions/browserPermissionConfig').BrowserPermissionTarget[];
   /** The REQUESTER's ceiling; `mayOfferPersistentGrant` still lowers it. */
   allowPersistentGrant?: boolean;
   level?: DangerLevel;
@@ -97,7 +99,8 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
     selectRetry: (id, mode) => {
       const item = get().pending[id];
       if (!item || !isRetryableTeamIdentity(item.identity)) return undefined;
-      set((s) => { s.retrySelections[id] = { item, mode }; delete s.pending[id]; });
+      const approvalMode = item.kind === 'browser' || item.kind === 'browser-upload' ? 'once' : mode;
+      set((s) => { s.retrySelections[id] = { item, mode: approvalMode }; delete s.pending[id]; });
       return id;
     },
     beginRetry: (conversationId, loopId, selectionId) => {
@@ -107,7 +110,7 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
       set((s) => {
         const approval: Approval = { ...selected, loopId,
           ...(selected.item.identity?.dispatchId === 'leader' ? { dispatchId: 'leader' } : {}) };
-        if (selected.mode === 'once') s.approvedOnce[selectionId] = approval;
+        if (selected.mode === 'once' || selected.item.kind === 'browser' || selected.item.kind === 'browser-upload') s.approvedOnce[selectionId] = approval;
         else s.runRules[selectionId] = approval;
         delete s.retrySelections[selectionId];
       });
@@ -123,7 +126,7 @@ export const useTeamConfirmationStore = create<TeamConfirmationStore>()(
       if (!isRetryableTeamIdentity(item.identity)) return false;
       const matches = (approval: Approval) => approval.loopId === item.identity!.loopId
         && confirmationKey(approval.item) === confirmationKey(item);
-      if (Object.values(get().runRules).some(matches)) return true;
+      if (item.kind !== 'browser' && item.kind !== 'browser-upload' && Object.values(get().runRules).some(matches)) return true;
       const entry = Object.entries(get().approvedOnce).find(([, approval]) => matches(approval)
         && approval.dispatchId === item.identity!.dispatchId
         && approval.item.identity?.requestOrdinal === item.identity!.requestOrdinal);

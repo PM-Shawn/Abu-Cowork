@@ -1,3 +1,5 @@
+import { createBrowserPermissionConfig } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * Integration coverage for the browser observability collection points added
  * to registry.ts (T2, docs/plans/2026-09-01-browser-batch1-observability.md):
@@ -35,7 +37,6 @@ vi.mock('../mcp/client', () => ({
 
 import { executeAnyTool, checkToolApproval } from './registry';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import {
   clearBrowserSignals,
@@ -64,7 +65,7 @@ function setDefaultResponse(text: string): void {
 describe('registry.ts browser observability collection', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard', browserPermissionConfigV2: createBrowserPermissionConfig() });
     __resetBrowserGrantsForTests();
     clearBrowserSignals();
     clearBrowserToolTrackers();
@@ -76,7 +77,7 @@ describe('registry.ts browser observability collection', () => {
     mocks.callTool.mockImplementation(async (_server: string, toolName: string) => {
       if (toolName === 'get_tabs') {
         getTabsCallCount++;
-        return JSON.stringify({ windows: [] });
+        return JSON.stringify({ windows: [{ tabs: [{ tabId: 1, url: 'https://example.com/page', frames: [{ frameId: 'f3', origin: 'https://frame.example', accessible: true, sameOriginAsTop: false }] }] }] });
       }
       return responseQueue.length > 0 ? responseQueue.shift() : defaultResponse;
     });
@@ -292,17 +293,21 @@ describe('registry.ts browser observability collection', () => {
     expect(getRecentBrowserSignals().filter((s) => s.kind === 'fallback_to_script')).toHaveLength(0);
   });
 
-  it('records confirm_prompt exactly when a real confirmation dialog is shown for a state-changing tool, and not again once granted', async () => {
+  it('records confirm_prompt exactly when a real confirmation dialog is shown for a state-changing tool, for each individually approved call', async () => {
+    const config = createBrowserPermissionConfig(); config.defaults.browse = 'ask';
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
     const confirm = async () => true;
 
     await checkToolApproval('abu-browser__click', { tabId: 1, locator: makeLocator({ ref: 'e1' }) }, { conversationId: 'conv-1' } as never, confirm as never);
     await checkToolApproval('abu-browser__click', { tabId: 1, locator: makeLocator({ ref: 'e1' }) }, { conversationId: 'conv-1' } as never, confirm as never);
 
     const prompts = getRecentBrowserSignals().filter((s) => s.kind === 'confirm_prompt');
-    expect(prompts).toHaveLength(1);
+    expect(prompts).toHaveLength(2);
   });
 
   it('does not record confirm_prompt when there is no confirmation channel (fails closed without ever prompting)', async () => {
+    const config = createBrowserPermissionConfig(); config.defaults.browse = 'ask';
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
     const decision = await checkToolApproval('abu-browser__click', { tabId: 1 }, { conversationId: 'conv-1' } as never, undefined);
     expect(decision.decision).toBe('deny');
     expect(getRecentBrowserSignals().filter((s) => s.kind === 'confirm_prompt')).toHaveLength(0);
@@ -390,7 +395,7 @@ describe('registry.ts browser observability collection', () => {
 
   // ── Fix-wave: navigate success caches tabId→origin, zero extra round trips ──
   describe('tab origin cache (fix-wave)', () => {
-    it('gives a later call on the same tab the origin a prior successful navigate resolved, without an extra get_tabs call', async () => {
+    it('gives a later call on the same tab the origin a prior successful navigate resolved, while rechecking its current origin', async () => {
       queueResponse('ok'); // response for the navigate call itself
       await executeAnyTool(
         'abu-browser__navigate',
@@ -414,7 +419,7 @@ describe('registry.ts browser observability collection', () => {
       const extractSignal = toolCalls.find((s) => s.kind === 'tool_call' && s.tool === 'abu-browser__extract_text');
       expect(extractSignal).toMatchObject({ origin: 'https://example.com' });
       // No additional get_tabs round trip was spent resolving it.
-      expect(getTabsCallCount).toBe(getTabsCallsAfterNavigate);
+      expect(getTabsCallCount).toBe(getTabsCallsAfterNavigate + 1);
     });
 
     it('does not cache an origin when the navigate call itself failed', async () => {
@@ -517,7 +522,10 @@ describe('registry.ts browser observability collection', () => {
   describe('mcpManager.callTool throwing (fix-wave minor, registry.ts callTool-throw branch)', () => {
     it('propagates the original error object unchanged and still records ok:false', async () => {
       const originalError = new Error('transport exploded');
-      mocks.callTool.mockImplementationOnce(async () => { throw originalError; });
+      mocks.callTool.mockImplementation(async (_server, tool) => {
+        if (tool === 'get_tabs') return JSON.stringify({ windows: [{ tabs: [{ tabId: 1, url: 'https://example.com' }] }] });
+        throw originalError;
+      });
 
       await expect(
         executeAnyTool('abu-browser__snapshot', { tabId: 1 }, undefined, undefined, { conversationId: 'conv-1' }),
@@ -528,7 +536,10 @@ describe('registry.ts browser observability collection', () => {
     });
 
     it('propagates a thrown non-Error value unchanged too', async () => {
-      mocks.callTool.mockImplementationOnce(async () => { throw 'plain string failure'; });
+      mocks.callTool.mockImplementation(async (_server, tool) => {
+        if (tool === 'get_tabs') return JSON.stringify({ windows: [{ tabs: [{ tabId: 1, url: 'https://example.com' }] }] });
+        throw 'plain string failure';
+      });
 
       await expect(
         executeAnyTool('abu-browser__snapshot', { tabId: 1 }, undefined, undefined, { conversationId: 'conv-1' }),

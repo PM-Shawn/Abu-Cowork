@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useI18n } from '@/i18n';
 import { Plus, CircleCheck, CircleAlert, ChevronDown, Globe, ImageIcon, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -11,17 +10,14 @@ import ProviderCard from './ai-services/ProviderCard';
 import AddProviderModal from './ai-services/AddProviderModal';
 import { WebSearchForm } from './WebSearchSection';
 import { ImageGenBackendsPanel, ImageGenBackendModal } from './ImageGenSection';
-import EnterpriseLlmBadge from '@/components/enterprise/EnterpriseLlmBadge';
 import type { ProviderInstance, ImageGenBackend } from '@/types/provider';
 
 export default function AIServicesSection() {
   const { t } = useI18n();
-  const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
   const providers = useSettingsStore((s) => s.providers);
   const activeModel = useSettingsStore((s) => s.activeModel);
   const customWebSearch = useSettingsStore((s) => s.auxiliaryServices.webSearch);
   const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
-  // Hooks must run unconditionally before the isEnterprise early return below.
   const imageGenBackends = useSettingsStore((s) => s.imageGeneration.backends);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<ProviderInstance | null>(null);
@@ -30,18 +26,6 @@ export default function AIServicesSection() {
   const [imageGenExpanded, setImageGenExpanded] = useState(false);
   const [showAddImageGenModal, setShowAddImageGenModal] = useState(false);
   const [editingImageGenBackend, setEditingImageGenBackend] = useState<ImageGenBackend | null>(null);
-
-  // In enterprise mode, show the gateway badge and hide personal provider config.
-  if (isEnterprise) {
-    return (
-      <div className="space-y-4">
-        <h3 className="text-h-sm font-semibold text-[var(--abu-text-primary)]">
-          {t.settings.aiServices}
-        </h3>
-        <EnterpriseLlmBadge />
-      </div>
-    );
-  }
 
   // Check if any enabled provider has builtin capabilities
   const enabledProviders = providers.filter(p => p.enabled);

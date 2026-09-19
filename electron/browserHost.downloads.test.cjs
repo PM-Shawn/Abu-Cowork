@@ -107,6 +107,9 @@ class FakeWebContents {
   }
 
   once(event, handler) { return this.on(event, handler); }
+  removeListener(event, handler) {
+    this.listeners.set(event, (this.listeners.get(event) || []).filter(value => value !== handler));
+  }
 
   fire(event, ...args) {
     for (const handler of this.listeners.get(event) || []) handler(...args);
@@ -210,7 +213,7 @@ function fakeSession(capture) {
     setDevicePermissionHandler() {},
     setDisplayMediaRequestHandler() {},
     on(event, handler) { if (event === 'will-download') capture(handler); },
-    webRequest: { onHeadersReceived() {} },
+    webRequest: { onBeforeRequest() {}, onHeadersReceived() {} },
   };
 }
 
@@ -1061,15 +1064,13 @@ test('arms file-chooser interception while automation drives a tab, and answers 
 
     const armed = contents.debugger.sent('Page.setInterceptFileChooserDialog');
     assert.equal(armed.length, 1);
-    assert.deepEqual(armed[0].params, { enabled: true });
+    assert.deepEqual(armed[0].params, { enabled: true, cancel: true });
 
     contents.debugger.fireCdp('Page.fileChooserOpened', { backendNodeId: 42 });
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
     const cancelled = contents.debugger.sent('DOM.setFileInputFiles');
-    assert.equal(cancelled.length, 1, 'the chooser was left hanging instead of cancelled');
-    // An empty selection IS Cancel, in CDP's vocabulary.
-    assert.deepEqual(cancelled[0].params, { files: [], backendNodeId: 42 });
+    assert.equal(cancelled.length, 0, 'native cancellation must not clear an existing file selection');
     noOsDialogs();
   } finally { restore(); }
 });
@@ -1084,22 +1085,16 @@ test('a read-only action never arms the chooser interception on the user\'s tab'
   } finally { restore(); }
 });
 
-/**
- * Interception is best-effort and SEPARATE from the dialog interception it
- * shares a lease with: an Electron build without the CDP method must not cost
- * the tab its javascript-dialog handling, which is the older and more
- * load-bearing of the two.
- */
-test('keeps dialog interception when the chooser CDP method is unavailable', async () => {
+test('refuses a page-driving action if native picker cancellation is unavailable', async () => {
   const { host, restore } = loadHost();
   try {
     const { tabId, contents } = await openTab(host, OWNER_A);
     contents.debugger.unsupported.add('Page.setInterceptFileChooserDialog');
-
-    await host.performBrowserAutomation('click', { ownerId: OWNER_A, tabId, locator: { css: '#x' } });
-
+    await assert.rejects(host.performBrowserAutomation('click', {
+      ownerId: OWNER_A, tabId, locator: { css: '#x' },
+    }), /interception is unavailable/);
+    assert.equal(contents.domCalls.filter((c) => c.action === 'click').length, 0);
     assert.equal(contents.debugger.sent('Page.enable').length, 1);
-    assert.equal(contents.debugger.sent('Page.setInterceptFileChooserDialog').length, 0);
   } finally { restore(); }
 });
 
@@ -1113,5 +1108,24 @@ test('ignores a chooser event that names no node instead of throwing inside the 
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
     assert.equal(contents.debugger.sent('DOM.setFileInputFiles').length, 0);
+  } finally { restore(); }
+});
+
+test('an epoch mtime is compared rather than treated as a missing upload pin', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const file = path.join(root, 'epoch.txt');
+    fs.writeFileSync(file, 'PUBLIC!!');
+    fs.utimesSync(file, new Date(0), new Date(0));
+    const approved = approvedEntry(file, 'epoch.txt');
+    assert.equal(approved.mtimeMs, 0);
+    fs.writeFileSync(file, 'SECRET!!');
+    fs.utimesSync(file, new Date(5000), new Date(5000));
+    assert.equal(fs.statSync(file).ino, approved.ino);
+    await assert.rejects(host.performBrowserAutomation('upload_file', {
+      ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+    }), /changed on disk/);
+    assert.equal(contents.domCalls.filter((entry) => entry.action === 'upload_file').length, 0);
   } finally { restore(); }
 });

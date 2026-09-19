@@ -138,4 +138,10 @@ describe('retry', () => {
     expect(fn).toHaveBeenCalledTimes(1); // no retry attempt
     expect(onRetry).not.toHaveBeenCalled(); // the content-wiping callback never ran
   });
+
+  it('#549: never retries payload_too_large', async () => {
+    const fn = vi.fn().mockRejectedValue(new LLMError('too big', 'payload_too_large', { retryable: false }));
+    await expect(withRetry(fn)).rejects.toMatchObject({ code: 'payload_too_large' });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
 });

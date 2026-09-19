@@ -410,6 +410,47 @@ function createReverseToolInvoker(
   };
 }
 
+/**
+ * The live settings mirror with `activeModel` pinned to the run's dispatch
+ * snapshot (#545) — see the comment above `handleSubagentRun`'s reader for why
+ * the model is the one field that must NOT follow the mirror.
+ *
+ * Referential stability (settingsReader.ts's contract, which subagentLoop.ts
+ * relies on by resolving the reader once and reading it at several points):
+ * the overlaid object is minted at most once per distinct live snapshot, so
+ * repeated reads while the mirror has not moved return the SAME object, and
+ * when the live model already equals the pin the mirror's own object is
+ * returned untouched. Nested references (including `activeModel`) are never
+ * cloned. Comparison is by provider + model id: the pin arrived over the wire,
+ * so it can never be the mirror's own object even when it is the same model.
+ */
+function createRunScopedSettingsReader(
+  live: SettingsReader,
+  pinnedModel: SettingsState['activeModel'] | undefined,
+): SettingsReader {
+  if (!pinnedModel) return live;
+  let lastLive: Readonly<SettingsState> | undefined;
+  let lastOverlay: Readonly<SettingsState> | undefined;
+  return {
+    getSnapshot: () => {
+      const snapshot = live.getSnapshot();
+      const liveModel = snapshot.activeModel;
+      if (
+        liveModel
+        && liveModel.providerId === pinnedModel.providerId
+        && liveModel.modelId === pinnedModel.modelId
+      ) {
+        return snapshot;
+      }
+      if (snapshot !== lastLive || lastOverlay === undefined) {
+        lastLive = snapshot;
+        lastOverlay = { ...snapshot, activeModel: pinnedModel };
+      }
+      return lastOverlay;
+    },
+  };
+}
+
 const activeRuns = new Map<string, { controller: AbortController; dispatchKey?: string }>();
 
 export function isSubagentDispatchActive(key: string): boolean {
@@ -452,9 +493,27 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
    * was actually protecting: a subagent that starts before any `state.settings`
    * push has landed still has its own snapshot to read. Once a push arrives,
    * every run — main loop and subagent alike — reads the same live value.
+   *
+   * THE ONE EXCEPTION IS THE MODEL (#545, per-conversation model scope). The
+   * mirror's `activeModel` is the GLOBAL default — "the model new conversations
+   * start on" — and it routinely differs from the model the PARENT conversation
+   * is pinned to. The shell dispatches this run with the parent's pinned model
+   * already overlaid in `params.settingsSnapshot` (agentLoop's
+   * `settingsForModel`, the same reader in-process delegates inherit) and
+   * pre-resolves `resolvedCreds` for THAT provider. If the loop read the model
+   * from the live mirror instead, an `inherit` delegate would run on the global
+   * default rather than "the model I picked in this conversation", or — worse —
+   * pair provider-Y credentials with a model-X id and fail the request. So the
+   * reader below is the live mirror with `activeModel` pinned to the dispatch
+   * snapshot: turn limits and switches stay live, model + provider identity
+   * follow the parent conversation for the whole run, exactly as they do for
+   * the parent loop itself (its entry snapshot is pinned, see agentLoop.ts).
    */
   seedSettingsMirrorIfEmpty(params.settingsSnapshot);
-  const settingsReader: SettingsReader = getSettingsMirrorReader();
+  const settingsReader: SettingsReader = createRunScopedSettingsReader(
+    getSettingsMirrorReader(),
+    params.settingsSnapshot.activeModel,
+  );
   const toolInvoker = createReverseToolInvoker(runId, params.tools, params.parentConversationId, controller.signal);
   const workspaceReader: WorkspaceReader = { getCurrentPath: () => params.workspacePathSnapshot };
   const capsPort = createDegradedCapsPort();

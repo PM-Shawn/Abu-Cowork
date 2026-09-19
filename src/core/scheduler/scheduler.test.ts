@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * Scheduler output-delivery tests (review finding [2]).
  *
@@ -12,7 +13,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
 import { getI18n, initLanguage } from '../../i18n';
@@ -380,6 +380,45 @@ describe('SchedulerEngine output delivery by exit reason', () => {
     // The suite runs under en-US; the zh-CN string names 浏览器操作 the same way.
     expect(runs[runs.length - 1]?.error).toContain('browser actions were refused');
     expect(runs[runs.length - 1]?.error).not.toContain('Task was cancelled');
+  });
+
+  /**
+   * #549 — a dispatch that never reached the sidecar carries its own reason.
+   * The run log is where an unattended task's failure is read, so the reason
+   * has to survive into it instead of collapsing to "Unknown error".
+   */
+  it('#549: a sidecar-unavailable dispatch lands in the run log with its reason', async () => {
+    const task = makeTask({ id: 'task-sidecar-unavailable' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({
+      reason: 'error',
+      error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+      messageTaken: true,
+      stopReason: 'sidecar_unavailable',
+    } as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    const runs = useScheduleStore.getState().tasks[task.id]?.runs ?? [];
+    expect(runs[runs.length - 1]?.status).toBe('error');
+    expect(runs[runs.length - 1]?.error).toContain('后台服务没有启动成功');
+  });
+
+  it('#549: an oversize dispatch lands in the run log with its reason', async () => {
+    const task = makeTask({ id: 'task-payload-too-large' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({
+      reason: 'error',
+      error: '这段对话太长，无法继续。',
+      messageTaken: true,
+      stopReason: 'payload_too_large',
+    } as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    const runs = useScheduleStore.getState().tasks[task.id]?.runs ?? [];
+    expect(runs[runs.length - 1]?.error).toContain('这段对话太长，无法继续。');
+    expect(runs[runs.length - 1]?.error).not.toContain('Unknown error');
   });
 });
 
@@ -924,7 +963,7 @@ describe('SchedulerEngine permission tier', () => {
       agentStates: new Map(),
     });
     // Pin the global fallback mode so "follows settings" tests are deterministic.
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
     vi.clearAllMocks();
     initLanguage('zh-CN');
     // authorizeWorkspace is a module-level map that outlives a single test.
@@ -981,7 +1020,7 @@ describe('SchedulerEngine permission tier', () => {
   });
 
   it('creates a full shell scope when an unset task follows global autonomous mode', async () => {
-    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    setMigratedBrowserSettings({ permissionMode: 'autonomous' });
     const task = makeTask({ id: 'task-follow-full', permissionMode: undefined });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     let scopeWasFull: boolean | undefined;
@@ -1147,7 +1186,7 @@ describe('SchedulerEngine permission tier', () => {
     }
 
     it('names the master switch and the site when unattended browser use is off', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: false,
         browserSitePermissions: { 'https://example.com': 'allowed' },
       });
@@ -1166,7 +1205,7 @@ describe('SchedulerEngine permission tier', () => {
       // the notice must not inherit the ceiling's hardcoded English diagnostic
       // ('browser action is not permitted by the unattended browser policy') —
       // that names neither the master switch nor where to change it.
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: false,
         browserSitePermissions: { 'https://example.com': 'allowed' },
       });
@@ -1183,7 +1222,7 @@ describe('SchedulerEngine permission tier', () => {
     });
 
     it('names the site when the run may use the browser but not on that site', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserSitePermissions: {},
       });
@@ -1640,7 +1679,7 @@ describe('the approval target reaches the browser gate, not just the callback (F
   beforeEach(() => {
     useScheduleStore.setState({ tasks: {} });
     useIMChannelStore.setState({ channels: {} });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       allowUnattendedBrowser: true,
       browserSitePermissions: { 'https://allowed.example': 'allowed' },
       browserOperationPolicy: {
@@ -1653,7 +1692,7 @@ describe('the approval target reaches the browser gate, not just the callback (F
   afterEach(() => {
     __resetUnattendedConfirmationForTests();
     useIMChannelStore.setState({ channels: {} });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
       browserSitePermissions: {},

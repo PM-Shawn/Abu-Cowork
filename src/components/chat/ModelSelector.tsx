@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Search, Star, Clock } from 'lucide-react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useActiveConversation, useChatStore } from '@/stores/chatStore';
-import { useI18n } from '@/i18n';
+import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import type { ModelInfo, ProviderInstance } from '@/types';
-import { useEnterpriseModels } from '@/core/enterprise/useEnterpriseModels';
-import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { refreshManagedProvider } from '@/core/llm/managedProviderRefresh';
+import { applyModelPick } from './modelPick';
 
 interface ModelSelectorProps {
   open: boolean;
@@ -77,18 +77,14 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
   const activeModel = useSettingsStore((s) => s.activeModel);
   const activeConv = useActiveConversation();
   const setConversationModel = useChatStore((s) => s.setConversationModel);
-  // When a conversation is open, the picker reflects/edits ITS pinned model
-  // (falling back to the global selection for new/legacy conversations).
+  // When a conversation is open, the picker reflects/edits ITS model (falling back to the new-conversation default for legacy unpinned conversations).
   const effectiveActiveModel = activeConv?.model ?? activeModel;
   const recentModels = useSettingsStore((s) => s.recentModels);
   const favoriteModels = useSettingsStore((s) => s.favoriteModels);
   const selectModel = useSettingsStore((s) => s.selectModel);
+  const touchRecentModel = useSettingsStore((s) => s.touchRecentModel);
   const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
-
-  // Enterprise mode: model list is scoped to gateway's /v1/models allow list.
-  const isEnterprise = useEnterpriseStore(s => s.mode.kind !== 'personal');
-  const enterpriseModels = useEnterpriseModels();
 
   const [query, setQuery] = useState('');
   const panelRef = useRef<HTMLDivElement>(null);
@@ -102,6 +98,15 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
       requestAnimationFrame(() => {
         searchRef.current?.focus();
       });
+    }
+  }, [open]);
+
+  // A managed provider's list can change on the owning system's side at any
+  // time (a model granted or revoked), so every open asks for a fresh one.
+  useEffect(() => {
+    if (!open) return;
+    for (const p of useSettingsStore.getState().providers) {
+      if (p.source === 'managed') void refreshManagedProvider(p.id);
     }
   }, [open]);
 
@@ -190,14 +195,15 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
 
   const handleSelect = useCallback(
     (providerId: string, modelId: string) => {
-      // Update the global selection (drives the default for NEW conversations +
-      // the recents list), and pin it to the open conversation so it sticks for
-      // this conversation regardless of later global switches.
-      selectModel(providerId, modelId);
-      if (activeConv) setConversationModel(activeConv.id, { providerId, modelId });
+      // Inside a conversation the pick is scoped to it; on the new-task page it
+      // sets the default for new conversations (issue #545, see modelPick.ts).
+      applyModelPick(
+        { activeConversationId: activeConv?.id, providerId, modelId },
+        { selectModel, touchRecentModel, setConversationModel },
+      );
       onClose();
     },
-    [selectModel, setConversationModel, activeConv, onClose]
+    [selectModel, touchRecentModel, setConversationModel, activeConv, onClose]
   );
 
   const handleToggleFavorite = useCallback(
@@ -230,84 +236,24 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
     [enabledProviders, matchesQuery]
   );
 
+  // Managed providers that have no list to show yet: still pulling it, or the
+  // pull failed. They keep a one-line place in the panel so the user can tell
+  // the organization's models exist. One confirmed to grant nothing is left out.
+  const pendingManagedProviders = useMemo(
+    () => (lowerQuery
+      ? []
+      : providers.filter((p) => p.source === 'managed' && p.enabled && p.models.length === 0 && p.status !== 'verified')),
+    [providers, lowerQuery]
+  );
+
   if (!open) return null;
 
-  // Enterprise mode: replace the personal provider list with the gateway model list.
-  if (isEnterprise) {
-    const gwModels = enterpriseModels ?? []
-    const filtered = lowerQuery
-      ? gwModels.filter(id => id.toLowerCase().includes(lowerQuery))
-      : gwModels
-    return (
-      <div
-        ref={panelRef}
-        className={cn(
-          'absolute bottom-full right-0 mb-1.5 z-50',
-          'w-72 max-h-96 rounded-lg shadow-lg',
-          'bg-[var(--abu-bg-base)] border border-[var(--abu-border)]',
-          'flex flex-col overflow-hidden'
-        )}
-      >
-        <div className="p-2 border-b border-[var(--abu-border)]">
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-[var(--abu-text-muted)]" />
-            <Input
-              ref={searchRef}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={t.common.search + '...'}
-              className="h-7 pl-7 pr-2 text-minor bg-transparent border-none focus:ring-0"
-            />
-          </div>
-        </div>
-        <div className="overflow-y-auto max-h-80">
-          <div className="p-1">
-            {enterpriseModels === null ? (
-              <div className="px-3 py-4 text-center text-minor text-[var(--abu-text-muted)]">
-                {t.chat.enterpriseModelLoading}
-              </div>
-            ) : filtered.length === 0 ? (
-              <div className="px-3 py-4 text-center text-minor text-[var(--abu-text-muted)]">
-                {lowerQuery ? t.chat.enterpriseModelNoMatch : t.chat.enterpriseModelEmpty}
-              </div>
-            ) : (
-              <div className="mb-1">
-                <div className="px-3 py-1">
-                  <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-clay)]">
-                    {t.chat.enterpriseGatewayLabel}
-                  </span>
-                </div>
-                {filtered.map(modelId => {
-                  const isActive = effectiveActiveModel.providerId === 'enterprise-gateway' && effectiveActiveModel.modelId === modelId
-                  return (
-                    <button
-                      key={modelId}
-                      onClick={() => handleSelect('enterprise-gateway', modelId)}
-                      className={cn(
-                        'w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-left',
-                        'text-minor transition-colors',
-                        isActive
-                          ? 'bg-[var(--abu-bg-hover)] text-[var(--abu-text-primary)]'
-                          : 'text-[var(--abu-text-secondary)] hover:bg-[var(--abu-bg-hover)]'
-                      )}
-                    >
-                      {isActive
-                        ? <Check className="h-3 w-3 text-[var(--abu-clay)] shrink-0" />
-                        : <span className="h-3 w-3 shrink-0" />
-                      }
-                      <span className="truncate">{modelId}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  const hasNoProviders = enabledProviders.length === 0;
+  const hasNoProviders = enabledProviders.length === 0 && pendingManagedProviders.length === 0;
+  const showsManagedGroup = pendingManagedProviders.length > 0
+    || filteredProviders.some((g) => g.provider.source === 'managed');
+  const firstOwnGroupId = showsManagedGroup
+    ? filteredProviders.find((g) => g.provider.source !== 'managed')?.provider.id
+    : undefined;
 
   return (
     <div
@@ -404,11 +350,36 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
               <div className="mx-3 my-1 border-t border-[var(--abu-border)]" />
             )}
 
+            {pendingManagedProviders.map((provider) => (
+              <div key={provider.id} className="mb-1">
+                <div className="px-3 py-1">
+                  <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-clay)]">
+                    {provider.name}
+                  </span>
+                </div>
+                <div className="px-3 py-1.5 text-minor text-[var(--abu-text-muted)]">
+                  {provider.status === 'failed'
+                    ? format(t.chat.managedProviderUnreachable, { org: provider.name })
+                    : t.chat.managedModelsSyncing}
+                </div>
+              </div>
+            ))}
+
             {/* Main list grouped by provider */}
             {filteredProviders.map(({ provider, models }) => (
               <div key={provider.id} className="mb-1">
+                {provider.id === firstOwnGroupId && (
+                  <div className="px-3 pt-1.5 pb-0.5 text-caption font-medium text-[var(--abu-text-tertiary)]">
+                    {t.chat.myModels}
+                  </div>
+                )}
                 <div className="px-3 py-1">
-                  <span className="text-caption font-medium uppercase tracking-wider text-[var(--abu-text-muted)]">
+                  <span
+                    className={cn(
+                      'text-caption font-medium uppercase tracking-wider',
+                      provider.source === 'managed' ? 'text-[var(--abu-clay)]' : 'text-[var(--abu-text-muted)]',
+                    )}
+                  >
                     {provider.name}
                   </span>
                 </div>
@@ -427,7 +398,7 @@ export function ModelSelector({ open, onClose, anchorRef }: ModelSelectorProps) 
             ))}
 
             {/* No results */}
-            {filteredProviders.length === 0 && resolvedFavorites.length === 0 && resolvedRecents.length === 0 && (
+            {filteredProviders.length === 0 && pendingManagedProviders.length === 0 && resolvedFavorites.length === 0 && resolvedRecents.length === 0 && (
               <div className="px-3 py-4 text-center text-minor text-[var(--abu-text-muted)]">
                 No models found
               </div>

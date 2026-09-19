@@ -60,7 +60,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { assertAllowed } = require('./fsHost.cjs');
+const { assertAbsoluteWithoutBaseDir, assertAllowed } = require('./fsHost.cjs');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
 const { assertResourceOwner } = require('./securityBoundary.cjs');
 
@@ -94,6 +94,7 @@ let nextRid = 1;
  * @param {number | undefined} baseDirNum
  */
 function resolveWatchPath(app, p, baseDirNum) {
+  assertAbsoluteWithoutBaseDir(p, baseDirNum, 'path');
   let resolved = p;
   if (baseDirNum != null) {
     const { baseDir } = require('./tauriHost.cjs');

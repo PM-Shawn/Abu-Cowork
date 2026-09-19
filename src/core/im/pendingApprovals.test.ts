@@ -529,10 +529,10 @@ describe('imApprovalResolver', () => {
     expect(mocks.send).not.toHaveBeenCalled();
   });
 
-  it('coalesces concurrent asks with the same key into ONE outbound message', async () => {
-    const a = imApprovalResolver(seamRequest());
-    const b = imApprovalResolver(seamRequest());
-    const c = imApprovalResolver(seamRequest());
+  it('non-browser command: coalesces concurrent asks with the same key into ONE outbound message', async () => {
+    const a = imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
+    const b = imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
+    const c = imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
     await settle();
 
     expect(mocks.send).toHaveBeenCalledTimes(1);
@@ -575,8 +575,8 @@ describe('imApprovalResolver', () => {
       await expect(promise).resolves.toMatchObject({ audit: { outcome: 'declined', fresh: true } });
     });
 
-    it('reports a replayed answer as NOT fresh — one 同意 is one decision', async () => {
-      const first = imApprovalResolver(seamRequest());
+    it('non-browser command: reports a replayed answer as NOT fresh — one 同意 is one decision', async () => {
+      const first = imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
       await settle();
       tryConsumeApprovalReply(inbound('同意'));
       await expect(first).resolves.toMatchObject({ audit: { fresh: true } });
@@ -584,17 +584,17 @@ describe('imApprovalResolver', () => {
       // A chatty tool calling again in the same run reuses the cached answer.
       // Counting this as a second human decision is how "you approved once"
       // becomes "you approved 14 times" in the report.
-      await expect(imApprovalResolver(seamRequest())).resolves.toMatchObject({
+      await expect(imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }))).resolves.toMatchObject({
         approved: true,
         audit: { outcome: 'approved', fresh: false },
       });
       expect(promptSends()).toHaveLength(1);
     });
 
-    it('reports a coalesced follower as NOT fresh', async () => {
-      const a = imApprovalResolver(seamRequest());
+    it('non-browser command: reports a coalesced follower as NOT fresh', async () => {
+      const a = imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
       await settle();
-      const b = imApprovalResolver(seamRequest());
+      const b = imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
       await settle();
       tryConsumeApprovalReply(inbound('同意'));
 
@@ -618,14 +618,14 @@ describe('imApprovalResolver', () => {
     });
   });
 
-  it('caches the answer for the rest of the run — no second prompt', async () => {
-    const first = imApprovalResolver(seamRequest());
+  it('non-browser command: caches the answer for the rest of the run — no second prompt', async () => {
+    const first = imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
     await settle();
     tryConsumeApprovalReply(inbound('同意'));
     await expect(first).resolves.toMatchObject({ approved: true });
 
-    const second = await imApprovalResolver(seamRequest());
-    const third = await imApprovalResolver(seamRequest());
+    const second = await imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
+    const third = await imApprovalResolver(seamRequest({ info: { ...seamRequest().info, kind: 'command' } }));
 
     expect(second.approved).toBe(true);
     expect(third.approved).toBe(true);
@@ -1802,4 +1802,24 @@ describe('an automation supplies its own approval target', () => {
 
     await vi.advanceTimersByTimeAsync(APPROVAL_TIMEOUT_MS);
   });
+});
+
+it('audit-runtime: an IM yes for one embedded scope must not authorize another host', async () => {
+  useIMChannelStore.setState({sessions:{[session().key]:session()}});
+  const frame = 'https://frame.example';
+  const request = (host: string) => seamRequest({info:{
+    command:'browser click ('+frame+')',level:'warn',reason:'click',kind:'browser',browserOperationClass:'interactive',
+    browserOrigin:frame,browserPageOrigin:host,browserPermissionResource:'browse',
+    browserPermissionTargets:[{origin:frame,embeddedIn:host}],allowPersistentGrant:false,
+  }});
+  const first = imApprovalResolver(request('https://first.example'));
+  await settle();
+  expect(tryConsumeApprovalReply(answer('同意','audit-first'))).toBe(true);
+  expect((await first).approved).toBe(true);
+  const second = imApprovalResolver(request('https://different.example'));
+  await settle();
+  tryConsumeApprovalReply(answer('拒绝','audit-second'));
+  const result = await second;
+  expect(result.approved).toBe(false);
+  expect(promptSends()).toHaveLength(2);
 });

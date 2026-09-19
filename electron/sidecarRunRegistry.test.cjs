@@ -121,3 +121,38 @@ test('ignores an incomplete terminal state until the immutable terminal fact arr
 
   assert.deepEqual(registry.snapshot().runs[0].terminal, terminal);
 });
+
+test('#549: header metadata mirrors agent.start like a parsed line, without the body', () => {
+  const registry = createSidecarRunRegistry({ now: () => 100 });
+  registry.beginGeneration();
+  registry.markReady();
+  registry.observeOutboundMeta({ method: 'agent.start', rpcId: '5', runId: 'run-m', clientMessageId: 'msg-m', payloadDigest: 'd-m' });
+  assert.deepEqual(registry.snapshot().runs, [{
+    runId: 'run-m',
+    state: 'pending',
+    generation: 1,
+    updatedAt: 100,
+    clientMessageId: 'msg-m',
+    payloadDigest: 'd-m',
+  }]);
+  // The numeric JSON-RPC id in the response matches the string header id.
+  registry.observeInbound(JSON.stringify({ jsonrpc: '2.0', id: 5, result: { state: 'accepted', runId: 'run-m', clientMessageId: 'msg-m', acceptedAt: 90 } }));
+  const run = registry.snapshot().runs.find((r) => r.runId === 'run-m');
+  assert.equal(run.clientMessageId, 'msg-m');
+  assert.equal(run.state, 'accepted');
+  assert.equal(run.acceptedAt, 90);
+
+  registry.observeOutboundMeta({ method: 'agent.run', runId: 'run-m' });
+  assert.equal(registry.snapshot().runs[0].state, 'running');
+});
+
+test('#549: header metadata without a usable method is ignored', () => {
+  const registry = createSidecarRunRegistry({ now: () => 100 });
+  registry.beginGeneration();
+  for (const meta of [undefined, null, 'agent.start', [], {}, { method: 5, runId: 'r' }, { runId: 'r' }]) {
+    registry.observeOutboundMeta(meta);
+  }
+  registry.observeOutboundMeta({ method: 'agent.start' });
+  registry.observeOutboundMeta({ method: 'llm.chat', runId: 'r' });
+  assert.deepEqual(registry.snapshot().runs, []);
+});

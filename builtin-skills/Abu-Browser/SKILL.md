@@ -15,22 +15,18 @@ tags:
 
 这是 Abu 随 Electron 客户端提供的内置浏览器。它会在 Abu 工作区中创建可见标签页，用户可以观察、接管或关闭。
 
-## 执行原则
+## Choosing and opening tabs
 
-1. 直接调用 `abu-browser__get_tabs`。没有标签页时，该调用会在 Abu 内创建一个可见空白标签。
-2. 使用返回的当前 `tabId` 调用 `abu-browser__navigate` 打开目标网址。
-3. 需要交互时先调用 `abu-browser__snapshot`，再根据元素 ref 点击或填写。
-4. 用户要求截图时，完成导航并等待页面稳定后调用 `abu-browser__screenshot` 或 `abu-browser__screenshot_full_page`。
-5. 不要运行 macOS `open`、Windows `start`，也不要用 `computer` 或外部系统浏览器代替。
+- A top-level approved click or key press may open one same-origin native tab. Call `abu-browser__list_tabs` after a popup-producing action and use the returned tab IDs; retain the source page. Cross-origin/high-risk or delayed popups are blocked and need separate approval. Never recreate a rejected form POST with `navigate`, scripts, or a GET request.
+- Use `abu-browser__close_tab` only for unused background tabs created by this run. Keep comparison pages and deliverables open. If it returns `requires_user_action`, leave the page for the user; if `closing`, do not retry or force-close. Never bypass a refusal with scripts or other tools.
+- Start with `abu-browser__list_tabs` to discover existing task tabs without creating a page. Select targets by their returned URL, title and tabId; never guess IDs.
+- Use `abu-browser__create_tab({ url })` for a new HTTP(S) page the user should keep separately. For a comparison of two pages, create one tab for each and retain both for the user to inspect. Do not navigate the first article to the second article's URL.
+- Use `abu-browser__navigate({ tabId, url })` when intentionally continuing navigation in an existing tab, such as refining a search. Reuse an already-open matching page instead of creating duplicates.
+- `get_tabs` remains a compatibility entry that creates a blank tab if none exists. Prefer the explicit list/create tools for new work.
+- Observe with `snapshot` before interacting; re-observe after navigation or a significant page change. Wait for relevant content with `wait_for` before extracting or taking a screenshot.
+- Never substitute OS launch commands, Computer Use, Chrome or another browser for an unavailable built-in browser.
 
-## 常用流程
-
-- 打开网页：`get_tabs` -> `navigate`
-- 截图：`get_tabs` -> `navigate` -> `wait_for` -> `screenshot`
-- 页面交互：`get_tabs` -> `snapshot` -> `click` / `fill` / `select`
-- 提取内容：`get_tabs` -> `extract_text` / `extract_table`
-
-页面发生明显变化后重新获取 `snapshot`；已持有的 ref 只要元素还在页面上就依然有效。
+For locator, screenshot and extraction examples, read [guide-basics.md](guide-basics.md).
 
 ## 表单与下拉
 
@@ -46,3 +42,11 @@ tags:
 ## 确认操作结果，也不要用脚本
 
 提交、保存这类操作之后要确认结果时：先 `wait_for`（等成功提示出现、或等 URL 变化），再 `extract_text` 读页面文字。**不要写脚本去挂 `fetch`、翻 `.ant-message`、查 DOM**——那样每查一次就打断用户一次。页面如果确实没有任何反馈，如实告诉用户"没有看到成功提示"，不要反复探测。
+
+Before a child task finishes, use `abu-browser__retain_tab({ tabId })` for each result or handoff page the user should keep. The host moves retained pages to the conversation; unused background pages may close safely. Never retry browser work after the child task has ended.
+
+## Embedded forms and control handback
+
+Use snapshot's native `frames` list. Pass explicit `frameId` for region observations, locators (including qualified refs), and waits. Cross-origin regions need their own approval. After navigation, frame replacement or handback, observe again and discard old IDs.
+
+While the user has control, stop tools and preserve their page. After cancellation or batch failure, inspect results; never replay writes automatically. Use approved `upload_file` inputs, not native pickers under automation. See guide-basics.md for details.

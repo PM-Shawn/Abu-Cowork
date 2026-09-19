@@ -16,7 +16,7 @@
 
 import { parseNamespacedToolName } from '../mcp/toolName';
 
-/** Built-in browser runtime + Chrome extension bridge — both expose the same tool set. */
+/** Built-in browser runtime + Chrome extension bridge — share page actions; built-in tab management is registered separately. */
 const BROWSER_SERVER_NAMES = new Set(['abu-browser', 'abu-browser-bridge']);
 
 /**
@@ -54,6 +54,9 @@ const INTERACTIVE_TOOLS = new Set([
   'select',
   'keyboard',
   'navigate',
+  'create_tab',
+  'close_tab',
+  'retain_tab',
   // Answering a page's own dialog MOVES THE PAGE: accepting a confirm submits
   // the form behind it, accepting a beforeunload leaves the page and discards
   // what is on it. `get_dialog` reads the same dialog and stays read-only —
@@ -76,6 +79,7 @@ const INTERACTIVE_TOOLS = new Set([
  */
 const READ_ONLY_TOOLS = new Set([
   'get_tabs',
+  'list_tabs',
   'snapshot',
   // Locating an element is reading the page — it returns candidates and
   // touches nothing. Listing it here rather than letting it ride the
@@ -308,7 +312,7 @@ export function normalizeBrowserOrigin(url: string | undefined): string | null {
  * an unattended run: a probe that times out because the browser host is
  * wedged must not become permission to read a site the user blocked.
  */
-const PAGELESS_TOOLS = new Set(['get_tabs', 'connection_status', 'get_downloads']);
+const PAGELESS_TOOLS = new Set(['get_tabs', 'list_tabs', 'connection_status', 'get_downloads']);
 
 export function browserToolTargetsPage(namespacedName: string): boolean {
   const toolName = browserToolNameOf(namespacedName);

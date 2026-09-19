@@ -88,6 +88,19 @@ vi.mock('../core/sidecar/sidecarManager', () => ({
   SidecarRequestError: class SidecarRequestError extends Error {},
 }));
 
+// #549: the readiness module reads sidecarManager's status/waiter exports,
+// which the partial mock above does not provide. This suite drives the venue
+// with `state.runtime`, so mirror that instead of importing the real module.
+vi.mock('../core/sidecar/sidecarReadiness', () => ({
+  isInProcessAgentEnvironment: () => state.runtime !== 'sidecar',
+  waitForSidecarVenue: vi.fn().mockResolvedValue(undefined),
+  SidecarUnavailableError: class SidecarUnavailableError extends Error {
+    readonly code = 'sidecar_unavailable';
+    readonly stopReason = 'sidecar_unavailable';
+    readonly reason = 'timeout';
+  },
+}));
+
 vi.mock('../../sidecar/src/rpcClient', () => ({ sendRequest: vi.fn(), sendNotification: vi.fn() }));
 vi.mock('../../sidecar/src/agentLoopHost', () => ({ findActiveRunDeltaForConversation: vi.fn() }));
 
@@ -194,8 +207,15 @@ describe('multimodal delegation route × runtime matrix', () => {
     registerBuiltinTools();
     // The real agentLoop performs its provider-key gate before it reaches the
     // direct @agent branch. Use its built-in local-provider exemption; the
-    // adapter itself remains the deterministic provider double above.
-    useSettingsStore.setState({ activeModel: { providerId: 'ollama', modelId: 'llama3.2' } } as never);
+    // adapter itself remains the deterministic provider double above. The
+    // pinned-model guard also requires ollama to be on and to list the model.
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: useSettingsStore.getState().providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    } as never);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -212,6 +232,45 @@ describe('multimodal delegation route × runtime matrix', () => {
     if (runtime === 'sidecar') expect(JSON.stringify(state.sidecarRequests)).toContain('Who is this report for?');
     // A distinct identity must not inherit the previous case's completed receipt.
     useChatStore.setState({ expertContactReceipts: {} });
+  });
+
+  it.each(['local', 'sidecar'] as const)('PDF file references survive direct, automatic and batch delegation without document blocks (%s)', async (runtime) => {
+    state.runtime = runtime;
+    const fileContext = '[Attachment: `/workspace/季度 报告.PDF`]\n\nRead this PDF with read_file.';
+    const conversationId = useChatStore.getState().createConversation();
+    await runAgentLoop(conversationId, `@researcher ${fileContext}`);
+    expect(JSON.stringify(state.chats[0])).toContain('/workspace/季度 报告.PDF');
+    expect(JSON.stringify(state.chats[0])).not.toContain('"type":"document"');
+
+    state.chats.length = 0;
+    state.adapterCalls.length = 0;
+    state.modelCallCount = 0;
+    state.modelDelegates = true;
+    const parentId = useChatStore.getState().createConversation();
+    await runAgentLoop(parentId, fileContext);
+    const childCalls = state.adapterCalls.filter(({ options }) =>
+      (options as { systemPrompt?: string }).systemPrompt?.includes('professional research assistant'));
+    expect(childCalls).toHaveLength(1);
+    expect(JSON.stringify(childCalls.at(-1)?.messages)).toContain('/workspace/季度 报告.PDF');
+
+    state.modelDelegates = false;
+    state.chats.length = 0;
+    const { conversationId: batchId, loopId } = installSourceTurn();
+    const source = useChatStore.getState().conversations[batchId].messages.find((message) => message.role === 'user')!;
+    useChatStore.getState().editMessage(batchId, source.id, fileContext);
+    try {
+      await runAgentBatchTool.execute({ tasks: [
+        { type: 'research', task: 'Read PDF facts.' },
+        { type: 'writer', task: 'Summarize PDF facts.' },
+      ] }, { conversationId: batchId, loopId, toolCallId: `pdf-batch-${runtime}` } as never);
+      expect(state.chats).toHaveLength(2);
+      for (const messages of state.chats) {
+        expect(JSON.stringify(messages)).toContain('/workspace/季度 报告.PDF');
+        expect(JSON.stringify(messages)).not.toContain('"type":"document"');
+      }
+    } finally {
+      clearLoopContext(loopId);
+    }
   });
 
   it.each(['local', 'sidecar'] as const)('direct @agent reaches the child adapter with image content (%s)', async (runtime) => {

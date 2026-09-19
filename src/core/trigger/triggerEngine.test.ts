@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * TriggerEngine tests — cover pure logic extracted from the engine:
  * matchGlob, simpleHash, debounce, quiet hours, filter matching,
@@ -73,7 +74,6 @@ import { resolveTriggerBindAddress, triggerEngine } from './triggerEngine';
 import { resolveTriggerCallbacks } from './triggerPermission';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { notifyTriggerCompleted } from '../../utils/notifications';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { checkToolApproval } from '../tools/registry';
 import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
@@ -568,7 +568,7 @@ describe('TriggerEngine', () => {
      */
     it('reaches the browser gate itself, not only the run callback', async () => {
       seedChannel();
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserSitePermissions: { 'https://allowed.example': 'allowed' },
         browserOperationPolicy: {
@@ -645,7 +645,7 @@ describe('TriggerEngine', () => {
       expect(captured.current?.runKey).toBe('loop-f1-trigger');
 
       __resetUnattendedConfirmationForTests();
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: false,
         browserSitePermissions: {},
         browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -900,6 +900,47 @@ describe('TriggerEngine', () => {
       await triggerEngine.handleEvent(trigger.id, { data: { n: 10 } });
 
       expect(outputSender.send).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /**
+   * #549 — a dispatch that never reached the sidecar carries its own reason.
+   * The trigger's run log is where that failure is read, so the reason has to
+   * survive into it instead of collapsing to "Unknown error".
+   */
+  describe('a dispatch that failed before the sidecar accepted it', () => {
+    it('#549: an oversize dispatch lands in the trigger run log', async () => {
+      const trigger = makeTrigger({ id: 'trigger-payload-too-large' });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockResolvedValue({
+        reason: 'error',
+        error: '这段对话太长，无法继续。',
+        messageTaken: true,
+        stopReason: 'payload_too_large',
+      });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 1 } });
+
+      const runs = useTriggerStore.getState().triggers[trigger.id]?.runs ?? [];
+      expect(runs[runs.length - 1]?.status).toBe('error');
+      expect(runs[runs.length - 1]?.error).toBe('这段对话太长，无法继续。');
+    });
+
+    it('#549: an unavailable sidecar lands in the trigger run log', async () => {
+      const trigger = makeTrigger({ id: 'trigger-sidecar-unavailable' });
+      useTriggerStore.setState({ triggers: { [trigger.id]: trigger } });
+      runAgentLoopMock.mockResolvedValue({
+        reason: 'error',
+        error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+        messageTaken: true,
+        stopReason: 'sidecar_unavailable',
+      });
+
+      await triggerEngine.handleEvent(trigger.id, { data: { n: 2 } });
+
+      const runs = useTriggerStore.getState().triggers[trigger.id]?.runs ?? [];
+      expect(runs[runs.length - 1]?.error).toContain('后台服务没有启动成功');
+      expect(runs[runs.length - 1]?.error).not.toContain('Unknown error');
     });
   });
 

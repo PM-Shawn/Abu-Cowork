@@ -1,5 +1,6 @@
+import { grantBrowserPermissionTargets } from '@/core/permissions/browserPermissionConfig';
 import { isRetryableTeamIdentity } from '@/core/agent/teamConfirmationIdentity';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { ShieldAlert, Check, X } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
@@ -17,6 +18,8 @@ import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
  */
 export default function TeamConfirmationsStrip({ conversationId }: { conversationId: string }) {
   const { t } = useI18n();
+  const [saving, setSaving] = useState<string | null>(null);
+  const [saveFailed, setSaveFailed] = useState(false);
   const pending = useTeamConfirmationStore((s) => s.pending);
   const items = useMemo(() => pendingFor(pending, conversationId), [pending, conversationId]);
   const runRules = useTeamConfirmationStore((s) => s.runRules);
@@ -27,7 +30,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
    * Settings › 网站授权 (or blocking it from a dialog in another conversation)
    * retracts the button live, without this strip remounting.
    */
-  const sitePermissions = useSettingsStore((s) => s.browserSitePermissions);
+  const permissions = useSettingsStore((s) => s.browserPermissionConfigV2);
   const rules = Object.entries(runRules).filter(([, rule]) => rule.item.conversationId === conversationId);
   if (items.length === 0 && rules.length === 0) return null;
 
@@ -70,21 +73,19 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
    * absolute in every direction, so none of that function's scoped-grant
    * qualification applies to it.
    */
-  const isBlockedSite = (origin: string | undefined) => !!origin && sitePermissions[origin] === 'denied';
   const canOfferSite = (item: TeamConfirmation) =>
-    (item.kind === 'browser' || item.kind === 'browser-upload')
-    && !!item.browserOrigin
+    (item.kind === 'browser' || item.kind === 'browser-upload') && !!item.browserOrigin
     && mayOfferPersistentGrant({ level: item.level ?? 'warn', kind: item.kind, allowPersistentGrant: item.allowPersistentGrant })
-    && !isBlockedSite(item.browserOrigin);
-  const allowSite = (item: TeamConfirmation) => {
-    const settings = useSettingsStore.getState();
-    // Belt and braces: the render-time gate above already hides the button, but
-    // a block landing between paint and click must not be overwritten either.
-    if (settings.browserSitePermissions[item.browserOrigin!] === 'denied') return;
-    settings.setBrowserSitePermission(item.browserOrigin!, 'allowed');
-    // The grant covers the SITE from now on; this refused call still needs its
-    // own retry, and it gets the narrowest one.
-    approve(item, 'once');
+    && !!item.browserPermissionResource && !!item.browserPermissionTargets?.length
+    && grantBrowserPermissionTargets(permissions, item.browserPermissionResource, item.browserPermissionTargets) !== null;
+  const allowSite = async (item: TeamConfirmation) => {
+    if (saving || !canOfferSite(item)) return;
+    const current = () => useTeamConfirmationStore.getState().pending[item.id] === item;
+    setSaving(item.id); setSaveFailed(false);
+    const saved = await useSettingsStore.getState().grantBrowserPermissionTargets(item.browserPermissionResource!, item.browserPermissionTargets!, current);
+    setSaving(null);
+    if (saved && current()) approve(item, 'once');
+    else if (current()) setSaveFailed(true);
   };
   const reject = (item: TeamConfirmation) => {
     useTeamConfirmationStore.getState().remove(item.id);
@@ -97,6 +98,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
         <ShieldAlert aria-hidden="true" className="h-3.5 w-3.5 text-[var(--abu-warning)]" />
         {format(t.team.confirmationStripTitle, { n: items.length })}
       </div>
+      {saveFailed && <p role="alert">{t.settings.browserSaveFailed}</p>}
       <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
         {items.map((item) => (
           <li key={item.id} className="flex flex-wrap items-center gap-2" data-testid="team-confirmation-item">
@@ -108,6 +110,7 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
                 ? (item.additionalCapabilities?.includes('read') ? t.team.confirmationWriteRead : t.team.confirmationWrite)
                 : t.team.confirmationRead}</div>}
               {item.identity && <div>{t.team.confirmationCwd}: <code>{item.identity.cwd ?? t.team.confirmationDefaultCwd}</code></div>}
+              {item.browserPermissionTargets?.map((target, index) => <div key={index}><code>{target.origin}{target.embeddedIn ? ` (${target.embeddedIn})` : ''}</code></div>)}
               {item.browserOrigin && <div>{t.team.confirmationOrigin}: <code>{item.browserOrigin}</code></div>}
               {isRetryableTeamIdentity(item.identity) && <div>{format(t.team.confirmationRequestOrdinal, { n: item.identity!.requestOrdinal })}</div>}
               {!isRetryableTeamIdentity(item.identity) && <div>{t.team.confirmationLegacy}</div>}
@@ -116,27 +119,27 @@ export default function TeamConfirmationsStrip({ conversationId }: { conversatio
             <button
               type="button"
               onClick={() => approve(item, 'once')}
-              disabled={!isRetryableTeamIdentity(item.identity)}
+              disabled={saving !== null || !isRetryableTeamIdentity(item.identity)}
               className="inline-flex shrink-0 items-center gap-1 rounded-md bg-[var(--abu-clay)] px-2 py-0.5 text-caption text-white hover:opacity-90"
               aria-label={`${t.team.confirmationApprove}: ${item.detail}`}
             >
               <Check aria-hidden="true" className="h-3 w-3" />
               {t.team.confirmationApprove}
             </button>
-            <button type="button" disabled={!isRetryableTeamIdentity(item.identity)}
+            {item.kind !== 'browser' && item.kind !== 'browser-upload' && <button type="button" disabled={saving !== null || !isRetryableTeamIdentity(item.identity)}
               onClick={() => approve(item, 'run')}
               title={t.team.confirmationRunRule}
               className="shrink-0 rounded-md border px-2 py-0.5 text-caption"
               aria-label={`${t.team.confirmationApproveRun}: ${item.detail}`}>
               {t.team.confirmationApproveRun}
-            </button>
+            </button>}
             {canOfferSite(item) && (
-              <button type="button" disabled={!isRetryableTeamIdentity(item.identity)}
-                onClick={() => allowSite(item)}
+              <button type="button" disabled={saving !== null || !isRetryableTeamIdentity(item.identity)}
+                onClick={() => void allowSite(item)}
                 data-testid="team-confirmation-allow-site"
                 className="shrink-0 rounded-md border px-2 py-0.5 text-caption"
-                aria-label={format(t.team.confirmationAllowSite, { origin: item.browserOrigin! })}>
-                {format(t.team.confirmationAllowSite, { origin: item.browserOrigin! })}
+                aria-label={item.browserPermissionResource === 'upload' ? t.settings.browserResourceGrantUpload : t.settings.browserResourceGrantBrowse}>
+                {item.browserPermissionResource === 'upload' ? t.settings.browserResourceGrantUpload : t.settings.browserResourceGrantBrowse}
               </button>
             )}
             <button

@@ -28,6 +28,21 @@ describe('atomicFs', () => {
       mockInvoke.mockRejectedValueOnce(new Error('disk full'));
       await expect(atomicWrite('/x', 'y')).rejects.toThrow('disk full');
     });
+
+    it('#549: in the Electron renderer, sends the content as a raw UTF-8 body with only a path header', async () => {
+      (globalThis as { __ABU_SHELL__?: unknown }).__ABU_SHELL__ = { mainSupervisesSidecar: true };
+      try {
+        mockInvoke.mockResolvedValueOnce(undefined);
+        await atomicWrite('/tmp/a b/中.json', '{"k":"中"}');
+        const [cmd, body, options] = mockInvoke.mock.calls[0] as unknown as [string, Uint8Array, { headers: Record<string, string> }];
+        expect(cmd).toBe('atomic_write_text');
+        expect(body).toBeInstanceOf(Uint8Array);
+        expect(new TextDecoder().decode(body)).toBe('{"k":"中"}');
+        expect(options).toEqual({ headers: { path: encodeURIComponent('/tmp/a b/中.json') } });
+      } finally {
+        delete (globalThis as { __ABU_SHELL__?: unknown }).__ABU_SHELL__;
+      }
+    });
   });
 
   describe('atomicWriteWithBackup', () => {

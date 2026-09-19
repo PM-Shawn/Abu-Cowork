@@ -1,12 +1,18 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { initLanguage } from '@/i18n';
 import {
   drainCapabilitySetupRequests,
   requestCapabilitySetup,
+  restoreComputerUseSetupRequest,
 } from '@/core/capabilityPlugins/setupBridge';
+import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { useChatStore } from '@/stores/chatStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { useToastStore } from '@/stores/toastStore';
 import CapabilitySetupDialog from './CapabilitySetupDialog';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import ImageLightbox from '@/components/chat/ImageLightbox';
@@ -14,6 +20,10 @@ import ImageLightbox from '@/components/chat/ImageLightbox';
 const restartAppMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('@/core/updates/checker', () => ({
   restartApp: restartAppMock,
+}));
+
+vi.mock('@/core/agent/agentLoopRunner', () => ({
+  runAgentLoopDispatched: vi.fn(),
 }));
 
 vi.mock('./sections/CapabilitiesSection', () => ({
@@ -195,6 +205,61 @@ describe('CapabilitySetupDialog', () => {
       conversationId: 'conversation-relaunch',
       taskSummaryHash,
       requirements: { screenRead: false, uiControl: true },
+    });
+  });
+  describe('resume after relaunch when the pinned model is no longer usable', () => {
+    let deleteSpy: MockInstance | undefined;
+
+    afterEach(() => {
+      deleteSpy?.mockRestore();
+      deleteSpy = undefined;
+      drainCapabilitySetupRequests();
+      useToastStore.setState(useToastStore.getInitialState(), true);
+      useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+      useEnterpriseStore.setState(useEnterpriseStore.getInitialState(), true);
+      useChatStore.setState(useChatStore.getInitialState(), true);
+    });
+
+    it('does not rewind or re-run the task', async () => {
+      vi.mocked(runAgentLoopDispatched).mockReset();
+      useSettingsStore.setState(useSettingsStore.getInitialState(), true);
+      useSettingsStore.setState((state) => ({
+        providers: state.providers.map((provider) =>
+          provider.id === 'anthropic' ? { ...provider, enabled: true, apiKey: 'test-key' } : provider,
+        ),
+      }));
+      useEnterpriseStore.setState({ mode: { kind: 'personal' }, initialized: true });
+      useToastStore.setState(useToastStore.getInitialState(), true);
+      const messages = [{ id: 'user-1', role: 'user' as const, content: 'open the calculator', timestamp: 1, loopId: 'loop-1' }];
+      useChatStore.setState({
+        conversations: {
+          'conversation-resume': {
+            id: 'conversation-resume',
+            title: 'resume',
+            messages,
+            createdAt: 1,
+            updatedAt: 1,
+            status: 'idle',
+            model: { providerId: 'gone-provider', modelId: 'model-a' },
+          },
+        },
+      });
+      deleteSpy = vi.spyOn(useChatStore.getState(), 'deleteMessagesFrom');
+      restoreComputerUseSetupRequest({
+        conversationId: 'conversation-resume',
+        taskSummaryHash: `sha256:${'b'.repeat(64)}`,
+        requirements: { screenRead: false, uiControl: true },
+      });
+
+      render(<CapabilitySetupDialog />);
+      fireEvent.click(screen.getByRole('button', { name: 'complete setup' }));
+
+      await waitFor(() => expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: 'error', title: expect.stringContaining('model-a') }),
+      ]));
+      expect(deleteSpy).not.toHaveBeenCalled();
+      expect(useChatStore.getState().conversations['conversation-resume'].messages).toBe(messages);
+      expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     });
   });
 });

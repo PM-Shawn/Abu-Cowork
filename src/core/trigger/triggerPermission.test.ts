@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { resolveTriggerCallbacks } from './triggerPermission';
 import { matchesToolName } from '../skill/toolFilter';
@@ -10,7 +11,6 @@ import {
   revokeWorkspace,
 } from '../tools/pathSafety';
 import { usePermissionStore } from '../../stores/permissionStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
 import {
   __resetUnattendedConfirmationForTests,
@@ -458,6 +458,8 @@ describe('resolveTriggerCallbacks — tiers cannot loosen the browser operation 
     reason: 'runs a script in the page',
     kind: 'browser' as const,
     browserOperationClass: 'scripting' as const,
+    browserPermissionResource: 'script' as const,
+    browserPermissionTargets: [{ origin: 'https://allowed.com' }],
     browserOrigin: 'https://allowed.com',
   };
 
@@ -473,12 +475,21 @@ describe('resolveTriggerCallbacks — tiers cannot loosen the browser operation 
   }
 
   beforeEach(() => {
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserSitePermissions: { 'https://allowed.com': 'allowed' },
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
     });
     __resetUnattendedConfirmationForTests();
+  });
+
+  it('rejects an otherwise allowed action when its target metadata is missing', async () => {
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
+    const { callbacks, dispose } = callbacksFor('full');
+    await expect(callbacks.commandConfirmCallback({ ...scriptingConfirm,
+      browserOperationClass: 'interactive', browserPermissionResource: 'browse', browserPermissionTargets: undefined,
+    })).resolves.toBe(false);
+    dispose();
   });
 
   it('full denies execute_js under the default policy', async () => {
@@ -494,17 +505,19 @@ describe('resolveTriggerCallbacks — tiers cannot loosen the browser operation 
   });
 
   it('full still approves an interactive action the unattended policy allows', async () => {
-    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     const { callbacks, dispose } = callbacksFor('full');
     await expect(callbacks.commandConfirmCallback({
       ...scriptingConfirm,
       browserOperationClass: 'interactive',
+      browserPermissionResource: 'browse',
+      browserPermissionTargets: [{ origin: 'https://allowed.com' }],
     })).resolves.toBe(true);
     dispose();
   });
 
   it('full and custom answer no to a refusal notice', async () => {
-    useSettingsStore.setState({ allowUnattendedBrowser: true });
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
     for (const capability of ['full', 'custom'] as const) {
       const { callbacks, dispose } = callbacksFor(capability);
       await expect(callbacks.commandConfirmCallback({

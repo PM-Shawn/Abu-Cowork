@@ -102,6 +102,14 @@ export interface ChatOptions {
    * don't repeat the failed-roundtrip.
    */
   onMaxTokensLimitDiscovered?: (limit: number) => void;
+  /**
+   * 这次请求的记账身份（来源、会话、技能、服务商配置 id）。
+   *
+   * 两个 adapter 在内部按它把每一次真实的 HTTP 请求记进用量账本。缺省时按
+   * `other` 记账——宁可记成来源不明，也不静默丢掉一次请求。纯数据，
+   * 随 `llm.chat` 一起序列化进 sidecar（`sidecarAdapter.ts`）。
+   */
+  accounting?: import('./usageRecorder').UsageAccountingContext;
 }
 
 export interface LLMAdapter {
@@ -134,6 +142,7 @@ export type LLMErrorCode =
   | 'server_error'         // 500 / 502
   | 'network_error'        // fetch/connection failures
   | 'network_blocked'      // WAF / proxy intercepted the request and returned HTML
+  | 'payload_too_large'    // shell↔sidecar IPC payload exceeded its limit (#549)
   | 'cancelled'            // user abort
   | 'unknown';
 
@@ -148,6 +157,7 @@ const LLM_ERROR_CODES: ReadonlySet<string> = new Set<LLMErrorCode>([
   'server_error',
   'network_error',
   'network_blocked',
+  'payload_too_large',
   'cancelled',
   'unknown',
 ]);

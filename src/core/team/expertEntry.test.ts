@@ -12,7 +12,7 @@ describe('expert detail entry', () => {
   it('shows first-contact greeting without creating a conversation, and skips confirmed identities', () => {
     prepareExpertEntry(contact);
     expect(useChatStore.getState().pendingExpertContact).toEqual(contact);
-    expect(useChatStore.getState().pendingInput).toBe('');
+    expect(readComposerDraft(key).text).toBe('');
     prepareExpertEntry(contact);
     expect(useChatStore.getState().pendingExpertContact).toEqual(contact);
     expect(useChatStore.getState().conversationIndex).toEqual({});
@@ -23,7 +23,7 @@ describe('expert detail entry', () => {
   it('preserves a real draft and attachments while switching to the requested expert', () => {
     writeComposerDraft(key, { ...readComposerDraft(key), text: 'Compare these', files: [{ id: 'f', name: 'report.csv', path: '/report.csv' }], selectedAgent: { name: 'old', description: '' } });
     prepareExpertEntry(contact);
-    expect(useChatStore.getState().pendingInput).toBe('Compare these');
+    expect(useChatStore.getState().pendingInput).toBeNull();
     expect(useChatStore.getState().pendingExpertContact).toBeNull();
     expect(readComposerDraft(key)).toMatchObject({ text: 'Compare these', files: [{ name: 'report.csv' }], selectedAgent: { name: 'analyst' } });
   });
@@ -52,5 +52,10 @@ describe('expert detail entry', () => {
     // A team entry pins the team instead of selecting an agent — no chip avatar.
     prepareExpertEntry({ identity: { key: 'team:t2', kind: 'team', name: 'Team', avatar: '\u{1F465}' }, introduction: 'Hello' });
     expect(readComposerDraft(key).selectedAgent).toBeNull();
+  });
+  it('adds a recommended question to the existing welcome draft', () => {
+    writeComposerDraft(key, { ...readComposerDraft(key), text: 'Original task' });
+    prepareExpertEntry(contact, 'Recommended question');
+    expect(readComposerDraft(key).text).toBe('Original task\nRecommended question');
   });
 });

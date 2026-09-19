@@ -92,7 +92,7 @@ function resolveInspectTheme() {
  * empty "start" state shows a normal React prompt underneath.
  */
 export default function BrowserTab({ tabId, url }: { tabId: string; url: string }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const updateBrowserUrl = usePreviewStore((s) => s.updateBrowserUrl);
   // A full-window React overlay would be painted UNDER the native webview, so
   // force-hide the webview while settings is open.
@@ -130,6 +130,22 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
   const [addressInput, setAddressInput] = useState(url);
   const [committedUrl, setCommittedUrl] = useState(url);
   const [inspecting, setInspecting] = useState(false);
+  const [popupBlocked, setPopupBlocked] = useState(false);
+  const [controlPhase, setControlPhase] = useState('ai');
+  const [controlPending, setControlPending] = useState(false);
+  const [controlFailed, setControlFailed] = useState(false);
+  const changeControl = async () => {
+    setControlPending(true);
+    setControlFailed(false);
+    try {
+      const phase = await invoke<string>('browser_control', { id: tabId, action: controlPhase === 'human' ? 'release' : 'take', locale });
+      if (phase) setControlPhase(phase);
+    } catch {
+      setControlFailed(true);
+    } finally {
+      setControlPending(false);
+    }
+  };
 
   const inspectLabels = {
     addToChat: t.reference.addToChat,
@@ -403,11 +419,14 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
 
     let navUnlisten: UnlistenFn | undefined;
     let elementUnlisten: UnlistenFn | undefined;
+    let popupUnlisten: UnlistenFn | undefined;
+    let controlUnlisten: UnlistenFn | undefined;
     let disposed = false;
 
     (async () => {
       const unlisten = await listen<string>(`browser://nav/${tabId}`, (e) => {
         const u = e.payload;
+        setPopupBlocked(false);
         if (u && u !== 'about:blank') {
           if (!addressFocusedRef.current && !addressDirtyRef.current) {
             setAddressInput(u);
@@ -437,6 +456,20 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       elementUnlisten = unlisten;
     })();
 
+    void listen(`browser://popup-blocked/${tabId}`, () => setPopupBlocked(true)).then((unlisten) => {
+      if (disposed) unlisten();
+      else popupUnlisten = unlisten;
+    });
+
+    void listen<string>(`browser://control/${tabId}`, (event) => {
+      if (!disposed) { setControlPhase(event.payload); setControlFailed(event.payload === 'yield-failed'); }
+    }).then(async (unlisten) => {
+      if (disposed) { unlisten(); return; }
+      controlUnlisten = unlisten;
+      const phase = await invoke<string>('browser_control', { id: tabId });
+      if (!disposed && phase) { setControlPhase(phase); setControlFailed(phase === 'yield-failed'); }
+    }).catch(() => {});
+
     if (committedUrlRef.current) {
       startWebviewNavigation(normalizeBrowserUrl(committedUrlRef.current));
     } else {
@@ -447,6 +480,8 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
       disposed = true;
       navUnlisten?.();
       elementUnlisten?.();
+      popupUnlisten?.();
+      controlUnlisten?.();
       // Unmount is NOT a close. The native view's lifetime belongs to the tab
       // record in previewStore (which destroys it when the tab is really
       // closed); this component can unmount while the tab stays open, and an
@@ -620,6 +655,9 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           className="flex-1 h-7 text-minor"
         />
 
+        <Button variant="ghost" size="sm" disabled={!committedUrl || controlPending || (controlPhase === 'yielding' && !controlFailed)} onClick={() => void changeControl()}>
+          {controlPhase === 'yielding' || controlPending ? t.workspace.browser.yielding : controlPhase === 'human' ? t.workspace.browser.handBack : t.workspace.browser.takeControl}
+        </Button>
         <ToolbarTooltip content={t.workspace.browser.openExternal}>
           <Button variant="ghost" size="icon-xs" disabled={!committedUrl} onClick={() => void handleOpenExternal()} className="text-[var(--abu-text-tertiary)]">
             <Compass className="w-3.5 h-3.5" strokeWidth={1.5} />
@@ -637,6 +675,18 @@ export default function BrowserTab({ tabId, url }: { tabId: string; url: string 
           </Button>
         </ToolbarTooltip>
       </div>
+
+      {(controlPhase !== 'ai' || controlFailed) && (
+        <div role="status" className="shrink-0 px-3 py-2 text-minor text-[var(--abu-text-secondary)] bg-[var(--abu-bg-subtle)]">
+          {controlFailed ? t.workspace.browser.controlFailed : controlPhase === 'yielding' ? t.workspace.browser.yielding : t.workspace.browser.humanControl}
+        </div>
+      )}
+      {popupBlocked && (
+        <div role="status" className="flex items-center gap-2 shrink-0 px-3 py-2 text-minor text-[var(--abu-text-secondary)] bg-[var(--abu-bg-subtle)]">
+          <span className="flex-1">{t.workspace.browser.popupBlocked}</span>
+          <Button variant="ghost" size="sm" onClick={() => setPopupBlocked(false)}>{t.workspace.browser.dismissHint}</Button>
+        </div>
+      )}
 
       {/* Placeholder the native webview is positioned over. When there's no URL
           yet, no webview exists, so this React start prompt is visible. While

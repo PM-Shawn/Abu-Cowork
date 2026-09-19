@@ -28,6 +28,8 @@ const MAX_PERSISTED_TEXT_LENGTH = 100_000;
 const MAX_PERSISTED_DRAFTS = 100;
 
 export interface ComposerSuggestion {
+  /** Inline skill position within plain draft text; session-only. */
+  offset?: number;
   name: string;
   description: string;
   trigger?: string;

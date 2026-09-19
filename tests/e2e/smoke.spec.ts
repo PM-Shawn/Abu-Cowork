@@ -116,6 +116,35 @@ test.describe.serial('Electron shell — real app smoke', () => {
     await expect(input).toHaveValue(draft);
   });
 
+  test('unlimited turns persists across restart and can return to a finite cap', async () => {
+    const launched = await launchAbuElectron();
+    app = launched.app;
+    dataRoot = launched;
+    let page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    const openGeneral = async () => {
+      await waitForWelcomeScreen(page);
+      await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
+      await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
+      await page.getByRole('button', { name: '偏好', exact: true }).click();
+    };
+    await openGeneral();
+    await page.getByRole('button', { name: '200 轮', exact: true }).click();
+    await page.getByRole('button', { name: '不限制', exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      JSON.parse(localStorage.getItem('abu-settings')!).state.agentMaxTurns,
+    )).toBe(0);
+    await closeAbuElectron(app);
+    app = undefined;
+    app = (await launchAbuElectron(dataRoot)).app;
+    page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await openGeneral();
+    await page.getByRole('button', { name: '不限制', exact: true }).click();
+    await page.getByRole('button', { name: '1000 轮', exact: true }).click();
+    await expect.poll(() => page.evaluate(() =>
+      JSON.parse(localStorage.getItem('abu-settings')!).state.agentMaxTurns,
+    )).toBe(1000);
+  });
+
   test('bridge-persists-app-data-across-restart', async () => {
     dataRoot = createElectronDataRoot();
     const firstLaunch = await launchAbuElectron(dataRoot);

@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 // U9 / C1 — the authorization layer and the dispatcher must agree about which
 // tool a namespaced name names.
 //
@@ -15,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval, executeAnyTool } from './registry';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import {
   DEFAULT_BROWSER_OPERATION_POLICY,
   __resetBrowserGrantsForTests,
@@ -107,7 +107,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
       );
     }
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserSitePermissions: { [ALLOWED_SITE]: 'allowed' },
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -225,7 +225,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
   // the unattended browser feature.
   describe('unattended at the full tier', () => {
     it('does not run suffixed execute_js through the interactive cell', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('interactive', 'allow'),
       });
 
@@ -244,7 +244,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
   // gate calls "a click" poisons them both.
   describe('secondary effect 1 — the denial taxonomy', () => {
     it('never reports a suffixed execute_js refusal as the weaker "other" kind', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('interactive', 'ask'),
       });
       setUnattendedConfirmationResolver(async () => ({
@@ -266,7 +266,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
     });
 
     it('control: the well-formed execute_js refusal is filed as scripting', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('scripting', 'ask'),
       });
       setUnattendedConfirmationResolver(async () => ({
@@ -288,7 +288,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
 
   describe('secondary effect 2 — a click-grade grant clearing a scripting streak', () => {
     it('a suffixed execute_js never reports a grant-consented allow', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         browserOperationPolicy: policyWith('interactive', 'allow'),
       });
       const reportBrowserAllow = vi.fn();
@@ -306,7 +306,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
       expect(reportBrowserAllow).not.toHaveBeenCalled();
     });
 
-    it('control: a real interactive action on an allowed site still reports its grant', async () => {
+    it('control: an allowed-site policy is not fresh consent and cannot clear a refusal', async () => {
       const reportBrowserAllow = vi.fn();
 
       await checkToolApproval(
@@ -315,7 +315,7 @@ describe('namespaced tool-name parse: gate and dispatcher agree (U9 C1)', () => 
         (async () => true) as never,
       );
 
-      expect(reportBrowserAllow).toHaveBeenCalledWith('grant');
+      expect(reportBrowserAllow).not.toHaveBeenCalled();
     });
   });
 });

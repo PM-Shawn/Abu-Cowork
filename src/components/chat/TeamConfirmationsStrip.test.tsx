@@ -1,11 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '@/core/permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 import { initLanguage } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
 import { usePermissionStore } from '@/stores/permissionStore';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { useSettingsStore, __resetBrowserConfigPersistenceForTests } from '@/stores/settingsStore';
 import { useTeamConfirmationStore, type TeamConfirmationInput } from '@/stores/teamConfirmationStore';
 import type { Conversation } from '@/types';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
@@ -21,6 +23,12 @@ function conversation(status: Conversation['status']): Conversation {
 
 const identity = { toolName: 'run_command', parametersDigest: 'p', cwd: '/project', loopId: 'original', callId: 'call', dispatchId: 'leader', dispatchFingerprint: 'leader', requestOrdinal: 1 };
 
+const originalLocksDescriptor = Object.getOwnPropertyDescriptor(navigator, 'locks');
+function restoreNavigatorLocks() {
+  if (originalLocksDescriptor) Object.defineProperty(navigator, 'locks', originalLocksDescriptor);
+  else Reflect.deleteProperty(navigator, 'locks');
+}
+
 describe('TeamConfirmationsStrip', () => {
   beforeEach(() => {
     initLanguage('zh-CN');
@@ -29,7 +37,7 @@ describe('TeamConfirmationsStrip', () => {
     useChatStore.setState({ activeConversationId: 'c1', conversations: { c1: conversation('idle') }, agentStates: new Map() });
     vi.clearAllMocks();
   });
-  afterEach(() => cleanup());
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); restoreNavigatorLocks(); });
 
   it('renders nothing without pending confirmations', () => {
     const { container } = render(<TeamConfirmationsStrip conversationId="c1" />);
@@ -97,6 +105,8 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     member: 'zz填表员',
     browserOrigin: ORIGIN,
     browserOperationClass: 'interactive',
+    browserPermissionResource: 'browse',
+    browserPermissionTargets: [{ origin: ORIGIN }],
     allowPersistentGrant: true,
     level: 'warn',
     ...overrides,
@@ -113,15 +123,23 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
     useChatStore.setState({ activeConversationId: 'c1', conversations: { c1: conversation('idle') }, agentStates: new Map() });
     // `browserSitePermissions` is branded so only the store's own action can
     // mint one; a test reset has to go around the brand, not through it.
-    useSettingsStore.setState({ browserSitePermissions: {}, browserSiteGrantViaEmbed: {} } as never);
+    let writes = Promise.resolve<unknown>(undefined);
+    const browserNavigator = navigator;
+    Object.defineProperty(browserNavigator, 'locks', { configurable: true, value: { request: (_name: string, callback: () => unknown) => {
+      const job = writes.then(callback); writes = job.catch(() => undefined); return job;
+    } } });
+    vi.stubGlobal('navigator', browserNavigator);
+    __resetBrowserConfigPersistenceForTests();
+    localStorage.clear();
+    setMigratedBrowserSettings({ browserPermissionConfigV2: createBrowserPermissionConfig() });
     vi.clearAllMocks();
   });
-  afterEach(() => cleanup());
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); restoreNavigatorLocks(); });
 
   it('A: offers the site grant and names the site on the row', () => {
     renderWith(browserRequest());
-    expect(allowSiteButton()).toHaveTextContent(`以后都允许该网站（${ORIGIN}）`);
-    expect(allowSiteButton()).toHaveAttribute('aria-label', expect.stringContaining(ORIGIN));
+    expect(allowSiteButton()).toHaveTextContent('以后允许在此网站浏览');
+    expect(allowSiteButton()).toHaveAttribute('aria-label', '以后允许在此网站浏览');
     expect(screen.getByTestId('team-confirmation-item').textContent).toContain(`网站: ${ORIGIN}`);
   });
 
@@ -153,48 +171,71 @@ describe('TeamConfirmationsStrip — per-site grant (P1-a)', () => {
    * shows what it is changing — the strip must not be the one surface that can
    * undo a block without showing the current verdict.
    */
-  it('G: a site the user blocked is never offered, and the offer returns the moment the block is lifted', () => {
+  it('G: a site the user blocked is never offered, and the offer returns the moment the block is lifted', async () => {
     renderWith(browserRequest());
     expect(allowSiteButton()).not.toBeNull();
 
     // Blocking from anywhere else — same store, no remount of this strip.
-    act(() => useSettingsStore.getState().setBrowserSitePermission(ORIGIN, 'denied'));
+    await act(async () => { await useSettingsStore.getState().setBrowserSiteBlocked(ORIGIN, true); });
     expect(allowSiteButton()).toBeNull();
     // The row's other two approvals are untouched: the block is about the SITE.
     expect(screen.getByRole('button', { name: '仅本次补跑允许: fill #q' })).toBeEnabled();
 
     // Lifting the block brings the offer back live, still without a remount.
-    act(() => useSettingsStore.getState().removeBrowserSitePermission(ORIGIN));
+    await act(async () => { await useSettingsStore.getState().removeBrowserSiteRule(ORIGIN, useSettingsStore.getState().browserPermissionConfigV2.sites[ORIGIN]); });
     expect(allowSiteButton()).not.toBeNull();
   });
 
-  it('H: clicking through a block that landed after paint writes nothing', () => {
+  it('H: clicking through a block that landed after paint writes nothing', async () => {
     renderWith(browserRequest());
     const button = allowSiteButton()!;
     // The button is captured while the site is still `default`, then the block
     // lands without React repainting it — the click path has to refuse too.
-    useSettingsStore.setState({ browserSitePermissions: { [ORIGIN]: 'denied' } } as never);
-    const setSite = vi.spyOn(useSettingsStore.getState(), 'setBrowserSitePermission');
-    fireEvent.click(button);
+    setMigratedBrowserSettings({ browserPermissionConfigV2: { ...createBrowserPermissionConfig(), sites: { [ORIGIN]: { ...emptyBrowserSiteRule(), blocked: true } } } });
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets');
+    await act(async () => { fireEvent.click(button); });
 
-    expect(setSite).not.toHaveBeenCalled();
-    expect(useSettingsStore.getState().browserSitePermissions[ORIGIN]).toBe('denied');
+    expect(useSettingsStore.getState().browserPermissionConfigV2.sites[ORIGIN].blocked).toBe(true);
+    expect(useSettingsStore.getState().browserPermissionConfigV2.sites[ORIGIN].blocked).toBe(true);
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
     expect(useTeamConfirmationStore.getState().retrySelections).toEqual({});
     setSite.mockRestore();
   });
 
-  it('F: granting writes the site verdict once and retries only this call', () => {
-    const setSite = vi.spyOn(useSettingsStore.getState(), 'setBrowserSitePermission');
+  it('F: granting writes the resource once and retries only this call', async () => {
+    const setSite = vi.spyOn(useSettingsStore.getState(), 'grantBrowserPermissionTargets');
     renderWith(browserRequest());
-    fireEvent.click(allowSiteButton()!);
+    await act(async () => { fireEvent.click(allowSiteButton()!); });
 
     expect(setSite).toHaveBeenCalledTimes(1);
-    expect(setSite).toHaveBeenCalledWith(ORIGIN, 'allowed');
-    expect(useSettingsStore.getState().browserSitePermissions?.[ORIGIN]).toBe('allowed');
-    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(setSite).toHaveBeenCalledWith('browse', [{ origin: ORIGIN }], expect.any(Function));
+    await waitFor(() => expect(useSettingsStore.getState().browserPermissionConfigV2.sites[ORIGIN]).toEqual({ ...emptyBrowserSiteRule(), browse: 'allow' }));
+    await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
     // The grant covers the site; it mints no reusable run rule.
     expect(useTeamConfirmationStore.getState().runRules).toEqual({});
     setSite.mockRestore();
   });
+});
+
+import {createBrowserPermissionConfig as auditTeamConfig} from '@/core/permissions/browserPermissionConfig';
+describe('audit-review team save cancellation',()=>{
+ beforeEach(()=>{initLanguage('zh-CN');useSettingsStore.setState({browserPermissionConfigV2:auditTeamConfig()});useTeamConfirmationStore.setState({pending:{},approvedOnce:{},runRules:{},retrySelections:{}});useChatStore.setState({conversations:{c1:conversation('running')}});vi.clearAllMocks();});
+ afterEach(()=>{cleanup();vi.restoreAllMocks();});
+ it.each(['removed','replaced'])('audit-cancel: team %s request cannot finish its pending upload grant',async(condition)=>{
+  let release!: (value: boolean) => void; let guard!: () => boolean;
+  const save=vi.spyOn(useSettingsStore.getState(),'grantBrowserPermissionTargets').mockImplementation((_resource,_targets,current)=>{guard=current!;return new Promise(resolve=>{release=resolve;});});
+  const target={origin:'https://frame.example',embeddedIn:'https://host.example'};
+  const entry=useTeamConfirmationStore.getState().add({conversationId:'c1',kind:'browser-upload',detail:'upload file',identity:{...identity,toolName:'abu-browser__upload_file'},browserOrigin:target.origin,browserOperationClass:'upload',browserPermissionResource:'upload',browserPermissionTargets:[target],allowPersistentGrant:true,level:'warn'});
+  if (!entry) throw new Error('test confirmation was not registered');
+  render(<TeamConfirmationsStrip conversationId='c1'/>);
+  fireEvent.click(screen.getByTestId('team-confirmation-allow-site'));
+  expect(save.mock.calls[0].slice(0,2)).toEqual(['upload',[target]]);
+  if(condition==='removed')fireEvent.click(screen.getByRole('button',{name:'拒绝: upload file'}));
+  else act(()=>useTeamConfirmationStore.setState({pending:{[entry.id]:{...entry,browserPermissionResource:'browse',browserPermissionTargets:[{origin:'https://different.example'}]}}}));
+  expect(guard()).toBe(false);
+  await act(async()=>release(false));
+  expect(useTeamConfirmationStore.getState().retrySelections).toEqual({});
+  expect(runAgentLoopDispatched).not.toHaveBeenCalled();
+  expect(enqueueUserInput).toHaveBeenCalledTimes(condition==='removed'?1:0);
+ });
 });

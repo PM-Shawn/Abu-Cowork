@@ -66,3 +66,22 @@ describe('fsHost toFileInfo readonly', () => {
     expect(readonlyOf(0o446)).toBe(false);
   });
 });
+
+describe('file identity survives the Electron wire format on every platform', () => {
+  it('preserves native device and inode, so Windows approval can detect replacement', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-identity-'));
+    try {
+      const target = path.join(dir, 'approved.txt');
+      const replacement = path.join(dir, 'replacement.txt');
+      fs.writeFileSync(target, 'approved'); fs.writeFileSync(replacement, 'replaced');
+      const before = fs.statSync(target);
+      const mapped = toFileInfo(before);
+      expect(mapped.dev).toBe(before.dev);
+      expect(mapped.ino).toBe(before.ino);
+      fs.renameSync(target, path.join(dir, 'original.txt'));
+      fs.renameSync(replacement, target);
+      const after = toFileInfo(fs.statSync(target));
+      expect(after.ino).not.toBe(mapped.ino);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+});

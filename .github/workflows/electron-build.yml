@@ -46,6 +46,13 @@ on:
         type: string
         default: all
   pull_request:
+    # Renderer sources (src/, public/) are deliberately absent: a renderer
+    # change cannot break Windows packaging in a way `check`'s `npm run build`
+    # and the macOS e2e-electron app launch do not already catch, and
+    # release.yml re-runs the full Windows package + install + smoke through
+    # workflow_call before anything reaches users. Keeping them here cost
+    # ~20 minutes on every UI pull request for a job that is not a required
+    # check and does not gate the merge.
     paths:
       - '.github/workflows/electron-build.yml'
       - '.github/workflows/release.yml'
@@ -55,8 +62,6 @@ on:
       - 'electron/**'
       - 'scripts/**'
       - 'sidecar/**'
-      - 'src/**'
-      - 'public/**'
       - 'builtin-skills/**'
       - 'abu-browser-bridge/**'
       - 'abu-chrome-extension/**'

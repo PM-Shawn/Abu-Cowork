@@ -223,6 +223,8 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
     // form asked once per field.
     browserOrigin: info.browserOrigin,
     browserOperationClass: info.browserOperationClass,
+    browserPermissionResource: info.browserPermissionResource,
+    browserPermissionTargets: info.browserPermissionTargets,
     allowPersistentGrant: info.allowPersistentGrant,
     level: info.level,
   });

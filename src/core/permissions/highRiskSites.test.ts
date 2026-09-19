@@ -107,7 +107,7 @@ describe('classifyHighRiskUrl', () => {
  */
 describe('the classifier reads the URL and nothing else (anti-injection)', () => {
   const source = readFileSync(
-    fileURLToPath(new URL('./highRiskSites.ts', import.meta.url)),
+    fileURLToPath(new URL('../../../abu-browser-shared/highRiskSites.mjs', import.meta.url)),
     'utf8',
   );
 

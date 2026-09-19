@@ -90,6 +90,7 @@ class FakeWebContents {
     this.id = (nextContentsId += 1);
     contentsRegistry.set(this.id, this);
     this.url = 'about:blank';
+    this.mainFrame = { get framesInSubtree() { return [this]; } };
     this.title = 'Blank';
     this.destroyed = false;
     this.listeners = new Map();
@@ -108,6 +109,9 @@ class FakeWebContents {
   }
 
   once(event, handler) { return this.on(event, handler); }
+  removeListener(event, handler) {
+    this.listeners.set(event, (this.listeners.get(event) || []).filter(value => value !== handler));
+  }
 
   fire(event, ...args) {
     for (const handler of this.listeners.get(event) || []) handler(...args);
@@ -133,14 +137,25 @@ class FakeWebContents {
     return undefined;
   }
 
+  get suspendPageCalls() { return this.pageSuspended === true; }
+  set suspendPageCalls(value) {
+    this.pageSuspended = value;
+    if (!value) {
+      for (const resume of this.suspendedCalls || []) resume({ success: true, message: 'ok' });
+      this.suspendedCalls = [];
+    }
+  }
+
   async executeJavaScriptInIsolatedWorld(_worldId, scripts) {
     const code = scripts && scripts[0] ? scripts[0].code : '';
     // `installAutomationRuntime` probes for `handleAction` before dispatching.
     if (/typeof globalThis/.test(code)) return true;
-    if (/handleAction/.test(code)) this.domCalls.push(code);
+    if (/handleAction\(\s*"/.test(code)) this.domCalls.push(code);
     // A page suspended inside `confirm()` never answers the isolated-world
     // call either — same renderer, same blocked main thread.
-    if (this.suspendPageCalls) return new Promise(() => {});
+    if (this.suspendPageCalls) return new Promise((resolve) => {
+      (this.suspendedCalls ||= []).push(resolve);
+    });
     // A page call that rejects — a dead renderer, a script error inside the
     // automation runtime. The action throws, and the `finally` is what has to
     // give the dialog watcher back.
@@ -167,7 +182,7 @@ function fakeSession() {
     setDevicePermissionHandler() {},
     setDisplayMediaRequestHandler() {},
     on() {},
-    webRequest: { onHeadersReceived() {} },
+    webRequest: { onBeforeRequest() {}, onHeadersReceived() {} },
   };
 }
 
@@ -206,7 +221,7 @@ function fakeClock(start = 2_000_000) {
   };
 }
 
-function loadHost() {
+function loadHost({ visible = true } = {}) {
   const prevElectron = require.cache[electronId];
   const prevTauri = require.cache[tauriHostId];
   delete require.cache[browserHostId];
@@ -243,7 +258,7 @@ function loadHost() {
         if (event === 'browser://automation-open') {
           openedViewIds.push(payload.id);
           host.browserDispatch(null, 'browser_create', {
-            id: payload.id, url: 'about:blank', x: 0, y: 0, width: 800, height: 600,
+            id: payload.id, url: 'about:blank', x: 0, y: 0, width: 800, height: 600, visible,
           });
         }
       },
@@ -281,11 +296,8 @@ async function openTab(host) {
  * Put a real pending dialog on `tabId`, the only way one can actually arrive:
  * DURING an action that drives the page.
  *
- * The watcher is armed for the length of ONE page-driving action and no
- * longer (F1), so a dialog fired between actions reaches nothing — which is
- * the point, and is what the "the user's own tab keeps its native dialogs"
- * test below asserts. In production a `confirm()` fires while the click that
- * triggered it is still suspended in the renderer, and that is what this
+ * Driving a page arms its persistent watcher; read-only first contact does
+ * not. A confirm normally suspends the triggering script, which this helper
  * reproduces: start the click, let it reach the page, then answer with a box.
  *
  * The click rejects with the dialog (that is the interrupt working, pinned by
@@ -648,8 +660,8 @@ test('reading the user\'s page does not take over its dialogs — their own conf
   }
 });
 
-test('the watcher is armed for one page-driving action and taken off when it ends', async () => {
-  const { host, restore } = loadHost();
+test('the watcher covers delayed dialogs between actions until explicit user takeover', async () => {
+  const { host, openedViewIds, restore } = loadHost();
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
@@ -659,25 +671,21 @@ test('the watcher is armed for one page-driving action and taken off when it end
     });
     assert.equal(dbg.attachCalls, 1, 'a page-driving action arms it');
     assert.equal(dbg.commands.filter((c) => c.method === 'Page.enable').length, 1);
-    // …and gives it back, so the tab is the user's again the moment Abu is
-    // done with it. This is the half that makes the arming safe: without it,
-    // one click owns that tab's dialogs for the rest of the session.
-    assert.equal(dbg.isAttached(), false, 'the lease is released when the action ends');
+    assert.equal(dbg.isAttached(), true, 'delayed pickers remain intercepted');
 
     await host.performBrowserAutomation('click', {
       ownerId: OWNER, tabId, locator: { css: '#submit' },
     });
-    assert.equal(dbg.attachCalls, 2, 'the next action arms it again');
-    assert.equal(dbg.isAttached(), false);
+    assert.equal(dbg.attachCalls, 1, 'the next action reuses the guard');
+    await host.browserDispatch(null, 'browser_control', { id: openedViewIds[0], action: 'take' });
+    assert.equal(dbg.isAttached(), false, 'manual takeover restores native dialogs');
   } finally {
     restore();
   }
 });
 
-test('a failing action still gives the watcher back', async () => {
-  // The `finally` path. An action that threw must not leave the tab captured:
-  // that failure is invisible until the user's next confirm never appears.
-  const { host, restore } = loadHost();
+test('a failing action retains delayed-picker protection until user takeover', async () => {
+  const { host, openedViewIds, restore } = loadHost();
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
@@ -688,17 +696,16 @@ test('a failing action still gives the watcher back', async () => {
     }));
 
     assert.equal(dbg.attachCalls, 1);
-    assert.equal(dbg.isAttached(), false, 'released even though the action threw');
+    assert.equal(dbg.isAttached(), true, 'a failed action may have scheduled a picker');
+    await host.browserDispatch(null, 'browser_control', { id: openedViewIds[0], action: 'take' });
+    assert.equal(dbg.isAttached(), false, 'takeover releases a failed action guard');
   } finally {
     restore();
   }
 });
 
-test('a pending dialog keeps the watcher until it is answered', async () => {
-  // The one exception to releasing at the end of the action: nothing can
-  // answer a dialog without the CDP session, and the 60s fail-safe would have
-  // nothing to fire into. So the tab keeps it — and gets it back afterwards.
-  const { host, restore } = loadHost();
+test('answering a pending dialog keeps delayed-picker protection until takeover', async () => {
+  const { host, openedViewIds, restore } = loadHost();
   try {
     const { tabId } = await openTab(host);
     const dbg = debuggerFor(tabId);
@@ -713,7 +720,9 @@ test('a pending dialog keeps the watcher until it is answered', async () => {
     await host.performBrowserAutomation('handle_dialog', {
       ownerId: OWNER, tabId, action: 'accept',
     });
-    assert.equal(dbg.isAttached(), false, 'released once the dialog is gone');
+    assert.equal(dbg.isAttached(), true, 'dialog completion is not manual takeover');
+    await host.browserDispatch(null, 'browser_control', { id: openedViewIds[0], action: 'take' });
+    assert.equal(dbg.isAttached(), false);
   } finally {
     restore();
   }
@@ -804,4 +813,81 @@ test('on a tab the user took back, the model may dismiss the dialog but not acce
   } finally {
     restore();
   }
+});
+
+test('a stopped run cannot report a late dialog acceptance ACK as successful', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const { tabId } = await openTab(host);
+    const dbg = debuggerFor(tabId);
+    await raiseDialog(host, tabId, { type: 'confirm', message: 'Submit?', url: 'https://example.com/form' });
+    let acknowledge;
+    let reached;
+    const atAck = new Promise((resolve) => { reached = resolve; });
+    const original = dbg.sendCommand.bind(dbg);
+    dbg.sendCommand = async (method, params) => {
+      if (method !== 'Page.handleJavaScriptDialog') return original(method, params);
+      reached();
+      await new Promise((resolve) => { acknowledge = resolve; });
+      return original(method, params);
+    };
+    const controller = new AbortController();
+    const work = host.performBrowserAutomation('handle_dialog', { ownerId: OWNER, tabId, action: 'accept' }, { signal: controller.signal });
+    const refused = assert.rejects(work, /cancelled.*run was stopped/);
+    await atAck;
+    controller.abort();
+    acknowledge();
+    await refused;
+    assert.equal(dbg.commands.filter((c) => c.method === 'Page.handleJavaScriptDialog').length, 1, 'no replay');
+  } finally { restore(); }
+});
+
+test('takeover during picker initialization detaches even after Chromium enabled the guard', async () => {
+  const { host, openedViewIds, restore } = loadHost();
+  try {
+    const { tabId } = await openTab(host);
+    const dbg = debuggerFor(tabId);
+    const original = dbg.sendCommand.bind(dbg);
+    let acknowledge;
+    let entered;
+    const armed = new Promise(resolve => { entered = resolve; });
+    dbg.sendCommand = async (method, params) => {
+      const result = await original(method, params);
+      if (method === 'Page.setInterceptFileChooserDialog') {
+        entered();
+        await new Promise(resolve => { acknowledge = resolve; });
+      }
+      return result;
+    };
+    const action = host.performBrowserAutomation('click', { ownerId: OWNER, tabId, locator: {css: '#submit'} });
+    const refused = assert.rejects(action, /released|cancelled|control/);
+    await armed;
+    const taking = host.browserDispatch(null, 'browser_control', {id: openedViewIds[0], action: 'take'});
+    acknowledge();
+    await refused;
+    assert.equal(await taking, 'human');
+    assert.equal(dbg.isAttached(), false, 'human state requires real native control to be restored');
+    assert.equal(contentsRegistry.get(tabId).domCalls.length, 0);
+  } finally { restore(); }
+});
+
+test('a dialog-interrupted native load still prevents close until its actual completion', async () => {
+  const {host,restore} = loadHost({visible:false});
+  try {
+    const {tabId} = await openTab(host); const contents = contentsRegistry.get(tabId);
+    let finish;
+    contents.loadURL = (url) => {
+      contents.url = url; contents.fire('did-start-navigation',{},url,false,true);
+      const pending = new Promise(resolve => {finish=resolve;});
+      contents.debugger.fireCdp('Page.javascriptDialogOpening',{type:'alert',message:'during document load',url,defaultPrompt:''});
+      return pending;
+    };
+    await assert.rejects(host.performBrowserAutomation('navigate',{ownerId:OWNER,tabId,url:'https://example.com/slow'}),/dialog/);
+    await host.performBrowserAutomation('handle_dialog',{ownerId:OWNER,tabId,action:'dismiss'});
+    const held = await host.performBrowserAutomation('close_tab',{ownerId:OWNER,tabId});
+    assert.equal(held.status,'requires_user_action'); assert.equal(contents.isDestroyed(),false);
+    finish(); await new Promise(resolve=>setImmediate(resolve));
+    const closed = await host.performBrowserAutomation('close_tab',{ownerId:OWNER,tabId});
+    assert.equal(closed.status,'closed'); assert.equal(contents.isDestroyed(),true);
+  } finally {restore();}
 });

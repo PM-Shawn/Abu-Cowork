@@ -52,6 +52,19 @@
  * always numeric (or string ids minted by the child itself, per its own
  * protocol — see the interception guard in the stdout loop below for why
  * that still can't collide).
+ *
+ * ## 用量帧拦截（用量记账修复，期 1 第 2 步）
+ *
+ * sidecar 在跑的时候，agent 主循环就在 sidecar 里，用量也只有它知道。这些数字
+ * 经由 stdout 上的用量帧直接交给 main 写进 `usage.sqlite`
+ * （`electron/usageDb.cjs`），**不经过 renderer**。
+ *
+ * 不经过 renderer 是这次故障的直接教训：renderer 一旦刷新、卡住或者没有订阅，
+ * 这条链就断了，而用户此刻的对话仍在 sidecar 里正常进行。同一个失效模式还写成了
+ * 验收断言（任务书 V05）。
+ *
+ * 拦截只对 `SIDECAR_ID` 生效。这个桥同时给第三方 MCP stdio 服务用，它们是外部
+ * 进程，不能让它们往用户的用量账本里写东西。
  */
 'use strict';
 
@@ -81,6 +94,8 @@ const {
   SIDECAR_ID,
   sidecarRunRegistry,
 } = require('./sidecarRunRegistry.cjs');
+const { decodeUsageFrame, USAGE_FRAME_PREFIX } = require('./usageAttemptFrame.cjs');
+const { recordValidatedAttempt, noteRejectedFrame } = require('./usageDb.cjs');
 
 /** id -> ChildProcess */
 const children = new Map();
@@ -244,6 +259,29 @@ function consumeHeartbeatAck(id, line) {
   return true;
 }
 
+/**
+ * Called from the stdout line loop BEFORE `emit('mcp-msg-{id}', line)`.
+ * Returns true iff `line` was a usage frame (in which case the caller must
+ * NOT emit it as a regular message).
+ *
+ * 只认 `SIDECAR_ID`：这个桥同时承载第三方 MCP 服务的 stdio，它们无权写用户账本。
+ * 判据是**顶层键**，不是"这行里含有标记串"——RPC 载荷里可以出现任意文本，
+ * 含标记串的普通行由 `decodeUsageFrame` 判为 `not-a-frame` 后照常投递。
+ *
+ * 写失败与坏帧都只累加健康计数：用量记账不得打断正在进行的回答（任务书 U05）。
+ */
+function consumeUsageFrame(app, id, line) {
+  if (id !== SIDECAR_ID) return false;
+  const decoded = decodeUsageFrame(line);
+  if (decoded.kind === 'not-a-frame') return false;
+  if (decoded.kind === 'rejected') {
+    noteRejectedFrame(decoded.reason);
+    return true;
+  }
+  recordValidatedAttempt(app, decoded.attempt);
+  return true;
+}
+
 /** Cache the event-bridge emit after the first require (hot path: one call per stream line). */
 let _emitEvent = null;
 function emit(event, payload) {
@@ -341,12 +379,25 @@ function killChild(id) {
   stopHeartbeatMonitor(id);
 }
 
+// #549 acceptance knob (unpackaged builds only — see e2eTestHooks.cjs): delay
+// the agent sidecar's spawn so the renderer's "starting" wait can be exercised.
+let testHooks = { sidecarSpawnDelayMs: 0 };
+
+function configureMcpBridgeTestHooks({ sidecarSpawnDelayMs } = {}) {
+  testHooks = {
+    sidecarSpawnDelayMs:
+      Number.isSafeInteger(sidecarSpawnDelayMs) && sidecarSpawnDelayMs > 0 ? sidecarSpawnDelayMs : 0,
+  };
+}
+
 /**
  * @param {string} cmd
  * @param {Record<string, unknown>} args
+ * @param {{ body?: Buffer, headers?: Record<string, string> }} [maybeRaw]
+ *   validated raw form (#549) — only honored with the `(app, cmd, args, raw)` signature.
  * @returns command result (Promise for mcp_spawn), or `undefined` if not an mcp command.
  */
-function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
+function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs, maybeRaw) {
   const app = typeof appOrCmd === 'string' ? undefined : appOrCmd;
   const cmd = typeof appOrCmd === 'string' ? appOrCmd : cmdOrArgs;
   const args = typeof appOrCmd === 'string' ? cmdOrArgs : maybeArgs;
@@ -355,9 +406,13 @@ function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
   const a = args || {};
   switch (cmd) {
     case 'mcp_spawn':
+      if (a.id === SIDECAR_ID && testHooks.sidecarSpawnDelayMs > 0) {
+        const delayMs = testHooks.sidecarSpawnDelayMs;
+        return new Promise((resolve) => setTimeout(resolve, delayMs)).then(() => mcpSpawn(app, a));
+      }
       return mcpSpawn(app, a);
     case 'mcp_write':
-      return mcpWrite(a);
+      return mcpWrite(a, typeof appOrCmd === 'string' ? undefined : maybeRaw);
     case 'mcp_kill':
       return mcpKill(a);
     default:
@@ -514,6 +569,8 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
       // Heartbeat ack interception — see consumeHeartbeatAck()'s JSDoc for
       // why this can never swallow a real RPC response.
       if (line.includes('__mcphb-') && consumeHeartbeatAck(id, line)) continue;
+      // 用量帧拦截 — 见 consumeUsageFrame() 的说明。
+      if (line.startsWith(USAGE_FRAME_PREFIX) && consumeUsageFrame(app, id, line)) continue;
       runtimeState.noteStdoutLine(id, line);
       emit(`mcp-msg-${id}`, line);
     }
@@ -597,8 +654,17 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
   return spawnPromise;
 }
 
-function mcpWrite({ id, message }) {
-  const runtimeRpc = runtimeState.noteRpcWriteStarted(id, message);
+const NEWLINE = Buffer.from('\n');
+
+function mcpWrite({ id, message }, raw) {
+  // Raw form (#549): `raw.body` is the validated single-line UTF-8 JSON-RPC
+  // message (securityBoundary validateTextRawBody); `raw.headers` only
+  // describes it. Plain form: `message` is a string, as before.
+  const rawBody = raw && Buffer.isBuffer(raw.body) ? raw.body : null;
+  const meta = rawBody && raw.headers && typeof raw.headers === 'object' ? raw.headers : {};
+  const runtimeRpc = rawBody
+    ? runtimeState.noteRpcWriteStartedMeta(id, meta, rawBody.length)
+    : runtimeState.noteRpcWriteStarted(id, message);
   const child = children.get(id);
   if (
     !child ||
@@ -610,18 +676,40 @@ function mcpWrite({ id, message }) {
     runtimeState.noteRpcWriteFinished(runtimeRpc, 'no_live_process');
     return Promise.reject(new Error(`mcp_write: no live process for id "${id}"`));
   }
-  if (id === SIDECAR_ID) sidecarRunRegistry.observeOutbound(String(message));
+  if (id === SIDECAR_ID) {
+    // Raw bodies can be 100+ MiB: take routing facts from the validated
+    // headers instead of JSON.parse-ing the whole line on the main thread.
+    if (rawBody) sidecarRunRegistry.observeOutboundMeta(meta);
+    else sidecarRunRegistry.observeOutbound(String(message));
+  }
   return new Promise((resolve, reject) => {
+    let failed = false;
+    const fail = (err) => {
+      if (failed) return;
+      failed = true;
+      runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_failed');
+      reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
+    };
     try {
-      child.stdin.write(String(message) + '\n', (err) => {
-        if (err) {
-          runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_failed');
-          reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
-        } else {
+      if (rawBody) {
+        // Both writes are queued in this tick, so concurrent mcp_write calls
+        // cannot interleave between a body and its newline.
+        child.stdin.write(rawBody, (err) => {
+          if (err) fail(err);
+        });
+        child.stdin.write(NEWLINE, (err) => {
+          if (err) return fail(err);
+          if (failed) return;
           runtimeState.noteRpcWriteFinished(runtimeRpc);
           resolve(null);
-        }
-      });
+        });
+      } else {
+        child.stdin.write(String(message) + '\n', (err) => {
+          if (err) return fail(err);
+          runtimeState.noteRpcWriteFinished(runtimeRpc);
+          resolve(null);
+        });
+      }
     } catch (err) {
       runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_threw');
       reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
@@ -659,4 +747,4 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   });
 }
 
-module.exports = { isLegacyChromeBridgeLaunch, mcpDispatch };
+module.exports = { configureMcpBridgeTestHooks, isLegacyChromeBridgeLaunch, mcpDispatch };

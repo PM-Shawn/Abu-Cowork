@@ -66,25 +66,38 @@ export function landCompactBoundaryMarker(
 }
 
 /**
- * Resolve the LLM config for a summarization call from the current settings.
+ * Resolve the LLM config for summarizing one conversation.
+ *
+ * Manual /compact summarizes THIS conversation, so it runs on the conversation's
+ * own model — the same pin → index → global fallback agentLoop uses (#545).
+ * Model name and provider identity (adapter / baseUrl / apiKey) all derive from
+ * that one scoped snapshot so they can never diverge.
  *
  * Enterprise gateway mode forces the OpenAI-compatible adapter (LiteLLM exposes
  * that interface) — matching llmCall.ts. Missing the `forceOpenAiCompatible`
  * term would pick the Claude adapter under an enforced gateway and fail the call.
  */
-function resolveSummarizeConfig(): CompressionConfig {
+function resolveSummarizeConfig(convId: string): CompressionConfig {
   const settings = getSettingsReader().getSnapshot();
-  const provider = getActiveProvider(settings);
-  const creds = resolveEffectiveLlmCreds(getActiveApiKey(settings), provider?.baseUrl || undefined);
+  const chat = useChatStore.getState();
+  const baseModel =
+    chat.conversations[convId]?.model ??
+    chat.conversationIndex?.[convId]?.model ??
+    settings.activeModel;
+  const scoped = baseModel === settings.activeModel ? settings : { ...settings, activeModel: baseModel };
+  const provider = getActiveProvider(scoped);
+  const creds = resolveEffectiveLlmCreds(getActiveApiKey(scoped), provider?.baseUrl || undefined);
   const adapter: LLMAdapter =
     creds.forceOpenAiCompatible || provider?.apiFormat === 'openai-compatible'
       ? new OpenAICompatibleAdapter()
       : new ClaudeAdapter();
   return {
     adapter,
-    model: getEffectiveModel(settings),
+    model: getEffectiveModel(scoped),
     apiKey: creds.apiKey,
     baseUrl: creds.baseUrl,
+    conversationId: convId,
+    providerInstanceId: provider?.id ?? 'unknown',
   };
 }
 
@@ -119,7 +132,7 @@ export async function compactConversationManually(
   let summaryText: string;
   useChatStore.getState().setIsCompressing(convId, true);
   try {
-    summaryText = await summarizeConversation(plan.middleMessages, resolveSummarizeConfig());
+    summaryText = await summarizeConversation(plan.middleMessages, resolveSummarizeConfig(convId));
   } catch {
     return { compacted: false, reason: 'summarize-failed' };
   } finally {

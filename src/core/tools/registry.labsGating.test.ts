@@ -1,7 +1,7 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { registerBuiltinTools } from './builtins';
 import { getAllTools, executeAnyTool } from './registry';
-import { useSettingsStore } from '@/stores/settingsStore';
 import { LABS_TODOS_INBOX } from '../labs/registry';
 import { TOOL_NAMES } from './toolNames';
 
@@ -17,7 +17,7 @@ beforeAll(() => {
 
 describe('Labs-gated tool availability (create_todo / todos-inbox held back)', () => {
   beforeEach(() => {
-    useSettingsStore.setState({ labs: {} });
+    setMigratedBrowserSettings({ labs: {} });
   });
 
   it('withholds create_todo from the advertised schema by default', () => {
@@ -25,12 +25,12 @@ describe('Labs-gated tool availability (create_todo / todos-inbox held back)', (
   });
 
   it('still withholds create_todo even with a stale todos-inbox flag set (held back)', () => {
-    useSettingsStore.setState({ labs: { [LABS_TODOS_INBOX]: true } });
+    setMigratedBrowserSettings({ labs: { [LABS_TODOS_INBOX]: true } });
     expect(getAllTools().some((t) => t.name === TOOL_NAMES.CREATE_TODO)).toBe(false);
   });
 
   it('rejects create_todo execution as Unknown even with a stale flag set (fail-safe)', async () => {
-    useSettingsStore.setState({ labs: { [LABS_TODOS_INBOX]: true } });
+    setMigratedBrowserSettings({ labs: { [LABS_TODOS_INBOX]: true } });
     const result = await executeAnyTool(TOOL_NAMES.CREATE_TODO, { title: 'x' });
     expect(String(result)).toContain('Unknown tool');
   });

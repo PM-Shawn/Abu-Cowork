@@ -114,7 +114,7 @@ describe('computeCapabilitySnapshot', () => {
     expect((await checkToolApproval(tool.name, {})).decision).toBe('deny');
     expect(await executeAnyTool(tool.name, {})).toBe(`Error: ${format(getI18n().toolResult.capabilitySnapshot.reasonMcpDisabled, { server: 'notes' })}`);
     expect(mocks.callTool).not.toHaveBeenCalled();
-    useMCPStore.getState().toggleServerEnabled('notes');
+    useMCPStore.getState().updateServer('notes', { enabled: true });
     expect(getAllTools()).toContain(tool);
     expect(await executeAnyTool(tool.name, {})).toBe('ok');
     expect(mocks.callTool).toHaveBeenCalledOnce();
@@ -128,7 +128,7 @@ describe('computeCapabilitySnapshot', () => {
     } });
     mocks.isConnected.mockImplementation((name: string) => name === 'notes');
     const confirm = vi.fn(async () => {
-      useMCPStore.getState().toggleServerEnabled('notes');
+      useMCPStore.getState().updateServer('notes', { enabled: false });
       return true;
     });
     expect(String(await executeAnyTool('notes__inspect', {}, confirm))).toContain('Error:');

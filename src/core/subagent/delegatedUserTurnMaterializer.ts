@@ -1,3 +1,4 @@
+import { extractFileReferences } from '../../utils/fileReference';
 import type { Conversation, DocumentContent, ImageContent, Message, MessageContent, ToolCall, ToolCallForContext, ToolResult, ToolResultContent } from '../../types';
 import { base64ToUint8Array, uint8ArrayToBase64 } from '../../utils/base64';
 import { getConversationReader } from '../agent/ports/conversationReader';
@@ -818,7 +819,7 @@ async function prepareToolCallsForSidecarWire<T extends ToolCall | ToolCallForCo
  * Prepare the frozen main-loop conversation snapshot for sidecar transport.
  *
  * The renderer-facing transcript may contain inline image/PDF base64 so local
- * history and in-process fallback keep their existing behavior. The sidecar
+ * history and the in-process loop keep their existing behavior. The sidecar
  * wire contract is stricter: media crosses as opaque delegated refs plus
  * metadata, then provider adapters materialize bytes at request time through
  * `prepareDelegatedUserTurnForRequest`.
@@ -886,7 +887,15 @@ export async function buildInitialSubagentUserContent(
     throw new DelegatedUserTurnError('Cannot prepare delegated user turn: invalid envelope');
   }
   if (!hasDelegatedTurnMedia(input.delegatedUserTurn)) {
-    return taskText;
+    // File attachments use the established text reference contract, not media
+    // blocks. Preserve only those reference lines from the frozen user turn:
+    // dropping all parent text here made automatic/batch children lose PDFs
+    // (and other files) unless the model repeated their paths in its task.
+    // This is context, never a filesystem grant; read_file still checks access.
+    const fileReferences = [...new Set(input.delegatedUserTurn.content.flatMap((block) => (
+      block.type === 'text' ? extractFileReferences(block.text) : []
+    )))].filter((reference) => !taskText.includes(reference));
+    return [...fileReferences, taskText].join('\n\n');
   }
 
   const content: InternalSubagentContent[] = [];

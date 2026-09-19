@@ -122,3 +122,4 @@ release-electron-e2e/
 
 # Build bookkeeping for scripts/check-browser-artifacts.mjs
 .artifact-digests/
+.scratch/

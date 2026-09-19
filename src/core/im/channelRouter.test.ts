@@ -1091,6 +1091,11 @@ describe('IMChannelRouter', () => {
         { error: '发送失败' },
         'Abu 处理出错: 发送失败',
       ],
+      [
+        'history_unavailable',
+        { error: '读取对话记录失败' },
+        'Abu 处理出错: 读取对话记录失败',
+      ],
     ])('#549: %s on a later turn answers the new question, not the old one', async (name, ending, reply) => {
       const convId = `conv-earlier-${name}`;
       seedSessionWithEarlierAnswer(convId, '上一轮的回答');

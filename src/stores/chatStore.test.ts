@@ -13,6 +13,10 @@ import {
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
 import { foldMessageLog } from '@/core/session/messageLedger';
+import {
+  expectedForText,
+  loadLoadedMessageSanitizerFixtures,
+} from '@/test/loadedMessageSanitizerFixtures';
 import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
@@ -3975,4 +3979,20 @@ describe('#549 runErrorKind', () => {
     expect(row.runErrorKind).toBeUndefined();
     expect(row.runError).toBeUndefined();
   });
+});
+
+describe('sanitizeLoadedMessages replays the shared sanitiser fixtures (#549 P2a)', () => {
+  const { cases } = loadLoadedMessageSanitizerFixtures();
+  // The renderer's loader never names a current run, so a case that does has
+  // no renderer-tier form; `loadedMessageSanitizer.test.ts` replays those.
+  for (const testCase of cases.filter((c) => c.currentRunMessageId === undefined)) {
+    it(`fixture: ${testCase.name}`, () => {
+      const { chat } = getI18n();
+      const out = sanitizeLoadedMessages(testCase.input as never);
+      expect(JSON.parse(JSON.stringify(out))).toEqual(expectedForText(testCase.expected, {
+        runRecoveredAfterRestart: chat.runRecoveredAfterRestart,
+        errorEmptyBody: chat.errorEmptyBody,
+      }));
+    });
+  }
 });

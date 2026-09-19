@@ -847,34 +847,127 @@ async function sweepStaleStreamSnapshotsOnVersionChange(): Promise<void> {
 }
 
 /**
+ * Turn one buffered revision into the ledger line it promotes to.
+ *
+ * Both promotions serialize through here — the one conversation a dispatch
+ * asks for (`promoteStreamSnapshots`) and every conversation at shutdown
+ * (`flushStreamSnapshots`) — so a buffered revision becomes the same ledger
+ * line whichever one reaches it.
+ */
+async function serializeSnapshotPromotion(convId: string, message: Message): Promise<string> {
+  const allowToolResultDehydration = hasInlineToolResultImages(message)
+    ? await refreshOutputManifestForToolResultImages(convId)
+    : true;
+  return serializeLedgerPut(
+    convId,
+    message,
+    parentIdByMessage.get(message.id),
+    allowToolResultDehydration,
+  );
+}
+
+/**
+ * Queue one promoted line and claim its id once the line is durable. The
+ * returned promise settles with the write: resolved means the line is on disk.
+ *
+ * The queue keeps the merge key, so a revision still queued for the same id is
+ * overwritten in place rather than appended twice.
+ */
+async function queueSnapshotPromotion(convId: string, message: Message, line: string): Promise<void> {
+  await enqueueWrite(messagesPath(convId), line, message.id);
+  writtenIds.add(message.id);
+}
+
+/**
+ * Promote one conversation's buffered revisions into its ledger and drop them
+ * from the snapshot; every other conversation's buffer is left alone.
+ *
+ * A reader given a byte watermark gets the ledger prefix alone, with no
+ * snapshot merged on top. A revision that lives only in the snapshot — the
+ * partial answer a crash left behind, re-armed by `loadMessages` — is part of
+ * what the user sees, so it has to be a ledger line before the watermark of a
+ * new run is taken (`takeLedgerHistoryPoint` in `ledgerHistoryPoint.ts`).
+ *
+ * Every line is queued before the flush, so they reach the file in one append.
+ * A failed append rejects and leaves the entries armed, in memory and on disk:
+ * the dispatch that asked for the promotion fails visibly, and the next
+ * attempt promotes them. The snapshot file is rewritten only after the ledger
+ * holds the revisions, so no crash window has neither copy.
+ */
+export async function promoteStreamSnapshots(convId: string): Promise<number> {
+  const entries = streamSnapshots.get(convId);
+  if (!entries || entries.size === 0) return 0;
+  await ensureBase();
+
+  // Serialized first, queued second: a revision whose tool-result images make
+  // serialization await the output manifest would otherwise reach the queue
+  // after the flush below and wait for the next drain.
+  const promoted = await Promise.all(
+    [...entries.entries()].map(async ([id, entry]) => ({
+      id,
+      entry,
+      line: await serializeSnapshotPromotion(convId, entry.message),
+    })),
+  );
+  // Observed before the flush so a rejected write always has a handler.
+  const outcome = Promise.allSettled(
+    promoted.map(({ entry, line }) => queueSnapshotPromotion(convId, entry.message, line)),
+  );
+  await flushWrites();
+  const failed = (await outcome).find(
+    (result): result is PromiseRejectedResult => result.status === 'rejected',
+  );
+  if (failed) throw failed.reason;
+
+  // Only what was promoted is dropped: an entry replaced while the write was
+  // in flight is a newer revision the ledger does not hold.
+  for (const { id, entry } of promoted) {
+    if (entries.get(id) === entry) entries.delete(id);
+  }
+  if (entries.size === 0) streamSnapshots.delete(convId);
+  await writeStreamSnapshot(convId, entries);
+  return promoted.length;
+}
+
+/**
+ * Whether this conversation holds a revision that is not a ledger line yet.
+ *
+ * Read-only: a dispatch taking its history point (`ledgerHistoryPoint.ts`)
+ * asks after the watermark, because a frame that lands during the promotion
+ * arms a revision the watermark it just took cannot cover.
+ */
+export function hasArmedStreamSnapshot(convId: string): boolean {
+  const entries = streamSnapshots.get(convId);
+  return entries !== undefined && entries.size > 0;
+}
+
+/**
  * Promote every buffered revision into the ledger and drop the snapshot files.
  * Called on shutdown so a snapshot never outlives the session that wrote it.
  */
 export async function flushStreamSnapshots(): Promise<void> {
   if (streamSnapshots.size === 0) return;
   await ensureBase();
-  const promotions: { convId: string; done: Promise<unknown> }[] = [];
+  const buffered: { convId: string; message: Message }[] = [];
   for (const [convId, entries] of [...streamSnapshots.entries()]) {
-    for (const { message } of entries.values()) {
-      promotions.push({
-        convId,
-        done: (async () => {
-          const allowToolResultDehydration = hasInlineToolResultImages(message)
-            ? await refreshOutputManifestForToolResultImages(convId)
-            : true;
-          const line = serializeLedgerPut(
-            convId,
-            message,
-            parentIdByMessage.get(message.id),
-            allowToolResultDehydration,
-          );
-          await enqueueWrite(messagesPath(convId), line, message.id);
-          writtenIds.add(message.id);
-        })(),
-      });
-    }
+    for (const { message } of entries.values()) buffered.push({ convId, message });
     streamSnapshots.delete(convId);
   }
+  // Serialized first, queued second, for the reason `promoteStreamSnapshots`
+  // gives: the flush below has to find every line already in the queue, or the
+  // promotion waits for the next drain — which a renderer being torn down at
+  // quit never reaches.
+  const serialized = await Promise.all(
+    buffered.map(async ({ convId, message }) => ({
+      convId,
+      message,
+      line: await serializeSnapshotPromotion(convId, message),
+    })),
+  );
+  const promotions = serialized.map(({ convId, message, line }) => ({
+    convId,
+    done: queueSnapshotPromotion(convId, message, line),
+  }));
   await flushWrites();
 
   // Drop a snapshot file only AFTER its revision is durably in the ledger.

@@ -10,7 +10,7 @@ vi.mock('@/core/observability/runtimeTrace', async (importOriginal) => ({
 import { exists, readTextFile, writeTextFile, mkdir, remove, readDir, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { foldMessageLog } from './messageLedger';
-import { decodeLedgerPrefix } from './ledgerReader';
+import { decodeLedgerPrefix, projectLedger } from './ledgerReader';
 import { APP_VERSION } from '@/utils/version';
 import type { Message, ToolResultContent } from '@/types';
 import { DURABLE_TOOL_RESULT_MAX_BYTES_PER_LIST } from './durableToolResultContent';
@@ -1816,6 +1816,18 @@ describe('conversationStorage', () => {
     });
 
     describe('stream snapshot', () => {
+      /** The write queue's drain debounce — `DRAIN_INTERVAL_MS` in conversationStorage.ts. */
+      const DRAIN_DEBOUNCE_MS = 100;
+
+      /**
+       * Run the pending microtasks to exhaustion under fake timers while
+       * keeping the clock short of the drain debounce, so a line that reached
+       * the queue too late for an explicit flush stays off disk.
+       */
+      async function advanceClockBelowDrainDebounce(): Promise<void> {
+        for (let ms = 1; ms < DRAIN_DEBOUNCE_MS; ms++) await vi.advanceTimersByTimeAsync(1);
+      }
+
       it('keeps in-flight revisions out of the ledger but readable after a crash', async () => {
         await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
         await storage.flushWrites();
@@ -1859,6 +1871,43 @@ describe('conversationStorage', () => {
         expect(memFs.files.has(SNAPSHOT)).toBe(false);
         const rows = physicalLines();
         expect(rows[rows.length - 1]).toMatchObject({ id: 'm1', content: 'unflushed' });
+      });
+
+      it('writes the promoted line in the flush it performs, not on the queue debounce', async () => {
+        // The renderer is torn down right after `shutdownConversationStorage()`
+        // is fired at quit, so a promotion that only reaches disk when the
+        // write queue's debounce fires may never reach disk at all.
+        await storage.appendMessage('conv-1', makeMsg({ id: 'm1', content: '' }));
+        await storage.flushWrites();
+        await storage.snapshotMessageRevision('conv-1', makeMsg({ id: 'm1', content: 'unflushed' }));
+
+        let ledgerWriteLanded!: () => void;
+        const ledgerWritten = new Promise<void>((resolve) => { ledgerWriteLanded = resolve; });
+        const writeThrough = vi.mocked(invoke).getMockImplementation()!;
+        vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+          const result = await writeThrough(cmd, args);
+          if (cmd === 'atomic_write_text' && (args as { path?: string } | undefined)?.path === MESSAGES) {
+            ledgerWriteLanded();
+          }
+          return result;
+        });
+
+        vi.useFakeTimers();
+        try {
+          const flushed = storage.flushStreamSnapshots();
+          // Every microtask gets to run, while the clock stays under the write
+          // queue's debounce: the only thing that can have put the line on disk
+          // by now is the flush `flushStreamSnapshots` performs itself.
+          await Promise.race([ledgerWritten, advanceClockBelowDrainDebounce()]);
+
+          const rows = physicalLines();
+          expect(rows[rows.length - 1]).toMatchObject({ id: 'm1', content: 'unflushed' });
+
+          await flushed;
+          expect(memFs.files.has(SNAPSHOT)).toBe(false);
+        } finally {
+          vi.useRealTimers();
+        }
       });
 
       it('does not resurrect a message that was deleted while buffered', async () => {
@@ -2418,6 +2467,197 @@ describe('conversationStorage', () => {
       expect(onDisk.endsWith('\n')).toBe(true);
       expect(watermark).toBe(new TextEncoder().encode(onDisk).byteLength);
       expect(decodeLedgerPrefix(new TextEncoder().encode(onDisk), watermark)).toBe(onDisk);
+    });
+  });
+
+  describe('promoteStreamSnapshots + takeLedgerHistoryPoint (#549 P2a)', () => {
+    const CONV = 'hp-conv';
+    const MESSAGES = `/Users/testuser/.abu/conversations/${CONV}/messages.jsonl`;
+    const SNAPSHOT = `/Users/testuser/.abu/conversations/${CONV}/stream-snapshot.json`;
+    const OTHER_SNAPSHOT = '/Users/testuser/.abu/conversations/hp-other/stream-snapshot.json';
+
+    function snapshotContents(path = SNAPSHOT): string[] {
+      const raw = memFs.files.get(path);
+      if (raw === undefined) return [];
+      const file = JSON.parse(raw) as { entries?: { message: Message }[] };
+      return (file.entries ?? []).map((entry) => String(entry.message.content));
+    }
+
+    it('promotes the named conversation only and removes its snapshot file', async () => {
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.appendMessage('hp-other', makeMsg({ id: 'b1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '半截回答' }));
+      await storage.snapshotMessageRevision('hp-other', makeMsg({ id: 'b1', role: 'assistant', content: 'other partial' }));
+
+      expect(await storage.promoteStreamSnapshots(CONV)).toBe(1);
+
+      expect(memFs.files.has(SNAPSHOT)).toBe(false);
+      expect(memFs.files.has(OTHER_SNAPSHOT)).toBe(true);
+      const ledgerOnly = projectLedger({ ledgerText: memFs.files.get(MESSAGES)! }).messages;
+      expect(ledgerOnly.map((m) => [m.id, m.content])).toEqual([['a1', '半截回答']]);
+      // Nothing is left armed for this conversation: a second call has nothing to do.
+      expect(await storage.promoteStreamSnapshots(CONV)).toBe(0);
+    });
+
+    it('resolves 0 and writes nothing when the conversation has no buffered revision', async () => {
+      await storage.appendMessage(CONV, makeMsg({ id: 'u1', content: 'hi' }));
+      await storage.flushWrites();
+      const before = memFs.files.get(MESSAGES);
+      expect(await storage.promoteStreamSnapshots(CONV)).toBe(0);
+      expect(memFs.files.get(MESSAGES)).toBe(before);
+      expect(memFs.files.has(SNAPSHOT)).toBe(false);
+    });
+
+    it('after a crash the history point covers the partial answer the renderer shows', async () => {
+      await storage.appendMessage(CONV, makeMsg({ id: 'u1', role: 'user', content: '问题' }));
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '写到一半的回答' }));
+
+      // The process dies here; a fresh module instance is the relaunched app.
+      vi.resetModules();
+      storage = await import('./conversationStorage');
+      const shown = await storage.loadMessages(CONV);
+      expect(shown.map((m) => m.content)).toEqual(['问题', '写到一半的回答']);
+      await storage.appendMessage(CONV, makeMsg({ id: 'u2', role: 'user', content: '接着说' }));
+
+      const { takeLedgerHistoryPoint } = await import('./ledgerHistoryPoint');
+      const point = await takeLedgerHistoryPoint(CONV);
+
+      expect(point.promotedSnapshotEntries).toBe(1);
+      const bytes = new TextEncoder().encode(memFs.files.get(MESSAGES)!);
+      expect(point.ledgerWatermark).toBe(bytes.byteLength);
+      // Chinese content makes the byte count exceed the character count, which
+      // is why the watermark is measured in bytes and read back through the
+      // decoder rather than by slicing the string.
+      expect(point.ledgerWatermark).toBeGreaterThan(memFs.files.get(MESSAGES)!.length);
+      const prefix = projectLedger({ ledgerText: decodeLedgerPrefix(bytes, point.ledgerWatermark) }).messages;
+      expect(prefix.map((m) => [m.id, m.content])).toEqual([
+        ['u1', '问题'],
+        ['a1', '写到一半的回答'],
+        ['u2', '接着说'],
+      ]);
+      expect(memFs.files.has(SNAPSHOT)).toBe(false);
+      // The entry a load re-armed is gone from the in-memory buffer too.
+      expect(await storage.promoteStreamSnapshots(CONV)).toBe(0);
+    });
+
+    it('a failed promotion rejects and keeps the revision armed in memory and on disk', async () => {
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: 'partial' }));
+      const writeThrough = vi.mocked(invoke).getMockImplementation()!;
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+        if (cmd === 'atomic_write_text' && (args as { path?: string } | undefined)?.path === MESSAGES) {
+          throw new Error('disk full');
+        }
+        return writeThrough(cmd, args);
+      });
+
+      await expect(storage.promoteStreamSnapshots(CONV)).rejects.toThrow('disk full');
+      expect(memFs.files.has(SNAPSHOT)).toBe(true);
+
+      vi.mocked(invoke).mockImplementation(writeThrough);
+      expect(await storage.promoteStreamSnapshots(CONV)).toBe(1);
+      expect(memFs.files.has(SNAPSHOT)).toBe(false);
+      const ledgerOnly = projectLedger({ ledgerText: memFs.files.get(MESSAGES)! }).messages;
+      expect(ledgerOnly.map((m) => m.content)).toEqual(['partial']);
+    });
+
+    it('keeps a revision captured while the promotion was writing', async () => {
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '第一版' }));
+
+      let releaseLedgerWrite!: () => void;
+      let ledgerWriteReached!: () => void;
+      const ledgerWriteGate = new Promise<void>((resolve) => { releaseLedgerWrite = resolve; });
+      const insideLedgerWrite = new Promise<void>((resolve) => { ledgerWriteReached = resolve; });
+      const writeThrough = vi.mocked(invoke).getMockImplementation()!;
+      vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+        if (cmd === 'atomic_write_text' && (args as { path?: string } | undefined)?.path === MESSAGES) {
+          ledgerWriteReached();
+          await ledgerWriteGate;
+        }
+        return writeThrough(cmd, args);
+      });
+
+      let promotionSettled = false;
+      const promotion = storage.promoteStreamSnapshots(CONV).then((count) => {
+        promotionSettled = true;
+        return count;
+      });
+      // The promotion has queued its line and is now blocked inside the append.
+      await insideLedgerWrite;
+      await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '第二版' }));
+      // The revision landed while the promotion was still inside its write.
+      expect(promotionSettled).toBe(false);
+      releaseLedgerWrite();
+
+      expect(await promotion).toBe(1);
+      // The newer revision is a revision the ledger does not hold, so it stays
+      // armed — in memory and in the snapshot file — instead of being dropped
+      // with the entry that was promoted.
+      expect(snapshotContents()).toEqual(['第二版']);
+      expect(await storage.promoteStreamSnapshots(CONV)).toBe(1);
+      const ledgerOnly = projectLedger({ ledgerText: memFs.files.get(MESSAGES)! }).messages;
+      expect(ledgerOnly.map((m) => m.content)).toEqual(['第二版']);
+    });
+
+    it('queues a revision carrying tool-result images into its own flush', async () => {
+      // Serializing such a revision awaits the output manifest. The promotion
+      // must still put its line in the queue the flush it performs drains,
+      // instead of leaving it for the queue's 100 ms debounce — which is what
+      // holding the timers still proves.
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      // The clock is held still only for the promotion itself.
+      vi.useFakeTimers();
+      try {
+        await storage.snapshotMessageRevision(CONV, makeMsg({
+          id: 'a1',
+          role: 'assistant',
+          content: '看图说话',
+          toolCalls: [{
+            id: 'tc-1',
+            name: 'screenshot',
+            input: {},
+            resultContent: [{
+              type: 'image',
+              source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+            }] as ToolResultContent[],
+          }],
+        }));
+
+        expect(await storage.promoteStreamSnapshots(CONV)).toBe(1);
+
+        const ledgerOnly = projectLedger({ ledgerText: memFs.files.get(MESSAGES)! }).messages;
+        expect(ledgerOnly.map((m) => [m.id, m.content])).toEqual([['a1', '看图说话']]);
+        expect(memFs.files.has(SNAPSHOT)).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('the history point of a conversation with no ledger is 0', async () => {
+      const { takeLedgerHistoryPoint } = await import('./ledgerHistoryPoint');
+      expect(await takeLedgerHistoryPoint('hp-missing')).toEqual({ ledgerWatermark: 0, promotedSnapshotEntries: 0 });
+    });
+
+    it('reports whether a conversation still has a revision waiting for its ledger', async () => {
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(false);
+
+      await storage.appendMessage(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '' }));
+      await storage.flushWrites();
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(false);
+
+      await storage.snapshotMessageRevision(CONV, makeMsg({ id: 'a1', role: 'assistant', content: '半截回答' }));
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(true);
+      expect(storage.hasArmedStreamSnapshot('hp-other')).toBe(false);
+
+      await storage.promoteStreamSnapshots(CONV);
+      expect(storage.hasArmedStreamSnapshot(CONV)).toBe(false);
     });
   });
 });

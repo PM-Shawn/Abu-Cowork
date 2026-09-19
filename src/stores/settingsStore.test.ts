@@ -1521,6 +1521,58 @@ describe('bootstrapSecrets — orphaned imagegen:<id> secret sweep', () => {
   });
 });
 
+describe('clearAllStoredKeys — API key scope', () => {
+  const invokeMock = vi.mocked(invoke);
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    useSettingsStore.setState({
+      providers: [makeProvider({ id: 'p1', apiKey: 'sk-provider' })],
+      auxiliaryServices: {
+        webSearch: { provider: 'tavily', apiKey: 'sk-search', baseUrl: 'https://search.example.com' },
+        imageGen: { apiKey: 'sk-image', baseUrl: '', model: '' },
+      },
+      imageGeneration: {
+        backends: [{
+          id: 'bk1',
+          name: 'Image',
+          vendor: 'custom',
+          baseUrl: 'https://images.example.com',
+          apiKey: 'sk-backend',
+          model: 'image-model',
+        }],
+        defaultId: 'bk1',
+      },
+    });
+  });
+
+  it('deletes only API keys and preserves an existing account credential', async () => {
+    const secrets = new Map([
+      ['provider:p1', 'sk-provider'],
+      ['aux:webSearch', 'sk-search'],
+      ['aux:imageGen', 'sk-image'],
+      ['imagegen:bk1', 'sk-backend'],
+      ['account:credentials:v1', 'account-secret'],
+    ]);
+    invokeMock.mockImplementation(async (cmd: unknown, args?: unknown) => {
+      if (cmd === 'secret_delete') {
+        secrets.delete((args as { key: string }).key);
+        return undefined;
+      }
+      if (cmd === 'secret_clear_all') throw new Error('must not clear the account store');
+      return undefined;
+    });
+
+    await useSettingsStore.getState().clearAllStoredKeys();
+
+    expect(secrets).toEqual(new Map([['account:credentials:v1', 'account-secret']]));
+    expect(invokeMock).not.toHaveBeenCalledWith('secret_clear_all', expect.anything());
+    expect(useSettingsStore.getState().providers[0].apiKey).toBe('');
+    expect(useSettingsStore.getState().auxiliaryServices.webSearch?.apiKey).toBe('');
+    expect(useSettingsStore.getState().imageGeneration.backends[0].apiKey).toBe('');
+  });
+});
+
 describe('secret write-through failure fallback', () => {
   const invokeMock = vi.mocked(invoke);
 

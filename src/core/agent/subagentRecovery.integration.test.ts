@@ -1261,10 +1261,12 @@ describe('subagent max_tokens recovery (integration)', () => {
     mockExecuteAnyTool.mockReset();
     mockExecuteAnyTool.mockResolvedValueOnce('ok');
     mockClaudeChat
+      // provider 的流内用量是累计快照：结束事件报的是这一轮到此为止的总数，
+      // 不是增量。适配器把流内已经拿到的输入带到结束事件上一起交出来。
       .mockImplementationOnce(emits([
         { type: 'usage', usage: { inputTokens: 100, outputTokens: 20 } } as StreamEvent,
         { type: 'tool_use', id: 't1', name: 'read_file', input: { path: '/a' } } as StreamEvent,
-        { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 0, outputTokens: 5 } } as StreamEvent,
+        { type: 'done', stopReason: 'tool_use', usage: { inputTokens: 100, outputTokens: 25 } } as StreamEvent,
       ]))
       .mockImplementationOnce(emits([
         { type: 'text', text: 'done' } as StreamEvent,
@@ -1277,6 +1279,18 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(events.find((event) => event.type === 'turn-complete')).toMatchObject({
       usage: { inputTokens: 100, outputTokens: 25 },
     });
+  });
+
+  it('counts the tokens of a request that threw after reporting usage', async () => {
+    // 请求抛出的那一轮同样消耗了 token。成员卡片上不能把开销最大的失败轮次显示成零。
+    mockClaudeChat.mockImplementation(async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+      onEvent({ type: 'usage', usage: { inputTokens: 100, outputTokens: 20 } });
+      throw new LLMError('bad request', 'invalid_request', { retryable: false });
+    });
+
+    const result = await runSubagentLoop({ agent, task: 'do the thing' });
+
+    expect(result.tokenUsage).toEqual({ input: 100, output: 20 });
   });
 
   it.each([

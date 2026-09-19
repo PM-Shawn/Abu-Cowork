@@ -1183,9 +1183,15 @@ export function getIndexEntries(): Record<string, ConversationMeta> {
   return indexCache?.entries ?? {};
 }
 
+/**
+ * Replace a conversation's row. The row passes the same rule as a row read
+ * from disk: an entry can reach this writer without passing the reader (the
+ * store keeps a localStorage row that has no disk row yet), and a permission
+ * mode this build does not accept must not become durable that way.
+ */
 export async function updateIndexEntry(meta: ConversationMeta): Promise<void> {
   const index = await loadIndex();
-  index.entries[meta.id] = meta;
+  index.entries[meta.id] = withAcceptedPermissionMode(meta);
   scheduleIndexFlush();
 }
 

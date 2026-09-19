@@ -1470,6 +1470,19 @@ describe('conversationStorage', () => {
       memFs.files.set(INDEX_PATH, JSON.stringify({ version: 1, entries: null }));
       await expect(storage.loadIndex()).resolves.toMatchObject({ version: 1 });
     });
+
+    it('a written entry loses a mode this build does not accept', async () => {
+      // An entry can reach this writer without passing the reader: the store
+      // keeps localStorage rows that have no disk row yet.
+      await storage.updateIndexEntry({
+        ...BASE_ENTRY,
+        teamId: 'team-1',
+        permissionMode: 'strict' as never,
+      });
+      await storage.flushIndex();
+      const entry = JSON.parse(memFs.files.get(INDEX_PATH)!).entries.c1;
+      expect(entry).toEqual({ ...BASE_ENTRY, teamId: 'team-1' });
+    });
   });
 
   describe('deleteConversationFiles', () => {

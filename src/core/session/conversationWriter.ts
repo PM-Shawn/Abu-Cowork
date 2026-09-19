@@ -166,8 +166,8 @@ export interface ConversationWriter {
   shutdown(): Promise<void>;
   /** Resolves the conversations root, creates it when missing, and runs the version sweep when this instance has it. Idempotent. */
   ensureReady(): Promise<void>;
-  /** `<appData>/conversations`; callable once `ensureReady` or any other awaited method has run. */
-  conversationsRoot(): string;
+  /** `<appData>/conversations`, or null until `ensureReady` or any other awaited method has resolved it. */
+  conversationsRoot(): string | null;
   flushWrites(): Promise<void>;
   flushAndGetLedgerWatermark(convId: string): Promise<number>;
   snapshotMessageRevision(convId: string, message: Message): Promise<void>;
@@ -1590,7 +1590,7 @@ export function createConversationWriter(deps: {
     init,
     shutdown,
     ensureReady: async () => { await ensureBase(); },
-    conversationsRoot: () => paths!.root,
+    conversationsRoot: () => paths?.root ?? null,
     flushWrites,
     flushAndGetLedgerWatermark,
     snapshotMessageRevision,

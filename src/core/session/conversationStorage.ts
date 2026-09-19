@@ -34,15 +34,15 @@ export type { ConversationMeta } from './conversationWriter';
 
 const writer = createConversationWriter({
   fs: rendererConversationFs,
+  // Every field is reached when a write needs it, never while this module is
+  // evaluated — the way this module has always reached its dependencies.
   env: {
     appDataDir: () => appDataDir(),
-    appVersion: APP_VERSION,
+    get appVersion() { return APP_VERSION; },
     now: () => Date.now(),
     randomSuffix: () => Math.random().toString(36).substring(2, 8),
     trace: (event, attributes) => traceRuntimeEvent(`renderer.${event}`, attributes),
-    errorType: runtimeErrorType,
-    // Called through, not read here: `outputSnapshots` is reached the first
-    // time a write needs it, the way this module has always reached it.
+    errorType: (err) => runtimeErrorType(err),
     outputManifest: {
       refresh: (convId) => refreshOutputManifest(convId),
       findToolResultImageSnapshot: (convId, toolCallId) => findToolResultImageSnapshot(convId, toolCallId),
@@ -167,7 +167,7 @@ export async function flushIndex(): Promise<void> {
 // re-scanning JSONL. Never write user data only to the catalog.
 
 /** Absolute path to the conversations root dir. Set by the writer's first use. */
-function conversationsRoot(): string {
+function conversationsRoot(): string | null {
   return writer.conversationsRoot();
 }
 

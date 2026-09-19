@@ -40,6 +40,32 @@ Both Electron development commands rebuild the renderer for the intended
 target before launching. This prevents a previous Enterprise build from being
 mistaken for OSS, or an OSS renderer from being mistaken for Enterprise.
 
+### macOS development deep links
+
+Both dev commands prepare a signed local `.dev-shell/Electron.app` with
+`abu-dev` in its Info.plist and a checkout-specific `com.abu.cowork.dev.*`
+bundle ID. They register the bundle with LaunchServices, set its default
+handler, and read the binding back before launching. Runtime
+`setAsDefaultProtocolClient()` alone cannot add the missing Info.plist entry
+to the stock Electron bundle. This setup requires Xcode Command Line Tools.
+
+The shell is rebuilt only when its Electron version, identity, or signature
+changes. Dependency reinstalls do not remove it. Do not delete it routinely:
+re-signing can prompt for Keychain access again. Other platforms continue to
+use their installed Electron binary. Production `abu://` is unchanged.
+
+For macOS deep-link acceptance, use `npm run electron:dev:enterprise`, keep
+that instance running, and complete browser login and consent. A subsequent
+`[deepLink] delivered running-app deep links` entry plus successful binding
+is the acceptance evidence. Directly running the stock `electron` binary
+bypasses the protocol shell and does not validate OS delivery.
+
+Only the most recently launched checkout owns `abu-dev://`; avoid overlapping
+browser login flows from different worktrees. Development cold launches are
+not supported: LaunchServices starts the bare shell without the application
+entry point. Start the dev command first. Test production cold starts with a
+packaged application instead.
+
 ## Enterprise Build Smoke Verification (manual steps, run by Shawn)
 
 ```bash

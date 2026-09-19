@@ -1,6 +1,10 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useAccountStore } from '@/core/account/accountStore';
+import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import {
   Settings,
@@ -15,6 +19,9 @@ import {
   ChevronsUpDown,
   Pencil,
   ExternalLink,
+  LogIn,
+  LogOut,
+  UserRound,
 } from 'lucide-react';
 import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { Select } from '@/components/ui/select';
@@ -32,9 +39,7 @@ import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
  * High-frequency prefs are surfaced inline so the user doesn't have to open the
  * full settings dialog: theme toggles in place, language switches via an inline
  * select, and check-for-updates runs the real update flow (check → download →
- * restart) reusing the store-backed update state. As an open-source BYO-key
- * client there is deliberately no account / plan / logout — the identity head
- * reads "本地模式".
+ * restart) reusing the store-backed update state.
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
   const { t, locale } = useI18n();
@@ -45,6 +50,13 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const language = useSettingsStore((s) => s.language);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
+  const openAccountLogin = useSettingsStore((s) => s.openAccountLogin);
+  const accountStatus = useAccountStore((s) => s.status);
+  const account = useAccountStore((s) => s.account);
+  const profileStatus = useAccountStore((s) => s.profileStatus);
+  const signOut = useAccountStore((s) => s.signOut);
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const unbindEnterprise = useEnterpriseStore((s) => s.unbind);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
@@ -126,6 +138,14 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     });
   }, [locale]);
 
+  const handleEnterpriseLogin = useCallback(() => {
+    void startEnterpriseAccountLogin()
+      .then((result) => {
+        if (result === 'configuration_required') openSystemSettings('enterprise');
+      })
+      .catch(() => openSystemSettings('enterprise'));
+  }, [openSystemSettings]);
+
   const languageOptions = [
     { value: 'system', label: t.settings.followSystem },
     { value: 'zh-CN', label: '简体中文' },
@@ -192,6 +212,28 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
                   trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
                 };
   const UpdateIcon = updateRow.icon;
+  const signedIn = accountStatus === 'signed_in' && account !== null;
+  const expired = accountStatus === 'expired' && account !== null;
+  const localLabel = userNickname || t.sidebar.defaultNickname;
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseSignedIn = enterpriseBinding !== null;
+  const hasDisplayedIdentity = signedIn || enterpriseSignedIn;
+  const accountLabel = enterpriseBinding
+    ? enterpriseBinding.userName || enterpriseBinding.userEmail || enterpriseBinding.orgName
+    : signedIn
+      ? account.name || account.email || t.account.title
+      : localLabel;
+  const accountDetail = enterpriseBinding
+    ? [enterpriseBinding.userEmail, enterpriseBinding.orgName].filter(Boolean).join(' · ')
+    : signedIn
+      ? profileStatus === 'loading'
+        ? t.account.profileLoading
+        : profileStatus === 'error'
+          ? t.account.profileUnavailable
+          : account.email || t.account.title
+      : t.sidebar.localMode;
 
   return (
     <div ref={rootRef} className="relative">
@@ -217,10 +259,10 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
         <span
           className={cn(
             'flex-1 min-w-0 text-h-xs font-semibold truncate',
-            userNickname ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
+            hasDisplayedIdentity ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
           )}
         >
-          {userNickname || t.sidebar.defaultNickname}
+          {accountLabel}
         </span>
         {updateInfo && !open && <span className="w-2 h-2 rounded-full bg-[var(--abu-danger-solid)] shrink-0" />}
         <ChevronsUpDown className="h-4 w-4 shrink-0 text-[var(--abu-text-muted)]" strokeWidth={1.6} />
@@ -232,8 +274,8 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           role="menu"
           className="absolute bottom-full left-0 right-0 mb-2 z-50 p-1.5 rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-[0_12px_34px_-8px_rgba(20,20,19,0.22),0_2px_8px_-2px_rgba(20,20,19,0.10)]"
         >
-          {/* Identity head */}
-          <div className="group flex items-center gap-2.5 px-2 py-2">
+          {/* Authenticated identity, or the local-mode account entry. */}
+          <div className="group flex w-full items-center gap-2.5 px-2 py-2">
             <span className="w-9 h-9 rounded-full overflow-hidden shrink-0">
               {userAvatar ? (
                 <img src={userAvatar} alt="" className="w-full h-full object-cover" />
@@ -243,9 +285,9 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             </span>
             <div className="flex-1 min-w-0">
               <div className="text-body font-semibold truncate text-[var(--abu-text-primary)]">
-                {userNickname || t.sidebar.defaultNickname}
+                {accountLabel}
               </div>
-              <div className="text-caption text-[var(--abu-text-muted)] truncate">{t.sidebar.localMode}</div>
+              <div className="text-caption text-[var(--abu-text-muted)] truncate">{accountDetail}</div>
             </div>
             <button
               onClick={() => run(onEditProfile)}
@@ -257,6 +299,18 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           </div>
 
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+
+          {!enterpriseSignedIn && signedIn && (
+            <>
+              <MenuRow icon={UserRound} label={t.account.accountSettings}
+                onClick={() => run(() => openSystemSettings('account'))} />
+              {IS_ENTERPRISE_BUILD && (
+                <MenuRow icon={LogIn} label={t.account.switchToEnterprise}
+                  onClick={() => run(handleEnterpriseLogin)} />
+              )}
+              <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+            </>
+          )}
 
           {/* Settings */}
           <MenuRow icon={Settings} label={t.settings.title} onClick={() => run(() => openSystemSettings())} />
@@ -336,6 +390,17 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             </span>
             {updateRow.trailing}
           </button>
+          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+          {enterpriseSignedIn ? (
+            <MenuRow icon={LogOut} label={t.account.signOutEnterprise}
+              onClick={() => run(() => void unbindEnterprise())} />
+          ) : signedIn ? (
+            <MenuRow icon={LogOut} label={IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
+              onClick={() => run(() => void signOut())} />
+          ) : (
+            <MenuRow icon={LogIn} label={expired ? t.account.retry : t.account.signIn}
+              onClick={() => run(openAccountLogin)} />
+          )}
         </div>
       )}
     </div>

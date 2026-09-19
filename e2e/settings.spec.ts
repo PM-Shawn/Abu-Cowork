@@ -37,9 +37,8 @@ test.describe('Settings', () => {
     // account popover (AccountMenu): the sidebar-bottom avatar trigger opens a
     // menu, and a "设置" (t.settings.title) menuitem opens settings — which now
     // renders as an overlay dialog (SystemSettingsDialog), not a view swap.
-    // In E2E, setupAbuSettings sets no nickname, so the trigger's accessible
-    // name is the default nickname "我" (t.sidebar.defaultNickname).
-    const accountTrigger = page.getByRole('button', { name: '我', exact: true });
+    // 使用未登录账号入口打开菜单。
+    const accountTrigger = page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ });
     await expect(accountTrigger).toBeVisible();
     await accountTrigger.click();
 

@@ -20,6 +20,7 @@
 import { execSync } from 'node:child_process';
 
 const REPO_ROOT = process.cwd();
+const ACCOUNT_E2E_SERVER_URL = process.env.VITE_PERSONAL_ACCOUNT_SERVER_URL || 'http://127.0.0.1:43119';
 
 export default async function globalSetup(): Promise<void> {
   console.log('[e2e:global-setup] preparing Electron and browser runtimes...');
@@ -41,5 +42,11 @@ export default async function globalSetup(): Promise<void> {
   execSync('npx vite build --base=./ --outDir dist-electron-spike', {
     cwd: REPO_ROOT,
     stdio: 'inherit',
+    env: {
+      ...process.env,
+      // The production default remains intentionally empty until its origin is
+      // approved. Electron E2E uses an isolated loopback account service.
+      VITE_PERSONAL_ACCOUNT_SERVER_URL: ACCOUNT_E2E_SERVER_URL,
+    },
   });
 }

@@ -7,6 +7,11 @@ import { fileURLToPath } from 'node:url';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
 
+test('both development targets use the platform-aware protocol shell launcher', () => {
+  assert.equal(packageJson.scripts['electron:dev'], 'node scripts/launch-electron-dev.mjs');
+  assert.equal(packageJson.scripts['electron:dev:enterprise'], 'ABU_BUILD_TARGET=enterprise node scripts/launch-electron-dev.mjs');
+});
+
 test('Electron dev launch rebuilds native agent runtimes before the renderer', () => {
   assert.equal(
     packageJson.scripts['preelectron:dev'],

@@ -113,8 +113,8 @@ import type * as realMemdirExtractorRun from '@/core/memdir/extractor';
 import type * as shimMemdirExtractorRun from './memdirExtractorRun';
 import type * as realMemdirPaths from '@/core/memdir/paths';
 import type * as shimMemdirPaths from './memdirPaths';
-import type * as realUsageTrackerRun from '@/core/llm/usageTracker';
-import type * as shimUsageTrackerRun from './usageTrackerRun';
+import type * as realUsageSinkRun from '@/core/llm/usageSink';
+import type * as shimUsageSinkRun from './usageSinkRun';
 import type * as realComputerToolsAxRun from '@/core/tools/definitions/computerTools';
 import type * as shimComputerToolsAxRun from './computerToolsAxRun';
 import type * as realConsoleTelemetryTargetRun from '@/utils/consoleTelemetryTarget';
@@ -272,8 +272,8 @@ export type MemdirExtractorRunReturns = NoDrift<ReturnDrift<typeof realMemdirExt
 export type MemdirPathsParams = NoDrift<ParamDrift<typeof realMemdirPaths, typeof shimMemdirPaths>>;
 export type MemdirPathsReturns = NoDrift<ReturnDrift<typeof realMemdirPaths, typeof shimMemdirPaths>>;
 
-export type UsageTrackerRunParams = NoDrift<ParamDrift<typeof realUsageTrackerRun, typeof shimUsageTrackerRun>>;
-export type UsageTrackerRunReturns = NoDrift<ReturnDrift<typeof realUsageTrackerRun, typeof shimUsageTrackerRun>>;
+export type UsageSinkRunParams = NoDrift<ParamDrift<typeof realUsageSinkRun, typeof shimUsageSinkRun>>;
+export type UsageSinkRunReturns = NoDrift<ReturnDrift<typeof realUsageSinkRun, typeof shimUsageSinkRun>>;
 
 export type ComputerToolsAxRunParams = NoDrift<ParamDrift<typeof realComputerToolsAxRun, typeof shimComputerToolsAxRun>>;
 export type ComputerToolsAxRunReturns = NoDrift<ReturnDrift<typeof realComputerToolsAxRun, typeof shimComputerToolsAxRun>>;

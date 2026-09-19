@@ -1,84 +1,39 @@
 import { useState, useMemo, useRef } from 'react';
-import { useUsageStatsStore, type DailyRecord } from '@/stores/usageStatsStore';
 import { useI18n, format } from '@/i18n';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
+import { localDateOf } from '@/core/llm/usageAccounting';
+import {
+  getUsageSendFailures,
+  type UsageAggregate,
+  type UsageRangeResult,
+} from '@/core/usage/usageLedgerClient';
+import { useUsageLedger, type UsagePeriod } from '@/core/usage/useUsageLedger';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-type Period = 'today' | 'week' | 'month' | 'all';
-
-function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
+/**
+ * 一个合计数字的显示值。这段时间里有请求、却一次都没取到这个数字时显示「—」：
+ * 0 的意思是确实没有消耗，取不到是另一回事（企业网关上的 Claude 整段输入总量
+ * 都判为未知，就是这种情况）。
+ */
+function formatKnownSum(sum: number, unknownAttempts: number, attempts: number): string {
+  if (attempts > 0 && unknownAttempts === attempts) return '—';
+  return formatTokens(sum);
 }
 
-function currentDate(): string {
-  return isoDate(new Date());
-}
-
-function getStartDate(period: Period): string {
-  const today = currentDate();
-  if (period === 'today') return today;
-  if (period === 'week') {
-    const d = new Date();
-    d.setDate(d.getDate() - 6);
-    return isoDate(d);
-  }
-  if (period === 'month') {
-    return `${today.slice(0, 7)}-01`;
-  }
-  return ''; // all
-}
-
-interface Aggregated {
-  requests: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  bySkill: { skill: string; requests: number; tokens: number }[];
-  byModel: { model: string; requests: number; tokens: number }[];
-}
-
-function aggregate(records: DailyRecord[], startDate: string, endDate: string): Aggregated {
-  const skillMap = new Map<string, { requests: number; tokens: number }>();
-  const modelMap = new Map<string, { requests: number; tokens: number }>();
-  let requests = 0, inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreationTokens = 0;
-
-  for (const rec of records) {
-    if (startDate && rec.date < startDate) continue;
-    if (rec.date > endDate) continue;
-    for (const e of rec.entries) {
-      requests += e.requests;
-      inputTokens += e.inputTokens;
-      outputTokens += e.outputTokens;
-      cacheReadTokens += e.cacheReadTokens;
-      cacheCreationTokens += e.cacheCreationTokens;
-
-      const total = e.inputTokens + e.outputTokens;
-      if (e.skill) {
-        const prev = skillMap.get(e.skill) ?? { requests: 0, tokens: 0 };
-        skillMap.set(e.skill, { requests: prev.requests + e.requests, tokens: prev.tokens + total });
-      }
-      const prevModel = modelMap.get(e.model) ?? { requests: 0, tokens: 0 };
-      modelMap.set(e.model, { requests: prevModel.requests + e.requests, tokens: prevModel.tokens + total });
-    }
-  }
-
-  return {
-    requests, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens,
-    bySkill: [...skillMap.entries()].map(([skill, v]) => ({ skill, ...v })).sort((a, b) => b.tokens - a.tokens),
-    byModel: [...modelMap.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => b.tokens - a.tokens),
-  };
-}
-
-function buildDateTokenMap(records: DailyRecord[]): Map<string, number> {
+/** 每日 token 总量：已知的输入加已知的输出，未知的不参与。 */
+function buildDateTokenMap(daily: UsageRangeResult): Map<string, number> {
   const map = new Map<string, number>();
-  for (const rec of records) {
-    let total = 0;
-    for (const e of rec.entries) total += e.inputTokens + e.outputTokens;
-    if (total > 0) map.set(rec.date, total);
+  for (const day of daily.byDay) {
+    const total = day.inputKnownSum + day.outputKnownSum;
+    if (total > 0) map.set(day.localDate, total);
   }
   return map;
+}
+
+/** 排序用的一行总量。 */
+function rowTokens(row: UsageAggregate): number {
+  return row.inputKnownSum + row.outputKnownSum;
 }
 
 function formatTokens(n: number): string {
@@ -111,12 +66,13 @@ function heatLevel(tokens: number, maxTokens: number): number {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function KpiCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-[var(--abu-border)] bg-[var(--abu-bg-card)] px-4 py-3 flex flex-col gap-1">
       <span className="text-caption text-[var(--abu-text-tertiary)] leading-none">{label}</span>
       <span className="text-h-md font-semibold text-[var(--abu-text-primary)] tabular-nums leading-tight">{value}</span>
-      <span className="text-caption text-[var(--abu-text-muted)] leading-none min-h-[12px]">{sub ?? ' '}</span>
+      {/* 占位行，只为四张卡片高度一致，不放文字 */}
+      <span className="text-caption text-[var(--abu-text-muted)] leading-none min-h-[12px]">{' '}</span>
     </div>
   );
 }
@@ -150,7 +106,7 @@ function FloatingTooltip({ hover }: { hover: { text: string; top: number; left: 
 function UsageHeatmap({ dateTokenMap }: { dateTokenMap: Map<string, number> }) {
   const { t } = useI18n();
   const today = new Date();
-  const todayStr = isoDate(today);
+  const todayStr = localDateOf(today);
   const containerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ text: string; top: number; left: number } | null>(null);
 
@@ -164,7 +120,7 @@ function UsageHeatmap({ dateTokenMap }: { dateTokenMap: Map<string, number> }) {
   for (let i = 0; i < 364; i++) {
     const d = new Date(startDate);
     d.setDate(startDate.getDate() + i);
-    const dateStr = isoDate(d);
+    const dateStr = localDateOf(d);
     cells.push({ date: dateStr, isFuture: dateStr > todayStr });
   }
 
@@ -261,7 +217,7 @@ function UsageDailyBar({ dateTokenMap }: { dateTokenMap: Map<string, number> }) 
     return Array.from({ length: 30 }, (_, i) => {
       const d = new Date(today);
       d.setDate(today.getDate() - (29 - i));
-      const date = isoDate(d);
+      const date = localDateOf(d);
       return { date, tokens: dateTokenMap.get(date) ?? 0 };
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -314,33 +270,76 @@ function UsageDailyBar({ dateTokenMap }: { dateTokenMap: Map<string, number> }) 
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
+/**
+ * 统计起点与记账健康：一行文字，说清这份统计从哪天开始、有没有漏记。
+ *
+ * 设置页不放大段文字，所以三件事挤进同一行：起点、本次运行未能记录的次数、
+ * 以及读取失败时的「暂未更新」。
+ */
+function UsageLedgerNote({
+  statsOrigin,
+  health,
+  stale,
+  unknownAttempts,
+}: {
+  statsOrigin: string | null;
+  health: UsageRangeResult['health'];
+  stale: boolean;
+  unknownAttempts: number;
+}) {
+  const { t } = useI18n();
+  // 三处加在一起：主进程写失败的、主进程校验拒绝的、renderer 这一侧没送到的。
+  const unrecorded = health.writeFailures + health.rejectedFrames + getUsageSendFailures();
+  const parts: string[] = [
+    statsOrigin ? format(t.usage.statsOrigin, { date: statsOrigin.replace(/-/g, '.') }) : t.usage.statsOriginEmpty,
+  ];
+  if (health.degradedCode) parts.push(t.usage.unavailable);
+  if (unrecorded > 0) parts.push(format(t.usage.unrecorded, { count: String(unrecorded) }));
+  // 只在真有漏掉时出现。全都取到的时候这一句不该占地方。
+  if (unknownAttempts > 0) parts.push(format(t.usage.unknownUsage, { count: String(unknownAttempts) }));
+  if (stale) parts.push(t.usage.stale);
+
+  return (
+    <p className="text-caption text-[var(--abu-text-muted)]">{parts.join(' · ')}</p>
+  );
+}
+
 export default function UsageSection() {
   const { t } = useI18n();
-  const records = useUsageStatsStore((s) => s.records);
-  const [period, setPeriod] = useState<Period>('all');
+  const [period, setPeriod] = useState<UsagePeriod>('all');
+  const { period: data, daily, stale } = useUsageLedger(period);
 
-  const periods: { id: Period; label: string }[] = [
+  const periods: { id: UsagePeriod; label: string }[] = [
     { id: 'all', label: t.usage.periodAll },
     { id: 'month', label: t.usage.periodMonth },
     { id: 'week', label: t.usage.periodWeek },
     { id: 'today', label: t.usage.periodToday },
   ];
 
-  const data = useMemo(() => {
-    const today = currentDate();
-    return aggregate(records, getStartDate(period), today);
-  }, [records, period]);
+  const dateTokenMap = useMemo(() => buildDateTokenMap(daily), [daily]);
 
-  const dateTokenMap = useMemo(() => buildDateTokenMap(records), [records]);
-
-  const totalTokens = data.inputTokens + data.outputTokens;
-  const cacheTotal = data.inputTokens + data.cacheReadTokens + data.cacheCreationTokens;
-  const maxSkillTokens = data.bySkill[0]?.tokens ?? 0;
-  const maxModelTokens = data.byModel[0]?.tokens ?? 0;
+  const totals = data.totals;
+  const byModel = useMemo(
+    () => [...data.byModel].sort((a, b) => rowTokens(b) - rowTokens(a)),
+    [data.byModel],
+  );
+  const bySkill = useMemo(
+    () => [...data.bySkill].sort((a, b) => rowTokens(b) - rowTokens(a)),
+    [data.bySkill],
+  );
+  const maxModelTokens = byModel[0] ? rowTokens(byModel[0]) : 0;
+  const maxSkillTokens = bySkill[0] ? rowTokens(bySkill[0]) : 0;
 
   return (
     <div className="space-y-5">
       <SettingsSectionHeader title={t.usage.title} />
+
+      <UsageLedgerNote
+        statsOrigin={data.statsOriginLocalDate}
+        health={data.health}
+        stale={stale}
+        unknownAttempts={Math.max(totals.inputUnknownAttempts, totals.outputUnknownAttempts)}
+      />
 
       {/* Period switcher */}
       <div className="flex gap-1">
@@ -361,17 +360,20 @@ export default function UsageSection() {
 
       {/* Row 1 — KPI cards (period-filtered) */}
       <div className="grid grid-cols-4 gap-3">
-        <KpiCard label={t.usage.requests} value={String(data.requests)} />
+        <KpiCard label={t.usage.requests} value={String(totals.attempts)} />
         <KpiCard
           label={t.usage.inputTokens}
-          value={formatTokens(data.inputTokens)}
-          sub={data.cacheReadTokens > 0 ? `cache ${formatTokens(data.cacheReadTokens)}` : undefined}
+          value={formatKnownSum(totals.inputKnownSum, totals.inputUnknownAttempts, totals.attempts)}
         />
-        <KpiCard label={t.usage.outputTokens} value={formatTokens(data.outputTokens)} />
+        <KpiCard
+          label={t.usage.outputTokens}
+          value={formatKnownSum(totals.outputKnownSum, totals.outputUnknownAttempts, totals.attempts)}
+        />
         <KpiCard
           label={t.usage.cacheHitRate}
-          value={formatRate(data.cacheReadTokens, cacheTotal)}
-          sub={totalTokens > 0 ? `${formatTokens(totalTokens)} total` : undefined}
+          // 命中率只在缓存读与输入总量都已知的那些尝试上计算。一次都算不出来时
+          // formatRate 给出「—」，本身就说明了没有可比的数据。
+          value={formatRate(totals.cacheReadComparableSum, totals.inputComparableSum)}
         />
       </div>
 
@@ -385,16 +387,16 @@ export default function UsageSection() {
       <div className="grid grid-cols-2 gap-6">
         <div className="space-y-2">
           <h3 className="text-caption font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">{t.usage.byModel}</h3>
-          {data.byModel.length === 0
+          {byModel.length === 0
             ? <p className="text-minor text-[var(--abu-text-muted)] py-1">—</p>
-            : <div className="space-y-2">{data.byModel.slice(0, 10).map(item => <BarRow key={item.model} label={item.model} tokens={item.tokens} maxTokens={maxModelTokens} />)}</div>
+            : <div className="space-y-2">{byModel.slice(0, 10).map(item => <BarRow key={item.requestedModel} label={item.requestedModel} tokens={rowTokens(item)} maxTokens={maxModelTokens} />)}</div>
           }
         </div>
         <div className="space-y-2">
           <h3 className="text-caption font-medium text-[var(--abu-text-tertiary)] uppercase tracking-wider">{t.usage.bySkill}</h3>
-          {data.bySkill.length === 0
+          {bySkill.length === 0
             ? <p className="text-minor text-[var(--abu-text-muted)] py-1">—</p>
-            : <div className="space-y-2">{data.bySkill.slice(0, 10).map(item => <BarRow key={item.skill} label={item.skill} tokens={item.tokens} maxTokens={maxSkillTokens} />)}</div>
+            : <div className="space-y-2">{bySkill.slice(0, 10).map(item => <BarRow key={item.skill} label={item.skill} tokens={rowTokens(item)} maxTokens={maxSkillTokens} />)}</div>
           }
         </div>
       </div>

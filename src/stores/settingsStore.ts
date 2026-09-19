@@ -44,7 +44,6 @@ import {
   deleteSecret,
   listFailedSecrets,
   listSecrets,
-  clearAllSecrets,
 } from '@/utils/secretStore';
 // Relocated to a pure module so the sidecar bundle (and anything else that
 // needs zero store-graph coupling) can import them directly — see
@@ -182,7 +181,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
+export type SystemSettingsTab = 'account' | 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
 export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
 
@@ -260,6 +259,8 @@ export interface SettingsState {
   /** System settings render as an overlay dialog on top of the current view,
    *  decoupled from viewMode. Ephemeral — not persisted. */
   systemSettingsOpen: boolean;
+  /** Centered personal/enterprise account entry dialog. Ephemeral. */
+  accountLoginOpen: boolean;
   /** Ephemeral deep link used when an in-flight task needs user setup. */
   capabilitySetupTarget: CapabilitySetupTarget | null;
   disabledSkills: string[];
@@ -526,6 +527,8 @@ interface SettingsActions {
   requestCapabilitySetup: (target: CapabilitySetupTarget) => void;
   clearCapabilitySetupTarget: () => void;
   closeSystemSettings: () => void;
+  openAccountLogin: () => void;
+  closeAccountLogin: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
   /** Toggle a Labs (experimental features) flag. Takes effect immediately. */
   setLabsFlag: (id: string, enabled: boolean) => void;
@@ -1289,6 +1292,7 @@ export const useSettingsStore = create<SettingsStore>()(
       viewMode: 'chat' as ViewMode,
       activeTeamTab: 'members' as TeamTab,
       systemSettingsOpen: false,
+      accountLoginOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [
         'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
@@ -1640,6 +1644,8 @@ export const useSettingsStore = create<SettingsStore>()(
         set({ capabilitySetupTarget: null }),
       closeSystemSettings: () =>
         set({ systemSettingsOpen: false, capabilitySetupTarget: null }),
+      openAccountLogin: () => set({ accountLoginOpen: true }),
+      closeAccountLogin: () => set({ accountLoginOpen: false }),
       setActiveSystemTab: (tab) => set({
         activeSystemTab: tab,
         ...(tab !== 'capabilities' ? { capabilitySetupTarget: null } : {}),
@@ -1932,8 +1938,8 @@ export const useSettingsStore = create<SettingsStore>()(
 
       clearAllStoredKeys: async () => {
         const s = useSettingsStore.getState();
-        // Collect the full set of known secret keys so the Windows/Linux
-        // keyring path (no enumeration API) has something to iterate.
+        // This action is scoped to API keys. Delete those exact entries so an
+        // unrelated account credential in the same OS store remains intact.
         const knownKeys = [
           ...userOwnedProviders(s.providers).map((p) => SECRET_KEYS.provider(p.id)),
           SECRET_KEYS.auxWebSearch,
@@ -1941,7 +1947,9 @@ export const useSettingsStore = create<SettingsStore>()(
           ...s.imageGeneration.backends.map((b) => SECRET_KEYS.imageGenBackend(b.id)),
         ];
         try {
-          await clearAllSecrets(knownKeys);
+          const outcomes = await Promise.allSettled(knownKeys.map((key) => deleteSecret(key)));
+          const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+          if (failure?.status === 'rejected') throw failure.reason;
         } catch (err) {
           console.warn('[secrets] clearAll backend failed:', err);
           // Continue anyway — at minimum blank the in-memory keys so the
@@ -3010,6 +3018,7 @@ export const useSettingsStore = create<SettingsStore>()(
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        state.accountLoginOpen = false;
         rememberHydratedBrowserConfig(state);
         // Main owns the runtime gate. Restore it only from persisted user
         // settings; Computer Use tools are never allowed to enable themselves.

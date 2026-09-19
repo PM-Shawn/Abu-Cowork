@@ -194,6 +194,37 @@ export interface TranslationDict {
     searchNoResults: string;
   };
 
+  account: {
+    title: string;
+    description: string;
+    personalLogin: string;
+    enterpriseLogin: string;
+    localWithoutLogin: string;
+    signIn: string;
+    loginRegister: string;
+    accountSettings: string;
+    switchAccount: string;
+    switchToEnterprise: string;
+    waitingBrowser: string;
+    completingLogin: string;
+    cancelled: string;
+    timedOut: string;
+    protocolNotReady: string;
+    protocolStatusUnknown: string;
+    serverUnavailable: string;
+    loginFailed: string;
+    retry: string;
+    sessionExpired: string;
+    profileLoading: string;
+    profileUnavailable: string;
+    reloadProfile: string;
+    name: string;
+    email: string;
+    signOut: string;
+    signOutPersonal: string;
+    signOutEnterprise: string;
+  };
+
   // Todos
   todos: {
     title: string;
@@ -412,7 +443,6 @@ export interface TranslationDict {
     imageLoading: string;
     imageUnavailable: string;
     imageRetry: string;
-    inputTokens: string;
     outputTokens: string;
     addAttachment: string;
     /** Composer `+` menu (添加文件 / 队员·团队 / 技能). */
@@ -3829,6 +3859,12 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     cacheHitRate: string;
+    statsOrigin: string;
+    statsOriginEmpty: string;
+    unrecorded: string;
+    unavailable: string;
+    stale: string;
+    unknownUsage: string;
     bySkill: string;
     byModel: string;
     noData: string;
@@ -3873,6 +3909,8 @@ export interface TranslationDict {
     tabPassword: string;
     tabMagicLink: string;
     tabSso: string;
+    webDesktopLoginButton: string;
+    webDesktopLoginHint: string;
     emailLabel: string;
     emailPlaceholder: string;
     passwordLabel: string;
@@ -3934,6 +3972,35 @@ export interface TranslationDict {
     migrateDescription: string;
     unbindConfirm: string;
     unbindButton: string;
+    /** Usage lane label — org gateway (shared with model picker). */
+    laneGateway: string;
+    /** Usage lane label — personal API key. */
+    lanePersonal: string;
+    /** /me transparency panel (Settings → Enterprise → My Data). */
+    meTransparency: {
+      tabProfile: string;
+      tabTokens: string;
+      tabAudit: string;
+      tabUsage: string;
+      fieldName: string;
+      fieldEmail: string;
+      fieldDepartment: string;
+      fieldRole: string;
+      /** Shown when users.email is null (SSO without mailbox). */
+      noEmailBound: string;
+      noClients: string;
+      noAudit: string;
+      rangeDays: string;
+      tokensIn: string;
+      tokensOut: string;
+      cost: string;
+      unpriced: string;
+      byModel: string;
+      noCalls: string;
+      calls: string;
+      errors: string;
+      laneNote: string;
+    };
   };
 
   // Computer-use runtime status bar + screen-border overlay windows

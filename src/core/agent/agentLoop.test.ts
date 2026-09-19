@@ -1011,6 +1011,56 @@ describe('runAgentLoop expert execution', () => {
   });
 });
 
+describe('runAgentLoop 用量合并', () => {
+  it('结束事件只报输出时，流内拿到的缓存读写仍然留在本轮用量里', async () => {
+    // Anthropic 的 message_start 带输入与缓存，message_delta 只带输出。结束分支
+    // 整体替换整个用量对象，缓存读写就会每轮归零——用户看到的缓存命中率恒为 0。
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({
+          type: 'usage',
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 1,
+            cacheReadInputTokens: 800,
+            cacheCreationInputTokens: 200,
+          },
+        });
+        onEvent({ type: 'text', text: '好' });
+        onEvent({ type: 'done', stopReason: 'end_turn', usage: { inputTokens: 1000, outputTokens: 500 } });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    try {
+      await runAgentLoop(conversationId, '你好');
+      // 结束事件不带缓存字段，合并之后它们仍在；整体替换会把这两项抹成 undefined。
+      expect(useChatStore.getState().currentUsage).toMatchObject({
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadInputTokens: 800,
+        cacheCreationInputTokens: 200,
+      });
+    } finally {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('runAgentLoop pinned-model availability guard', () => {
   async function setup(mutate: (p: import('../../types/provider').ProviderInstance) => import('../../types/provider').ProviderInstance | null) {
     const { useChatStore } = await import('../../stores/chatStore');

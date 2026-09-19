@@ -186,6 +186,11 @@ describe('permission mode is restored when a conversation is loaded', () => {
     expect(useChatStore.getState().conversations.c2?.permissionMode).toBeUndefined();
   });
 
+  // Seven conversations exceed the loaded-set size (MAX_LOADED in
+  // chatStore.ts), so the oldest ones are unloaded. The Electron journey in
+  // tests/e2e/conversation-permission-mode-restart.spec.ts evicts with the same
+  // arithmetic, which the DOM cannot observe: when the loaded-set size in
+  // chatStore.ts changes, this case and that spec's filler count move together.
   it('an unloaded conversation comes back with its mode', async () => {
     const ids = Array.from({ length: 7 }, () => useChatStore.getState().createConversation(null, { skipActivate: true }));
     useChatStore.setState((state) => {

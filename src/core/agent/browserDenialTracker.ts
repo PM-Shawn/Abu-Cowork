@@ -26,7 +26,7 @@
  * clear a streak containing a SCRIPTING refusal — see `BrowserAllowConsent`.
  *
  * The tracker is pure state: whoever owns the run (the shell-side RunSession
- * for a sidecar-hosted loop, agentLoop.ts for the in-process fallback) passes
+ * for a sidecar-hosted loop, agentLoop.ts for the in-process loop) passes
  * the abort action in and exposes ONLY the two report functions on the tool
  * context — never the AbortController itself.
  */

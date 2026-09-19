@@ -540,6 +540,19 @@ function isUNCPath(rawPath: string): boolean {
 }
 
 /**
+ * 判断路径是否为绝对路径。Windows 规则与 Node win32 的 path.isAbsolute 一致；
+ * 相对路径在主进程会被接到 process.cwd() 上，策略检查无法得到一致结果。
+ */
+function isAbsolutePolicyPath(rawPath: string): boolean {
+  if (isWindows()) return /^([a-zA-Z]:)?[\\/]/.test(rawPath);
+  return rawPath.startsWith('/');
+}
+
+function relativePathResult(): PathCheckResult {
+  return { allowed: false, reason: '路径必须是绝对路径' };
+}
+
+/**
  * Check if a path matches any blocked pattern
  */
 async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blocked: boolean; reason?: string }> {
@@ -938,6 +951,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
   }
+  if (!isAbsolutePolicyPath(path)) return relativePathResult();
 
   const normalizedPath = normalizePath(path);
 
@@ -1045,6 +1059,7 @@ export async function checkWritePath(
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
   }
+  if (!isAbsolutePolicyPath(path)) return relativePathResult();
 
   const normalizedPath = normalizePath(path);
 
@@ -1172,6 +1187,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
   if (isUNCPath(path)) {
     return { allowed: false, reason: 'UNC network paths are not supported' };
   }
+  if (!isAbsolutePolicyPath(path)) return relativePathResult();
 
   const normalizedPath = normalizePath(path);
 

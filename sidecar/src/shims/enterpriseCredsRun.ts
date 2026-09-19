@@ -40,29 +40,6 @@
 import { getCurrentAgentRunContext } from '../agentRunContext';
 import { getCurrentSubagentRunContext } from '../subagentRunContext';
 
-/**
- * `agentLoop.ts` also imports `EnterpriseLlmUnavailableError` by name (from
- * the SAME module specifier, `../enterprise/llm-resolver`) for `err
- * instanceof EnterpriseLlmUnavailableError` checks (verified: `grep -n
- * "EnterpriseLlmUnavailableError" src/core/agent/agentLoop.ts` — 3 sites,
- * all `instanceof`, none construct/throw it). This shim's
- * `resolveEffectiveLlmCreds` never throws it (dispatch-time enterprise-gateway
- * failures are handled shell-side, before an `agent.run`/`subagent.run` is
- * ever sent — see `subagentRunner.ts`'s `buildSubagentRunParams` catch for
- * the established precedent), so the `instanceof` checks below always
- * evaluate `false` in the sidecar — correct, not a gap: there is no
- * legitimate way for this specific error to originate sidecar-side. The
- * class must still exist and be exported (byte-identical shape — a plain
- * `Error` subclass) purely so the import resolves and the `instanceof`
- * check itself doesn't throw a ReferenceError.
- */
-export class EnterpriseLlmUnavailableError extends Error {
-  constructor(msg: string) {
-    super(msg);
-    this.name = 'EnterpriseLlmUnavailableError';
-  }
-}
-
 export function resolveEffectiveLlmCreds(
   _personalApiKey: string,
   _personalBaseUrl: string | undefined,

@@ -5,9 +5,9 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { afterEach, test } = require('node:test');
+const { afterEach, mock, test } = require('node:test');
 
-const { isLegacyChromeBridgeLaunch, mcpDispatch } = require('./mcpBridge.cjs');
+const { configureMcpBridgeTestHooks, isLegacyChromeBridgeLaunch, mcpDispatch } = require('./mcpBridge.cjs');
 const { REPO_ROOT } = require('./appEnv.cjs');
 
 const app = { isPackaged: false };
@@ -185,4 +185,80 @@ test('MCP spawn rejects before ready when the target executable is missing', asy
     }),
     /mcp_spawn failed.*failed to spawn target/s,
   );
+});
+
+function stdinRecorderFixture(resultPath, lines) {
+  return `
+    const fs = require('node:fs');
+    const chunks = [];
+    let newlines = 0;
+    process.stdin.on('data', (chunk) => {
+      chunks.push(chunk);
+      for (const byte of chunk) if (byte === 10) newlines += 1;
+      if (newlines >= ${lines}) {
+        fs.writeFileSync(${JSON.stringify(resultPath)}, Buffer.concat(chunks));
+      }
+    });
+    setInterval(() => {}, 1000);
+  `;
+}
+
+test('#549: raw mcp_write bodies reach stdin byte-for-byte, one line each, without interleaving', async () => {
+  const id = 'mcp-raw-write';
+  const resultPath = path.join(tmpDir(), 'stdin.bin');
+  activeIds.add(id);
+  await mcpDispatch(app, 'mcp_spawn', {
+    id,
+    command: 'node',
+    args: ['-e', stdinRecorderFixture(resultPath, 3)],
+    env: {},
+  });
+  const first = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'agent.start', params: { t: '中'.repeat(512 * 1024) } }));
+  const second = Buffer.from('{"jsonrpc":"2.0","id":2,"method":"echo"}');
+  await Promise.all([
+    mcpDispatch(app, 'mcp_write', { id }, { body: first, headers: { method: 'agent.start', rpcId: '1' } }),
+    mcpDispatch(app, 'mcp_write', { id }, { body: second, headers: {} }),
+    mcpDispatch(app, 'mcp_write', { id, message: '{"plain":true}' }),
+  ]);
+  await waitUntil(() => fs.existsSync(resultPath), 'stdin recorder output');
+  const received = fs.readFileSync(resultPath);
+  assert.ok(received.equals(Buffer.concat([first, Buffer.from('\n'), second, Buffer.from('\n{"plain":true}\n')])));
+});
+
+test('#549: raw mcp_write to a missing process rejects like the plain form', async () => {
+  await assert.rejects(
+    mcpDispatch(app, 'mcp_write', { id: 'mcp-raw-missing' }, { body: Buffer.from('{}'), headers: {} }),
+    /no live process for id "mcp-raw-missing"/,
+  );
+});
+
+test('#549: the sidecar spawn-delay test hook only delays the agent sidecar', async (t) => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  t.after(() => {
+    mock.timers.reset();
+    configureMcpBridgeTestHooks({});
+  });
+  configureMcpBridgeTestHooks({ sidecarSpawnDelayMs: 70_000 });
+  const resultPath = path.join(tmpDir(), 'delayed.json');
+  let settled = false;
+  activeIds.add('abu-sidecar');
+  const spawned = mcpDispatch(app, 'mcp_spawn', {
+    id: 'abu-sidecar',
+    command: 'node',
+    args: ['-e', processTreeFixture(resultPath, false)],
+    env: {},
+  }).then(() => { settled = true; });
+  mock.timers.tick(69_999);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  await assert.rejects(
+    mcpDispatch(app, 'mcp_write', { id: 'abu-sidecar', message: '{}' }),
+    /no live process/,
+  );
+  mock.timers.tick(1);
+  // Spawn continues on real timers from here.
+  mock.timers.reset();
+  await spawned;
+  assert.equal(settled, true);
+  await waitUntil(() => fs.existsSync(resultPath), 'delayed sidecar fixture output');
 });

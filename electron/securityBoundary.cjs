@@ -1,16 +1,33 @@
 'use strict';
 
+const { isUtf8 } = require('node:buffer');
 const path = require('node:path');
 const { fileURLToPath, pathToFileURL } = require('node:url');
 const {
   COMPUTER_USE_TOKEN_ARG,
   COMPUTER_USE_PRIVILEGED_COMMANDS,
 } = require('./computerUseCommands.cjs');
+const { createPayloadTooLargeError } = require('./ipcPayloadError.cjs');
 
 const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
-const RAW_BODY_COMMANDS = new Set([
+// Tauri plugin-fs raw writes: path + options headers.
+const FS_RAW_WRITE_COMMANDS = new Set([
   'plugin:fs|write_file',
   'plugin:fs|write_text_file',
+]);
+// #549: text commands whose payload grows with the conversation. They keep
+// their plain-args form; the raw form carries the text as UTF-8 bytes (128 MiB
+// cap instead of 8 MiB) plus a small, closed, per-command header schema. The
+// headers only describe the body (routing / observability); they grant
+// nothing the plain form's args did not.
+const TEXT_RAW_BODY_COMMANDS = new Map([
+  ['mcp_write', {
+    required: ['id'],
+    optional: ['method', 'rpcId', 'runId', 'clientMessageId', 'payloadDigest'],
+    singleLine: true,
+  }],
+  ['append_file_text', { required: ['path'], optional: [], singleLine: false }],
+  ['atomic_write_text', { required: ['path'], optional: [], singleLine: false }],
 ]);
 const RESTRICTED_WINDOW_COMMANDS = new Map([
   [
@@ -103,6 +120,27 @@ const MAX_ARGS_BYTES = 8 * 1024 * 1024;
 const MAX_RAW_BODY_BYTES = 128 * 1024 * 1024;
 const MAX_PATH_BYTES = 32 * 1024;
 const MAX_HEADER_VALUE_BYTES = 64 * 1024;
+const MAX_TEXT_HEADER_BYTES = 256;
+
+/** cmd -> byte limit; only set by main.cjs from e2eTestHooks (unpackaged builds only). */
+let rawBodyLimitOverrides = new Map();
+
+// Test hook: an override can only LOWER the mcp_write raw limit.
+function configureIpcPayloadLimits({ mcpWriteRawBodyBytes } = {}) {
+  const next = new Map();
+  if (
+    Number.isSafeInteger(mcpWriteRawBodyBytes)
+    && mcpWriteRawBodyBytes > 0
+    && mcpWriteRawBodyBytes < MAX_RAW_BODY_BYTES
+  ) {
+    next.set('mcp_write', mcpWriteRawBodyBytes);
+  }
+  rawBodyLimitOverrides = next;
+}
+
+function rawBodyLimitFor(cmd) {
+  return rawBodyLimitOverrides.get(cmd) ?? MAX_RAW_BODY_BYTES;
+}
 
 /** @type {WeakMap<object, { allowedFilePage: string, label: string, allowExternalOpen: boolean, shell?: { openExternal: (url: string) => unknown } }>} */
 const trustedWebContents = new WeakMap();
@@ -375,7 +413,9 @@ function assertJsonValue(value, state, depth, key) {
   if (typeof value === 'string') {
     if (value.includes('\0')) throw new Error(`IPC string value ${key || '<root>'} must not contain NUL`);
     state.bytes += byteLength(value);
-    if (state.bytes > MAX_ARGS_BYTES) throw new Error('IPC args are too large');
+    if (state.bytes > MAX_ARGS_BYTES) {
+      throw createPayloadTooLargeError({ bytes: state.bytes, limit: MAX_ARGS_BYTES, method: state.cmd });
+    }
     if (PATH_KEYS.has(key)) assertSafePath(value, `IPC ${key}`);
     return;
   }
@@ -388,7 +428,9 @@ function assertJsonValue(value, state, depth, key) {
   if (Array.isArray(value)) {
     if (state.byteArrays?.has(value)) {
       state.bytes += value.length;
-      if (state.bytes > MAX_ARGS_BYTES) throw new Error('IPC args are too large');
+      if (state.bytes > MAX_ARGS_BYTES) {
+        throw createPayloadTooLargeError({ bytes: state.bytes, limit: MAX_ARGS_BYTES, method: state.cmd });
+      }
       for (const byte of value) {
         if (!Number.isInteger(byte) || byte < 0 || byte > 255) {
           throw new Error('plugin:http|fetch body must contain only bytes');
@@ -404,7 +446,9 @@ function assertJsonValue(value, state, depth, key) {
         throw new Error('IPC args contain an invalid object key');
       }
       state.bytes += byteLength(childKey);
-      if (state.bytes > MAX_ARGS_BYTES) throw new Error('IPC args are too large');
+      if (state.bytes > MAX_ARGS_BYTES) {
+        throw createPayloadTooLargeError({ bytes: state.bytes, limit: MAX_ARGS_BYTES, method: state.cmd });
+      }
       assertJsonValue(childValue, state, depth + 1, childKey);
     }
   }
@@ -415,7 +459,7 @@ function jsonValidationState(cmd, args) {
   const byteArrays = new WeakSet();
   const httpData = cmd === 'plugin:http|fetch' ? args?.clientConfig?.data : null;
   if (Array.isArray(httpData)) byteArrays.add(httpData);
-  return { nodes: 0, bytes: 0, seen: new WeakSet(), byteArrays };
+  return { cmd, nodes: 0, bytes: 0, seen: new WeakSet(), byteArrays };
 }
 
 function assertCommandAllowed(record, cmd) {
@@ -454,6 +498,67 @@ function bodyByteLength(body) {
   return null;
 }
 
+function toBuffer(body) {
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+}
+
+// #549 raw form of the TEXT_RAW_BODY_COMMANDS. Returns the same `{ cmd, args }`
+// the plain form's downstream dispatchers read (`args.id` / `args.path`), with
+// the text as a Buffer in `body` and only the optional descriptive headers in
+// `headers`.
+function validateTextRawBody(cmd, spec, args, body, headers) {
+  if (args !== undefined && args !== null) {
+    throw new Error(`${cmd} raw form must not carry args`);
+  }
+  const bodyBytes = bodyByteLength(body);
+  if (bodyBytes == null) throw new Error(`${cmd} requires a binary body`);
+  const limit = rawBodyLimitFor(cmd);
+  if (bodyBytes > limit) throw createPayloadTooLargeError({ bytes: bodyBytes, limit, method: cmd });
+  if (!isPlainRecord(headers)) throw new Error(`${cmd} requires plain-object headers`);
+  const allowed = new Set([...spec.required, ...spec.optional]);
+  const meta = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (!allowed.has(key)) throw new Error(`${cmd} header ${key} is not allowed`);
+    const maxBytes = key === 'path' ? MAX_PATH_BYTES : MAX_TEXT_HEADER_BYTES;
+    if (
+      typeof value !== 'string'
+      || value.length === 0
+      || value.includes('\0')
+      || byteLength(value) > maxBytes
+    ) {
+      throw new Error(`${cmd} header ${key} is invalid`);
+    }
+    meta[key] = value;
+  }
+  for (const key of spec.required) {
+    if (!Object.hasOwn(meta, key)) throw new Error(`${cmd} requires a ${key} header`);
+  }
+  const bytes = toBuffer(body);
+  if (!isUtf8(bytes)) throw new Error(`${cmd} body must be valid UTF-8`);
+  if (bytes.includes(0)) throw new Error(`${cmd} body must not contain NUL`);
+  if (spec.singleLine && (bytes.includes(0x0a) || bytes.includes(0x0d))) {
+    throw new Error(`${cmd} body must be a single line`);
+  }
+  const { id, path: encodedPath, ...rest } = meta;
+  if (cmd === 'mcp_write') {
+    return { cmd, args: { id }, body: bytes, headers: rest };
+  }
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(encodedPath);
+  } catch {
+    throw new Error(`${cmd} path header is not valid URI encoding`);
+  }
+  // Same checks the plain form's `path` arg gets in assertJsonValue (PATH_KEYS)
+  // and assertFsPathsAbsolute; fsDispatch still applies resolveScoped to the
+  // decoded path. These commands take no baseDir in either form, so there is
+  // never an anchor that would make a relative path meaningful.
+  assertSafePath(decodedPath, `${cmd} path header`);
+  assertAbsolutePath(decodedPath, `${cmd} path header`);
+  return { cmd, args: { path: decodedPath }, body: bytes, headers: rest };
+}
+
 function validateInvokePayload(record, payload) {
   if (!isPlainRecord(payload)) throw new Error('IPC payload must be a plain object');
   for (const key of Object.keys(payload)) {
@@ -473,6 +578,11 @@ function validateInvokePayload(record, payload) {
   }
   assertCommandAllowed(record, cmd);
 
+  const textSpec = TEXT_RAW_BODY_COMMANDS.get(cmd);
+  if (textSpec && (body !== undefined || headers !== undefined)) {
+    return validateTextRawBody(cmd, textSpec, args, body, headers);
+  }
+
   if (args != null) {
     if (!isPlainRecord(args)) throw new Error('IPC args must be a plain object');
     assertJsonValue(args, jsonValidationState(cmd, args), 0, '');
@@ -487,7 +597,7 @@ function validateInvokePayload(record, payload) {
     throw new Error('unknown BaseDirectory value for directory');
   }
 
-  const rawCommand = RAW_BODY_COMMANDS.has(cmd);
+  const rawCommand = FS_RAW_WRITE_COMMANDS.has(cmd);
   let normalizedHeaders = headers;
   if (!rawCommand && (body !== undefined || headers !== undefined)) {
     throw new Error(`raw body and headers are not allowed for ${cmd}`);
@@ -495,7 +605,9 @@ function validateInvokePayload(record, payload) {
   if (rawCommand) {
     const bodyBytes = bodyByteLength(body);
     if (bodyBytes == null) throw new Error(`${cmd} requires a binary body`);
-    if (bodyBytes > MAX_RAW_BODY_BYTES) throw new Error(`${cmd} body is too large`);
+    if (bodyBytes > MAX_RAW_BODY_BYTES) {
+      throw createPayloadTooLargeError({ bytes: bodyBytes, limit: MAX_RAW_BODY_BYTES, method: cmd });
+    }
     if (!isPlainRecord(headers)) throw new Error(`${cmd} requires plain-object headers`);
     for (const [key, value] of Object.entries(headers)) {
       if (key !== 'path' && key !== 'options') {
@@ -522,7 +634,7 @@ function validateInvokePayload(record, payload) {
         throw new Error(`${cmd} options header is not valid JSON`);
       }
       if (!isPlainRecord(options)) throw new Error(`${cmd} options header must encode an object`);
-      assertJsonValue(options, { nodes: 0, bytes: 0, seen: new WeakSet() }, 0, '');
+      assertJsonValue(options, { cmd, nodes: 0, bytes: 0, seen: new WeakSet() }, 0, '');
     }
     if (options?.baseDir == null) assertAbsolutePath(decodedPath, `${cmd} path header`);
     if (headers.options === undefined) normalizedHeaders = { ...headers, options: '{}' };
@@ -548,5 +660,6 @@ module.exports = {
   canonicalNavigatedFilePage,
   shouldOpenExternal,
   validateInvokePayload,
+  configureIpcPayloadLimits,
   assertResourceOwner,
 };

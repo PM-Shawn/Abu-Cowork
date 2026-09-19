@@ -2,9 +2,12 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles/index.css'
 import App from './App.tsx'
+import { initializeAccountProtocol } from './core/account/runtime'
 
 // Dev-only: registers window.__abuLangfuseSpike() for the Phase A transport test.
 if (import.meta.env.DEV) void import('./core/observability/langfuse')
+
+void initializeAccountProtocol()
 
 // Overlay scrollbar: show the thumb only while an element is actively scrolling,
 // then fade out. Applies to EVERY scrollable element (not just those tagged

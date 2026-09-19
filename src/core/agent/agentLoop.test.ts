@@ -1073,6 +1073,56 @@ describe('runAgentLoop expert execution', () => {
   });
 });
 
+describe('runAgentLoop 用量合并', () => {
+  it('结束事件只报输出时，流内拿到的缓存读写仍然留在本轮用量里', async () => {
+    // Anthropic 的 message_start 带输入与缓存，message_delta 只带输出。结束分支
+    // 整体替换整个用量对象，缓存读写就会每轮归零——用户看到的缓存命中率恒为 0。
+    const { useChatStore } = await import('../../stores/chatStore');
+    const { useSettingsStore } = await import('../../stores/settingsStore');
+    const adapters = await import('../llm/selectChatAdapter');
+    const settings = useSettingsStore.getState();
+    useSettingsStore.setState({
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      providers: settings.providers.map((p) =>
+        p.id === 'ollama'
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          : p),
+    });
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 0; });
+    const conversationId = useChatStore.getState().createConversation();
+    const chat = vi.fn().mockImplementation(
+      async (_messages: unknown, _options: unknown, onEvent: (event: StreamEvent) => void) => {
+        onEvent({
+          type: 'usage',
+          usage: {
+            inputTokens: 1000,
+            outputTokens: 1,
+            cacheReadInputTokens: 800,
+            cacheCreationInputTokens: 200,
+          },
+        });
+        onEvent({ type: 'text', text: '好' });
+        onEvent({ type: 'done', stopReason: 'end_turn', usage: { inputTokens: 1000, outputTokens: 500 } });
+      },
+    );
+    const selectAdapter = vi.spyOn(adapters, 'selectChatAdapter').mockReturnValue({ chat });
+    try {
+      await runAgentLoop(conversationId, '你好');
+      // 结束事件不带缓存字段，合并之后它们仍在；整体替换会把这两项抹成 undefined。
+      expect(useChatStore.getState().currentUsage).toMatchObject({
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheReadInputTokens: 800,
+        cacheCreationInputTokens: 200,
+      });
+    } finally {
+      selectAdapter.mockRestore();
+      useSettingsStore.setState({ activeModel: settings.activeModel, providers: settings.providers });
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('runAgentLoop pinned-model availability guard', () => {
   async function setup(mutate: (p: import('../../types/provider').ProviderInstance) => import('../../types/provider').ProviderInstance | null) {
     const { useChatStore } = await import('../../stores/chatStore');
@@ -1127,15 +1177,64 @@ describe('runAgentLoop pinned-model availability guard', () => {
   const run = (conversationId: string) =>
     runAgentLoop(conversationId, 'hello', { orchestration: { route: { type: 'general', name: 'abu', cleanInput: 'hello' }, systemPromptSections: [] } });
 
-  it('keeps the configure-key path for an enterprise-gateway pin when the gateway is unavailable', async () => {
+  it('blocks a pin to a managed provider that is no longer registered, like any removed provider', async () => {
     const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
     try {
-      useChatStore.getState().setConversationModel(conversationId, { providerId: 'enterprise-gateway', modelId: 'gw-model' });
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model' });
       const result = await run(conversationId);
-      expect(result).toEqual({ reason: 'error', error: 'API Key not configured', messageTaken: true });
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
       expect(chat).not.toHaveBeenCalled();
       const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
-      expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+      expect(String(last?.content)).toContain('所属服务已删除');
+      expect(String(last?.content)).toContain('「org-model」');
+    } finally {
+      restore();
+    }
+  });
+
+  it('blocks a pin to a model the managed provider confirmed it withdrew, asking for another pick', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.getState().upsertManagedProvider({
+        id: 'org-models',
+        name: 'MAZG',
+        baseUrl: 'https://abu.example.net/api/gateway',
+        apiKey: 'sk-virtual',
+        models: [{ id: 'org-model-a', label: 'org-model-a' }],
+      });
+      useSettingsStore.getState().setProviderStatus('org-models', 'verified');
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model-b' });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(String(last?.content)).toBe('这个任务使用的模型「org-model-b」已不可用，没有发送。请在输入框里重新选择一个模型。');
+    } finally {
+      restore();
+    }
+  });
+
+  it('runs a pin to a registered managed provider whose model list is not confirmed yet', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.getState().upsertManagedProvider({
+        id: 'org-models',
+        name: 'MAZG',
+        baseUrl: 'https://abu.example.net/api/gateway',
+        apiKey: 'sk-virtual',
+        models: [],
+      });
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model' });
+      chat.mockRejectedValue(new Error('stop after the first call'));
+      await run(conversationId);
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(chat.mock.calls[0][1]).toMatchObject({
+        model: 'org-model',
+        apiKey: 'sk-virtual',
+        baseUrl: 'https://abu.example.net/api/gateway',
+      });
     } finally {
       restore();
     }

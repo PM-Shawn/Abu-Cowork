@@ -41,8 +41,10 @@ const {
   sidecarBundleExists,
   sidecarPathFor,
 } = require('./appEnv.cjs');
-const { initDeepLink, handleSecondInstanceArgv } = require('./deepLinkHost.cjs');
-const { registerPrivilegedWindow } = require('./securityBoundary.cjs');
+const { initDeepLink, handleSecondInstanceArgv, getActiveScheme } = require('./deepLinkHost.cjs');
+const { configureIpcPayloadLimits, registerPrivilegedWindow } = require('./securityBoundary.cjs');
+const { configureMcpBridgeTestHooks } = require('./mcpBridge.cjs');
+const { readE2ETestHooks } = require('./e2eTestHooks.cjs');
 const { isTauriTransitionBuild } = require('./releaseMetadata.cjs');
 const { hideLegacyTauriUninstallEntry } = require('./legacyWindowsInstall.cjs');
 const { configureWindowShowPolicy, revealWindow } = require('./windowShowPolicy.cjs');
@@ -97,6 +99,14 @@ const windowShowPolicy = configureWindowShowPolicy({
   allowE2E: allowE2EAppDataRedirect,
   platform: process.platform,
 });
+// #549 acceptance knobs (low mcp_write raw limit, slow sidecar spawn). Stricter
+// than the gate above: unpackaged builds only, ABU_PACKAGED_E2E does not apply.
+const e2eTestHooks = readE2ETestHooks({ env: process.env, isPackaged: app.isPackaged });
+configureIpcPayloadLimits({ mcpWriteRawBodyBytes: e2eTestHooks.mcpWriteLimitBytes });
+configureMcpBridgeTestHooks({ sidecarSpawnDelayMs: e2eTestHooks.sidecarSpawnDelayMs });
+if (Object.keys(e2eTestHooks).length > 0) {
+  console.warn('[abu] E2E test hooks active:', JSON.stringify(e2eTestHooks));
+}
 let e2eTauriStorageRoot = null;
 if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)) {
   const appDataRoot = process.env[E2E_APP_DATA_ROOT_ENV];
@@ -219,6 +229,12 @@ function createWindow(transitionWindow = null) {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // The renderer must build an OAuth `redirect_uri` the OS will route back
+      // to THIS shell — an unpackaged dev run owns `abu-dev://`, while `abu://`
+      // belongs to whatever production Abu is installed on the machine. Passed
+      // as a launch argument (not IPC) because the renderer needs it
+      // synchronously while assembling the authorization URL.
+      additionalArguments: [`--abu-deep-link-scheme=${getActiveScheme()}`],
     },
   });
   if (process.platform === 'win32') {

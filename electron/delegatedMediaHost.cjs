@@ -146,6 +146,7 @@ module.exports = {
   MAX_DELEGATED_MEDIA_BYTES,
   PERSIST_DELEGATED_MEDIA_CHANNEL,
   READ_DELEGATED_MEDIA_CHANNEL,
+  isOpaqueId,
   persistDelegatedMedia,
   readDelegatedMedia,
 };

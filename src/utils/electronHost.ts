@@ -149,6 +149,15 @@ export function hasElectronCommandHost(): boolean {
   );
 }
 
+/**
+ * True only in the Electron RENDERER (preload exposes `__ABU_SHELL__`). Unlike
+ * `hasElectronCommandHost`, never true inside the Node sidecar, whose
+ * `invoke` shim forwards JSON and cannot carry a binary body (#549).
+ */
+export function hasElectronRawBodyInvoke(): boolean {
+  return getRuntime().__ABU_SHELL__?.mainSupervisesSidecar === true;
+}
+
 /** Resolve the native path of a user-provided Electron File object. */
 export function getElectronFilePath(file: File): string {
   return getRuntime().__ABU_SHELL__?.getPathForFile?.(file) ?? '';

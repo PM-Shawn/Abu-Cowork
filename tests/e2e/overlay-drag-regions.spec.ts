@@ -82,7 +82,7 @@ test.describe.serial('Electron overlay hit testing — window drag lanes', () =>
       mainWindow.setContentSize(viewport.width, viewport.height);
     }, REPORTED_VIEWPORT);
 
-    await page.getByRole('button', { name: /^(我|Me)$/ }).first().click();
+    await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
     await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
 
     const dialog = page.locator('[data-abu-settings-dialog]');

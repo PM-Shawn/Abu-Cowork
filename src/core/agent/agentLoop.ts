@@ -2,7 +2,8 @@ import { clearRunBounds } from '../team/teamRunBounds';
 import type { StreamEvent, ToolCall, TokenUsage, ImageAttachment, Message, MessageContent, SubagentStopReason, ToolExecutionContext, UpstreamErrorDetails } from '../../types';
 import { teamRosterNames } from '../team/leaderRoute';
 import type { ToolCallContext } from '../../types/execution';
-import type { LLMAdapter } from '../llm/adapter';
+import type { AdapterKind, LLMAdapter } from '../llm/adapter';
+import { promptTokensOf } from '../llm/usageAccounting';
 import { LLMError, formatLlmDisplayError, formatLlmTerminalError } from '../llm/adapter';
 import { recordProviderCallOutcome, isConfigFailureCode } from '../llm/providerCallHealth';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
@@ -17,7 +18,7 @@ import {
   hasAnyEnabledProvider,
   providerRequiresApiKey,
 } from '../../utils/settingsSelectors';
-import { describeModelUnavailable } from '../../utils/modelUnavailableCopy';
+import { describeManagedModelRevoked, describeManagedProviderUnreachable, describeModelUnavailable } from '../../utils/modelUnavailableCopy';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
@@ -115,7 +116,7 @@ import {
   buildDeferredToolsSummary,
   promoteSearchedDeferredTools,
 } from '../tools/toolSearch';
-import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 import {
@@ -590,9 +591,8 @@ export interface AgentLoopOptions {
   authorizationScopeId?: string;
   /**
    * Shell-local ownership handoff for callers that need to cancel this exact
-   * run (for example an IM timeout). Never serialized to the sidecar. The
-   * callback may be invoked again when the same dispatched call hands off to
-   * an in-process fallback or a queued continuation with a new controller.
+   * run (for example an IM timeout). Never serialized to the sidecar. Invoked
+   * once per call, with the controller that run is stopped through.
    */
   onAbortControllerReady?: (controller: AbortController) => void;
   /**
@@ -772,13 +772,20 @@ interface AgentLoopResultBase {
   /** Bounded upstream fields for the failed-run terminal; never the raw body. */
   upstream?: UpstreamErrorDetails;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
-  stopReason?: 'sidecar_unavailable';
+  stopReason?: 'sidecar_unavailable' | 'payload_too_large';
   /**
    * Why the run aborted ITSELF, when `reason: 'aborted'` was not a Stop
    * click: today only the consecutive browser-denial guard. Shell-owned —
    * a sidecar terminal never carries it (see agentRunTerminal.ts's key set).
    */
   abortCause?: BrowserDenialAbortCause;
+  /**
+   * The kind stamped on the failed user row for a run the sidecar never
+   * accepted (#549), so a caller can tell that the row already explains the
+   * failure and offers its own action. Shell-owned, like `abortCause`: a
+   * sidecar terminal never carries it (see agentRunTerminal.ts's key set).
+   */
+  runErrorKind?: NonNullable<Message['runErrorKind']>;
 }
 
 /**
@@ -956,20 +963,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // no longer lists, must never reach an adapter: a missing provider leaves the
   // base URL empty and the adapter would fall back to a public default endpoint.
   // With no usable provider at all, keep the long-standing "configure a key" copy.
-  // Enterprise-gateway pins are virtual (never in `providers`), so they are never
-  // checked here — even when the gateway resolver is unavailable.
-  const pinnedModelIssue =
-    isEnterpriseGatewayMode || settingsForModel.activeModel.providerId === 'enterprise-gateway'
-      ? null
-      : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
+  const pinnedModelIssue = isEnterpriseGatewayMode
+    ? null
+    : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
   const blockText = isEnterpriseGatewayMode
     ? null
     : pinnedModelIssue && hasAnyEnabledProvider(settingsForModel)
-      ? describeModelUnavailable(
-          getI18n().chat,
-          pinnedModelIssue,
-          getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
-        ).inTask
+      ? (pinnedModelIssue === 'model-removed' && getActiveProvider(settingsForModel)?.source === 'managed'
+          ? describeManagedModelRevoked(
+              getI18n().chat,
+              getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+            ).inTask
+          : describeModelUnavailable(
+              getI18n().chat,
+              pinnedModelIssue,
+              getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+            ).inTask)
       : pinnedModelIssue || (providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel))
         ? getI18n().chat.configureApiKey
         : null;
@@ -1269,11 +1278,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // selectChatAdapter routes through the sidecar transport when it's healthy
   // ('running'), else falls back to the local in-process adapter — the
   // kind-choosing condition itself is unchanged (P1-1).
-  const adapter: LLMAdapter = selectChatAdapter(
+  const adapterKind: AdapterKind =
     isEnterpriseGatewayMode || getActiveProvider(settingsForModel)?.apiFormat === 'openai-compatible'
       ? 'openai-compatible'
-      : 'claude',
-  );
+      : 'claude';
+  const adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
   // Validate required tools are available (blocking check — one-time at start)
   if (route.type === 'skill' && route.skill?.requiredTools) {
@@ -1573,8 +1582,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (err instanceof LLMError && isConfigFailureCode(err.code)) {
         recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
       }
-      let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
-        ? getI18n().chat.gatewayUnreachable
+      const delegateManagedUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        err instanceof LLMError ? err.code : undefined,
+      );
+      let delegateDisplayError = delegateManagedUnreachable
+        ? delegateManagedUnreachable
         : err instanceof LLMError && err.code === 'content_policy'
         ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
@@ -2059,6 +2073,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 apiKey: compressionCreds.apiKey,
                 baseUrl: compressionCreds.baseUrl,
                 signal: abortController.signal,
+                conversationId,
+                providerInstanceId: activeProvider?.id ?? 'unknown',
               },
               toolTokens
             );
@@ -2181,6 +2197,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               apiKey: compactionCreds.apiKey,
               baseUrl: compactionCreds.baseUrl,
               signal: abortController.signal,
+              conversationId,
+              providerInstanceId: activeProvider?.id ?? 'unknown',
             });
           } catch (err) {
             // Defensive: summarizeConversation is contractually no-throw (it
@@ -2277,8 +2295,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return budgetResult;
       };
 
-      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
-      // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+      // Resolve apiKey + baseUrl for the provider this conversation is bound to.
       const effectiveCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settingsForModel),
         getActiveProvider(settingsForModel)?.baseUrl || undefined,
@@ -2295,6 +2312,16 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         systemPromptSections: mergeSections(allSections),
         volatileContextTail,
         metadata: { conversationId },
+        // 记账身份随请求一起进 adapter：页面按 source 分组，用户才能自己解释
+        // 「我发了 10 条消息为什么是 23 次请求尝试」（任务书 U02）。
+        accounting: {
+          source: 'main' as const,
+          conversationId,
+          skill: route.type === 'skill'
+            ? (route.skill?.name ?? null)
+            : (getConversationReader().getConversation(conversationId)?.activeSkills?.[0] ?? null),
+          providerInstanceId: activeProvider?.id ?? 'unknown',
+        },
         tools: tools.length > 0 ? tools : undefined,
         maxTokens: maxOutputTokens,
         signal: abortController.signal,
@@ -2502,8 +2529,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                 maxOutputTokensRecoveryCount = 0;
               }
               if (event.usage) {
-                finalUsage = event.usage;
-                chatDelta.setCurrentUsage(event.usage);
+                // 与 'usage' 分支同样合并：结束事件只带它自己那几项，流内已经拿到的
+                // 输入与缓存读写要保留。
+                finalUsage = finalUsage
+                  ? { ...finalUsage, ...event.usage }
+                  : { ...event.usage };
+                chatDelta.setCurrentUsage(finalUsage);
               }
               break;
 
@@ -2594,6 +2625,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
                   apiKey: recoveryCreds.apiKey,
                   baseUrl: recoveryCreds.baseUrl,
                   signal: abortController.signal,
+                  conversationId,
+                  providerInstanceId: activeProvider?.id ?? 'unknown',
                 },
                 toolTokens
               );
@@ -2685,24 +2718,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         chatDelta.updateMessageUsage(conversationId, finalUsage, assistantMsgId);
         // Calibrate token estimator with actual API usage
         const estimatedInput = estimateTokens(effectiveSystemPrompt) + estimateMessageTokens(lastProviderMessages) + toolTokens;
-        calibrateFromUsage(estimatedInput, finalUsage.inputTokens);
-        // Record token usage
-        const usageSnapshot = { ...finalUsage };
-        import('../llm/usageTracker').then(({ recordTurnUsage }) => {
-          recordTurnUsage(
-            conversationId,
-            effectiveModelId,
-            route.type === 'skill'
-              ? (route.skill?.name ?? null)
-              : (getConversationReader().getConversation(conversationId)?.activeSkills?.[0] ?? null),
-            {
-              inputTokens: usageSnapshot.inputTokens,
-              outputTokens: usageSnapshot.outputTokens,
-              cacheReadInputTokens: usageSnapshot.cacheReadInputTokens,
-              cacheCreationInputTokens: usageSnapshot.cacheCreationInputTokens,
-            },
-          );
-        }).catch(() => {});
+        // 校准要的是整段提示词的大小。Anthropic 的 inputTokens 不含缓存读写，
+        // 开了提示缓存之后它可以只有几百，直接拿去校准会把估算比例拉到接近零。
+        calibrateFromUsage(
+          estimatedInput,
+          promptTokensOf(adapterKind === 'claude' ? 'anthropic' : 'openai-compatible', finalUsage),
+        );
       }
 
       let semanticLoopReason: SemanticToolLoopReason | null = null;
@@ -3200,10 +3221,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // string with actionable copy; the diagnostic path keeps the raw body,
       // while the terminal/store path keeps only the bounded provider summary.
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
-      const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const managedProviderUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        errorCode,
+      );
       const isContextBudgetError = err instanceof ContextBudgetError;
-      let displayError = isEnterpriseGatewayUnavailable
-        ? getI18n().chat.gatewayUnreachable
+      let displayError = managedProviderUnreachable
+        ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
         : isContextBudgetError

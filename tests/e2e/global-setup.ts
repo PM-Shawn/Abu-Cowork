@@ -45,6 +45,8 @@ function bundledNodeEnv(): NodeJS.ProcessEnv {
   };
 }
 
+const ACCOUNT_E2E_SERVER_URL = process.env.VITE_PERSONAL_ACCOUNT_SERVER_URL || 'http://127.0.0.1:43119';
+
 export default async function globalSetup(): Promise<void> {
   console.log('[e2e:global-setup] preparing Electron and browser runtimes...');
   // This bootstrap is intentionally the only command allowed to use the
@@ -84,5 +86,11 @@ export default async function globalSetup(): Promise<void> {
     cwd: REPO_ROOT,
     env: runtimeEnv,
     stdio: 'inherit',
+    env: {
+      ...process.env,
+      // The production default remains intentionally empty until its origin is
+      // approved. Electron E2E uses an isolated loopback account service.
+      VITE_PERSONAL_ACCOUNT_SERVER_URL: ACCOUNT_E2E_SERVER_URL,
+    },
   });
 }

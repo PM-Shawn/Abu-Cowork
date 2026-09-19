@@ -7,7 +7,7 @@ import {
   type AgentLoopDispatchResult,
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
-import { shouldRestoreComposerAfterDispatch } from './composerSendResult';
+import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -936,10 +936,14 @@ export default function ChatView({
         useChatStore.getState().clearStagedExpertContact(convId);
         throw error;
       }
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: error.message || t.chat.conversationBusy,
-      });
+      // #549: same rule as the returned-result path below — a row that already
+      // states the failure and offers its action needs no toast on top.
+      if (!failureIsOwnedByTranscript(useChatStore.getState().conversations[convId]?.messages ?? [])) {
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: error.message || t.chat.conversationBusy,
+        });
+      }
       return;
     }
     if (!useChatStore.getState().conversations[convId]?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
@@ -951,10 +955,15 @@ export default function ChatView({
     // back instead.
     if (dispatch?.reason === 'error') {
       if (!dispatch.messageTaken) pendingTurnAnchorRef.current = null;
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: dispatch.error || t.chat.conversationBusy,
-      });
+      // #549: a pre-accept failure already states itself in the failed row, with
+      // the action that resolves it (Retry / 新建对话). A toast carrying the same
+      // sentence would say it twice and point nowhere.
+      if (!dispatch.runErrorKind) {
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: dispatch.error || t.chat.conversationBusy,
+        });
+      }
       if (shouldRestoreComposerAfterDispatch(dispatch)) {
         return false;
       }

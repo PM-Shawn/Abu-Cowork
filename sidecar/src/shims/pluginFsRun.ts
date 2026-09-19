@@ -111,8 +111,11 @@
  * `create` defaulting to `true` and `truncate = !append`):
  *   - `createNew` → `O_CREAT|O_EXCL`: an existing file fails with `EEXIST`,
  *     atomically — no check-then-write window. Wins over `create`.
- *   - `create: false` → no `O_CREAT`: a missing file fails with `ENOENT`
- *     and is not created.
+ *   - `create: false` → `O_WRONLY` with no `O_CREAT`: a missing file fails
+ *     with `ENOENT` and is not created, and a file whose owner left it
+ *     write-only opens. The truncation of a non-append write happens through
+ *     the handle after the open, because Windows rejects `O_TRUNC` without
+ *     `O_CREAT` with `EINVAL`.
  *   - `append` → `O_APPEND`, never `O_TRUNC`.
  *   - `mode` → the new file's permissions (POSIX only; the plugin ignores it
  *     on Windows, where Node would otherwise turn a mode without the owner
@@ -128,6 +131,7 @@
  * matching plugin-fs's own behavior of rejecting with a real `Error`.
  */
 import * as fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import type { Dirent, Stats } from 'node:fs';
 
 /** Mirrors plugin-fs's `WriteFileOptions`; `baseDir` is typed only to be rejected. */
@@ -163,21 +167,19 @@ function rejectUnsupportedOptions(fn: string, options: object | undefined, suppo
 }
 
 /**
- * `create: false` (the file must already exist) has no Node flag string, and
- * the open(2) flags for it are NOT portable: Windows rejects `O_TRUNC`
- * without `O_CREAT` with `EINVAL` instead of opening the existing file
- * (caught by CI's `test-windows` on the first cut of this shim). `'r+'` opens
- * without ever creating — `ENOENT` when the file is missing, exactly like the
- * plugin — and truncating or seeking to the end reproduces the plugin's
- * `truncate = !append`.
+ * `create: false` (the file must already exist) has no Node flag string, so
+ * the open uses numeric flags: `O_WRONLY`, plus `O_APPEND` for an append, and
+ * never `O_CREAT` — a missing file fails with `ENOENT`, exactly like the
+ * plugin. `O_TRUNC` cannot ride along: Windows rejects it without `O_CREAT`
+ * with `EINVAL`. The plugin's `truncate = !append` therefore happens through
+ * the handle after the open. `electron/fsHost.cjs` opens the same way, and
+ * `pluginFsCreateFalse.contract.test.ts` holds the two together.
  */
 async function writeToExistingFile(path: string | URL, data: string | Uint8Array, append: boolean): Promise<void> {
-  const bytes = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data;
-  const handle = await fs.open(path, 'r+');
+  const handle = await fs.open(path, fsConstants.O_WRONLY | (append ? fsConstants.O_APPEND : 0));
   try {
-    const position = append ? (await handle.stat()).size : 0;
     if (!append) await handle.truncate(0);
-    await handle.write(bytes, 0, bytes.byteLength, position);
+    await handle.writeFile(data);
   } finally {
     await handle.close();
   }

@@ -1420,6 +1420,56 @@ describe('conversationStorage', () => {
       const parsed = JSON.parse(memFs.files.get(indexPath)!);
       expect(parsed.entries['conv-del']).toBeUndefined();
     });
+
+    const INDEX_PATH = '/Users/testuser/.abu/conversations/index.json';
+    const BASE_ENTRY = { id: 'c1', title: 'T', createdAt: 1, updatedAt: 2, messageCount: 3 };
+
+    it('an entry without a permission mode is written without that key', async () => {
+      await storage.updateIndexEntry({ ...BASE_ENTRY });
+      await storage.flushIndex();
+      const entry = JSON.parse(memFs.files.get(INDEX_PATH)!).entries.c1;
+      expect(Object.keys(entry).sort()).toEqual(['createdAt', 'id', 'messageCount', 'title', 'updatedAt']);
+    });
+
+    it('a permission mode round-trips through index.json', async () => {
+      await storage.updateIndexEntry({ ...BASE_ENTRY, permissionMode: 'autonomous' });
+      await storage.flushIndex();
+
+      vi.resetModules();
+      storage = await import('./conversationStorage');
+      const index = await storage.loadIndex();
+      expect(index.entries.c1).toEqual({ ...BASE_ENTRY, permissionMode: 'autonomous' });
+    });
+
+    it('an index written without the field loads entry for entry as it was written', async () => {
+      const entries = {
+        c1: { ...BASE_ENTRY, workspacePath: '/ws', model: { providerId: 'p', modelId: 'm' }, teamId: 'team-1' },
+        c2: { ...BASE_ENTRY, id: 'c2', readOnly: true, importedFrom: { schemaVersion: 1, importedAt: 5 } },
+      };
+      memFs.files.set(INDEX_PATH, JSON.stringify({ version: 1, entries }));
+      const index = await storage.loadIndex();
+      expect(index.entries).toEqual(entries);
+    });
+
+    it('leaves out a mode this build does not accept and keeps every other field', async () => {
+      memFs.files.set(INDEX_PATH, JSON.stringify({
+        version: 1,
+        entries: {
+          old: { ...BASE_ENTRY, id: 'old', teamId: 'team-1', permissionMode: 'strict' },
+          odd: { ...BASE_ENTRY, id: 'odd', scheduledTaskId: 'task-1', permissionMode: ['autonomous'] },
+          fine: { ...BASE_ENTRY, id: 'fine', permissionMode: 'smart' },
+        },
+      }));
+      const index = await storage.loadIndex();
+      expect(index.entries.old).toEqual({ ...BASE_ENTRY, id: 'old', teamId: 'team-1' });
+      expect(index.entries.odd).toEqual({ ...BASE_ENTRY, id: 'odd', scheduledTaskId: 'task-1' });
+      expect(index.entries.fine).toEqual({ ...BASE_ENTRY, id: 'fine', permissionMode: 'smart' });
+    });
+
+    it('an index whose entries value is no object still loads', async () => {
+      memFs.files.set(INDEX_PATH, JSON.stringify({ version: 1, entries: null }));
+      await expect(storage.loadIndex()).resolves.toMatchObject({ version: 1 });
+    });
   });
 
   describe('deleteConversationFiles', () => {
@@ -1458,6 +1508,13 @@ describe('conversationStorage', () => {
       expect(meta.messageCount).toBe(3);
       expect(meta.workspacePath).toBe('/workspace');
       expect(meta.projectId).toBe('proj-1');
+    });
+
+    it('carries an accepted permission mode and leaves the key out otherwise', () => {
+      const base = { id: 'c1', title: 'T', createdAt: 1, updatedAt: 2, messages: [] };
+      expect(storage.buildMeta({ ...base, permissionMode: 'smart' }).permissionMode).toBe('smart');
+      expect('permissionMode' in storage.buildMeta(base)).toBe(false);
+      expect('permissionMode' in storage.buildMeta({ ...base, permissionMode: 'strict' as never })).toBe(false);
     });
   });
 

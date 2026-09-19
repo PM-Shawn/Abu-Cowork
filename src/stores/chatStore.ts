@@ -2743,7 +2743,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 13,
+      version: 14,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2782,6 +2782,10 @@ export const useChatStore = create<ChatStore>()(
         if (version < 12) { /* no transform needed */ }
         // v12 → v13: per-identity contact receipts; old histories remain untouched.
         if (version < 13) state.expertContactReceipts = {};
+        // v13 → v14: added per-conversation permissionMode on ConversationMeta
+        // (optional field; absent = the conversation follows the global
+        // permission mode, no-op migration).
+        if (version < 14) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

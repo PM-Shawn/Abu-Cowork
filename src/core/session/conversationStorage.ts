@@ -50,6 +50,8 @@ import { atomicWrite } from '@/utils/atomicFs';
 import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
 import { isPayloadTooLargeError, parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtimeTrace';
+import type { PermissionMode } from '../permissions/permissionMode';
+import { acceptConversationPermissionMode, withAcceptedPermissionMode } from './conversationPermissionMode';
 import { createLedgerEvent, type LedgerLine } from './messageLedger';
 import { projectLedger, STREAM_SNAPSHOT_FILENAME, type StreamSnapshotEntry } from './ledgerReader';
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
@@ -69,6 +71,8 @@ export interface ConversationMeta {
   messageCount: number;
   workspacePath?: string | null;
   model?: { providerId: string; modelId: string };  // Model pinned to this conversation (undefined = inherit global)
+  /** Permission mode of this conversation (undefined = follow the global default). */
+  permissionMode?: PermissionMode;
   imChannelId?: string;
   imPlatform?: string;
   scheduledTaskId?: string;
@@ -1156,7 +1160,23 @@ export async function loadIndex(): Promise<ConversationIndex> {
   } else {
     indexCache = { version: 1, entries: {} };
   }
+  normalizeIndexEntries(indexCache);
   return indexCache;
+}
+
+/**
+ * A conversation's permission mode is read tolerantly: a value this build
+ * does not accept is left out of the entry, every other field stays as it
+ * was read. Runs outside the parse `try`, and never throws, so it cannot
+ * turn a readable index into an empty one.
+ */
+function normalizeIndexEntries(index: ConversationIndex): void {
+  const entries: unknown = index.entries;
+  if (typeof entries !== 'object' || entries === null) return;
+  for (const [id, entry] of Object.entries(entries as Record<string, unknown>)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    index.entries[id] = withAcceptedPermissionMode(entry as ConversationMeta);
+  }
 }
 
 export function getIndexEntries(): Record<string, ConversationMeta> {
@@ -1842,6 +1862,7 @@ export function buildMeta(conv: {
   messages: { length: number };
   workspacePath?: string | null;
   model?: { providerId: string; modelId: string };
+  permissionMode?: PermissionMode;
   imChannelId?: string;
   imPlatform?: string;
   scheduledTaskId?: string;
@@ -1851,6 +1872,7 @@ export function buildMeta(conv: {
   readOnly?: boolean;
   importedFrom?: { schemaVersion: number; importedAt: number };
 }): ConversationMeta {
+  const permissionMode = acceptConversationPermissionMode(conv.permissionMode);
   return {
     id: conv.id,
     title: conv.title,
@@ -1867,6 +1889,7 @@ export function buildMeta(conv: {
     projectId: conv.projectId,
     readOnly: conv.readOnly,
     importedFrom: conv.importedFrom,
+    ...(permissionMode ? { permissionMode } : {}),
   };
 }
 

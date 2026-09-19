@@ -1,0 +1,38 @@
+{
+  "accepted": [
+    "loyw3v28abc123", "m1a2b3c4", "conv-1", "ab", "widget", "parallel-conv-12",
+    "A", "a.b", "a_b-c.d", "0", "media_0123456789abcdef", "com10", "console", "nul0", "a.nul",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
+  "rejectedByBoth": [
+    { "value": "", "reason": "empty" },
+    { "value": "..", "reason": "charset" },
+    { "value": "a..b", "reason": "dot_dot" },
+    { "value": "../x", "reason": "charset" },
+    { "value": "a/b", "reason": "charset" },
+    { "value": "a\\b", "reason": "charset" },
+    { "value": "C:", "reason": "charset" },
+    { "value": "a:b", "reason": "charset" },
+    { "value": "~abc", "reason": "charset" },
+    { "value": ".hidden", "reason": "charset" },
+    { "value": "-dash", "reason": "charset" },
+    { "value": "a b", "reason": "charset" },
+    { "value": "a\u0000b", "reason": "charset" },
+    { "value": "a\nb", "reason": "charset" },
+    { "value": "对话", "reason": "charset" },
+    { "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "too_long" }
+  ],
+  "rejectedByConversationGrammarOnly": [
+    { "value": "abc.", "reason": "trailing_dot" },
+    { "value": "CON", "reason": "reserved_device_name" },
+    { "value": "nul", "reason": "reserved_device_name" },
+    { "value": "nul.txt", "reason": "reserved_device_name" },
+    { "value": "Com1", "reason": "reserved_device_name" },
+    { "value": "lpt9.a.b", "reason": "reserved_device_name" },
+    { "value": "aux", "reason": "reserved_device_name" },
+    { "value": "PRN", "reason": "reserved_device_name" },
+    { "value": "index.json", "reason": "reserved_sibling_name" },
+    { "value": "INDEX.JSON", "reason": "reserved_sibling_name" }
+  ],
+  "notStrings": [null, 7, true, {}, []]
+}

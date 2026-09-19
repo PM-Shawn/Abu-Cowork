@@ -19,6 +19,9 @@ vi.mock('@/utils/electronHost', () => ({
   hasElectronUserAttachmentReleaseHost: vi.fn(() => false),
   releaseElectronUserAttachment: vi.fn(),
   getElectronFilePath: vi.fn(() => null),
+  // #549: the conversation writer resolves the conversations root through this
+  // one; null is what a tier without the Electron bridge answers.
+  canonicalizeElectronPathForPolicy: vi.fn(async () => null),
 }));
 
 /* The composer toolbar has to survive a narrow center pane — the workspace

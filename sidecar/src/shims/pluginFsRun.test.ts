@@ -71,6 +71,24 @@ describe('sidecar plugin-fs shim', () => {
         await writeTextFile(path, 'new', { create: false });
         expect(await read(path)).toBe('new');
       });
+
+      it.skipIf(isWindows)('writes a file whose owner left it write-only', async () => {
+        const path = join(dir, 'write-only.md');
+        await nodeWriteFile(path, 'old');
+        await nodeChmod(path, 0o200);
+        await writeTextFile(path, 'new', { create: false });
+        await nodeChmod(path, 0o600);
+        expect(await read(path)).toBe('new');
+      });
+
+      it.skipIf(isWindows)('appends to a file whose owner left it write-only', async () => {
+        const path = join(dir, 'write-only.log');
+        await nodeWriteFile(path, 'line 1\n');
+        await nodeChmod(path, 0o200);
+        await writeTextFile(path, 'line 2\n', { append: true, create: false });
+        await nodeChmod(path, 0o600);
+        expect(await read(path)).toBe('line 1\nline 2\n');
+      });
     });
 
     describe('append', () => {

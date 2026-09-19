@@ -443,6 +443,7 @@ export function registerRunSession(runId: string, session: RunSession): void {
   registerRunResourceSettlement(runId, session.resourceSettlement);
   sessions.set(runId, session);
   installPushEmitters();
+  pushSettingsNow();
 }
 
 /** The live session for a conversationId, or undefined — P1-3B-3B's concurrency guard (`runAgentLoopDispatched`) and the `state.execPatch` emitter both need this conversationId→runId lookup. Linear scan — the sessions map is bounded by concurrently-running conversations (small in practice, same discipline as `pushConvPatchesForActiveSessions` below). */
@@ -1510,17 +1511,14 @@ function normalizeTrustedToolMetadata(
  *
  * `toolCallToStepId` is deliberately NOT populated from the wire here — the
  * sidecar's `tool.invoke` request carries no explicit toolCallId→stepId
- * mapping (traced: the `addStep` frame carries the step's own id but not
- * the originating toolCallId; `context.toolCallId` travels but has no
- * matching stepId to pair it with). The primary consumer
- * (`delegate_to_agent`, agentTools.ts) already has a fallback for exactly
- * this case — `eventRouter.getCurrentStepId(loopId)`, which reads the REAL
- * shell-side ExecutionPort. By the time this handler runs, the current
- * tool's `addStep` frame has ALREADY been applied (frames flush-before-
- * request — design doc §3's chatDelta/executionPort row), so the fallback
- * resolves correctly without an explicit wire field. See
- * P1-3B-3B-REPORT.md's "toolCallToStepId threading" section for the full
- * trace.
+ * mapping. The consumers (`delegate_to_agent` / `run_agent_batch`) resolve
+ * their step on the REAL shell-side ExecutionPort by `context.toolCallId`
+ * (the `addStep` frame carries the step's toolCallId). That step is NOT
+ * guaranteed to be visible when this handler runs: frames are flushed before
+ * the request on the sidecar side, but the shell applies them in order behind
+ * awaited ledger writes (frameApplier.ts), so the lookup is lazy and member
+ * progress is queued until it resolves (delegateProgressRecorder.ts,
+ * 2026-09-16).
  *
  * P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5 "secondary
  * finding"): also refuses to execute when the run's `conversationId` no
@@ -2019,6 +2017,23 @@ function scheduleSettingsPush(): void {
       revision: settingsPushRevision++,
     });
   }, SETTINGS_DEBOUNCE_MS);
+}
+
+/**
+ * Push the current snapshot right now, cancelling any pending debounced push.
+ * Called on every run registration, before agent.start goes out on the same
+ * ordered mcp_write channel, so the sidecar mirror never starts a run on
+ * settings from a previous run.
+ */
+function pushSettingsNow(): void {
+  if (settingsDebounceTimer) {
+    clearTimeout(settingsDebounceTimer);
+    settingsDebounceTimer = undefined;
+  }
+  notifySidecar('state.settings', {
+    settings: getSettingsReader().getSnapshot(),
+    revision: settingsPushRevision++,
+  });
 }
 
 /** The 4 scalar fields diffed per-conversation for `state.convPatch` — see design doc §5's emitter bullet. */

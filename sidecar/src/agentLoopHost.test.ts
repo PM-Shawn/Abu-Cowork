@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RpcError } from './protocol';
 import type { SubagentLoopOptions, SubagentProgressEvent } from '@/core/agent/subagentLoop';
 import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
@@ -79,6 +79,7 @@ import {
   shutdownAllAgentRuns,
   __getActiveAgentRunCount,
   __resetAgentRunRegistryForTests,
+  __RUN_REGISTRY_ACCEPTED_TTL_MS,
   buildAgentRunPayloadDigest,
 } from './agentLoopHost';
 import { getCurrentAgentRunContext } from './agentRunContext';
@@ -262,6 +263,74 @@ describe('agentLoopHost', () => {
 
       await expect(handleAgentRun(params)).rejects.toMatchObject({ code: -32602 });
       expect(runAgentLoopMock).not.toHaveBeenCalled();
+    });
+
+    describe('stale accepted entries', () => {
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date('2026-09-17T00:00:00Z'));
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it('prunes an accepted run that never received agent.run and reports not_found', () => {
+        const params = reliableParams({ runId: 'accepted-orphan' });
+        handleAgentStart(params);
+
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'accepted' }));
+        expect(traceSidecarRuntimeEventMock).not.toHaveBeenCalledWith(
+          'sidecar.agent_start_pruned',
+          expect.anything(),
+        );
+
+        vi.advanceTimersByTime(1);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual({
+          version: 1,
+          runId: params.runId,
+          state: 'not_found',
+        });
+        expect(traceSidecarRuntimeEventMock).toHaveBeenCalledWith('sidecar.agent_start_pruned', {
+          runId: params.runId,
+          stage: 'accepted',
+          outcome: 'expired',
+        });
+      });
+
+      it('lets agent.abort-cancelled accepted runs expire too', async () => {
+        const params = reliableParams({ runId: 'accepted-cancelled-orphan' });
+        handleAgentStart(params);
+        await expect(handleAgentAbort({ runId: params.runId })).resolves.toEqual({ accepted: true, state: 'aborting' });
+
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS + 1);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'not_found' }));
+        await expect(handleAgentAbort({ runId: params.runId })).resolves.toEqual({ accepted: false, state: 'not_found' });
+      });
+
+      it('accepts a fresh start for the same runId after its stale acceptance was pruned', () => {
+        const params = reliableParams({ runId: 'accepted-restart' });
+        handleAgentStart(params);
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS + 1);
+
+        expect(handleAgentStart(params)).toEqual(expect.objectContaining({ state: 'accepted', replay: false }));
+        expect(runAgentLoopMock).not.toHaveBeenCalled();
+      });
+
+      it('does not prune a run that is still executing past the accepted TTL', async () => {
+        const params = reliableParams({ runId: 'long-running' });
+        handleAgentStart(params);
+        const loop = deferred<{ reason: string }>();
+        runAgentLoopMock.mockReturnValueOnce(loop.promise);
+        const run = handleAgentRun(params);
+
+        vi.advanceTimersByTime(__RUN_REGISTRY_ACCEPTED_TTL_MS * 3);
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'running' }));
+
+        loop.resolve({ reason: 'completed' });
+        await expect(run).resolves.toEqual({ reason: 'completed' });
+        expect(handleAgentGetState({ runId: params.runId })).toEqual(expect.objectContaining({ state: 'terminal' }));
+      });
     });
 
     it('rejects agent.run when executable params are tampered after start', async () => {

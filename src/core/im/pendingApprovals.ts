@@ -708,7 +708,7 @@ function coalesceKey(request: UnattendedConfirmationRequest, conversationId: str
   const origin = request.info.browserOrigin ?? 'origin-unknown';
   const opClass = request.info.browserOperationClass ?? 'scripting';
   const kind = request.info.kind ?? 'command';
-  return [conversationId, request.runKey ?? '', kind, opClass, origin, request.info.command].join(
+  return [conversationId, request.runKey ?? '', kind, opClass, origin, request.info.command, request.info.browserPageOrigin ?? '', JSON.stringify(request.info.browserPermissionTargets ?? [])].join(
     '\u0000',
   );
 }
@@ -815,6 +815,15 @@ function buildPrompt(request: UnattendedConfirmationRequest, timeoutMs: number):
         origin: sanitizeUntrustedPromptField(request.info.browserPageOrigin),
       }),
     );
+  }
+  for (const target of request.info.browserPermissionTargets ?? []) {
+    const origin = sanitizeUntrustedPromptField(target.origin ?? 'origin-unknown');
+    context.push(format(t.imChannel.approvalPromptOrigin, { origin }));
+    if (target.embeddedIn) {
+      context.push(format(t.imChannel.approvalPromptPageOrigin, {
+        origin: sanitizeUntrustedPromptField(target.embeddedIn),
+      }));
+    }
   }
   return format(t.imChannel.approvalPrompt, {
     context: context.length > 0 ? `${context.join('\n')}\n` : '',
@@ -978,7 +987,12 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
   // run's "yes" would authorize the other's action), and a remembered answer
   // would never expire. Ask separately instead — a duplicate prompt is a
   // nuisance; a shared one is a security bug.
+  // Browser approval means this invocation only. Identical display text is
+  // not an operation identity (nor an embedded-page scope), so neither cached
+  // answers nor an overlapping prompt may authorize a subsequent browser call.
+  const browserRequest = request.info.kind === 'browser' || request.info.kind === 'browser-upload';
   const runScoped = request.runKey !== undefined;
+  const mayCoalesce = runScoped && !browserRequest;
   const key = coalesceKey(request, conversationId);
 
   // An answer already given for this exact ask in this run. A timeout is
@@ -987,14 +1001,14 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
   const cached = runScoped ? answered.get(key) : undefined;
   // A replay of an answer already given. `fresh: false` so an audit counting
   // human decisions counts ONE "同意", not one per tool call that reused it.
-  if (cached !== undefined) return { ...cached, audit: { ...cached.audit, fresh: false } };
+  if (cached !== undefined && (!browserRequest || !cached.approved)) return { ...cached, audit: { ...cached.audit, fresh: false } };
 
   // Concurrent asks with the same key wait on the one prompt already out.
-  let outcomePromise = runScoped ? inFlight.get(key) : undefined;
+  let outcomePromise = mayCoalesce ? inFlight.get(key) : undefined;
   const owned = outcomePromise === undefined;
   if (outcomePromise === undefined) {
     outcomePromise = askOverIm(request, conversationId, prompt);
-    if (runScoped) inFlight.set(key, outcomePromise);
+    if (mayCoalesce) inFlight.set(key, outcomePromise);
   }
 
   let outcome: ImApprovalResult;
@@ -1002,7 +1016,7 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
     outcome = await outcomePromise;
   } finally {
     // Only the owner clears: a follower must not drop a newer entry.
-    if (owned && runScoped && inFlight.get(key) === outcomePromise) inFlight.delete(key);
+    if (owned && mayCoalesce && inFlight.get(key) === outcomePromise) inFlight.delete(key);
   }
 
   const result = describeOutcome(outcome);
@@ -1012,7 +1026,7 @@ export const imApprovalResolver: UnattendedConfirmationResolver = async (request
   //
   // Cached WITHOUT the freshness flag: `fresh` describes this particular call,
   // not the answer, and a replay must never be able to inherit a `true`.
-  if (runScoped && outcome.cause !== 'aborted') rememberAnswer(key, result);
+  if (runScoped && outcome.cause !== 'aborted' && (!browserRequest || !result.approved)) rememberAnswer(key, result);
 
   // Only the call that owned the round-trip reports it. A follower that waited
   // on someone else's prompt did not produce a human decision of its own.

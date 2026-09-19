@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * TriggerEngine tests — cover pure logic extracted from the engine:
  * matchGlob, simpleHash, debounce, quiet hours, filter matching,
@@ -75,7 +76,6 @@ import { resolveTriggerBindAddress, triggerEngine } from './triggerEngine';
 import { resolveTriggerCallbacks } from './triggerPermission';
 import { useIMChannelStore } from '../../stores/imChannelStore';
 import { notifyTriggerCompleted } from '../../utils/notifications';
-import { useSettingsStore } from '../../stores/settingsStore';
 import { checkToolApproval } from '../tools/registry';
 import { clearLoopContext, setLoopContext } from '../agent/permissionBridge';
 import { DEFAULT_BROWSER_OPERATION_POLICY } from '../permissions/browserToolPolicy';
@@ -570,7 +570,7 @@ describe('TriggerEngine', () => {
      */
     it('reaches the browser gate itself, not only the run callback', async () => {
       seedChannel();
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserSitePermissions: { 'https://allowed.example': 'allowed' },
         browserOperationPolicy: {
@@ -647,7 +647,7 @@ describe('TriggerEngine', () => {
       expect(captured.current?.runKey).toBe('loop-f1-trigger');
 
       __resetUnattendedConfirmationForTests();
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: false,
         browserSitePermissions: {},
         browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,

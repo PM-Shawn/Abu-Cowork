@@ -49,7 +49,9 @@ export const BROWSER_TOOL_SUFFIXES = [
   'stop_recording',
 ] as const;
 
-const BUILTIN_BROWSER_TOOLS = BROWSER_TOOL_SUFFIXES.map(
+export const BUILTIN_BROWSER_TOOL_SUFFIXES = [...BROWSER_TOOL_SUFFIXES, 'list_tabs', 'create_tab', 'close_tab', 'retain_tab'] as const;
+
+const BUILTIN_BROWSER_TOOLS = BUILTIN_BROWSER_TOOL_SUFFIXES.map(
   (name) => `abu-browser__${name}`,
 );
 const CHROME_BRIDGE_TOOLS = BROWSER_TOOL_SUFFIXES.map(

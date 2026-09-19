@@ -129,6 +129,9 @@ test.describe('composer @ popup geometry', () => {
       // depends on the builtin roster size vs. the popup's max height, which
       // dev changes over time — so the scroll itself is asserted only when the
       // list overflows; the reopen-unscrolled check below holds either way.
+      // Agent discovery lands the 专家 group after the teams; count only once the
+      // whole roster is in, or the walk stops short of the end and never scrolls.
+      await expect(listbox.getByRole('group', { name: '专家', exact: true })).toBeVisible();
       const optionCount = await page.getByRole('option').count();
       for (let i = 0; i < optionCount; i += 1) await textbox.press('ArrowDown');
       const beforeClose = await page.evaluate(() => {

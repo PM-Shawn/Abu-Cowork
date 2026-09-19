@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
-import { clearAllComposerDrafts } from '@/stores/composerDraftStore';
+import { clearAllComposerDrafts, readComposerDraft, WELCOME_COMPOSER_DRAFT_KEY } from '@/stores/composerDraftStore';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useTeamStore } from '@/stores/teamStore';
+import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
+import { DEFAULT_SOURCES, useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 // TeamView reads/writes the real teamStore (zustand works fine in tests);
 // everything else is mocked at the boundary, mirroring ToolboxModal.test.tsx.
@@ -133,6 +135,9 @@ vi.mock('@/components/customize/AgentsSection', async () => {
 
 import TeamView from './TeamView';
 
+// Looked up by id, not by position: the shelf order is product copy, not a contract.
+const SOFTWARE_RD_TEAM = BUILTIN_TEAMS.find((team) => team.id === 'builtin-team:software-rd')!;
+
 type SeedExtra = { roleId?: string; skills?: string[]; source?: { kind: 'plugin'; plugin: string } };
 function seedAgent(name: string, extra?: string | SeedExtra) {
   const { roleId, skills, source } = typeof extra === 'string' ? ({ roleId: extra } as SeedExtra) : (extra ?? {});
@@ -145,7 +150,11 @@ describe('TeamView', () => {
   beforeEach(() => {
     clearAllComposerDrafts();
     useTeamStore.setState({ teams: []});
+    // Every team seeded below is one the user assembled, so these assertions
+    // are about the 「我的」 shelf; 市场 (the default) holds the built-in teams.
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine', teams: 'mine' } });
     settingsState.activeTeamTab = 'members';
+    settingsState.disabledAgents = [];
     for (const key of Object.keys(registryAgents)) delete registryAgents[key];
     discoveryState.agents = [];
     chatState.conversationIndex = {};
@@ -213,6 +222,31 @@ describe('TeamView', () => {
     expect((screen.getByTestId('team-name-input') as HTMLInputElement).value).toBe('新名字');
   });
 
+  it('team dialog: renaming onto another team\u2019s name is refused before it can be saved', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('\u5206\u6790\u5e08', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '\u5206\u6790\u5e08' }];
+    useTeamStore.setState({ teams: [
+      { id: 't1', name: '\u6570\u636e\u5c0f\u961f', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 },
+      { id: 't2', name: '\u589e\u957f\u5c0f\u961f', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 2 },
+    ] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-\u589e\u957f\u5c0f\u961f'));
+    fireEvent.click(screen.getByTestId('team-detail-menu'));
+    fireEvent.click(screen.getByTestId('team-detail-edit'));
+    // Its own name is fine — re-saving a dialog untouched must not be blocked.
+    expect(screen.queryByTestId('team-name-taken')).toBeNull();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '\u6570\u636e\u5c0f\u961f' } });
+    expect(screen.getByTestId('team-name-taken')).toBeTruthy();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByTestId('team-name-input'), { target: { value: '\u589e\u957f\u5c0f\u961f 2' } });
+    expect(screen.queryByTestId('team-name-taken')).toBeNull();
+    expect((screen.getByTestId('team-save') as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('renders the two tabs 专家·专家团 (the task board is gone)', () => {
     render(<TeamView />);
     const tabs = screen.getAllByRole('button').map((b) => b.textContent).filter((label) =>
@@ -253,6 +287,38 @@ describe('TeamView', () => {
     useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-mem', 'r-gone'], createdAt: 1 }] });
     render(<TeamView />);
     expect(screen.getByTestId('team-row-数据小队').textContent).toContain('1 名成员');
+  });
+
+  it('teams tab: a team that picked no icon keeps a visible grey plate on its card', () => {
+    // Same reason as the expert card: the avatar fills the 40px slot, so its
+    // own `--abu-bg-muted` would sit invisibly on the card's `--abu-bg-subtle`
+    // ground. The card asks for the slot's `--abu-bg-active` plate back.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
+    render(<TeamView />);
+    const avatar = screen.getByTestId('team-row-数据小队').querySelector('[data-testid="team-avatar"]')!;
+    expect(avatar.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
+  it('teams tab: the opened detail keeps that grey plate too', () => {
+    // The detail header's plate is the 56px slot, and a `2xl` avatar covers it
+    // exactly — the same defect as on the card. The card's avatar stays in the
+    // DOM behind the modal, so pick the 56px (`h-14`) one.
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.setState({ teams: [{ id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 }] });
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-row-数据小队'));
+    expect(screen.getByTestId('team-detail-start-chat')).toBeTruthy();
+    const avatar = [...document.querySelectorAll('[data-testid="team-avatar"]')]
+      .find((el) => el.className.includes('h-14'));
+    expect(avatar).toBeDefined();
+    expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
+    expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');
   });
 
   it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {
@@ -381,7 +447,8 @@ describe('TeamView', () => {
     expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
     expect(chatState.setPendingAgent).toHaveBeenCalledWith(null);
     // Nothing prefilled: the user says what they want in their own words.
-    expect(chatState.setPendingInput).toHaveBeenCalledWith('');
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(null);
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('');
   });
 
   it('teams tab: 编辑 lives behind the detail\'s "…" menu, mirroring the 专家 detail', () => {
@@ -412,7 +479,7 @@ describe('TeamView', () => {
     fireEvent.click(screen.getByTestId(trigger));
     fireEvent.click(screen.getByText('使用阿布创建'));
     expect(chatState.startNewConversation).toHaveBeenCalledOnce();
-    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt);
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(prompt, { startsTask: true });
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -571,7 +638,8 @@ describe('TeamView', () => {
     expect(chatState.createConversation).not.toHaveBeenCalled();
     expect(chatState.startNewConversation).toHaveBeenCalled();
     expect(chatState.setPendingTeamId).toHaveBeenCalledWith('t1');
-    expect(chatState.setPendingInput).toHaveBeenCalledWith('帮我看上季度销量');
+    expect(chatState.setPendingInput).toHaveBeenCalledWith(null);
+    expect(readComposerDraft(WELCOME_COMPOSER_DRAFT_KEY).text).toBe('帮我看上季度销量');
     expect(settingsState.closeTeam).toHaveBeenCalledOnce();
     expect(dispatch).not.toHaveBeenCalled();
     expect(screen.queryByTestId('team-detail-start-chat')).toBeNull();
@@ -591,5 +659,73 @@ describe('TeamView', () => {
     fireEvent.change(screen.getByLabelText('推荐提问（可选）'), { target: { value: ' 问题一\n问题二 ' } });
     fireEvent.click(screen.getByTestId('team-save'));
     await waitFor(() => expect(useTeamStore.getState().teams[0]).toMatchObject({ description: '新介绍', intro: undefined, expertise: ['取数', '出图'], samplePrompts: ['问题一', '问题二'] }));
+  });
+  describe('built-in teams · 市场 | 我的', () => {
+    const userTeam = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead'], createdAt: 1 };
+
+    beforeEach(() => {
+      settingsState.activeTeamTab = 'teams';
+      // 市场 is where a fresh install lands, and it is the shelf the shipped
+      // teams live on — the suite's other tests opt into 我的 instead.
+      useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    });
+
+    it('lists built-in teams under 市场 and the user\u2019s own under 我的', () => {
+      useTeamStore.setState({ teams: [userTeam, ...BUILTIN_TEAMS] });
+      render(<TeamView />);
+      // Both shelves are reachable, but only one is rendered at a time.
+      expect(screen.getByTestId('team-source-market')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('team-source-mine')).toHaveTextContent('我的');
+      expect(screen.getByTestId(`team-row-${SOFTWARE_RD_TEAM.name}`)).toBeInTheDocument();
+      expect(screen.queryByTestId('team-row-数据小队')).toBeNull();
+
+      fireEvent.click(screen.getByTestId('team-source-mine'));
+
+      expect(screen.getByTestId('team-row-数据小队')).toBeInTheDocument();
+      expect(screen.queryByTestId(`team-row-${SOFTWARE_RD_TEAM.name}`)).toBeNull();
+    });
+
+    it('a built-in team detail has no edit / delete menu', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      render(<TeamView />);
+      fireEvent.click(screen.getByTestId(`team-row-${SOFTWARE_RD_TEAM.name}`));
+      // Read-only: starting work is still the primary action, but there is no
+      // 「…」 behind which 编辑 / 删除 could sit.
+      expect(screen.getByTestId('team-detail-start-chat')).toBeInTheDocument();
+      expect(screen.queryByTestId('team-detail-menu')).toBeNull();
+    });
+
+    it('shows 还没有专家团 inside 我的 when only built-ins exist', () => {
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      render(<TeamView />);
+      // The shipped teams are NOT an answer to "have you made a team yet".
+      expect(screen.queryByText('还没有专家团')).toBeNull();
+      fireEvent.click(screen.getByTestId('team-source-mine'));
+      expect(screen.getByText('还没有专家团')).toBeInTheDocument();
+      expect(screen.getAllByText('新建专家团').length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('members off the auto-dispatch pool in the team detail', () => {
+    const team = { id: 't1', name: '数据小队', leaderRoleId: 'r-lead', memberRoleIds: ['r-lead', 'r-b'], createdAt: 1 };
+
+    beforeEach(() => {
+      settingsState.activeTeamTab = 'teams';
+      seedAgent('L', { roleId: 'r-lead' });
+      seedAgent('B', { roleId: 'r-b' });
+      discoveryState.agents = [{ name: 'L' }, { name: 'B' }];
+      useTeamStore.setState({ teams: [team] });
+    });
+
+    // 停用 is about Abu's automatic delegation only: the team detail shows no
+    // marker for it, and a leader off the pool still starts the team.
+    it('shows no disabled marker and starts the team even when a member is off the auto-dispatch pool', () => {
+      settingsState.disabledAgents = ['B', 'L'];
+      render(<TeamView />);
+      fireEvent.click(screen.getByTestId('team-row-数据小队'));
+      expect(screen.queryByTestId('team-member-disabled')).toBeNull();
+      expect(screen.queryByTestId('team-leader-disabled-hint')).toBeNull();
+      expect(screen.getByTestId('team-detail-start-chat')).not.toBeDisabled();
+    });
   });
 });

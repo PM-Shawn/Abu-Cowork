@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * What a run PRODUCED, from the tool call to the sentence a person reads
  * (batch-三 T6 · R-1).
@@ -23,7 +24,6 @@ import { executeAnyTool } from './registry';
 import { mcpManager } from '../mcp/client';
 import { getI18n } from '../../i18n';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import {
   clearBrowserSignals,
   getBrowserSignalCursor,
@@ -127,7 +127,7 @@ describe('a download this run produced reaches the card and the IM summary', () 
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserSitePermissions: testSiteVerdicts({ [SITE]: 'allowed' }),
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
@@ -294,7 +294,7 @@ describe('a download in an ordinary conversation becomes the downloads-only card
       tools: new Map(),
     });
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       permissionMode: 'standard',
       browserSitePermissions: testSiteVerdicts({ [SITE]: 'allowed' }),
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,

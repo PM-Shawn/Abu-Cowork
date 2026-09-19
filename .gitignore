@@ -18,6 +18,9 @@ coverage/
 # Logs
 *.log
 
+# 本地中间结果（门禁日志等）
+.scratch/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -121,3 +124,5 @@ release-electron-computer-use-test-e2e/
 
 # Build bookkeeping for scripts/check-browser-artifacts.mjs
 .artifact-digests/
+# Local working notes and intermediate command output.
+.scratch/

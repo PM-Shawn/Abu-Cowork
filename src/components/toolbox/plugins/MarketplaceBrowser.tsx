@@ -33,7 +33,6 @@ import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
-const ALL_CATEGORIES = '__all__';
 
 /**
  * The whole install-disclosure flow as one value. `pendingEntry` (is the dialog
@@ -108,7 +107,6 @@ export default function MarketplaceBrowser({
   const [selectedName, setSelectedName] = useState<string | null>(null);
   useEffect(() => { if (requestedMarket) setSelectedName(requestedMarket.name); }, [requestedMarket]);
   const [entriesState, setEntriesState] = useState<EntriesState>({ kind: 'idle' });
-  const [category, setCategory] = useState(ALL_CATEGORIES);
   const [flow, setFlow] = useState<InstallFlow>({ kind: 'closed' });
   const [installing, setInstalling] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
@@ -170,7 +168,6 @@ export default function MarketplaceBrowser({
     }
     let cancelled = false;
     setEntriesState({ kind: 'loading', marketplace: cachedMarkets.current.get(selected.dir) });
-    setCategory(ALL_CATEGORIES);
     loadMarketplaceFromDir(selected.dir)
       .then((marketplace) => {
         if (marketplace.name !== selected.name) throw new Error(tb.pluginsMarketplaceIdentityChanged);
@@ -237,24 +234,10 @@ export default function MarketplaceBrowser({
     [marketsHydrated, installed, marketplaces],
   );
 
-  const categoryOptions = useMemo(() => {
-    const names = new Set<string>();
-    for (const entry of marketplace?.plugins ?? []) {
-      if (entry.category) names.add(entry.category);
-    }
-    return [
-      { value: ALL_CATEGORIES, label: tb.pluginsCategoryAll },
-      ...[...names].sort().map((name) => ({ value: name, label: name })),
-    ];
-  }, [marketplace, tb.pluginsCategoryAll]);
-
   const visibleEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return (marketplace?.plugins ?? []).filter(
-      (entry) =>
-        (category === ALL_CATEGORIES || entry.category === category) && matchesQuery(entry, query),
-    );
-  }, [marketplace, category, searchQuery]);
+    return (marketplace?.plugins ?? []).filter((entry) => matchesQuery(entry, query));
+  }, [marketplace, searchQuery]);
 
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
@@ -408,7 +391,7 @@ export default function MarketplaceBrowser({
       description={entry.description}
       testId="plugin-marketplace-entry"
       onClick={() => setManaging(installedRecord)}
-      actions={hasUpdate ? <Button size="sm" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
+      actions={hasUpdate ? <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
     />;
     return (
       <div className="h-full">
@@ -417,7 +400,7 @@ export default function MarketplaceBrowser({
           name={entry.name}
           description={entry.description}
           onClick={() => void handlePlan(entry)}
-          actions={<Button size="sm" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${tb.pluginsInstall}: ${entry.name}`}>{tb.pluginsInstall}</Button>}
+          actions={<Button variant="tint" size="xs" className="h-7 px-2.5" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${tb.pluginsInstall}: ${entry.name}`}>{tb.pluginsInstall}</Button>}
         />
       </div>
     );
@@ -455,15 +438,6 @@ export default function MarketplaceBrowser({
           <span className="text-h-xs text-[var(--abu-text-primary)]">{selectedName}</span>
         )}
 
-        <Select
-          variant="inline"
-          value={category}
-          onChange={setCategory}
-          ariaLabel={tb.pluginsCategoryAll}
-          options={categoryOptions}
-          className="w-44"
-        />
-
         {marketplace && (
           <span className="text-minor text-[var(--abu-text-muted)]">
             {format(tb.pluginsEntryCount, { count: visibleEntries.length })}
@@ -472,7 +446,9 @@ export default function MarketplaceBrowser({
 
         <div className="ml-auto flex items-center gap-1.5">
           {selectedName && <Button size="icon-sm" variant="ghost" aria-label={tb.pluginsRefreshMarketplace} disabled={entriesState.kind === 'loading'} onClick={() => setReload(value => value + 1)}><RefreshCw className="h-3.5 w-3.5" /></Button>}
-          {selectedName && (
+          {/* The built-in market cannot be removed (the store short-circuits it),
+              so it gets no Remove control rather than one that silently no-ops. */}
+          {selectedName && !selected?.builtin && (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -537,19 +513,24 @@ export default function MarketplaceBrowser({
       {orphans.length > 0 && (
         <section
           data-testid="plugin-orphan-group"
-          className="shrink-0 border-t border-[var(--abu-border)] px-8 py-3"
+          className="shrink-0 border-t border-[var(--abu-border)] py-3"
         >
-          <h4 className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsOrphanGroup}</h4>
-          <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
-            {orphans.map((plugin) => (
-              <MarketplaceEntryRow
-                key={plugin.key}
-                testId="plugin-orphan-row"
-                name={plugin.name}
-                description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
-                onClick={() => setManaging(plugin)}
-              />
-            ))}
+          {/* Same centred column as the grid above — padding INSIDE the
+              max-width, as there — or this block sits 32px left of the cards. */}
+          <div className="mx-auto w-full max-w-[1088px] px-8">
+            <h4 className="text-h-xs text-[var(--abu-text-primary)]">{tb.pluginsOrphanGroup}</h4>
+            <p className="text-minor text-[var(--abu-text-tertiary)]">{tb.pluginsOrphanHint}</p>
+            <div className="mt-2 grid grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-4">
+              {orphans.map((plugin) => (
+                <MarketplaceEntryRow
+                  key={plugin.key}
+                  testId="plugin-orphan-row"
+                  name={plugin.name}
+                  description={format(tb.pluginsFromMarketplace, { name: plugin.marketplace })}
+                  onClick={() => setManaging(plugin)}
+                />
+              ))}
+            </div>
           </div>
         </section>
       )}

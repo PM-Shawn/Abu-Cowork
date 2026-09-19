@@ -302,7 +302,7 @@ function invokeSelectUserAttachments(request = {}) {
     request.mediaTypes !== undefined
     && (!Array.isArray(request.mediaTypes)
       || request.mediaTypes.length === 0
-      || request.mediaTypes.some((mediaType) => !USER_ATTACHMENT_MEDIA_TYPES.has(mediaType)))
+      || request.mediaTypes.some((mediaType) => !USER_ATTACHMENT_MEDIA_TYPES.has(mediaType) && mediaType !== 'application/pdf'))
   ) {
     throw new Error('selectUserAttachments media types are unsupported');
   }

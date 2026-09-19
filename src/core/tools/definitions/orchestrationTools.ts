@@ -25,9 +25,9 @@ import { isTeamRosterMember } from '../../team/leaderRoute';
 import { admitDispatches, recordDispatchOutcome } from '../../team/teamRunBounds';
 import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expectedFiles';
 import { createParentStepResolver } from '../../agent/delegateParentStep';
+import { createDelegateProgressRecorder } from '../../agent/delegateProgressRecorder';
 import { agentRegistry } from '../../agent/registry';
 import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
-import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
 import { isSubagentResultError, type SubagentResult } from '../../agent/subagentLoop';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
@@ -459,15 +459,18 @@ export const runAgentBatchTool: ToolDefinition = {
     // recording under the (running) run_agent_batch step. The live batch
     // store stays the in-run view; these children are what survives on the
     // message snapshot so a member tab can replay after restart / reopen.
-    // Parent step resolved lazily per event (delegateParentStep.ts): over the
-    // reverse channel this tool can start before its own step-start frame
-    // reached the shell mirror, and an eager lookup recorded nothing.
-    const resolveBatchParentStepId = loopCtx?.eventRouter
+    // Parent step resolved lazily per event (delegateParentStep.ts) and
+    // events queued until it resolves (delegateProgressRecorder.ts): over the
+    // reverse channel this tool — and a whole member run — can finish before
+    // its own step-start frame reached the shell mirror.
+    const recorderLoopCtx = loopCtx?.eventRouter
       && typeof loopCtx.eventRouter.addChildStepToDelegate === 'function'
       && typeof loopCtx.eventRouter.completeChildStep === 'function'
-      ? createParentStepResolver(loopCtx, toolExecContext?.toolCallId)
-      : null;
-    const canRecordChildSteps = resolveBatchParentStepId !== null;
+      ? loopCtx
+      : undefined;
+    const resolveBatchParentStepId = recorderLoopCtx
+      ? createParentStepResolver(recorderLoopCtx, toolExecContext?.toolCallId)
+      : undefined;
 
     // ── 4. Resolve each task's agent ──────────────────────────────────────
     type ResolvedTask = { agent: SubagentDefinition; task: string; context?: string; label: string; expectedFiles: string[] };
@@ -494,10 +497,6 @@ export const runAgentBatchTool: ToolDefinition = {
             .join(', ');
           const presetList = Object.keys(PRESET_AGENTS).join(', ');
           return format(ot.errBatchAgentNotFound, { i, agentName, available: available || getI18n().toolResult.valueNone, presetList });
-        }
-        const { disabledAgents } = getSettingsReader().getSnapshot();
-        if (disabledAgents.includes(agentName)) {
-          return format(ot.errBatchAgentDisabled, { i, agentName });
         }
       } else {
         // Default to research when neither type nor agent_name provided
@@ -595,7 +594,14 @@ export const runAgentBatchTool: ToolDefinition = {
             ? resolved.task + buildSchemaInstruction(schema)
             : resolved.task;
         let currentTurn = 0;
-        const childStepIds = new Map<string, string>(); // member tool_use id -> child step id
+        const childSteps = recorderLoopCtx && resolveBatchParentStepId
+          ? createDelegateProgressRecorder({
+            loopCtx: recorderLoopCtx,
+            resolveParentStepId: resolveBatchParentStepId,
+            batchTask: { index: idx, label: resolved.label, agent: resolved.agent.name },
+            logLabel: 'run_agent_batch',
+          })
+          : undefined;
         try {
           const result = await runWithTimeout(
             (sig) => withDispatchController(resolved.agent.name, sig, `${batchIdentity.batchToolCallId}:${idx}`, (dispatchSignal) => runSubagent({
@@ -618,28 +624,11 @@ export const runAgentBatchTool: ToolDefinition = {
               onProgress: (event) => {
                 try {
                   const store = useBatchProgressStore.getState();
+                  childSteps?.record(event);
                   if (event.type === 'tool-start') {
-                    const batchParentStepId = resolveBatchParentStepId?.();
-                    if (canRecordChildSteps && loopCtx && batchParentStepId) {
-                      const childStepId = loopCtx.eventRouter.addChildStepToDelegate(loopCtx.loopId, batchParentStepId, {
-                        toolName: event.toolName,
-                        toolInput: event.toolInput,
-                        toolCallId: event.id,
-                        batchTask: { index: idx, label: resolved.label, agent: resolved.agent.name },
-                      });
-                      if (childStepId) childStepIds.set(event.id, childStepId);
-                    }
                     store.startTaskStep(batchIdentity, idx, event);
                     store.setTaskActivity(batchIdentity, idx, format(getI18n().toolResult.orchestration.activityCalling, { toolName: event.toolName }), currentTurn);
                   } else if (event.type === 'tool-end') {
-                    const childStepId = childStepIds.get(event.id);
-                    childStepIds.delete(event.id);
-                    const batchParentStepId = resolveBatchParentStepId?.();
-                    if (childStepId && loopCtx && batchParentStepId) {
-                      loopCtx.eventRouter.completeChildStep(
-                        loopCtx.loopId, batchParentStepId, childStepId, event.result, event.error, event.resultContent,
-                      );
-                    }
                     // Preserve rich blocks verbatim: BatchProgress turns image
                     // blocks into DetailBlockView input while this in-memory
                     // batch card remains open.
@@ -665,6 +654,7 @@ export const runAgentBatchTool: ToolDefinition = {
             SUBAGENT_WALLCLOCK_TIMEOUT_MS,
             loopCtx?.signal,
           );
+          await childSteps?.drain();
           // Define-done check: declared artifacts must exist, whatever the text says.
           if (resolved.expectedFiles.length > 0) {
             const missingFiles = await findMissingExpectedFiles(resolved.expectedFiles, toolExecContext?.workspacePath);
@@ -690,6 +680,7 @@ export const runAgentBatchTool: ToolDefinition = {
           terminalizeTask(idx, terminalForSettledResult(settledResult, structuredEntries?.[idx]?.ok));
           return result;
         } catch (err) {
+          childSteps?.settle();
           const settledResult = { status: 'rejected', reason: err } as const satisfies PromiseSettledResult<SubagentResult>;
           if (structuredEntries !== undefined && schema !== undefined) {
             structuredEntries[idx] = structuredEntryForSettledResult(settledResult, resolved.label, schema);

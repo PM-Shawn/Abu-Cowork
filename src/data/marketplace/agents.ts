@@ -13,7 +13,7 @@ export const agentTemplates: MarketplaceItem[] = [
     content: `---
 name: researcher
 description: 专注于信息收集和研究分析
-avatar: 🔬
+avatar: icon:flask/teal
 model: inherit
 max-turns: 30
 tools:
@@ -54,7 +54,7 @@ memory: session
     content: `---
 name: coder
 description: 专注于代码开发和技术实现
-avatar: 💻
+avatar: icon:code/blue
 model: inherit
 max-turns: 50
 tools:
@@ -96,7 +96,7 @@ memory: project
     content: `---
 name: writer
 description: 专注于文档撰写和内容创作
-avatar: ✍️
+avatar: icon:pen/coral
 model: inherit
 max-turns: 20
 tools:
@@ -135,7 +135,7 @@ memory: session
     content: `---
 name: reviewer
 description: 专注于代码审查和质量保证
-avatar: 🔍
+avatar: icon:search/purple
 model: inherit
 max-turns: 30
 tools:

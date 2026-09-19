@@ -18,16 +18,6 @@ type TestRuntime = typeof globalThis & {
   };
 };
 
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 function dragEvent(files: File[] = [], types: string[] = ['Files']) {
   const currentTarget = document.createElement('div');
   return {
@@ -107,37 +97,32 @@ describe('useFileDragDrop', () => {
 
 
 
-  it('reports a failed Electron PDF authorization and always closes its admission gate', async () => {
-    const auth = deferred<never>();
-    runtime.__ABU_SHELL__!.authorizeUserAttachment = vi.fn(() => auth.promise);
-    runtime.__ABU_SHELL__!.readUserAttachment = vi.fn();
+  it.each(['brief.pdf', 'brief.PDF'])('delivers native PDF %s as a file reference', async (name) => {
     const onDrop = vi.fn();
     const finishAdmission = vi.fn();
     const onAdmissionError = vi.fn();
-    const useHookWithAdmission = useFileDragDrop as unknown as (
-      handler: typeof onDrop,
-      options: {
-        onAdmissionStart: () => () => void;
-        onAdmissionError: () => void;
-      },
-    ) => ReturnType<typeof useFileDragDrop>;
-    const { result } = renderHook(() => useHookWithAdmission(onDrop, {
-      onAdmissionStart: () => finishAdmission,
-      onAdmissionError,
+    const { result } = renderHook(() => useFileDragDrop(onDrop, {
+      onAdmissionStart: () => finishAdmission, onAdmissionError,
     }));
-
-    act(() => {
-      result.current.dropTargetProps.onDrop?.(dragEvent([
-        new File([new TextEncoder().encode('%PDF-1.7\n%%EOF')], 'blocked.pdf', { type: 'application/pdf' }),
-      ]));
-    });
-
     await act(async () => {
-      auth.reject(new Error('native authorization failed'));
-      await auth.promise.catch(() => undefined);
-      await Promise.resolve();
+      result.current.dropTargetProps.onDrop?.(dragEvent([new File(['pdf'], name, { type: 'application/pdf' })]));
     });
+    expect(onDrop).toHaveBeenCalledWith([`/native/${name}`]);
+    expect(onAdmissionError).not.toHaveBeenCalled();
+    expect(finishAdmission).toHaveBeenCalledTimes(1);
+  });
 
+  it('rejects a PDF with no native path and closes admission', async () => {
+    runtime.__ABU_SHELL__!.getPathForFile = () => '';
+    const onDrop = vi.fn();
+    const onAdmissionError = vi.fn();
+    const finishAdmission = vi.fn();
+    const { result } = renderHook(() => useFileDragDrop(onDrop, {
+      onAdmissionStart: () => finishAdmission, onAdmissionError,
+    }));
+    await act(async () => {
+      result.current.dropTargetProps.onDrop?.(dragEvent([new File(['pdf'], 'missing.pdf')]));
+    });
     expect(onDrop).not.toHaveBeenCalled();
     expect(onAdmissionError).toHaveBeenCalledTimes(1);
     expect(finishAdmission).toHaveBeenCalledTimes(1);

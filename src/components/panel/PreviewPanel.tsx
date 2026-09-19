@@ -857,7 +857,7 @@ export default function PreviewPanel({
             <p className="text-body text-[var(--abu-danger)]">{error}</p>
           </div>
         ) : rendererType === 'pdf' || rendererType === 'docx' || rendererType === 'pptx' || rendererType === 'xlsx' || (rendererType === 'csv' && content !== null) ? (
-          <DocSelectionLayer filePath={previewFilePath}>
+          <DocSelectionLayer filePath={previewFilePath} active={!embedded || tabId === activeTabId}>
             <Suspense fallback={<LazyFallback />}>
               {rendererType === 'pdf' && <PdfPreview filePath={previewFilePath} />}
               {rendererType === 'docx' && <DocxPreview filePath={previewFilePath} />}
@@ -871,7 +871,7 @@ export default function PreviewPanel({
         ) : rendererType === 'markdown' && content !== null ? (
           viewMode === 'preview' ? (
             <ScrollArea className="h-full">
-              <DocSelectionLayer filePath={previewFilePath}>
+              <DocSelectionLayer filePath={previewFilePath} active={!embedded || tabId === activeTabId}>
                 <div className="p-4">
                   {/* Render the live draft (kept in sync with disk on load /
                       reconcile) so toggling to preview mid-edit reflects the

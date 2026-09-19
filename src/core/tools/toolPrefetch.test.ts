@@ -196,7 +196,7 @@ describe('toolPrefetch', () => {
  * symptom ("the tool doesn't exist") points nowhere near the cause.
  */
 describe('browser tool prefetch list vs the real tool surface', () => {
-  it('offers every tool the bridge actually registers', async () => {
+  it.each(['chrome', 'built-in'] as const)('offers every tool registered by %s', async (backend) => {
     const { registerTools } = await import('../../../abu-browser-bridge/src/tools.js');
     const registered: string[] = [];
     const server = { tool: (name: string) => { registered.push(name); } };
@@ -208,6 +208,7 @@ describe('browser tool prefetch list vs the real tool surface', () => {
     registerTools(
       server as unknown as Parameters<typeof registerTools>[0],
       transport as unknown as Parameters<typeof registerTools>[1],
+      { backend },
     );
 
     const offered = prefetchTools(makeCtx({ userInput: '打开网页帮我填个表单' }));

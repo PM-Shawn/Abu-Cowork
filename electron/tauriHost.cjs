@@ -1769,5 +1769,13 @@ module.exports = {
     clearSubscriptions() {
       subscriptions.clear();
     },
+    /** Event names `sender` (a WebContents) currently holds a subscription for. */
+    subscribedEvents(sender) {
+      const events = [];
+      for (const sub of subscriptions.values()) {
+        if (sub.sender === sender) events.push(sub.event);
+      }
+      return events;
+    },
   },
 };

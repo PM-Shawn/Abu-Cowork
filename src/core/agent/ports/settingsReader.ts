@@ -1,4 +1,4 @@
-import { useSettingsStore, type SettingsState } from '@/stores/settingsStore';
+import { readConfirmedBrowserPermissionConfig, useSettingsStore, type SettingsState } from '@/stores/settingsStore';
 import { createPortSlot } from './portSlot';
 
 /**
@@ -32,21 +32,23 @@ export interface SettingsReader {
  *  here so both readers return the same data-only shape from day one.
  *  Shallow copy keeps nested references (e.g. `activeModel`) identical
  *  across snapshots, so reference comparisons against store-derived
- *  values keep working. SettingsState has no function-valued data fields
+ *  values keep working. Browser permissions are the exception: confirmed
+ *  storage replaces optimistic state on every read. SettingsState has no function-valued data fields
  *  (verified), so the typeof filter cannot drop real data. */
 export function createInProcessSettingsReader(): SettingsReader {
-  // Single-slot memo keyed on the store's state reference. Zustand's `set()`
-  // always produces a brand-new state object (even for a no-op update it
-  // replaces the reference), so `state === lastState` is a safe freshness
-  // check — no need to re-walk/re-copy `Object.keys()` on every call when
-  // nothing has changed since the last one.
+  // Ordinary settings follow Zustand identity. Permission authority is read
+  // from confirmed storage on EVERY call: another window can revoke access
+  // before its storage event reaches this renderer, even with a lower revision.
   let lastState: ReturnType<typeof useSettingsStore.getState> | undefined;
   let lastSnapshot: Readonly<SettingsState> | undefined;
+  let lastPermissionKey: string | undefined;
 
   return {
     getSnapshot: () => {
       const state = useSettingsStore.getState();
-      if (state === lastState && lastSnapshot !== undefined) {
+      const confirmedPermissions = readConfirmedBrowserPermissionConfig(state);
+      const permissionKey = JSON.stringify(confirmedPermissions);
+      if (state === lastState && lastSnapshot !== undefined && permissionKey === lastPermissionKey) {
         return lastSnapshot;
       }
 
@@ -56,6 +58,8 @@ export function createInProcessSettingsReader(): SettingsReader {
         if (typeof full[key] !== 'function') snapshot[key] = full[key];
       }
 
+      snapshot.browserPermissionConfigV2 = confirmedPermissions;
+      lastPermissionKey = permissionKey;
       lastState = state;
       lastSnapshot = snapshot as Readonly<SettingsState>;
       return lastSnapshot;

@@ -64,7 +64,7 @@ test.describe('composer @ suggestions after stopping a run', () => {
       await dismissFirstRunOverlays(page);
       await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true, permissionMode: 'standard' });
 
-      if (viaNewTaskButton) await page.getByRole('button', { name: '新建任务' }).first().click();
+      if (viaNewTaskButton) await page.getByRole('button', { name: '新任务', exact: true }).first().click();
 
       // Delegate to a builtin agent exactly the way the user did: @ → pick → text → Enter.
       // Placeholder changes once an agent chip is selected — locate by role.

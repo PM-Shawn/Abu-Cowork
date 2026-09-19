@@ -470,6 +470,7 @@ describe('MarketplaceBrowser', () => {
 
     const group = screen.getByTestId('plugin-orphan-group');
     expect(group).toHaveTextContent(tb().pluginsOrphanGroup);
+    expect(group).toHaveTextContent(tb().pluginsOrphanHint);
     expect(group).toHaveTextContent('stale');
     expect(group).toHaveTextContent('removed');
 
@@ -513,6 +514,34 @@ describe('MarketplaceBrowser', () => {
     expect(rows[0]).toHaveTextContent('plugin-0');
     expect(rows[299]).toHaveTextContent('plugin-299');
     expect(list.querySelector('ul')).toBeNull();
+  });
+
+  it('offers no Remove button for the built-in market, only for user-added ones', async () => {
+    // The store refuses to remove the built-in market, so a visible Remove
+    // button there is a control that does nothing after a danger confirm.
+    usePluginStore.setState({
+      marketplaces: [{ name: 'abu-official', dir: '/m/abu', builtin: true }],
+    });
+    renderBrowser();
+
+    await screen.findByText('abu-official');
+    expect(screen.getByRole('button', { name: tb().pluginsRefreshMarketplace })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: tb().pluginsRemoveMarketplace })).not.toBeInTheDocument();
+  });
+
+  it('removes a user-added market after the danger confirmation', async () => {
+    renderBrowser();
+    expect(await screen.findByText('weather')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: tb().pluginsRemoveMarketplace }));
+    expect(screen.getByText(tb().pluginsRemoveMarketplaceTitle)).toBeInTheDocument();
+    // The dialog's confirm shares the button's label — it is the last one rendered.
+    const buttons = screen.getAllByRole('button', { name: tb().pluginsRemoveMarketplace });
+    fireEvent.click(buttons[buttons.length - 1]);
+
+    await waitFor(() => {
+      expect(usePluginStore.getState().marketplaces).toEqual([]);
+    });
   });
 
   it('surfaces a broken marketplace directory as a readable error', async () => {

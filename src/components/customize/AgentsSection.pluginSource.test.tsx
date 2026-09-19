@@ -60,16 +60,25 @@ const definition: SubagentDefinition = {
 
 const tb = () => getI18n().toolbox;
 
-/** Render the section with `reviewer` discovered, then open its detail. */
+/** The header's "..." button — absent entirely for a 市场 expert. */
+const menuButton = () => [...document.querySelectorAll('button')].find((b) =>
+  /ellipsis|more-horizontal/.test(b.querySelector('svg')?.getAttribute('class') ?? ''),
+);
+
+/** Render the section with `reviewer` discovered, then open its detail.
+ *  A plugin's expert sits on the 市场 shelf (the default), a user's own on 我的. */
 function openDetail(meta: SubagentMetadata) {
   useDiscoveryStore.setState({ agents: [meta], skills: [], isLoading: false });
-  render(<AgentsSection />);
+  render(<AgentsSection source={meta.source?.kind === 'plugin' ? 'market' : 'mine'} />);
   fireEvent.click(screen.getByText('reviewer'));
-  // The edit / delete entries live behind the header's "..." menu.
-  const menuButton = [...document.querySelectorAll('button')].find((b) =>
-    /ellipsis|more-horizontal/.test(b.querySelector('svg')?.getAttribute('class') ?? ''),
-  );
-  fireEvent.click(menuButton!);
+  // The edit / delete entries live behind the header's "..." menu. A 市场
+  // expert has none at all, so there is nothing to open; the user's own MUST
+  // have one — clicking it only "if it happens to be there" would let a
+  // vanished menu pass as a pass, and every assertion below it go untested.
+  if (meta.source?.kind === 'plugin') return;
+  const button = menuButton();
+  expect(button).toBeDefined();
+  fireEvent.click(button!);
 }
 
 beforeEach(() => {
@@ -94,7 +103,7 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
     fireEvent.click(screen.getByText('reviewer'));
 
     expect(screen.getByTestId('agent-added-by').textContent).toBe(
-      format(tb().agentFromPlugin, { plugin: 'Weather Pack' }),
+      format(tb().agentFromPluginRemoveHint, { plugin: 'Weather Pack' }),
     );
   });
 
@@ -104,7 +113,7 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
       skills: [],
       isLoading: false,
     });
-    render(<AgentsSection />);
+    render(<AgentsSection source="mine" />);
     fireEvent.click(screen.getByText('reviewer'));
 
     expect(screen.getByTestId('agent-added-by').textContent).toBe(tb().sourceUser);
@@ -118,7 +127,7 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
         skills: [],
         isLoading: false,
       });
-      render(<AgentsSection />);
+      render(<AgentsSection source="mine" />);
       fireEvent.click(screen.getByText('reviewer'));
 
       expect(screen.getByTitle('预览')).toBeTruthy();
@@ -135,26 +144,23 @@ describe('AgentsSection — plugin-contributed agent detail', () => {
     }
   });
 
-  it('disables edit and delete, each saying why', () => {
+  it('offers no "..." menu at all — not even greyed-out entries', () => {
     openDetail({
       name: 'reviewer',
       description: 'Reviews code',
       source: { kind: 'plugin', plugin: 'weather@official' },
     });
 
-    const edit = screen.getByText(tb().agentEdit).closest('button')!;
-    const remove = screen.getByText(tb().uninstall).closest('button')!;
-    expect(edit.hasAttribute('disabled')).toBe(true);
-    expect(edit.getAttribute('title')).toBe(tb().agentFromPluginEditDisabled);
-    expect(remove.hasAttribute('disabled')).toBe(true);
-    expect(remove.getAttribute('title')).toBe(tb().agentFromPluginDeleteDisabled);
+    expect(menuButton()).toBeUndefined();
+    expect(screen.queryByText(tb().agentEdit)).toBeNull();
+    expect(screen.queryByText(tb().deleteItem)).toBeNull();
   });
 
   it('leaves edit and delete usable for a user-authored agent', () => {
     openDetail({ name: 'reviewer', description: 'Reviews code' });
 
     expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(false);
-    expect(screen.getByText(tb().uninstall).closest('button')!.hasAttribute('disabled')).toBe(false);
+    expect(screen.getByText(tb().deleteItem).closest('button')!.hasAttribute('disabled')).toBe(false);
   });
 });
 
@@ -176,7 +182,7 @@ describe('AgentsSection — installed-plugin hydration', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('agent-added-by').textContent).toBe(
-        format(tb().agentFromPlugin, { plugin: 'Weather Pack' }),
+        format(tb().agentFromPluginRemoveHint, { plugin: 'Weather Pack' }),
       );
     });
     expect(vi.mocked(readInstalled)).toHaveBeenCalledWith('/Users/testuser');
@@ -185,18 +191,17 @@ describe('AgentsSection — installed-plugin hydration', () => {
 
 describe('AgentsSection — plugin ownership invariant', () => {
   // The predicate itself is pinned in `utils/agentSource.test.ts`; this is the
-  // end-to-end complement: the entry is disabled AND
-  // the handler behind it early-returns, so no path from this menu reaches the
-  // filesystem for a plugin agent.
-  it('removes nothing from disk when the delete entry is clicked for a plugin agent', () => {
+  // end-to-end complement: the detail offers no delete entry AND the handler
+  // behind it early-returns, so no path from this detail reaches the filesystem
+  // for a plugin agent.
+  it('offers no delete entry, and removes nothing from disk, for a plugin agent', () => {
     openDetail({
       name: 'reviewer',
       description: 'Reviews code',
       source: { kind: 'plugin', plugin: 'weather@official' },
     });
 
-    fireEvent.click(screen.getByText(tb().uninstall).closest('button')!);
-
+    expect(screen.queryByText(tb().deleteItem)).toBeNull();
     expect(vi.mocked(fsRemove)).not.toHaveBeenCalled();
   });
 });
@@ -215,7 +220,7 @@ describe('AgentsSection — the store\'s normalised source wins over the registr
 
     expect(screen.getByTestId('agent-added-by').textContent).toBe(tb().sourceUser);
     expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(false);
-    const remove = screen.getByText(tb().uninstall).closest('button')!;
+    const remove = screen.getByText(tb().deleteItem).closest('button')!;
     expect(remove.hasAttribute('disabled')).toBe(false);
 
     // …and the handler behind the entry actually proceeds to the disk delete.
@@ -231,8 +236,8 @@ describe('AgentsSection — the store\'s normalised source wins over the registr
     });
 
     expect(screen.getByTestId('agent-added-by').textContent).toBe(
-      format(tb().agentFromPlugin, { plugin: 'Weather Pack' }),
+      format(tb().agentFromPluginRemoveHint, { plugin: 'Weather Pack' }),
     );
-    expect(screen.getByText(tb().agentEdit).closest('button')!.hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByText(tb().agentEdit)).toBeNull();
   });
 });

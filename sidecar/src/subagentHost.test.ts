@@ -432,6 +432,98 @@ describe('subagentHost', () => {
 
         expect(capturedReader?.getSnapshot().agentMaxTurns).toBe(42);
       });
+
+      /**
+       * #545 — the model is the ONE field that must NOT be live. The shell
+       * dispatches the subagent with the PARENT CONVERSATION's pinned model in
+       * `settingsSnapshot` (agentLoop's `settingsForModel`) and pre-resolves
+       * `resolvedCreds` for that provider. The shared mirror carries the GLOBAL
+       * `activeModel`, which after per-conversation model scope is merely the
+       * "default for new conversations" and routinely differs from the open
+       * conversation's model. Reading it here would run an `inherit` delegate
+       * on the wrong model (or pair provider-Y creds with a model-X id).
+       */
+      describe('model follows the parent conversation pin, not the global default (#545)', () => {
+        const globalModel = { providerId: 'p-global', modelId: 'global-default-x' };
+        const convModel = { providerId: 'p-conv', modelId: 'conv-pinned-y' };
+
+        it('overlays activeModel from the dispatch snapshot while other settings stay live', async () => {
+          __resetSettingsMirror();
+          // The main loop already seeded/pushed the GLOBAL snapshot into the
+          // shared mirror before this delegate was dispatched.
+          applySettingsSnapshot({ agentMaxTurns: 200, activeModel: globalModel } as never, 0);
+          let capturedReader: { getSnapshot: () => Record<string, unknown> } | undefined;
+          runSubagentLoopMock.mockImplementation(async (options: { settingsReader: { getSnapshot: () => Record<string, unknown> } }) => {
+            capturedReader = options.settingsReader;
+            return resultShape('ok');
+          });
+
+          await handleSubagentRun(baseParams({
+            settingsSnapshot: { agentMaxTurns: 200, activeModel: convModel },
+          }));
+
+          expect(capturedReader?.getSnapshot().activeModel).toEqual(convModel);
+          expect(capturedReader?.getSnapshot().agentMaxTurns).toBe(200);
+
+          // A later push changes a live knob AND the global default: the knob
+          // follows the mirror, the model still follows the conversation pin.
+          applySettingsSnapshot(
+            { agentMaxTurns: 7, activeModel: { providerId: 'p-global', modelId: 'global-default-z' } } as never,
+            1,
+          );
+          expect(capturedReader?.getSnapshot().agentMaxTurns).toBe(7);
+          expect(capturedReader?.getSnapshot().activeModel).toEqual(convModel);
+        });
+
+        it('returns the live mirror object itself when the global model already matches the pin', async () => {
+          // settingsReader.ts's contract: shallow snapshots keep nested references
+          // identical so reference comparisons against store-derived values keep
+          // working. When there is nothing to overlay, hand out the mirror's own
+          // object (referentially stable across reads) rather than a fresh copy.
+          __resetSettingsMirror();
+          const live = { agentMaxTurns: 200, activeModel: convModel };
+          applySettingsSnapshot(live as never, 0);
+          let capturedReader: { getSnapshot: () => Record<string, unknown> } | undefined;
+          runSubagentLoopMock.mockImplementation(async (options: { settingsReader: { getSnapshot: () => Record<string, unknown> } }) => {
+            capturedReader = options.settingsReader;
+            return resultShape('ok');
+          });
+
+          await handleSubagentRun(baseParams({
+            settingsSnapshot: { agentMaxTurns: 200, activeModel: convModel },
+          }));
+
+          expect(capturedReader?.getSnapshot()).toBe(live);
+          expect(capturedReader?.getSnapshot()).toBe(capturedReader?.getSnapshot());
+        });
+
+        it('keeps the overlaid snapshot referentially stable while the mirror is unchanged', async () => {
+          // subagentLoop.ts resolves `settingsReader` once and reads it at
+          // several points; the overlay must not mint a new object per read
+          // while the underlying mirror has not moved.
+          __resetSettingsMirror();
+          applySettingsSnapshot({ agentMaxTurns: 200, activeModel: globalModel } as never, 0);
+          let capturedReader: { getSnapshot: () => Record<string, unknown> } | undefined;
+          runSubagentLoopMock.mockImplementation(async (options: { settingsReader: { getSnapshot: () => Record<string, unknown> } }) => {
+            capturedReader = options.settingsReader;
+            return resultShape('ok');
+          });
+
+          await handleSubagentRun(baseParams({
+            settingsSnapshot: { agentMaxTurns: 200, activeModel: convModel },
+          }));
+
+          const first = capturedReader?.getSnapshot();
+          expect(first?.activeModel).toEqual(convModel);
+          expect(capturedReader?.getSnapshot()).toBe(first);
+
+          applySettingsSnapshot({ agentMaxTurns: 9, activeModel: globalModel } as never, 1);
+          const second = capturedReader?.getSnapshot();
+          expect(second).not.toBe(first);
+          expect(second?.agentMaxTurns).toBe(9);
+          expect(second?.activeModel).toEqual(convModel);
+        });
+      });
     });
 
     it('restores only the trusted text-only delegated-media fallback', async () => {

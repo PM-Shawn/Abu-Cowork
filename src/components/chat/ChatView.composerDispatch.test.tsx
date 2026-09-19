@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatView from './ChatView';
+import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -11,7 +12,7 @@ import { useToastStore } from '@/stores/toastStore';
 import { useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { agentRegistry } from '@/core/agent/registry';
-import { getI18n } from '@/i18n';
+import { getI18n, getLanguageSetting, setLanguage } from '@/i18n';
 import type { SubagentDefinition } from '@/types';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { teamIdentity, expertIdentity } from '@/core/team/expertContact';
@@ -226,6 +227,43 @@ describe('ChatView welcome composer dispatch ownership', () => {
     });
   });
 
+  it('blocks sending in a conversation whose pinned provider was removed, keeps the text, and names the model', async () => {
+    configureApiKey();
+    const previousLanguage = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationModel(convId, { providerId: 'gone-provider', modelId: 'model-a' });
+      useChatStore.setState({ activeConversationId: convId });
+
+      render(<ChatView />);
+      const user = userEvent.setup();
+      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      await user.type(textarea, 'hello');
+      await user.keyboard('{Enter}');
+
+      expect(dispatchMock).not.toHaveBeenCalled();
+      expect(textarea.value).toBe('hello');
+      expect(useToastStore.getState().toasts.at(-1)?.title).toBe('模型「model-a」所属服务已删除，请换一个模型再发送');
+      expect(screen.getByText('model-a（不可用）')).toBeInTheDocument();
+      expect(useSettingsStore.getState().systemSettingsOpen).toBe(false);
+    } finally {
+      setLanguage(previousLanguage);
+    }
+  });
+
+  it('still opens settings when no provider is usable at all', async () => {
+    const convId = useChatStore.getState().createConversation();
+    useChatStore.getState().setConversationModel(convId, { providerId: 'gone-provider', modelId: 'model-a' });
+    useChatStore.setState({ activeConversationId: convId });
+    render(<ChatView />);
+    const user = userEvent.setup();
+    await user.type(screen.getByRole('textbox'), 'hello');
+    await user.keyboard('{Enter}');
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(useSettingsStore.getState().systemSettingsOpen).toBe(true);
+  });
+
   describe('team welcome identity', () => {
     const leader: SubagentDefinition = { name: '分析师', description: '分析数据', intro: '队员开场白', avatar: 'icon:code/purple', roleId: 'role-lead', filePath: '/agents/analyst/AGENT.md', systemPrompt: '' };
     const member: SubagentDefinition = { name: '取数员', description: '负责取数', roleId: 'role-fetch', filePath: '/agents/fetch/AGENT.md', systemPrompt: '' };
@@ -298,6 +336,18 @@ describe('ChatView welcome composer dispatch ownership', () => {
       await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('Review sales'));
       expect(useChatStore.getState().conversationIndex).toEqual({});
       expect(dispatchMock).not.toHaveBeenCalled();
+    });
+
+    it('lays this team’s prompts out on the same two-column grid as the default guide', async () => {
+      const team = useTeamStore.getState().teams[0];
+      useTeamStore.getState().updateTeam(team.id, { samplePrompts: ['Review sales', 'Draft a much longer suggestion that would otherwise stretch its chip', 'Plan'] });
+      useChatStore.setState({ pendingTeamId: team.id });
+      render(<ChatView />);
+      const grid = await screen.findByTestId('expert-prompts');
+      expect(grid.className.split(' ')).toEqual(expect.arrayContaining(PROMPT_GRID_CLASS.split(' ')));
+      for (const chip of within(grid).getAllByRole('button')) {
+        expect(chip.className).toBe(PROMPT_ITEM_CLASS);
+      }
     });
 
     it('stages the greeting with the actual first user message on the team route', async () => {

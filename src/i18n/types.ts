@@ -484,6 +484,12 @@ export interface TranslationDict {
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
+    modelUnavailableLabel: string;
+    modelUnavailableToast: string;
+    modelUnavailableInTask: string;
+    modelUnavailableReasonProviderRemoved: string;
+    modelUnavailableReasonProviderDisabled: string;
+    modelUnavailableReasonModelRemoved: string;
     /** Skill requires tools that aren't currently available. {missing} */
     skillMissingTools: string;
     /** Enterprise AI gateway unreachable (shown as an error bubble). */
@@ -530,6 +536,7 @@ export interface TranslationDict {
     /** Toast after a direct instruction was queued for a running team member. */
     memberInstructionSent: string;
     /** Composer failed to admit an attachment. */
+    attachmentInvalidFileName: string;
     attachmentAdmissionFailed: string;
     /** Accessible name for the skill/agent suggestion listbox. */
     composerSuggestions: string;
@@ -972,6 +979,63 @@ export interface TranslationDict {
 
   // Settings Modal
   settings: {
+    browserResourceGrantBrowse: string;
+    browserResourceGrantUpload: string;
+    browserRequestOnce: string;
+    browserDownloadsCompleted: string;
+    browserDownloadsUnavailable: string;
+    browserDownloadsUnknown: string;
+    browserResourceAlwaysAllow: string;
+    browserBrowseDesc: string;
+    browserBrowseLabel: string;
+    browserConfigInvalid: string;
+    browserDefaultAllowDesc: string;
+    browserDownloadsChecking: string;
+    browserDownloadsClearSearch: string;
+    browserDownloadsDesc: string;
+    browserDownloadsEmpty: string;
+    browserDownloadsEntryDesc: string;
+    browserDownloadsLoading: string;
+    browserDownloadsNoResults: string;
+    browserDownloadsOmitted: string;
+    browserDownloadsOpenFileLabel: string;
+    browserDownloadsOpenTaskLabel: string;
+    browserDownloadsPartialRead: string;
+    browserDownloadsReadAgain: string;
+    browserDownloadsReadFailed: string;
+    browserDownloadsReveal: string;
+    browserDownloadsRevealLabel: string;
+    browserDownloadsSearchLabel: string;
+    browserDownloadsSearchPlaceholder: string;
+    browserDownloadsTaskUnavailable: string;
+    browserDownloadsTitle: string;
+    browserInherit: string;
+    browserPermissionsSharedDesc: string;
+    browserPermissionsTitle: string;
+    browserScriptActionDesc: string;
+    browserSiteAccess: string;
+    browserSiteAccessBlock: string;
+    browserSiteAddHint: string;
+    browserSiteAddTitle: string;
+    browserSiteAllowBrowse: string;
+    browserSiteAlreadyAdded: string;
+    browserSiteCustom: string;
+    browserSiteCustomTitle: string;
+    browserSiteDefaultState: string;
+    browserSiteDeleteButton: string;
+    browserSiteDeleteLabel: string;
+    browserSiteDeleteMessage: string;
+    browserSiteDeleteTitle: string;
+    browserSitePermsAddCredentials: string;
+    browserSitePermsEffectiveOrigin: string;
+    browserSitePermsSave: string;
+    browserSiteRuleConflict: string;
+    browserSiteRulesDesc: string;
+    browserSiteRulesFootnote: string;
+    browserSiteRulesSummary: string;
+    browserSiteUnblockOnSave: string;
+    browserUploadActionDesc: string;
+    browserEmbeddedScope: string;
     title: string;
     apiConfig: string;
     modelSelect: string;
@@ -1138,6 +1202,19 @@ export interface TranslationDict {
     capabilityWebTitle: string;
     capabilityBuiltinBrowser: string;
     capabilityMyChrome: string;
+    capabilityChromeWaitingForBrowser: string;
+    capabilityChromeSetupHelp: string;
+    capabilityChromeOpenFolder: string;
+    capabilityChromeOpenExtensions: string;
+    capabilityChromeNotInstalled: string;
+    capabilityChromeInstalled: string;
+    capabilityChromeInstallationUnknown: string;
+    capabilityChromeInstallExtension: string;
+    capabilityChromeGuidePage: string;
+    capabilityChromeGuideIntro: string;
+    capabilityChromeGuideFolder: string;
+    capabilityChromeGuideDeveloper: string;
+    capabilityChromeExtension: string;
     capabilityMyChromeDesc: string;
     /** The one consent clause the My Chrome page keeps: it sits on the status
      *  row while the channel is connected, in place of the footer paragraph
@@ -1882,6 +1959,7 @@ export interface TranslationDict {
     teamSaveFailed: string;
     fieldName: string;
     fieldNamePlaceholder: string;
+    nameTakenHint: string;
     fieldDescription: string;
     fieldDescriptionPlaceholder: string;
     fieldIntro: string;
@@ -1928,9 +2006,7 @@ export interface TranslationDict {
     editInvalidMembers: string;
     teamsEmpty: string;
     teamsEmptyHint: string;
-    /** Follow-up chips under a finished team turn. */
-    followUpRedoStep: string;
-    followUpMemberRevise: string;
+    /** Team tab "add instruction" text dropped into the composer. */
     followUpMemberAppend: string;
     confirmationStripTitle: string;
     confirmationSeparator: string;
@@ -1955,7 +2031,6 @@ export interface TranslationDict {
     stallStoppedNotice: string;
     resumeAfterRestart: string;
     resumeAfterRestartFailed: string;
-    followUpHint: string;
     fieldPlanApproval: string;
     fieldPlanApprovalHint: string;
     chatReceiptEmptyGoal: string;
@@ -1981,16 +2056,12 @@ export interface TranslationDict {
     agentSkillsEmpty: string;
     title: string;
     skills: string;
-    agents: string;
-    mcp: string;
     searchPlaceholder: string;
     footerDescription: string;
     // Extensions view tabs (插件 / 技能 / 连接器) — see ToolboxModal
     plugins: string;
     pluginsEmptyState: string;
-    /** Third tab's label in the Extensions view — "连接器"/Connectors. Distinct
-     *  from `mcp` (still used by CustomizePanel) because en-US's `mcp` is
-     *  literally "MCP", not a Connectors-flavored label. */
+    /** Third tab's label in the Extensions view — "连接器"/Connectors. */
     connectors: string;
     // Plugins tab (Task 10 UI) — installed list, marketplace browse, install disclosure
     pluginsMarketplaceTab: string;
@@ -2064,7 +2135,6 @@ export interface TranslationDict {
     pluginsRemoveMarketplace: string;
     pluginsRemoveMarketplaceTitle: string;
     pluginsRemoveMarketplaceMessage: string;
-    pluginsCategoryAll: string;
     pluginsNoMatches: string;
     pluginsEntryCount: string;
     pluginsInstall: string;
@@ -2088,6 +2158,8 @@ export interface TranslationDict {
     pluginsMineEmptyHint: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
+    /** One line under it: they still work, and the detail dialog uninstalls. */
+    pluginsOrphanHint: string;
     /** Title of the installed-plugin detail dialog opened from 「管理」. */
     pluginsManageTitle: string;
     /** Install disclosure — the screen that shows what executable code is coming in. */
@@ -2200,30 +2272,25 @@ export interface TranslationDict {
     disconnect: string;
     add: string;
     install: string;
-    uninstall: string;
-    installed: string;
+    /** Danger action on items the user owns (their own experts / skills): they are deleted, not uninstalled. */
+    deleteItem: string;
     installAndConnect: string;
     popularMCPServices: string;
     setupWithAbu: string;
     aiAssistedMCPSetup: string;
     // Source labels
+    /** Source label for shipped (built-in) experts — shown as 「市场」 since v0.50: built-ins are the OSS market shelf. */
     sourceBuiltin: string;
     sourceProject: string;
     sourceUser: string;
     sourceUnknown: string;
     // Generic "Description" label used in the agent/skill/MCP detail views
     detailDescription: string;
-    builtinSkills: string;
-    builtinAgents: string;
     noSkillsFound: string;
     noAgentsFound: string;
     systemSkills: string;
     customSkills: string;
     noCustomSkills: string;
-    // Customize Panel
-    customize: string;
-    customizeFooter: string;
-    models: string;
     // ModelsSection
     currentConfig: string;
     quickSwitch: string;
@@ -2332,13 +2399,14 @@ export interface TranslationDict {
     categoryAgentEvolvedBadge: string; // small badge e.g. "自进化"
     categoryAgentEvolvedEmpty: string; // placeholder when no drafts + no workspace-auto skills
     categoryBuiltin: string;           // "市场" (ships-with-Abu / catalog, vs "我的")
-    skillSourceBuiltin: string;
     skillSourceUser: string;
     skillSourcePlugin: string;
     skillPluginDisabled: string;
     skillSourceStandard: string;
     skillSourceProject: string;
     skillSourceWorkspaceAuto: string;
+    skillShadowedBadge: string;
+    skillShadowedHint: string;
     /** Skills 「市场」 hint card — outside skills arrive with plugins. */
     skillsMarketHintTitle: string;
     skillsMarketHintBody: string;
@@ -2353,6 +2421,8 @@ export interface TranslationDict {
     connectorAddLabel: string;
     /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
     connectorsMineEmptyTitle: string;
+    /** Experts 「我的」 empty state — nothing the user created themselves yet. */
+    agentsMineEmpty: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;
@@ -2384,10 +2454,8 @@ export interface TranslationDict {
     agentBackground: string;
     agentSystemPrompt: string;
     agentEdit: string;
-    /** Provenance row on a plugin-contributed agent: `{plugin}` is its display name. */
-    agentFromPlugin: string;
-    agentFromPluginEditDisabled: string;
-    agentFromPluginDeleteDisabled: string;
+    /** Provenance row on a plugin-contributed agent — it also says how to get rid of it; `{plugin}` is the plugin's display name. */
+    agentFromPluginRemoveHint: string;
     /** Deleting an agent that one or more teams reference. */
     agentDeleteInTeamsTitle: string;
     agentDeleteInTeamsMessage: string;
@@ -2395,7 +2463,9 @@ export interface TranslationDict {
     agentDeleteAnyway: string;
     agentSave: string;
     agentSaveAndTest: string;
-    agentEditorTitle: string;
+    /** Dialog titles — 新建专家 / 编辑专家, mirroring the team dialog. */
+    agentEditorTitleNew: string;
+    agentEditorTitleEdit: string;
     agentEditorName: string;
     agentEditorDescription: string;
     agentEditorMetadata: string;
@@ -2415,8 +2485,9 @@ export interface TranslationDict {
     agentExpertisePlaceholder: string;
     agentSamplePromptsPlaceholder: string;
     agentTagsPlaceholder: string;
-    agentEnabled: string;
-    agentDisabled: string;
+    agentAutoDispatch: string;
+    agentAutoDispatchHint: string;
+    agentAutoDispatchOff: string;
     agentCategoryAll: string;
     agentCategoryResearch: string;
     agentCategoryDevelopment: string;
@@ -2435,8 +2506,6 @@ export interface TranslationDict {
     // Server logs
     viewLogs: string;
     noLogs: string;
-    // MarketplaceCard i18n
-    installing: string;
     aiCreateAgentPrompt: string;
     aiCreateSkillPrompt: string;
     agentTestPrompt: string;
@@ -2807,7 +2876,6 @@ export interface TranslationDict {
     teamAppendInstruction: string;
     teamStalledFor: string;
     teamDispatchInterrupted: string;
-    teamDispatchNoToolCalls: string;
     teamMemberBarCollapse: string;
     teamMemberBarExpand: string;
     teamMemberBarCollapsed: string;
@@ -2832,6 +2900,12 @@ export interface TranslationDict {
       reload: string;
       openExternal: string;
       addressPlaceholder: string;
+      takeControl: string;
+      handBack: string;
+      yielding: string;
+      humanControl: string;
+      controlFailed: string;
+      popupBlocked: string;
       startPrompt: string;
       framingHint: string;
       dismissHint: string;
@@ -3920,6 +3994,7 @@ export interface TranslationDict {
     team: {
       invalidInput: string;
       unavailableAgents: string;
+      builtinTeamReadOnly: string;
       saved: string;
       approvalOn: string;
       approvalOff: string;
@@ -4156,8 +4231,6 @@ export interface TranslationDict {
       // delegate_to_agent
       /** Error: agent not found. {agentName}, {available}, {presetList} */
       errAgentNotFound: string;
-      /** Error: agent disabled. {agentName} */
-      errAgentDisabled: string;
       errNotTeamMember: string;
       /** Team run hit its hand-off cap (teamRunBounds). */
       errDispatchCapReached: string;
@@ -4243,8 +4316,6 @@ export interface TranslationDict {
       errTaskEmpty: string;
       /** Error: agent not found in batch task. {i}, {agentName}, {available}, {presetList} */
       errBatchAgentNotFound: string;
-      /** Error: agent disabled in batch task. {i}, {agentName} */
-      errBatchAgentDisabled: string;
       errBatchNotTeamMember: string;
       errBatchDispatchCapReached: string;
       errBatchMemberBlocked: string;

@@ -5,8 +5,10 @@ import { X } from 'lucide-react';
 
 /** Shared modal shell for team dialogs — copies ConfirmDialog's portal/overlay
  *  pattern (incl. the Windows drag-lane opt-out on the overlay root). */
-export default function DialogShell({ open, onClose, title, children, wide }: {
+export default function DialogShell({ open, onClose, title, children, wide, maxWidth }: {
   open: boolean; onClose: () => void; title: string; children: ReactNode; wide?: boolean;
+  /** Tailwind max-width class; overrides `wide` (the expert editor needs more room than a form). */
+  maxWidth?: string;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -18,7 +20,7 @@ export default function DialogShell({ open, onClose, title, children, wide }: {
   return createPortal(
     <div data-electron-no-drag className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/40 animate-in fade-in duration-150" onClick={onClose}>
       <div
-        className={`bg-[var(--abu-bg-base)] rounded-2xl shadow-xl border border-[var(--abu-border)] w-full ${wide ? 'max-w-lg' : 'max-w-md'} mx-4 max-h-[85vh] flex flex-col`}
+        className={`bg-[var(--abu-bg-base)] rounded-2xl shadow-xl border border-[var(--abu-border)] w-full ${maxWidth ?? (wide ? 'max-w-lg' : 'max-w-md')} mx-4 max-h-[85vh] flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 pt-4 pb-2">

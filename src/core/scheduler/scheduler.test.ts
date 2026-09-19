@@ -1,3 +1,4 @@
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 /**
  * Scheduler output-delivery tests (review finding [2]).
  *
@@ -12,7 +13,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useScheduleStore } from '../../stores/scheduleStore';
 import { useChatStore } from '../../stores/chatStore';
-import { useSettingsStore } from '../../stores/settingsStore';
 import type { ScheduledTask } from '../../types/schedule';
 import type { ConfirmationInfo } from '../tools/registry';
 import { getI18n, initLanguage } from '../../i18n';
@@ -926,7 +926,7 @@ describe('SchedulerEngine permission tier', () => {
       agentStates: new Map(),
     });
     // Pin the global fallback mode so "follows settings" tests are deterministic.
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
     vi.clearAllMocks();
     initLanguage('zh-CN');
     // authorizeWorkspace is a module-level map that outlives a single test.
@@ -983,7 +983,7 @@ describe('SchedulerEngine permission tier', () => {
   });
 
   it('creates a full shell scope when an unset task follows global autonomous mode', async () => {
-    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    setMigratedBrowserSettings({ permissionMode: 'autonomous' });
     const task = makeTask({ id: 'task-follow-full', permissionMode: undefined });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     let scopeWasFull: boolean | undefined;
@@ -1149,7 +1149,7 @@ describe('SchedulerEngine permission tier', () => {
     }
 
     it('names the master switch and the site when unattended browser use is off', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: false,
         browserSitePermissions: { 'https://example.com': 'allowed' },
       });
@@ -1168,7 +1168,7 @@ describe('SchedulerEngine permission tier', () => {
       // the notice must not inherit the ceiling's hardcoded English diagnostic
       // ('browser action is not permitted by the unattended browser policy') —
       // that names neither the master switch nor where to change it.
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: false,
         browserSitePermissions: { 'https://example.com': 'allowed' },
       });
@@ -1185,7 +1185,7 @@ describe('SchedulerEngine permission tier', () => {
     });
 
     it('names the site when the run may use the browser but not on that site', async () => {
-      useSettingsStore.setState({
+      setMigratedBrowserSettings({
         allowUnattendedBrowser: true,
         browserSitePermissions: {},
       });
@@ -1642,7 +1642,7 @@ describe('the approval target reaches the browser gate, not just the callback (F
   beforeEach(() => {
     useScheduleStore.setState({ tasks: {} });
     useIMChannelStore.setState({ channels: {} });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       allowUnattendedBrowser: true,
       browserSitePermissions: { 'https://allowed.example': 'allowed' },
       browserOperationPolicy: {
@@ -1655,7 +1655,7 @@ describe('the approval target reaches the browser gate, not just the callback (F
   afterEach(() => {
     __resetUnattendedConfirmationForTests();
     useIMChannelStore.setState({ channels: {} });
-    useSettingsStore.setState({
+    setMigratedBrowserSettings({
       browserOperationPolicy: DEFAULT_BROWSER_OPERATION_POLICY,
       allowUnattendedBrowser: false,
       browserSitePermissions: {},

@@ -1,16 +1,15 @@
+import { useId, useState } from 'react';
+import type { ChromeExtensionInstallation } from '@/core/capabilityPlugins/chromeSetup';
 import {
   ArrowLeft,
   ChevronRight,
-  CheckCircle2,
   Chrome,
   Eye,
   MousePointer2,
-  CircleAlert,
   FolderOpen,
   LoaderCircle,
   MonitorCog,
   RefreshCw,
-  ShieldCheck,
 } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
 import { Button } from '@/components/ui/button';
@@ -193,269 +192,91 @@ export function SetupHeader({
 export const settingsCardClass =
   'rounded-lg border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] p-4';
 
-const secondaryButtonClass =
-  'inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--abu-border)] bg-[var(--abu-bg-base)] px-3 text-minor font-medium text-[var(--abu-text-secondary)] transition-colors hover:bg-[var(--abu-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50';
-
-/** The status row's action. Same height as the secondary button beside it, so
- *  the row reads as one control strip whichever state the page is in. */
-const rowActionButtonClass =
-  'inline-flex h-8 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-3 text-minor font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)] disabled:cursor-not-allowed disabled:opacity-50';
+function ChromeInstallationHelp({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return <div>
+    <Button variant="ghost" size="sm" aria-expanded={open} aria-controls={id}
+      className="h-auto gap-1.5 p-0 text-minor text-[var(--abu-text-muted)] hover:bg-transparent hover:text-[var(--abu-text-primary)]"
+      onClick={() => setOpen(!open)}>
+      <ChevronRight aria-hidden="true" className={cn('size-4 transition-transform', open && 'rotate-90')} />
+      {t.settings.capabilityChromeSetupHelp}
+    </Button>
+    {open && <div id={id} className="mt-4">{children}</div>}
+  </div>;
+}
 
 export function ChromeSetupView({
-  capabilityEnabled,
-  requestedByTask,
-  runtimeReady,
-  extensionConnected,
-  everConnected,
-  extensionPath,
-  working,
-  openingInstaller,
-  error,
-  onBack,
-  onPrepare,
-  onOpenInstaller,
-  onCheck,
-  onDone,
-  onDisconnect,
-  breadcrumb,
-  children,
+  installation, capabilityEnabled, requestedByTask, runtimeReady, extensionConnected,
+  extensionPath, connecting, openingInstaller, error,
+  onBack, onPrepare, onOpenInstaller, onDone, breadcrumb,
 }: {
+  installation: ChromeExtensionInstallation | undefined;
   capabilityEnabled: boolean;
   requestedByTask: boolean;
   runtimeReady: boolean;
-  extensionConnected: boolean;
-  /** Has the extension EVER answered the handshake in this process (the
-   *  session-scoped latch). It is what separates "never set up" from "was
-   *  working and broke" — two states that look identical from
-   *  `extensionConnected` alone but call for opposite offers. */
-  everConnected: boolean;
+  extensionConnected: boolean | undefined;
   extensionPath: string | null | undefined;
-  working: boolean;
+  connecting: boolean;
   openingInstaller: boolean;
   error?: string;
   onBack: () => void;
   onPrepare: () => void;
-  onOpenInstaller: () => void;
-  onCheck: () => void;
+  onOpenInstaller: (target?: 'page' | 'folder') => void;
   onDone: () => void;
-  onDisconnect: () => void;
   breadcrumb?: string[];
-  /** The shared browser permission cards, mounted for this channel. */
-  children?: React.ReactNode;
 }) {
   const { t } = useI18n();
+  const [installGuideOpen, setInstallGuideOpen] = useState(false);
+  const installed = installation === 'installed';
+  const taskReady = capabilityEnabled && runtimeReady && extensionConnected === true;
+  const statusLabel = installed ? t.settings.capabilityChromeInstalled
+    : installation === 'not-installed' ? t.settings.capabilityChromeNotInstalled
+    : installation === 'unknown' ? t.settings.capabilityChromeInstallationUnknown
+    : t.settings.capabilityChromeExtension;
+  const guideButtonClass = 'border border-[var(--abu-border)] bg-[var(--abu-bg-muted)] text-[var(--abu-text-primary)] text-minor shadow-none hover:bg-[var(--abu-bg-hover)]';
+  const startInstallation = () => {
+    setInstallGuideOpen(true);
+    if ((!capabilityEnabled || !runtimeReady) && !connecting) onPrepare();
+  };
 
-  /*
-    One row, one action, and the action is decided by what is actually
-    missing:
-      - the bridge was never enabled (or was disconnected) → the explicit
-        opt-in, which is still the ONLY thing that starts the local runtime;
-      - enabled but the local runtime is down → retry it;
-      - running but no extension answering → open the install windows;
-      - connected, or connected once and now lost → disconnect.
+  const guide = <section aria-label={t.settings.capabilityChromeSetupTitle} className="space-y-4">
+    <p className="text-minor text-[var(--abu-text-muted)]">{t.settings.capabilityChromeGuideIntro}</p>
+    <ol className="divide-y divide-[var(--abu-border)] rounded-xl border border-[var(--abu-border)] px-3">
+      <li className="flex items-center gap-3 py-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)]">1</span><div className="min-w-0 flex-1">
+        <p className="text-body text-[var(--abu-text-primary)]">{t.settings.capabilityChromeGuidePage}</p>
+      </div><Button variant="secondary" size="sm" className={guideButtonClass} disabled={openingInstaller} onClick={() => onOpenInstaller('page')}>{t.settings.capabilityChromeOpenExtensions}</Button></li>
+      <li className="flex items-start gap-3 py-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)]">2</span><p className="text-body text-[var(--abu-text-primary)]">{t.settings.capabilityChromeGuideDeveloper}</p></li>
+      <li className="flex items-center gap-3 py-3"><span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-muted)] text-minor text-[var(--abu-text-muted)]">3</span><div className="min-w-0 flex-1">
+        <p className="text-body text-[var(--abu-text-primary)]">{t.settings.capabilityChromeGuideFolder}</p>
+      </div><Button variant="secondary" size="sm" className={guideButtonClass} disabled={!extensionPath || openingInstaller} onClick={() => onOpenInstaller('folder')}>{t.settings.capabilityChromeOpenFolder}</Button></li>
+    </ol>
+    {extensionPath === null && <p role="alert" className="text-minor text-[var(--abu-warning)]">{t.settings.capabilityChromeResourceMissing}</p>}
+  </section>;
 
-    Disconnect is gated on the HANDSHAKE LATCH, not on the live connection.
-    The complaint it answers is "I never installed anything — why am I being
-    offered a disconnect?", and that is the never-handshaked case. A channel
-    that worked and then broke is the opposite: disconnect is the only way to
-    turn the listener back off, and taking it away would strand the user on a
-    page whose every button asks them to fix something they may not want.
-  */
-  const lostConnection = !extensionConnected && everConnected;
-  const canDisconnect = extensionConnected || everConnected;
-  const needsRuntime = capabilityEnabled && !runtimeReady;
-  const statusLabel = extensionConnected
-    ? t.settings.capabilityStatusConnected
-    : lostConnection || needsRuntime
-      ? t.settings.capabilityStatusSetupRequired
-      : t.settings.capabilityStatusNotConnected;
-  const statusTone: StatusBadgeTone = extensionConnected
-    ? 'ready'
-    : lostConnection || needsRuntime
-      ? 'attention'
-      : 'neutral';
-  const statusNote = extensionConnected
-    // The one consent sentence this page keeps, in place of the footer
-    // paragraph that said it at four times the length.
-    ? t.settings.capabilityMyChromeScope
-    : lostConnection
-      ? t.settings.capabilityChromeDisconnected
-      : requestedByTask && !capabilityEnabled
-        ? t.settings.capabilityChromeTaskNeedsSetup
-        : needsRuntime
-          ? t.settings.capabilityChromeServiceUnavailable
-          : t.settings.capabilityChromeExtensionDesc;
-
-  const statusAction = canDisconnect ? (
-    <button
-      type="button"
-      onClick={onDisconnect}
-      disabled={working}
-      // Shown short because the page is already titled "My Chrome"; the
-      // accessible name keeps the full phrase, and contains the visible text.
-      aria-label={t.settings.capabilityChromeDisconnect}
-      className={secondaryButtonClass}
-    >
-      {t.settings.capabilityChromeDisconnectShort}
-    </button>
-  ) : !capabilityEnabled ? (
-    <button
-      type="button"
-      onClick={onPrepare}
-      disabled={working}
-      className={rowActionButtonClass}
-    >
-      {working && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
-      {t.settings.capabilityChromeConnect}
-    </button>
-  ) : needsRuntime ? (
-    <button
-      type="button"
-      onClick={onPrepare}
-      disabled={working}
-      className={rowActionButtonClass}
-    >
-      <RefreshCw className={cn('h-3.5 w-3.5', working && 'animate-spin')} />
-      {t.settings.capabilityRetry}
-    </button>
-  ) : (
-    <button
-      type="button"
-      onClick={onOpenInstaller}
-      disabled={working || !extensionPath || openingInstaller}
-      className={rowActionButtonClass}
-    >
-      {openingInstaller || working
-        ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-        : <FolderOpen className="h-3.5 w-3.5" />}
-      {t.settings.capabilityChromeOpenInstaller}
-    </button>
-  );
-
-  return (
-    <div className="space-y-7">
-      <SetupHeader
-        icon={Chrome}
-        title={t.settings.capabilityMyChrome}
-        description={t.settings.capabilityMyChromeSubtitle}
-        onBack={onBack}
-        backLabel={requestedByTask ? t.common.cancel : undefined}
-        breadcrumb={requestedByTask ? undefined : breadcrumb}
-      />
-
-      <CapabilityStatusRow
-        label={working ? t.settings.capabilityStatusChecking : statusLabel}
-        tone={statusTone}
-        checking={working}
-        note={statusNote}
-        action={statusAction}
-      />
-
-      {/*
-        Installation guidance, and nothing but: it is addressed to someone who
-        has no extension attached, so a user who already connected one never
-        sees it. The developer-mode warning lives INSIDE it rather than as a
-        standalone callout, because it is a fact about step 2.
-      */}
-      {!extensionConnected && (
-        <div className="space-y-3">
-          <h4 className="text-body font-medium text-[var(--abu-text-primary)]">
-            {t.settings.capabilityChromeManualTitle}
-          </h4>
-          <ol className="space-y-2 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
-            {[
-              t.settings.capabilityChromeManualStep1,
-              t.settings.capabilityChromeManualStep2,
-              t.settings.capabilityChromeManualStep3,
-            ].map((step, index) => (
-              <li key={step} className="flex items-start gap-2">
-                <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[var(--abu-bg-active)] text-caption font-medium text-[var(--abu-text-secondary)]">
-                  {index + 1}
-                </span>
-                <span>{step}</span>
-              </li>
-            ))}
-          </ol>
-          <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-text-secondary)]">
-            <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-warning)]" />
-            {t.settings.capabilityChromeExperimental}
-          </p>
-          <p className="flex items-start gap-2 text-minor leading-relaxed text-[var(--abu-text-muted)]">
-            <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--abu-warning)]" />
-            {t.settings.capabilityChromePermissionScope}
-          </p>
-          {extensionPath === null && (
-            <p className="flex items-start gap-2 text-minor text-[var(--abu-warning)]">
-              <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              {t.settings.capabilityChromeResourceMissing}
-            </p>
-          )}
-          {/*
-            Abu detects the connection on its own; this is the manual nudge for
-            someone who does not want to wait. Conditionally rendered, NOT
-            `hidden={!capabilityEnabled}`: Tailwind v4 puts utilities in a later
-            cascade layer than preflight, so `.inline-flex` outranks preflight's
-            `[hidden] { display: none }` and the attribute does nothing — the
-            button went on offering to check a connection for a bridge that is
-            not even enabled.
-          */}
-          {capabilityEnabled && (
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Step 1 names this button, so it cannot go missing just
-                  because the status row above is offering "disconnect" for a
-                  connection that broke. */}
-              {canDisconnect && (
-                <button
-                  type="button"
-                  onClick={onOpenInstaller}
-                  disabled={working || !extensionPath || openingInstaller}
-                  className={secondaryButtonClass}
-                >
-                  {openingInstaller
-                    ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                    : <FolderOpen className="h-3.5 w-3.5" />}
-                  {t.settings.capabilityChromeOpenInstaller}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onCheck}
-                disabled={working}
-                className={secondaryButtonClass}
-              >
-                <RefreshCw className={cn('h-3.5 w-3.5', working && 'animate-spin')} />
-                {t.settings.capabilityCheckConnection}
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {error && (
-        <p className="flex items-start gap-2 text-minor text-[var(--abu-danger)]">
-          <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          {error}
+  return <div className="space-y-7">
+    <SetupHeader icon={Chrome} title={t.settings.capabilityMyChrome}
+      description={t.settings.capabilityMyChromeSubtitle} onBack={onBack}
+      backLabel={requestedByTask ? t.common.cancel : undefined}
+      breadcrumb={requestedByTask ? undefined : breadcrumb} />
+    <section aria-label={t.settings.capabilityChromeExtension} className="rounded-2xl border border-[var(--abu-border)] p-4">
+      <div className="flex items-center gap-4">
+        <p role="status" className="flex min-w-0 flex-1 items-center gap-2 text-body font-medium text-[var(--abu-text-primary)]">
+          <span aria-hidden="true" className={cn('size-2 shrink-0 rounded-full', installed ? 'bg-[var(--abu-success-solid)]' : 'bg-[var(--abu-text-muted)]')} />
+          {statusLabel}
         </p>
-      )}
-
-      {children}
-
-      {/* Only a task has somewhere to go back TO; everyone else has the
-          breadcrumb, and a second way out is not a feature. */}
-      {extensionConnected && requestedByTask && (
-        <div className="flex flex-wrap items-center gap-3 border-t border-[var(--abu-border)] pt-4">
-          <button
-            type="button"
-            onClick={onDone}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--abu-clay)] px-4 text-body font-medium text-white transition-colors hover:bg-[var(--abu-clay-hover)]"
-          >
-            <CheckCircle2 className="h-4 w-4" />
-            {t.settings.capabilityReturnToTask}
-          </button>
-        </div>
-      )}
-    </div>
-  );
+        {!installed && <Button variant="secondary" size="sm" className={guideButtonClass} disabled={openingInstaller} onClick={startInstallation}>{t.settings.capabilityChromeInstallExtension}</Button>}
+      </div>
+    </section>
+    {installed ? <ChromeInstallationHelp>{guide}</ChromeInstallationHelp> : installGuideOpen && guide}
+    {error && <p role="alert" className="text-minor text-[var(--abu-danger)]">{error}</p>}
+    {requestedByTask && installed && !taskReady && <div className="space-y-3">
+      <p className="text-minor text-[var(--abu-text-muted)]">{t.settings.capabilityChromeWaitingForBrowser}</p>
+      {(!capabilityEnabled || !runtimeReady) && <Button disabled={connecting} onClick={onPrepare}>{t.settings.capabilityChromeConnect}</Button>}
+    </div>}
+    {requestedByTask && taskReady && <Button onClick={onDone}>{t.settings.capabilityReturnToTask}</Button>}
+  </div>;
 }
 
 const computerSetupButtonClass =

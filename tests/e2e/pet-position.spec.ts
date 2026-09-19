@@ -24,6 +24,7 @@ import {
   firstShowRecordFor,
   launchAbuElectron,
   removeElectronDataRoot,
+  windowListenerRegistered,
 } from './electronHelpers';
 
 const READY_TIMEOUT = 45_000;
@@ -72,7 +73,10 @@ async function enablePet(page: Page): Promise<void> {
 test('the desktop pet reopens where it was left, without a jump', async () => {
   const dataRoot = createElectronDataRoot();
   try {
-    let launched = await launchAbuElectron(dataRoot);
+    // Both launches need the recorder: the first to sequence the move below
+    // after the pet renderer's `listen()`, the second to have the pet's first
+    // reveal on record (see mainProcessRecorder.cjs for why it is `-r` injected).
+    let launched = await launchAbuElectron(dataRoot, { recordMainProcess: true });
     let target: { x: number; y: number };
     let expectedPhysical: { x: number; y: number };
     try {
@@ -81,6 +85,16 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
       await dismissFirstRunOverlays(main);
       await enablePet(main);
       await expect.poll(() => petBounds(launched.app), { timeout: 20_000 }).not.toBeNull();
+      // The pet persists its position from getCurrentWindow().onMoved, and
+      // `tauri://move` reaches only subscriptions that already exist — a move
+      // issued before the pet renderer's `listen()` lands is dropped and nothing
+      // is ever persisted (see windowListenerRegistered). Sequence it after.
+      await expect
+        .poll(() => windowListenerRegistered(launched.app, '/pet.html', 'tauri://move'), {
+          timeout: 20_000,
+          message: 'the pet renderer subscribed to tauri://move',
+        })
+        .toBe(true);
 
       // A spot well inside the primary work area, away from the snap edges, so
       // edge-snap leaves it untouched.
@@ -112,12 +126,7 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
       await closeAbuElectron(launched.app);
     }
 
-    // `recordWindowShows` injects the first-show recorder into the main process
-    // ahead of electron/main.cjs, so it is watching before the app can create a
-    // single window. Installing that hook from here instead — after
-    // electron.launch() resolves — races the app's own startup, which is what
-    // made this journey report a missing pet window on ~40% of CI runs.
-    launched = await launchAbuElectron(dataRoot, { recordWindowShows: true });
+    launched = await launchAbuElectron(dataRoot, { recordMainProcess: true });
     try {
       const main = await launched.app.firstWindow();
       await waitForApp(main);
@@ -128,10 +137,12 @@ test('the desktop pet reopens where it was left, without a jump', async () => {
           return b ? Math.max(Math.abs(b.x - target.x), Math.abs(b.y - target.y)) : Infinity;
         }, { timeout: 10_000 })
         .toBeLessThanOrEqual(1);
-      // …and it was already there when it first became visible: the host creates
+      // …and it was already there when it was first revealed: the host creates
       // the pet window AT the saved spot (guiHost.cjs initialPetPosition), so a
-      // regression that let the renderer move it after first paint would show up
-      // here as the default bottom-right corner.
+      // regression that created it at the default corner and left the renderer
+      // to restore the saved spot after first paint would show up here as that
+      // corner. The record is complete as soon as isVisible() is true (see
+      // mainProcessRecorderCore.cjs for why it is captured at the show() call).
       const firstShow = await firstShowRecordFor(launched.app, '/pet.html');
       expect(firstShow, 'the recorder saw the pet window being created').not.toBeNull();
       expect(firstShow!.shownBounds, 'the pet window was shown during this launch').not.toBeNull();

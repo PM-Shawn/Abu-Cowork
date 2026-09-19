@@ -9,7 +9,7 @@ import {
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
-import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -31,14 +31,15 @@ import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
-import TeamFollowUpChips from './TeamFollowUpChips';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
+import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
 import { agentRegistry } from '@/core/agent/registry';
 import { matchTeamMention } from '@/core/team/chatEntry';
 import { useTeamStore } from '@/stores/teamStore';
@@ -57,7 +58,6 @@ import { cn } from '@/lib/utils';
 import { isMacOS } from '@/utils/platform';
 import { windowDragRowProps } from '@/utils/windowDrag';
 import { Input } from '@/components/ui/input';
-import { Button } from '@/components/ui/button';
 import UsageChip from './UsageChip';
 import { shouldShowTypingIndicator } from './typingIndicator';
 import { groupMessagesByLoop } from './messageGrouping';
@@ -832,14 +832,10 @@ export default function ChatView({
     workspacePath?: string | null,
     onAccepted?: () => void,
   ) => {
-    // Block sending if API key is not configured (Ollama doesn't need one).
-    // Returning false hands the text back to the composer — opening settings
-    // used to swallow whatever the user had typed.
-    const currentState = useSettingsStore.getState();
-    if (!isEnterprise && providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
-      currentState.openSystemSettings('ai-services');
-      return false;
-    }
+    // Check the model THIS conversation will run on (its pin, else the global
+    // default). Returning false hands the text back to the composer — opening
+    // settings used to swallow whatever the user had typed.
+    if (!ensureConversationModelUsable(activeConv ?? undefined, t.chat)) return false;
 
     if (text.trim() === '/compact') {
       const convId = activeConv?.id;
@@ -1439,8 +1435,8 @@ export default function ChatView({
 
             {/* Scenario Guide */}
             {pendingAgent || welcomeTeam ? (
-              !!expertPrompts?.length && guideVisible && <div className="flex flex-wrap gap-2 mt-4" data-testid="expert-prompts">
-                {expertPrompts.map((prompt, index) => <Button key={index} variant="subtle" className="h-auto whitespace-normal text-left" onClick={() => handleSelectPrompt(prompt)}>{prompt}</Button>)}
+              !!expertPrompts?.length && guideVisible && <div className={cn(PROMPT_GRID_CLASS, 'mt-4')} data-testid="expert-prompts">
+                {expertPrompts.map((prompt, index) => <button key={index} type="button" className={PROMPT_ITEM_CLASS} onClick={() => handleSelectPrompt(prompt)}>{prompt}</button>)}
               </div>
             ) : <ScenarioGuide
               onSelectPrompt={handleSelectPrompt}
@@ -1513,6 +1509,7 @@ export default function ChatView({
       {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
         <CommandConfirmDialog
           request={commandConfirmRequest.info}
+          isRequestActive={() => getPendingCommandConfirmation() === commandConfirmRequest}
           onConfirm={handleCommandConfirm}
           onCancel={handleCommandCancel}
         />
@@ -1719,7 +1716,6 @@ export default function ChatView({
               silent dead wait above the composer. */}
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
-          {activeConv.teamId && <TeamFollowUpChips conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}

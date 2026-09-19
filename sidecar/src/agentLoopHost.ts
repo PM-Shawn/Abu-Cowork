@@ -659,6 +659,18 @@ interface RunRegistryEntry {
 
 const RUN_REGISTRY_MAX_ENTRIES = 128;
 const RUN_REGISTRY_TERMINAL_TTL_MS = 60 * 60 * 1_000;
+/**
+ * How long an `accepted` entry may wait for its `agent.run`. The shell sends
+ * `agent.run` right after the start ACK (its ACK/state-query timeouts are a
+ * few seconds, and transport recovery re-polls every 2 s), so an entry still
+ * `accepted` after this long means the shell gave up on it (e.g. the ACK was
+ * lost and the user row was ended). Without a bound it would pin the whole
+ * `AgentRunParams` snapshot for the life of the process — the terminal
+ * TTL/max-entries sweeps below never touch non-terminal entries. Kept well
+ * below the terminal TTL; `running` entries are never pruned because they
+ * always reach `rememberTerminal`.
+ */
+const RUN_REGISTRY_ACCEPTED_TTL_MS = 10 * 60 * 1_000;
 const runRegistry = new Map<string, RunRegistryEntry>();
 
 function pruneRunRegistry(now = Date.now()): void {
@@ -668,6 +680,16 @@ function pruneRunRegistry(now = Date.now()): void {
       && now - (entry.terminalAt ?? entry.acceptedAt) > RUN_REGISTRY_TERMINAL_TTL_MS
     ) {
       runRegistry.delete(runId);
+    } else if (
+      entry.state === 'accepted'
+      && now - entry.acceptedAt > RUN_REGISTRY_ACCEPTED_TTL_MS
+    ) {
+      runRegistry.delete(runId);
+      traceSidecarRuntimeEvent('sidecar.agent_start_pruned', {
+        runId,
+        stage: 'accepted',
+        outcome: 'expired',
+      });
     }
   }
   if (runRegistry.size <= RUN_REGISTRY_MAX_ENTRIES) return;
@@ -1251,6 +1273,9 @@ export function __getActiveAgentRunCount(): number {
 }
 
 /** Test-only reset for the bounded idempotency registry. */
+/** Test-only: the accepted-entry TTL, so tests don't duplicate the number. */
+export const __RUN_REGISTRY_ACCEPTED_TTL_MS = RUN_REGISTRY_ACCEPTED_TTL_MS;
+
 export function __resetAgentRunRegistryForTests(): void {
   runRegistry.clear();
 }

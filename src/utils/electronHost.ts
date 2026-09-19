@@ -11,7 +11,7 @@ interface AbuShellBridge {
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
   authorizeUserAttachment?: (file: File, request: ElectronUserAttachmentAuthorizeRequest) => Promise<ElectronUserAttachmentToken>;
-  selectUserAttachments?: (request: ElectronUserAttachmentSelectRequest) => Promise<ElectronUserAttachmentToken[]>;
+  selectUserAttachments?: (request: ElectronUserAttachmentSelectRequest) => Promise<ElectronUserAttachmentSelection[]>;
   readUserAttachment?: (request: ElectronUserAttachmentReadRequest) => Promise<Uint8Array>;
   releaseUserAttachment?: (request: ElectronUserAttachmentReleaseRequest) => Promise<ElectronUserAttachmentReleaseResult>;
   persistDelegatedMedia?: (request: ElectronDelegatedMediaPersistRequest) => Promise<MediaRef>;
@@ -59,8 +59,17 @@ export type ElectronUserAttachmentMediaType =
   | 'image/webp';
 
 export interface ElectronUserAttachmentSelectRequest {
-  mediaTypes?: ElectronUserAttachmentMediaType[];
+  mediaTypes?: (ElectronUserAttachmentMediaType | 'application/pdf')[];
 }
+
+/** Native picker file references do not grant access; read_file enforces permissions. */
+export interface ElectronUserAttachmentFileReference {
+  path: string;
+  name: string;
+  mediaType: 'application/pdf';
+}
+
+export type ElectronUserAttachmentSelection = ElectronUserAttachmentToken | ElectronUserAttachmentFileReference;
 
 export interface ElectronUserAttachmentToken {
   token: string;
@@ -210,7 +219,7 @@ export async function authorizeElectronUserAttachment(
 
 export async function selectElectronUserAttachments(
   request: ElectronUserAttachmentSelectRequest = {},
-): Promise<ElectronUserAttachmentToken[]> {
+): Promise<ElectronUserAttachmentSelection[]> {
   const select = getRuntime().__ABU_SHELL__?.selectUserAttachments;
   if (!select) throw new Error('Electron attachment picker host is unavailable');
   return await select(request);

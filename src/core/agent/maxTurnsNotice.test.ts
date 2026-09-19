@@ -148,17 +148,17 @@ describe('maxTurnsNotice', () => {
       expect(buildAgentMaxTurnsOptions(200)).toEqual([...AGENT_MAX_TURNS_OPTIONS]);
     });
 
-    it('never offers 0 or an unbounded number as a NEW choice', () => {
+    it('offers unlimited last as an explicit choice', () => {
       const offered = buildAgentMaxTurnsOptions(undefined);
 
-      expect(offered).not.toContain(0);
+      expect(offered).toEqual([50, 100, 200, 500, 1000, 0]);
       expect(Math.max(...offered)).toBe(1000);
     });
 
     it('keeps an out-of-band stored value visible, in order', () => {
       // Only reachable by hand-editing config — but the menu must show the cap
       // that is really in force rather than rounding it away.
-      expect(buildAgentMaxTurnsOptions(777)).toEqual([50, 100, 200, 500, 777, 1000]);
+      expect(buildAgentMaxTurnsOptions(777)).toEqual([50, 100, 200, 500, 777, 1000, 0]);
     });
 
     it('surfaces an already-in-force "no cap" instead of pretending it is 200', () => {

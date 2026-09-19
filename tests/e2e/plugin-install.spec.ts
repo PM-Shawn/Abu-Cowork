@@ -119,7 +119,8 @@ async function openPluginsTab(page: Page): Promise<void> {
     timeout: READY_TIMEOUT,
   });
   await panel.getByRole('button', { name: PLUGINS_TAB }).click();
-  // My and Market are vertically stacked sections, without a nested tab.
+  // 我的 and 市场 are two shelves behind a pill sub-nav (extensions-source-*),
+  // one rendered at a time; the tab opens on 市场 and remembers the last pick.
 }
 
 async function openAddMarketplace(page: Page): Promise<void> {
@@ -197,6 +198,7 @@ test('loads custom skill directories and standalone MCP configuration in Electro
     const customCard = page.getByRole('button').filter({ has: page.getByText('e2e-custom-skill', { exact: true }) });
     await customCard.getByRole('switch').click();
     await expect(customCard.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings') ?? '{}').state.disabledSkills)).toContain('e2e-custom-skill');
     const childPreferences = await page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings') ?? '{}').state.disabledSkills);
     await page.getByRole('main').getByRole('button', { name: PLUGINS_TAB }).click();
     await expect(entry.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
@@ -271,10 +273,14 @@ test.describe('plugin install loop', () => {
     const entry = page.getByTestId('plugin-marketplace-entry')
       .filter({ hasText: 'e2e-weather' }).first();
     await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
+    // Entries carry a category, but the market offers no category filter.
+    await expect(page.getByLabel(/^(全部分类|All categories):/)).toHaveCount(0);
 
     // Different-height card rows must remain reachable through virtualization.
-    // The accepted layout scrolls My and Market together in the page.
-    const list = page.getByTestId('plugin-mine-group').locator('..');
+    // Virtuoso hands scrolling to PluginsTab's own container (customScrollParent),
+    // so the element to scroll is the market list's nearest scrolling ancestor.
+    const list = page.getByTestId('plugin-marketplace-list')
+      .locator('xpath=ancestor::div[contains(@class,"overflow-y-auto")][1]');
     const lastCard = page.getByTestId('plugin-marketplace-entry').filter({ hasText: 'preview-29' });
     await expect.poll(async () => {
       await list.evaluate(element => { element.scrollTop = element.scrollHeight; });
@@ -319,8 +325,12 @@ test.describe('plugin install loop', () => {
 
     // A relative source from a market does not establish local authorship.
     const mine = page.getByTestId('plugin-mine-group');
+    await page.getByTestId('extensions-source-mine').click();
     await expect(mine).toContainText(MINE_EMPTY);
     await expect(mine).not.toContainText('e2e-weather');
+    // 市场 is where the rest of this journey happens.
+    await page.getByTestId('extensions-source-market').click();
+    await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
 
     // Removing and reconnecting a source preserves the installation identity.
     await page.getByRole('button', { name: /^(移除市场|Remove marketplace)$/ }).click();
@@ -348,6 +358,7 @@ test.describe('plugin install loop', () => {
     await expect(entry.getByTestId('plugin-item-menu')).toHaveCount(0);
     await expect(entry.getByRole('switch')).toHaveCount(0);
 
+    await page.getByTestId('extensions-source-mine').click();
     await expect(mine).toContainText(MINE_EMPTY);
   });
 });
@@ -472,7 +483,10 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
     const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
     await expect(page.getByRole('button', { name: '/abu-plugin-builder', exact: true })).toBeVisible();
-    await expect(page.locator('textarea').first()).not.toHaveValue(/plugin_prepare/);
+    const composer = page.locator('[data-chat-composer]');
+    const composerText = () => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '');
+    await expect(composer).toBeVisible();
+    await expect.poll(composerText).not.toMatch(/plugin_prepare/);
     const sourceDir = path.join(launched.appDataDir, 'Home/Abu Plugins', author.id);
     expect(fs.existsSync(sourceDir)).toBe(true);
     fs.mkdirSync(path.join(sourceDir, '.abu-plugin'));
@@ -509,7 +523,8 @@ test('creates a plugin without a marketplace, updates the same version, and pres
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: /^(立即试用|Try now)$/ }).click();
     await expect(page.getByTestId('plugin-mine-group')).toBeHidden();
-    await expect(page.locator('textarea').first()).toHaveValue(/e2e-author/);
+    await expect(composer).toBeVisible();
+    await expect.poll(composerText).toMatch(/e2e-author/);
     await openPluginsTab(page);
     await row.getByRole('switch').click();
     await expect(row.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
@@ -599,7 +614,11 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     await input.fill(credential);
     await page.getByTestId('plugin-install-confirm').click();
     await expect(page.getByTestId('plugin-install-disclosure')).toBeHidden({ timeout: READY_TIMEOUT });
+    // Installation replaces the disclosure with the installed detail. Wait for
+    // that transition before sending Escape to the new modal.
+    await expect(page.getByTestId('plugin-manage-dialog')).toBeVisible();
     await page.keyboard.press('Escape');
+    await expect(page.getByTestId('plugin-manage-dialog')).toBeHidden();
     await expect(page.getByTestId('plugin-mine-row').getByRole('switch')).toHaveAttribute('aria-checked', 'true');
     const settings = await page.evaluate(() => ({ mcp: localStorage.getItem('abu-mcp-store'), all: JSON.stringify(localStorage) }));
     expect(settings.all).not.toContain(credential);

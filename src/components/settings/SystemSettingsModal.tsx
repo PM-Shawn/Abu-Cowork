@@ -3,7 +3,7 @@ import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore
 import { useI18n } from '@/i18n';
 import { Settings2, Info, Shield, SlidersHorizontal, MessageCircle, Radio, Brain, Heart, Activity, BarChart3, Building2, FlaskConical, PawPrint, Zap, UserRound } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { AIServicesSection, AboutSection, SandboxSection, GeneralSection, CapabilitiesSection, IMChannelSection } from './sections';
+import { AccountSection, AIServicesSection, AboutSection, SandboxSection, GeneralSection, CapabilitiesSection, IMChannelSection } from './sections';
 import FeedbackSection from './sections/FeedbackSection';
 import AuthorSection from './sections/AuthorSection';
 import PersonalMemorySection from './sections/PersonalMemorySection';
@@ -35,13 +35,14 @@ export default function SystemSettingsView() {
 
   // Nav is chunked into intent-based clusters, separated by thin dividers with
   // no group titles (mirrors TRAE / WorkBuddy settings). Order top→bottom:
-  // ① system/app config · ② models & usage · ③ personalization ·
+  // ① account + system/app config · ② models & usage · ③ personalization ·
   // ④ channels · ⑤ support (about/feedback/diagnostic last, by convention).
   // Theme & language also live in 通用 but are surfaced in the account popover.
   type NavItem = { id: SystemSettingsTab; label: string; icon: typeof Settings2 };
   const navGroups: NavItem[][] = [
-    // ① 系统 / 应用设置 — 沙盒 folded in here, not its own cluster
+    // ① 账号与系统 / 应用设置 — identity is the first conventional destination
     [
+      { id: 'account', label: t.account.title, icon: UserRound },
       { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
       { id: 'capabilities', label: t.settings.capabilityOverview, icon: Zap },
       { id: 'sandbox', label: t.settings.sandbox, icon: Shield },
@@ -79,6 +80,8 @@ export default function SystemSettingsView() {
 
   const renderContent = () => {
     switch (activeSystemTab) {
+      case 'account':
+        return <AccountSection />;
       case 'general':
         return <GeneralSection />;
       case 'capabilities':

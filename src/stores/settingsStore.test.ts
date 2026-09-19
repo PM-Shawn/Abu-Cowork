@@ -460,6 +460,70 @@ describe('settingsStore partialize', () => {
   });
 });
 
+describe('settingsStore account login dialog', () => {
+  it('opens and closes without changing the current view or settings selection', () => {
+    const previous = useSettingsStore.getState();
+    const surroundingUi = () => {
+      const state = useSettingsStore.getState();
+      return {
+        viewMode: state.viewMode,
+        activeSystemTab: state.activeSystemTab,
+        systemSettingsOpen: state.systemSettingsOpen,
+      };
+    };
+
+    try {
+      useSettingsStore.setState({
+        viewMode: 'automation',
+        activeSystemTab: 'sandbox',
+        systemSettingsOpen: true,
+        accountLoginOpen: false,
+      });
+      const before = surroundingUi();
+
+      useSettingsStore.getState().openAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(true);
+      expect(surroundingUi()).toEqual(before);
+
+      useSettingsStore.getState().closeAccountLogin();
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+      expect(surroundingUi()).toEqual(before);
+    } finally {
+      useSettingsStore.setState({
+        viewMode: previous.viewMode,
+        activeSystemTab: previous.activeSystemTab,
+        systemSettingsOpen: previous.systemSettingsOpen,
+        accountLoginOpen: previous.accountLoginOpen,
+      });
+    }
+  });
+
+  it('does not restore an open account dialog from persisted settings', async () => {
+    const previous = useSettingsStore.getState();
+    const previousStoredSettings = localStorage.getItem('abu-settings');
+    __resetBrowserConfigPersistenceForTests();
+
+    try {
+      useSettingsStore.setState({ accountLoginOpen: true });
+      const storedSettings = localStorage.getItem('abu-settings');
+      expect(storedSettings).not.toBeNull();
+      expect(JSON.parse(storedSettings!).state).not.toHaveProperty('accountLoginOpen');
+
+      await useSettingsStore.persist.rehydrate();
+
+      expect(useSettingsStore.getState().accountLoginOpen).toBe(false);
+    } finally {
+      useSettingsStore.setState({ accountLoginOpen: previous.accountLoginOpen });
+      if (previousStoredSettings === null) {
+        localStorage.removeItem('abu-settings');
+      } else {
+        localStorage.setItem('abu-settings', previousStoredSettings);
+      }
+      __resetBrowserConfigPersistenceForTests();
+    }
+  });
+});
+
 const OA = 'https://oa.example.com';
 const PORTAL = 'https://portal.example.org';
 

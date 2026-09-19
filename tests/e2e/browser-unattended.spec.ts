@@ -1028,7 +1028,7 @@ function persistedScheduledTask(
  *  `<capability> · <status>`, so the badge is part of the name (see
  *  `ChannelCard` in CapabilitiesSection.tsx, and tests/e2e/capabilities.spec.ts
  *  which pins this same row). */
-const ACCOUNT_MENU = /^(我|Me)$/;
+const ACCOUNT_MENU = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 const SETTINGS_MENU_ITEM = /^(设置|Settings)$/;
 const CAPABILITIES_TAB = /^(能力|Capabilities)$/;
 const BROWSER_CARD_READY = /^(阿布内置浏览器|Abu built-in browser) · (已就绪|Ready)$/;

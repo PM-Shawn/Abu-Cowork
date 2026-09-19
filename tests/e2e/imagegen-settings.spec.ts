@@ -82,7 +82,7 @@ test.describe.serial('Electron image-gen settings — chat-endpoint warning', ()
     await waitForApp(page);
     await primeMigratedChatEndpointBackend(page);
 
-    await page.getByRole('button', { name: /^(我|Me)$/ }).first().click();
+    await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
     await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
     await page.getByRole('button', { name: /^(模型|Models)$/ }).click();
 

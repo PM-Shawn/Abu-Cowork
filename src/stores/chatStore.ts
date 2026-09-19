@@ -36,6 +36,7 @@ export function keepExistingChildSteps(
 }
 import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
+import { acceptConversationPermissionMode } from '../core/session/conversationPermissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import type { ExpertContact, ExpertContactReceipt } from '@/types/expertContact';
 import { introductionMessage, isIntroductionMessage } from '@/core/team/expertContact';
@@ -315,6 +316,34 @@ function persistMessageReplacement(convId: string, message: Message): void {
       replaceMessageById(convId, message)
     ),
   );
+}
+
+/**
+ * Write a conversation's index entry to `index.json` through that
+ * conversation's serial persistence queue. `updateIndexEntry` alone only
+ * updates the in-memory index and arms a two-second debounce, so the flush is
+ * explicit: a permission mode the user just lowered has to be on disk before
+ * the write reports done, or a quit inside that window leaves the higher mode
+ * for the next start. A rejection is kept by the queue and ends the
+ * conversation's next dispatch at its durability barrier
+ * (`waitForConversationPersistence`) like any other failed write.
+ */
+function persistConversationIndexEntry(convId: string): void {
+  trackConversationPersistence(
+    convId,
+    () => import('../core/session/conversationStorage').then(async ({ updateIndexEntry, flushIndex }) => {
+      const meta = useChatStore.getState().conversationIndex[convId];
+      if (!meta) return;
+      await updateIndexEntry(meta);
+      await flushIndex();
+    }),
+  );
+}
+
+/** The permission mode `loadConversation` takes from an index entry: the one the setter would accept now, or none. */
+function restoredPermissionMode(meta: ConversationMeta): Pick<Conversation, 'permissionMode'> {
+  const permissionMode = acceptConversationPermissionMode(meta.permissionMode);
+  return permissionMode ? { permissionMode } : {};
 }
 
 /**
@@ -772,7 +801,11 @@ interface ChatActions {
 
   // Export/Import
   exportConversation: (convId: string) => string | null;
-  importConversation: (json: string) => string | null;
+  /**
+   * `keepPermissionMode` is for JSON this session produced itself (the undo of
+   * a delete). Without it a raw conversation JSON never sets a permission mode.
+   */
+  importConversation: (json: string, options?: { keepPermissionMode?: boolean }) => string | null;
   /**
    * Build a redacted, portable share bundle for the given conversation.
    * Returns null if the conversation does not exist. Caller is responsible
@@ -832,11 +865,14 @@ export const useChatStore = create<ChatStore>()(
           const project = useProjectStore.getState().getProjectByWorkspace(workspacePath);
           if (project) resolvedProjectId = project.id;
         }
-        // The welcome-page chip belongs to the conversation the user is about
-        // to open. Background creators (scheduler / trigger / IM / watcher /
-        // project click) pass skipActivate and must neither inherit nor clear it.
-        const consumePendingTeam = !options?.skipActivate;
-        const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
+        // The welcome-page picks — the team chip and the permission mode —
+        // belong to the conversation the user is about to open. The creators
+        // of an unattended run (scheduler / trigger / IM inbound / file
+        // watcher) pass skipActivate and must neither inherit nor clear them:
+        // such a run would otherwise take an authority the user chose for a
+        // conversation of their own, and keep it on the row for ever.
+        const consumePendingPicks = !options?.skipActivate;
+        const initialTeamId = options?.teamId ?? (consumePendingPicks ? get().pendingTeamId : undefined);
         // Pin the new-conversation default at creation (issue #545) so an empty
         // conversation never drifts with later picks elsewhere. An uninitialized
         // enterprise store skips this: until its async init() resolves, a
@@ -847,6 +883,11 @@ export const useChatStore = create<ChatStore>()(
         const defaultModel = useSettingsStore.getState().activeModel;
         const initialModel = accountReady && defaultModel?.modelId
           ? { providerId: defaultModel.providerId, modelId: defaultModel.modelId }
+          : undefined;
+        // The mode picked on the new-task page belongs to the conversation
+        // from its first moment, in memory and in its index entry.
+        const initialPermissionMode = consumePendingPicks
+          ? acceptConversationPermissionMode(get().pendingPermissionMode)
           : undefined;
         const meta: ConversationMeta = {
           id,
@@ -861,21 +902,22 @@ export const useChatStore = create<ChatStore>()(
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
           ...(initialModel ? { model: initialModel } : {}),
+          ...(initialPermissionMode ? { permissionMode: initialPermissionMode } : {}),
         };
         set((state) => {
-          const initialPermissionMode = state.pendingPermissionMode;
           state.conversations[id] = {
             ...meta,
             messages: [],
             status: 'idle',
-            ...(initialPermissionMode ? { permissionMode: initialPermissionMode } : {}),
           };
           state.conversationIndex[id] = meta;
           if (!options?.skipActivate) {
             state.activeConversationId = id;
           }
-          state.pendingPermissionMode = undefined;
-          if (consumePendingTeam) state.pendingTeamId = undefined;
+          if (consumePendingPicks) {
+            state.pendingPermissionMode = undefined;
+            state.pendingTeamId = undefined;
+          }
         });
         // Sync index to disk (fire-and-forget). Also write-through the SQLite
         // catalog (message-storage P0) — best-effort, reconcile is the net.
@@ -1030,13 +1072,25 @@ export const useChatStore = create<ChatStore>()(
         });
       },
 
+      // The conversation's own permission mode (undefined = follow the global
+      // default). Updates the loaded conversation and the index entry, then
+      // persists the entry. The accepted values are decided in one place,
+      // `acceptConversationPermissionMode`, which the restore asks as well.
       setConversationPermissionMode: (convId, mode) => {
+        if (mode !== undefined && acceptConversationPermissionMode(mode) === undefined) {
+          throw new TypeError(`Unknown permission mode: ${String(mode)}`);
+        }
+        if (!get().conversations[convId] && !get().conversationIndex[convId]) return;
         set((state) => {
           const conv = state.conversations[convId];
-          if (conv) {
-            conv.permissionMode = mode;
+          if (conv) conv.permissionMode = mode;
+          const entry = state.conversationIndex[convId];
+          if (entry) {
+            if (mode) entry.permissionMode = mode;
+            else delete entry.permissionMode;
           }
         });
+        persistConversationIndexEntry(convId);
       },
 
       setPendingPermissionMode: (mode) => {
@@ -2508,7 +2562,7 @@ export const useChatStore = create<ChatStore>()(
       //      with external references stripped and an `importedFrom` stamp.
       //   2. Raw conversation JSON (legacy, used by the undo-delete flow via
       //      `exportConversation`). Retained verbatim so undo keeps working.
-      importConversation: (json: string) => {
+      importConversation: (json: string, options) => {
         try {
           const parsed = JSON.parse(json) as unknown;
 
@@ -2559,10 +2613,19 @@ export const useChatStore = create<ChatStore>()(
           const conv = parsed as Conversation;
           if (!conv.id || !conv.messages) return null;
 
+          // A permission mode is kept only for JSON this session produced
+          // itself (the undo of a delete), and only if the setter would
+          // accept it. A file picked from disk never sets one.
+          const { permissionMode: rawPermissionMode, ...rawConversation } = conv;
+          const keptPermissionMode = options?.keepPermissionMode
+            ? acceptConversationPermissionMode(rawPermissionMode)
+            : undefined;
+
           // Generate new ID to avoid conflicts
           const newId = generateId();
           const imported: Conversation = {
-            ...conv,
+            ...rawConversation,
+            ...(keptPermissionMode ? { permissionMode: keptPermissionMode } : {}),
             id: newId,
             status: 'idle',
             completedAt: undefined,
@@ -2586,6 +2649,7 @@ export const useChatStore = create<ChatStore>()(
             projectId: imported.projectId,
             readOnly: imported.readOnly,
             importedFrom: imported.importedFrom,
+            ...(keptPermissionMode ? { permissionMode: keptPermissionMode } : {}),
           };
 
           set((state) => {
@@ -2664,6 +2728,7 @@ export const useChatStore = create<ChatStore>()(
               projectId: meta.projectId,
               readOnly: meta.readOnly,
               importedFrom: meta.importedFrom,
+              ...restoredPermissionMode(meta),
             };
           });
 
@@ -2698,6 +2763,7 @@ export const useChatStore = create<ChatStore>()(
                 projectId: meta.projectId,
                 readOnly: meta.readOnly,
                 importedFrom: meta.importedFrom,
+                ...restoredPermissionMode(meta),
               };
             });
           }
@@ -2743,7 +2809,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 13,
+      version: 14,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2782,6 +2848,10 @@ export const useChatStore = create<ChatStore>()(
         if (version < 12) { /* no transform needed */ }
         // v12 → v13: per-identity contact receipts; old histories remain untouched.
         if (version < 13) state.expertContactReceipts = {};
+        // v13 → v14: added per-conversation permissionMode on ConversationMeta
+        // (optional field; absent = the conversation follows the global
+        // permission mode, no-op migration).
+        if (version < 14) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

@@ -330,12 +330,18 @@ export function createConversationWriter(deps: {
     return known !== undefined ? known : fs.canonicalPath(path);
   }
 
-  /** Rejects unless `dir` canonically is a direct child of `canonicalRootDir`. */
-  async function assertDirectChild(canonicalRootDir: string | null, dir: string): Promise<void> {
-    if (canonicalRootDir === null) return;
+  /**
+   * Rejects unless `dir` canonically is a direct child of `canonicalRootDir`,
+   * and answers whether the comparison ran: false when the root resolved to
+   * null, which is this tier saying it has no canonical primitive. A caller
+   * that remembers the answer may remember only a comparison that ran.
+   */
+  async function assertDirectChild(canonicalRootDir: string | null, dir: string): Promise<boolean> {
+    if (canonicalRootDir === null) return false;
     const canonicalDir = await fs.canonicalPath(dir);
     if (canonicalDir === null) throw new ConversationPathError('canonical_path_unavailable');
     if (!isDirectChildPath(canonicalRootDir, canonicalDir)) throw new ConversationPathError('conversation_dir_outside_root');
+    return true;
   }
 
   /**
@@ -365,8 +371,14 @@ export function createConversationWriter(deps: {
     // entered while the first was still inside `ensureBase`'s init block, which
     // assigns `paths` before it resolves the root.
     canonicalRoot = await canonicalOf(p.root, canonicalRoot);
-    await assertDirectChild(canonicalRoot, p.conversationDir(convId));
-    containedConversations.add(convId);
+    // Recorded only when the comparison ran. In that init window a primitive
+    // that answers null for a directory it cannot find yet — the root is
+    // created inside the same window — makes the root read as absent for one
+    // conversation, and the record would then say "checked" about a comparison
+    // that never happened, for the rest of the process.
+    if (await assertDirectChild(canonicalRoot, p.conversationDir(convId))) {
+      containedConversations.add(convId);
+    }
   }
 
   /**
@@ -1833,9 +1845,17 @@ export function createConversationWriter(deps: {
    */
   async function deleteConversationFiles(convId: string): Promise<void> {
     const p = await ensureConversation(convId);
-    await assertConversationContained(convId);
-    canonicalLegacyRoot = await canonicalOf(p.legacySessionsRoot, canonicalLegacyRoot);
-    await assertDirectChild(canonicalLegacyRoot, p.legacySessionDir(convId));
+    try {
+      await assertConversationContained(convId);
+      canonicalLegacyRoot = await canonicalOf(p.legacySessionsRoot, canonicalLegacyRoot);
+      await assertDirectChild(canonicalLegacyRoot, p.legacySessionDir(convId));
+    } catch (err) {
+      // A refused delete records nothing, whichever of the two legs refused:
+      // the next touch of this conversation resolves it again instead of
+      // trusting a record this call left behind.
+      containedConversations.delete(convId);
+      throw err;
+    }
     // Drop the crash-protection buffer first: leaving it armed would have a
     // later flush recreate the conversation directory we are deleting. The rest
     // of the conversation's state goes with it — the files it describes are

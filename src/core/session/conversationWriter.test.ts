@@ -567,6 +567,38 @@ describe('createConversationWriter', () => {
       expect(fs.calls.filter((c) => c.startsWith('canonicalPath'))).toEqual([`canonicalPath ${ROOT}`]);
     });
 
+    it('a root that answers null only transiently records nothing, so the next write resolves the conversation', async () => {
+      const fs = createMemoryConversationFs();
+      fs.setCanonical((path) => path);
+      const canonicalPath = fs.canonicalPath;
+      let rootAsks = 0;
+      // A `canonicalPath` built on `realpath` answers null for a directory that
+      // does not exist yet, and `ensureBase` publishes `paths` before it creates
+      // the root and before it resolves it.
+      fs.canonicalPath = async (path) => {
+        const resolved = await canonicalPath(path);
+        return path === ROOT && rootAsks++ === 0 ? null : resolved;
+      };
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      const exists = fs.exists;
+      let second: Promise<void> | undefined;
+      // The root probe of `ensureBase`, the first call it makes after it has
+      // published `paths`: a second conversation entering here resolves the root
+      // itself, ahead of the probe.
+      fs.exists = async (path) => {
+        if (path === ROOT && !second) second = writer.appendMessage('c2', msg('n1', 'y'));
+        return exists(path);
+      };
+      await writer.appendMessage('c1', msg('m1', 'x'));
+      await second;
+      // c2 passed through the window: nothing resolved it, while c1 was compared
+      // against the root the probe went on to resolve.
+      expect(fs.calls.filter((c) => c === `canonicalPath ${ROOT}/c2`)).toEqual([]);
+      expect(fs.calls).toContain(`canonicalPath ${ROOT}/c1`);
+      fs.setCanonical(resolveWith({ [`${ROOT}/c2`]: '/etc/abu-escape' }));
+      await expect(writer.appendMessage('c2', msg('n2', 'z'))).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
+    });
+
     it('a primitive that resolves the root and then answers null is an error', async () => {
       const fs = createMemoryConversationFs();
       let asked = 0;
@@ -608,6 +640,20 @@ describe('createConversationWriter', () => {
         const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
         await expect(writer.deleteConversationFiles('c1')).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
         expect(fs.calls.some((c) => c.startsWith(`remove ${APP_DATA}/sessions`))).toBe(false);
+      });
+
+      it('a refused legacy leg leaves nothing recorded: the next write resolves the conversation again', async () => {
+        const fs = createMemoryConversationFs();
+        fs.setCanonical((path) => path);
+        const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+        await writer.appendMessage('c1', msg('m1', 'x'));
+        await writer.flushWrites();
+        fs.setCanonical(resolveWith({ [`${APP_DATA}/sessions/c1`]: '/Users/victim' }));
+        await expect(writer.deleteConversationFiles('c1')).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
+        const checks = (): number => fs.calls.filter((c) => c === `canonicalPath ${ROOT}/c1`).length;
+        const before = checks();
+        await writer.appendMessage('c1', msg('m2', 'y'));
+        expect(checks()).toBe(before + 1);
       });
 
       it('a remove that fails for an ordinary reason stays non-critical', async () => {

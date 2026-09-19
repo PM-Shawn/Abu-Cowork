@@ -94,6 +94,20 @@ describe('conversation paths', () => {
   });
 });
 
+describe('conversation paths outside the ledger', () => {
+  const paths = createConversationPaths('/Users/testuser/.abu');
+  it('builds the outputs, results and checkpoint paths the rest of the app writes', () => {
+    expect(paths.outputsDir('conv-1')).toBe('/Users/testuser/.abu/conversations/conv-1/outputs');
+    expect(paths.resultsDir('conv-1')).toBe('/Users/testuser/.abu/conversations/conv-1/results');
+    expect(paths.checkpointPath('conv-1')).toBe('/Users/testuser/.abu/conversations/conv-1/checkpoint.json');
+  });
+  it.each(['../x', 'a/b', '', 'CON', 'abc.', 'index.json'])('refuses %j before building', (bad) => {
+    for (const build of [paths.outputsDir, paths.resultsDir, paths.checkpointPath]) {
+      expect(() => build(bad)).toThrow(ConversationIdError);
+    }
+  });
+});
+
 describe('isDirectChildPath', () => {
   it.each([
     ['/r/conversations', '/r/conversations/abc', true],
@@ -105,5 +119,14 @@ describe('isDirectChildPath', () => {
     ['/r/conversations', '/elsewhere/abc', false],
   ])('%s ⊃ %s → %s', (root, target, expected) => {
     expect(isDirectChildPath(root, target)).toBe(expected);
+  });
+
+  it.each([
+    ['/r/conversations', '/r/conversations/..'],
+    ['/r/conversations', '/r/conversations/.'],
+    ['/r/conversations', '/r/conversations/../'],
+    ['C:\\r\\conversations', 'C:\\r\\conversations\\..'],
+  ])('%s ⊅ %s, whose final segment names the root or its parent', (root, target) => {
+    expect(isDirectChildPath(root, target)).toBe(false);
   });
 });

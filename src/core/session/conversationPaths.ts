@@ -25,6 +25,9 @@ const INDEX_FILENAME = 'index.json';
 const LEDGER_FILENAME = 'messages.jsonl';
 const STREAM_SNAPSHOT_FILENAME = 'stream-snapshot.json';
 const SNAPSHOT_SWEEP_MARKER_FILENAME = '.snapshot-sweep-version';
+const CHECKPOINT_FILENAME = 'checkpoint.json';
+const OUTPUTS_DIRNAME = 'outputs';
+const RESULTS_DIRNAME = 'results';
 
 /**
  * Everything `createConversationPaths` places directly under the conversations
@@ -102,6 +105,9 @@ export interface ConversationPaths {
   conversationDir(convId: string): string;
   messagesPath(convId: string): string;
   streamSnapshotPath(convId: string): string;
+  checkpointPath(convId: string): string;
+  outputsDir(convId: string): string;
+  resultsDir(convId: string): string;
   legacySessionDir(convId: string): string;
   conversationIdOfMessagesPath(filePath: string): string | undefined;
 }
@@ -123,6 +129,9 @@ export function createConversationPaths(appDataDir: string): ConversationPaths {
     conversationDir: (convId) => under(root, convId),
     messagesPath: (convId) => under(root, convId, LEDGER_FILENAME),
     streamSnapshotPath: (convId) => under(root, convId, STREAM_SNAPSHOT_FILENAME),
+    checkpointPath: (convId) => under(root, convId, CHECKPOINT_FILENAME),
+    outputsDir: (convId) => under(root, convId, OUTPUTS_DIRNAME),
+    resultsDir: (convId) => under(root, convId, RESULTS_DIRNAME),
     legacySessionDir: (convId) => under(legacySessionsRoot, convId),
     conversationIdOfMessagesPath: (filePath) => {
       const parts = filePath.split('/');
@@ -142,5 +151,10 @@ export function isDirectChildPath(canonicalRoot: string, canonicalTarget: string
   const target = comparable(canonicalTarget);
   const cut = target.lastIndexOf('/');
   if (cut <= 0) return false;
-  return target.slice(0, cut) === root && target.length > cut + 1;
+  // `comparable` normalises separators without resolving anything, so a final
+  // `.` or `..` still names the root itself or its parent while the prefix
+  // before it compares equal to the root. Neither is a child.
+  const name = target.slice(cut + 1);
+  if (name === '' || name === '.' || name === '..') return false;
+  return target.slice(0, cut) === root;
 }

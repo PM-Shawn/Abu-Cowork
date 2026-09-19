@@ -145,4 +145,25 @@ describe('sidecar loadMessages', () => {
       code: expect.not.stringMatching(/^ENOENT$/),
     });
   });
+
+  // The tolerant read above answers "empty" for a ledger that is not there. An
+  // id the grammar refuses is a different thing entirely — there is no
+  // conversation to be empty — and reading it back as one would hand a run a
+  // blank history and let the caller keep going. The paths are therefore built
+  // before the tolerant catches, where the rejection stays visible.
+  it('refuses an id outside the grammar instead of reading back an empty conversation', async () => {
+    const { loadMessages } = await import('./conversationStorageRun');
+    for (const bad of ['../../etc', 'a/b', '', 'a..b', 'CON', 'abc.', 'index.json']) {
+      await expect(loadMessages(bad)).rejects.toMatchObject({
+        name: 'ConversationIdError',
+        code: 'conversation_id_invalid',
+      });
+    }
+    await expect(loadMessages('../../etc', { strictRead: true })).rejects.toMatchObject({
+      code: 'conversation_id_invalid',
+    });
+    await expect(loadMessages('../../etc', { uptoBytes: 4 })).rejects.toMatchObject({
+      code: 'conversation_id_invalid',
+    });
+  });
 });

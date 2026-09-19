@@ -28,6 +28,7 @@
 import { exists, mkdir, readTextFile, writeTextFile, remove, stat, copyFile, rename, readFile, writeFile } from '@tauri-apps/plugin-fs';
 import { appDataDir, homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators, getBaseName } from '@/utils/pathUtils';
+import { createConversationPaths, type ConversationPaths } from './conversationPaths';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { base64ToUint8Array } from '@/utils/base64';
 import { RESULT_IMAGE_EXTENSIONS } from '@/utils/imageMediaTypes';
@@ -122,8 +123,8 @@ const manifestCache = new Map<string, OutputManifest>();
  */
 const convLocks = new Map<string, Promise<unknown>>();
 
-/** Cached app data base path */
-let cachedAppDataBase: string | null = null;
+/** Cached conversation path builders */
+let cachedPaths: ConversationPaths | null = null;
 /** Cached home directory (for ~ expansion) */
 let cachedHomeDir: string | null = null;
 
@@ -133,11 +134,10 @@ let cachedHomeDir: string | null = null;
 
 /** Get the outputs/ directory for a specific conversation. Creates if needed. */
 async function getOutputsDir(convId: string): Promise<string> {
-  if (!cachedAppDataBase) {
-    const appData = await appDataDir();
-    cachedAppDataBase = joinPath(appData, 'conversations');
+  if (!cachedPaths) {
+    cachedPaths = createConversationPaths(await appDataDir());
   }
-  const dir = joinPath(cachedAppDataBase, convId, 'outputs');
+  const dir = cachedPaths.outputsDir(convId);
   if (!(await exists(dir))) {
     await mkdir(dir, { recursive: true });
   }
@@ -750,11 +750,10 @@ export async function cleanupConversationOutputs(convId: string): Promise<void> 
   // Defensive: also try to remove the dir directly, in case the caller didn't
   // also call deleteConversationFiles. swallow errors (already-deleted is fine).
   try {
-    if (!cachedAppDataBase) {
-      const appData = await appDataDir();
-      cachedAppDataBase = joinPath(appData, 'conversations');
+    if (!cachedPaths) {
+      cachedPaths = createConversationPaths(await appDataDir());
     }
-    const dir = joinPath(cachedAppDataBase, convId, 'outputs');
+    const dir = cachedPaths.outputsDir(convId);
     if (await exists(dir)) {
       await remove(dir, { recursive: true });
     }
@@ -891,7 +890,7 @@ export const __testing = {
   resetCaches: () => {
     manifestCache.clear();
     convLocks.clear();
-    cachedAppDataBase = null;
+    cachedPaths = null;
   },
   MAX_FILE_BYTES,
 };

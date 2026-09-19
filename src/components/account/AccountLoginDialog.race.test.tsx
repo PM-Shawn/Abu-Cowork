@@ -13,8 +13,10 @@ import AccountLoginDialog from './AccountLoginDialog';
 
 const ui = vi.hoisted(() => ({
   close: vi.fn(),
+  openSystemSettings: vi.fn(),
   state: {} as Record<string, unknown>,
 }));
+const startEnterpriseLogin = vi.hoisted(() => vi.fn());
 
 vi.mock('@/stores/settingsStore', () => ({
   useSettingsStore: (selector: (state: Record<string, unknown>) => unknown) => selector(ui.state),
@@ -22,8 +24,8 @@ vi.mock('@/stores/settingsStore', () => ({
 
 vi.mock('@/config/featureGates', () => ({ IS_ENTERPRISE_BUILD: true }));
 
-vi.mock('@/components/enterprise/BindToEnterpriseFlow', () => ({
-  default: () => <div>enterprise-flow</div>,
+vi.mock('@/core/enterprise/accountLogin', () => ({
+  startEnterpriseAccountLogin: startEnterpriseLogin,
 }));
 
 vi.mock('@/core/account/pkce', () => ({ createPkcePair: vi.fn() }));
@@ -51,7 +53,14 @@ describe('AccountLoginDialog pending personal login', () => {
     initLanguage('zh-CN');
     __resetAccountStoreForTest();
     ui.close.mockReset();
-    ui.state = { accountLoginOpen: true, closeAccountLogin: ui.close };
+    ui.openSystemSettings.mockReset();
+    startEnterpriseLogin.mockReset();
+    startEnterpriseLogin.mockResolvedValue('started');
+    ui.state = {
+      accountLoginOpen: true,
+      closeAccountLogin: ui.close,
+      openSystemSettings: ui.openSystemSettings,
+    };
     vi.mocked(createPkcePair).mockReset();
     vi.mocked(createPkcePair).mockResolvedValue(PKCE);
     vi.mocked(openUrl).mockReset();
@@ -93,7 +102,9 @@ describe('AccountLoginDialog pending personal login', () => {
     render(<AccountLoginDialog />);
     fireEvent.click(screen.getByRole('button', { name: '个人账号登录' }));
     fireEvent.click(screen.getByRole('button', { name: '企业账号登录' }));
-    expect(screen.getByText('enterprise-flow')).toBeInTheDocument();
+    expect(ui.close).toHaveBeenCalledOnce();
+    await waitFor(() => expect(startEnterpriseLogin).toHaveBeenCalledOnce());
+    expect(ui.openSystemSettings).not.toHaveBeenCalled();
 
     registration.resolve(true);
 

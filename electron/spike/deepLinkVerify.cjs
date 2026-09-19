@@ -93,6 +93,22 @@ app.whenReady().then(async () => {
     checks.normalizeRejectsUnknownHost = normalizeDeepLinkUrl('abu://wat?x=1') === null;
     checks.normalizeRejectsForeignScheme = normalizeDeepLinkUrl('https://evil.com') === null;
     checks.normalizeRejectsGarbage = normalizeDeepLinkUrl('not a url') === null;
+    checks.normalizeAuthRewritesDevScheme =
+      normalizeDeepLinkUrl('abu-dev://auth?code=once&state=csrf') ===
+      'abu://auth?code=once&state=csrf';
+    checks.normalizeAuthPassesCanonical =
+      normalizeDeepLinkUrl('abu://auth?code=once&state=csrf') ===
+      'abu://auth?code=once&state=csrf';
+    checks.normalizeRejectsLegacyLoginHost =
+      normalizeDeepLinkUrl('abu://login?code=once&state=csrf') === null;
+    checks.normalizeOpenPassesCanonical =
+      normalizeDeepLinkUrl('abu://open?server=https://ex.com') ===
+      'abu://open?server=https://ex.com';
+    checks.normalizeOpenRewritesDevScheme =
+      normalizeDeepLinkUrl('abu-dev://open?server=https://ex.com') ===
+      'abu://open?server=https://ex.com';
+    checks.packagedRejectsDevScheme =
+      normalizeDeepLinkUrl('abu-dev://auth?code=once&state=csrf', false) === null;
     checks.extractFindsUrlInArgv =
       extractDeepLinkFromArgv(['electron', 'main.cjs', 'abu://enroll?server=x']) ===
       'abu://enroll?server=x';
@@ -148,12 +164,76 @@ app.whenReady().then(async () => {
   received = await readReceived();
   checks.foreignUrlIgnored = received.length === 2; // unchanged
 
+  // ── 4b) auth host delivered (Web → desktop one-time code) ──
+  fireOpenUrl('abu-dev://auth?code=smoke&state=csrf');
+  await sleep(80);
+  received = await readReceived();
+  checks.authUrlDelivered =
+    received.length === 3 &&
+    received[2] === 'abu://auth?code=smoke&state=csrf';
+
+  // ── 4c) open host delivered (browser → client, no credentials) ──
+  fireOpenUrl('abu-dev://open?server=https://open.example.com');
+  await sleep(80);
+  received = await readReceived();
+  checks.openUrlDelivered =
+    received.length === 4 &&
+    received[3] === 'abu://open?server=https://open.example.com';
+
   // ── 5) get_current reaches the real handler (null: no cold-start here) ──
   const cur = await win.webContents.executeJavaScript(
     `window.__TAURI_INTERNALS__.invoke('plugin:deep-link|get_current', null)`
   );
   checks.getCurrentNullNoColdStart = cur === null;
   checks.getCurrentReachedRealHandler = !stubbedCmdsSeen.has('plugin:deep-link|get_current');
+
+  // ── 6) scheme handed to the renderer for its OAuth redirect_uri ──
+  // The renderer builds `redirect_uri` from __ABU_SHELL__.deepLinkScheme. If it
+  // reads 'abu' inside an unpackaged shell, Console redirects the authorization
+  // code to the INSTALLED production Abu and the shell under test never hears
+  // back — silent, and exactly the failure that kept browser login unverifiable.
+  // Unit tests can't cover this: it crosses additionalArguments → preload →
+  // contextBridge, which only exists in a real Electron window.
+  const readScheme = async (additionalArguments) => {
+    const probe = new BrowserWindow({
+      show: false,
+      webPreferences: {
+        preload: path.join(__dirname, '..', 'preload.cjs'),
+        contextIsolation: true,
+        sandbox: true,
+        nodeIntegration: false,
+        ...(additionalArguments ? { additionalArguments } : {}),
+      },
+    });
+    registerPrivilegedWindow(probe, scratchHtml, { label: 'verify-deep-link-scheme' });
+    await probe.loadFile(scratchHtml);
+    const value = await probe.webContents.executeJavaScript(
+      'window.__ABU_SHELL__ && window.__ABU_SHELL__.deepLinkScheme'
+    );
+    probe.destroy();
+    return value;
+  };
+
+  try {
+    // Same call main.cjs makes, so a scheme change can't drift between them.
+    checks.shellReportsRegisteredScheme =
+      (await readScheme([`--abu-deep-link-scheme=${deepLinkHost.getActiveScheme()}`])) === 'abu-dev';
+    // A window launched without the flag must fall back to the production
+    // scheme rather than surfacing undefined into a redirect_uri.
+    checks.shellFallsBackWithoutFlag = (await readScheme(null)) === 'abu';
+    // Never propagate an unrecognized value.
+    checks.shellRejectsBogusScheme =
+      (await readScheme(['--abu-deep-link-scheme=evil'])) === 'abu';
+  } catch (err) {
+    errors.shellScheme = String(err);
+    checks.shellReportsRegisteredScheme = false;
+  }
+
+  // main.cjs must actually pass the flag — the checks above prove the plumbing
+  // works, not that the real window is wired to it.
+  const mainSource = fs.readFileSync(path.join(__dirname, '..', 'main.cjs'), 'utf8');
+  checks.mainWindowPassesSchemeFlag =
+    /additionalArguments:\s*\[`--abu-deep-link-scheme=\$\{getActiveScheme\(\)\}`\]/.test(mainSource);
 
   fs.rmSync(scratchHtml, { force: true });
 

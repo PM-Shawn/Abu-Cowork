@@ -2,6 +2,9 @@ import { useState, useRef, useEffect, useCallback, type ReactNode } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useAccountStore } from '@/core/account/accountStore';
+import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import {
   Settings,
@@ -40,6 +43,7 @@ import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
  */
 export default function AccountMenu({ onEditProfile }: { onEditProfile: () => void }) {
   const { t, locale } = useI18n();
+  const userNickname = useSettingsStore((s) => s.userNickname);
   const userAvatar = useSettingsStore((s) => s.userAvatar);
   const theme = useSettingsStore((s) => s.theme);
   const setTheme = useSettingsStore((s) => s.setTheme);
@@ -51,6 +55,8 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const account = useAccountStore((s) => s.account);
   const profileStatus = useAccountStore((s) => s.profileStatus);
   const signOut = useAccountStore((s) => s.signOut);
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const unbindEnterprise = useEnterpriseStore((s) => s.unbind);
   const updateInfo = useSettingsStore((s) => s.updateInfo);
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
@@ -132,6 +138,14 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     });
   }, [locale]);
 
+  const handleEnterpriseLogin = useCallback(() => {
+    void startEnterpriseAccountLogin()
+      .then((result) => {
+        if (result === 'configuration_required') openSystemSettings('enterprise');
+      })
+      .catch(() => openSystemSettings('enterprise'));
+  }, [openSystemSettings]);
+
   const languageOptions = [
     { value: 'system', label: t.settings.followSystem },
     { value: 'zh-CN', label: '简体中文' },
@@ -200,19 +214,25 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const UpdateIcon = updateRow.icon;
   const signedIn = accountStatus === 'signed_in' && account !== null;
   const expired = accountStatus === 'expired' && account !== null;
-  const accountLabel = signedIn
-    ? account.name || account.email || t.account.title
-    : expired
-      ? t.account.retry
-      : t.account.loginRegister;
-  const accountDetail = signedIn
-    ? profileStatus === 'loading'
-      ? t.account.profileLoading
-      : profileStatus === 'error'
-        ? t.account.profileUnavailable
-        : account.email || t.account.title
-    : expired
-      ? t.account.sessionExpired
+  const localLabel = userNickname || t.sidebar.defaultNickname;
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseSignedIn = enterpriseBinding !== null;
+  const hasDisplayedIdentity = signedIn || enterpriseSignedIn;
+  const accountLabel = enterpriseBinding
+    ? enterpriseBinding.userName || enterpriseBinding.userEmail || enterpriseBinding.orgName
+    : signedIn
+      ? account.name || account.email || t.account.title
+      : localLabel;
+  const accountDetail = enterpriseBinding
+    ? [enterpriseBinding.userEmail, enterpriseBinding.orgName].filter(Boolean).join(' · ')
+    : signedIn
+      ? profileStatus === 'loading'
+        ? t.account.profileLoading
+        : profileStatus === 'error'
+          ? t.account.profileUnavailable
+          : account.email || t.account.title
       : t.sidebar.localMode;
 
   return (
@@ -239,7 +259,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
         <span
           className={cn(
             'flex-1 min-w-0 text-h-xs font-semibold truncate',
-            signedIn ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
+            hasDisplayedIdentity ? 'text-[var(--abu-text-primary)]' : 'text-[var(--abu-text-tertiary)]'
           )}
         >
           {accountLabel}
@@ -255,7 +275,7 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           className="absolute bottom-full left-0 right-0 mb-2 z-50 p-1.5 rounded-2xl border border-[var(--abu-border)] bg-[var(--abu-bg-base)] shadow-[0_12px_34px_-8px_rgba(20,20,19,0.22),0_2px_8px_-2px_rgba(20,20,19,0.10)]"
         >
           {/* Authenticated identity, or the local-mode account entry. */}
-          <div className="flex w-full items-center gap-2.5 px-2 py-2">
+          <div className="group flex w-full items-center gap-2.5 px-2 py-2">
             <span className="w-9 h-9 rounded-full overflow-hidden shrink-0">
               {userAvatar ? (
                 <img src={userAvatar} alt="" className="w-full h-full object-cover" />
@@ -269,30 +289,28 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
               </div>
               <div className="text-caption text-[var(--abu-text-muted)] truncate">{accountDetail}</div>
             </div>
+            <button
+              onClick={() => run(onEditProfile)}
+              title={t.sidebar.editProfile}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-[var(--abu-text-tertiary)] hover:text-[var(--abu-clay)] hover:bg-[var(--abu-bg-hover)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition"
+            >
+              <Pencil className="h-[15px] w-[15px]" strokeWidth={1.7} />
+            </button>
           </div>
 
           <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
-          {signedIn ? (
+          {!enterpriseSignedIn && signedIn && (
             <>
-              <MenuRow
-                icon={UserRound}
-                label={t.account.accountSettings}
-                onClick={() => run(() => openSystemSettings('account'))}
-              />
-              <MenuRow icon={LogOut} label={t.account.signOut} onClick={() => run(() => void signOut())} />
+              <MenuRow icon={UserRound} label={t.account.accountSettings}
+                onClick={() => run(() => openSystemSettings('account'))} />
+              {IS_ENTERPRISE_BUILD && (
+                <MenuRow icon={LogIn} label={t.account.switchToEnterprise}
+                  onClick={() => run(handleEnterpriseLogin)} />
+              )}
+              <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
             </>
-          ) : (
-            <MenuRow
-              icon={LogIn}
-              label={expired ? t.account.retry : t.account.loginRegister}
-              onClick={() => run(openAccountLogin)}
-            />
           )}
-
-          <MenuRow icon={Pencil} label={t.sidebar.editProfile} onClick={() => run(onEditProfile)} />
-
-          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
 
           {/* Settings */}
           <MenuRow icon={Settings} label={t.settings.title} onClick={() => run(() => openSystemSettings())} />
@@ -372,6 +390,17 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
             </span>
             {updateRow.trailing}
           </button>
+          <div className="mx-1.5 my-1 h-px bg-[var(--abu-border)]" />
+          {enterpriseSignedIn ? (
+            <MenuRow icon={LogOut} label={t.account.signOutEnterprise}
+              onClick={() => run(() => void unbindEnterprise())} />
+          ) : signedIn ? (
+            <MenuRow icon={LogOut} label={IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
+              onClick={() => run(() => void signOut())} />
+          ) : (
+            <MenuRow icon={LogIn} label={expired ? t.account.retry : t.account.signIn}
+              onClick={() => run(openAccountLogin)} />
+          )}
         </div>
       )}
     </div>

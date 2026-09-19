@@ -1,3 +1,4 @@
+import EnterpriseAccountSlot from '@enterprise-modules/components/enterprise/EnterpriseAccountSlot';
 import { CircleAlert, LoaderCircle, LogIn, LogOut, RefreshCw } from 'lucide-react';
 import { useAccountStore } from '@/core/account/accountStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -20,6 +21,7 @@ export default function AccountSection() {
     <div className="space-y-5">
       <SettingsSectionHeader title={t.account.title} description={t.account.description} />
 
+      <EnterpriseAccountSlot>
       {!signedIn && !expired ? (
         <section className="space-y-4 rounded-xl border border-[var(--abu-border)] p-4">
           <p className="text-body text-[var(--abu-text-secondary)]">
@@ -86,13 +88,14 @@ export default function AccountSection() {
                 {t.account.retry}
               </Button>
             )}
-            <Button variant="destructive" onClick={() => void signOut()}>
+            <Button variant="subtle" onClick={() => void signOut()}>
               <LogOut aria-hidden="true" />
               {t.account.signOut}
             </Button>
           </div>
         </section>
       )}
+      </EnterpriseAccountSlot>
     </div>
   );
 }

@@ -24,6 +24,10 @@ import {
 } from '@/core/account/deepLinkListener';
 import { createPkcePair } from '@/core/account/pkce';
 import type { PkcePair } from '@/core/account/pkce';
+import {
+  activateExclusiveAccountSession,
+  registerAccountSessionDeactivator,
+} from '@/core/account/sessionCoordinator';
 
 export type AccountStatus = 'signed_out' | 'awaiting_browser' | 'exchanging' | 'signed_in' | 'expired';
 
@@ -338,6 +342,57 @@ async function bestEffortRemoteLogout(credentials: AccountCredentials): Promise<
   }
 }
 
+interface DeactivatedPersonalSession {
+  credentials: AccountCredentials | null;
+  id: number;
+  epoch: number;
+}
+
+function isCurrentPersonalSession(session: DeactivatedPersonalSession): boolean {
+  return session.id === operationId && session.epoch === credentialEpoch;
+}
+
+async function deactivatePersonalSession(): Promise<DeactivatedPersonalSession> {
+  const id = nextOperationId();
+  credentialEpoch += 1;
+  const epoch = credentialEpoch;
+  discardPendingAuthorization();
+  useAccountStore.setState({ status: 'signed_out', account: null, profileStatus: 'idle', error: null });
+  try {
+    return await enqueueCredentialMutation(async () => {
+      const stored = await loadAccountCredentials();
+      await clearAccountCredentials();
+      return { credentials: stored, id, epoch };
+    });
+  } catch (error) {
+    if (id === operationId) {
+      useAccountStore.setState({
+        status: 'expired',
+        account: null,
+        profileStatus: 'idle',
+        error: 'credential_storage_unavailable',
+      });
+    }
+    throw error;
+  }
+}
+
+async function restorePersonalSession(session: DeactivatedPersonalSession): Promise<void> {
+  const { credentials, id } = session;
+  if (!credentials || !isCurrentPersonalSession(session)) return;
+  await enqueueCredentialMutation(async () => {
+    if (isCurrentPersonalSession(session)) await saveAccountCredentials(credentials);
+  });
+  if (!isCurrentPersonalSession(session)) return;
+  useAccountStore.setState({
+    status: 'signed_in',
+    account: summaryOf(credentials),
+    profileStatus: 'loading',
+    error: null,
+  });
+  await loadProfileIntoSummary(credentials, id, useAccountStore.setState, useAccountStore.getState);
+}
+
 // Only the account summary and transition state live in Zustand. Credentials
 // stay exclusively in Electron safeStorage through credentials.ts.
 export const useAccountStore = create<AccountStore>()((set, get) => ({
@@ -449,8 +504,10 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
     const pending = pendingAuthorization;
     if (!pending || get().status !== 'awaiting_browser') return true;
     if (callback.state !== pending.pkce.state) {
-      set({ error: 'state_mismatch' });
-      return true;
+      // `abu://auth` is shared by personal and enterprise OAuth. A valid
+      // callback with another state belongs to the other pending flow; leave
+      // this request untouched so its own callback can still complete.
+      return false;
     }
 
     if (pending.timeout !== null) {
@@ -475,11 +532,14 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
         userId,
         kind: 'personal',
       };
-      const saved = await enqueueCredentialMutation(async () => {
-        if (pending.id !== operationId) return false;
-        await saveAccountCredentials(credentials);
-        return pending.id === operationId;
-      });
+      const saved = await activateExclusiveAccountSession(
+        'personal',
+        async () => {
+          await enqueueCredentialMutation(() => saveAccountCredentials(credentials));
+          return () => enqueueCredentialMutation(clearAccountCredentials);
+        },
+        () => pending.id === operationId && !pending.controller.signal.aborted,
+      );
       if (!saved || pending.id !== operationId) return true;
       pendingAuthorization = null;
       set({
@@ -533,31 +593,30 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
   },
 
   signOut: async () => {
-    const id = nextOperationId();
-    credentialEpoch += 1;
-    discardPendingAuthorization();
-    set({ status: 'signed_out', account: null, profileStatus: 'idle', error: null });
     let credentials: AccountCredentials | null;
     try {
-      credentials = await enqueueCredentialMutation(async () => {
-        const stored = await loadAccountCredentials();
-        await clearAccountCredentials();
-        return stored;
-      });
+      ({ credentials } = await deactivatePersonalSession());
     } catch {
-      if (id === operationId) {
-        set({
-          status: 'expired',
-          account: null,
-          profileStatus: 'idle',
-          error: 'credential_storage_unavailable',
-        });
-      }
       return;
     }
     if (credentials) await bestEffortRemoteLogout(credentials);
   },
 }));
+
+registerAccountSessionDeactivator('personal', async () => {
+  const id = operationId;
+  // 等待刷新保存最终凭据，供企业登录失败时恢复；主动退出仍立即清理。
+  if (refreshMemo) await refreshMemo.result;
+  if (id !== operationId) throw new Error('account_session_transition_cancelled');
+  const session = await deactivatePersonalSession();
+  if (!isCurrentPersonalSession(session)) throw new Error('account_session_transition_cancelled');
+  const { credentials } = session;
+  if (!credentials) return;
+  return {
+    rollback: () => restorePersonalSession(session),
+    commit: () => { void bestEffortRemoteLogout(credentials); },
+  };
+});
 
 export function __resetAccountStoreForTest(): void {
   operationId = 0;

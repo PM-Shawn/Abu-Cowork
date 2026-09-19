@@ -1,4 +1,4 @@
-import { expect, test, type TestInfo } from '@playwright/test';
+import { expect, test, type Locator, type TestInfo } from '@playwright/test';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
@@ -176,8 +176,27 @@ async function captureLightAndDark(page: Page, testInfo: TestInfo, name: string)
   await page.screenshot({ path: screenshotPath(testInfo, `${name}-dark`), animations: 'disabled' });
 }
 
+async function captureHoveredLightAndDark(
+  page: Page,
+  testInfo: TestInfo,
+  name: string,
+  hoverTarget: Locator,
+  revealedTarget: Locator,
+): Promise<void> {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await hoverTarget.hover();
+  await expect(page.locator('html')).not.toHaveClass(/(^|\s)dark(\s|$)/);
+  await expect(revealedTarget).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: screenshotPath(testInfo, `${name}-light`), animations: 'disabled' });
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await hoverTarget.hover();
+  await expect(page.locator('html')).toHaveClass(/(^|\s)dark(\s|$)/);
+  await expect(revealedTarget).toHaveCSS('opacity', '1');
+  await page.screenshot({ path: screenshotPath(testInfo, `${name}-dark`), animations: 'disabled' });
+}
+
 async function useSystemTheme(page: Page): Promise<void> {
-  await page.getByRole('button', { name: '登录 / 注册', exact: true }).first().click();
+  await page.getByRole('button', { name: '我', exact: true }).click();
   await page.getByRole('menuitem', { name: '设置', exact: true }).click();
   const settings = page.locator('[data-abu-settings-dialog]');
   await expect(settings).toBeVisible();
@@ -193,8 +212,8 @@ async function useSystemTheme(page: Page): Promise<void> {
   await expect(settings).toBeHidden();
 }
 
-async function openLoginDialogFromSidebar(page: Page, label: '登录 / 注册' | '重新登录') {
-  await page.getByRole('button', { name: label, exact: true }).first().click();
+async function openLoginDialogFromSidebar(page: Page, label: '登录' | '重新登录') {
+  await page.getByRole('button', { name: '我', exact: true }).click();
   await page.getByRole('menuitem', { name: label, exact: true }).click();
   const dialog = page.getByRole('dialog', { name: '登录 / 注册' });
   await expect(dialog).toBeVisible();
@@ -235,10 +254,29 @@ test.describe.serial('personal account login UI', () => {
     await installMainBoundaryFixture(app);
     await useSystemTheme(page);
 
-    await captureLightAndDark(page, testInfo, '01-sidebar-signed-out');
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    const localMenu = page.getByRole('menu');
+    await expect(localMenu.getByText('本地模式', { exact: true })).toBeVisible();
+    await expect(localMenu.getByRole('menuitem').last()).toHaveAccessibleName('登录');
+    await expect(localMenu.getByRole('menuitem', { name: '编辑资料', exact: true })).toHaveCount(0);
+    const editProfileButton = localMenu.getByTitle('编辑资料');
+    await captureLightAndDark(page, testInfo, '01-local-menu-signed-out');
+    await captureHoveredLightAndDark(
+      page,
+      testInfo,
+      '01b-profile-edit-hover',
+      editProfileButton.locator('..'),
+      editProfileButton,
+    );
+    await editProfileButton.click();
+    const editProfileHeading = page.getByRole('heading', { name: '编辑资料', exact: true });
+    await expect(editProfileHeading).toBeVisible();
+    await captureLightAndDark(page, testInfo, '01c-profile-editor');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(editProfileHeading).toBeHidden();
 
-    await page.getByRole('button', { name: '登录 / 注册', exact: true }).first().click();
-    await page.getByRole('menuitem', { name: '登录 / 注册', exact: true }).click();
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    await page.getByRole('menuitem', { name: '登录', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: '登录 / 注册' });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole('button', { name: '个人账号登录' })).toBeVisible();
@@ -297,7 +335,10 @@ test.describe.serial('personal account login UI', () => {
     expect(refreshRequests).toBe(1);
 
     await page.getByRole('button', { name: 'Ada', exact: true }).first().click();
-    await page.getByRole('menuitem', { name: '账号设置', exact: true }).click();
+    const signedInMenu = page.getByRole('menu');
+    await expect(signedInMenu.getByRole('menuitem').last()).toHaveAccessibleName('退出登录');
+    await captureLightAndDark(page, testInfo, '08b-signed-in-menu');
+    await signedInMenu.getByRole('menuitem', { name: '账号设置', exact: true }).click();
     const settings = page.locator('[data-abu-settings-dialog]');
     await expect(settings.getByRole('heading', { name: '账号' })).toBeVisible();
     await expect(settings.getByText('ada@example.com')).toBeVisible();
@@ -314,10 +355,12 @@ test.describe.serial('personal account login UI', () => {
     // A 401 from the authenticated profile endpoint expires the stored login.
     serverMode = 'profile-unauthorized';
     let openCount = await openedUrlCount(app);
-    let recoveryDialog = await openLoginDialogFromSidebar(page, '登录 / 注册');
+    let recoveryDialog = await openLoginDialogFromSidebar(page, '登录');
     await recoveryDialog.getByRole('button', { name: '个人账号登录' }).click();
     await emitNextAuthReturn(app, openCount);
-    await expect(page.getByRole('button', { name: '重新登录', exact: true }).first()).toBeVisible();
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: '重新登录', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
 
     // The expired-session dialog offers a real local+remote sign-out path.
     recoveryDialog = await openLoginDialogFromSidebar(page, '重新登录');
@@ -330,10 +373,12 @@ test.describe.serial('personal account login UI', () => {
 
     // Reproduce the 401 once more, then recover by completing a fresh login.
     openCount = await openedUrlCount(app);
-    recoveryDialog = await openLoginDialogFromSidebar(page, '登录 / 注册');
+    recoveryDialog = await openLoginDialogFromSidebar(page, '登录');
     await recoveryDialog.getByRole('button', { name: '个人账号登录' }).click();
     await emitNextAuthReturn(app, openCount);
-    await expect(page.getByRole('button', { name: '重新登录', exact: true }).first()).toBeVisible();
+    await page.getByRole('button', { name: '我', exact: true }).click();
+    await expect(page.getByRole('menuitem', { name: '重新登录', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
 
     serverMode = 'success';
     openCount = await openedUrlCount(app);

@@ -58,9 +58,15 @@ describe('a sidecar-instantiated writer writes the bytes the renderer writes', (
     await nodeFs.writeFile(target, content, 'utf-8');
   };
 
-  // `concurrentRevisionBurst` cases are left out: their bytes depend on the
-  // order two concurrent `exists` probes of the same ledger complete in, which
-  // on real files is the kernel's order. See that field's doc comment.
+  // `concurrentRevisionBurst` cases are skipped rather than dropped, so a run
+  // names every fixture case and the exclusion stays visible: their bytes
+  // depend on the order two concurrent `exists` probes of the same ledger
+  // complete in, which on real files is the kernel's order. See that field's
+  // doc comment.
+  for (const testCase of loadConversationWriterFixtures().filter((c) => c.concurrentRevisionBurst)) {
+    it.skip(`shared fixture: ${testCase.name} (concurrent revisions of one message id — kernel probe order)`, () => {});
+  }
+
   for (const testCase of loadConversationWriterFixtures().filter((c) => !c.concurrentRevisionBurst)) {
     it(`shared fixture: ${testCase.name}`, async () => {
       const writer = createNodeConversationWriter({

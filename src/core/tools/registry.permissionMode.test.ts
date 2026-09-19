@@ -1,4 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { mcpManager } from '../mcp/client';
+import { createBrowserPermissionConfig, emptyBrowserSiteRule } from '../permissions/browserPermissionConfig';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { exists, stat } from '@tauri-apps/plugin-fs';
 import { tempDir } from '@tauri-apps/api/path';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
@@ -12,10 +15,13 @@ import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginToolPolicy';
 import { buildScheduledRunPermissionCeiling, buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
-import { checkToolApproval } from './registry';
+import { checkToolApproval, executeAnyTool, toolRegistry } from './registry';
+import { registerBuiltinTools } from './builtins';
 import {
+  authorizeWorkspace,
   createAuthorizationScope,
   disposeAuthorizationScope,
+  revokeWorkspace,
   scopedAuthorizeWorkspace,
 } from './pathSafety';
 
@@ -54,7 +60,7 @@ function resolvePermissionMode(conversationId: string | undefined): PermissionMo
 describe('permission mode resolution', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
   });
 
   it('returns global setting when no conversationId given', () => {
@@ -73,14 +79,14 @@ describe('permission mode resolution', () => {
   });
 
   it('conversation override takes precedence over global setting', () => {
-    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    setMigratedBrowserSettings({ permissionMode: 'autonomous' });
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().setConversationPermissionMode(id, 'standard');
     expect(resolvePermissionMode(id)).toBe('standard');
   });
 
   it('falls back to global when conversation override is cleared to undefined', () => {
-    useSettingsStore.setState({ permissionMode: 'smart' });
+    setMigratedBrowserSettings({ permissionMode: 'smart' });
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().setConversationPermissionMode(id, 'autonomous');
     useChatStore.getState().setConversationPermissionMode(id, undefined);
@@ -99,7 +105,7 @@ describe('write_file $TMPDIR overwrite-safety precheck', () => {
 
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
     vi.mocked(tempDir).mockResolvedValue(runtimeTemp);
     // macOS canonicalizes /var → /private/var; this is exactly the lexical↔canonical
     // divergence that broke the precheck when the canonical form was passed in.
@@ -132,46 +138,101 @@ describe('write_file $TMPDIR overwrite-safety precheck', () => {
   });
 });
 
+// ── 相对路径的文件工具调用 ──
+// 主进程会把相对路径接到自身 cwd 上；即使解析结果落在已授权工作区，也必须拒绝且不执行。
+describe('read_file relative path', () => {
+  const ws = '/Users/testuser/Projects/relative-read';
+
+  beforeEach(() => {
+    registerBuiltinTools();
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    setMigratedBrowserSettings({ permissionMode: 'autonomous' });
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => (
+      String(candidate) === 'x' ? `${ws}/x` : String(candidate)
+    ));
+    authorizeWorkspace(ws, ['read', 'write']);
+  });
+
+  afterEach(() => {
+    revokeWorkspace(ws);
+    vi.mocked(canonicalizeElectronPathForPolicy).mockReset().mockResolvedValue(null);
+  });
+
+  it('denies the call without asking for permission or executing the tool', async () => {
+    const cleanup = setPlatformForTest('macos');
+    const execute = vi.spyOn(toolRegistry, 'execute');
+    const onRequireFilePermission = vi.fn(async () => true);
+    try {
+      expect(toolRegistry.has(TOOL_NAMES.READ_FILE)).toBe(true);
+      const result = await executeAnyTool(
+        TOOL_NAMES.READ_FILE,
+        { path: 'x' },
+        undefined,
+        onRequireFilePermission as never,
+        { conversationId: 'conv-relative' } as never,
+      );
+      expect(result).toBe('Error: 路径必须是绝对路径');
+      expect(execute).not.toHaveBeenCalled();
+      expect(onRequireFilePermission).not.toHaveBeenCalled();
+    } finally {
+      execute.mockRestore();
+      cleanup();
+    }
+  });
+});
+
 // ── Browser automation gate (end-to-end through checkToolApproval) ──
 // Browser tools reach the user's logged-in sessions, the same consequence
 // Computer Use already gates for browser apps. These pin the gate itself, not
 // just the classifier, because the failure mode being fixed was a policy that
 // existed but was never wired into the approval chain.
+function browserFixture(sites: Record<string, 'allowed' | 'denied'> = {}, browse: 'ask' | 'allow' = 'ask') {
+  const config = createBrowserPermissionConfig(); config.defaults.browse = browse;
+  config.sites = Object.fromEntries(Object.entries(sites).map(([origin, decision]) => [origin, { ...emptyBrowserSiteRule(), ...(decision === 'denied' ? { blocked: true } : { browse: 'allow' as const }) }]));
+  setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+}
+function installBrowserProbe() {
+  (mcpManager as unknown as { servers: Map<string, unknown> }).servers.set('abu-browser', {
+    config: { name: 'abu-browser' }, transport: {}, appTools: new Map(), tools: new Map(),
+    client: { callTool: vi.fn(async () => ({ content: [{ type: 'text', text: JSON.stringify({ windows: [{ tabs: [{ tabId: 1, url: 'https://example.com/page' }] }] }) }] })) },
+  });
+}
 describe('browser automation approval gate', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
-    __resetBrowserGrantsForTests();
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
+    __resetBrowserGrantsForTests(); browserFixture(); installBrowserProbe();
   });
+  afterEach(() => { (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser'); });
 
-  it('asks before a state-changing browser action, then not again in the same conversation', async () => {
+  it('asks separately for every action when browsing is set to ask', async () => {
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
     const first = await checkToolApproval(
-      'abu-browser__click', { ref: 'e1' }, { conversationId: 'conv-1' } as never, confirm as never,
+      'abu-browser__click', { tabId: 1, ref: 'e1' }, { conversationId: 'conv-1' } as never, confirm as never,
     );
     const second = await checkToolApproval(
-      'abu-browser__fill', { ref: 'e2', value: 'x' }, { conversationId: 'conv-1' } as never, confirm as never,
+      'abu-browser__fill', { tabId: 1, ref: 'e2', value: 'x' }, { conversationId: 'conv-1' } as never, confirm as never,
     );
 
     expect(first.decision).toBe('allow');
     expect(second.decision).toBe('allow');
-    expect(asked).toHaveLength(1);
+    expect(asked).toHaveLength(2);
     expect(asked[0]).toContain('abu-browser__click');
   });
 
   it('a team browser approval never silently becomes a broader conversation grant (F1)', async () => {
     const confirm = vi.fn(async () => true);
     const context = { conversationId: 'team-browser', teamRoster: ['A'], agentName: 'A', loopId: 'l', toolCallId: 't' };
-    await checkToolApproval('abu-browser__click', { ref: 'e1' }, context, confirm);
-    await checkToolApproval('abu-browser__fill', { ref: 'e2', value: 'other action' }, context, confirm);
+    await checkToolApproval('abu-browser__click', { tabId: 1, ref: 'e1' }, context, confirm);
+    await checkToolApproval('abu-browser__fill', { tabId: 1, ref: 'e2', value: 'other action' }, context, confirm);
     expect(confirm).toHaveBeenCalledTimes(2);
   });
 
   it('denies the action when the user declines', async () => {
     const decision = await checkToolApproval(
-      'abu-browser__execute_js', { code: 'fetch("/transfer")' },
+      'abu-browser__execute_js', { tabId: 1, code: 'fetch("/transfer")' },
       { conversationId: 'conv-1' } as never, (async () => false) as never,
     );
     expect(decision.decision).toBe('deny');
@@ -181,13 +242,14 @@ describe('browser automation approval gate', () => {
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
-    await checkToolApproval('abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never);
-    await checkToolApproval('abu-browser__click', {}, { conversationId: 'conv-2' } as never, confirm as never);
+    await checkToolApproval('abu-browser__click', { tabId: 1 }, { conversationId: 'conv-1' } as never, confirm as never);
+    await checkToolApproval('abu-browser__click', { tabId: 1 }, { conversationId: 'conv-2' } as never, confirm as never);
 
     expect(asked).toHaveLength(2);
   });
 
-  it('never asks for read-only browser tools', async () => {
+  it('allows verified reads when browsing is allowed', async () => {
+    browserFixture({}, 'allow');
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
@@ -204,18 +266,18 @@ describe('browser automation approval gate', () => {
   });
 
   it('still asks in autonomous mode — this surface is approval-required in every mode', async () => {
-    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    setMigratedBrowserSettings({ permissionMode: 'autonomous' }); browserFixture();
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
-    await checkToolApproval('abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never);
+    await checkToolApproval('abu-browser__click', { tabId: 1 }, { conversationId: 'conv-1' } as never, confirm as never);
 
     expect(asked).toHaveLength(1);
   });
 
   it('fails closed when there is no confirmation channel (headless/background run)', async () => {
     const decision = await checkToolApproval(
-      'abu-browser__click', {}, { conversationId: 'conv-1' } as never, undefined,
+      'abu-browser__click', { tabId: 1 }, { conversationId: 'conv-1' } as never, undefined,
     );
     expect(decision.decision).toBe('deny');
   });
@@ -229,12 +291,13 @@ describe('browser automation approval gate', () => {
 describe('browser site permission verdicts', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard', browserSitePermissions: {} });
-    __resetBrowserGrantsForTests();
+    setMigratedBrowserSettings({ permissionMode: 'standard', browserSitePermissions: {} });
+    __resetBrowserGrantsForTests(); browserFixture(); installBrowserProbe();
   });
+  afterEach(() => { (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser'); });
 
   it('lets an allowed site through without asking', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    browserFixture({ 'https://example.com': 'allowed' });
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
@@ -248,7 +311,7 @@ describe('browser site permission verdicts', () => {
   });
 
   it('lets an allowed site through even with no confirmation channel (headless run; the scheduler itself passes an auto-deny callback, same outcome)', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    browserFixture({ 'https://example.com': 'allowed' });
 
     const decision = await checkToolApproval(
       'abu-browser__navigate', { tabId: 1, url: 'https://example.com/report' },
@@ -259,7 +322,7 @@ describe('browser site permission verdicts', () => {
   });
 
   it('denies a blocked site outright, without offering confirmation', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://evil.com': 'denied' } });
+    browserFixture({ 'https://evil.com': 'denied' });
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
@@ -272,13 +335,13 @@ describe('browser site permission verdicts', () => {
     expect(asked).toHaveLength(0);
   });
 
-  it('a denied site stays denied even after a conversation grant — denied wins', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://evil.com': 'denied' } });
+  it('a denied site stays denied even after a one-shot approval — denied wins', async () => {
+    browserFixture({ 'https://evil.com': 'denied' });
     const confirm = async () => true;
 
-    // Earn a conversation grant on an unrelated action first.
+    // Approve an unrelated action once first.
     await checkToolApproval(
-      'abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never,
+      'abu-browser__click', { tabId: 1 }, { conversationId: 'conv-1' } as never, confirm as never,
     );
     const decision = await checkToolApproval(
       'abu-browser__navigate', { tabId: 1, url: 'https://evil.com/' },
@@ -289,7 +352,7 @@ describe('browser site permission verdicts', () => {
   });
 
   it('an allowed parent domain does not cover a subdomain — exact origins only', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    browserFixture({ 'https://example.com': 'allowed' });
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
@@ -305,20 +368,21 @@ describe('browser site permission verdicts', () => {
     // The executor ignores `url` unless action === 'goto', so the gate must
     // not let a crafted allowed-site url approve a history navigation whose
     // real destination is unknown.
-    useSettingsStore.setState({ browserSitePermissions: { 'https://allowed.com': 'allowed' } });
+    browserFixture({ 'https://allowed.com': 'allowed' });
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
-    await checkToolApproval(
+    const decision = await checkToolApproval(
       'abu-browser__navigate', { tabId: 1, url: 'https://allowed.com/', action: 'back' },
       { conversationId: 'conv-1' } as never, confirm as never,
     );
 
-    expect(asked).toHaveLength(1);
+    expect(decision.decision).toBe('deny');
+    expect(asked).toHaveLength(0);
   });
 
   it('denies navigate back with a decoy allowed url when headless — no silent unattended ride', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://allowed.com': 'allowed' } });
+    browserFixture({ 'https://allowed.com': 'allowed' });
 
     const decision = await checkToolApproval(
       'abu-browser__navigate', { tabId: 1, url: 'https://allowed.com/', action: 'reload' },
@@ -328,17 +392,17 @@ describe('browser site permission verdicts', () => {
     expect(decision.decision).toBe('deny');
   });
 
-  it('execute_js does not ride the conversation grant earned by a non-scripting approval', async () => {
+  it('execute_js does not reuse a non-scripting approval', async () => {
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
-    // Approving a click mints the conversation grant…
+    // Approve the click once.
     await checkToolApproval(
-      'abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never,
+      'abu-browser__click', { tabId: 1 }, { conversationId: 'conv-1' } as never, confirm as never,
     );
     // …but a script run in the same conversation must still ask.
     await checkToolApproval(
-      'abu-browser__execute_js', { code: 'document.cookie' },
+      'abu-browser__execute_js', { tabId: 1, code: 'document.cookie' },
       { conversationId: 'conv-1' } as never, confirm as never,
     );
 
@@ -350,18 +414,18 @@ describe('browser site permission verdicts', () => {
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
 
     await checkToolApproval(
-      'abu-browser__execute_js', { code: '1+1' },
+      'abu-browser__execute_js', { tabId: 1, code: '1+1' },
       { conversationId: 'conv-1' } as never, confirm as never,
     );
     await checkToolApproval(
-      'abu-browser__click', {}, { conversationId: 'conv-1' } as never, confirm as never,
+      'abu-browser__click', { tabId: 1 }, { conversationId: 'conv-1' } as never, confirm as never,
     );
 
     expect(asked).toHaveLength(2);
   });
 
   it('denies headless execute_js even on an allowed site — fail-closed pinned', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    browserFixture({ 'https://example.com': 'allowed' });
 
     const decision = await checkToolApproval(
       'abu-browser__execute_js', { tabId: 1, code: '1+1' },
@@ -372,7 +436,7 @@ describe('browser site permission verdicts', () => {
   });
 
   it('execute_js never rides a site grant — scripts ask every time', async () => {
-    useSettingsStore.setState({ browserSitePermissions: { 'https://example.com': 'allowed' } });
+    browserFixture({ 'https://example.com': 'allowed' });
     const infos: Array<{ command: string; allowPersistentGrant?: boolean }> = [];
     const confirm = async (info: { command: string; allowPersistentGrant?: boolean }) => {
       infos.push(info);
@@ -380,7 +444,7 @@ describe('browser site permission verdicts', () => {
     };
 
     await checkToolApproval(
-      'abu-browser__execute_js', { code: '1+1' },
+      'abu-browser__execute_js', { tabId: 1, code: '1+1' },
       { conversationId: 'conv-1' } as never, confirm as never,
     );
 
@@ -401,15 +465,15 @@ describe('browser site permission verdicts', () => {
       { conversationId: 'conv-1' } as never, confirm as never,
     );
     __resetBrowserGrantsForTests();
-    // click with no resolvable origin (no reachable MCP server in tests) → no grant offered.
-    await checkToolApproval(
-      'abu-browser__click', {}, { conversationId: 'conv-2' } as never, confirm as never,
+    // Unknown tab: fail closed before offering either approval scope.
+    const unknown = await checkToolApproval(
+      'abu-browser__click', { tabId: 999 }, { conversationId: 'conv-2' } as never, confirm as never,
     );
 
     expect(infos[0].browserOrigin).toBe('https://example.com');
     expect(infos[0].allowPersistentGrant).toBe(true);
-    expect(infos[1].browserOrigin).toBeUndefined();
-    expect(infos[1].allowPersistentGrant).toBe(false);
+    expect(infos).toHaveLength(1);
+    expect(unknown.decision).toBe('deny');
   });
 });
 
@@ -417,7 +481,7 @@ describe('browser site permission verdicts', () => {
 describe('enterprise policy confirm gate', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
     policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
     policyMocks.showPolicyConfirm.mockResolvedValue(true);
     policyMocks.showPolicyConfirm.mockClear();
@@ -479,7 +543,7 @@ describe('enterprise policy confirm gate', () => {
 describe('command confirmation channel', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
     policyMocks.checkTool.mockReturnValue({ decision: 'allow' });
   });
 
@@ -501,7 +565,7 @@ describe('command confirmation channel', () => {
 describe('self-extension approval gate', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
   });
 
   const collectingConfirm = (asked: string[]) =>
@@ -604,7 +668,7 @@ describe('self-extension approval gate', () => {
 
   it('fails closed with no confirmation channel, in every permission mode', async () => {
     for (const mode of ['standard', 'smart', 'autonomous'] as const) {
-      useSettingsStore.setState({ permissionMode: mode });
+      setMigratedBrowserSettings({ permissionMode: mode });
       const decision = await checkToolApproval(
         'save_agent', { name: 'x' }, { conversationId: 'conv-1' } as never, undefined,
       );
@@ -617,7 +681,7 @@ describe('self-extension approval gate', () => {
     ['manage_scheduled_task', 'create'],
     ['manage_file_watch', 'add'],
   ])('does not let a custom wildcard trigger persist authority through %s(%s)', async (name, action) => {
-    useSettingsStore.setState({ permissionMode: 'autonomous' });
+    setMigratedBrowserSettings({ permissionMode: 'autonomous' });
     const confirm = vi.fn(async () => true);
     const decision = await checkToolApproval(
       name,
@@ -669,7 +733,7 @@ describe('self-extension approval gate', () => {
 
     it('fails closed with no confirmation channel, in every permission mode', async () => {
       for (const mode of ['standard', 'smart', 'autonomous'] as const) {
-        useSettingsStore.setState({ permissionMode: mode });
+        setMigratedBrowserSettings({ permissionMode: mode });
         const decision = await checkToolApproval(
           'save_team', { name: '数据小队', leader: '分析师', members: [] },
           { conversationId: 'conv-1' } as never, undefined,
@@ -725,7 +789,7 @@ describe('self-extension approval gate', () => {
 describe('plugin tool approval gate', () => {
   beforeEach(() => {
     useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
     setPluginServerNames(['weather']);
     forgetPluginGrants();
   });
@@ -740,7 +804,7 @@ describe('plugin tool approval gate', () => {
   it.each(['standard', 'smart', 'full'] as const)(
     'asks before running a plugin-contributed MCP tool in %s mode',
     async (mode) => {
-      useSettingsStore.setState({ permissionMode: mode });
+      setMigratedBrowserSettings({ permissionMode: mode });
       const asked: string[] = [];
       const decision = await checkToolApproval(
         'weather__get_forecast', {}, { conversationId: 'conv-1' } as never, collectingConfirm(asked),
@@ -819,7 +883,7 @@ describe('team file retry boundary (F1/F2)', () => {
     const { usePermissionStore } = await import('../../stores/permissionStore');
     const { isInScopedAuthorizedWorkspace } = await import('./pathSafety');
     useChatStore.setState({ conversations: { 'file-team': { id: 'file-team', teamId: 't', title: 't', createdAt: 1, updatedAt: 1, status: 'running', messages: [] } } });
-    useSettingsStore.setState({ permissionMode: 'standard' });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
     usePermissionStore.setState({ persistedGrants: {}, sessionGrants: {}, pendingRequest: null });
     useTeamConfirmationStore.setState({ pending: {}, approvedOnce: {}, runRules: {}, retrySelections: {} });
     policyMocks.checkTool.mockReturnValue({ decision: 'allow' });

@@ -47,6 +47,61 @@ export function getActiveApiKey(state: SettingsState): string {
   return p?.apiKey ?? '';
 }
 
+export type ModelUnavailableReason = 'provider-removed' | 'provider-disabled' | 'model-removed';
+export interface ModelRef { providerId: string; modelId: string }
+
+/**
+ * Whether a conversation's pinned model can still be used. Mirrors the
+ * settings page's own visibility rule (AIServicesSection `visibleProviders`):
+ * a builtin the user trashed stays in the array but is hidden, so it reads as
+ * removed, not merely switched off.
+ *
+ * A managed provider's model list is pulled at runtime. An empty list that no
+ * pull has confirmed (`status !== 'verified'`) says nothing about what the
+ * owning system allows, so a model missing from it is not reported as removed;
+ * the request itself settles the question. A list on hand came from a
+ * successful pull and stands while the next one is in flight or has failed.
+ */
+export function getModelUnavailableReason(
+  state: Pick<SettingsState, 'providers'>,
+  ref: ModelRef,
+): ModelUnavailableReason | null {
+  const p = state.providers.find((x) => x.id === ref.providerId);
+  const visible = !!p && (p.userAdded || p.enabled || p.apiKey.trim().length > 0);
+  if (!p || !visible) return 'provider-removed';
+  if (!p.enabled) return 'provider-disabled';
+  if (p.source === 'managed' && p.status !== 'verified' && p.models.length === 0) return null;
+  if (!p.models.some((m) => m.id === ref.modelId)) return 'model-removed';
+  return null;
+}
+
+export function hasAnyEnabledProvider(state: Pick<SettingsState, 'providers'>): boolean {
+  return state.providers.some((p) => p.enabled);
+}
+
+/**
+ * A model of the user's own to fall back on while a managed provider cannot be
+ * reached: the one in use before that provider took over the default, if it
+ * can still be used, else the first model of the first enabled provider the
+ * user owns. Null when the user has none.
+ */
+export function findPersonalFallbackModel(
+  state: Pick<SettingsState, 'providers'>,
+  preferred: ModelRef | null,
+): ModelRef | null {
+  if (preferred) {
+    const p = state.providers.find((x) => x.id === preferred.providerId);
+    if (p && p.source !== 'managed' && getModelUnavailableReason(state, preferred) === null) return preferred;
+  }
+  const own = state.providers.find((p) => p.source !== 'managed' && p.enabled && p.models.length > 0);
+  return own ? { providerId: own.id, modelId: own.models[0].id } : null;
+}
+
+export function getModelDisplayLabel(state: Pick<SettingsState, 'providers'>, ref: ModelRef): string {
+  const p = state.providers.find((x) => x.id === ref.providerId);
+  return p?.models.find((m) => m.id === ref.modelId)?.label || ref.modelId;
+}
+
 /** Resolve an agent's model field into the actual model ID */
 export function resolveAgentModel(agentModel: string | undefined, state: SettingsState): string {
   const globalModel = state.activeModel.modelId;

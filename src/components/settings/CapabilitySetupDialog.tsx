@@ -17,6 +17,7 @@ import {
 import { routedComputerUseTaskSummary } from '@/core/capabilityPlugins/computerUseResume';
 import { useChatStore } from '@/stores/chatStore';
 import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
+import { ensureConversationModelUsable } from '@/components/chat/sendModelGuard';
 import { rehydrateImageData } from '@/core/llm/imageRehydration';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 
@@ -100,6 +101,8 @@ export default function CapabilitySetupDialog() {
     // `message` is the user message that started this loop (loops always
     // begin with their user message), so truncating from its own id already
     // removes the whole loop — deleteLoopMessages is retired (plan stage 3).
+    // Same pre-send model check as the composer, before anything is deleted.
+    if (!ensureConversationModelUsable(useChatStore.getState().conversations[request.conversationId], t.chat)) return;
     chat.deleteMessagesFrom(request.conversationId, message.id);
     await runAgentLoopDispatched(
       request.conversationId,

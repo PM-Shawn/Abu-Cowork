@@ -293,14 +293,17 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
   type ExampleItem = { kind: 'installed'; entry: MCPServerEntry } | { kind: 'template'; template: MCPTemplate };
   const offeredTemplateIds = useMemo(() => new Set(availableTemplates.map((tmpl) => tmpl.id)), [availableTemplates]);
   const exampleItems = useMemo(() => {
-    const items: ExampleItem[] = [];
+    const added: ExampleItem[] = [];
+    const rest: ExampleItem[] = [];
     for (const tmpl of getMCPTemplates()) {
       if (searchLower && !tmpl.name.toLowerCase().includes(searchLower) && !tmpl.description.toLowerCase().includes(searchLower)) continue;
       const entry = servers[tmpl.name];
-      if (entry) items.push({ kind: 'installed', entry });
-      else if (offeredTemplateIds.has(tmpl.id)) items.push({ kind: 'template', template: tmpl });
+      if (entry) added.push({ kind: 'installed', entry });
+      else if (offeredTemplateIds.has(tmpl.id)) rest.push({ kind: 'template', template: tmpl });
     }
-    return items;
+    // Added first, catalog order kept inside each group: ordering is half the
+    // signal that tells the two kinds of card apart, the status dot the other.
+    return [...added, ...rest];
   }, [offeredTemplateIds, servers, searchLower]);
 
   // 「市场」 = 内置 / 官方 / 插件提供 (ruling 2026-09-13): a plugin's server is
@@ -613,8 +616,16 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     // Connect/disconnect is the authoritative action — clear any stale test result.
     setServerErrors((prev) => { const next = { ...prev }; delete next[name]; return next; });
     try {
-      if (entry.status === 'connected') await disconnectServer(name);
-      else {
+      if (entry.status === 'connected') {
+        // Record the intent, not just the current state: without this the
+        // startup pass (`connectAllEnabled`) reconnects every server the user
+        // switched off, so the switch was only ever good until the next
+        // launch. `provisionFirstPartyMCPServers` deliberately leaves
+        // `enabled` alone when it refreshes the bridge's command, so an off
+        // switch survives upgrades too.
+        await disconnectServer(name);
+        updateServer(name, { enabled: false });
+      } else {
         updateServer(name, { enabled: true });
         await connectServer(name);
       }
@@ -654,6 +665,28 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
     setShowLogs(false);
   }, [selectedKey]);
 
+  /** The catalog shelf mixes servers the user has added with ones they have
+   *  not. A card with no dot has not been added — that dot is what 「市场」
+   *  lacked, and it doubles as the health readout on 「我的」.
+   *
+   *  Dot only, no visible text: ToolCard's badge box is the slot that yields
+   *  width (`ToolCard.tsx:95`), and at four columns a label like
+   *  「Connection error」 squeezes the name to its 40px floor — the same trap
+   *  the expert cards' tool-count badge was removed for. The label still rides
+   *  along as the tooltip and for screen readers.
+   *
+   *  The state itself comes from `serverStatusMeta`, the same function the
+   *  detail header uses, so the card and the detail can never disagree. */
+  const statusDot = (entry: MCPServerEntry) => {
+    const { statusLabel, statusDotColor } = serverStatusMeta(entry, connectingServer, null, t);
+    return (
+      <span className="flex items-center" title={entry.error || statusLabel} data-testid={`mcp-status-${entry.config.name}`}>
+        <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', statusDotColor)} />
+        <span className="sr-only">{statusLabel}</span>
+      </span>
+    );
+  };
+
   const renderServerCard = (entry: MCPServerEntry) => {
     const c = entry.config;
     const isHttp = !!(c.url || c.transport === 'http');
@@ -667,9 +700,11 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
         key={c.name}
         item={{
           id: c.name,
+          testId: `mcp-card-${c.name}`,
           name: c.name,
           description,
           avatar: <Server className="h-6 w-6 text-[var(--abu-text-muted)]" />,
+          badge: statusDot(entry),
           toggle: (
             <span title={entry.error || (entry.status === 'connected' ? t.toolbox.disconnect : t.toolbox.connect)} onClick={event => event.stopPropagation()}>
               <Toggle
@@ -692,6 +727,7 @@ export default function MCPSection({ showAddForm: externalShowAddForm, onAddForm
       key={tmpl.id}
       item={{
         id: tmpl.id,
+        testId: `mcp-card-${tmpl.name}`,
         name: pickLocale(locale, tmpl.name, tmpl.nameEn),
         description: pickLocale(locale, tmpl.description, tmpl.descriptionEn),
         avatar: <Server className="h-6 w-6 text-[var(--abu-text-placeholder)]" />,
@@ -957,7 +993,14 @@ function serverStatusMeta(
     : isConnected ? 'text-[var(--abu-success)]'
     : status === 'error' ? 'text-[var(--abu-danger)]'
     : 'text-[var(--abu-text-muted)]';
-  return { isConnected, isConnecting, isTesting, statusLabel, statusColor };
+  // Same five states as a filled dot, for the card badge. Kept here rather than
+  // derived from `statusColor` so the two can never drift apart.
+  const statusDotColor = isReconnecting ? 'bg-[var(--abu-warning)]'
+    : isConnecting ? 'bg-[var(--abu-warning)]'
+    : isConnected ? 'bg-[var(--abu-success-solid)]'
+    : status === 'error' ? 'bg-[var(--abu-danger)]'
+    : 'bg-[var(--abu-text-placeholder)]';
+  return { isConnected, isConnecting, isTesting, statusLabel, statusColor, statusDotColor };
 }
 
 /** Connection control and secondary actions share the extension detail header. */

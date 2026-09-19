@@ -108,7 +108,7 @@ export function parseLeadingAgentCommand(text: string): LeadingAgentCommand | nu
     range,
     caret,
     query,
-    body: text.slice(range.end).replace(/^\s+/, ''),
+    body: text.slice(range.end).replace(/^[ \t]/, ''),
     key: buildKey('leading-command', range, caret, query),
   };
 }

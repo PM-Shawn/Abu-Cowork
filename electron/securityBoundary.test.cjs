@@ -411,12 +411,12 @@ test('invoke payload rejects malformed, oversized, and dangerous values', () => 
   );
 });
 
-test('raw bodies and headers are limited to fs write commands', () => {
+test('raw bodies and headers are limited to raw-body commands', () => {
   const record = trustedRecord();
   assert.throws(
     () =>
       validateInvokePayload(record, {
-        cmd: 'mcp_write',
+        cmd: 'run_shell_command',
         args: {},
         body: Buffer.from('x'),
       }),
@@ -457,6 +457,109 @@ test('raw bodies and headers are limited to fs write commands', () => {
       headers: { path: encodeURIComponent('/tmp/a'), options: '{"baseDir":12}' },
     })
   );
+});
+
+test('fs commands refuse relative paths at the boundary unless a baseDir names the anchor', () => {
+  const record = trustedRecord();
+  const refused = (payload, key) =>
+    assert.throws(
+      () => validateInvokePayload(record, payload),
+      (err) => {
+        assert.match(err.message, new RegExp(`\\b${key}\\b.*must be an absolute path`));
+        assert.equal(err.message.includes('secret-name'), false, 'error must not echo the path');
+        return true;
+      }
+    );
+  const rel = 'nested/secret-name.txt';
+  const abs = path.join(os.tmpdir(), 'abu-abs.txt');
+
+  // Bare-name commands never take a baseDir.
+  refused({ cmd: 'append_file_text', args: { path: rel, data: 'x' } }, 'path');
+  refused({ cmd: 'atomic_write_text', args: { path: rel, content: 'x' } }, 'path');
+  refused({ cmd: 'atomic_write_with_backup', args: { path: rel, content: 'x' } }, 'path');
+  refused({ cmd: 'restore_from_backup', args: { target: rel, backup: abs } }, 'target');
+  refused({ cmd: 'restore_from_backup', args: { target: abs, backup: rel } }, 'backup');
+  refused({ cmd: 'cleanup_old_backups', args: { dir: 'secret-name', ttlHours: 1 } }, 'dir');
+  // A baseDir-looking option does not re-anchor a bare-name command.
+  refused({ cmd: 'atomic_write_text', args: { path: rel, content: 'x', options: { baseDir: 12 } } }, 'path');
+
+  // plugin:fs plain-arg form.
+  refused({ cmd: 'plugin:fs|read_text_file', args: { path: rel } }, 'path');
+  refused({ cmd: 'plugin:fs|remove', args: { path: rel, options: { recursive: true } } }, 'path');
+  refused({ cmd: 'plugin:fs|rename', args: { oldPath: abs, newPath: rel, options: { oldPathBaseDir: 12 } } }, 'newPath');
+  refused({ cmd: 'plugin:fs|copy_file', args: { fromPath: rel, toPath: abs, options: { toPathBaseDir: 12 } } }, 'fromPath');
+  refused({ cmd: 'plugin:fs|watch', args: { paths: [abs, rel], options: {}, onEvent: '__CHANNEL__:1' } }, 'paths');
+  for (const paths of [[''], [['nested']], [abs, 7]]) {
+    assert.throws(
+      () => validateInvokePayload(record, { cmd: 'plugin:fs|watch', args: { paths, onEvent: '__CHANNEL__:1' } }),
+      /IPC paths must be a non-empty string/
+    );
+  }
+
+  // plugin:fs raw-body form.
+  for (const cmd of ['plugin:fs|write_file', 'plugin:fs|write_text_file']) {
+    refused(
+      { cmd, body: Buffer.from('x'), headers: { path: encodeURIComponent(rel), options: '{}' } },
+      'path header'
+    );
+    refused(
+      { cmd, body: Buffer.from('x'), headers: { path: encodeURIComponent(rel), options: undefined } },
+      'path header'
+    );
+  }
+
+  // Accepted: absolute paths, and relative paths anchored by their own baseDir.
+  for (const payload of [
+    { cmd: 'append_file_text', args: { path: abs, data: 'x' } },
+    { cmd: 'restore_from_backup', args: { target: abs, backup: abs } },
+    { cmd: 'plugin:fs|read_text_file', args: { path: rel, options: { baseDir: 12 } } },
+    { cmd: 'plugin:fs|exists', args: { path: abs } },
+    {
+      cmd: 'plugin:fs|rename',
+      args: { oldPath: rel, newPath: rel, options: { oldPathBaseDir: 12, newPathBaseDir: 12 } },
+    },
+    { cmd: 'plugin:fs|watch', args: { paths: [rel], options: { baseDir: 12 }, onEvent: '__CHANNEL__:1' } },
+    {
+      cmd: 'plugin:fs|write_file',
+      body: Buffer.from('x'),
+      headers: { path: encodeURIComponent(rel), options: '{"baseDir":12}' },
+    },
+    // Non-fs commands keep their own semantics for path-like keys.
+    { cmd: 'plugin:path|join', args: { paths: ['a', 'b'] } },
+  ]) {
+    assert.doesNotThrow(() => validateInvokePayload(record, payload), payload.cmd);
+  }
+});
+
+test('raw-body text writes need an absolute path header, like their plain-args form', () => {
+  const record = trustedRecord();
+  const rel = 'nested/secret-name.txt';
+  const abs = path.join(os.tmpdir(), 'abu-raw-text-abs.txt');
+
+  // The raw form carries no options header, so there is no baseDir to anchor
+  // a relative path against — it is refused for the same reason #556 refuses
+  // the plain-args form.
+  for (const cmd of ['append_file_text', 'atomic_write_text']) {
+    assert.throws(
+      () => validateInvokePayload(record, {
+        cmd,
+        body: Buffer.from('hello'),
+        headers: { path: encodeURIComponent(rel) },
+      }),
+      (err) => {
+        assert.match(err.message, new RegExp(`\\bpath header\\b.*must be an absolute path`));
+        assert.equal(err.message.includes('secret-name'), false, 'error must not echo the path');
+        return true;
+      },
+      cmd
+    );
+    const accepted = validateInvokePayload(record, {
+      cmd,
+      body: Buffer.from('hello'),
+      headers: { path: encodeURIComponent(abs) },
+    });
+    assert.equal(accepted.args.path, abs, cmd);
+  }
 });
 
 test('real plugin-fs writeTextFile without options produces an accepted raw request', async () => {
@@ -797,7 +900,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     /native path is unavailable/,
   );
   assert.throws(
-    () => shellBridge.selectUserAttachments({ mediaTypes: ['application/pdf'] }),
+    () => shellBridge.selectUserAttachments({ mediaTypes: ['application/octet-stream'] }),
     /media types are unsupported/,
   );
   assert.deepEqual(
@@ -809,6 +912,10 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
       expiresAt: 2_000,
     }],
   );
+  await shellBridge.selectUserAttachments({ mediaTypes: ['application/pdf'] });
+  assert.ok(invoked.some(({ channel, payload }) => channel === 'abu:select-user-attachments'
+    && payload.mediaTypes?.[0] === 'application/pdf'));
+  assert.throws(() => shellBridge.selectUserAttachments({ path: '/private/secret.pdf' }), /does not accept path/);
   const imageSelectInvoke = invoked.find(({ channel, payload }) => (
     channel === 'abu:select-user-attachments'
       && Array.isArray(payload?.mediaTypes)

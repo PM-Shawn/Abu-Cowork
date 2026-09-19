@@ -3,9 +3,17 @@
 
 import { render, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mockResolveWindow = vi.hoisted(() => vi.fn((_modelId: string, _user?: number) => 2000));
+vi.mock('@/core/llm/modelCapabilities', async (orig) => ({
+  ...(await orig<typeof import('@/core/llm/modelCapabilities')>()),
+  resolveEffectiveContextWindow: (m: string, u?: number) => mockResolveWindow(m, u),
+}));
+
 import ContextIndicator from './ContextIndicator';
 import { useChatStore } from '../../stores/chatStore';
+import { useSettingsStore } from '../../stores/settingsStore';
 import type { Conversation } from '../../types';
 
 const baseConv: Conversation = {
@@ -91,6 +99,18 @@ describe('ContextIndicator', () => {
     // Progress arc should now render (track + arc = 2 circles) — proving the
     // derive fired even without a published usage value.
     expect(indicator.querySelectorAll('circle').length).toBe(2);
+  });
+
+  it('sizes the fallback window from the conversation model, not the global default', () => {
+    useSettingsStore.setState({ activeModel: { providerId: 'p', modelId: 'global-model' } });
+    setConv({
+      model: { providerId: 'p', modelId: 'conv-model' },
+      messages: [{ id: 'm1', role: 'user', content: 'hi', timestamp: 0 }],
+    });
+    mockResolveWindow.mockClear();
+    render(<ContextIndicator conversationId="c1" />);
+    expect(mockResolveWindow).toHaveBeenCalledWith('conv-model', expect.anything());
+    expect(mockResolveWindow).not.toHaveBeenCalledWith('global-model', expect.anything());
   });
 
   it('adds only the messages after messageCountAtPublish, so streaming output moves the ring', () => {

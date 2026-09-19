@@ -1,38 +1,3 @@
-/**
- * Who may mint a standing browser site verdict.
- *
- * `'allowed'` is the strongest thing this app stores about a website: it is
- * what stops the confirmation dialog appearing, AND it is the one signal that
- * lets an AUTOMATIC task act on that site at all (`decideBrowserOperation`
- * refuses an unattended call on anything without it). Its safety argument is
- * provenance, not shape: every one of them is a human act, taken in a surface
- * the user opened, with the reason next to the control.
- *
- * That argument only holds while the writers can be enumerated. This test
- * enumerates them. Adding a third file to the list is not forbidden — it is
- * required to be a DECISION, taken by whoever adds it, rather than something
- * that shows up in a diff nobody reads.
- *
- * Four ways in are checked:
- *  1. the store's setter, `setBrowserSitePermission`;
- *  2. writing the `browserSitePermissions` map straight through `setState`,
- *     which would bypass the setter entirely;
- *  3. casting to the branded `BrowserSiteVerdicts` type, which is how a
- *     writer would get past the compiler now that the field is nominal
- *     (config-batch4);
- *  4. importing the test-only minting helper from shipped code.
- *
- * (3) and (4) are the escape hatches the TYPE constraint leaves open. The
- * brand makes an accidental writer impossible — `setState({
- * browserSitePermissions: {...} })` no longer compiles anywhere outside
- * `settingsStore.ts` — but any nominal type in TypeScript can be forced with
- * an `as`, so the scan still has to say that forcing it is a decision rather
- * than a detail.
- *
- * Deliberately a source scan rather than a runtime spy: the property is about
- * code that EXISTS, and a call site nobody exercises in a test would be
- * invisible to a spy while being just as real at runtime.
- */
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
@@ -95,22 +60,8 @@ const TEST_VERDICT_HELPER = join('src', 'test', 'browserSiteVerdicts.ts');
 const PERMITTED_WRITERS = [
   join('src', 'components', 'chat', 'TeamConfirmationsStrip.tsx'),
   join('src', 'components', 'common', 'CommandConfirmDialog.tsx'),
-  join('src', 'components', 'settings', 'sections', 'BrowserPermissionCards.tsx'),
 ];
-
-/**
- * The writers that grant on behalf of an EMBEDDED REGION, and therefore have
- * to mark what they mint. Exactly one today: the merged prompt, which is the
- * only surface that is ever shown a page's embedded origins.
- *
- * `browserPageOrigin` is the signal — the gate sends it only when the action
- * lands somewhere other than the top page, so a writer that reads it is by
- * definition deciding about a region.
- */
-const REGION_AWARE_WRITERS = [
-  join('src', 'components', 'common', 'CommandConfirmDialog.tsx'),
-];
-
+const SETTINGS_WRITER = join('src', 'components', 'settings', 'sections', 'NewBrowserPermissionCards.tsx');
 function sourceFiles(): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
@@ -137,80 +88,52 @@ function sourceFiles(): string[] {
 function filesMatching(predicate: (source: string) => boolean): string[] {
   return sourceFiles()
     .filter((file) => file !== STORE
-      && file !== TEST_VERDICT_HELPER
+      && file !== TEST_VERDICT_HELPER && file !== join('src', 'test', 'migratedBrowserSettings.ts')
       && predicate(readFileSync(join(REPO_ROOT, file), 'utf-8')))
     .sort();
 }
 
-describe('standing browser site verdicts have an enumerated set of writers', () => {
-  it('finds the files it is asserting about (the scan is not silently empty)', () => {
+describe('browser permission writes stay in explicit user surfaces', () => {
+  it('scans real sources and all approved writers', () => {
     const files = sourceFiles();
     expect(files.length).toBeGreaterThan(200);
-    expect(files).toContain(STORE);
-    expect(files).toContain(TEST_VERDICT_HELPER);
-    for (const writer of PERMITTED_WRITERS) expect(files).toContain(writer);
-    // A path typo in PERMITTED_WRITERS would otherwise make this suite pass by
-    // comparing two empty-ish sets.
+    for (const writer of [STORE, SETTINGS_WRITER, ...PERMITTED_WRITERS]) expect(files).toContain(writer);
     expect(sep).toBeDefined();
   });
-
-  it('lets nobody else call the setter', () => {
-    expect(filesMatching((src) => src.includes('setBrowserSitePermission(')))
-      .toEqual([...PERMITTED_WRITERS].sort());
+  it('allows atomic approval grants only from ordinary and team confirmation', () => {
+    expect(filesMatching(src => /\.grantBrowserPermissionTargets\(/.test(src))).toEqual([...PERMITTED_WRITERS].sort());
   });
-
-  it('lets nobody write the verdict map around the setter', () => {
-    // `setState({ browserSitePermissions: ... })` would be a grant with none
-    // of the setter's call sites — invisible to the test above.
-    const bypass = filesMatching(
-      (src) => /setState\s*\(/.test(src) && src.includes('browserSitePermissions'),
-    );
-    expect(bypass).toEqual([]);
+  it('allows explicit site rules only from the settings editor', () => {
+    expect(filesMatching(src => /\.(setBrowserSiteRule|setBrowserEmbeddedRule)\(/.test(src))).toEqual([SETTINGS_WRITER]);
   });
-
-  it('lets nobody force the brand with a cast', () => {
-    // The compile-time half of the rule (config-batch4): the field's type is
-    // nominal, so only `settingsStore.ts`'s module-private
-    // `mintBrowserSiteVerdicts` can produce one. A cast is the one way past
-    // that, and it must not appear in shipped code.
-    const forced = filesMatching((src) => /\bas\s+BrowserSiteVerdicts\b/.test(src));
-    expect(forced).toEqual([]);
+  it('enumerates every remaining permission mutation API', () => {
+    const writers: Record<string, string[]> = {
+      setBrowserSiteResourcePermission: [],
+      setBrowserPermissionDefault: [SETTINGS_WRITER],
+      removeBrowserSiteRule: [SETTINGS_WRITER],
+      removeBrowserEmbeddedRule: [],
+      setBrowserSiteBlocked: [join('src', 'components', 'common', 'CommandConfirmDialog.tsx')],
+    };
+    for (const [method, expected] of Object.entries(writers)) {
+      expect(filesMatching(src => src.includes(`.${method}(`)), method).toEqual(expected);
+    }
+    const dialog = readFileSync(join(REPO_ROOT, writers.setBrowserSiteBlocked[0]), 'utf8');
+    expect(dialog.match(/\.setBrowserSiteBlocked\([^;]+/g)).toEqual([
+      '.setBrowserSiteBlocked(request.browserOrigin, true)',
+    ]);
   });
-
-  it('lets nobody but the merged region prompt mint a SCOPED grant', () => {
-    // The scope itself is a small enumerable set, so that "which screens can
-    // produce a grant that is only valid inside one page" stays answerable by
-    // reading one list.
-    const markers = filesMatching((src) => /viaEmbedPage:/.test(src));
-    expect(markers).toEqual([...REGION_AWARE_WRITERS].sort());
+  it('has no active legacy site setter or raw permission-state writer', () => {
+    expect(filesMatching(src => src.includes('setBrowserSitePermission('))).toEqual([]);
+    expect(filesMatching(src => /setState\s*\(/.test(src) && /browserPermissionConfigV2|browserSitePermissions/.test(src))).toEqual([]);
   });
-
-  it('makes a writer that knows about embedded regions mark what it mints', () => {
-    // The failure this catches: a NEW granting surface (or a change to an
-    // existing one) that starts reading `browserPageOrigin` — i.e. starts
-    // deciding about a region — and calls the setter without the mark. The
-    // option is optional and omitting it is the WIDE branch, so nothing else
-    // in the build would notice.
-    const grantsForRegionsUnmarked = filesMatching(
-      (src) => src.includes('setBrowserSitePermission(')
-        && src.includes('browserPageOrigin')
-        && !src.includes('viaEmbedPage'),
-    );
-    expect(grantsForRegionsUnmarked).toEqual([]);
-
-    // …and the region-aware writer really is one, so the case above is not
-    // passing on an empty premise.
-    const regionAware = filesMatching(
-      (src) => src.includes('setBrowserSitePermission(') && src.includes('browserPageOrigin'),
-    );
-    expect(regionAware).toEqual([...REGION_AWARE_WRITERS].sort());
+  it('passes the captured resource and full target scope from both approval writers', () => {
+    for (const writer of PERMITTED_WRITERS) {
+      const source = readFileSync(join(REPO_ROOT, writer), 'utf8');
+      expect(source).toMatch(/\.grantBrowserPermissionTargets\([^,]*browserPermissionResource!?,[^,]*browserPermissionTargets!?, current\)/);
+    }
   });
-
-  it('lets nobody reach for the test-only minting helper', () => {
-    // `src/test/browserSiteVerdicts.ts` casts on purpose, for component tests
-    // that arrange standing verdicts without driving the UI. A shipped file
-    // importing it would be that same cast wearing a helper's name.
-    const importers = filesMatching((src) => src.includes('test/browserSiteVerdicts'));
-    expect(importers).toEqual([]);
+  it('never imports a permission test fixture into shipped code', () => {
+    expect(filesMatching(src => /test\/(browserSiteVerdicts|migratedBrowserSettings)/.test(src))).toEqual([]);
+    expect(filesMatching(src => /\bas\s+BrowserSiteVerdicts\b/.test(src))).toEqual([]);
   });
 });

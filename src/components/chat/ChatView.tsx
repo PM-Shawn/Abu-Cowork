@@ -7,9 +7,9 @@ import {
   type AgentLoopDispatchResult,
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
-import { shouldRestoreComposerAfterDispatch } from './composerSendResult';
+import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
-import { useSettingsStore, getActiveApiKey, providerRequiresApiKey } from '@/stores/settingsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import type { PermissionDuration } from '@/stores/permissionStore';
@@ -31,12 +31,12 @@ import { isMaxTurnsNoticeMessage } from '@/core/agent/maxTurnsNotice';
 import { getMessageText } from '@/core/context/contextUtils';
 import { compactConversationManually } from '@/core/context/compactionService';
 import { useToastStore } from '@/stores/toastStore';
+import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import UserQuestionDock from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
-import TeamFollowUpChips from './TeamFollowUpChips';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import ScenarioGuide from './ScenarioGuide';
 import { PROMPT_GRID_CLASS, PROMPT_ITEM_CLASS } from './promptGrid';
@@ -832,14 +832,10 @@ export default function ChatView({
     workspacePath?: string | null,
     onAccepted?: () => void,
   ) => {
-    // Block sending if API key is not configured (Ollama doesn't need one).
-    // Returning false hands the text back to the composer — opening settings
-    // used to swallow whatever the user had typed.
-    const currentState = useSettingsStore.getState();
-    if (!isEnterprise && providerRequiresApiKey(currentState) && !getActiveApiKey(currentState)?.trim()) {
-      currentState.openSystemSettings('ai-services');
-      return false;
-    }
+    // Check the model THIS conversation will run on (its pin, else the global
+    // default). Returning false hands the text back to the composer — opening
+    // settings used to swallow whatever the user had typed.
+    if (!ensureConversationModelUsable(activeConv ?? undefined, t.chat)) return false;
 
     if (text.trim() === '/compact') {
       const convId = activeConv?.id;
@@ -940,10 +936,14 @@ export default function ChatView({
         useChatStore.getState().clearStagedExpertContact(convId);
         throw error;
       }
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: error.message || t.chat.conversationBusy,
-      });
+      // #549: same rule as the returned-result path below — a row that already
+      // states the failure and offers its action needs no toast on top.
+      if (!failureIsOwnedByTranscript(useChatStore.getState().conversations[convId]?.messages ?? [])) {
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: error.message || t.chat.conversationBusy,
+        });
+      }
       return;
     }
     if (!useChatStore.getState().conversations[convId]?.messages.some((m) => m.role === 'user' && !m.isSystem)) {
@@ -955,10 +955,15 @@ export default function ChatView({
     // back instead.
     if (dispatch?.reason === 'error') {
       if (!dispatch.messageTaken) pendingTurnAnchorRef.current = null;
-      useToastStore.getState().addToast({
-        type: 'error',
-        title: dispatch.error || t.chat.conversationBusy,
-      });
+      // #549: a pre-accept failure already states itself in the failed row, with
+      // the action that resolves it (Retry / 新建对话). A toast carrying the same
+      // sentence would say it twice and point nowhere.
+      if (!dispatch.runErrorKind) {
+        useToastStore.getState().addToast({
+          type: 'error',
+          title: dispatch.error || t.chat.conversationBusy,
+        });
+      }
       if (shouldRestoreComposerAfterDispatch(dispatch)) {
         return false;
       }
@@ -1513,6 +1518,7 @@ export default function ChatView({
       {commandConfirmRequest && commandConfirmRequest.conversationId === activeConvId && (
         <CommandConfirmDialog
           request={commandConfirmRequest.info}
+          isRequestActive={() => getPendingCommandConfirmation() === commandConfirmRequest}
           onConfirm={handleCommandConfirm}
           onCancel={handleCommandCancel}
         />
@@ -1716,7 +1722,6 @@ export default function ChatView({
               silent dead wait above the composer. */}
           {activeConv.teamId && <TeamMemberBar conversationId={activeConv.id} />}
           {activeConv.teamId && <TeamConfirmationsStrip conversationId={activeConv.id} />}
-          {activeConv.teamId && <TeamFollowUpChips conversationId={activeConv.id} />}
           <AgentStatusStrip conversationId={activeConv.id} />
           {/* Staged mid-task messages — cancellable pills at the composer's
               top-right edge; they enter the transcript when the loop drains them */}

@@ -33,7 +33,6 @@ import ToolGrid from '@/components/toolbox/ToolGrid';
 import InstalledPluginDetail from './InstalledPluginDetail';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
-const ALL_CATEGORIES = '__all__';
 
 /**
  * The whole install-disclosure flow as one value. `pendingEntry` (is the dialog
@@ -108,7 +107,6 @@ export default function MarketplaceBrowser({
   const [selectedName, setSelectedName] = useState<string | null>(null);
   useEffect(() => { if (requestedMarket) setSelectedName(requestedMarket.name); }, [requestedMarket]);
   const [entriesState, setEntriesState] = useState<EntriesState>({ kind: 'idle' });
-  const [category, setCategory] = useState(ALL_CATEGORIES);
   const [flow, setFlow] = useState<InstallFlow>({ kind: 'closed' });
   const [installing, setInstalling] = useState(false);
   const [removeTarget, setRemoveTarget] = useState<string | null>(null);
@@ -170,7 +168,6 @@ export default function MarketplaceBrowser({
     }
     let cancelled = false;
     setEntriesState({ kind: 'loading', marketplace: cachedMarkets.current.get(selected.dir) });
-    setCategory(ALL_CATEGORIES);
     loadMarketplaceFromDir(selected.dir)
       .then((marketplace) => {
         if (marketplace.name !== selected.name) throw new Error(tb.pluginsMarketplaceIdentityChanged);
@@ -237,24 +234,10 @@ export default function MarketplaceBrowser({
     [marketsHydrated, installed, marketplaces],
   );
 
-  const categoryOptions = useMemo(() => {
-    const names = new Set<string>();
-    for (const entry of marketplace?.plugins ?? []) {
-      if (entry.category) names.add(entry.category);
-    }
-    return [
-      { value: ALL_CATEGORIES, label: tb.pluginsCategoryAll },
-      ...[...names].sort().map((name) => ({ value: name, label: name })),
-    ];
-  }, [marketplace, tb.pluginsCategoryAll]);
-
   const visibleEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return (marketplace?.plugins ?? []).filter(
-      (entry) =>
-        (category === ALL_CATEGORIES || entry.category === category) && matchesQuery(entry, query),
-    );
-  }, [marketplace, category, searchQuery]);
+    return (marketplace?.plugins ?? []).filter((entry) => matchesQuery(entry, query));
+  }, [marketplace, searchQuery]);
 
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
@@ -454,15 +437,6 @@ export default function MarketplaceBrowser({
         ) : (
           <span className="text-h-xs text-[var(--abu-text-primary)]">{selectedName}</span>
         )}
-
-        <Select
-          variant="inline"
-          value={category}
-          onChange={setCategory}
-          ariaLabel={tb.pluginsCategoryAll}
-          options={categoryOptions}
-          className="w-44"
-        />
 
         {marketplace && (
           <span className="text-minor text-[var(--abu-text-muted)]">

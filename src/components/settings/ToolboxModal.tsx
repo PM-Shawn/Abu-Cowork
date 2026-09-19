@@ -82,7 +82,7 @@ export default function ExtensionsView() {
   // Handler for creating a skill with AI (the only tab with an AI-create entry)
   const handleAICreate = () => {
     startNewConversation();
-    setPendingInput(t.toolbox.aiCreateSkillPrompt);
+    setPendingInput(t.toolbox.aiCreateSkillPrompt, { startsTask: true });
     closeExtensions();
   };
 

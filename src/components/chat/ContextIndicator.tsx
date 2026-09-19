@@ -86,7 +86,10 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
   const messages = useChatStore((s) => s.conversations[conversationId]?.messages);
   const isCompressing = useChatStore((s) => s.conversations[conversationId]?.isCompressing ?? false);
   const userContextWindow = useSettingsStore((s) => s.contextWindowSize);
-  const activeModelId = useSettingsStore(getEffectiveModel);
+  const convModelId = useChatStore((s) => s.conversations[conversationId]?.model?.modelId);
+  const globalModelId = useSettingsStore(getEffectiveModel);
+  // The ring describes THIS conversation, so size it from its own model (#545).
+  const activeModelId = convModelId ?? globalModelId;
 
   // agentLoop's published snapshot is the truth: it measures the payload actually
   // sent, so it already reflects compaction, micro-compaction and the hard budget

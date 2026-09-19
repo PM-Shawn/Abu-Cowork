@@ -9,6 +9,7 @@ import { createLogger } from '../logging/logger';
 import { resolveOpenAIBaseUrl, buildFullChatUrl } from './urlUtils';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
 import { observeCompatEvent } from '../observability/compatEvents';
+import { createDefaultUsageRecorder, type UsageAttemptRecorder } from './usageRecorder';
 
 const logger = createLogger('openai-compatible');
 
@@ -348,7 +349,39 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
   async chat(
     messages: Message[],
     options: ChatOptions,
-    onEvent: (event: StreamEvent) => void
+    emitEvent: (event: StreamEvent) => void
+  ): Promise<void> {
+    // 用量采集在 provider 边界。这个适配器有二十多处结束事件的发出点，结清统一挂在
+    // 事件出口上：每一处都会经过这里，没有哪次尝试会永远停在「进行中」。
+    const recorder = createDefaultUsageRecorder({
+      protocol: 'openai-compatible',
+      requestedModel: options.model,
+      accounting: options.accounting,
+    });
+    const onEvent = (event: StreamEvent): void => {
+      if (event.type === 'done') {
+        recorder.settle(event.stopReason === 'cancelled' ? 'cancelled' : 'succeeded');
+      }
+      emitEvent(event);
+    };
+    try {
+      await this.chatWithRecorder(messages, options, onEvent, recorder);
+    } catch (err) {
+      // 用户取消与请求失败在账本里是两种结果，页面上也分开显示。
+      recorder.settle(options.signal?.aborted ? 'cancelled' : 'failed');
+      throw err;
+    } finally {
+      // 兜底：走到这里还没结清，说明是上面两支没覆盖到的退出路径。
+      // 结清是幂等的，已经有结果的尝试不会被改写。
+      recorder.settle('interrupted');
+    }
+  }
+
+  private async chatWithRecorder(
+    messages: Message[],
+    options: ChatOptions,
+    onEvent: (event: StreamEvent) => void,
+    recorder: UsageAttemptRecorder,
   ): Promise<void> {
     // Normalize + auto-append /v1 via shared util — keeps UI preview consistent
     // and defensively trims whitespace users paste in (e.g. trailing space
@@ -437,6 +470,12 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
       requestHeaders['Authorization'] = `Bearer ${options.apiKey}`;
     }
     const fetchFn = await getTauriFetch();
+    // 尝试身份在 fetch 层铸造：下面的限额重试会再走一次 fetch，它在账本里单独
+    // 占一条尝试（任务书 U02）。
+    const countingFetch: typeof fetchFn = (...args) => {
+      recorder.beginAttempt();
+      return fetchFn(...args);
+    };
 
     // Stream-level abort controller. The idle heartbeat (below) emits events
     // but cannot make a hung `reader.read()` return — chat() would stay pending
@@ -457,7 +496,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     const connectHangTimer = armHangTimer(streamAbort);
     let response: Awaited<ReturnType<typeof fetchFn>>;
     try {
-      response = await fetchFn(fullUrl, {
+      response = await countingFetch(fullUrl, {
         method: 'POST',
         headers: requestHeaders,
         body: JSON.stringify(body),
@@ -491,7 +530,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         // headers would wait unbounded (only a user abort could cancel it).
         const retryConnectHangTimer = armHangTimer(streamAbort);
         try {
-          response = await fetchFn(fullUrl, {
+          response = await countingFetch(fullUrl, {
             method: 'POST',
             headers: requestHeaders,
             body: JSON.stringify(body),
@@ -544,9 +583,12 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
         onEvent({ type: 'text', text: msg.content });
       }
 
+      if (typeof data.model === 'string') recorder.noteServedModel(data.model);
       // Emit usage before done so agentLoop can capture it in finalUsage
       const usage = data.usage as Record<string, unknown> | undefined;
       if (usage) {
+        // 非流式响应里的 usage 就是最终结算。
+        recorder.observeUsage(usage, 'final');
         onEvent({ type: 'usage', usage: extractUsage(usage) });
       }
 
@@ -828,7 +870,10 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
             // Extract usage from ANY chunk that carries it — some providers
             // send it as a standalone chunk (OpenAI stream_options), others
             // embed it in the finish_reason chunk alongside choices.
+            if (typeof parsed.model === 'string') recorder.noteServedModel(parsed.model);
             if (parsed.usage) {
+              // OpenAI 协议的 usage 是一次性的尾部结算，不是逐块累计。
+              recorder.observeUsage(parsed.usage as Record<string, unknown>, 'final');
               onEvent({
                 type: 'usage',
                 usage: extractUsage(parsed.usage as Record<string, unknown>),

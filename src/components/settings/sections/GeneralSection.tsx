@@ -41,8 +41,6 @@ export default function GeneralSection() {
   const setAgentMaxTurns = useSettingsStore(s => s.setAgentMaxTurns);
   const maxTurnsOptions = buildAgentMaxTurnsOptions(agentMaxTurns).map((turns) => ({
     value: String(turns),
-    // 0 only appears when it is already in force (see buildAgentMaxTurnsOptions)
-    // — it is shown so the menu doesn't misreport the cap, not offered as new.
     label: turns <= 0
       ? t.settings.agentMaxTurnsUnlimited
       : format(t.settings.agentMaxTurnsOption, { n: turns }),

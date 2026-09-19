@@ -397,16 +397,16 @@ describe('库出问题时', () => {
     expect(usageDb.getUsageHealth().writeFailures).toBe(1);
   });
 
-  it.skipIf(isRoot)('目录一时不可写：恢复之后自己接着记，不必重启', () => {
-    const dir = path.dirname(dbPath());
-    fs.mkdirSync(dir, { recursive: true });
-    fs.chmodSync(dir, 0o555);
+  it('库一时打不开：恢复之后自己接着记，不必重启', () => {
+    // 在库文件的位置放一个目录，SQLite 打不开它。这个阻塞方式在 macOS 与 Windows
+    // 上是同一种失败，不依赖目录权限位的语义。
+    fs.mkdirSync(dbPath(), { recursive: true });
 
     const blocked = usageDb.recordUsageAttempt(fakeApp(), attempt({ attemptId: 'att-blocked' }));
     expect(blocked.ok).toBe(false);
     expect(usageDb.getUsageHealth().degradedCode).not.toBeNull();
 
-    fs.chmodSync(dir, 0o755);
+    fs.rmSync(dbPath(), { recursive: true });
 
     // 没有重启、没有重置：下一次写入自己重新打开库。
     const recovered = usageDb.recordUsageAttempt(fakeApp(), attempt({ attemptId: 'att-after' }));

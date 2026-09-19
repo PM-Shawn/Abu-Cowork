@@ -108,6 +108,19 @@ describe('handleWatchTrigger background authorization', () => {
   });
 
   /**
+   * #549 — a watcher run is unattended, so its conversation must be created as
+   * a background one. The store reads `skipActivate` to decide that the
+   * permission mode the user picked on the new-task page is not this
+   * conversation's: under 「完全自主」 the auto-deny callback above is never
+   * even consulted.
+   */
+  it('#549: the watcher conversation is created in the background', async () => {
+    await handleWatchTrigger({ ...rule, id: 'watch-background-create' }, `${rule.path}/b.txt`);
+
+    expect(createConversationMock).toHaveBeenCalledWith(null, { skipActivate: true });
+  });
+
+  /**
    * #549 — a watcher rule has no run log of its own. Its hidden conversation
    * is the only place the failure can be read, and a run that never reached
    * the sidecar wrote nothing into it at all.

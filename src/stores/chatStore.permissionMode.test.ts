@@ -1,3 +1,7 @@
+// @vitest-environment happy-dom
+// The chat store persists through `window.localStorage` (TESTING.md §6: a
+// store with persist opts into a DOM); without it every `set` in this file
+// would go through the persist middleware's storage-unavailable branch.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import { exists } from '@tauri-apps/plugin-fs';
@@ -84,11 +88,37 @@ describe('permission mode is persisted with the conversation', () => {
 
   it('the mode picked before the conversation existed lands in its index entry', async () => {
     useChatStore.getState().setPendingPermissionMode('autonomous');
-    const id = useChatStore.getState().createConversation(null, { skipActivate: true });
+    const id = useChatStore.getState().createConversation(null);
     expect(useChatStore.getState().conversations[id].permissionMode).toBe('autonomous');
     expect(useChatStore.getState().conversationIndex[id].permissionMode).toBe('autonomous');
     expect(useChatStore.getState().pendingPermissionMode).toBeUndefined();
     expect((await indexEntryOnDisk(id))?.permissionMode).toBe('autonomous');
+  });
+
+  it('a conversation created in the background takes no pick and leaves it for the user', async () => {
+    // The pick belongs to the conversation the user is about to open. A
+    // scheduler / trigger / IM / watcher creation passes skipActivate: it
+    // would otherwise run — and now keep for ever — an authority the user
+    // chose for a conversation of their own.
+    useChatStore.getState().setPendingPermissionMode('autonomous');
+    const background = useChatStore.getState().createConversation(null, { skipActivate: true });
+
+    expect(useChatStore.getState().conversations[background].permissionMode).toBeUndefined();
+    expect('permissionMode' in useChatStore.getState().conversationIndex[background]).toBe(false);
+    const onDisk = await indexEntryOnDisk(background);
+    expect(onDisk).toBeDefined();
+    expect('permissionMode' in onDisk!).toBe(false);
+    expect(useChatStore.getState().pendingPermissionMode).toBe('autonomous');
+  });
+
+  it('the pick a background creation left alone goes to the next conversation the user opens', () => {
+    useChatStore.getState().setPendingPermissionMode('autonomous');
+    useChatStore.getState().createConversation(null, { skipActivate: true });
+
+    const mine = useChatStore.getState().createConversation(null);
+    expect(useChatStore.getState().conversations[mine].permissionMode).toBe('autonomous');
+    expect(useChatStore.getState().conversationIndex[mine].permissionMode).toBe('autonomous');
+    expect(useChatStore.getState().pendingPermissionMode).toBeUndefined();
   });
 
   it('a conversation created without a pick has no mode of its own', () => {

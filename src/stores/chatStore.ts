@@ -860,11 +860,14 @@ export const useChatStore = create<ChatStore>()(
           const project = useProjectStore.getState().getProjectByWorkspace(workspacePath);
           if (project) resolvedProjectId = project.id;
         }
-        // The welcome-page chip belongs to the conversation the user is about
-        // to open. Background creators (scheduler / trigger / IM / watcher /
-        // project click) pass skipActivate and must neither inherit nor clear it.
-        const consumePendingTeam = !options?.skipActivate;
-        const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
+        // The welcome-page picks — the team chip and the permission mode —
+        // belong to the conversation the user is about to open. The creators
+        // of an unattended run (scheduler / trigger / IM inbound / file
+        // watcher) pass skipActivate and must neither inherit nor clear them:
+        // such a run would otherwise take an authority the user chose for a
+        // conversation of their own, and keep it on the row for ever.
+        const consumePendingPicks = !options?.skipActivate;
+        const initialTeamId = options?.teamId ?? (consumePendingPicks ? get().pendingTeamId : undefined);
         // Pin the new-conversation default at creation (issue #545) so an empty
         // conversation never drifts with later picks elsewhere. An uninitialized
         // enterprise store skips this: until its async init() resolves, a
@@ -878,7 +881,9 @@ export const useChatStore = create<ChatStore>()(
           : undefined;
         // The mode picked on the new-task page belongs to the conversation
         // from its first moment, in memory and in its index entry.
-        const initialPermissionMode = acceptConversationPermissionMode(get().pendingPermissionMode);
+        const initialPermissionMode = consumePendingPicks
+          ? acceptConversationPermissionMode(get().pendingPermissionMode)
+          : undefined;
         const meta: ConversationMeta = {
           id,
           title: getDefaultConvTitle(),
@@ -904,8 +909,10 @@ export const useChatStore = create<ChatStore>()(
           if (!options?.skipActivate) {
             state.activeConversationId = id;
           }
-          state.pendingPermissionMode = undefined;
-          if (consumePendingTeam) state.pendingTeamId = undefined;
+          if (consumePendingPicks) {
+            state.pendingPermissionMode = undefined;
+            state.pendingTeamId = undefined;
+          }
         });
         // Sync index to disk (fire-and-forget). Also write-through the SQLite
         // catalog (message-storage P0) — best-effort, reconcile is the net.

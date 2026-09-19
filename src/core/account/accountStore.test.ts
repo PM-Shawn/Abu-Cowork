@@ -7,6 +7,7 @@ import {
   exchangeCode,
   fetchAccountProfile,
   logout,
+  refresh,
   userIdFromAccessToken,
 } from '@/core/account/client';
 import { clearAccountCredentials, loadAccountCredentials, saveAccountCredentials } from '@/core/account/credentials';
@@ -14,6 +15,8 @@ import { createPkcePair } from '@/core/account/pkce';
 import { useSettingsStore } from '@/stores/settingsStore';
 import {
   ACCOUNT_BROWSER_TIMEOUT_MS,
+  ACCOUNT_PROFILE_TIMEOUT_MS,
+  ACCOUNT_REFRESH_TIMEOUT_MS,
   __resetAccountStoreForTest,
   useAccountStore,
 } from '@/core/account/accountStore';
@@ -26,6 +29,7 @@ vi.mock('@/core/account/client', async () => {
     exchangeCode: vi.fn(),
     fetchAccountProfile: vi.fn(),
     logout: vi.fn(),
+    refresh: vi.fn(),
     userIdFromAccessToken: vi.fn(),
   };
 });
@@ -45,6 +49,18 @@ const PAIR = {
   refresh_absolute_expires_at: '2026-12-13T00:00:00Z',
   family_id: 'family-1',
 } as const;
+const ROTATED_PAIR = {
+  ...PAIR,
+  access_token: 'rotated-access-secret',
+  refresh_token: 'rotated-refresh-secret',
+} as const;
+const STORED_CREDENTIALS = {
+  serverUrl: 'https://accounts.example.com',
+  accessToken: 'expired-access-secret',
+  refreshToken: 'refresh-secret',
+  userId: 'user-1',
+  kind: 'personal',
+} as const;
 
 describe('account store', () => {
   beforeEach(() => {
@@ -63,6 +79,8 @@ describe('account store', () => {
     });
     vi.mocked(logout).mockReset();
     vi.mocked(logout).mockResolvedValue(undefined);
+    vi.mocked(refresh).mockReset();
+    vi.mocked(refresh).mockResolvedValue(ROTATED_PAIR);
     vi.mocked(userIdFromAccessToken).mockReset();
     vi.mocked(userIdFromAccessToken).mockReturnValue('user-1');
     vi.mocked(loadAccountCredentials).mockReset();
@@ -199,6 +217,315 @@ describe('account store', () => {
     });
   });
 
+  it('rotates a rejected access token, confirms it, then retries the profile once', async () => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile)
+      .mockRejectedValueOnce(new AccountClientError('unauthenticated', 401))
+      .mockResolvedValueOnce({ id: 'user-1', name: 'Ada', email: 'ada@example.com' });
+
+    await useAccountStore.getState().hydrate();
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledWith(
+      STORED_CREDENTIALS.serverUrl,
+      STORED_CREDENTIALS.refreshToken,
+      expect.any(AbortSignal),
+    );
+    expect(saveAccountCredentials).toHaveBeenCalledWith({
+      ...STORED_CREDENTIALS,
+      accessToken: ROTATED_PAIR.access_token,
+      refreshToken: ROTATED_PAIR.refresh_token,
+    });
+    expect(fetchAccountProfile).toHaveBeenNthCalledWith(
+      2,
+      STORED_CREDENTIALS.serverUrl,
+      ROTATED_PAIR.access_token,
+      expect.any(AbortSignal),
+    );
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: { userId: 'user-1', name: 'Ada', email: 'ada@example.com' },
+      profileStatus: 'ready',
+      error: null,
+    });
+  });
+
+  it('does not use a rotated access token before safeStorage confirms it', async () => {
+    let confirmSave!: () => void;
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile)
+      .mockRejectedValueOnce(new AccountClientError('unauthenticated', 401))
+      .mockResolvedValueOnce({ id: 'user-1', name: 'Ada', email: null });
+    vi.mocked(saveAccountCredentials).mockReturnValue(new Promise((resolve) => {
+      confirmSave = resolve;
+    }));
+
+    const hydrating = useAccountStore.getState().hydrate();
+    await vi.waitFor(() => expect(saveAccountCredentials).toHaveBeenCalledOnce());
+    expect(fetchAccountProfile).toHaveBeenCalledOnce();
+
+    confirmSave();
+    await hydrating;
+    expect(fetchAccountProfile).toHaveBeenCalledTimes(2);
+    expect(useAccountStore.getState().profileStatus).toBe('ready');
+  });
+
+  it('shares one hydrate and one rotation while startup callers overlap', async () => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile)
+      .mockRejectedValueOnce(new AccountClientError('unauthenticated', 401))
+      .mockResolvedValueOnce({ id: 'user-1', name: 'Ada', email: null });
+
+    const first = useAccountStore.getState().hydrate();
+    const second = useAccountStore.getState().hydrate();
+    expect(second).toBe(first);
+    await Promise.all([first, second]);
+
+    expect(loadAccountCredentials).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(saveAccountCredentials).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['transport failure', new AccountClientError('network_error')],
+    ['server failure', new AccountClientError('server_error', 503)],
+    ['malformed success response', new AccountClientError('invalid_response', 200)],
+  ])('does not replay a refresh after an ambiguous %s', async (_label, failure) => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile).mockRejectedValue(
+      new AccountClientError('unauthenticated', 401),
+    );
+    vi.mocked(refresh).mockRejectedValue(failure);
+
+    await useAccountStore.getState().hydrate();
+    await useAccountStore.getState().hydrate();
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(saveAccountCredentials).not.toHaveBeenCalled();
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: { userId: 'user-1' },
+      profileStatus: 'error',
+      error: null,
+    });
+  });
+
+  it('releases a stalled profile load so the next hydration can retry', async () => {
+    vi.useFakeTimers();
+    try {
+      let markProfileStarted!: () => void;
+      const profileStarted = new Promise<void>((resolve) => {
+        markProfileStarted = resolve;
+      });
+      vi.mocked(loadAccountCredentials).mockResolvedValue({
+        ...STORED_CREDENTIALS,
+        accessToken: 'access-secret',
+      });
+      vi.mocked(fetchAccountProfile)
+        .mockImplementationOnce((_server, _token, signal) => {
+          markProfileStarted();
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => {
+              reject(new AccountClientError('cancelled'));
+            }, { once: true });
+          });
+        })
+        .mockResolvedValueOnce({ id: 'user-1', name: 'Ada', email: null });
+
+      const first = useAccountStore.getState().hydrate();
+      await profileStarted;
+      await vi.advanceTimersByTimeAsync(ACCOUNT_PROFILE_TIMEOUT_MS);
+      await first;
+      expect(useAccountStore.getState().profileStatus).toBe('error');
+
+      await useAccountStore.getState().hydrate();
+      expect(fetchAccountProfile).toHaveBeenCalledTimes(2);
+      expect(useAccountStore.getState()).toMatchObject({
+        status: 'signed_in', profileStatus: 'ready', account: { name: 'Ada' },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a stalled refresh without retrying its one-time token', async () => {
+    vi.useFakeTimers();
+    try {
+      let markRefreshStarted!: () => void;
+      const refreshStarted = new Promise<void>((resolve) => {
+        markRefreshStarted = resolve;
+      });
+      vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+      vi.mocked(fetchAccountProfile).mockRejectedValue(
+        new AccountClientError('unauthenticated', 401),
+      );
+      vi.mocked(refresh).mockImplementation((_server, _token, signal) => {
+        markRefreshStarted();
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            reject(new AccountClientError('cancelled'));
+          }, { once: true });
+        });
+      });
+
+      const hydrating = useAccountStore.getState().hydrate();
+      await refreshStarted;
+      await vi.advanceTimersByTimeAsync(ACCOUNT_REFRESH_TIMEOUT_MS);
+      await hydrating;
+      await useAccountStore.getState().hydrate();
+
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(useAccountStore.getState()).toMatchObject({
+        status: 'signed_in', profileStatus: 'error', error: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('expires only after the refresh endpoint definitively rejects the credential', async () => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile).mockRejectedValue(
+      new AccountClientError('unauthenticated', 401),
+    );
+    vi.mocked(refresh).mockRejectedValue(
+      new AccountClientError('token_reuse_detected', 401),
+    );
+
+    await useAccountStore.getState().hydrate();
+
+    expect(fetchAccountProfile).toHaveBeenCalledOnce();
+    expect(saveAccountCredentials).not.toHaveBeenCalled();
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'expired',
+      account: { userId: 'user-1' },
+      profileStatus: 'error',
+      error: 'session_expired',
+    });
+  });
+
+  it('fails closed when a rotated credential cannot be confirmed in safeStorage', async () => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile).mockRejectedValue(
+      new AccountClientError('unauthenticated', 401),
+    );
+    vi.mocked(saveAccountCredentials).mockRejectedValue(
+      new Error('account_credentials_not_confirmed'),
+    );
+
+    await useAccountStore.getState().hydrate();
+
+    expect(fetchAccountProfile).toHaveBeenCalledOnce();
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_out',
+      account: null,
+      profileStatus: 'idle',
+      error: 'credential_storage_unavailable',
+    });
+  });
+
+  it.each([
+    ['another identity', 'another-user'],
+    ['no readable identity', null],
+  ] as const)('does not persist or use a rotated access token with %s', async (_label, userId) => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile).mockRejectedValue(
+      new AccountClientError('unauthenticated', 401),
+    );
+    vi.mocked(userIdFromAccessToken).mockReturnValueOnce(userId);
+
+    await useAccountStore.getState().hydrate();
+
+    expect(saveAccountCredentials).not.toHaveBeenCalled();
+    expect(fetchAccountProfile).toHaveBeenCalledOnce();
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: { userId: 'user-1' },
+      profileStatus: 'error',
+    });
+  });
+
+  it('never sends an enterprise credential to the personal refresh endpoint', async () => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue({
+      ...STORED_CREDENTIALS,
+      kind: 'enterprise',
+    });
+    vi.mocked(fetchAccountProfile).mockRejectedValue(
+      new AccountClientError('unauthenticated', 401),
+    );
+
+    await useAccountStore.getState().hydrate();
+
+    expect(refresh).not.toHaveBeenCalled();
+    expect(saveAccountCredentials).not.toHaveBeenCalled();
+    expect(clearAccountCredentials).not.toHaveBeenCalled();
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'expired',
+      account: { userId: 'user-1', kind: 'enterprise' },
+      error: 'session_expired',
+    });
+  });
+
+  it('keeps the visible identity while a foreground hydration reloads its profile', async () => {
+    let resolveProfile!: (value: { id: string; name: string; email: string | null }) => void;
+    vi.mocked(loadAccountCredentials).mockResolvedValue({
+      ...STORED_CREDENTIALS,
+      accessToken: 'access-secret',
+    });
+    vi.mocked(fetchAccountProfile).mockReturnValue(new Promise((resolve) => {
+      resolveProfile = resolve;
+    }));
+    useAccountStore.setState({
+      status: 'signed_in',
+      account: {
+        serverUrl: STORED_CREDENTIALS.serverUrl,
+        userId: 'user-1',
+        kind: 'personal',
+        name: 'Ada',
+        email: 'ada@example.com',
+      },
+      profileStatus: 'ready',
+      error: null,
+    });
+
+    const hydrating = useAccountStore.getState().hydrate();
+    await vi.waitFor(() => expect(useAccountStore.getState().profileStatus).toBe('loading'));
+    expect(useAccountStore.getState().account).toMatchObject({
+      name: 'Ada', email: 'ada@example.com',
+    });
+    resolveProfile({ id: 'user-1', name: 'Ada Lovelace', email: 'ada@example.com' });
+    await hydrating;
+    expect(useAccountStore.getState().account?.name).toBe('Ada Lovelace');
+  });
+
+  it('keeps a previously verified identity when foreground revalidation is offline', async () => {
+    vi.mocked(loadAccountCredentials).mockResolvedValue({
+      ...STORED_CREDENTIALS,
+      accessToken: 'access-secret',
+    });
+    vi.mocked(fetchAccountProfile).mockRejectedValue(new AccountClientError('network_error'));
+    useAccountStore.setState({
+      status: 'signed_in',
+      account: {
+        serverUrl: STORED_CREDENTIALS.serverUrl,
+        userId: 'user-1',
+        kind: 'personal',
+        name: 'Ada',
+        email: 'ada@example.com',
+      },
+      profileStatus: 'ready',
+      error: null,
+    });
+
+    await useAccountStore.getState().hydrate();
+
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: { userId: 'user-1', name: 'Ada', email: 'ada@example.com' },
+      profileStatus: 'error',
+    });
+  });
+
   it('does not trust profile fields when the authenticated id differs', async () => {
     vi.mocked(fetchAccountProfile).mockResolvedValue({
       id: 'another-user', name: 'Mallory', email: 'mallory@example.com',
@@ -242,6 +569,8 @@ describe('account store', () => {
 
     await useAccountStore.getState().hydrate();
 
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(fetchAccountProfile).toHaveBeenCalledTimes(2);
     expect(useAccountStore.getState()).toMatchObject({
       status: 'expired',
       account: { userId: 'user-1', name: null, email: null },
@@ -410,6 +739,152 @@ describe('account store', () => {
     expect(clearAccountCredentials).toHaveBeenCalledBefore(vi.mocked(logout));
     resolveLogout();
     await signingOut;
+  });
+
+  it('lets sign-out clear and revoke the rotated pair without reviving the account', async () => {
+    let resolveRefresh!: (value: typeof ROTATED_PAIR) => void;
+    vi.mocked(loadAccountCredentials)
+      .mockResolvedValueOnce(STORED_CREDENTIALS)
+      .mockResolvedValueOnce(STORED_CREDENTIALS)
+      .mockResolvedValueOnce(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile).mockRejectedValue(
+      new AccountClientError('unauthenticated', 401),
+    );
+    vi.mocked(refresh).mockReturnValue(new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+
+    const hydrating = useAccountStore.getState().hydrate();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    const signingOut = useAccountStore.getState().signOut();
+    expect(useAccountStore.getState()).toMatchObject({ status: 'signed_out', account: null });
+    await signingOut;
+    expect(clearAccountCredentials).toHaveBeenCalledOnce();
+    expect(saveAccountCredentials).not.toHaveBeenCalled();
+
+    resolveRefresh(ROTATED_PAIR);
+    await hydrating;
+
+    expect(saveAccountCredentials).not.toHaveBeenCalled();
+    expect(logout).toHaveBeenNthCalledWith(
+      1,
+      STORED_CREDENTIALS.serverUrl,
+      STORED_CREDENTIALS.accessToken,
+      STORED_CREDENTIALS.refreshToken,
+      expect.any(AbortSignal),
+    );
+    expect(logout).toHaveBeenNthCalledWith(
+      2,
+      STORED_CREDENTIALS.serverUrl,
+      ROTATED_PAIR.access_token,
+      ROTATED_PAIR.refresh_token,
+      expect.any(AbortSignal),
+    );
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_out', account: null, profileStatus: 'idle', error: null,
+    });
+  });
+
+  it('rechecks the sign-out fence after a delayed persistence read', async () => {
+    let markPersistenceReadStarted!: () => void;
+    let resolvePersistenceRead!: (value: typeof STORED_CREDENTIALS) => void;
+    const persistenceReadStarted = new Promise<void>((resolve) => {
+      markPersistenceReadStarted = resolve;
+    });
+    vi.mocked(loadAccountCredentials)
+      .mockResolvedValueOnce(STORED_CREDENTIALS)
+      .mockResolvedValueOnce(STORED_CREDENTIALS)
+      .mockImplementationOnce(() => {
+        markPersistenceReadStarted();
+        return new Promise((resolve) => {
+          resolvePersistenceRead = resolve;
+        });
+      })
+      .mockResolvedValueOnce(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile).mockRejectedValue(
+      new AccountClientError('unauthenticated', 401),
+    );
+
+    const hydrating = useAccountStore.getState().hydrate();
+    await persistenceReadStarted;
+    const signingOut = useAccountStore.getState().signOut();
+    resolvePersistenceRead(STORED_CREDENTIALS);
+    await Promise.all([hydrating, signingOut]);
+
+    expect(saveAccountCredentials).not.toHaveBeenCalled();
+    expect(clearAccountCredentials).toHaveBeenCalledOnce();
+    expect(useAccountStore.getState()).toMatchObject({ status: 'signed_out', account: null });
+  });
+
+  it('does not let login-attempt cancellation turn an established refresh into a hidden session', async () => {
+    let resolveRefresh!: (value: typeof ROTATED_PAIR) => void;
+    vi.mocked(loadAccountCredentials).mockResolvedValue(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile)
+      .mockRejectedValueOnce(new AccountClientError('unauthenticated', 401))
+      .mockResolvedValueOnce({ id: 'user-1', name: 'Ada', email: null });
+    vi.mocked(refresh).mockReturnValue(new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+
+    const hydrating = useAccountStore.getState().hydrate();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    useAccountStore.getState().cancel();
+    expect(useAccountStore.getState().status).toBe('signed_in');
+
+    resolveRefresh(ROTATED_PAIR);
+    await hydrating;
+
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_in', account: { userId: 'user-1', name: 'Ada' }, profileStatus: 'ready',
+    });
+  });
+
+  it('orders rotation, sign-out, and a different new login without crossing identities', async () => {
+    const newPair = {
+      ...PAIR,
+      access_token: 'new-user-access',
+      refresh_token: 'new-user-refresh',
+    } as const;
+    let resolveRefresh!: (value: typeof ROTATED_PAIR) => void;
+    vi.mocked(loadAccountCredentials)
+      .mockResolvedValueOnce(STORED_CREDENTIALS)
+      .mockResolvedValueOnce(STORED_CREDENTIALS)
+      .mockResolvedValueOnce(STORED_CREDENTIALS);
+    vi.mocked(fetchAccountProfile)
+      .mockRejectedValueOnce(new AccountClientError('unauthenticated', 401))
+      .mockResolvedValueOnce({ id: 'user-2', name: 'Grace', email: 'grace@example.com' });
+    vi.mocked(refresh).mockReturnValue(new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    vi.mocked(exchangeCode).mockResolvedValue(newPair);
+    vi.mocked(userIdFromAccessToken).mockImplementation((token) => (
+      token === newPair.access_token ? 'user-2' : 'user-1'
+    ));
+
+    const hydrating = useAccountStore.getState().hydrate();
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    const signingOut = useAccountStore.getState().signOut();
+    await start();
+    const loggingIn = useAccountStore.getState().handleDeepLink(
+      'abu://auth?code=new-code&state=expected-state',
+    );
+
+    resolveRefresh(ROTATED_PAIR);
+    await Promise.all([hydrating, signingOut, loggingIn]);
+
+    expect(saveAccountCredentials).toHaveBeenCalledOnce();
+    expect(saveAccountCredentials).toHaveBeenCalledWith({
+      serverUrl: STORED_CREDENTIALS.serverUrl,
+      accessToken: newPair.access_token,
+      refreshToken: newPair.refresh_token,
+      userId: 'user-2',
+      kind: 'personal',
+    });
+    expect(useAccountStore.getState()).toMatchObject({
+      status: 'signed_in',
+      account: { userId: 'user-2', name: 'Grace', email: 'grace@example.com' },
+      profileStatus: 'ready',
+    });
   });
 
   it('orders an in-flight old save, sign-out clear, and new login save', async () => {

@@ -8,6 +8,7 @@ import {
   logout,
   normalizeAccountServerUrl,
   PERSONAL_ACCOUNT_SERVER_URL,
+  refresh,
   userIdFromAccessToken,
 } from '@/core/account/client';
 import { clearAccountCredentials, loadAccountCredentials, saveAccountCredentials } from '@/core/account/credentials';
@@ -67,11 +68,27 @@ interface ActiveProfileRequest {
 }
 
 let operationId = 0;
+let loginStartOperationId: number | null = null;
 let pendingAuthorization: PendingAuthorization | null = null;
 let activeProfileRequest: ActiveProfileRequest | null = null;
 let credentialMutationQueue: Promise<void> = Promise.resolve();
+let credentialEpoch = 0;
+let hydrateFlight: Promise<void> | null = null;
+let refreshMemo: {
+  source: AccountCredentials;
+  result: Promise<RefreshResult>;
+} | null = null;
 const LOGOUT_TIMEOUT_MS = 10_000;
+export const ACCOUNT_PROFILE_TIMEOUT_MS = 10_000;
+export const ACCOUNT_REFRESH_TIMEOUT_MS = 10_000;
 export const ACCOUNT_BROWSER_TIMEOUT_MS = 10 * 60 * 1000;
+
+type RefreshResult =
+  | { kind: 'refreshed'; credentials: AccountCredentials }
+  | { kind: 'rejected' }
+  | { kind: 'storage_unavailable' }
+  | { kind: 'unavailable' }
+  | { kind: 'superseded' };
 
 function nextOperationId(): number {
   if (activeProfileRequest) {
@@ -79,6 +96,7 @@ function nextOperationId(): number {
     activeProfileRequest = null;
   }
   operationId += 1;
+  loginStartOperationId = null;
   return operationId;
 }
 
@@ -106,26 +124,179 @@ function summaryOf(credentials: AccountCredentials): AccountSummary {
   };
 }
 
+function summaryForHydration(
+  credentials: AccountCredentials,
+  current: AccountSummary | null,
+): AccountSummary {
+  if (
+    current &&
+    current.serverUrl === credentials.serverUrl &&
+    current.userId === credentials.userId &&
+    current.kind === credentials.kind
+  ) return current;
+  return summaryOf(credentials);
+}
+
+function credentialsEqual(
+  left: AccountCredentials | null,
+  right: AccountCredentials,
+): boolean {
+  return left !== null &&
+    left.serverUrl === right.serverUrl &&
+    left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken &&
+    left.userId === right.userId &&
+    left.kind === right.kind;
+}
+
+function refreshAccountCredentials(source: AccountCredentials): Promise<RefreshResult> {
+  if (source.kind !== 'personal') return Promise.resolve({ kind: 'rejected' });
+  if (refreshMemo && credentialsEqual(refreshMemo.source, source)) return refreshMemo.result;
+
+  const epoch = credentialEpoch;
+  const result = (async (): Promise<RefreshResult> => {
+    let stored: AccountCredentials | null;
+    try {
+      stored = await enqueueCredentialMutation(loadAccountCredentials);
+    } catch {
+      return { kind: 'storage_unavailable' };
+    }
+    if (epoch !== credentialEpoch || !credentialsEqual(stored, source)) {
+      return { kind: 'superseded' };
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), ACCOUNT_REFRESH_TIMEOUT_MS);
+    try {
+      const pair = await refresh(source.serverUrl, source.refreshToken, controller.signal);
+      const userId = userIdFromAccessToken(pair.access_token);
+      if (userId !== source.userId) return { kind: 'unavailable' };
+      const credentials: AccountCredentials = {
+        serverUrl: source.serverUrl,
+        accessToken: pair.access_token,
+        refreshToken: pair.refresh_token,
+        userId,
+        kind: source.kind,
+      };
+      const persistence = await enqueueCredentialMutation(async () => {
+        if (epoch !== credentialEpoch) return 'superseded' as const;
+        let current: AccountCredentials | null;
+        try {
+          current = await loadAccountCredentials();
+        } catch {
+          return 'storage_unavailable' as const;
+        }
+        if (epoch !== credentialEpoch || !credentialsEqual(current, source)) {
+          return 'superseded' as const;
+        }
+        try {
+          await saveAccountCredentials(credentials);
+          return 'saved' as const;
+        } catch {
+          return 'storage_unavailable' as const;
+        }
+      });
+      if (persistence !== 'saved') {
+        await bestEffortRemoteLogout(credentials);
+        return { kind: persistence };
+      }
+      return { kind: 'refreshed', credentials };
+    } catch (error) {
+      return error instanceof AccountClientError && error.status === 401
+        ? { kind: 'rejected' }
+        : { kind: 'unavailable' };
+    } finally {
+      clearTimeout(timeout);
+    }
+  })();
+  refreshMemo = { source, result };
+  return result;
+}
+
+async function fetchProfileWithDeadline(
+  credentials: AccountCredentials,
+  operationSignal: AbortSignal,
+) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (operationSignal.aborted) controller.abort();
+  else operationSignal.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, ACCOUNT_PROFILE_TIMEOUT_MS);
+  try {
+    return await fetchAccountProfile(
+      credentials.serverUrl,
+      credentials.accessToken,
+      controller.signal,
+    );
+  } finally {
+    clearTimeout(timeout);
+    operationSignal.removeEventListener('abort', abort);
+  }
+}
+
 async function loadProfileIntoSummary(
   credentials: AccountCredentials,
   id: number,
   set: (state: Partial<AccountState>) => void,
+  get: () => AccountStore,
 ): Promise<void> {
   const request = { id, controller: new AbortController() };
   activeProfileRequest = request;
   try {
-    const profile = await fetchAccountProfile(
-      credentials.serverUrl,
-      credentials.accessToken,
-      request.controller.signal,
-    );
+    let activeCredentials = credentials;
+    let profile;
+    try {
+      profile = await fetchProfileWithDeadline(activeCredentials, request.controller.signal);
+    } catch (error) {
+      if (
+        !(error instanceof AccountClientError) ||
+        error.status !== 401 ||
+        activeCredentials.kind !== 'personal' ||
+        id !== operationId ||
+        activeProfileRequest !== request
+      ) throw error;
+
+      const refreshed = await refreshAccountCredentials(activeCredentials);
+      if (id !== operationId || activeProfileRequest !== request) return;
+      if (refreshed.kind === 'rejected') {
+        set({
+          status: 'expired',
+          account: summaryOf(activeCredentials),
+          profileStatus: 'error',
+          error: 'session_expired',
+        });
+        return;
+      }
+      if (refreshed.kind === 'storage_unavailable') {
+        set({
+          status: 'signed_out',
+          account: null,
+          profileStatus: 'idle',
+          error: 'credential_storage_unavailable',
+        });
+        return;
+      }
+      if (refreshed.kind !== 'refreshed') {
+        set({
+          account: summaryForHydration(activeCredentials, get().account),
+          profileStatus: 'error',
+        });
+        return;
+      }
+
+      activeCredentials = refreshed.credentials;
+      profile = await fetchProfileWithDeadline(activeCredentials, request.controller.signal);
+    }
     if (id !== operationId || activeProfileRequest !== request) return;
-    if (profile.id !== credentials.userId) {
-      set({ account: summaryOf(credentials), profileStatus: 'error' });
+    if (profile.id !== activeCredentials.userId) {
+      set({
+        account: summaryForHydration(activeCredentials, get().account),
+        profileStatus: 'error',
+      });
       return;
     }
     set({
-      account: { ...summaryOf(credentials), name: profile.name, email: profile.email },
+      account: { ...summaryOf(activeCredentials), name: profile.name, email: profile.email },
       profileStatus: 'ready',
     });
   } catch (error) {
@@ -138,7 +309,10 @@ async function loadProfileIntoSummary(
           error: 'session_expired',
         });
       } else {
-        set({ account: summaryOf(credentials), profileStatus: 'error' });
+        set({
+          account: summaryForHydration(credentials, get().account),
+          profileStatus: 'error',
+        });
       }
     }
   } finally {
@@ -172,38 +346,47 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
   profileStatus: 'idle',
   error: null,
 
-  hydrate: async () => {
-    const id = nextOperationId();
-    discardPendingAuthorization();
-    try {
-      const credentials = await loadAccountCredentials();
-      if (id !== operationId) return;
-      if (!credentials) {
-        set({ status: 'signed_out', account: null, profileStatus: 'idle', error: null });
-        return;
-      }
-      set({
-        status: 'signed_in',
-        account: summaryOf(credentials),
-        profileStatus: 'loading',
-        error: null,
-      });
-      await loadProfileIntoSummary(credentials, id, set);
-    } catch {
-      if (id === operationId) {
+  hydrate: () => {
+    if (hydrateFlight) return hydrateFlight;
+    const flight = (async () => {
+      const id = nextOperationId();
+      discardPendingAuthorization();
+      try {
+        const credentials = await enqueueCredentialMutation(loadAccountCredentials);
+        if (id !== operationId) return;
+        if (!credentials) {
+          set({ status: 'signed_out', account: null, profileStatus: 'idle', error: null });
+          return;
+        }
         set({
-          status: 'signed_out',
-          account: null,
-          profileStatus: 'idle',
-          error: 'credential_storage_unavailable',
+          status: 'signed_in',
+          account: summaryForHydration(credentials, get().account),
+          profileStatus: 'loading',
+          error: null,
         });
+        await loadProfileIntoSummary(credentials, id, set, get);
+      } catch {
+        if (id === operationId) {
+          set({
+            status: 'signed_out',
+            account: null,
+            profileStatus: 'idle',
+            error: 'credential_storage_unavailable',
+          });
+        }
       }
-    }
+    })();
+    hydrateFlight = flight;
+    void flight.finally(() => {
+      if (hydrateFlight === flight) hydrateFlight = null;
+    });
+    return flight;
   },
 
   startPersonalLogin: async (serverUrl = PERSONAL_ACCOUNT_SERVER_URL) => {
     if (get().status === 'signed_in') return null;
     const id = nextOperationId();
+    loginStartOperationId = id;
     discardPendingAuthorization();
     set({ status: 'signed_out', account: null, profileStatus: 'idle', error: null });
     try {
@@ -225,6 +408,7 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
         timeout: null,
       };
       pendingAuthorization = pending;
+      loginStartOperationId = null;
       set({ status: 'awaiting_browser', account: null, profileStatus: 'idle', error: null });
       pending.timeout = setTimeout(() => {
         if (
@@ -244,6 +428,7 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
       return authorizeUrl;
     } catch (error) {
       if (id === operationId) {
+        loginStartOperationId = null;
         discardPendingAuthorization();
         const code = error instanceof AccountClientError ? error.code : 'protocol_unavailable';
         set({ status: 'signed_out', account: null, profileStatus: 'idle', error: code });
@@ -303,7 +488,7 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
         profileStatus: 'loading',
         error: null,
       });
-      await loadProfileIntoSummary(credentials, pending.id, set);
+      await loadProfileIntoSummary(credentials, pending.id, set, get);
     } catch (error) {
       if (pending.id === operationId) {
         discardPendingAuthorization();
@@ -319,8 +504,18 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
   },
 
   cancel: () => {
-    const wasExchanging = get().status === 'exchanging';
+    const status = get().status;
+    // Cancellation belongs to the browser-login attempt. A profile restore has
+    // no cancel affordance, and treating an unrelated call as sign-out could
+    // leave a completed token rotation persisted behind signed-out UI.
+    if (
+      status !== 'awaiting_browser' &&
+      status !== 'exchanging' &&
+      loginStartOperationId !== operationId
+    ) return;
+    const wasExchanging = status === 'exchanging';
     const cancelId = nextOperationId();
+    if (wasExchanging) credentialEpoch += 1;
     discardPendingAuthorization();
     set({ status: 'signed_out', account: null, profileStatus: 'idle', error: 'cancelled' });
     if (wasExchanging) {
@@ -339,6 +534,7 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
 
   signOut: async () => {
     const id = nextOperationId();
+    credentialEpoch += 1;
     discardPendingAuthorization();
     set({ status: 'signed_out', account: null, profileStatus: 'idle', error: null });
     let credentials: AccountCredentials | null;
@@ -365,8 +561,12 @@ export const useAccountStore = create<AccountStore>()((set, get) => ({
 
 export function __resetAccountStoreForTest(): void {
   operationId = 0;
+  loginStartOperationId = null;
   discardPendingAuthorization();
   credentialMutationQueue = Promise.resolve();
+  credentialEpoch = 0;
+  hydrateFlight = null;
+  refreshMemo = null;
   __resetAccountDeepLinkListenerForTest();
   useAccountStore.setState({ status: 'signed_out', account: null, profileStatus: 'idle', error: null });
 }

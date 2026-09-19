@@ -39,6 +39,12 @@ export interface LaunchedApp extends ElectronDataRoot {
 
 export interface LaunchOptions {
   /**
+   * Extra main-process env for a single launch. Only for the gated #549 test
+   * hooks (`ABU_E2E_MCP_WRITE_LIMIT_BYTES`, `ABU_E2E_SIDECAR_SPAWN_DELAY_MS`),
+   * which electron/e2eTestHooks.cjs reads only in an unpackaged build.
+   */
+  extraEnv?: Record<string, string>;
+  /**
    * Inject tests/e2e/mainProcessRecorder.cjs into the main process ahead of
    * electron/main.cjs, so `firstShowRecordFor()` can report where a window was
    * the moment it was first revealed and `windowListenerRegistered()` can read
@@ -91,7 +97,10 @@ export function removeElectronDataRoot(dataRoot: ElectronDataRoot): void {
  * NO_PROXY) also covers HTTP clients that honor `http_proxy` but not
  * `no_proxy`. CI runners set no proxy vars, so this is a no-op there.
  */
-function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
+function buildLaunchEnv(
+  dataRoot: ElectronDataRoot,
+  extraEnv: Record<string, string> = {},
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const key of Object.keys(env)) {
     if (/_proxy$/i.test(key)) delete env[key];
@@ -110,7 +119,7 @@ function buildLaunchEnv(dataRoot: ElectronDataRoot): NodeJS.ProcessEnv {
   // machine. Windows are still real and rendered: drag-region and
   // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
   env.ABU_E2E_QUIET_WINDOW = '1';
-  return env;
+  return { ...env, ...extraEnv };
 }
 
 /**
@@ -152,7 +161,7 @@ export async function launchAbuElectron(
       '--lang=zh-CN',
     ],
     cwd: REPO_ROOT,
-    env: buildLaunchEnv(dataRoot),
+    env: buildLaunchEnv(dataRoot, options.extraEnv),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the

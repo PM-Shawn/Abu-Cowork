@@ -379,12 +379,25 @@ function killChild(id) {
   stopHeartbeatMonitor(id);
 }
 
+// #549 acceptance knob (unpackaged builds only — see e2eTestHooks.cjs): delay
+// the agent sidecar's spawn so the renderer's "starting" wait can be exercised.
+let testHooks = { sidecarSpawnDelayMs: 0 };
+
+function configureMcpBridgeTestHooks({ sidecarSpawnDelayMs } = {}) {
+  testHooks = {
+    sidecarSpawnDelayMs:
+      Number.isSafeInteger(sidecarSpawnDelayMs) && sidecarSpawnDelayMs > 0 ? sidecarSpawnDelayMs : 0,
+  };
+}
+
 /**
  * @param {string} cmd
  * @param {Record<string, unknown>} args
+ * @param {{ body?: Buffer, headers?: Record<string, string> }} [maybeRaw]
+ *   validated raw form (#549) — only honored with the `(app, cmd, args, raw)` signature.
  * @returns command result (Promise for mcp_spawn), or `undefined` if not an mcp command.
  */
-function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
+function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs, maybeRaw) {
   const app = typeof appOrCmd === 'string' ? undefined : appOrCmd;
   const cmd = typeof appOrCmd === 'string' ? appOrCmd : cmdOrArgs;
   const args = typeof appOrCmd === 'string' ? cmdOrArgs : maybeArgs;
@@ -393,9 +406,13 @@ function mcpDispatch(appOrCmd, cmdOrArgs, maybeArgs) {
   const a = args || {};
   switch (cmd) {
     case 'mcp_spawn':
+      if (a.id === SIDECAR_ID && testHooks.sidecarSpawnDelayMs > 0) {
+        const delayMs = testHooks.sidecarSpawnDelayMs;
+        return new Promise((resolve) => setTimeout(resolve, delayMs)).then(() => mcpSpawn(app, a));
+      }
       return mcpSpawn(app, a);
     case 'mcp_write':
-      return mcpWrite(a);
+      return mcpWrite(a, typeof appOrCmd === 'string' ? undefined : maybeRaw);
     case 'mcp_kill':
       return mcpKill(a);
     default:
@@ -637,8 +654,17 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
   return spawnPromise;
 }
 
-function mcpWrite({ id, message }) {
-  const runtimeRpc = runtimeState.noteRpcWriteStarted(id, message);
+const NEWLINE = Buffer.from('\n');
+
+function mcpWrite({ id, message }, raw) {
+  // Raw form (#549): `raw.body` is the validated single-line UTF-8 JSON-RPC
+  // message (securityBoundary validateTextRawBody); `raw.headers` only
+  // describes it. Plain form: `message` is a string, as before.
+  const rawBody = raw && Buffer.isBuffer(raw.body) ? raw.body : null;
+  const meta = rawBody && raw.headers && typeof raw.headers === 'object' ? raw.headers : {};
+  const runtimeRpc = rawBody
+    ? runtimeState.noteRpcWriteStartedMeta(id, meta, rawBody.length)
+    : runtimeState.noteRpcWriteStarted(id, message);
   const child = children.get(id);
   if (
     !child ||
@@ -650,18 +676,40 @@ function mcpWrite({ id, message }) {
     runtimeState.noteRpcWriteFinished(runtimeRpc, 'no_live_process');
     return Promise.reject(new Error(`mcp_write: no live process for id "${id}"`));
   }
-  if (id === SIDECAR_ID) sidecarRunRegistry.observeOutbound(String(message));
+  if (id === SIDECAR_ID) {
+    // Raw bodies can be 100+ MiB: take routing facts from the validated
+    // headers instead of JSON.parse-ing the whole line on the main thread.
+    if (rawBody) sidecarRunRegistry.observeOutboundMeta(meta);
+    else sidecarRunRegistry.observeOutbound(String(message));
+  }
   return new Promise((resolve, reject) => {
+    let failed = false;
+    const fail = (err) => {
+      if (failed) return;
+      failed = true;
+      runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_failed');
+      reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
+    };
     try {
-      child.stdin.write(String(message) + '\n', (err) => {
-        if (err) {
-          runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_failed');
-          reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
-        } else {
+      if (rawBody) {
+        // Both writes are queued in this tick, so concurrent mcp_write calls
+        // cannot interleave between a body and its newline.
+        child.stdin.write(rawBody, (err) => {
+          if (err) fail(err);
+        });
+        child.stdin.write(NEWLINE, (err) => {
+          if (err) return fail(err);
+          if (failed) return;
           runtimeState.noteRpcWriteFinished(runtimeRpc);
           resolve(null);
-        }
-      });
+        });
+      } else {
+        child.stdin.write(String(message) + '\n', (err) => {
+          if (err) return fail(err);
+          runtimeState.noteRpcWriteFinished(runtimeRpc);
+          resolve(null);
+        });
+      }
     } catch (err) {
       runtimeState.noteRpcWriteFinished(runtimeRpc, 'stdin_write_threw');
       reject(new Error(`mcp_write failed for id "${id}": ${errMsg(err)}`));
@@ -699,4 +747,4 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   });
 }
 
-module.exports = { isLegacyChromeBridgeLaunch, mcpDispatch };
+module.exports = { configureMcpBridgeTestHooks, isLegacyChromeBridgeLaunch, mcpDispatch };

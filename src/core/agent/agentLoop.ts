@@ -18,7 +18,7 @@ import {
   hasAnyEnabledProvider,
   providerRequiresApiKey,
 } from '../../utils/settingsSelectors';
-import { describeModelUnavailable } from '../../utils/modelUnavailableCopy';
+import { describeManagedModelRevoked, describeManagedProviderUnreachable, describeModelUnavailable } from '../../utils/modelUnavailableCopy';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import { getChatDelta } from './ports/chatDelta';
@@ -116,7 +116,7 @@ import {
   buildDeferredToolsSummary,
   promoteSearchedDeferredTools,
 } from '../tools/toolSearch';
-import { resolveEffectiveLlmCreds, EnterpriseLlmUnavailableError } from '../enterprise/llm-resolver';
+import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { createLogger } from '../logging/logger';
 import { reportError } from '@/utils/consoleError';
 import {
@@ -547,9 +547,8 @@ export interface AgentLoopOptions {
   authorizationScopeId?: string;
   /**
    * Shell-local ownership handoff for callers that need to cancel this exact
-   * run (for example an IM timeout). Never serialized to the sidecar. The
-   * callback may be invoked again when the same dispatched call hands off to
-   * an in-process fallback or a queued continuation with a new controller.
+   * run (for example an IM timeout). Never serialized to the sidecar. Invoked
+   * once per call, with the controller that run is stopped through.
    */
   onAbortControllerReady?: (controller: AbortController) => void;
   /**
@@ -729,13 +728,20 @@ interface AgentLoopResultBase {
   /** Bounded upstream fields for the failed-run terminal; never the raw body. */
   upstream?: UpstreamErrorDetails;
   /** Machine-readable terminal cause when `reason: 'error'` needs caller-specific handling. */
-  stopReason?: 'sidecar_unavailable';
+  stopReason?: 'sidecar_unavailable' | 'payload_too_large';
   /**
    * Why the run aborted ITSELF, when `reason: 'aborted'` was not a Stop
    * click: today only the consecutive browser-denial guard. Shell-owned —
    * a sidecar terminal never carries it (see agentRunTerminal.ts's key set).
    */
   abortCause?: BrowserDenialAbortCause;
+  /**
+   * The kind stamped on the failed user row for a run the sidecar never
+   * accepted (#549), so a caller can tell that the row already explains the
+   * failure and offers its own action. Shell-owned, like `abortCause`: a
+   * sidecar terminal never carries it (see agentRunTerminal.ts's key set).
+   */
+  runErrorKind?: NonNullable<Message['runErrorKind']>;
 }
 
 /**
@@ -913,20 +919,22 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // no longer lists, must never reach an adapter: a missing provider leaves the
   // base URL empty and the adapter would fall back to a public default endpoint.
   // With no usable provider at all, keep the long-standing "configure a key" copy.
-  // Enterprise-gateway pins are virtual (never in `providers`), so they are never
-  // checked here — even when the gateway resolver is unavailable.
-  const pinnedModelIssue =
-    isEnterpriseGatewayMode || settingsForModel.activeModel.providerId === 'enterprise-gateway'
-      ? null
-      : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
+  const pinnedModelIssue = isEnterpriseGatewayMode
+    ? null
+    : getModelUnavailableReason(settingsForModel, settingsForModel.activeModel);
   const blockText = isEnterpriseGatewayMode
     ? null
     : pinnedModelIssue && hasAnyEnabledProvider(settingsForModel)
-      ? describeModelUnavailable(
-          getI18n().chat,
-          pinnedModelIssue,
-          getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
-        ).inTask
+      ? (pinnedModelIssue === 'model-removed' && getActiveProvider(settingsForModel)?.source === 'managed'
+          ? describeManagedModelRevoked(
+              getI18n().chat,
+              getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+            ).inTask
+          : describeModelUnavailable(
+              getI18n().chat,
+              pinnedModelIssue,
+              getModelDisplayLabel(settingsForModel, settingsForModel.activeModel),
+            ).inTask)
       : pinnedModelIssue || (providerRequiresApiKey(settingsForModel) && !getActiveApiKey(settingsForModel))
         ? getI18n().chat.configureApiKey
         : null;
@@ -1518,8 +1526,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (err instanceof LLMError && isConfigFailureCode(err.code)) {
         recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
       }
-      let delegateDisplayError = err instanceof EnterpriseLlmUnavailableError
-        ? getI18n().chat.gatewayUnreachable
+      const delegateManagedUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        err instanceof LLMError ? err.code : undefined,
+      );
+      let delegateDisplayError = delegateManagedUnreachable
+        ? delegateManagedUnreachable
         : err instanceof LLMError && err.code === 'content_policy'
         ? getI18n().chat.contentPolicyRejected
         : formatLlmDisplayError(err, errorMessage, getI18n().chat.errorEmptyBody);
@@ -2215,8 +2228,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         return budgetResult;
       };
 
-      // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
-      // Throws EnterpriseLlmUnavailableError if enforced but gateway unreachable.
+      // Resolve apiKey + baseUrl for the provider this conversation is bound to.
       const effectiveCreds = resolveEffectiveLlmCreds(
         getActiveApiKey(settingsForModel),
         getActiveProvider(settingsForModel)?.baseUrl || undefined,
@@ -3142,10 +3154,14 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // string with actionable copy; the diagnostic path keeps the raw body,
       // while the terminal/store path keeps only the bounded provider summary.
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
-      const isEnterpriseGatewayUnavailable = err instanceof EnterpriseLlmUnavailableError;
+      const managedProviderUnreachable = describeManagedProviderUnreachable(
+        getI18n().chat,
+        getActiveProvider(settingsForModel),
+        errorCode,
+      );
       const isContextBudgetError = err instanceof ContextBudgetError;
-      let displayError = isEnterpriseGatewayUnavailable
-        ? getI18n().chat.gatewayUnreachable
+      let displayError = managedProviderUnreachable
+        ? managedProviderUnreachable
         : isContextBudgetError && err.code === 'INPUT_TOO_LARGE'
         ? getI18n().chat.contextInputTooLarge
         : isContextBudgetError

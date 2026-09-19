@@ -18,6 +18,9 @@ import {
 const recordElectronRuntimeEventMock = vi.hoisted(() => vi.fn());
 vi.mock('@/utils/electronHost', () => ({
   recordElectronRuntimeEvent: (...args: unknown[]) => recordElectronRuntimeEventMock(...args),
+  // #549: conversationStorage's debounced flushIndex reaches rawBodyInvoke,
+  // which probes this — without it the timer rejects after the suite ends.
+  hasElectronRawBodyInvoke: () => false,
 }));
 
 import {

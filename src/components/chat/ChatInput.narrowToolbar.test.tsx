@@ -8,6 +8,9 @@ import { getI18n } from '@/i18n';
 
 vi.mock('@/utils/electronHost', () => ({
   hasElectronCommandHost: vi.fn(() => false),
+  // #549: conversationStorage's debounced flushIndex reaches rawBodyInvoke,
+  // which probes this — without it the timer rejects after the suite ends.
+  hasElectronRawBodyInvoke: vi.fn(() => false),
   hasElectronUserAttachmentAuthorizeHost: vi.fn(() => false),
   hasElectronUserAttachmentSelectHost: vi.fn(() => false),
   authorizeElectronUserAttachment: vi.fn(),

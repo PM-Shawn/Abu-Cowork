@@ -106,6 +106,22 @@ const TERMINAL_RUN_STATES = new Set<Message['runState']>([
   'interrupted',
 ]);
 const RUN_FAILURE_STATES = new Set<Message['runState']>(['failed', 'connection-failed']);
+/**
+ * #549: the closed set of pre-accept failure causes a failed user row may
+ * carry. Anything else (including a value hand-edited into the ledger) is
+ * dropped — the field drives UI affordances, so it is never trusted from disk.
+ */
+const RUN_ERROR_KINDS = new Set<NonNullable<Message['runErrorKind']>>([
+  'payload_too_large',
+  'sidecar_unavailable',
+  'dispatch_failed',
+]);
+
+function sanitizeRunErrorKind(value: unknown): Message['runErrorKind'] {
+  return RUN_ERROR_KINDS.has(value as NonNullable<Message['runErrorKind']>)
+    ? value as Message['runErrorKind']
+    : undefined;
+}
 
 function toolCallHasNonSuccessMetadata(tc: ToolCall): boolean {
   return tc.subagentStopReason !== undefined && tc.subagentStopReason !== 'completed'
@@ -122,8 +138,13 @@ function recoverInterruptedUserRun(msg: Message, answeredLoopIds?: ReadonlySet<s
   if (msg.loopId && answeredLoopIds?.has(msg.loopId)) {
     return { ...msg, runState: 'completed' };
   }
+  // `runErrorKind` is dropped on purpose (#549): a row branded failed by
+  // restart recovery is not one of the pre-accept causes, so it must not
+  // inherit their affordances (e.g. the oversize 「新建对话」 button) from a
+  // kind that happened to be sitting in the ledger.
+  const { runErrorKind: _recoveredKind, ...withoutKind } = msg;
   return {
-    ...msg,
+    ...withoutKind,
     runState: 'failed',
     runError: getI18n().chat.runRecoveredAfterRestart,
   };
@@ -145,7 +166,12 @@ function sanitizeRunError(value: unknown, errorDetails?: UpstreamErrorDetails): 
 
 function enforceRunErrorState(message: Message): Message {
   if (RUN_FAILURE_STATES.has(message.runState)) return message;
-  const { runError: _runError, runErrorDetails: _runErrorDetails, ...withoutRunError } = message;
+  const {
+    runError: _runError,
+    runErrorDetails: _runErrorDetails,
+    runErrorKind: _runErrorKind,
+    ...withoutRunError
+  } = message;
   return withoutRunError as Message;
 }
 
@@ -158,14 +184,17 @@ export function sanitizeImportedMessage(msg: Message, answeredLoopIds?: Readonly
   const {
     runErrorDetails: untrustedRunErrorDetails,
     runError: untrustedRunError,
+    runErrorKind: untrustedRunErrorKind,
     ...messageWithoutErrorDetails
   } = msg;
   const runErrorDetails = normalizeUpstreamErrorDetails(untrustedRunErrorDetails);
   const runError = sanitizeRunError(untrustedRunError, runErrorDetails);
+  const runErrorKind = sanitizeRunErrorKind(untrustedRunErrorKind);
   return enforceRunErrorState(recoverInterruptedUserRun({
     ...messageWithoutErrorDetails,
     ...(runError ? { runError } : {}),
     ...(runErrorDetails ? { runErrorDetails } : {}),
+    ...(runErrorKind ? { runErrorKind } : {}),
     isStreaming: false,
     toolCalls: msg.toolCalls?.map((tc) => {
       const {
@@ -219,10 +248,12 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
       const {
         runErrorDetails: untrustedRunErrorDetails,
         runError: untrustedRunError,
+        runErrorKind: untrustedRunErrorKind,
         ...messageWithoutErrorDetails
       } = msg;
       const runErrorDetails = normalizeUpstreamErrorDetails(untrustedRunErrorDetails);
       const runError = sanitizeRunError(untrustedRunError, runErrorDetails);
+      const runErrorKind = sanitizeRunErrorKind(untrustedRunErrorKind);
       const toolCalls = msg.toolCalls?.map((tc) => {
         const safeToRetryRecovery =
           tc.sandboxRecoveryAction === 'pending'
@@ -241,6 +272,7 @@ export function sanitizeLoadedMessages(messages: Message[]): Message[] {
         ...messageWithoutErrorDetails,
         ...(runError ? { runError } : {}),
         ...(runErrorDetails ? { runErrorDetails } : {}),
+        ...(runErrorKind ? { runErrorKind } : {}),
         isStreaming: false,
         toolCalls,
       }, answeredLoopIds));
@@ -744,6 +776,7 @@ interface ChatActions {
       state: NonNullable<Message['runState']>;
       error?: string;
       errorDetails?: UpstreamErrorDetails;
+      errorKind?: Message['runErrorKind'];
       content?: Message['content'];
       skill?: Message['skill'];
       delegateAgent?: Message['delegateAgent'];
@@ -918,15 +951,14 @@ export const useChatStore = create<ChatStore>()(
         const consumePendingTeam = !options?.skipActivate;
         const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
         // Pin the new-conversation default at creation (issue #545) so an empty
-        // conversation never drifts with later picks elsewhere. Enterprise mode
-        // skips this, mirroring agentLoop's first-run pin (gateway-scoped models).
-        // An uninitialized enterprise store also skips: enterprise builds start
-        // as 'personal' until async init() resolves, and background creators may
-        // run before that; agentLoop's first-run pin covers those conversations.
-        const ent = useEnterpriseStore.getState();
-        const isPersonal = ent.initialized && ent.mode.kind === 'personal';
+        // conversation never drifts with later picks elsewhere. An uninitialized
+        // enterprise store skips this: until its async init() resolves, a
+        // managed provider may not be registered yet and the default may still
+        // be about to change; background creators can run that early, and
+        // agentLoop's first-run pin covers those conversations.
+        const accountReady = useEnterpriseStore.getState().initialized;
         const defaultModel = useSettingsStore.getState().activeModel;
-        const initialModel = isPersonal && defaultModel?.modelId
+        const initialModel = accountReady && defaultModel?.modelId
           ? { providerId: defaultModel.providerId, modelId: defaultModel.modelId }
           : undefined;
         const meta: ConversationMeta = {
@@ -1390,8 +1422,8 @@ export const useChatStore = create<ChatStore>()(
         // N7 — the user closing an agent's browser tab makes the host refuse to
         // open another one until they speak again; writing to the conversation
         // is them speaking. This is the one place every send path commits a user
-        // message (the sidecar dispatch in agentLoopRunner and agentLoop's
-        // in-process fallbacks all land here), so the signal is taken here
+        // message (the sidecar dispatch in agentLoopRunner and the in-process
+        // loop in agentLoop both land here), so the signal is taken here
         // rather than duplicated per path. `isSystem` messages ride the `user`
         // role but are the app waking itself up — they must not hand the browser
         // back on the user's behalf. Fire-and-forget: a send never waits on, or
@@ -1763,6 +1795,9 @@ export const useChatStore = create<ChatStore>()(
           else delete message.runError;
           if (isFailure && errorDetails) message.runErrorDetails = errorDetails;
           else delete message.runErrorDetails;
+          const errorKind = isFailure ? sanitizeRunErrorKind(patch.errorKind) : undefined;
+          if (errorKind) message.runErrorKind = errorKind;
+          else delete message.runErrorKind;
           if ('content' in patch && patch.content !== undefined) message.content = patch.content;
           if ('skill' in patch) message.skill = patch.skill;
           if ('delegateAgent' in patch) message.delegateAgent = patch.delegateAgent;

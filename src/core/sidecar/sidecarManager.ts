@@ -127,8 +127,11 @@ import {
   subscribeElectronSidecarEvents,
   type ElectronSidecarEvent,
 } from '@/utils/electronHost';
-import { traceRuntimeEvent } from '@/core/observability/runtimeTrace';
+import { runtimeErrorType, traceRuntimeEvent } from '@/core/observability/runtimeTrace';
+import { FIELD_BREAKDOWN_MIN_BYTES, MEASURED_RPC_METHODS, measurePayloadFields } from '@/core/ipc/payloadFieldSizes';
 import { reportError } from '@/utils/consoleError';
+import { invokeTextCommand } from '@/core/ipc/rawBodyInvoke';
+import { parsePayloadTooLargeError } from '@/core/ipc/payloadTooLarge';
 
 const logger = createLogger('sidecar');
 
@@ -246,6 +249,8 @@ let startPromise: Promise<void> | null = null;
 let nextRequestId = 1;
 const pendingRequests = new Map<number, PendingRequest>();
 const connectionHandlers = new Set<(event: SidecarConnectionEvent) => void>();
+/** Wake-ups for in-flight waitForSidecarStatus() calls (#549 cold start). */
+const statusWaiters = new Set<() => void>();
 let lastSidecarSequence = 0;
 let lastSidecarGeneration = 0;
 let sidecarEventChain: Promise<void> = Promise.resolve();
@@ -256,6 +261,11 @@ const notificationHandlers = new Map<string, Set<SidecarNotificationHandler>>();
 
 /** method -> handler, for sidecar→shell REQUESTS (tool.invoke, hook.emit, ...). See onSidecarRequest(). Single handler per method (unlike notifications' Set) — a request needs exactly one response. */
 const requestHandlers = new Map<string, SidecarRequestHandler>();
+
+/** method -> full-state re-push, used after a failed notify (#549). */
+const notifyResyncs = new Map<string, () => void>();
+/** Methods whose last notify was lost and whose resync has not run yet (#549). */
+const dirtyNotifyMethods = new Set<string>();
 
 /** Renderer-heartbeat state (Tauri path only — see module JSDoc "F1"). */
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -275,12 +285,18 @@ function pushEnterpriseEntitlement(): void {
 
 function ensureEnterpriseEntitlementSync(): void {
   enterpriseEntitlementUnsub ??= useEnterpriseStore.subscribe(pushEnterpriseEntitlement);
+  // A lost entitlement push would leave the sidecar on a stale (possibly more
+  // permissive) mirror — re-push the whole snapshot on the next send (#549).
+  notifyResyncs.set('state.enterpriseEntitlement', pushEnterpriseEntitlement);
   pushEnterpriseEntitlement();
 }
 
 function stopEnterpriseEntitlementSync(): void {
   enterpriseEntitlementUnsub?.();
   enterpriseEntitlementUnsub = undefined;
+  // Released with the subscription; ensureEnterpriseEntitlementSync() puts it
+  // back on the next start (#549).
+  notifyResyncs.delete('state.enterpriseEntitlement');
 }
 
 // ── Public API ──
@@ -288,6 +304,54 @@ function stopEnterpriseEntitlementSync(): void {
 /** Current supervisor state. Exported for future use/tests. */
 export function getSidecarStatus(): SidecarStatus {
   return status;
+}
+
+/**
+ * The ONLY way production code changes `status` (#549): every transition wakes
+ * pending readiness waiters. Assigning `status` directly would leave a
+ * cold-start wait hanging for its full timeout. (`__resetForTests` is the one
+ * deliberate exception.)
+ */
+function setStatus(next: SidecarStatus): void {
+  if (status === next) return;
+  status = next;
+  // Copy: a waiter removes itself from the set as it settles.
+  for (const waiter of [...statusWaiters]) waiter();
+}
+
+export type SidecarWaitOutcome = 'running' | 'failed' | 'timeout' | 'aborted';
+
+/** `stopped` while waiting counts as `failed`: nobody is going to bring it up. */
+function settledOutcome(current: SidecarStatus): SidecarWaitOutcome | null {
+  if (current === 'running') return 'running';
+  if (current === 'failed' || current === 'stopped') return 'failed';
+  return null;
+}
+
+/**
+ * Wait until the supervisor leaves `starting`/`restarting` (#549 cold start).
+ * Never starts the sidecar itself — see sidecarReadiness.waitForSidecarVenue.
+ */
+export function waitForSidecarStatus(timeoutMs: number, signal?: AbortSignal): Promise<SidecarWaitOutcome> {
+  const immediate = settledOutcome(status);
+  if (immediate) return Promise.resolve(immediate);
+  if (signal?.aborted) return Promise.resolve('aborted');
+  return new Promise((resolve) => {
+    const finish = (outcome: SidecarWaitOutcome): void => {
+      clearTimeout(timer);
+      statusWaiters.delete(onStatus);
+      signal?.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    const onStatus = (): void => {
+      const outcome = settledOutcome(status);
+      if (outcome) finish(outcome);
+    };
+    const onAbort = (): void => finish('aborted');
+    const timer = setTimeout(() => finish('timeout'), timeoutMs);
+    statusWaiters.add(onStatus);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 /** Subscribe to transport recovery state for task-level status/UI projection. */
@@ -335,7 +399,7 @@ export async function stopSidecar(): Promise<void> {
   rejectAllPending(new Error('Sidecar stopped'));
   restartTimestamps = [];
   crashLoopWarned = false;
-  status = 'stopped';
+  setStatus('stopped');
 
   for (const unlisten of unlisteners) {
     unlisten();
@@ -350,6 +414,69 @@ export async function stopSidecar(): Promise<void> {
       error: err instanceof Error ? err.message : String(err),
     });
   }
+}
+
+const textEncoder = new TextEncoder();
+
+function stringParam(params: unknown, key: string): string | undefined {
+  if (typeof params !== 'object' || params === null) return undefined;
+  const value = (params as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.length <= 256 ? value : undefined;
+}
+
+const ROUTING_META_KEYS = ['runId', 'clientMessageId', 'payloadDigest'] as const;
+
+/**
+ * #549: diagnostic `mcp_write` headers for the raw-body form. They come from
+ * the same message as the body, so main-process observability sees exactly
+ * what the line carries; `invokeTextCommand` drops any value the main header
+ * schema would refuse.
+ */
+function routingMeta(method: string, rpcId: number | undefined, params: unknown): Record<string, string> {
+  const meta: Record<string, string> = { method };
+  if (rpcId !== undefined) meta.rpcId = String(rpcId);
+  for (const key of ROUTING_META_KEYS) {
+    const value = stringParam(params, key);
+    if (value) meta[key] = value;
+  }
+  return meta;
+}
+
+/** Write one JSON-RPC line to the sidecar's stdin (raw body in Electron, #549). */
+function sendSidecarLine(
+  method: string,
+  payload: string,
+  meta: Record<string, string>,
+  encoded?: Uint8Array,
+): Promise<void> {
+  return invokeTextCommand('mcp_write', { id: SIDECAR_ID }, payload, { method, meta, encoded });
+}
+
+/** Diagnostics must never change request settlement (#549 Task 1 review). */
+function traceSafely(emit: () => void): void {
+  try {
+    emit();
+  } catch (err) {
+    logger.warn('Sidecar RPC trace failed', { error: runtimeErrorType(err) });
+  }
+}
+
+/**
+ * #549 step 0: record how many bytes a growing RPC put on the wire (numbers
+ * only; a per-field breakdown once the payload reaches 1 MiB). Called after the
+ * write settles so `outcome` reflects whether the bytes actually left.
+ */
+function traceRpcSent(method: string, rpcId: number, params: unknown, payloadBytes: number, error?: unknown): void {
+  if (!MEASURED_RPC_METHODS.has(method)) return;
+  traceRuntimeEvent('renderer.sidecar_rpc_sent', {
+    method,
+    rpcId: String(rpcId),
+    runId: stringParam(params, 'runId'),
+    payloadBytes,
+    outcome: error === undefined ? 'success' : 'error',
+    ...(error === undefined ? {} : { errorType: runtimeErrorType(error) }),
+    ...(payloadBytes >= FIELD_BREAKDOWN_MIN_BYTES ? measurePayloadFields(params) : {}),
+  });
 }
 
 /**
@@ -368,15 +495,24 @@ export async function stopSidecar(): Promise<void> {
  * here. Pending requests sent with timeoutMs: 0 still reject like any other
  * pending request when the sidecar process closes (rejectAllPending, called
  * from handleClose()) — they are not immune to that.
+ *
+ * The timer starts before the write, so it covers the IPC transfer, the
+ * boundary validation, the stdin pipe and the sidecar's own parse. A caller
+ * whose budget has to grow with the body passes a function instead of a
+ * number; it is called once with the encoded byte length of this exact
+ * request (#549, `agentStartAckBudgetMs`), so nothing is encoded twice.
  */
 export function request(
   method: string,
   params: unknown,
-  timeoutMs: number = REQUEST_DEFAULT_TIMEOUT_MS,
+  timeoutMs: number | ((encodedBytes: number) => number) = REQUEST_DEFAULT_TIMEOUT_MS,
   signal?: AbortSignal,
 ): Promise<unknown> {
+  drainDirtyNotifyResyncs();
   const id = nextRequestId++;
   const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+  const encoded = textEncoder.encode(payload);
+  const budgetMs = typeof timeoutMs === 'function' ? timeoutMs(encoded.byteLength) : timeoutMs;
 
   return new Promise<unknown>((resolve, reject) => {
     const abortError = (): Error => {
@@ -392,13 +528,13 @@ export function request(
       return;
     }
 
-    const timer = timeoutMs > 0
+    const timer = budgetMs > 0
       ? setTimeout(() => {
           const entry = pendingRequests.get(id);
           pendingRequests.delete(id);
           entry?.cleanupAbort?.();
-          reject(new Error(`Sidecar request "${method}" timed out after ${timeoutMs}ms`));
-        }, timeoutMs)
+          reject(new Error(`Sidecar request "${method}" timed out after ${budgetMs}ms`));
+        }, budgetMs)
       : null;
 
     const onAbort = (): void => {
@@ -416,30 +552,104 @@ export function request(
 
     pendingRequests.set(id, { resolve, reject, timer, cleanupAbort });
 
-    invoke('mcp_write', { id: SIDECAR_ID, message: payload }).catch((err: unknown) => {
+    sendSidecarLine(method, payload, routingMeta(method, id, params), encoded).then(() => {
+      traceSafely(() => traceRpcSent(method, id, params, encoded.byteLength));
+    }, (err: unknown) => {
+      // Settle first: a throwing tracer must never strand a request (llm.chat
+      // has no timeout).
       const entry = pendingRequests.get(id);
       if (entry) {
         if (entry.timer) clearTimeout(entry.timer);
         pendingRequests.delete(id);
         entry.cleanupAbort?.();
       }
+      const tooLarge = parsePayloadTooLargeError(err, method);
+      if (tooLarge) {
+        // Oversize is its own terminal event (numbers only, full breakdown);
+        // it replaces renderer.sidecar_rpc_sent for this request.
+        traceSafely(() => traceRuntimeEvent('renderer.sidecar_rpc_payload_too_large', {
+          method,
+          rpcId: String(id),
+          runId: stringParam(params, 'runId'),
+          payloadBytes: tooLarge.bytes,
+          limitBytes: tooLarge.limit,
+          outcome: 'error',
+          errorType: 'payload_too_large',
+          ...measurePayloadFields(params),
+        }));
+        reject(tooLarge);
+        return;
+      }
+      traceSafely(() => traceRpcSent(method, id, params, encoded.byteLength, err ?? new Error('mcp_write failed')));
       reject(err instanceof Error ? err : new Error(String(err)));
     });
   });
 }
 
 /**
+ * Register how to re-send the complete (small) state behind a `state.*`
+ * notification. If a notify for `method` fails for any reason other than
+ * payload_too_large, the resync runs once before the next outbound send —
+ * a dropped notification must not leave the sidecar quietly stale (#549).
+ *
+ * Returns an unregister function that only removes THIS resync (a stale
+ * unregister after a replacement cannot clobber the new one), mirroring
+ * `onSidecarRequest`'s discipline.
+ */
+export function registerSidecarNotifyResync(method: string, resync: () => void): () => void {
+  notifyResyncs.set(method, resync);
+  return () => {
+    if (notifyResyncs.get(method) === resync) notifyResyncs.delete(method);
+  };
+}
+
+/**
+ * Run (once) every resync queued by a failed notify. Called at the start of
+ * every outbound send, so the re-push rides the next line to the sidecar
+ * instead of needing a timer of its own. A throwing resync is contained: it
+ * must never break the send that triggered the drain.
+ */
+function drainDirtyNotifyResyncs(): void {
+  if (dirtyNotifyMethods.size === 0) return;
+  const methods = [...dirtyNotifyMethods];
+  dirtyNotifyMethods.clear();
+  for (const method of methods) {
+    try {
+      notifyResyncs.get(method)?.();
+    } catch (err) {
+      logger.warn('Sidecar notify resync threw', {
+        method,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+/**
  * Send a JSON-RPC notification (no `id`, no response expected) to the
  * sidecar — e.g. `llm.abort`. Fire-and-forget: failures are logged, not
- * thrown, matching the rest of this module's fail-soft contract.
+ * thrown, matching the rest of this module's fail-soft contract — but never
+ * silent (#549): the failure is a runtime event, and a method with a
+ * registered resync re-pushes its full state on the next send.
  */
 export function notifySidecar(method: string, params: unknown): void {
+  drainDirtyNotifyResyncs();
   const payload = JSON.stringify({ jsonrpc: '2.0', method, params });
-  invoke('mcp_write', { id: SIDECAR_ID, message: payload }).catch((err: unknown) => {
+  sendSidecarLine(method, payload, { method }).catch((err: unknown) => {
+    const tooLarge = parsePayloadTooLargeError(err, method);
+    traceSafely(() => traceRuntimeEvent('renderer.sidecar_notify_failed', {
+      method,
+      outcome: 'error',
+      errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(err),
+      ...(tooLarge ? { payloadBytes: tooLarge.bytes, limitBytes: tooLarge.limit } : {}),
+    }));
     logger.warn('Sidecar notify failed', {
       method,
       error: err instanceof Error ? err.message : String(err),
     });
+    // An oversize notification could never succeed on a retry, so re-pushing
+    // the same state would only burn another write (#549).
+    if (!tooLarge && notifyResyncs.has(method)) dirtyNotifyMethods.add(method);
   });
 }
 
@@ -486,7 +696,10 @@ export function onSidecarRequest(method: string, handler: SidecarRequestHandler)
 /** Reset all module state for test isolation. Not used by production code. */
 export function __resetForTests(): void {
   stopEnterpriseEntitlementSync();
+  // Direct assignment on purpose: a reset is not a transition — waiters from
+  // the previous test are dropped below, not notified.
   status = 'stopped';
+  statusWaiters.clear();
   listenersReady = false;
   unlisteners = [];
   deliberatelyStopped = true;
@@ -498,6 +711,8 @@ export function __resetForTests(): void {
   pendingRequests.clear();
   notificationHandlers.clear();
   requestHandlers.clear();
+  notifyResyncs.clear();
+  dirtyNotifyMethods.clear();
   connectionHandlers.clear();
   lastSidecarSequence = 0;
   lastSidecarGeneration = 0;
@@ -653,7 +868,7 @@ async function ensureListeners(): Promise<void> {
 }
 
 async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
-  status = kind === 'initial' ? 'starting' : 'restarting';
+  setStatus(kind === 'initial' ? 'starting' : 'restarting');
 
   // Listeners must be live before we spawn, so we never miss an early
   // stdout line or an immediate crash.
@@ -723,7 +938,7 @@ async function attemptSpawn(kind: 'initial' | 'restart'): Promise<void> {
     return;
   }
 
-  status = 'running';
+  setStatus('running');
   publishConnectionState({ state: 'connected', reason: 'ready' });
   // Seed after every spawn/restart, then stream heartbeat/store changes.
   ensureEnterpriseEntitlementSync();
@@ -751,7 +966,7 @@ function handleSpawnFailure(err: unknown, reason: string): void {
  */
 function scheduleRestartOrGiveUp(reason: string): void {
   if (deliberatelyStopped) {
-    status = 'stopped';
+    setStatus('stopped');
     return;
   }
 
@@ -760,7 +975,7 @@ function scheduleRestartOrGiveUp(reason: string): void {
   restartTimestamps = restartTimestamps.filter((t) => now - t <= CRASH_LOOP_WINDOW_MS);
 
   if (restartTimestamps.length > CRASH_LOOP_MAX_RESTARTS) {
-    status = 'failed';
+    setStatus('failed');
     publishConnectionState({ state: 'failed', reason: 'crash-loop' });
     if (!crashLoopWarned) {
       crashLoopWarned = true;
@@ -790,7 +1005,7 @@ function scheduleRestartOrGiveUp(reason: string): void {
     return;
   }
 
-  status = 'restarting';
+  setStatus('restarting');
   logger.warn('Sidecar restarting', { reason, attempt: restartTimestamps.length });
   // Local-only: a single respawn is routine and recovers on its own, so it is
   // recorded for diagnosis but never reported remotely.
@@ -924,7 +1139,7 @@ async function forceRestartOnHang(reason: string): Promise<void> {
   stopHeartbeat();
   // Flip to 'restarting' BEFORE killing, so the close event this kill
   // triggers is recognized as self-initiated by handleClose() below.
-  status = 'restarting';
+  setStatus('restarting');
   await invoke('mcp_kill', { id: SIDECAR_ID }).catch(() => {});
   scheduleRestartOrGiveUp(reason);
 }
@@ -1005,13 +1220,13 @@ async function handleIncomingRequest(
 ): Promise<void> {
   const handler = requestHandlers.get(method);
   if (!handler) {
-    await writeRpcMessage({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } });
+    await writeRpcMessage({ jsonrpc: '2.0', id, error: { code: -32601, message: `Method not found: ${method}` } }, method);
     return;
   }
 
   try {
     const result = await handler(params);
-    await writeRpcMessage({ jsonrpc: '2.0', id, result });
+    await writeRpcMessage({ jsonrpc: '2.0', id, result }, method);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const data = err instanceof SidecarRequestError ? err.data : undefined;
@@ -1020,18 +1235,61 @@ async function handleIncomingRequest(
       jsonrpc: '2.0',
       id,
       error: data !== undefined ? { code, message, data } : { code, message },
-    });
+    }, method);
   }
 }
 
-/** Write one JSON-RPC message (a response to an incoming sidecar request) back over the pipe. Fail-soft — logs, never throws. */
-async function writeRpcMessage(payload: unknown): Promise<void> {
+/**
+ * Write one JSON-RPC response to an incoming sidecar request. Fail-soft (it
+ * never throws) but never silent (#549): if the response cannot be delivered,
+ * the sidecar still gets a small error so its awaiting request settles instead
+ * of hanging — on the unbounded `tool.invoke` a missing answer hangs FOREVER,
+ * which is the #549 symptom itself. The fallback carries numbers and the
+ * method name only — never any part of the result or of the handler's error.
+ *
+ * `isFallback` says whether THIS payload is already the small substitute. The
+ * decision is by intent, not by shape: a `-32601` and a handler-thrown `-32000`
+ * both carry `error` yet are ordinary responses whose own body (an arbitrary
+ * `err.message`, arbitrary `SidecarRequestError.data`) can itself be refused as
+ * oversize, and they need the substitute just as much as a result does.
+ */
+async function writeRpcMessage(
+  payload: { jsonrpc: '2.0'; id: string | number | null; result?: unknown; error?: unknown },
+  method: string,
+  isFallback = false,
+): Promise<void> {
   try {
-    await invoke('mcp_write', { id: SIDECAR_ID, message: JSON.stringify(payload) });
+    await sendSidecarLine(`${method}.response`, JSON.stringify(payload), {});
+    return;
   } catch (err) {
+    const tooLarge = parsePayloadTooLargeError(err, method);
+    traceSafely(() => traceRuntimeEvent('renderer.sidecar_response_write_failed', {
+      method,
+      rpcId: String(payload.id),
+      // Which write was refused: the real answer, or the small substitute for
+      // it (the latter means the sidecar got NOTHING for this request).
+      stage: isFallback ? 'fallback' : 'response',
+      outcome: 'error',
+      errorType: tooLarge ? 'payload_too_large' : runtimeErrorType(err),
+      ...(tooLarge ? { payloadBytes: tooLarge.bytes, limitBytes: tooLarge.limit } : {}),
+    }));
     logger.warn('Failed to write response to an incoming sidecar request', {
+      method,
       error: err instanceof Error ? err.message : String(err),
     });
+    if (isFallback) return; // this WAS the substitute; don't loop
+    const error = tooLarge
+      ? {
+          code: -32000,
+          message: `The result of ${method} is too large to return (${tooLarge.bytes} bytes > ${tooLarge.limit} bytes).`,
+          data: { code: 'payload_too_large', bytes: tooLarge.bytes, limit: tooLarge.limit, method },
+        }
+      : {
+          code: -32000,
+          message: `The result of ${method} could not be delivered.`,
+          data: { code: 'response_write_failed', method },
+        };
+    await writeRpcMessage({ jsonrpc: '2.0', id: payload.id, error }, method, true);
   }
 }
 
@@ -1040,7 +1298,7 @@ function handleClose(): void {
   rejectAllPending(new Error('Sidecar process closed'));
 
   if (deliberatelyStopped) {
-    status = 'stopped';
+    setStatus('stopped');
     return;
   }
 

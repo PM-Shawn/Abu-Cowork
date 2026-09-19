@@ -142,6 +142,7 @@ export type LLMErrorCode =
   | 'server_error'         // 500 / 502
   | 'network_error'        // fetch/connection failures
   | 'network_blocked'      // WAF / proxy intercepted the request and returned HTML
+  | 'payload_too_large'    // shell↔sidecar IPC payload exceeded its limit (#549)
   | 'cancelled'            // user abort
   | 'unknown';
 
@@ -156,6 +157,7 @@ const LLM_ERROR_CODES: ReadonlySet<string> = new Set<LLMErrorCode>([
   'server_error',
   'network_error',
   'network_blocked',
+  'payload_too_large',
   'cancelled',
   'unknown',
 ]);

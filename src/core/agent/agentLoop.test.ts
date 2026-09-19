@@ -1115,15 +1115,64 @@ describe('runAgentLoop pinned-model availability guard', () => {
   const run = (conversationId: string) =>
     runAgentLoop(conversationId, 'hello', { orchestration: { route: { type: 'general', name: 'abu', cleanInput: 'hello' }, systemPromptSections: [] } });
 
-  it('keeps the configure-key path for an enterprise-gateway pin when the gateway is unavailable', async () => {
+  it('blocks a pin to a managed provider that is no longer registered, like any removed provider', async () => {
     const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
     try {
-      useChatStore.getState().setConversationModel(conversationId, { providerId: 'enterprise-gateway', modelId: 'gw-model' });
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model' });
       const result = await run(conversationId);
-      expect(result).toEqual({ reason: 'error', error: 'API Key not configured', messageTaken: true });
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
       expect(chat).not.toHaveBeenCalled();
       const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
-      expect(last?.content).toBe('请先在设置中配置你的 API Key。');
+      expect(String(last?.content)).toContain('所属服务已删除');
+      expect(String(last?.content)).toContain('「org-model」');
+    } finally {
+      restore();
+    }
+  });
+
+  it('blocks a pin to a model the managed provider confirmed it withdrew, asking for another pick', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.getState().upsertManagedProvider({
+        id: 'org-models',
+        name: 'MAZG',
+        baseUrl: 'https://abu.example.net/api/gateway',
+        apiKey: 'sk-virtual',
+        models: [{ id: 'org-model-a', label: 'org-model-a' }],
+      });
+      useSettingsStore.getState().setProviderStatus('org-models', 'verified');
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model-b' });
+      const result = await run(conversationId);
+      expect(result).toEqual({ reason: 'error', error: 'Model unavailable', messageTaken: true });
+      expect(chat).not.toHaveBeenCalled();
+      const last = useChatStore.getState().conversations[conversationId].messages.at(-1);
+      expect(String(last?.content)).toBe('这个任务使用的模型「org-model-b」已不可用，没有发送。请在输入框里重新选择一个模型。');
+    } finally {
+      restore();
+    }
+  });
+
+  it('runs a pin to a registered managed provider whose model list is not confirmed yet', async () => {
+    const { useChatStore, conversationId, chat, restore } = await setup((p) => p);
+    try {
+      const { useSettingsStore } = await import('../../stores/settingsStore');
+      useSettingsStore.getState().upsertManagedProvider({
+        id: 'org-models',
+        name: 'MAZG',
+        baseUrl: 'https://abu.example.net/api/gateway',
+        apiKey: 'sk-virtual',
+        models: [],
+      });
+      useChatStore.getState().setConversationModel(conversationId, { providerId: 'org-models', modelId: 'org-model' });
+      chat.mockRejectedValue(new Error('stop after the first call'));
+      await run(conversationId);
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(chat.mock.calls[0][1]).toMatchObject({
+        model: 'org-model',
+        apiKey: 'sk-virtual',
+        baseUrl: 'https://abu.example.net/api/gateway',
+      });
     } finally {
       restore();
     }

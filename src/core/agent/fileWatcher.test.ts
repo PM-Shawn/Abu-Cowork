@@ -7,6 +7,7 @@ const scopedAuthorizeWorkspaceMock = vi.fn();
 const disposeAuthorizationScopeMock = vi.fn();
 const createConversationMock = vi.fn();
 const renameConversationMock = vi.fn();
+const addMessageMock = vi.fn();
 const emitBrowserRunReportMock = vi.fn();
 
 vi.mock('./agentLoopRunner', () => ({
@@ -24,6 +25,7 @@ vi.mock('../../stores/chatStore', () => ({
     getState: () => ({
       createConversation: createConversationMock,
       renameConversation: renameConversationMock,
+      addMessage: addMessageMock,
     }),
   },
 }));
@@ -39,7 +41,10 @@ vi.mock('../observability/browserRunReportEmitter', () => ({
 vi.mock('../../i18n', () => ({
   format: (template: string, values: Record<string, string>) => Object.entries(values)
     .reduce((result, [key, value]) => result.replaceAll(`{${key}}`, value), template),
-  getI18n: () => ({ chatDefaults: { watcherConversationTitle: '{file} {time}' } }),
+  getI18n: () => ({
+    chatDefaults: { watcherConversationTitle: '{file} {time}' },
+    chat: { automationRunFailed: 'failed: {error}' },
+  }),
 }));
 
 import { handleWatchTrigger, type FileWatchRule } from './fileWatcher';
@@ -66,6 +71,7 @@ describe('handleWatchTrigger background authorization', () => {
     createConversationMock.mockReset();
     createConversationMock.mockReturnValue('watch-conversation-1');
     renameConversationMock.mockReset();
+    addMessageMock.mockReset();
     emitBrowserRunReportMock.mockReset();
   });
 
@@ -99,6 +105,41 @@ describe('handleWatchTrigger background authorization', () => {
     await expect(options.commandConfirmCallback({})).resolves.toBe(false);
     await expect(options.filePermissionCallback({})).resolves.toBe(false);
     expect(disposeAuthorizationScopeMock).toHaveBeenCalledWith('watch-scope-1');
+  });
+
+  /**
+   * #549 — a watcher rule has no run log of its own. Its hidden conversation
+   * is the only place the failure can be read, and a run that never reached
+   * the sidecar wrote nothing into it at all.
+   */
+  it('#549: an error result leaves a visible note in the watcher conversation', async () => {
+    runAgentLoopDispatchedMock.mockResolvedValue({
+      reason: 'error',
+      error: '这段对话太长',
+      messageTaken: true,
+      stopReason: 'payload_too_large',
+    });
+
+    // A fresh rule id: handleWatchTrigger debounces per rule, and the suite's
+    // clock is frozen.
+    await handleWatchTrigger({ ...rule, id: 'watch-failed-note' }, `${rule.path}/a.txt`);
+
+    expect(addMessageMock).toHaveBeenCalledWith('watch-conversation-1', expect.objectContaining({
+      // Prefix only: the id carries a random suffix so two failures in the
+      // same millisecond cannot collide.
+      id: expect.stringMatching(/^watch-failed-/),
+      role: 'assistant',
+      content: 'failed: 这段对话太长',
+      isSystem: true,
+      isRecoveryNotice: true,
+    }));
+  });
+
+  it('#549: a completed run adds no failure note', async () => {
+    await handleWatchTrigger({ ...rule, id: 'watch-ok-no-note' }, `${rule.path}/b.txt`);
+
+    expect(runAgentLoopDispatchedMock).toHaveBeenCalledTimes(1);
+    expect(addMessageMock).not.toHaveBeenCalled();
   });
 
   it('disposes the scope when the background run rejects', async () => {

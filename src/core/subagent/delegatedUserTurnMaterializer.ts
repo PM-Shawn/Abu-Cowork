@@ -819,7 +819,7 @@ async function prepareToolCallsForSidecarWire<T extends ToolCall | ToolCallForCo
  * Prepare the frozen main-loop conversation snapshot for sidecar transport.
  *
  * The renderer-facing transcript may contain inline image/PDF base64 so local
- * history and in-process fallback keep their existing behavior. The sidecar
+ * history and the in-process loop keep their existing behavior. The sidecar
  * wire contract is stricter: media crosses as opaque delegated refs plus
  * metadata, then provider adapters materialize bytes at request time through
  * `prepareDelegatedUserTurnForRequest`.

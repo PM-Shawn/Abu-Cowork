@@ -381,6 +381,45 @@ describe('SchedulerEngine output delivery by exit reason', () => {
     expect(runs[runs.length - 1]?.error).toContain('browser actions were refused');
     expect(runs[runs.length - 1]?.error).not.toContain('Task was cancelled');
   });
+
+  /**
+   * #549 — a dispatch that never reached the sidecar carries its own reason.
+   * The run log is where an unattended task's failure is read, so the reason
+   * has to survive into it instead of collapsing to "Unknown error".
+   */
+  it('#549: a sidecar-unavailable dispatch lands in the run log with its reason', async () => {
+    const task = makeTask({ id: 'task-sidecar-unavailable' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({
+      reason: 'error',
+      error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+      messageTaken: true,
+      stopReason: 'sidecar_unavailable',
+    } as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    const runs = useScheduleStore.getState().tasks[task.id]?.runs ?? [];
+    expect(runs[runs.length - 1]?.status).toBe('error');
+    expect(runs[runs.length - 1]?.error).toContain('后台服务没有启动成功');
+  });
+
+  it('#549: an oversize dispatch lands in the run log with its reason', async () => {
+    const task = makeTask({ id: 'task-payload-too-large' });
+    useScheduleStore.setState({ tasks: { [task.id]: task } });
+    vi.mocked(runAgentLoop).mockResolvedValue({
+      reason: 'error',
+      error: '这段对话太长，无法继续。',
+      messageTaken: true,
+      stopReason: 'payload_too_large',
+    } as never);
+
+    await schedulerEngine.runNow(task.id);
+
+    const runs = useScheduleStore.getState().tasks[task.id]?.runs ?? [];
+    expect(runs[runs.length - 1]?.error).toContain('这段对话太长，无法继续。');
+    expect(runs[runs.length - 1]?.error).not.toContain('Unknown error');
+  });
 });
 
 // ── U7: the unattended task report card ───────────────────────────────────

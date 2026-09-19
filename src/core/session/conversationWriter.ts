@@ -59,7 +59,10 @@ import { withAcceptedPermissionMode } from './conversationPermissionMode';
 import { createLedgerEvent, type LedgerLine } from './messageLedger';
 import { projectLedger, STREAM_SNAPSHOT_FILENAME, type StreamSnapshotEntry } from './ledgerReader';
 import {
+  assertConversationId,
+  ConversationPathError,
   createConversationPaths,
+  isDirectChildPath,
   joinConversationPath,
   type ConversationPaths,
 } from './conversationPaths';
@@ -189,11 +192,12 @@ export interface ConversationWriter {
   /**
    * Drops everything this instance knows about one conversation: tail check,
    * written ids, ledger length, last message id, parent ids, settled sandbox
-   * actions and armed snapshots. Write entries of the conversation that are
-   * still running are awaited and the queue is flushed first. The next write
-   * entry for the conversation re-derives all of it from one strict read of the
-   * ledger and the snapshot file, and rejects when that read fails. Files are
-   * not touched.
+   * actions, armed snapshots and the containment check. Write entries of the
+   * conversation that are still running are awaited and the queue is flushed
+   * first. The next write entry for the conversation re-derives all of it from
+   * one strict read of the ledger and the snapshot file, resolves the
+   * conversation directory again, and rejects when either fails. Files are not
+   * touched.
    */
   forgetConversation(convId: string): Promise<void>;
   deleteConversationFiles(convId: string): Promise<void>;
@@ -290,8 +294,102 @@ export function createConversationWriter(deps: {
         await fs.mkdir(paths.root, { recursive: true });
       }
       if (capabilities.versionSweep) await sweepStaleStreamSnapshotsOnVersionChange();
+      // Probed here, with the root's own creation, rather than on the first
+      // conversation: a tier with no canonical primitive then answers every
+      // later containment check out of this one result, and the first write of
+      // a conversation waits for nothing the root's setup did not already pay.
+      canonicalRoot = await fs.canonicalPath(paths.root);
     }
     return paths;
+  }
+
+  // ════════════════════════════════════════════════════════════
+  // Containment (design D6)
+  // ════════════════════════════════════════════════════════════
+  //
+  // The id grammar makes a conversation path lexically `<root>/<one segment>`,
+  // which says nothing about where that segment points once the filesystem has
+  // resolved it. A conversation directory that is a link, or that sits under a
+  // linked ancestor, can name anything on the disk — and this writer appends
+  // to it, rewrites files in it and removes it recursively. So before the first
+  // file call this process makes for a conversation, both sides are resolved
+  // and the directory must come out a direct child of the resolved root.
+
+  /** undefined: not asked yet. null: this tier has no canonical primitive. */
+  let canonicalRoot: string | null | undefined;
+  /** The resolved legacy sessions root. undefined: not asked yet. null: no canonical primitive. */
+  let canonicalLegacyRoot: string | null | undefined;
+  const containedConversations = new Set<string>();
+
+  async function canonicalOf(path: string, known: string | null | undefined): Promise<string | null> {
+    return known !== undefined ? known : fs.canonicalPath(path);
+  }
+
+  /** Rejects unless `dir` canonically is a direct child of `rootDir`. */
+  async function assertDirectChild(canonicalRootDir: string | null, dir: string): Promise<void> {
+    if (canonicalRootDir === null) return;
+    const canonicalDir = await fs.canonicalPath(dir);
+    if (canonicalDir === null) throw new ConversationPathError('canonical_path_unavailable');
+    if (!isDirectChildPath(canonicalRootDir, canonicalDir)) throw new ConversationPathError('conversation_dir_outside_root');
+  }
+
+  /**
+   * Resolve the conversation directory and refuse it unless it is a direct
+   * child of the resolved conversations root.
+   *
+   * `ensureConversation` runs it the first time this process touches a
+   * conversation and again after a `forgetConversation` — the same moments at
+   * which every other fact this instance holds about the conversation is
+   * (re-)derived — and records the answer in `containedConversations`.
+   * `deleteConversationFiles` calls it directly, past that record, because the
+   * one operation that removes a directory tree re-resolves it every time.
+   * Between those checks the path is not unguarded: in the renderer the main
+   * process resolves and scope-checks the path of every single operation
+   * (`assertAllowed` in `electron/fsHost.cjs`), and in the sidecar the adapter
+   * opens final components without following links.
+   *
+   * A tier whose `canonicalPath` answers null for the root has no canonical
+   * primitive at all, and the lexical guarantee of `conversationPaths.ts`
+   * stands alone. A tier that resolves the root and then cannot resolve a
+   * conversation directory is refused instead: that is a missing answer, not a
+   * missing primitive.
+   */
+  async function assertConversationContained(convId: string): Promise<void> {
+    const p = paths!;
+    // `ensureBase` normally has this already. It does not when a second caller
+    // entered while the first was still inside `ensureBase`'s init block, which
+    // assigns `paths` before it resolves the root.
+    canonicalRoot = await canonicalOf(p.root, canonicalRoot);
+    await assertDirectChild(canonicalRoot, p.conversationDir(convId));
+    containedConversations.add(convId);
+  }
+
+  /**
+   * What every conversation-scoped method awaits first: the id passes the
+   * grammar before any path exists, the root exists, and the conversation
+   * directory resolves inside it.
+   *
+   * It answers without a promise whenever it has nothing to resolve — the root
+   * is resolved and either this conversation has been checked already or this
+   * tier has no canonical primitive to check it with. A queued append reaches
+   * the write queue in a fixed number of microtask turns, and a caller that
+   * fires a flush right behind one (`catalogReindexConversation` drains the
+   * queue before it reindexes) must still find that append in it.
+   */
+  function ensureConversation(convId: string): ConversationPaths | Promise<ConversationPaths> {
+    // Before `ensureBase`, so an invalid id costs no file call even on the
+    // first use of the instance.
+    assertConversationId(convId);
+    if (paths && canonicalRoot !== undefined && (canonicalRoot === null || containedConversations.has(convId))) {
+      return paths;
+    }
+    return resolveConversation(convId);
+  }
+
+  async function resolveConversation(convId: string): Promise<ConversationPaths> {
+    const p = await ensureBase();
+    await assertConversationContained(convId);
+    return p;
   }
 
   // ════════════════════════════════════════════════════════════
@@ -560,7 +658,7 @@ export function createConversationWriter(deps: {
    *    is refused by every reader, so the tail is terminated first.
    */
   async function flushAndGetLedgerWatermark(convId: string): Promise<number> {
-    await ensureBase();
+    await ensureConversation(convId);
     await flushWrites();
     const path = paths!.messagesPath(convId);
     return withFileLock(path, async () => {
@@ -751,7 +849,7 @@ export function createConversationWriter(deps: {
    * state is worth a permanent line.
    */
   async function snapshotMessageRevision(convId: string, message: Message): Promise<void> {
-    await ensureBase();
+    await ensureConversation(convId);
     await ensureDerived(convId);
     const allowToolResultDehydration = hasInlineToolResultImages(message)
       ? await refreshOutputManifestForToolResultImages(convId)
@@ -936,6 +1034,10 @@ export function createConversationWriter(deps: {
    * holds the revisions, so no crash window has neither copy.
    */
   async function promoteStreamSnapshots(convId: string): Promise<number> {
+    // The early return below answers before any path is built, so the grammar
+    // runs here; the containment check comes with `ensureConversation` on the
+    // path that reaches a file.
+    assertConversationId(convId);
     // A forgotten conversation may have a snapshot on disk this process does not
     // hold, so the buffer is re-derived before it is read as empty.
     if (forgotten.has(convId)) {
@@ -944,7 +1046,7 @@ export function createConversationWriter(deps: {
     }
     const entries = streamSnapshots.get(convId);
     if (!entries || entries.size === 0) return 0;
-    await ensureBase();
+    await ensureConversation(convId);
 
     // Serialized first, queued second: a revision whose tool-result images make
     // serialization await the output manifest would otherwise reach the queue
@@ -1151,7 +1253,7 @@ export function createConversationWriter(deps: {
     if (inFlight) return inFlight;
 
     const write = (async () => {
-      await ensureBase();
+      await ensureConversation(convId);
       // A forgotten conversation re-derives first, and the dedup check above ran
       // against a set that did not yet know what the previous owner wrote.
       if ((await ensureDerived(convId)) && writtenIds.has(message.id)) return;
@@ -1223,7 +1325,7 @@ export function createConversationWriter(deps: {
     fromMessageId: string,
     opts: { pid?: string; removedIds: string[] },
   ): Promise<boolean> {
-    await ensureBase();
+    await ensureConversation(convId);
     await ensureDerived(convId);
     const path = paths!.messagesPath(convId);
 
@@ -1337,7 +1439,7 @@ export function createConversationWriter(deps: {
     message: Message,
     strict: boolean,
   ): Promise<boolean> {
-    await ensureBase();
+    await ensureConversation(convId);
     // Outside the `try` below, so a re-derivation that fails rejects the
     // non-strict variant too rather than being read as "nothing to replace".
     await ensureDerived(convId);
@@ -1416,7 +1518,7 @@ export function createConversationWriter(deps: {
    * destroyed a message, and the cost is one extra line.
    */
   async function updateLastMessage(convId: string, message: Message): Promise<void> {
-    await ensureBase();
+    await ensureConversation(convId);
     await ensureDerived(convId);
     const path = paths!.messagesPath(convId);
     // Preserved from the rewrite era: with no conversation file there is nothing
@@ -1457,7 +1559,7 @@ export function createConversationWriter(deps: {
    * `forgetConversation` relies on it as the one way state comes back.
    */
   async function deriveFromDisk(convId: string, options?: { strictRead?: boolean }): Promise<Message[]> {
-    await ensureBase();
+    await ensureConversation(convId);
     const path = paths!.messagesPath(convId);
     if (!(await fs.exists(path))) {
       // Nothing on disk is a complete answer, so the conversation is derived.
@@ -1557,8 +1659,13 @@ export function createConversationWriter(deps: {
   /** Conversations whose state was dropped and not yet re-derived. */
   const forgotten = new Set<string>();
 
-  /** Drop every piece of per-conversation state this instance holds. Touches no file. */
+  /**
+   * Drop every piece of per-conversation state this instance holds, including
+   * the record that this conversation's directory was found inside the root, so
+   * the next method to touch it resolves the directory again. Touches no file.
+   */
   function releaseConversationState(convId: string): void {
+    containedConversations.delete(convId);
     for (const id of idsByConv.get(convId) ?? []) {
       writtenIds.delete(id);
       persistedSandboxActions.delete(id);
@@ -1605,14 +1712,15 @@ export function createConversationWriter(deps: {
   /**
    * Drop everything this instance knows about one conversation: tail check,
    * written ids, ledger length, last message id, parent ids, settled sandbox
-   * actions and armed snapshots. Write entries of the conversation that are
-   * still running are awaited and the queue is flushed first. The next write
-   * entry for the conversation re-derives all of it from one strict read of the
-   * ledger and the snapshot file, and rejects when that read fails. Files are
-   * not touched.
+   * actions, armed snapshots and the containment check. Write entries of the
+   * conversation that are still running are awaited and the queue is flushed
+   * first. The next write entry for the conversation re-derives all of it from
+   * one strict read of the ledger and the snapshot file, resolves the
+   * conversation directory again, and rejects when either fails. Files are not
+   * touched.
    */
   async function forgetConversation(convId: string): Promise<void> {
-    const { messagesPath } = await ensureBase();
+    const { messagesPath } = await ensureConversation(convId);
     const path = messagesPath(convId);
     // An entry that has started may not have reached the queue yet; it settles
     // once its line is durable (or refused), so waiting for it covers both.
@@ -1630,9 +1738,20 @@ export function createConversationWriter(deps: {
   /**
    * Delete all files for a conversation (messages, outputs, results).
    * Also cleans up the legacy sessions/ path from pre-migration data.
+   *
+   * These are the writer's only recursive removes. Both targets come from the
+   * path builders, so each is lexically `<root>/<id that passed the grammar>`,
+   * and both are resolved again here rather than trusted from an earlier check:
+   * a directory that has become a link since this process last looked at it
+   * would otherwise carry the remove out of the root. A refusal is thrown, not
+   * swallowed by the "non-critical" catches below, which cover a directory that
+   * is merely gone or busy.
    */
   async function deleteConversationFiles(convId: string): Promise<void> {
-    await ensureBase();
+    const p = await ensureConversation(convId);
+    await assertConversationContained(convId);
+    canonicalLegacyRoot = await canonicalOf(p.legacySessionsRoot, canonicalLegacyRoot);
+    await assertDirectChild(canonicalLegacyRoot, p.legacySessionDir(convId));
     // Drop the crash-protection buffer first: leaving it armed would have a
     // later flush recreate the conversation directory we are deleting. The rest
     // of the conversation's state goes with it — the files it describes are

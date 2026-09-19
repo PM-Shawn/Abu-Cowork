@@ -415,4 +415,135 @@ describe('createConversationWriter', () => {
       await expect(writer.forgetConversation('../c1')).rejects.toMatchObject({ code: 'conversation_id_invalid' });
     });
   });
+
+  describe('containment', () => {
+    const resolveWith = (links: Record<string, string>) => (path: string): string => {
+      for (const [from, to] of Object.entries(links)) {
+        if (path === from || path.startsWith(`${from}/`)) return to + path.slice(from.length);
+      }
+      return path;
+    };
+
+    it('an invalid id rejects every conversation-scoped method before any fs call', async () => {
+      const fs = createMemoryConversationFs();
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      await writer.ensureReady();
+      const callsBefore = fs.calls.length;
+      const bad = '../escape';
+      const m = msg('m1', 'x');
+      for (const attempt of [
+        () => writer.appendMessage(bad, m),
+        () => writer.replaceMessageById(bad, m),
+        () => writer.replaceMessageByIdStrict(bad, m),
+        () => writer.updateLastMessage(bad, m),
+        () => writer.snapshotMessageRevision(bad, m),
+        () => writer.appendTruncateEvent(bad, 'm1', { removedIds: ['m1'] }),
+        () => writer.promoteStreamSnapshots(bad),
+        () => writer.loadMessages(bad),
+        () => writer.flushAndGetLedgerWatermark(bad),
+        () => writer.deleteConversationFiles(bad),
+        () => writer.forgetConversation(bad),
+      ]) {
+        await expect(attempt()).rejects.toMatchObject({ code: 'conversation_id_invalid' });
+      }
+      expect(fs.calls.length).toBe(callsBefore);
+    });
+
+    it('a conversation directory that resolves outside the root is refused, and nothing is written', async () => {
+      const fs = createMemoryConversationFs();
+      // The marker already names this version, so the version sweep — the one
+      // root-level write `ensureBase` makes — returns before it rewrites it.
+      fs.files.set(`${ROOT}/.snapshot-sweep-version`, '9.9.9');
+      fs.setCanonical(resolveWith({ [`${ROOT}/c1`]: '/etc/abu-escape' }));
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      await expect(writer.appendMessage('c1', msg('m1', 'x'))).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
+      await expect(writer.snapshotMessageRevision('c1', msg('m1', 'x'))).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
+      await expect(writer.loadMessages('c1')).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
+      expect(fs.calls.some((c) => c.startsWith('appendText') || c.startsWith('atomicWriteText'))).toBe(false);
+    });
+
+    it('a root that is itself behind a link is fine: both sides are canonical', async () => {
+      const fs = createMemoryConversationFs();
+      fs.setCanonical(resolveWith({ [APP_DATA]: '/Volumes/real/abu' }));
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      await writer.appendMessage('c1', msg('m1', 'x'));
+      await writer.flushWrites();
+      expect(fs.files.get(`${ROOT}/c1/messages.jsonl`)).toContain('"m1"');
+    });
+
+    it('checks a conversation once per process, and again after forget', async () => {
+      const fs = createMemoryConversationFs();
+      fs.setCanonical((path) => path);
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      await writer.appendMessage('c1', msg('m1', 'x'));
+      await writer.appendMessage('c1', msg('m2', 'y'));
+      await writer.flushWrites();
+      const count = (): number => fs.calls.filter((c) => c === `canonicalPath ${ROOT}/c1`).length;
+      expect(count()).toBe(1);
+      await writer.forgetConversation('c1');
+      await writer.appendMessage('c1', msg('m3', 'z'));
+      expect(count()).toBe(2);
+    });
+
+    it('a tier without a canonical primitive makes no canonical call after the root probe', async () => {
+      const fs = createMemoryConversationFs();
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      await writer.appendMessage('c1', msg('m1', 'x'));
+      await writer.appendMessage('c2', msg('n1', 'x'));
+      expect(fs.calls.filter((c) => c.startsWith('canonicalPath'))).toEqual([`canonicalPath ${ROOT}`]);
+    });
+
+    it('a primitive that resolves the root and then answers null is an error', async () => {
+      const fs = createMemoryConversationFs();
+      let asked = 0;
+      fs.canonicalPath = async (path) => (asked++ === 0 ? path : null);
+      const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+      await expect(writer.appendMessage('c1', msg('m1', 'x'))).rejects.toMatchObject({ code: 'canonical_path_unavailable' });
+    });
+
+    describe('deleteConversationFiles', () => {
+      it('removes the conversation directory and the legacy session directory of a contained conversation', async () => {
+        const fs = createMemoryConversationFs();
+        fs.setCanonical((path) => path);
+        const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+        await writer.appendMessage('c1', msg('m1', 'x'));
+        await writer.flushWrites();
+        await fs.mkdir(`${APP_DATA}/sessions/c1`, { recursive: true });
+        fs.files.set(`${APP_DATA}/sessions/c1/old.json`, '{}');
+        await writer.deleteConversationFiles('c1');
+        expect([...fs.files.keys()].filter((p) => p.includes('/c1/'))).toEqual([]);
+        expect(fs.calls).toContain(`remove ${ROOT}/c1 recursive`);
+      });
+
+      it('re-checks at delete time and refuses a directory that now resolves elsewhere, loudly', async () => {
+        const fs = createMemoryConversationFs();
+        fs.setCanonical((path) => path);
+        const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+        await writer.appendMessage('c1', msg('m1', 'x'));
+        await writer.flushWrites();
+        fs.setCanonical(resolveWith({ [`${ROOT}/c1`]: '/Users/victim/Documents' }));
+        await expect(writer.deleteConversationFiles('c1')).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
+        expect(fs.calls.some((c) => c.startsWith('remove'))).toBe(false);
+      });
+
+      it('refuses a legacy session directory that resolves elsewhere and removes nothing under sessions', async () => {
+        const fs = createMemoryConversationFs();
+        await fs.mkdir(`${APP_DATA}/sessions/c1`, { recursive: true });
+        fs.files.set(`${APP_DATA}/sessions/c1/old.json`, '{}');
+        fs.setCanonical(resolveWith({ [`${APP_DATA}/sessions/c1`]: '/Users/victim' }));
+        const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+        await expect(writer.deleteConversationFiles('c1')).rejects.toMatchObject({ code: 'conversation_dir_outside_root' });
+        expect(fs.calls.some((c) => c.startsWith(`remove ${APP_DATA}/sessions`))).toBe(false);
+      });
+
+      it('a remove that fails for an ordinary reason stays non-critical', async () => {
+        const fs = createMemoryConversationFs();
+        const writer = createConversationWriter({ fs, env: makeEnv(), capabilities: ALL });
+        await writer.appendMessage('c1', msg('m1', 'x'));
+        await writer.flushWrites();
+        fs.remove = async () => { throw new Error('EBUSY'); };
+        await expect(writer.deleteConversationFiles('c1')).resolves.toBeUndefined();
+      });
+    });
+  });
 });

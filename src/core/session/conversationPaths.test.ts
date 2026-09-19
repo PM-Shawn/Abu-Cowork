@@ -129,4 +129,9 @@ describe('isDirectChildPath', () => {
   ])('%s ⊅ %s, whose final segment names the root or its parent', (root, target) => {
     expect(isDirectChildPath(root, target)).toBe(false);
   });
+
+  it('refuses every child of the filesystem root, which is never the conversations root', () => {
+    expect(isDirectChildPath('/', '/abc')).toBe(false);
+    expect(isDirectChildPath('/', '/')).toBe(false);
+  });
 });

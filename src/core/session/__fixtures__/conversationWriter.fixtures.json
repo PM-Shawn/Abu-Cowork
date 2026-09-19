@@ -63,6 +63,76 @@
           "conv-promote/stream-snapshot.json": null
         } }
       ]
+    },
+    {
+      "name": "a completed tool call with an inline image result keeps its projected shape",
+      "convId": "conv-tools",
+      "now": 1700000000000,
+      "randomSuffix": "i",
+      "ops": [
+        { "op": "appendMessage", "message": { "id": "u1", "role": "user", "content": "看看这张图", "timestamp": 1700000000000 } },
+        { "op": "appendMessage", "message": {
+          "id": "a1",
+          "role": "assistant",
+          "content": "已读取",
+          "timestamp": 1700000000000,
+          "toolCalls": [
+            {
+              "id": "toolu_img",
+              "name": "read_file",
+              "input": { "path": "result.png" },
+              "result": "Image result",
+              "resultContent": [
+                { "type": "text", "text": "Image result" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "QUJDRA==" } }
+              ],
+              "isExecuting": false,
+              "startTime": 1700000000000,
+              "endTime": 1700000000001
+            }
+          ],
+          "toolCallsForContext": [
+            {
+              "id": "toolu_img",
+              "name": "read_file",
+              "input": { "path": "result.png" },
+              "result": "Image result",
+              "resultContent": [
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "QUJDRA==" } }
+              ]
+            }
+          ]
+        } },
+        { "op": "flushWrites" },
+        { "op": "expectFiles", "files": {
+          "conv-tools/messages.jsonl": "{\"id\":\"u1\",\"role\":\"user\",\"content\":\"看看这张图\",\"timestamp\":1700000000000}\n{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"已读取\",\"timestamp\":1700000000000,\"toolCalls\":[{\"id\":\"toolu_img\",\"name\":\"read_file\",\"input\":{\"path\":\"result.png\"},\"result\":\"Image result\",\"resultContent\":[{\"type\":\"text\",\"text\":\"Image result\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"QUJDRA==\"}}],\"isExecuting\":false,\"startTime\":1700000000000,\"endTime\":1700000000001}],\"toolCallsForContext\":[{\"id\":\"toolu_img\",\"name\":\"read_file\",\"input\":{\"path\":\"result.png\"},\"result\":\"Image result\",\"resultContent\":[{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"QUJDRA==\"}}]}],\"pid\":\"u1\"}\n"
+        } },
+        { "op": "snapshotMessageRevision", "message": {
+          "id": "a1",
+          "role": "assistant",
+          "content": "已读取，正在总结",
+          "timestamp": 1700000000000,
+          "toolCalls": [
+            {
+              "id": "toolu_img",
+              "name": "read_file",
+              "input": { "path": "result.png" },
+              "result": "Image result",
+              "resultContent": [
+                { "type": "text", "text": "Image result" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "QUJDRA==" } }
+              ],
+              "isExecuting": false,
+              "startTime": 1700000000000,
+              "endTime": 1700000000001
+            }
+          ],
+          "isStreaming": true
+        } },
+        { "op": "expectFiles", "files": {
+          "conv-tools/stream-snapshot.json": "{\"version\":2,\"entries\":[{\"message\":{\"id\":\"a1\",\"role\":\"assistant\",\"content\":\"已读取，正在总结\",\"timestamp\":1700000000000,\"toolCalls\":[{\"id\":\"toolu_img\",\"name\":\"read_file\",\"input\":{\"path\":\"result.png\"},\"result\":\"Image result\",\"resultContent\":[{\"type\":\"text\",\"text\":\"Image result\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"QUJDRA==\"}}],\"isExecuting\":false,\"startTime\":1700000000000,\"endTime\":1700000000001}],\"isStreaming\":false},\"stamp\":694}],\"ledgerBytes\":694}"
+        } }
+      ]
     }
   ]
 }

@@ -19,13 +19,11 @@ vi.mock('./workspaceStore', () => ({
 }));
 
 /**
- * The conversation's row as the last `index.json` write holds it. The index
- * writer is real; the file system under it is the global `invoke` mock.
+ * The conversation's row as the last `index.json` write on the mocked file
+ * system holds it. Reads only what has already been written — no flush of
+ * its own, so it can tell a durable write from a pending one.
  */
-async function indexEntryOnDisk(convId: string): Promise<Record<string, unknown> | undefined> {
-  await waitForConversationPersistence(convId);
-  const { flushIndex } = await import('../core/session/conversationStorage');
-  await flushIndex();
+function indexEntryFlushedToDisk(convId: string): Record<string, unknown> | undefined {
   const write = vi.mocked(invoke).mock.calls
     .filter(([cmd, args]) => cmd === 'atomic_write_text'
       && String((args as { path?: string } | undefined)?.path).endsWith('index.json'))
@@ -35,6 +33,18 @@ async function indexEntryOnDisk(convId: string): Promise<Record<string, unknown>
     entries: Record<string, Record<string, unknown>>;
   };
   return parsed.entries[convId];
+}
+
+/**
+ * The conversation's row after everything it has queued has settled and the
+ * index writer's own debounce has been drained. The index writer is real; the
+ * file system under it is the global `invoke` mock.
+ */
+async function indexEntryOnDisk(convId: string): Promise<Record<string, unknown> | undefined> {
+  await waitForConversationPersistence(convId);
+  const { flushIndex } = await import('../core/session/conversationStorage');
+  await flushIndex();
+  return indexEntryFlushedToDisk(convId);
 }
 
 function seedIndex(entries: Record<string, Partial<ConversationMeta> & Record<string, unknown>>): void {
@@ -125,6 +135,31 @@ describe('permission mode is persisted with the conversation', () => {
     const id = useChatStore.getState().createConversation(null, { skipActivate: true });
     expect(useChatStore.getState().conversations[id].permissionMode).toBeUndefined();
     expect('permissionMode' in useChatStore.getState().conversationIndex[id]).toBe(false);
+  });
+
+  it('a lowered mode is on disk by the time its write reports done', async () => {
+    const id = useChatStore.getState().createConversation(null, { skipActivate: true });
+    useChatStore.getState().setConversationPermissionMode(id, 'autonomous');
+    await waitForConversationPersistence(id);
+    useChatStore.getState().setConversationPermissionMode(id, 'standard');
+
+    await waitForConversationPersistence(id);
+    // Read without draining the index writer's debounce: quitting inside that
+    // window must not leave the higher mode on disk for the next start.
+    expect(indexEntryFlushedToDisk(id)?.permissionMode).toBe('standard');
+  });
+
+  it('a failed index write ends the conversation at its durability barrier', async () => {
+    const id = useChatStore.getState().createConversation(null, { skipActivate: true });
+    await waitForConversationPersistence(id);
+
+    vi.mocked(invoke).mockRejectedValue(new Error('disk unavailable'));
+    try {
+      useChatStore.getState().setConversationPermissionMode(id, 'standard');
+      await expect(waitForConversationPersistence(id)).rejects.toThrow('disk unavailable');
+    } finally {
+      vi.mocked(invoke).mockReset();
+    }
   });
 
   it('an index entry carrying a mode outside the closed set reaches index.json without it', async () => {

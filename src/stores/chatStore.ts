@@ -319,18 +319,23 @@ function persistMessageReplacement(convId: string, message: Message): void {
 }
 
 /**
- * Queue a conversation's index entry for `index.json` through that
- * conversation's serial persistence queue. `updateIndexEntry` rejects only
- * when the storage base cannot be prepared; the queue keeps that rejection,
- * and it ends the conversation's next dispatch at its durability barrier
+ * Write a conversation's index entry to `index.json` through that
+ * conversation's serial persistence queue. `updateIndexEntry` alone only
+ * updates the in-memory index and arms a two-second debounce, so the flush is
+ * explicit: a permission mode the user just lowered has to be on disk before
+ * the write reports done, or a quit inside that window leaves the higher mode
+ * for the next start. A rejection is kept by the queue and ends the
+ * conversation's next dispatch at its durability barrier
  * (`waitForConversationPersistence`) like any other failed write.
  */
 function persistConversationIndexEntry(convId: string): void {
   trackConversationPersistence(
     convId,
-    () => import('../core/session/conversationStorage').then(async ({ updateIndexEntry }) => {
+    () => import('../core/session/conversationStorage').then(async ({ updateIndexEntry, flushIndex }) => {
       const meta = useChatStore.getState().conversationIndex[convId];
-      if (meta) await updateIndexEntry(meta);
+      if (!meta) return;
+      await updateIndexEntry(meta);
+      await flushIndex();
     }),
   );
 }

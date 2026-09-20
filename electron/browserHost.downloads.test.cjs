@@ -1027,6 +1027,42 @@ test('refuses a same-size DIFFERENT file moved into the approved path', async ()
   } finally { restore(); }
 });
 
+/**
+ * The swap above leans entirely on the file id being compared, and where ids
+ * are small — a fresh APFS or ext4 inode — every bound reads one the same way.
+ * An NTFS id carries a record sequence number above the record index, so
+ * `%TEMP%` on a Windows machine that has been in use for a while reports ids
+ * past 2^53, and there it is the WIDTH the pin accepts that decides the
+ * outcome. So the width gets its own case, which lands the same way on every
+ * filesystem: an id too large for a double to hold precisely is still an
+ * identity, and an entry carrying one is checked against the descriptor rather
+ * than accepted on size and mtime.
+ */
+test('checks an approved file id too large to be exactly representable', async () => {
+  const { host, root, restore } = loadHost();
+  try {
+    const { tabId, contents } = await openTab(host, OWNER_A);
+    const approvedPath = path.join(root, 'report.txt');
+    fs.writeFileSync(approvedPath, 'PUBLIC!!');
+    const frozen = new Date(1_700_000_000_000);
+    fs.utimesSync(approvedPath, frozen, frozen);
+    // Size and mtime match the file on disk exactly, so the id is the only
+    // thing that can reject this — and it is one no double can hold precisely.
+    const approved = { ...approvedEntry(approvedPath, 'report.txt'), ino: Number.MAX_SAFE_INTEGER + 3 };
+    assert.equal(Number.isSafeInteger(approved.ino), false);
+    assert.equal(Math.floor(fs.lstatSync(approvedPath).mtimeMs), approved.mtimeMs);
+    assert.equal(fs.lstatSync(approvedPath).size, approved.size);
+
+    await assert.rejects(
+      host.performBrowserAutomation('upload_file', {
+        ownerId: OWNER_A, tabId, locator: { css: 'input[type=file]' }, files: [approved],
+      }),
+      /changed on disk/,
+    );
+    assert.equal(contents.domCalls.filter((c) => c.action === 'upload_file').length, 0);
+  } finally { restore(); }
+});
+
 test('refuses a same-size rewrite in place, which keeps the inode', async () => {
   const { host, root, restore } = loadHost();
   try {

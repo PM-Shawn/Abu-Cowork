@@ -108,7 +108,11 @@ export interface ApprovedUploadFile {
    * side reports sub-millisecond — the two must be comparable.
    */
   mtimeMs: number;
-  /** Inode, where the platform has one (`null` on Windows → omitted). */
+  /**
+   * File id, omitted when the filesystem reports none. Windows reports one: an
+   * NTFS id is 64 bits wide, so once the record sequence number grows it passes
+   * 2^53 and reaches this pin rounded to the nearest double.
+   */
   ino?: number;
   /** Device id, paired with `ino`: an inode number is only unique per device. */
   dev?: number;
@@ -156,7 +160,7 @@ export interface BrowserUploadDeps {
     size: number;
     /** Whole milliseconds, or 0 when the platform reported no mtime. */
     mtimeMs?: number;
-    /** `null`/absent on Windows, where there is no inode. */
+    /** `null`/absent where the filesystem reports no file id. */
     ino?: number | null;
     dev?: number | null;
   }>;

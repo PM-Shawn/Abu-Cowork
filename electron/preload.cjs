@@ -602,7 +602,14 @@ contextBridge.exposeInMainWorld('__TAURI_OS_PLUGIN_INTERNALS__', ipcRenderer.sen
 // wrong sends the authorization code to a DIFFERENT Abu install.
 function readDeepLinkScheme() {
   const flag = '--abu-deep-link-scheme=';
-  const arg = process.argv.find(a => a.startsWith(flag));
+  // Every real preload has `process`. The preload-surface tests
+  // (securityBoundary.test.cjs, ipcRawBody.test.cjs) evaluate this file in a
+  // bare VM sandbox that withholds the Node globals on purpose, and the whole
+  // bridge must stay constructible there — the same reason the localStorage
+  // work above tolerates its global being absent. No flag and no `process`
+  // land on the same production default below.
+  const argv = typeof process === 'undefined' ? [] : process.argv;
+  const arg = argv.find(a => a.startsWith(flag));
   const value = arg ? arg.slice(flag.length) : '';
   // Only ever the two schemes the shell can register; anything else falls back
   // to the production scheme rather than propagating a bogus redirect_uri.

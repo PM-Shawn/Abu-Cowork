@@ -1,16 +1,18 @@
 /**
  * Source-to-UX-category mapping.
  *
- * The Toolbox shows 3 top-level skill buckets (`SkillUXCategory`):
+ * The Toolbox shows 3 top-level skill buckets (`SkillUXCategory`), split by
+ * what the user OWNS versus what they can still get:
  *
- *   - **mine** — user/standard/project/project-standard/workspace-auto.
- *     Everything the human or Abu created on behalf of the user. Abu-created
- *     skills get the per-row "自进化" badge via sourceBadge() so the origin
- *     is still visible without a separate category.
+ *   - **mine** — what the user has: skills they or Abu wrote
+ *     (user/standard/project/project-standard/workspace-auto), skills a plugin
+ *     they installed brought in, and skills the organization pushed. Origin
+ *     stays visible per row (sourceBadge / the plugin badge); a plugin's skill
+ *     is read-only there and leaves with its plugin.
  *   - **agent-evolved** — draft only. Pending agent proposals awaiting
  *     user review. Shown via SkillDraftsPanel when draftsCount > 0.
- *   - **builtin** — the 市场 bucket: bundled with the app binary, or brought
- *     in by a plugin. Read-only either way.
+ *   - **builtin** — the 市场 bucket: what ships with the app and can be
+ *     used without installing anything.
  *
  * All Toolbox grouping goes through this function, so the enum-to-
  * bucket mapping stays in one place and it's hard to forget a new
@@ -30,17 +32,12 @@ export function sourceToUXCategory(source: SkillSource | undefined): SkillUXCate
     case 'workspace-auto':
       return 'mine';
     case 'enterprise':
-      // Enterprise-installed skills appear in the "mine" bucket for now.
-      // A dedicated visual badge will distinguish them (spec 11.d, V1.5+).
+      // Pushed to this user by their organization: theirs to use, badged.
       return 'mine';
     case 'plugin':
-      // Plugin-contributed skills belong to the 市场 bucket: someone else
-      // shipped them, and 「我的」 means what this user wrote or installed by
-      // hand. Removing one is uninstalling its plugin, not deleting a file —
-      // the same read-only treatment every other 市场 card gets. Provenance
-      // ("which plugin brought this in") stays a per-row badge, and the
-      // Plugins tab is still the place that lists them by package.
-      return 'builtin';
+      // Installed by this user through a plugin: theirs, badged with the
+      // plugin, read-only, and removed by uninstalling the plugin.
+      return 'mine';
     case 'draft':
       return 'agent-evolved';
     case 'builtin':

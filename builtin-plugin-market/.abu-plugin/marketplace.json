@@ -10,6 +10,36 @@
       "author": { "name": "Abu" },
       "category": "productivity",
       "source": "./plugins/abu-prd-doctor"
+    },
+    {
+      "name": "abu-app-recruiting",
+      "description": "招聘应用：写 JD、筛简历、备面试、查行情，由招聘专家团负责",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "hr",
+      "providesApp": true,
+      "minAbuVersion": "0.51.0",
+      "source": "./plugins/abu-app-recruiting"
+    },
+    {
+      "name": "abu-app-finance-reconciliation",
+      "description": "财务对账应用：对流水、查差异、出报表，由财务对账专家团负责",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "finance",
+      "providesApp": true,
+      "minAbuVersion": "0.51.0",
+      "source": "./plugins/abu-app-finance-reconciliation"
+    },
+    {
+      "name": "abu-app-content-creation",
+      "description": "内容创作应用：选题、成稿、配图、发布物料，由内容创作专家团负责",
+      "version": "1.0.0",
+      "author": { "name": "Abu" },
+      "category": "content",
+      "providesApp": true,
+      "minAbuVersion": "0.51.0",
+      "source": "./plugins/abu-app-content-creation"
     }
   ]
 }

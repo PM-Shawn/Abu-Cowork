@@ -1,10 +1,13 @@
 /**
- * The installed-plugins list — 「我的」 when `mode="authored"`.
+ * The 「已安装」 group of the plugins 「我的」 shelf: every personal install the
+ * user made from a marketplace. 「我的」 is what the user HAS — a plugin fetched
+ * from someone else's market is theirs once installed, so it lists here (and
+ * stays in the market with an 「已安装」 mark, where updates are offered).
  *
- * 「我的」 means *authored by the user*, not merely "installed": a plugin
- * fetched from someone else's repo is somebody else's work and belongs in 市场
- * (shown in place there), never under a heading that reads as the user's own.
- * `isSelfAuthoredPlugin` is the single definition of that; see `authored.ts`.
+ * Two kinds of install are not this group's: organization installs (managed
+ * and uninstalled from the 组织 view only, same as skills) and the user's own
+ * creations (`isAuthoredInstall`), which `AuthoredPluginList` shows with
+ * their drafts.
  *
  * Counts come from the install record's `contributed` list — the same list the
  * uninstaller withdraws from — rather than from rescanning the package
@@ -23,31 +26,24 @@ import { Button } from '@/components/ui/button';
 import { usePluginStore } from '@/stores/pluginStore';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
 import { partitionInstalled } from '@/core/plugin/enterpriseMarket';
-import { isSelfAuthoredPlugin } from '@/core/plugin/authored';
-import { InstalledPluginSummary } from './InstalledPluginDetail';
+import { isAuthoredInstall } from '@/core/plugin/authored';
+import InstalledPluginDetail, { InstalledPluginSummary } from './InstalledPluginDetail';
 import ToolGrid from '@/components/toolbox/ToolGrid';
-import MarketplaceEntryRow from './MarketplaceEntryRow';
+import InstalledPluginCard from './InstalledPluginCard';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
 interface InstalledPluginListProps {
   home: string;
+  /** Render as a titled group inside the 「我的」 shelf rather than as a whole panel. */
   grouped?: boolean;
   searchQuery: string;
-  /**
-   * `'authored'` narrows the list to plugins the user wrote themselves (the
-   * 「我的」 panel). `'all'` keeps the whole personal set — no surface ships it
-   * today, but it is the difference this component's own tests pin, so the
-   * authored filter cannot silently become the only behaviour there is.
-   */
-  mode?: 'authored' | 'all';
-  /** Only offered in `'all'` mode — 「我的」 explains authoring instead. */
+  /** Offered from the empty state: the marketplace is where an install comes from. */
   onBrowseMarketplace?: () => void;
 }
 
 export default function InstalledPluginList({
   home,
   searchQuery,
-  mode = 'all',
   grouped = false,
   onBrowseMarketplace,
 }: InstalledPluginListProps) {
@@ -55,15 +51,12 @@ export default function InstalledPluginList({
   const tb = t.toolbox;
   const installed = usePluginStore((s) => s.installed);
   const [pendingRemoval, setPendingRemoval] = useState<InstalledPlugin | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  // The personal view never lists organization-installed plugins — those
-  // are managed (and uninstalled) from the 组织 view only, same as skills.
   // Both the list and the empty state key off this partition, so a user whose
-  // installs are all organization-scoped sees the empty state, not "no matches".
-  const scoped = useMemo(() => {
-    const { personal } = partitionInstalled(installed);
-    return mode === 'authored' ? personal.filter(isSelfAuthoredPlugin) : personal;
-  }, [installed, mode]);
+  // installs are all organization-scoped or self-authored sees the empty
+  // state, not "no matches".
+  const scoped = useMemo(() => partitionInstalled(installed).personal.filter((p) => !isAuthoredInstall(p)), [installed]);
 
   const visible = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -71,74 +64,60 @@ export default function InstalledPluginList({
     return scoped.filter((p) => `${p.name} ${p.marketplace}`.toLowerCase().includes(query));
   }, [scoped, searchQuery]);
 
-  if (grouped && visible.length === 0) return (
-    <section className="px-8 pb-6" data-testid="plugin-mine-group">
-      <div className="mx-auto max-w-5xl">
-        <h3 className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{tb.sourceMine}</h3>
-        <div className="rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]">
-          {scoped.length === 0 ? tb.pluginsMineEmptyTitle : tb.pluginsNoMatches}
-        </div>
-      </div>
-    </section>
+  const selected = scoped.find((p) => p.key === selectedKey) ?? null;
+
+  const emptyState = (
+    <div className={grouped
+      ? 'flex flex-col items-start gap-2 rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]'
+      : 'flex h-full flex-col items-center justify-center gap-3 px-8 text-center'}>
+      {!grouped && <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />}
+      <p className={grouped ? undefined : 'text-body text-[var(--abu-text-tertiary)]'}>{scoped.length === 0 ? tb.pluginsEmptyState : tb.pluginsNoMatches}</p>
+      {scoped.length === 0 && onBrowseMarketplace && (
+        <Button variant="outline" size={grouped ? 'sm' : 'default'} onClick={onBrowseMarketplace}>
+          {tb.pluginsGoToMarketplace}
+        </Button>
+      )}
+    </div>
   );
 
-  if (scoped.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-        <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />
-        {mode === 'authored' ? (
-          <>
-            <p className="text-h-sm text-[var(--abu-text-primary)]">{tb.pluginsMineEmptyTitle}</p>
-            <p className="max-w-md text-body text-[var(--abu-text-tertiary)]">
-              {tb.pluginsMineEmptyHint}
-            </p>
-          </>
-        ) : (
-          <>
-            <p className="text-body text-[var(--abu-text-tertiary)]">{tb.pluginsEmptyState}</p>
-            {onBrowseMarketplace && (
-              <Button variant="outline" onClick={onBrowseMarketplace}>
-                {tb.pluginsGoToMarketplace}
-              </Button>
-            )}
-          </>
-        )}
-      </div>
-    );
-  }
+  const body = visible.length === 0 ? emptyState : (
+    <ToolGrid>
+      {visible.map((plugin) => (
+        <InstalledPluginCard
+          key={plugin.key}
+          plugin={plugin}
+          home={home}
+          testId="plugin-mine-row"
+          description={<InstalledPluginSummary plugin={plugin} />}
+          onClick={() => setSelectedKey(plugin.key)}
+          actions={
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
+              onClick={(event) => { event.stopPropagation(); setPendingRemoval(plugin); }}
+            >
+              <Trash2 className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
+              <span className="text-[var(--abu-danger)]">{tb.pluginsUninstall}</span>
+            </Button>
+          }
+        />
+      ))}
+    </ToolGrid>
+  );
 
   return (
-    <div className={grouped ? "px-8 pb-6" : "h-full overflow-y-auto px-8 py-3"}><div className="max-w-5xl mx-auto">
-      {grouped && <h3 className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{tb.sourceMine}</h3>}
-      {visible.length === 0 ? (
-        <p className="py-8 text-center text-body text-[var(--abu-text-tertiary)]">
-          {tb.pluginsNoMatches}
-        </p>
-      ) : (
-        <ToolGrid>
-          {visible.map((plugin) => (
-            <MarketplaceEntryRow
-              key={plugin.key}
-              testId="plugin-mine-row"
-              name={plugin.name}
-              description={<InstalledPluginSummary plugin={plugin} />}
-              actions={
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label={`${tb.pluginsUninstall}: ${plugin.name}`}
-                onClick={() => setPendingRemoval(plugin)}
-              >
-                <Trash2 className="h-3.5 w-3.5 text-[var(--abu-danger)]" />
-                <span className="text-[var(--abu-danger)]">{tb.pluginsUninstall}</span>
-              </Button>
-              }
-            />
-          ))}
-        </ToolGrid>
-      )}
-
+    <div className={grouped ? 'px-8 pb-6' : 'h-full overflow-y-auto px-8 py-3'} data-testid={grouped ? 'plugin-installed-group' : undefined}>
+      <div className="mx-auto max-w-5xl">
+        {grouped && <h3 className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{tb.pluginsInstalledGroup}</h3>}
+        {body}
       </div>
+      <InstalledPluginDetail
+        home={home}
+        plugin={selected}
+        onClose={() => setSelectedKey(null)}
+        onUninstall={(plugin) => { setSelectedKey(null); setPendingRemoval(plugin); }}
+      />
       <UninstallPluginDialog
         home={home}
         target={pendingRemoval}

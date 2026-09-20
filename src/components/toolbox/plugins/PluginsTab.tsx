@@ -7,9 +7,11 @@ import { useI18n } from '@/i18n';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { archivePluginOperation } from '@/core/plugin/operationBridge';
 import AuthoredPluginList from './AuthoredPluginList';
+import InstalledPluginList from './InstalledPluginList';
 import MarketplaceBrowser from './MarketplaceBrowser';
 import AddMarketplaceDialog from './AddMarketplaceDialog';
 import type { ExtensionSource } from '../extensionSource';
+import type { ExtensionsFilter } from '@/stores/settingsStore';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
 interface PluginsTabProps {
@@ -19,9 +21,12 @@ interface PluginsTabProps {
   /** Which shelf this render is showing — the sub-nav's current pick.
    *  Defaults to 市场, the shelf a fresh install has something on. */
   source?: ExtensionSource;
+  /** A deep link's market narrowing (「发现应用」), handed to the market and consumed once. */
+  initialFilter?: ExtensionsFilter | null;
+  onFilterConsumed?: () => void;
 }
 
-export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'market' }: PluginsTabProps) {
+export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'market', initialFilter = null, onFilterConsumed }: PluginsTabProps) {
   const { t } = useI18n();
   const [scrollParent, setScrollParent] = useState<HTMLDivElement | null>(null);
   const [home, setHome] = useState<string | null>(null);
@@ -89,11 +94,14 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
         <p>{t.toolbox.pluginsArchivedNotice}</p><p>{archiveResult.archivedPath}</p>
         <ul className="max-h-40 overflow-y-auto">{archiveResult.backupPaths.map(file => <li key={file}>{file}</li>)}</ul>
       </div>}
-      {/* One shelf at a time: 「我的」 is what this user authored, 「市场」 the
-          marketplaces they browse. The sub-nav above names which — the heading
-          that used to do it here is gone. */}
+      {/* One shelf at a time: 「我的」 is what this user has — the plugins they
+          installed and the ones they created here — 「市场」 the marketplaces
+          they browse. The sub-nav above names which. */}
       {home !== null && (source === 'mine'
-        ? <AuthoredPluginList home={home} searchQuery={searchQuery} />
+        ? <>
+            <InstalledPluginList home={home} searchQuery={searchQuery} grouped onBrowseMarketplace={() => setSource('plugins', 'market')} />
+            <AuthoredPluginList home={home} searchQuery={searchQuery} heading={t.toolbox.pluginsAuthoredGroup} />
+          </>
         : <section>
             <MarketplaceBrowser
               home={home}
@@ -101,6 +109,8 @@ export default function PluginsTab({ searchQuery, addTrigger = 0, source = 'mark
               searchQuery={searchQuery}
               onAddMarketplace={() => setAddOpen(true)}
               scrollParent={scrollParent ?? undefined}
+              initialFilter={initialFilter}
+              onFilterConsumed={onFilterConsumed}
             />
           </section>)}
 

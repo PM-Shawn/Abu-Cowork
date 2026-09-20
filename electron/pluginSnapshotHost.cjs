@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { convertSingleFileAgent, renderAgentMd, BUILTIN_AGENT_NAMES } = require('./shared/pluginAgentFormat.mjs');
 const { assertAllowed: defaultAssertAllowed } = require('./fsHost.cjs');
+const { identityOf } = require('./fileIdentity.cjs');
 const { mutate: defaultMutate } = require('./pluginOperationWorker.cjs');
 const { pluginGitDispatch } = require('./pluginGitHost.cjs');
 
@@ -92,10 +93,10 @@ function createPluginSnapshotHost({
   }
   const ensureDirectory = async dir => {
     const canonicalHome = await fs.realpath(home);
-    const identity = await fs.lstat(canonicalHome);
+    const identity = identityOf(await fs.lstat(canonicalHome, { bigint: true }));
     const relative = path.relative(path.resolve(home), dir);
     within(path.resolve(home), dir);
-    await mutate({ home: canonicalHome, identity: { ino: identity.ino, dev: identity.dev },
+    await mutate({ home: canonicalHome, identity,
       parent: relative.split(path.sep).filter(Boolean), action: 'ensure' });
     return ownedDirectory(dir);
   };
@@ -378,11 +379,11 @@ function createPluginSnapshotHost({
   });
   async function publishTree(parent, name, temp, tree) {
     const canonicalHome = await fs.realpath(home);
-    const identity = await fs.lstat(canonicalHome);
-    const parentIdentity = await fs.lstat(parent);
-    await mutate({ home: canonicalHome, identity: { ino: identity.ino, dev: identity.dev },
+    const identity = identityOf(await fs.lstat(canonicalHome, { bigint: true }));
+    const parentIdentity = identityOf(await fs.lstat(parent, { bigint: true }));
+    await mutate({ home: canonicalHome, identity,
       parent: path.relative(canonicalHome, parent).split(path.sep),
-      parentIdentity: { ino: parentIdentity.ino, dev: parentIdentity.dev },
+      parentIdentity,
       action: 'tree', to: name, temp,
       tree: [...tree].map(([relative, bytes]) => [relative, bytes === null ? null : bytes.toString('base64')]) });
     await ownedDirectory(parent);

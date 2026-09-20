@@ -1,0 +1,31 @@
+{
+  "name": "broken-run-ref",
+  "version": "1.0.0",
+  "minAbuVersion": "0.51.0",
+  "interface": { "displayName": "Broken", "shortDescription": "scene run points at a team that does not exist", "logo": "assets/logo.png", "logoDark": "assets/logo-dark.png" },
+  "app": {
+    "version": 1,
+    "home": {
+      "modes": {
+        "items": [
+          {
+            "modeId": "only",
+            "title": "Only mode",
+            "scenes": [
+              {
+                "id": "scene",
+                "title": "Scene",
+                "run": { "team": "ghost-team" },
+                "templates": [
+                  { "id": "a", "title": "A", "prompt": "A" },
+                  { "id": "b", "title": "B", "prompt": "B" },
+                  { "id": "c", "title": "C", "prompt": "C" }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

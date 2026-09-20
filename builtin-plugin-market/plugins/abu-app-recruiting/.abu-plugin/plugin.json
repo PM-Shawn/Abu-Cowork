@@ -1,0 +1,107 @@
+{
+  "name": "abu-app-recruiting",
+  "version": "1.0.0",
+  "description": "招聘：从岗位到 offer，由招聘专家团负责",
+  "author": { "name": "Abu" },
+  "license": "Apache-2.0",
+  "keywords": ["recruiting", "hr", "hiring"],
+  "minAbuVersion": "0.51.0",
+  "interface": {
+    "displayName": "招聘",
+    "shortDescription": "写 JD、筛简历、备面试、查行情",
+    "longDescription": "给招聘专员准备的应用：岗位准备、简历筛选、面试和薪资行情四组场景，都由随阿布附带的招聘专家团负责——HR 招聘官带队，行业调研专家查行情，办公文档专家出物料。",
+    "developerName": "Abu",
+    "category": "hr",
+    "capabilities": ["读取你上传的 JD、简历和面试记录", "生成 JD、筛选理由、面试评估表和薪资建议"],
+    "brandColor": "#C4633A",
+    "logo": "assets/logo.png",
+    "logoDark": "assets/logo-dark.png"
+  },
+  "app": {
+    "version": 1,
+    "defaultRun": { "team": "builtin-team:recruiting" },
+    "promptAppend": "The user works in recruiting. Deliver documents they can use directly (job descriptions, screening tables, interview kits) and ask for the position, the candidate files or the interview notes when they are missing.",
+    "home": {
+      "header": {
+        "title": { "zh-CN": "招聘，从岗位到 offer", "en-US": "Recruiting, from role to offer" },
+        "slogan": { "zh-CN": "告诉我要招什么人，或者从下面选一件事开始", "en-US": "Tell me who you are hiring, or pick a task below" }
+      },
+      "modes": {
+        "defaultSelected": "prepare",
+        "items": [
+          {
+            "modeId": "prepare",
+            "title": { "zh-CN": "岗位准备", "en-US": "Prepare the role" },
+            "scenes": [
+              {
+                "id": "write-jd",
+                "title": { "zh-CN": "写 JD", "en-US": "Write the JD" },
+                "placeholder": { "zh-CN": "说说岗位名称、级别和团队情况", "en-US": "Describe the role, level and team" },
+                "templates": [
+                  { "id": "senior-frontend", "title": { "zh-CN": "高级前端 JD", "en-US": "Senior front-end JD" }, "prompt": { "zh-CN": "帮我写一份高级前端工程师的 JD，并定好面试题", "en-US": "Write a senior front-end engineer JD and draft the interview questions" } },
+                  { "id": "rewrite", "title": { "zh-CN": "改写 JD", "en-US": "Rewrite a JD" }, "prompt": { "zh-CN": "把这份 JD 改得更吸引人，保留必须项", "en-US": "Make this JD more attractive while keeping every requirement" } },
+                  { "id": "must-nice", "title": { "zh-CN": "必须项和加分项", "en-US": "Must-haves and nice-to-haves" }, "prompt": { "zh-CN": "按这个岗位列出必须项和加分项", "en-US": "List the must-haves and nice-to-haves for this role" } }
+                ]
+              },
+              {
+                "id": "persona",
+                "title": { "zh-CN": "定人选画像", "en-US": "Candidate profile" },
+                "templates": [
+                  { "id": "profile", "title": { "zh-CN": "画像与来源", "en-US": "Profile and sourcing" }, "prompt": { "zh-CN": "根据这个岗位给出理想人选画像和三个寻访渠道", "en-US": "Give the ideal candidate profile for this role and three sourcing channels" } },
+                  { "id": "questions", "title": { "zh-CN": "准备面试题", "en-US": "Interview questions" }, "prompt": { "zh-CN": "为这个岗位准备一套分层的面试题", "en-US": "Prepare a tiered interview question set for this role" } },
+                  { "id": "plan", "title": { "zh-CN": "招聘计划", "en-US": "Hiring plan" }, "prompt": { "zh-CN": "给这个岗位排一个四周的招聘计划", "en-US": "Lay out a four-week hiring plan for this role" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "screen",
+            "title": { "zh-CN": "简历筛选", "en-US": "Screen resumes" },
+            "scenes": [
+              {
+                "id": "rank",
+                "title": { "zh-CN": "简历排序", "en-US": "Rank resumes" },
+                "placeholder": { "zh-CN": "把简历拖进来，说明岗位要求", "en-US": "Drop the resumes in and state the requirements" },
+                "templates": [
+                  { "id": "rank-five", "title": { "zh-CN": "给这批简历排序", "en-US": "Rank this batch" }, "prompt": { "zh-CN": "按岗位要求给这几份简历排序，说明每一份的筛选理由", "en-US": "Rank these resumes against the role and give the reason for each" } },
+                  { "id": "shortlist", "title": { "zh-CN": "挑出面试名单", "en-US": "Pick the interview list" }, "prompt": { "zh-CN": "从这批简历里挑出值得面试的人，并写一句推荐理由", "en-US": "Pick the resumes worth interviewing, one line of reasoning each" } },
+                  { "id": "gaps", "title": { "zh-CN": "标出疑点", "en-US": "Flag the gaps" }, "prompt": { "zh-CN": "标出这份简历里需要在面试中核实的疑点", "en-US": "Flag what in this resume needs checking in the interview" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "interview",
+            "title": { "zh-CN": "面试", "en-US": "Interview" },
+            "scenes": [
+              {
+                "id": "evaluate",
+                "title": { "zh-CN": "评估表与记录", "en-US": "Scorecards and notes" },
+                "templates": [
+                  { "id": "scorecard", "title": { "zh-CN": "出评估表", "en-US": "Scorecard" }, "prompt": { "zh-CN": "给这个岗位出一份面试评估表", "en-US": "Produce an interview scorecard for this role" } },
+                  { "id": "notes", "title": { "zh-CN": "整理面试记录", "en-US": "Tidy the notes" }, "prompt": { "zh-CN": "把这段面试记录整理成结构化的评估意见", "en-US": "Turn these interview notes into a structured evaluation" } },
+                  { "id": "compare", "title": { "zh-CN": "比较候选人", "en-US": "Compare candidates" }, "prompt": { "zh-CN": "比较这几位候选人的面试表现，给出录用建议", "en-US": "Compare these candidates' interviews and recommend whom to hire" } }
+                ]
+              }
+            ]
+          },
+          {
+            "modeId": "market",
+            "title": { "zh-CN": "薪资行情", "en-US": "Salary market" },
+            "scenes": [
+              {
+                "id": "salary",
+                "title": { "zh-CN": "查行情、给报价", "en-US": "Check the market, make the offer" },
+                "templates": [
+                  { "id": "range", "title": { "zh-CN": "查薪资范围", "en-US": "Salary range" }, "prompt": { "zh-CN": "查一下这个岗位在这个城市的薪资范围", "en-US": "Look up the salary range for this role in this city" } },
+                  { "id": "offer", "title": { "zh-CN": "给报价建议", "en-US": "Offer advice" }, "prompt": { "zh-CN": "根据候选人情况和行情给出报价建议", "en-US": "Suggest an offer based on the candidate and the market" } },
+                  { "id": "counter", "title": { "zh-CN": "应对还价", "en-US": "Handle a counter" }, "prompt": { "zh-CN": "候选人要求加薪，帮我准备回应方案", "en-US": "The candidate asked for more; prepare my response" } }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

@@ -180,7 +180,10 @@ function createDefaultProviders(): ProviderInstance[] {
 // View mode types
 // ============================================================
 
-export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
+export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team' | 'app-page';
+
+/** What the plugin market should be narrowed to when opened through a deep link. */
+export type ExtensionsFilter = 'apps';
 export type AutomationTab = 'schedule' | 'trigger';
 export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
@@ -255,6 +258,8 @@ export interface SettingsState {
    *  so it can never hijack a later open. Ephemeral, one-shot.
    *  Do NOT add to partialize. */
   pendingExtensionsSource: ExtensionSource | null;
+  /** Narrowing the plugin market to apps for the next open — 「发现应用」. One-shot, ephemeral, never persisted. */
+  pendingExtensionsFilter: ExtensionsFilter | null;
   installingItem: string | null;
   viewMode: ViewMode;
   /** System settings render as an overlay dialog on top of the current view,
@@ -526,7 +531,9 @@ interface SettingsActions {
   setActiveAutomationTab: (tab: AutomationTab) => void;
   /** Open the Extensions view. `source` names the half of `tab` to land on —
    *  omit it to land on 「市场」, the default for every tab. */
-  openExtensions: (tab?: ExtensionsTab, source?: ExtensionSource) => void;
+  openExtensions: (tab?: ExtensionsTab, source?: ExtensionSource, filter?: ExtensionsFilter) => void;
+  /** Spend the one-shot `pendingExtensionsFilter` once the market has applied it. */
+  clearPendingExtensionsFilter: () => void;
   closeExtensions: () => void;
   /** Spend the one-shot `pendingExtensionsSource` once the view has applied it. */
   clearPendingExtensionsSource: () => void;
@@ -1260,6 +1267,7 @@ export const useSettingsStore = create<SettingsStore>()(
       activeExtensionsTab: 'plugins' as ExtensionsTab,
       extensionsSearchQueries: emptyExtensionsSearchQueries(),
       pendingExtensionsSource: null,
+      pendingExtensionsFilter: null,
       installingItem: null,
       viewMode: 'chat' as ViewMode,
       activeTeamTab: 'members' as TeamTab,
@@ -1593,21 +1601,24 @@ export const useSettingsStore = create<SettingsStore>()(
       // Neither opening nor closing the view clears the search words: they are
       // remembered per tab for the whole session, so re-entering Extensions
       // resumes the list the user had narrowed to.
-      openExtensions: (tab, source) =>
+      openExtensions: (tab, source, filter) =>
         set(() => ({
           viewMode: 'extensions' as ViewMode,
           activeExtensionsTab: tab ?? 'plugins',
-          // Always written, so a source left over from an unconsumed open
-          // cannot leak into this one.
+          // Always written, so a source or filter left over from an unconsumed
+          // open cannot leak into this one.
           pendingExtensionsSource: source ?? null,
+          pendingExtensionsFilter: filter ?? null,
         })),
       closeExtensions: () =>
         set({
           viewMode: 'chat' as ViewMode,
           installingItem: null,
           pendingExtensionsSource: null,
+          pendingExtensionsFilter: null,
         }),
       clearPendingExtensionsSource: () => set({ pendingExtensionsSource: null }),
+      clearPendingExtensionsFilter: () => set({ pendingExtensionsFilter: null }),
       setActiveExtensionsTab: (tab) => set({ activeExtensionsTab: tab }),
       setExtensionsSearchQuery: (tab, query) =>
         set((state) => ({

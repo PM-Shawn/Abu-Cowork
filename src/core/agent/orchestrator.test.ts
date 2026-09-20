@@ -349,6 +349,28 @@ describe('buildSystemPrompt - structure', () => {
   });
 });
 
+describe('buildSystemPromptSections - app context', () => {
+  const basePrompt = 'base prompt';
+  const binding = { version: 1 as const, appId: 'shop@market', pluginKey: 'shop@market', pluginVersion: '1.0.0', appName: '店铺运营', modeId: 'sourcing', promptAppend: 'Focus on margins.' };
+
+  it('adds the app section, cacheable, after the identity block and before the date, only for app-bound conversations', async () => {
+    const { useChatStore } = await import('@/stores/chatStore');
+    const conversation = (id: string, appBinding?: typeof binding) => ({ id, title: id, messages: [], createdAt: 0, updatedAt: 0, status: 'idle' as const, ...(appBinding ? { appBinding } : {}) });
+    useChatStore.setState((state) => ({ conversations: { ...state.conversations, plain: conversation('plain'), bound: conversation('bound', binding) } }));
+    const plainNames = (await buildSystemPromptSections(routeInput('hello'), basePrompt, 'plain')).map((section) => section.name);
+    expect(plainNames).not.toContain('app-context');
+
+    const sections = await buildSystemPromptSections(routeInput('hello'), basePrompt, 'bound');
+    const names = sections.map((section) => section.name);
+    expect(names.indexOf('app-context')).toBeGreaterThan(names.indexOf('planning'));
+    expect(names.indexOf('app-context')).toBeLessThan(names.indexOf('current-time'));
+    const section = sections.find((entry) => entry.name === 'app-context')!;
+    expect(section.cacheable).toBe(true);
+    expect(section.text).toContain('inside the app "店铺运营"');
+    expect(section.text).toContain('<app-instructions>\nFocus on margins.\n</app-instructions>');
+  });
+});
+
 describe('buildSystemPromptSections - agent preloaded skills', () => {
   const basePrompt = 'base prompt';
 

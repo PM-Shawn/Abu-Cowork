@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { enterDirectory, acquireWriteLock, run: runRegistry } = require('./pluginRegistryWorker.cjs');
+const { identityOf, sameIdentity } = require('./fileIdentity.cjs');
 const { run } = require('./pluginOperationWorker.cjs');
 const { runAuthor } = require('./pluginAuthorWorker.cjs');
 
@@ -114,16 +115,19 @@ function createOperationSession(home) {
 
 function serve() {
   const home = process.cwd();
-  const identity = fs.statSync('.');
+  // Bigint stats throughout: the anchors below leave this process over IPC as
+  // JSON, where only the decimal strings of `electron/fileIdentity.cjs` carry a
+  // 64-bit Windows file id intact.
+  const identity = identityOf(fs.statSync('.', { bigint: true }));
   const reset = () => {
     process.chdir(home);
-    const actual = fs.statSync('.');
-    if (identity.ino !== actual.ino || identity.dev !== actual.dev) throw new Error('Plugin operation: profile changed');
+    const actual = identityOf(fs.statSync('.', { bigint: true }));
+    if (!sameIdentity(identity, actual)) throw new Error('Plugin operation: profile changed');
   };
   enterDirectory('.abu', true);
-  const abu = fs.statSync('.');
+  const abu = identityOf(fs.statSync('.', { bigint: true }));
   enterDirectory('plugin-operations', true);
-  const operations = fs.statSync('.');
+  const operations = identityOf(fs.statSync('.', { bigint: true }));
   const release = acquireWriteLock();
   reset();
   const verifyLease = () => {
@@ -131,8 +135,8 @@ function serve() {
     for (const [name, expected] of [['.abu', abu], ['plugin-operations', operations]]) {
       try { enterDirectory(name, false); }
       catch { throw new Error('Plugin operation: lease directory changed'); }
-      const actual = fs.statSync('.');
-      if (expected.ino !== actual.ino || expected.dev !== actual.dev) throw new Error('Plugin operation: lease directory changed');
+      const actual = identityOf(fs.statSync('.', { bigint: true }));
+      if (!sameIdentity(expected, actual)) throw new Error('Plugin operation: lease directory changed');
     }
   };
   let ended = false;
@@ -160,7 +164,7 @@ function serve() {
     } catch (error) { reply.error = error.message; }
     if (process.connected) process.send(reply, () => {});
   });
-  process.send({ ready: true, anchors: { abu: { ino: abu.ino, dev: abu.dev }, operations: { ino: operations.ino, dev: operations.dev } } });
+  process.send({ ready: true, anchors: { abu, operations } });
 }
 if (require.main === module) {
   try { serve(); }

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useSettingsStore, type TeamTab } from '@/stores/settingsStore';
-import { useTeamStore, type Team } from '@/stores/teamStore';
+import { isReadOnlyTeam, useTeamStore, type Team } from '@/stores/teamStore';
+import { pluginTeamOwner } from '@/core/team/pluginTeams';
+import { useSelectedApp } from '@/stores/appStore';
+import { GENERAL_APP_ID } from '@/types/app';
+import { agentBelongsToApp, teamBelongsToApp } from '@/core/app/appScope';
+import { pluginDisplayName } from '@/core/plugin/installedStore';
+import SourceBadge from '@/components/toolbox/SourceBadge';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { usePluginStore } from '@/stores/pluginStore';
 import { useChatStore } from '@/stores/chatStore';
@@ -396,6 +402,7 @@ export default function TeamView() {
   // …and file-backed experts only resolve once plugin records are ready, which
   // at launch lands after discovery: re-render the cards and the open detail then.
   const pluginRecordsReady = usePluginStore((s) => s.activationReady);
+  const installedPlugins = usePluginStore((s) => s.installed);
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
@@ -432,7 +439,14 @@ export default function TeamView() {
     setManualCreateTrigger(0);
   }, [activeTeamTab]);
 
-  const activeTeams = teams;
+  // Inside an app the page opens on 「本应用」: the app's own experts and teams
+  // plus the built-in ones its scenes hand work to (product spec §5.5).
+  const selectedApp = useSelectedApp();
+  const inApp = selectedApp.appId !== GENERAL_APP_ID;
+  const [appScope, setAppScope] = useState<'app' | 'all'>('app');
+  const scopedToApp = inApp && appScope === 'app';
+  const activeTeams = useMemo(() => (scopedToApp ? teams.filter((team) => teamBelongsToApp(selectedApp, team.id)) : teams), [teams, scopedToApp, selectedApp]);
+  const agentFilter = useMemo(() => (scopedToApp ? (agent: SubagentDefinition) => agentBelongsToApp(selectedApp, agent) : undefined), [scopedToApp, selectedApp]);
 
   // `_agents` / `_ready` are unused by value — they exist only to make
   // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
@@ -506,30 +520,35 @@ export default function TeamView() {
     switch (activeTeamTab) {
       case 'members':
         // Single identity source: this IS the toolbox agents surface.
-        return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} />;
+        return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} filter={agentFilter} />;
       case 'teams': {
         const source = sources.teams;
         // One shelf at a time — which one is the sub-nav's job to say, so the
         // group heading that used to name it here is gone. 「市场」 is the teams
-        // Abu ships; 「我的」 the ones this user assembled.
+        // Abu ships; 「我的」 the ones this user has: assembled themselves, or
+        // brought in by a plugin they installed (badged, read-only).
         const list = source === 'mine'
           ? activeTeams.filter((team) => !isBuiltinTeam(team))
           : activeTeams.filter(isBuiltinTeam);
         // Same grid + card the 专家 tab uses (ToolGrid/ToolCard), not a
         // hand-rolled row: a team and a member are peers in this surface.
-        const card = (team: Team) => (
-          <ToolCard
-            key={team.id}
-            item={{
-              id: team.id,
-              testId: `team-row-${team.name}`,
-              name: team.name,
-              description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
-              avatar: <TeamAvatar avatar={team.avatar} size="xl" className="bg-[var(--abu-bg-active)]" />,
-            }}
-            onClick={() => setDetailTeam(team)}
-          />
-        );
+        const card = (team: Team) => {
+          const owner = pluginTeamOwner(team);
+          return (
+            <ToolCard
+              key={team.id}
+              item={{
+                id: team.id,
+                testId: `team-row-${team.name}`,
+                name: team.name,
+                description: team.description || cardSummary(team, discoveredAgents, pluginRecordsReady),
+                avatar: <TeamAvatar avatar={team.avatar} size="xl" className="bg-[var(--abu-bg-active)]" />,
+                badge: owner ? <SourceBadge source={{ kind: 'plugin', plugin: pluginDisplayName(installedPlugins, owner) }} /> : undefined,
+              }}
+              onClick={() => setDetailTeam(team)}
+            />
+          );
+        };
         if (source === 'mine' && list.length === 0) {
           return (
             <div className="h-full flex flex-col">
@@ -560,7 +579,7 @@ export default function TeamView() {
       <TopTabNav items={navItems} activeId={activeTeamTab} onSelect={setActiveTeamTab} belowChrome right={renderHeaderRight()} />
       {/* 市场 | 我的 — one row, directly under the tabs and inset to the same
           grid the cards use, exactly as on 扩展. */}
-      <div className="px-8"><div className="max-w-5xl mx-auto">
+      <div className="px-8"><div className="max-w-5xl mx-auto flex items-center justify-between gap-3">
         <SourceSubNav
           value={sources[activeTeamTab]}
           onChange={(next) => setSource(activeTeamTab, next)}
@@ -569,6 +588,23 @@ export default function TeamView() {
           testIdPrefix="team-source"
           panelId={TEAM_PANEL_ID}
         />
+        {inApp && (
+          <div role="tablist" aria-label={selectedApp.name} data-testid="team-app-scope" className="inline-flex shrink-0 rounded-lg bg-[var(--abu-bg-muted)] p-0.5">
+            {(['app', 'all'] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={appScope === value}
+                data-testid={`team-app-scope-${value}`}
+                onClick={() => setAppScope(value)}
+                className={cn('rounded-md px-2.5 py-1 text-minor transition-colors', appScope === value ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}
+              >
+                {value === 'app' ? t.team.appScopeThis : t.team.appScopeAll}
+              </button>
+            ))}
+          </div>
+        )}
       </div></div>
       <div
         id={TEAM_PANEL_ID}
@@ -604,7 +640,7 @@ export default function TeamView() {
           </div>
         ) : undefined}
         headerActions={detailTeam ? (() => {
-          const readOnly = isBuiltinTeam(detailTeam);
+          const readOnly = isReadOnlyTeam(detailTeam);
           return (
             <>
               {!readOnly && (
@@ -675,8 +711,14 @@ export default function TeamView() {
               </button>
             );
           };
+          const owner = pluginTeamOwner(detailTeam);
           return (
             <div className="space-y-5">
+              {owner && (
+                <div className="text-caption text-[var(--abu-text-muted)]" data-testid="team-plugin-origin">
+                  {format(t.toolbox.itemFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, owner) })}
+                </div>
+              )}
               <div>
                 <div className="text-minor text-[var(--abu-text-muted)] mb-1">{t.team.detailLeader}</div>
                 {leader

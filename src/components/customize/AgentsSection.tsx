@@ -21,6 +21,7 @@ import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isBuiltinAgentPath } from '@/core/agent/builtinAgent';
 import { pluginDisplayName } from '@/core/plugin/installedStore';
 import { usePluginStore } from '@/stores/pluginStore';
+import SourceBadge from '@/components/toolbox/SourceBadge';
 import { getAllTools } from '@/core/tools/registry';
 import ToolCard from '@/components/toolbox/ToolCard';
 import ToolGrid from '@/components/toolbox/ToolGrid';
@@ -31,11 +32,18 @@ import { effectiveRoleId } from '@/core/team/roleIdentity';
 import type { ExtensionSource } from '@/components/toolbox/extensionSource';
 import { useExtensionSourceStore } from '@/stores/extensionSourceStore';
 
+/** 市场 = shipped with the app. Everything else — the user's own experts and the ones their plugins brought — is 「我的」. */
 function isSystemAgent(agent: SubagentDefinition): boolean {
-  // 市场 = shipped with the app OR brought in by a plugin; both are read-only
-  // here. 「我的」 is what this user wrote — a plugin's expert is someone else's
-  // work, and removing it is uninstalling the plugin, not deleting a file.
-  return isBuiltinAgentPath(agent.filePath) || isPluginOwnedAgent(agent);
+  return isBuiltinAgentPath(agent.filePath);
+}
+
+/**
+ * Editable = the user's own file. A plugin's expert sits under 「我的」 with a
+ * provenance badge, but an edit would be overwritten by the next plugin
+ * update and removing it belongs to uninstalling the plugin.
+ */
+function isEditableAgent(agent: SubagentDefinition): boolean {
+  return !isSystemAgent(agent) && !isPluginOwnedAgent(agent);
 }
 
 
@@ -65,9 +73,11 @@ interface AgentsSectionProps {
   /** Which shelf this render is showing — the sub-nav's current pick.
    *  Defaults to 市场, the shelf a fresh install has something on. */
   source?: ExtensionSource;
+  /** Narrows both shelves — the 团队 view's 「本应用」 scope inside an app. */
+  filter?: (agent: SubagentDefinition) => boolean;
 }
 
-export default function AgentsSection({ manualCreateTrigger, searchQuery, source = 'market' }: AgentsSectionProps) {
+export default function AgentsSection({ manualCreateTrigger, searchQuery, source = 'market', filter }: AgentsSectionProps) {
   const { agents, refresh } = useDiscoveryStore();
   const installedPlugins = usePluginStore((s) => s.installed);
   const refreshInstalled = usePluginStore((s) => s.refreshInstalled);
@@ -159,8 +169,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
   // Selectable agents, before search. Excludes the 'abu' default agent — it's
   // the fallback, not a selectable agent.
   const visibleAgents = useMemo(
-    () => installedAgents.filter((a) => a.name !== 'abu' && !a.managed),
-    [installedAgents],
+    () => installedAgents.filter((a) => a.name !== 'abu' && !a.managed && (filter === undefined || filter(a))),
+    [installedAgents, filter],
   );
   // Nothing of the user's own at all ("还没有你创建的专家") reads differently
   // from "your experts, none matching" — so the empty state asks the
@@ -185,8 +195,8 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     });
   }, [visibleAgents, extensionsSearchQuery]);
 
-  // Split into the two shelves: 「我的」 is what the user wrote, 「市场」 what
-  // shipped with Abu or arrived with a plugin.
+  // Split into the two shelves: 「我的」 is what the user has (their own
+  // experts and the ones their plugins brought), 「市场」 what shipped with Abu.
   const userAgents = filteredAgents
     .filter((a) => !isSystemAgent(a))
     // Newest first (user feedback 2026-08-31); agents predating the created
@@ -235,6 +245,7 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
     // not what it does.
     const toolSummary = getAgentToolSummary(agent.tools, agent.disallowedTools, knownToolNames);
     const offAutoDispatch = disabledSet.has(agent.name);
+    const pluginKey = isPluginOwnedAgent(agent) ? agent.source?.plugin : undefined;
 
     return (
       <ToolCard
@@ -244,11 +255,12 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         name: displayName(agent, locale),
         description: localizedDescription(agent, locale),
         avatar: <AgentAvatar agent={agent} size="xl" className="bg-[var(--abu-bg-active)]" />,
-        badge: offAutoDispatch || toolSummary.invalidField ? (
+        badge: offAutoDispatch || toolSummary.invalidField || pluginKey ? (
           // Chips wrap rather than clip: the badge box is the slot that yields
           // width (ToolCard row 1), and a clipped 「工具配置无效」 would hide the one
           // chip the user has to act on.
           <span className="flex items-center gap-1.5 flex-wrap justify-end">
+            {pluginKey && <SourceBadge source={{ kind: 'plugin', plugin: pluginDisplayName(installedPlugins, pluginKey) }} />}
             {offAutoDispatch && (
               <span
                 className="rounded-full bg-[var(--abu-bg-muted)] px-1.5 py-0.5 text-caption text-[var(--abu-text-tertiary)]"
@@ -359,11 +371,11 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         headerActions={selected && selected.name !== 'abu' ? (
           <>
             {/* "..." menu — edit / delete, for the user's own experts only.
-                市场 experts (the app's own builtins and the ones a plugin brings)
-                have nothing to offer here: there is no file of the user's to edit,
-                and removing a plugin's expert is uninstalling that plugin. Showing
-                the menu greyed out only invited clicks, so it is withheld. */}
-            {!isSystemAgent(selected) && (
+                Built-ins and a plugin's experts have nothing to offer here: there
+                is no file of the user's to edit, and removing a plugin's expert is
+                uninstalling that plugin (the detail says so). Showing the menu
+                greyed out only invited clicks, so it is withheld. */}
+            {isEditableAgent(selected) && (
               <div className="relative">
                 <button
                   onClick={(e) => { e.stopPropagation(); setMenuAgent(menuAgent === selected.name ? null : selected.name); }}

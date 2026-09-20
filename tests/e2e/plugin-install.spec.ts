@@ -46,7 +46,8 @@ const PLUGINS_TAB = /^(插件|Plugins)(\s.*)?$/;
 const INSTALL = /^(安装|Install)$/;
 const UNINSTALL = /^(卸载|Uninstall)$/;
 const UNINSTALL_TITLE = /^(卸载插件|Uninstall plugin)$/;
-const MINE_EMPTY = /还没有你自己开发的插件|No plugins of your own yet/;
+const MINE_EMPTY = /还没有你自己创建的插件|No plugins you created yet/;
+const INSTALLED_EMPTY = /还没有安装任何插件|No plugins installed yet/;
 
 
 /** A self-contained marketplace + plugin written to a temp dir for this run. */
@@ -191,7 +192,9 @@ test('loads custom skill directories and standalone MCP configuration in Electro
     expect(persisted.state.servers['e2e-config-server'].config).toMatchObject({
       enabled: true, command: 'abu-e2e-must-not-run', args: ['--stdio'], env: { REGION: 'cn east', OPTIONAL: '' },
     });
+    // A plugin's skill is the user's — it lists under 「技能 → 我的」.
     await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
+    await page.getByTestId('extensions-source-mine').click();
     await expect(page.getByText('e2e-custom-skill', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-custom-components.png') });
 
@@ -210,6 +213,7 @@ test('loads custom skill directories and standalone MCP configuration in Electro
     await openPluginsTab(page);
     await expect(entry.getByRole('switch')).toHaveAttribute('aria-checked', 'false', { timeout: READY_TIMEOUT });
     await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
+    await page.getByTestId('extensions-source-mine').click();
     await expect(customCard.getByRole('switch')).toHaveAttribute('aria-checked', 'false');
     await page.getByRole('main').getByRole('button', { name: PLUGINS_TAB }).click();
     await entry.getByRole('switch').click();
@@ -223,6 +227,7 @@ test('loads custom skill directories and standalone MCP configuration in Electro
     await waitForWelcomeScreen(page);
     await openPluginsTab(page);
     await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
+    await page.getByTestId('extensions-source-mine').click();
     await expect(page.getByText('e2e-custom-skill', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await page.getByRole('main').getByRole('button', { name: /^(连接器|Connectors)$/ }).click();
     await page.getByText('e2e-config-server', { exact: true }).click();
@@ -323,12 +328,31 @@ test.describe('plugin install loop', () => {
     await expect(entry.getByTestId('plugin-item-menu')).toHaveCount(0);
     await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'e2e-plugin-installed.png') });
 
-    // A relative source from a market does not establish local authorship.
+    // 「我的」 is what the user has: the install lists under 已安装, badged by its
+    // market, while 自己创建的 stays empty — installing is not authoring.
     const mine = page.getByTestId('plugin-mine-group');
+    const installedGroup = page.getByTestId('plugin-installed-group');
     await page.getByTestId('extensions-source-mine').click();
+    await expect(installedGroup.getByTestId('plugin-mine-row')).toContainText('e2e-weather');
+    await expect(installedGroup.getByTestId('plugin-mine-row').getByRole('switch')).toHaveAttribute('aria-checked', 'true');
     await expect(mine).toContainText(MINE_EMPTY);
     await expect(mine).not.toContainText('e2e-weather');
-    // 市场 is where the rest of this journey happens.
+    // The skill it brought in is on 「技能 → 我的」 with its provenance, and the
+    // card offers no edit or delete — removing it is uninstalling the plugin.
+    await page.getByRole('main').getByRole('button', { name: /^(技能|Skills)$/ }).click();
+    await page.getByTestId('extensions-source-mine').click();
+    const pluginSkillCard = page.getByRole('button').filter({ has: page.getByText('today', { exact: true }) });
+    await expect(pluginSkillCard).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(pluginSkillCard.getByTestId('source-badge')).toHaveAttribute('data-source-kind', 'plugin');
+    await pluginSkillCard.click();
+    await expect(page.getByTestId('skill-plugin-origin')).toContainText('e2e-weather');
+    await page.getByTestId('skill-detail-menu').click();
+    await expect(page.getByRole('button', { name: /^(编辑|Edit)$/ })).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    await page.getByRole('main').getByRole('button', { name: PLUGINS_TAB }).click();
+    // 市场 keeps the entry, marked installed, and is where the rest of this
+    // journey happens.
     await page.getByTestId('extensions-source-market').click();
     await expect(entry).toBeVisible({ timeout: READY_TIMEOUT });
 
@@ -359,6 +383,8 @@ test.describe('plugin install loop', () => {
     await expect(entry.getByRole('switch')).toHaveCount(0);
 
     await page.getByTestId('extensions-source-mine').click();
+    await expect(installedGroup).toContainText(INSTALLED_EMPTY);
+    await expect(installedGroup.getByTestId('plugin-mine-row')).toHaveCount(0);
     await expect(mine).toContainText(MINE_EMPTY);
   });
 });
@@ -672,6 +698,50 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     await expect.poll(() => Object.keys(JSON.parse(fs.readFileSync(secretsPath, 'utf8')))).not.toContain(config.pluginConfiguration);
     expect(fs.existsSync(manifestFile)).toBe(true);
 
+  } finally {
+    if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
+  }
+});
+
+// The app authored in a creation conversation: the example package stands in
+// for the files the model writes; the preview names the team and the pages,
+// and confirming the install enters the app the way the market's 使用 does.
+test('creates an app in a creation conversation and enters it from the preview', async () => {
+  let launched: Awaited<ReturnType<typeof launchAbuElectron>> | undefined;
+  try {
+    launched = await launchAbuElectron();
+    const page = await launched.app.firstWindow();
+    await waitForWelcomeScreen(page);
+    await dismissFirstRunOverlays(page);
+    await openPluginsTab(page);
+    await page.getByTestId('plugin-create-trigger').click();
+    await page.getByTestId('plugin-create-menu').getByRole('button', { name: /^(创建应用|Create app)$/ }).click();
+    const authorsPath = path.join(launched.appDataDir, 'Home/.abu/plugin-authors/authors.json');
+    await expect.poll(() => fs.existsSync(authorsPath) ? JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0]?.conversationId : null).toBeTruthy();
+    const author = JSON.parse(fs.readFileSync(authorsPath, 'utf8'))[0];
+    const composer = page.locator('[data-chat-composer]');
+    const composerText = () => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '');
+    await expect(composer).toBeVisible();
+    await expect.poll(composerText).toMatch(/创建一个应用|create an app/);
+    const sourceDir = path.join(launched.appDataDir, 'Home/Abu Plugins', author.id);
+    fs.cpSync(path.join(REPO_ROOT, 'examples', 'plugin-market', 'plugins', 'abu-example-shop-ops'), sourceDir, { recursive: true });
+
+    await openPluginsTab(page);
+    await page.getByTestId('plugin-mine-draft').click();
+    await page.getByRole('button', { name: /^(校验并预览|Validate and preview)$/ }).click();
+    const disclosure = page.getByTestId('plugin-install-disclosure');
+    await expect(disclosure).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(disclosure.getByTestId('plugin-disclosure-team')).toContainText('店铺运营小组');
+    await expect(disclosure.getByTestId('plugin-disclosure-app')).toContainText('店铺后台');
+    await expect(disclosure.getByTestId('plugin-disclosure-app-pages')).toContainText('https://example.com');
+    await expect(page.getByTestId('plugin-install-confirm')).toHaveText(/安装并进入|Install and enter/);
+    await page.getByLabel('SHOP_TOKEN', { exact: true }).fill('e2e-shop-token-placeholder');
+    await page.getByTestId('plugin-install-confirm').click();
+
+    await expect(page.getByTestId('app-switcher-current')).toHaveText('店铺运营', { timeout: READY_TIMEOUT });
+    await expect(page.getByTestId('app-home-title')).toHaveText('店铺运营');
+    await expect(page.getByTestId('sidebar-app-page-portal')).toBeVisible();
+    expect(fs.existsSync(path.join(installRoot(launched), `author-${author.id}/abu-example-shop-ops/1.0.0/.abu-plugin/plugin.json`))).toBe(true);
   } finally {
     if (launched) { await closeAbuElectron(launched.app); removeElectronDataRoot(launched); }
   }

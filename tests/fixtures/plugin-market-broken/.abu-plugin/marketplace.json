@@ -1,0 +1,10 @@
+{
+  "name": "broken-fixture",
+  "plugins": [
+    { "name": "broken-run-ref", "version": "1.0.0", "providesApp": true, "source": "./plugins/broken-run-ref" },
+    { "name": "app-without-flag", "version": "2.0.0", "source": "./plugins/app-without-flag" },
+    { "name": "missing-min-version", "version": "1.0.0", "source": "./plugins/missing-min-version" },
+    { "name": "unsafe-skill-name", "version": "1.0.0", "providesApp": true, "minAbuVersion": "0.51.0", "source": "./plugins/unsafe-skill-name" },
+    { "name": "bad-mcp-shape", "version": "1.0.0", "providesApp": true, "minAbuVersion": "0.51.0", "source": "./plugins/bad-mcp-shape" }
+  ]
+}

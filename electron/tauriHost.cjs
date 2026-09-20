@@ -57,6 +57,7 @@ const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginS
 const { createOperationSession } = require('./pluginOperationSession.cjs');
 const { PLUGIN_REGISTRY_CHANNEL, createPluginRegistryHost } = require('./pluginRegistryHost.cjs');
 const { PLUGIN_AUTHOR_CHANNEL, createPluginAuthorHost } = require('./pluginAuthorHost.cjs');
+const { APP_PAGE_CHANNEL, createAppPageHost } = require('./appPageHost.cjs');
 const { PLUGIN_OPERATION_CHANNEL, createPluginOperationHost } = require('./pluginOperationHost.cjs');
 const {
   SAVE_IMAGE_ATTACHMENT_CHANNEL,
@@ -854,6 +855,15 @@ function registerTauriHost(app, options = {}) {
   const pluginOperationSession = createOperationSession(app.getPath('home'));
   const pluginSnapshots = createPluginSnapshotHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.mutate(input) });
   const pluginAuthors = createPluginAuthorHost({ home: app.getPath('home'), session: pluginOperationSession, snapshots: pluginSnapshots });
+  const electronForAppPages = require('electron');
+  const appPages = createAppPageHost({
+    home: app.getPath('home'),
+    getMainWindow,
+    emit: emitEvent,
+    createView: webPreferences => new electronForAppPages.WebContentsView({ webPreferences }),
+    sessionFor: partition => electronForAppPages.session.fromPartition(partition),
+    openExternal: url => { void electronForAppPages.shell.openExternal(url); },
+  });
   const pluginRegistry = createPluginRegistryHost({ home: app.getPath('home'), mutate: input => pluginOperationSession.registry(input) });
   const { safeStorage } = require('electron');
   const pluginOperations = createPluginOperationHost({
@@ -1584,6 +1594,12 @@ function registerTauriHost(app, options = {}) {
     return payload.action === 'delete'
       ? pluginOperations.external('delete', () => pluginAuthors.dispatch(e.sender, payload.action, payload.request))
       : pluginAuthors.dispatch(e.sender, payload.action, payload.request);
+  });
+
+  ipcMain.handle(APP_PAGE_CHANNEL, async (e, payload) => {
+    assertTrustedMainIpcSender(e);
+    if (!payload || typeof payload.action !== 'string') throw new Error('Invalid app page request');
+    return appPages.dispatch(payload.action, payload.request);
   });
 
   ipcMain.handle(PLUGIN_SNAPSHOT_CHANNEL, async (e, payload = {}) => {

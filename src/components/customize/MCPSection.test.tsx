@@ -42,7 +42,7 @@ const plugin = (name: string, mcpServers: string[]): InstalledPlugin => ({
   name,
   version: '1.0.0',
   installedAt: '2026-01-01T00:00:00.000Z',
-  contributed: { skills: [], mcpServers, agents: [] },
+  contributed: { skills: [], mcpServers, agents: [], teams: [] },
 });
 
 beforeEach(() => {

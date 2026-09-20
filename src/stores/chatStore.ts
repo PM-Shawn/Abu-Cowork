@@ -38,6 +38,7 @@ import type { ShareBundle } from '../core/session/shareBundle';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import type { ChatReference } from '@/types/chatReference';
 import type { ExpertContact, ExpertContactReceipt } from '@/types/expertContact';
+import type { ConversationAppBinding } from '@/types/app';
 import { introductionMessage, isIntroductionMessage } from '@/core/team/expertContact';
 import { getI18n } from '../i18n';
 import { TOOL_NAMES } from '../core/tools/toolNames';
@@ -677,6 +678,9 @@ interface ChatState {
   /** Team picked in the composer before a conversation exists (welcome page);
    *  consumed by createConversation, mirrors pendingPermissionMode. */
   pendingTeamId: string | undefined;
+  /** The app (mode / scene) the welcome page is showing, captured onto the next
+   *  conversation the way pendingTeamId is. Ephemeral, not persisted. */
+  pendingAppBinding: ConversationAppBinding | undefined;
 }
 
 interface ChatActions {
@@ -689,6 +693,7 @@ interface ChatActions {
   /** Pin / clear the team whose leader runs this conversation (persisted in the index). */
   setConversationTeamId: (convId: string, teamId: string | undefined) => void;
   setPendingTeamId: (teamId: string | undefined) => void;
+  setPendingAppBinding: (binding: ConversationAppBinding | undefined) => void;
   setConversationPermissionMode: (convId: string, mode: PermissionMode | undefined) => void;
   setPendingPermissionMode: (mode: PermissionMode | undefined) => void;
   deleteConversation: (id: string) => void;
@@ -899,6 +904,7 @@ export const useChatStore = create<ChatStore>()(
       pendingAttachmentRequests: [],
       pendingPermissionMode: undefined,
       pendingTeamId: undefined,
+      pendingAppBinding: undefined,
 
       createConversation: (workspacePath, options) => {
         const id = generateId();
@@ -917,6 +923,9 @@ export const useChatStore = create<ChatStore>()(
         // project click) pass skipActivate and must neither inherit nor clear it.
         const consumePendingTeam = !options?.skipActivate;
         const initialTeamId = options?.teamId ?? (consumePendingTeam ? get().pendingTeamId : undefined);
+        // The app binding travels with the team pin: both describe the welcome
+        // page the user is sending from, and only that conversation gets them.
+        const initialAppBinding = consumePendingTeam ? get().pendingAppBinding : undefined;
         // Pin the new-conversation default at creation (issue #545) so an empty
         // conversation never drifts with later picks elsewhere. Enterprise mode
         // skips this, mirroring agentLoop's first-run pin (gateway-scoped models).
@@ -939,6 +948,7 @@ export const useChatStore = create<ChatStore>()(
           ...(options?.scheduledTaskId ? { scheduledTaskId: options.scheduledTaskId } : {}),
           ...(options?.triggerId ? { triggerId: options.triggerId } : {}),
           ...(initialTeamId ? { teamId: initialTeamId } : {}),
+          ...(initialAppBinding ? { appBinding: initialAppBinding } : {}),
           ...(options?.imChannelId ? { imChannelId: options.imChannelId, imPlatform: options.imPlatform } : {}),
           ...(resolvedProjectId ? { projectId: resolvedProjectId } : {}),
           ...(initialModel ? { model: initialModel } : {}),
@@ -956,7 +966,10 @@ export const useChatStore = create<ChatStore>()(
             state.activeConversationId = id;
           }
           state.pendingPermissionMode = undefined;
-          if (consumePendingTeam) state.pendingTeamId = undefined;
+          if (consumePendingTeam) {
+            state.pendingTeamId = undefined;
+            state.pendingAppBinding = undefined;
+          }
         });
         // Sync index to disk (fire-and-forget). Also write-through the SQLite
         // catalog (message-storage P0) — best-effort, reconcile is the net.
@@ -981,6 +994,7 @@ export const useChatStore = create<ChatStore>()(
           state.activeConversationId = null;
           state.pendingAgentName = null;
           state.pendingTeamId = undefined;
+          state.pendingAppBinding = undefined;
           state.pendingExpertContact = null;
         });
         // Top-level "新建任务" is semantically "step out of the current
@@ -1008,6 +1022,7 @@ export const useChatStore = create<ChatStore>()(
           state.activeConversationId = id;
           state.pendingExpertContact = null;
           state.pendingAgentName = null;
+          state.pendingAppBinding = undefined;
         });
 
         // Unload old conversations AFTER activeConversationId is set,
@@ -1103,6 +1118,8 @@ export const useChatStore = create<ChatStore>()(
           if (meta) updateIndexEntry(meta).catch(() => {});
         });
       },
+
+      setPendingAppBinding: (binding) => set((state) => { state.pendingAppBinding = binding; }),
 
       setPendingTeamId: (teamId) => {
         set((state) => {
@@ -2739,6 +2756,7 @@ export const useChatStore = create<ChatStore>()(
               scheduledTaskId: meta.scheduledTaskId,
               triggerId: meta.triggerId,
               teamId: meta.teamId,
+              appBinding: meta.appBinding,
               projectId: meta.projectId,
               readOnly: meta.readOnly,
               importedFrom: meta.importedFrom,
@@ -2773,6 +2791,7 @@ export const useChatStore = create<ChatStore>()(
                 scheduledTaskId: meta.scheduledTaskId,
                 triggerId: meta.triggerId,
                 teamId: meta.teamId,
+                appBinding: meta.appBinding,
                 projectId: meta.projectId,
                 readOnly: meta.readOnly,
                 importedFrom: meta.importedFrom,
@@ -2821,7 +2840,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 13,
+      version: 14,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -2860,6 +2879,10 @@ export const useChatStore = create<ChatStore>()(
         if (version < 12) { /* no transform needed */ }
         // v12 → v13: per-identity contact receipts; old histories remain untouched.
         if (version < 13) state.expertContactReceipts = {};
+        // v13 → v14: added appBinding on Conversation/ConversationMeta (optional
+        // field; absent = general shell, present = the app the conversation was
+        // started in. Nothing to transform for pre-app conversations).
+        if (version < 14) { /* no transform needed */ }
         // v3 → v4: migrate conversations from localStorage to file system
         if (version < 4) {
           // Mark for async migration in onRehydrateStorage

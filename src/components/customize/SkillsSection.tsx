@@ -28,6 +28,10 @@ import ToolGrid from '@/components/toolbox/ToolGrid';
 import SkillDetailPanel from '@/components/toolbox/skills/SkillDetailPanel';
 import { usePluginSkillGate } from '@/components/toolbox/plugins/usePluginSkillGate';
 import { isUserOwnedSkill } from '@/components/toolbox/skills/isSystemSkill';
+import SourceBadge from '@/components/toolbox/SourceBadge';
+import { pluginOwnerForSkill } from '@/core/plugin/activationPolicy';
+import { pluginDisplayName } from '@/core/plugin/installedStore';
+import { usePluginStore } from '@/stores/pluginStore';
 
 // Build a set of system skill names from marketplace templates
 /**
@@ -83,6 +87,7 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // where it actually is, or the create reads as a create that did nothing.
   const setSource = useExtensionSourceStore((s) => s.setSource);
   const { t } = useI18n();
+  const installedPlugins = usePluginStore((s) => s.installed);
 
   const installedSkills = useMemo(() => skills.flatMap((meta) => {
     const skill = skillLoader.getSkill(meta.name, { includeDisabledPlugins: true });
@@ -147,16 +152,13 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     // shadowed built-ins from resurrecting that group on their own.
     if (source === 'mine') return [];
     const q = searchLower;
+    // Whatever covered the built-in — a user's own file, a plugin's, the
+    // organization's — sits under 「我的」, which is where the hint points.
     return skillLoader.getShadowedSkills().filter((s) => {
       if (s.source !== 'builtin') return false;
-      // The hint says the live copy is under 「我的」. When the winner is a
-      // plugin skill it sits on this same shelf, so the card would mislead —
-      // the plugin card already represents that name here.
-      const winner = installedSkills.find((w) => w.name === s.name);
-      if (winner && sourceToUXCategory(winner.source) === 'builtin') return false;
       return !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q);
     });
-  }, [skills, installedSkills, searchLower, source]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [skills, searchLower, source]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selected = installedSkills.find((s) => s.name === selectedSkill) ?? null;
 
@@ -206,6 +208,11 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
     const gated = !pluginAllowed(skill);
     const isEnabled = !disabledSet.has(skill.name) && !gated;
     const badge = sourceBadge(skill);
+    // Plugin and organization skills sit under 「我的」 with their provenance
+    // on the card, the same pill the expert and team cards carry.
+    const owner = skill.source === 'plugin' ? pluginOwnerForSkill(skill.skillDir) : undefined;
+    const provenance = skill.source === 'plugin' ? <SourceBadge source={{ kind: 'plugin', plugin: owner ? pluginDisplayName(installedPlugins, owner) : undefined }} />
+      : skill.source === 'enterprise' ? <SourceBadge source={{ kind: 'enterprise' }} /> : null;
     return (
       <ToolCard
         key={skill.name}
@@ -214,11 +221,11 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
           name: skill.name,
           description: skill.description,
           avatar: <FileText className="h-6 w-6 text-[var(--abu-text-muted)]" />,
-          badge: badge ? (
+          badge: provenance ?? (badge ? (
             <span className={`shrink-0 px-1.5 py-0.5 rounded text-caption font-medium ${SOURCE_BADGE_TONE[badge.tone]}`}>
               {t.toolbox[badge.labelKey]}
             </span>
-          ) : undefined,
+          ) : undefined),
           toggle: (
             <span onClick={(event) => event.stopPropagation()} title={gated ? t.toolbox.skillPluginDisabled : undefined}>
               <Toggle checked={isEnabled} disabled={gated} onChange={() => toggleSkillEnabled(skill.name)} size="sm" tone="green" />
@@ -295,9 +302,10 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
           <div className="max-w-5xl mx-auto space-y-6">
             {/* One shelf at a time — which one is the sub-nav's job to say, so
                 the group heading that used to name it here is gone.
-                「我的」: what this user (or Abu on their behalf) put on disk.
-                「市场」: bundled + plugin-contributed skills, plus the built-in
-                a same-name skill of theirs covers. */}
+                「我的」: what this user has — their own files, what installed
+                plugins brought in, what the organization pushed.
+                「市场」: bundled skills, plus the built-in a same-name skill
+                of theirs covers. */}
             {(filteredSkills.length > 0 || shadowedBuiltin.length > 0) && (
               <ToolGrid>
                 {filteredSkills.map((skill) => renderSkillCard(skill))}
@@ -390,6 +398,12 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             <Button variant="ghost" size="sm" className="bg-[var(--abu-danger-bg)] text-[var(--abu-danger)] hover:bg-[var(--abu-danger-bg)] hover:text-[var(--abu-danger)] rounded-xl" onClick={() => handleDelete(selected)}>{t.toolbox.deleteItem}</Button>
           ) : !pluginAllowed(selected) ? (
             <span className="text-caption text-[var(--abu-text-muted)]">{t.toolbox.skillPluginDisabled}</span>
+          ) : selected.source === 'plugin' ? (
+            // Under 「我的」 without a delete button: say where it came from and
+            // how it leaves, the way the expert detail does.
+            <span className="text-caption text-[var(--abu-text-muted)]" data-testid="skill-plugin-origin">
+              {format(t.toolbox.itemFromPluginRemoveHint, { plugin: pluginDisplayName(installedPlugins, pluginOwnerForSkill(selected.skillDir) ?? '') })}
+            </span>
           ) : <span />}
 
 

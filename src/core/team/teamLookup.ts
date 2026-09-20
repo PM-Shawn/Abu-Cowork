@@ -1,5 +1,4 @@
-import { useTeamStore } from '@/stores/teamStore';
-import { isBuiltinTeam } from './builtinTeams';
+import { isReadOnlyTeam, useTeamStore } from '@/stores/teamStore';
 
 /**
  * Would a `save_team` call with this `name` overwrite a team that already
@@ -17,9 +16,9 @@ export function saveTeamWouldReplace(rawName: unknown): boolean {
   const name = typeof rawName === 'string' ? rawName.trim() : '';
   if (!name) return false;
   try {
-    // A built-in name is refused by save_team, never replaced — do not warn
-    // about a replace that will not happen.
-    return useTeamStore.getState().teams.some((team) => team.name === name && !isBuiltinTeam(team));
+    // A built-in or plugin team's name is refused by save_team, never
+    // replaced — do not warn about a replace that will not happen.
+    return useTeamStore.getState().teams.some((team) => team.name === name && !isReadOnlyTeam(team));
   } catch {
     return true;
   }

@@ -85,20 +85,21 @@ describe('SkillsSection · source="mine"', () => {
     }
   });
 
-  it('drops plugin- and builtin-shipped skills (the 市场 shelf)', async () => {
+  it('keeps what the user has — plugin and organization skills included — and leaves bundled skills to 市场', async () => {
     render(<SkillsSection source="mine" />);
     await screen.findByText('my-notes');
-    expect(screen.queryByText('weather-report')).toBeNull();
     expect(screen.queryByText('pdf-fill')).toBeNull();
-    // An organization-shipped skill is installed FOR this user: spec A7.3 files
-    // it under 「个人 › 我的」, not on the marketplace shelf.
-    expect(screen.getByText('expense-policy')).toBeTruthy();
+    // Installed by this user through a plugin, or pushed by their organization:
+    // theirs, so on 「我的」, each with its provenance on the card.
+    const pluginCard = screen.getByText('weather-report').closest('[role="button"]') as HTMLElement;
+    expect(within(pluginCard).getByTestId('source-badge').getAttribute('data-source-kind')).toBe('plugin');
+    const orgCard = screen.getByText('expense-policy').closest('[role="button"]') as HTMLElement;
+    expect(within(orgCard).getByTestId('source-badge').getAttribute('data-source-kind')).toBe('enterprise');
+    expect(within(screen.getByText('my-notes').closest('[role="button"]') as HTMLElement).queryByTestId('source-badge')).toBeNull();
   });
 
-  it('says 还没有你创建的技能 when everything came from outside', async () => {
-    useDiscoveryStore.setState({
-      skills: [meta('weather-report', 'plugin'), meta('pdf-fill', 'builtin')],
-    });
+  it('says 还没有你创建的技能 only when the user has nothing at all', async () => {
+    useDiscoveryStore.setState({ skills: [meta('pdf-fill', 'builtin')] });
     render(<SkillsSection source="mine" />);
     expect(await screen.findByText(tb().skillsMineEmptyTitle)).toBeTruthy();
   });
@@ -110,9 +111,7 @@ describe('SkillsSection · source="mine"', () => {
    * them — `draft` is in MINE_SOURCES, and 市场 will never show them either.
    */
   it('shows pending drafts even when the user has authored nothing', async () => {
-    useDiscoveryStore.setState({
-      skills: [meta('weather-report', 'plugin'), meta('pdf-fill', 'builtin')],
-    });
+    useDiscoveryStore.setState({ skills: [meta('pdf-fill', 'builtin')] });
     useSkillDraftsStore.setState({ drafts: [draft('meeting-notes')] });
     render(<SkillsSection source="mine" />);
     expect(await screen.findByText(tb().categoryAgentEvolved)).toBeTruthy();
@@ -133,19 +132,33 @@ describe('SkillsSection · source="mine"', () => {
   it('keeps every source, one shelf each', async () => {
     const { rerender } = render(<SkillsSection source="mine" />);
     expect(await screen.findByText('my-notes')).toBeTruthy();
+    expect(screen.getByText('weather-report')).toBeTruthy();
     rerender(<SkillsSection source="market" />);
-    expect(await screen.findByText('weather-report')).toBeTruthy();
-    expect(screen.getByText('pdf-fill')).toBeTruthy();
+    expect(await screen.findByText('pdf-fill')).toBeTruthy();
+    expect(screen.queryByText('weather-report')).toBeNull();
+    expect(screen.queryByText('my-notes')).toBeNull();
   });
   it.each(['pdf-fill', 'weather-report', 'expense-policy'])('retains detail actions but not independent removal for %s', async (name) => {
-    // 企业下发 lives on the 我的 shelf; bundled and plugin skills on 市场.
-    render(<SkillsSection source={name === 'expense-policy' ? 'mine' : 'market'} />);
+    // Plugin and 企业下发 skills live on the 我的 shelf; bundled skills on 市场.
+    render(<SkillsSection source={name === 'pdf-fill' ? 'market' : 'mine'} />);
     fireEvent.click(await screen.findByText(name));
     expect(screen.getByTestId('skill-detail')).toBeVisible();
     fireEvent.click(screen.getByTestId('skill-detail-menu'));
     expect(screen.getByText(tb().exportSkill)).toBeVisible();
     expect(screen.getByText(tb().historyMenuLabel)).toBeVisible();
+    expect(screen.queryByText(tb().skillEdit)).toBeNull();
     expect(screen.queryByText(tb().deleteItem)).toBeNull();
+  });
+
+  it('tells a plugin skill\'s detail where it came from and how it leaves', async () => {
+    usePluginStore.setState({
+      installed: [{ key: 'weather@market', marketplace: 'market', name: 'weather', version: '1.0.0', installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: ['weather-report'], mcpServers: [], agents: [], teams: [] } }],
+      activationByKey: { 'weather@market': { enabled: true, root: '/skills/weather-report', skillDirs: ['/skills/weather-report'], legacySkills: false, agentFiles: [], mcpServers: [] } },
+      activationReady: true,
+    });
+    render(<SkillsSection source="mine" />);
+    fireEvent.click(await screen.findByText('weather-report'));
+    expect(screen.getByTestId('skill-plugin-origin').textContent).toContain('weather');
   });
 
 });
@@ -171,21 +184,19 @@ describe('SkillsSection · disabled plugin ownership', () => {
 
   it('shows the skill as off and locks its switch while the owning plugin is disabled', async () => {
     usePluginStore.setState({ activationByKey: activation(false), activationReady: true });
-    const { rerender } = render(<SkillsSection />);
+    render(<SkillsSection source="mine" />);
     await screen.findByText('weather-report');
     const toggle = switchFor('weather-report');
     expect(toggle.getAttribute('aria-checked')).toBe('false');
     expect((toggle as HTMLButtonElement).disabled).toBe(true);
-    // A skill nobody owns is unaffected (it sits on the other shelf).
-    rerender(<SkillsSection source="mine" />);
-    await screen.findByText('my-notes');
+    // A skill nobody owns, on the same shelf, is unaffected.
     expect(switchFor('my-notes').getAttribute('aria-checked')).toBe('true');
     expect((switchFor('my-notes') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('blocks the trial button and says why', async () => {
     usePluginStore.setState({ activationByKey: activation(false), activationReady: true });
-    render(<SkillsSection />);
+    render(<SkillsSection source="mine" />);
     fireEvent.click(await screen.findByText('weather-report'));
     expect(screen.getByText(tb().skillPluginDisabled)).toBeTruthy();
     expect((screen.getByText(tb().menuTrial).closest('button') as HTMLButtonElement).disabled).toBe(true);
@@ -193,7 +204,7 @@ describe('SkillsSection · disabled plugin ownership', () => {
 
   it('leaves the switch on once the owning plugin is enabled', async () => {
     usePluginStore.setState({ activationByKey: activation(true), activationReady: true });
-    render(<SkillsSection />);
+    render(<SkillsSection source="mine" />);
     await screen.findByText('weather-report');
     const toggle = switchFor('weather-report');
     expect(toggle.getAttribute('aria-checked')).toBe('true');
@@ -229,19 +240,19 @@ describe('SkillsSection · system skill protection', () => {
 });
 
 describe('SkillsSection · shadowed built-ins on 市场', () => {
-  it('keeps a built-in covered by a user skill, marked, but not one covered by a plugin skill on the same shelf', () => {
-    // docx: the winner is the user's copy (lives under 我的) → the 市场 card
-    // stays, marked 已被覆盖. weather-report: the winner is a plugin skill,
-    // which is already a card on this very shelf → no second, misleading card.
+  it('keeps a covered built-in on 市场, marked, whether the winner is the user\'s or a plugin\'s copy', () => {
+    // Both winners live under 我的 — the user's docx and the plugin's
+    // weather-report — which is where the badge's hint sends the user.
     vi.spyOn(skillLoader, 'getShadowedSkills').mockReturnValue([
       full(meta('docx', 'builtin')),
       full(meta('weather-report', 'builtin')),
     ]);
     render(<SkillsSection source="market" />);
-    const covered = screen.getByTestId('skill-shadowed-docx');
-    expect(within(covered).getByText(tb().skillShadowedBadge)).toBeInTheDocument();
-    expect(screen.queryByTestId('skill-shadowed-weather-report')).toBeNull();
-    // The plugin's own card is the one that represents weather-report here.
-    expect(screen.getByText('weather-report')).toBeInTheDocument();
+    for (const name of ['docx', 'weather-report']) {
+      const covered = screen.getByTestId(`skill-shadowed-${name}`);
+      expect(within(covered).getByText(tb().skillShadowedBadge)).toBeInTheDocument();
+    }
+    // The live copies are not on this shelf.
+    expect(screen.getAllByText('weather-report')).toHaveLength(1);
   });
 });

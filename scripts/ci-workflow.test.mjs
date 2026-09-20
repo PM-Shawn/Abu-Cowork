@@ -244,6 +244,7 @@ test('parallel gates preserve their commands, full installs, and blocking outcom
     ['test', 'Test with coverage', 'npm run test:coverage'],
     ['test', 'Test-infra scripts (node:test)', 'npm run test:infra'],
     ['test', 'TESTING.md inventory is up to date', 'npm run test:inventory:check'],
+    ['test', 'Official plugin market validates', 'npm run market:check'],
     ['build', 'Build frontend', 'npm run build'],
   ]) {
     assert.ok(requiredCheckStep(step, job).includes(`run: ${command}\n`));

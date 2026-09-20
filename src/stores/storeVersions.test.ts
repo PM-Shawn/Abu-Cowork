@@ -4,7 +4,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // When adding a new persist store, add it to this list — otherwise this test fails.
 const PERSISTED_STORES = [
   { key: 'abu-settings', minVersion: 52 },
-  { key: 'abu-chat', minVersion: 13 },
+  { key: 'abu-chat', minVersion: 14 },
+  { key: 'abu-app', minVersion: 1 },
   { key: 'abu-scratchpad-store', minVersion: 1 },
   { key: 'abu-permissions', minVersion: 1 },
   { key: 'abu-workspace', minVersion: 1 },
@@ -49,6 +50,7 @@ beforeAll(async () => {
   await import('./composerDraftStore');
   await import('./pluginStore');
   await import('./extensionSourceStore');
+  await import('./appStore');
 }, 120_000); // Store imports trigger on-the-fly transforms; under v8 coverage instrumentation a cold cache exceeds 30s, so allow a generous ceiling (inline timeout overrides global hookTimeout)
 
 describe('Store version compliance', () => {

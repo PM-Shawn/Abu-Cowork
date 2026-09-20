@@ -5,6 +5,7 @@ import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useI18n } from '@/i18n';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
+import { useAppStore } from '@/stores/appStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { PluginAuthor } from '@/core/plugin/authorBridge';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -21,7 +22,7 @@ import InstalledPluginDetail from './InstalledPluginDetail';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import UninstallPluginDialog from './UninstallPluginDialog';
 
-export default function AuthoredPluginList({ home, searchQuery }: { home: string; searchQuery: string }) {
+export default function AuthoredPluginList({ home, searchQuery, heading }: { home: string; searchQuery: string; heading?: string }) {
   const { t } = useI18n();
   const tb = t.toolbox;
   const authors = usePluginAuthorStore(s => s.authors);
@@ -87,6 +88,9 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
       if (installed) await usePluginStore.getState().update({ ...request, key: installed.key });
       else await usePluginStore.getState().install(request);
       setPlan(null); setSelected(author);
+      // A draft with `app` installs as 「安装并进入」: land on its home once the
+      // app list has picked the new record up.
+      if (disclosure.app && !installed) useAppStore.getState().enterAppWhenAvailable(disclosure.key);
     } catch (error) { setPlan({ author, state: { kind: 'error', message: String(error) } }); report(error); }
     finally {
       if (installingToken) await releasePreparedInstall(installingToken).catch(() => {});
@@ -101,9 +105,12 @@ export default function AuthoredPluginList({ home, searchQuery }: { home: string
   ];
   const hasUpdate = (author: PluginAuthor) => Boolean(author.prepared && recordFor(author) && author.prepared.checksum !== recordFor(author)?.checksum);
   const selectedRecord = selected ? recordFor(selected) : undefined;
-  return <section className="px-8 pt-3 pb-6" data-testid="plugin-mine-group"><div className="mx-auto max-w-5xl">
+  return <section className={heading ? 'px-8 pb-6' : 'px-8 pt-3 pb-6'} data-testid="plugin-mine-group"><div className="mx-auto max-w-5xl">
+    {heading && <h3 className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{heading}</h3>}
     {error && <p role="alert" className="mb-3 text-minor text-[var(--abu-danger)]">{error}</p>}
-    {visible.length === 0 ? <div className="rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]">{authors.length ? tb.pluginsNoMatches : tb.pluginsMineEmptyTitle}</div> : <ToolGrid>
+    {visible.length === 0 ? <div className="rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]">
+      {authors.length ? tb.pluginsNoMatches : <>{tb.pluginsMineEmptyTitle}<span className="mt-1 block text-caption text-[var(--abu-text-tertiary)]">{tb.pluginsMineEmptyHint}</span></>}
+    </div> : <ToolGrid>
       {visible.map(author => {
         const record = recordFor(author);
         return record ? <InstalledPluginCard key={author.id} plugin={record} home={home} description={author.prepared?.description} testId="plugin-mine-row" actions={hasUpdate(author) ? <span className="text-minor text-[var(--abu-clay)]">{tb.pluginsAuthorUpdateAvailable}</span> : undefined} onClick={() => setSelected(author)} />

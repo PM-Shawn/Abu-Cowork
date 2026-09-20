@@ -117,6 +117,17 @@ export function useDeepLinkEnroll(): {
   return { pendingEnroll: null, dismissEnroll() {} }
 }
 
+/** Which app the organization opens Abu in, and whether the employee may leave it. */
+export interface EnterpriseAppPolicy {
+  defaultAppId: string | null
+  allowExit: boolean
+}
+
+/** Personal mode: no default app, and every app is free to leave. */
+export function useEnterpriseAppPolicy(): EnterpriseAppPolicy {
+  return { defaultAppId: null, allowExit: true }
+}
+
 export function BindToEnterpriseFlow(_props: {
   onDone: () => void
   onCancel: () => void

@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { run } = require('./pluginOperationWorker.cjs');
+const { statIdentitySync } = require('./fileIdentity.cjs');
 
 function fixture() {
   const profile = { ino: 1, dev: 1 };
@@ -62,12 +63,14 @@ test('archive checks the confirmed bytes inside the worker, including same-inode
     fs.mkdirSync(parent, { recursive: true });
     const source = path.join(parent, 'active.enc');
     fs.writeFileSync(source, 'confirmed');
-    const identity = fs.statSync(home);
-    const original = fs.statSync(source);
+    // What the worker receives has crossed JSON: the decimal-string pair of
+    // `electron/fileIdentity.cjs`, never a live `Stats`.
+    const identity = statIdentitySync(home);
+    const original = statIdentitySync(source);
     const fingerprint = crypto.createHash('sha256').update('confirmed').digest('hex');
     const input = { identity, parent: ['.abu', 'plugin-operations'], action: 'archive', from: 'active.enc', to: 'corrupt-1.enc', source: original, fingerprint };
     fs.writeFileSync(source, 'different');
-    assert.equal(fs.statSync(source).ino, original.ino);
+    assert.equal(statIdentitySync(source).ino, original.ino);
     process.chdir(home);
     assert.throws(() => run(input), /archive source changed/);
     assert.equal(fs.readFileSync(source, 'utf8'), 'different');

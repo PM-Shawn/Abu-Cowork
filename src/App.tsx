@@ -15,6 +15,7 @@ import SystemSettingsDialog from '@/components/settings/SystemSettingsDialog';
 import CapabilitySetupDialog from '@/components/settings/CapabilitySetupDialog';
 import ExtensionsView from '@/components/settings/ToolboxModal';
 import TeamView from '@/components/team/TeamView';
+import AppPageView from '@/components/app/AppPageView';
 import TodoView from '@/components/todos/TodoView';
 import InboxView from '@/components/inbox/InboxView';
 import { useLabsFlag, resolveLabsFlag } from '@/core/labs/resolve';
@@ -925,6 +926,7 @@ function App() {
                 {viewMode === 'automation' && <AutomationView />}
                 {viewMode === 'extensions' && <ExtensionsView />}
                 {viewMode === 'team' && <TeamView />}
+                {viewMode === 'app-page' && <AppPageView />}
                 {viewMode === 'todos' && <TodoView />}
                 {viewMode === 'inbox' && <InboxView />}
                 {(viewMode === 'chat' || !viewMode) && (

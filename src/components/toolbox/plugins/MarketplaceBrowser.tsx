@@ -12,6 +12,9 @@ import { Select } from '@/components/ui/select';
 import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
+import { useAppStore } from '@/stores/appStore';
+import type { ExtensionsFilter } from '@/stores/settingsStore';
+import { cn } from '@/lib/utils';
 import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
 import { orphanedInstalls } from '@/core/plugin/authored';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -56,6 +59,9 @@ interface MarketplaceBrowserProps {
   searchQuery: string;
   requestedMarket?: { name: string };
   onAddMarketplace: () => void;
+  /** A deep link's narrowing (「发现应用」 opens on apps); consumed once, see `onFilterConsumed`. */
+  initialFilter?: ExtensionsFilter | null;
+  onFilterConsumed?: () => void;
 }
 
 type EntriesState =
@@ -90,9 +96,21 @@ export default function MarketplaceBrowser({
   requestedMarket,
   onAddMarketplace,
   scrollParent,
+  initialFilter = null,
+  onFilterConsumed,
 }: MarketplaceBrowserProps) {
   const { t } = useI18n();
   const tb = t.toolbox;
+  const enterApp = useAppStore((s) => s.enterApp);
+  const enterInstalledApp = useAppStore((s) => s.enterAppWhenAvailable);
+  // 「全部 | 应用」: apps are plugins whose entry says `providesApp`; the
+  // switcher's 「发现应用」 lands here with the apps half preselected.
+  const [filter, setFilter] = useState<'all' | 'apps'>(initialFilter === 'apps' ? 'apps' : 'all');
+  useEffect(() => {
+    if (!initialFilter) return;
+    setFilter(initialFilter === 'apps' ? 'apps' : 'all');
+    onFilterConsumed?.();
+  }, [initialFilter, onFilterConsumed]);
   const marketplaces = usePluginStore((s) => s.marketplaces);
   const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
   const installed = usePluginStore((s) => s.installed);
@@ -236,8 +254,8 @@ export default function MarketplaceBrowser({
 
   const visibleEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return (marketplace?.plugins ?? []).filter((entry) => matchesQuery(entry, query));
-  }, [marketplace, searchQuery]);
+    return (marketplace?.plugins ?? []).filter((entry) => (filter === 'all' || entry.providesApp === true) && matchesQuery(entry, query));
+  }, [marketplace, searchQuery, filter]);
 
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
@@ -331,6 +349,11 @@ export default function MarketplaceBrowser({
         message: tb.pluginsUpdateReloadHint,
       });
       closeFlow();
+      // 「使用」 is install-and-enter: a fresh app install lands the user on its
+      // home. The app list refreshes from the records the install just wrote,
+      // so the switcher may still be catching up — the store checks the record
+      // directly, and an update to an app the user is already in stays put.
+      if (flow.disclosure.app && !existing) enterInstalledApp(flow.disclosure.key);
     } catch (err) {
       releasePreparation();
       setFlow({ kind: 'error', entry, message: err instanceof Error ? err.message : String(err) });
@@ -345,7 +368,7 @@ export default function MarketplaceBrowser({
       installingRef.current = false;
       setInstalling(false);
     }
-  }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow, releasePreparation]);
+  }, [selected, flow, install, update, installedByName, home, addToast, tb, closeFlow, releasePreparation, enterInstalledApp]);
 
   const dialogState: InstallPlanState =
     flow.kind === 'ready'
@@ -385,14 +408,22 @@ export default function MarketplaceBrowser({
     // Read from the store rather than scored here: one source of truth for the
     // badge count and this button (see the recompute effect above).
     const hasUpdate = !!selected && updateKeySet.has(pluginKey(entry.name, selected.name));
+    // An installed app keeps its market card (marked installed by the switch)
+    // and offers 进入; an app not yet installed offers 使用, which installs and
+    // enters in one step.
+    const isApp = entry.providesApp === true;
     if (installedRecord) return <InstalledPluginCard
       plugin={installedRecord}
       home={home}
       description={entry.description}
       testId="plugin-marketplace-entry"
       onClick={() => setManaging(installedRecord)}
-      actions={hasUpdate ? <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button> : undefined}
+      actions={<>
+        {hasUpdate && <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button>}
+        {isApp && <Button variant="tint" size="xs" className="h-7 px-2.5" data-testid="plugin-enter-app" aria-label={`${tb.pluginsEnter}: ${entry.name}`} onClick={event => { event.stopPropagation(); enterApp(installedRecord.key); }}>{tb.pluginsEnter}</Button>}
+      </>}
     />;
+    const installLabel = isApp ? tb.pluginsUse : tb.pluginsInstall;
     return (
       <div className="h-full">
         <MarketplaceEntryRow
@@ -400,7 +431,7 @@ export default function MarketplaceBrowser({
           name={entry.name}
           description={entry.description}
           onClick={() => void handlePlan(entry)}
-          actions={<Button variant="tint" size="xs" className="h-7 px-2.5" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${tb.pluginsInstall}: ${entry.name}`}>{tb.pluginsInstall}</Button>}
+          actions={<Button variant="tint" size="xs" className="h-7 px-2.5" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${installLabel}: ${entry.name}`}>{installLabel}</Button>}
         />
       </div>
     );
@@ -437,6 +468,22 @@ export default function MarketplaceBrowser({
         ) : (
           <span className="text-h-xs text-[var(--abu-text-primary)]">{selectedName}</span>
         )}
+
+        <div role="tablist" aria-label={tb.pluginsFilterApps} data-testid="plugin-market-filter" className="inline-flex rounded-lg bg-[var(--abu-bg-muted)] p-0.5">
+          {(['all', 'apps'] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={filter === value}
+              data-testid={`plugin-market-filter-${value}`}
+              onClick={() => setFilter(value)}
+              className={cn('rounded-md px-2.5 py-1 text-minor transition-colors', filter === value ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}
+            >
+              {value === 'all' ? tb.pluginsFilterAll : tb.pluginsFilterApps}
+            </button>
+          ))}
+        </div>
 
         {marketplace && (
           <span className="text-minor text-[var(--abu-text-muted)]">

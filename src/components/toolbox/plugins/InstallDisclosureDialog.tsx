@@ -16,14 +16,18 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Bot, Loader2, Sparkles, Server, ShieldCheck, Package } from 'lucide-react';
+import { AlertTriangle, Bot, Loader2, Sparkles, Server, ShieldCheck, Package, UsersRound, LayoutGrid } from 'lucide-react';
 import { useI18n, format } from '@/i18n';
+import { resolveText } from '@/core/app/appBinding';
+import { roleIdAgentName } from '@/core/team/roleIdentity';
+import { BUILTIN_TEAMS } from '@/core/team/builtinTeams';
 import ToolDetailModal from '@/components/toolbox/ToolDetailModal';
 import { Input } from '@/components/ui/input';
 import { PLUGIN_CONFIG_VALUE_LIMIT, pluginConfigFields } from '@/core/plugin/configuration';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { InstallDisclosure, PluginAgentDisclosure } from '@/core/plugin/installer';
+import type { ParsedPluginTeam } from '@/types/app';
 import type { PluginSource } from '@/core/plugin/marketplace';
 import { formatServerCommand } from './serverCommand';
 
@@ -83,6 +87,18 @@ function Section({
       {children}
     </section>
   );
+}
+
+/**
+ * The name to show for the team a scene runs on. A scene names either one of
+ * Abu's own teams (`builtin-team:<id>`) or a team the package ships (its id in
+ * `teams/`); the dialog shows what the user will see in 专家, never the id.
+ */
+function runTeamName(teamId: string, teams: ParsedPluginTeam[] | undefined): string {
+  const builtin = BUILTIN_TEAMS.find((team) => team.id === teamId);
+  if (builtin) return builtin.name;
+  const packaged = teams?.find((team) => team.id === teamId);
+  return packaged ? resolveText(packaged.name) : teamId;
 }
 
 /**
@@ -306,6 +322,49 @@ export default function InstallDisclosureDialog({
               </Section>
             )}
 
+            {(d.teams?.length ?? 0) > 0 && (
+              <Section icon={UsersRound} title={tb.pluginsDisclosureTeams}>
+                <ul className="space-y-1">
+                  {d.teams!.map((team) => (
+                    <li key={team.id} data-testid="plugin-disclosure-team" className="rounded bg-[var(--abu-bg-muted)] px-2 py-1 text-[var(--abu-text-secondary)]">
+                      <p className="text-body"><span className="font-medium">{resolveText(team.name)}</span></p>
+                      <p className="mt-0.5 text-minor text-[var(--abu-text-muted)]">{resolveText(team.description)}</p>
+                      <p className="mt-0.5 text-minor text-[var(--abu-text-muted)]">{team.memberRoleIds.map((roleId) => roleIdAgentName(roleId) ?? roleId).join('、')}</p>
+                    </li>
+                  ))}
+                </ul>
+              </Section>
+            )}
+
+            {d.app && (
+              <Section icon={LayoutGrid} title={tb.pluginsDisclosureApp}>
+                <div data-testid="plugin-disclosure-app" className="space-y-1.5 text-minor text-[var(--abu-text-secondary)]">
+                  {d.app.nav && (
+                    <p>{format(tb.pluginsDisclosureAppNav, { items: d.app.nav.items.map((item) => item.title === undefined ? item.target : resolveText(item.title)).join('、') })}</p>
+                  )}
+                  {(d.app.allowedOrigins?.length ?? 0) > 0 && (
+                    <p data-testid="plugin-disclosure-app-pages">{format(tb.pluginsDisclosureAppPages, { origins: d.app.allowedOrigins!.join('、') })}</p>
+                  )}
+                  <p className="text-[var(--abu-text-muted)]">{tb.pluginsDisclosureAppScenes}</p>
+                  <ul className="space-y-1">
+                    {d.app.home.modes.items.flatMap((mode) => mode.scenes.map((scene) => {
+                      const run = scene.run ?? d.app!.defaultRun;
+                      const who = !run ? tb.pluginsDisclosureRunDefault
+                        : 'team' in run ? format(tb.pluginsDisclosureRunTeam, { name: runTeamName(run.team, d.teams) })
+                        : 'expert' in run ? format(tb.pluginsDisclosureRunExpert, { name: roleIdAgentName(run.expert) ?? run.expert })
+                        : format(tb.pluginsDisclosureRunSkill, { name: run.skill });
+                      return (
+                        <li key={`${mode.modeId}/${scene.id}`} className="flex items-baseline justify-between gap-3 rounded bg-[var(--abu-bg-muted)] px-2 py-1">
+                          <span className="truncate text-body text-[var(--abu-text-secondary)]">{resolveText(mode.title)} · {resolveText(scene.title)}</span>
+                          <span className="shrink-0 text-minor text-[var(--abu-text-muted)]">{who}</span>
+                        </li>
+                      );
+                    }))}
+                  </ul>
+                </div>
+              </Section>
+            )}
+
             {d.capabilities && d.capabilities.length > 0 && (
             <Section icon={ShieldCheck} title={tb.pluginsDisclosureCapabilities}>
                 <div className="flex flex-wrap gap-1.5">
@@ -359,7 +418,7 @@ export default function InstallDisclosureDialog({
               </Button>
               <Button data-testid="plugin-install-confirm" onClick={() => onConfirm(configuration)} disabled={installing || fields.some(field => !configuration[field]?.trim())}>
                 {installing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : tb.pluginsInstall}
+                {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : state.kind === 'ready' && state.disclosure.app ? tb.pluginsInstallAndEnter : tb.pluginsInstall}
               </Button>
             </>
           ) : (

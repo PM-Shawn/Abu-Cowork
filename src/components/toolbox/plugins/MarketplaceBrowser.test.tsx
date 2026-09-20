@@ -127,7 +127,7 @@ const installedWeather: InstalledPlugin = {
   name: 'weather',
   version: '1.0.0',
   installedAt: '2026-08-31T00:00:00.000Z',
-  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: [] },
+  contributed: { skills: ['forecast'], mcpServers: ['weather-mcp'], agents: [], teams: [] },
 };
 
 /** Locale-resolved toolbox strings — these tests run under either locale. */
@@ -163,7 +163,7 @@ beforeEach(() => {
       name: disclosure.name,
       version: disclosure.version ?? '0.0.0',
       installedAt: '2026-09-01T00:00:00.000Z',
-      contributed: { skills: disclosure.skills, mcpServers: disclosure.mcpServers.map((s) => s.name), agents: [] },
+      contributed: { skills: disclosure.skills, mcpServers: disclosure.mcpServers.map((s) => s.name), agents: [], teams: [] },
     },
     mcpServers: disclosure.mcpServers,
   });
@@ -556,7 +556,7 @@ describe('MarketplaceBrowser', () => {
     usePluginStore.setState({
       installed: [{
         key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
-        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
       }],
     });
     renderBrowser();
@@ -580,7 +580,7 @@ describe('MarketplaceBrowser', () => {
       usePluginStore.setState({
         installed: [{
           key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
-          installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+          installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
         }],
       });
     });
@@ -592,7 +592,7 @@ describe('MarketplaceBrowser', () => {
     // REPLACE the personal-scope keys, so opening a market with nothing to
     // update silently cleared an update that was still true in the first one.
     const installedAt = '2026-09-01T00:00:00.000Z';
-    const contributed = { skills: [], mcpServers: [], agents: [] };
+    const contributed = { skills: [], mcpServers: [], agents: [], teams: [] };
     usePluginStore.setState({
       installed: [
         { key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0', installedAt, contributed },
@@ -633,7 +633,7 @@ describe('MarketplaceBrowser', () => {
     usePluginStore.setState({
       installed: [{
         key: 'weather@official', marketplace: 'official', name: 'weather', version: '0.9.0',
-        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
       }],
     });
     renderBrowser();
@@ -649,7 +649,7 @@ describe('MarketplaceBrowser', () => {
     usePluginStore.setState({
       installed: [{
         key: 'weather@official', marketplace: 'official', name: 'weather', version: '1.0.0',
-        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [] },
+        installedAt: '2026-09-01T00:00:00.000Z', contributed: { skills: [], mcpServers: [], agents: [], teams: [] },
       }],
     });
     renderBrowser();

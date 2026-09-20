@@ -36,16 +36,21 @@ import { useTeamConfirmationStore } from '@/stores/teamConfirmationStore';
  */
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry';
-import type { ToolExecutionContext, Conversation, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
+import type { ToolExecutionContext, Conversation, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
 import {
   onSidecarNotification,
   onSidecarRequest,
   onSidecarConnectionState,
   notifySidecar,
   getSidecarStatus,
+  registerSidecarNotifyResync,
   request as sidecarRequest,
+  sidecarHasCapability,
   SidecarRequestError,
 } from '../sidecar/sidecarManager';
+import { CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER } from '../sidecar/sidecarProtocol';
+import { takeLedgerHistoryPoint } from '../session/ledgerHistoryPoint';
+import { parseHistoryUnavailableError, type HistoryUnavailableData } from '../ipc/historyUnavailable';
 import { applyDeltaFrames, type PortFrame } from './frameApplier';
 import { getExecutionPort } from './ports/executionPort';
 import { getChatDelta } from './ports/chatDelta';
@@ -161,6 +166,13 @@ import { emitBrowserDownloadsCard } from '../observability/browserRunReportEmitt
 import { getElectronSidecarRunFact } from '../../utils/electronHost';
 import { attachTrustedSkillCommandApproval } from './skillCommandApproval';
 import { AgentLoopDispatchError, wrapAgentLoopDispatchError } from './agentLoopDispatchError';
+import { isPayloadTooLargeError } from '../ipc/payloadTooLarge';
+import { paramsBuildDisplayMessage } from './paramsBuildFailure';
+import {
+  isInProcessAgentEnvironment,
+  waitForSidecarVenue,
+  SidecarUnavailableError,
+} from '../sidecar/sidecarReadiness';
 import {
   createRunResourceSettlement,
   getRunResourceSettlement,
@@ -188,8 +200,32 @@ const logger = createLogger('agent-loop-runner');
 const AGENT_ABORT_ACK_TIMEOUT_MS = 1_000;
 const AGENT_ABORT_FORCE_FINALIZE_MS = 5_000;
 const AGENT_FIRST_FRAME_STALL_MS = 30_000;
-const AGENT_START_ACK_TIMEOUT_MS = 3_000;
+const AGENT_START_ACK_BASE_TIMEOUT_MS = 3_000;
+const AGENT_START_ACK_MS_PER_MIB = 100;
 const AGENT_STATE_QUERY_TIMEOUT_MS = 2_000;
+
+/**
+ * How long the `agent.start` acknowledgement may take, as a function of the
+ * two sizes the sidecar works through before it answers.
+ *
+ * The clock starts before the write, so the budget has to cover the IPC
+ * transfer, the boundary validation, the stdin pipe, the sidecar's framing and
+ * `JSON.parse`, and the digest check — all of which scale with the request
+ * body. A start that names a ledger watermark hands the sidecar a tiny request
+ * and a whole ledger prefix to read, fold and sanitise before it acknowledges,
+ * so those bytes are paid for at the same rate: a 45 MiB history is 4 500 ms on
+ * top of the base allowance. A base allowance plus a per-started-MiB allowance
+ * for each size gives 3 000 ms for an ordinary turn and 15 800 ms at the
+ * 128 MiB raw-body ceiling. Exported for the table test; production passes
+ * `agentStartAckBudget` to `sidecarRequest` so the encoded length is taken from
+ * the bytes that request already produced (#549).
+ */
+export function agentStartAckBudgetMs(encodedBytes: number, ledgerWatermarkBytes = 0): number {
+  const startedMib = (bytes: number): number => Math.ceil(bytes / (1024 * 1024));
+  return AGENT_START_ACK_BASE_TIMEOUT_MS
+    + startedMib(encodedBytes) * AGENT_START_ACK_MS_PER_MIB
+    + startedMib(ledgerWatermarkBytes) * AGENT_START_ACK_MS_PER_MIB;
+}
 const MAX_REATTACH_UNAVAILABLE_CHECKS = 3;
 const AGENT_LOOP_EXIT_REASONS = new Set<AgentLoopExitReason>([
   'completed',
@@ -205,7 +241,7 @@ function warnFailedAgentResult(params: {
   runId: string;
   conversationId: string;
   cause: string;
-  source: 'terminal' | 'raw-rpc' | 'replay-rpc' | 'fallback-in-process';
+  source: 'terminal' | 'raw-rpc' | 'replay-rpc';
   upstream?: UpstreamErrorDetails;
   errorType?: string;
   stack?: string;
@@ -797,74 +833,11 @@ function updateSessionMessageState(
   );
 }
 
-async function runInProcessWithPersistedMessage(
-  conversationId: string,
-  userMessage: string,
-  runId: string,
-  clientMessageId: string,
-  options?: AgentLoopOptions,
-): Promise<AgentLoopDispatchResult> {
-  try {
-    // Params preparation can fail before it upgrades the durable raw message
-    // to multimodal content. Do that here before the in-process handoff so a
-    // pre-dispatch failure never drops an attached image merely because the
-    // local loop is told not to append a duplicate user row. This belongs
-    // inside the same failure finalization as the local loop: once the shell
-    // has appended the row, every thrown preparation/persistence step must
-    // leave it retryable instead of stranded at `pending`.
-    const persistedMessage = getConversationReader()
-      .getConversation(conversationId)
-      ?.messages.find((message) => message.id === clientMessageId);
-    if (options?.images?.length && typeof persistedMessage?.content === 'string') {
-      const content = await buildUserMessageContent(conversationId, userMessage, options.images);
-      useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
-        state: 'pending',
-        content,
-      });
-      await waitForConversationPersistence(conversationId);
-    }
-    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, { state: 'running' });
-    const result = await runAgentLoop(conversationId, userMessage, rendererRuntimeOptions({
-      ...options,
-      loopId: runId,
-      prePersistedUserMessageId: clientMessageId,
-    }));
-    const state = result.reason === 'aborted'
-      ? 'interrupted'
-      : result.reason === 'error'
-        ? 'failed'
-        : 'completed';
-    if (result.reason === 'error') {
-      warnFailedAgentResult({
-        runId,
-        conversationId,
-        cause: result.error || 'Agent run failed',
-        source: 'fallback-in-process',
-        upstream: result.upstream,
-      });
-    }
-    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
-      state,
-      ...(result.error ? { error: result.error } : {}),
-      ...(result.upstream ? { errorDetails: result.upstream } : {}),
-    });
-    await waitForConversationPersistence(conversationId);
-    return markReturnedErrorAsTaken(result);
-  } catch (error) {
-    useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
-      state: 'failed',
-      error: error instanceof Error ? error.message : String(error),
-    });
-    await waitForConversationPersistence(conversationId);
-    throw error;
-  }
-}
-
 async function finalizePreDispatchInterruptedRun(
   conversationId: string,
   clientMessageId: string,
   runId: string,
-  stage: 'params_build_aborted' | 'before_dispatch',
+  stage: 'params_build_aborted' | 'before_dispatch' | 'waiting_for_sidecar',
   runtimeStartedAt: number,
 ): Promise<AgentLoopDispatchResult> {
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
@@ -885,6 +858,126 @@ async function finalizePreDispatchInterruptedRun(
     finishRuntimeRun(runId);
   }
   return { reason: 'aborted' };
+}
+
+type PreAcceptFailureKind = NonNullable<Message['runErrorKind']>;
+
+/**
+ * May THIS send spend the sidecar's one cold-start restart attempt (#549)?
+ *
+ * Only a human-initiated dispatch may. `startSidecar()` resets the crash-loop
+ * breaker's window, so letting a timer-driven dispatcher (scheduler tick,
+ * trigger, file watcher, IM inbound, team resume-after-restart) restart a dead
+ * sidecar would re-arm that window on every tick and hide a real crash loop.
+ * Every UI entry point stamps `initiatedBy: 'user'`; the headless dispatchers
+ * stamp `'automation'` or nothing at all, and an unlabelled run is treated as
+ * headless on purpose — a missing label must never widen authority.
+ */
+function mayRestartSidecarForSend(options: AgentLoopOptions | undefined): boolean {
+  return options?.initiatedBy === 'user';
+}
+
+/**
+ * #549 B: a run the sidecar never accepted ends here — visibly, retryably,
+ * and without running anything in this renderer. The user's text stays in
+ * the failed row (Retry / 新建对话 read it from there).
+ *
+ * If the turn carried images and the durable row is still the raw string
+ * (params building failed before it could upgrade the row), the images are
+ * folded into the SAME terminal revision, so `rebuildImageAttachments` can
+ * reconstruct the attachments when the user retries.
+ */
+async function finalizePreAcceptFailure(params: {
+  conversationId: string;
+  clientMessageId: string;
+  runId: string;
+  runtimeStartedAt: number;
+  kind: PreAcceptFailureKind;
+  displayMessage: string;
+  stage: 'sidecar_unavailable' | 'payload_too_large' | 'params_build_failed' | 'history_unavailable';
+  errorType: string;
+  /** Fixed vocabulary, never free text: which variant of the stage this is. */
+  reason?: string;
+  /** Present when the sidecar measured the ledger (`history_unavailable`): numbers only. */
+  historyUnavailable?: HistoryUnavailableData;
+  /** Present only once a RunSession exists; its own `finally` owns teardown. */
+  session?: RunSession;
+  userMessage?: string;
+  images?: AgentLoopOptions['images'];
+}): Promise<AgentLoopDispatchResult> {
+  const { conversationId, clientMessageId, runId, session } = params;
+  if (session) {
+    session.dropFrames = true;
+    session.terminalPublished = true;
+  } else {
+    getAbortRegistry().clearAbortController(conversationId);
+  }
+  const content = await preservedMultimodalContent(params);
+  useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
+    state: 'failed',
+    error: params.displayMessage,
+    errorKind: params.kind,
+    ...(content ? { content } : {}),
+  });
+  getChatDelta().setConversationStatus(conversationId, 'idle');
+  traceRuntimeEvent('renderer.agent_run_failed', {
+    runId,
+    clientMessageId,
+    executionPath: 'sidecar',
+    stage: params.stage,
+    outcome: 'error',
+    errorType: params.errorType,
+    ...(params.reason ? { reason: params.reason } : {}),
+    ...(params.historyUnavailable ? {
+      ledgerWatermarkBytes: params.historyUnavailable.uptoBytes,
+      ledgerFileBytes: params.historyUnavailable.fileBytes,
+    } : {}),
+    durationMs: Date.now() - params.runtimeStartedAt,
+  });
+  try {
+    await waitForConversationPersistence(conversationId);
+  } finally {
+    // Only the session-less paths own the runtime-run handle here; once a
+    // RunSession exists the dispatcher's own `finally` calls finishRuntimeRun,
+    // and calling it twice for one run would be a lie in the trace.
+    if (!session) finishRuntimeRun(runId);
+  }
+  return {
+    reason: 'error',
+    error: params.displayMessage,
+    messageTaken: true,
+    runErrorKind: params.kind,
+    ...(params.kind === 'dispatch_failed' ? {} : { stopReason: params.kind }),
+  };
+}
+
+/**
+ * Rebuild the multimodal content for a failed row whose durable copy is still
+ * the plain string. Best effort: if the attachments can no longer be read, the
+ * row still has to end visibly failed, so the failure text wins over the images.
+ */
+async function preservedMultimodalContent(params: {
+  conversationId: string;
+  clientMessageId: string;
+  userMessage?: string;
+  images?: AgentLoopOptions['images'];
+}): Promise<Message['content'] | undefined> {
+  const { conversationId, clientMessageId, userMessage, images } = params;
+  if (!images?.length || userMessage === undefined) return undefined;
+  const persisted = getConversationReader()
+    .getConversation(conversationId)
+    ?.messages.find((message) => message.id === clientMessageId);
+  if (typeof persisted?.content !== 'string') return undefined;
+  try {
+    return await buildUserMessageContent(conversationId, userMessage, images);
+  } catch (error) {
+    logger.warn('could not preserve attachments on a pre-accept failure row', {
+      conversationId,
+      clientMessageId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
 }
 
 async function settleRunPersistence(session: RunSession): Promise<void> {
@@ -2175,6 +2268,18 @@ function forwardQueuedInputsForActiveSessions(): void {
 
 let queueForwardUnsub: (() => void) | undefined;
 
+/**
+ * #549: how to re-push each `state.*` mirror in full after a notify that never
+ * reached the sidecar. Held for the lifetime of the installed emitters and
+ * released with them.
+ *
+ * Deliberately NOT registered: `agent.enqueueInput`, `llm.abort`,
+ * `subagent.abort`, `state.cancelDispatch` and `state.dispatchInput` — a
+ * re-send there could duplicate the user's input, and the aborts have their own
+ * grace timers. Those failures still record `renderer.sidecar_notify_failed`.
+ */
+let resyncUnsubs: Array<() => void> = [];
+
 let emittersInstalled = false;
 
 /** Exported for tests — install() is normally driven by registerRunSession(). */
@@ -2197,6 +2302,32 @@ export function installPushEmitters(): void {
   queueForwardUnsub = subscribeToInputQueue(() => {
     forwardQueuedInputsForActiveSessions();
   });
+
+  // Each resync re-derives the mirror from scratch (the diffing caches are
+  // cleared first) so the sidecar converges even though the lost patch itself
+  // is gone (#549).
+  resyncUnsubs = [
+    registerSidecarNotifyResync('state.settings', () => scheduleSettingsPush()),
+    registerSidecarNotifyResync('state.convPatch', () => {
+      lastPushedConvSnapshot.clear();
+      pushConvPatchesForActiveSessions();
+    }),
+    registerSidecarNotifyResync('state.execPatch', () => {
+      lastPushedPlannedSteps.clear();
+      pushExecPatchesForActiveSessions();
+    }),
+    registerSidecarNotifyResync('state.planMode', () => {
+      const seen = new Set<string>();
+      for (const session of sessions.values()) {
+        if (seen.has(session.conversationId)) continue;
+        seen.add(session.conversationId);
+        notifySidecar('state.planMode', {
+          conversationId: session.conversationId,
+          mode: getPlanMode(session.conversationId),
+        });
+      }
+    }),
+  ];
 }
 
 /** Exported for tests — uninstall() is normally driven by unregisterRunSession() once the last session is gone. */
@@ -2218,6 +2349,8 @@ export function uninstallPushEmitters(): void {
   planModeUnsub = undefined;
   queueForwardUnsub?.();
   queueForwardUnsub = undefined;
+  for (const unsub of resyncUnsubs) unsub();
+  resyncUnsubs = [];
 }
 
 // ── Shell EventRouter / LoopContext-lite construction ───────────────────
@@ -2309,7 +2442,8 @@ export function removeShellLoopContext(runId: string): void {
 // ── Dispatch entrypoint (P1-3B-3B) ───────────────────────────────────────
 
 /**
- * Wire params for `agent.run` — mirrors `sidecar/src/agentLoopHost.ts`'s
+ * Wire params for `agent.start` (and, for a start that carries its messages,
+ * for `agent.run`) — mirrors `sidecar/src/agentLoopHost.ts`'s
  * `AgentRunParams` field-for-field. NEVER imported from there — `src/` must
  * never import from `sidecar/` (same discipline `frameApplier.ts`'s
  * independently-declared `PortFrame` type documents, P1-3b-2). Kept in sync
@@ -2358,6 +2492,13 @@ interface AgentRunParams {
    * cross this boundary; the shell starts them as independent runs.
    */
   queuedInputs?: { id: string; text: string; isSystem?: boolean }[];
+  /**
+   * Present when the sidecar reads this run's history from the conversation's
+   * ledger: `conversationSnapshot.messages` is then empty on the wire and the
+   * sidecar reads `messages.jsonl` up to this byte watermark
+   * (`takeLedgerHistoryPoint`). Absent when the params carry the messages.
+   */
+  history?: { source: 'ledger'; ledgerWatermark: number };
 }
 
 /** Defensive validation of the `agent.run` response before trusting it as an `AgentLoopResult` — same discipline as subagentRunner.ts's `isSerializableSubagentResult`. A malformed response is treated identically to any other transport failure by the caller (same committed-flag fallback decision). */
@@ -2517,9 +2658,15 @@ async function establishAgentStart(
     return raw;
   };
 
+  const ackBudget = agentStartAckBudget(params);
   try {
-    return accept(await sidecarRequest('agent.start', params, AGENT_START_ACK_TIMEOUT_MS));
+    return accept(await sidecarRequest('agent.start', params, ackBudget));
   } catch (startError) {
+    // Neither of these can succeed by asking again with the same bytes: an
+    // oversize start, and a start whose history the sidecar could not read at
+    // the watermark it was given. No state query, no replay (#549 M2 — the
+    // oversize case used to cost 2 more full sends).
+    if (isPayloadTooLargeError(startError) || parseHistoryUnavailableError(startError)) throw startError;
     traceRuntimeEvent('renderer.agent_start_ack_missing', {
       runId: params.runId,
       clientMessageId: params.clientMessageId,
@@ -2558,7 +2705,7 @@ async function establishAgentStart(
 
     // Same runId/clientMessageId/payloadDigest: the sidecar either accepts it
     // once or replays the existing fact. It can never execute twice.
-    return accept(await sidecarRequest('agent.start', params, AGENT_START_ACK_TIMEOUT_MS));
+    return accept(await sidecarRequest('agent.start', params, ackBudget));
   }
 }
 
@@ -2637,6 +2784,49 @@ async function waitForReattachedTerminal(
 }
 
 /**
+ * Whether this dispatch lets the sidecar read the history from the ledger.
+ * One rule, asked once per dispatch: the running sidecar announced the
+ * capability in its handshake. A sidecar that does not announce it — an older
+ * build, or one started with `ABU_AGENT_START_PROTOCOL=1`
+ * (`sidecar/src/handshake.ts`) — gets the form that carries the messages. A
+ * failure of the chosen form is never answered by sending the other one.
+ */
+function agentStartReadsHistoryFromLedger(): boolean {
+  return sidecarHasCapability(CAPABILITY_AGENT_START_HISTORY_FROM_LEDGER);
+}
+
+/**
+ * A user image reaches a sidecar that reads the ledger only through the file
+ * its `filePath` names: the ledger row keeps the path and drops the bytes.
+ * `buildUserMessageContent` leaves `filePath` undefined when the file could
+ * not be written, and such a turn is refused here, before anything is
+ * dispatched, with the same reason a failed message write gives.
+ */
+function assertUserImagesAreOnDisk(content: string | MessageContent[]): void {
+  if (typeof content === 'string') return;
+  if (content.some((block) => block.type === 'image' && !block.filePath)) {
+    throw new Error(getI18n().chat.messageSaveFailed);
+  }
+}
+
+/** What `agent.run` carries: three ids for a ledger start, the start's own params otherwise. */
+function agentRunRequestFor(params: AgentRunParams): unknown {
+  return params.history
+    ? { runId: params.runId, clientMessageId: params.clientMessageId, payloadDigest: params.payloadDigest }
+    : params;
+}
+
+/**
+ * The acknowledgement budget of one `agent.start`, closed over the ledger this
+ * start asks the sidecar to read. Both sends of a start use the same instance,
+ * so the replay is judged by the budget the first send was judged by.
+ */
+function agentStartAckBudget(params: AgentRunParams): (encodedBytes: number) => number {
+  const ledgerWatermarkBytes = params.history?.ledgerWatermark ?? 0;
+  return (encodedBytes: number) => agentStartAckBudgetMs(encodedBytes, ledgerWatermarkBytes);
+}
+
+/**
  * Build the `agent.run` wire params — the shell-side "frozen snapshot"
  * projection of everything `runAgentLoop` would otherwise resolve
  * in-process (design doc §4's `AgentRunParams` contract,
@@ -2645,12 +2835,15 @@ async function waitForReattachedTerminal(
  * `buildSubagentRunParams`) — frozen for the whole run.
  *
  * Throws if `resolveEffectiveLlmCreds` throws (enterprise gateway
- * unavailable — `EnterpriseLlmUnavailableError`) or if the conversation
- * record is missing — the caller (`runAgentLoopDispatched`) treats either
- * as a pre-dispatch failure and falls back to `runAgentLoop` in-process,
- * which hits the identical real error path itself rather than this
- * function duplicating its error-shaping logic (same discipline as
- * subagentRunner.ts's `buildSubagentRunParams`).
+ * unavailable — `EnterpriseLlmUnavailableError`), if the conversation record
+ * is missing, if the history point cannot be taken, or if the turn carries an
+ * image that never reached disk on the ledger path. The caller
+ * (`runAgentLoopDispatched`) treats each of them as
+ * a pre-accept failure (#549): the user row ends `failed` with the reason
+ * from `paramsBuildDisplayMessage` and the existing Retry. Nothing is re-run
+ * in this renderer, so this function still does not duplicate the loop's
+ * error-shaping logic (same discipline as subagentRunner.ts's
+ * `buildSubagentRunParams`).
  *
  * Deliberately does NOT replicate the loop's OWN "no API key configured"
  * early-return gate (`providerRequiresApiKey(settingsForModel) &&
@@ -2721,8 +2914,7 @@ async function buildAgentRunParams(
   }
   const { effectiveModelId, provider } = resolveEntryModel(orchestration.route, settingsForModel);
 
-  // May throw (EnterpriseLlmUnavailableError) — propagates to the caller,
-  // see this function's doc.
+  // May throw — propagates to the caller, see this function's doc.
   const resolvedCreds = resolveEffectiveLlmCreds(
     getActiveApiKey(settingsForModel),
     getActiveProvider(settingsForModel)?.baseUrl || undefined,
@@ -2749,6 +2941,8 @@ async function buildAgentRunParams(
     orchestration.route.cleanInput,
     options?.images,
   );
+  const historyFromLedger = agentStartReadsHistoryFromLedger();
+  if (historyFromLedger) assertUserImagesAreOnDisk(userContent);
   useChatStore.getState().updateUserMessageRun(conversationId, clientMessageId, {
     state: 'pending',
     content: userContent,
@@ -2771,6 +2965,13 @@ async function buildAgentRunParams(
     conversationSnapshot,
     getWorkspaceReader().getCurrentPath(),
   );
+
+  // The watermark covers all prior history, any promoted stream-snapshot
+  // revision, and this turn's user row in its routed form: the barrier above
+  // has awaited that row's write, and a rejected write has already thrown.
+  const history = historyFromLedger
+    ? { source: 'ledger' as const, ledgerWatermark: (await takeLedgerHistoryPoint(conversationId)).ledgerWatermark }
+    : undefined;
 
   // Snapshot only internal system wake-ups for this conversation at dispatch
   // time. User follow-ups remain shell-side until the current run terminates.
@@ -2799,11 +3000,13 @@ async function buildAgentRunParams(
     // Freeze the entry provider/model onto the wire snapshot. A model switch
     // while message persistence is in flight belongs to the next run and must
     // not be combined with this run's already-resolved credentials.
-    conversationSnapshot: await prepareConversationSnapshotForSidecarWire({
-      ...conversationSnapshot,
-      workspacePath: workspacePathSnapshot,
-      model: settingsForModel.activeModel,
-    } as Conversation, abortSignal),
+    conversationSnapshot: history
+      ? { ...conversationSnapshot, workspacePath: workspacePathSnapshot, model: settingsForModel.activeModel, messages: [] } as Conversation
+      : await prepareConversationSnapshotForSidecarWire({
+          ...conversationSnapshot,
+          workspacePath: workspacePathSnapshot,
+          model: settingsForModel.activeModel,
+        } as Conversation, abortSignal),
     indexEntrySnapshot: indexEntrySnapshot as ConversationMeta | undefined,
     settingsSnapshot: settingsForModel,
     capsSnapshot,
@@ -2812,6 +3015,7 @@ async function buildAgentRunParams(
     planMode: getPlanMode(conversationId),
     locale: getLocale(),
     queuedInputs,
+    ...(history ? { history } : {}),
   };
   const payloadDigest = buildAgentRunPayloadDigest(paramsWithoutDigest);
   return { ...paramsWithoutDigest, payloadDigest };
@@ -2824,9 +3028,11 @@ async function buildAgentRunParams(
  * the 4th reuse of the `selectChatAdapter`/`runSubagent` zero-risk-switch
  * shape). Every existing caller of `runAgentLoop` switches to this.
  *
- * - sidecar NOT `'running'` → `runAgentLoop` in-process, unchanged.
- * - sidecar `'running'` → concurrency guard (see below), then dispatch
- *   `agent.run`, then the fallback/re-run discipline (see below).
+ * - Web preview / unit tests (no desktop process bridge,
+ *   `isInProcessAgentEnvironment()`) → `runAgentLoop` in this renderer. This
+ *   is an environment choice, never a recovery path.
+ * - Electron → concurrency guard, durable user row, wait for the sidecar
+ *   (≤60s, visible), build params, `agent.start` + `agent.run`.
  *
  * ## Concurrency guard
  *
@@ -2854,21 +3060,17 @@ async function buildAgentRunParams(
  * current text-only mid-run queue, so an attachment send is rejected while
  * preserving the composer draft; it must never start a concurrent run.
  *
- * ## Fallback / re-run discipline
+ * ## Failure discipline (#549)
  *
- * A `agent.run` dispatch can fail two structurally different ways (mirrors
- * subagentRunner.ts's `runSubagent` exactly):
- *   1. Before the run is "committed" (`RunSession.committed` — flipped on
- *      the first `tool.invoke` OR the first `agent.delta` frame applied) →
- *      nothing observable has happened yet → safe to retry the WHOLE run
- *      in-process via `runAgentLoop`.
- *   2. After the run is committed → real side effects (a tool ran, or text
- *      already streamed into the visible transcript) may have occurred →
- *      surfaces as `{reason:'error', error:...}` instead. NO rerun (would
- *      double-execute tool side effects / duplicate streamed text).
- * `buildAgentRunParams` itself failing (thrown before ANY dispatch — e.g.
- * `EnterpriseLlmUnavailableError`, or a missing conversation record) is
- * ALSO pre-commit by construction — same in-process fallback.
+ * Nothing is ever re-run in-process. Before the sidecar accepts the run
+ * (params build failure, sidecar unavailable, transport failure, oversize
+ * payload, unreadable history) the user row ends `failed` with a reason and
+ * Retry. The form of `agent.start` is chosen once per dispatch from the
+ * sidecar's capability list, and a failed start is never repeated in the other
+ * form. After accept,
+ * the existing recovery (state query, one replay while uncommitted,
+ * reattach) runs; if it cannot settle, the run ends with a visible error.
+ * The user's turn is never resent automatically.
  */
 async function runSingleAgentLoopDispatchedWithOwnership(
   conversationId: string,
@@ -2876,11 +3078,11 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   ownership: { messageTaken: boolean },
   options?: AgentLoopOptions,
 ): Promise<AgentLoopDispatchResult> {
-  const sidecarRunning = getSidecarStatus() === 'running';
+  const inProcessEnvironment = isInProcessAgentEnvironment();
 
   // ── Concurrency guard — see doc above for the two-venue rationale. This
-  // runs before venue selection so sidecar-down/fallback callers cannot bypass
-  // the same one-live-run-per-conversation invariant.
+  // runs before venue selection so a renderer-hosted run cannot bypass the
+  // same one-live-run-per-conversation invariant.
   {
     const runningConv = getConversationReader().getConversation(conversationId);
     const hasAttachments = Boolean(options?.images?.length);
@@ -2934,7 +3136,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   options = { ...options, loopId: ownedLoopId };
   useTeamConfirmationStore.getState().beginRetry(conversationId, ownedLoopId, options.teamConfirmationRetryId);
   try {
-  if (!sidecarRunning) {
+  if (inProcessEnvironment) {
+    // Environment choice (web preview / unit tests): there is no desktop
+    // process bridge, so the loop runs in this renderer. Not a failure
+    // fallback — Electron never reaches this branch (#549).
     await ensureBuiltinBrowserRuntime();
     let localUserMessageId: string | undefined;
     try {
@@ -3067,6 +3272,41 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     stage: 'local_message_persisted',
     durationMs: Date.now() - runtimeStartedAt,
   });
+
+  // #549: the venue is decided AFTER the row is durable and BEFORE any work is
+  // built for it. A cold or restarting sidecar is waited for (≤60s, under the
+  // turn's own 「思考中」 row); a dead one fails this send visibly instead of
+  // silently running here. `allowRestart` is spent only for a human-initiated
+  // send — see the helper.
+  try {
+    await waitForSidecarVenue({
+      signal: shellAbortController.signal,
+      allowRestart: mayRestartSidecarForSend(options),
+    });
+  } catch (err) {
+    if (shellAbortController.signal.aborted) {
+      return finalizePreDispatchInterruptedRun(
+        conversationId,
+        clientMessageId,
+        runId,
+        'waiting_for_sidecar',
+        runtimeStartedAt,
+      );
+    }
+    return finalizePreAcceptFailure({
+      conversationId,
+      clientMessageId,
+      runId,
+      runtimeStartedAt,
+      kind: 'sidecar_unavailable',
+      displayMessage: getI18n().chat.sidecarNotReady,
+      stage: 'sidecar_unavailable',
+      errorType: err instanceof SidecarUnavailableError ? `sidecar_${err.reason}` : runtimeErrorType(err),
+      userMessage,
+      images: options?.images,
+    });
+  }
+
   traceRuntimeEvent('renderer.agent_params_build_started', {
     runId,
     executionPath: 'sidecar',
@@ -3096,6 +3336,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       runId,
       executionPath: 'sidecar',
       stage: 'params_built',
+      ...(params.history ? { ledgerWatermarkBytes: params.history.ledgerWatermark } : {}),
       durationMs: Date.now() - runtimeStartedAt,
     });
   } catch (err) {
@@ -3109,39 +3350,33 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         runtimeStartedAt,
       );
     }
-    abortRegistry.clearAbortController(conversationId);
-    shellChatDelta.setConversationStatus(conversationId, 'idle');
-    // Failed before any dispatch — pre-commit by construction (see doc).
-    logger.warn('agent-loop dispatch params build failed — running in-process', {
+    // Failed before any dispatch. Nothing ran in either venue (#549), so the
+    // row ends failed with its reason and Retry — and, like the other
+    // pre-dispatch exits, this seals no browser-tab settlement because no run
+    // ever claimed a tab. `finalizePreAcceptFailure` clears the abort
+    // controller and idles the conversation.
+    logger.warn('agent-loop dispatch params build failed', {
       runId,
       conversationId,
       error: err instanceof Error ? err.message : String(err),
     });
-    traceRuntimeEvent('renderer.agent_params_build_failed', {
+    // A ledger that could not be brought level with what the user sees is the
+    // same root cause as a history the sidecar could not read; the reason tells
+    // the two apart. No byte counts: nothing was measured on this side.
+    const ledgerNotLevel = err instanceof Error && err.name === 'LedgerHistoryPointError';
+    return finalizePreAcceptFailure({
+      conversationId,
+      clientMessageId,
       runId,
-      executionPath: 'sidecar',
-      stage: 'fallback_in_process',
-      outcome: 'error',
+      runtimeStartedAt,
+      kind: 'dispatch_failed',
+      displayMessage: paramsBuildDisplayMessage(err),
+      stage: ledgerNotLevel ? 'history_unavailable' : 'params_build_failed',
       errorType: runtimeErrorType(err),
-      durationMs: Date.now() - runtimeStartedAt,
+      ...(ledgerNotLevel ? { reason: 'ledger_not_level' } : {}),
+      userMessage,
+      images: options?.images,
     });
-    finishRuntimeRun(runId);
-    try {
-      return await runInProcessWithPersistedMessage(
-        conversationId,
-        userMessage,
-        runId,
-        clientMessageId,
-        options,
-      );
-    } finally {
-      // Third settlement seal, and the only one outside the two `finally`s
-      // above: a params-build failure runs the WHOLE loop in-process and
-      // returns from here, never reaching the sidecar `try`. The other
-      // pre-dispatch exits (`finalizePreDispatchInterruptedRun`) started no
-      // run at all and must stay silent.
-      releaseRunBrowserTabClaims(conversationId);
-    }
   }
   if (shellAbortController.signal.aborted) {
     return finalizePreDispatchInterruptedRun(
@@ -3252,7 +3487,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       durationMs: Date.now() - runtimeStartedAt,
     });
   }, AGENT_FIRST_FRAME_STALL_MS);
-  let handedOffToLocal = false;
   const scopedRun = options?.authorizationScopeId !== undefined;
 
   const settleFromTerminal = async (terminal: AgentRunTerminal): Promise<AgentLoopDispatchResult> => {
@@ -3338,7 +3572,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
 
     const rpcOutcome = sidecarRequest(
       'agent.run',
-      params,
+      agentRunRequestFor(params),
       0,
       session.transportAbortController!.signal,
     ).then((raw) => ({ source: 'rpc' as const, raw }));
@@ -3409,7 +3643,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     return markReturnedErrorAsTaken(raw);
   } catch (err) {
     let transportError = err;
-    let acceptedExecutionStateUnknown = false;
     // A failing RPC can still have flushed committed frames immediately
     // before its error response. Land those frames before deciding fallback
     // or applying the shell-owned error finalization.
@@ -3446,7 +3679,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         return await settleFromTerminal(recovery.terminal);
       }
       if (recovery.action === 'reattach') {
-        acceptedExecutionStateUnknown = true;
         try {
           return await settleFromTerminal(await waitForReattachedTerminal(params, session));
         } catch (reattachError) {
@@ -3454,7 +3686,6 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         }
       }
       if (recovery.action === 'unavailable' && scopedRun) {
-        acceptedExecutionStateUnknown = true;
         try {
           return await settleFromTerminal(await waitForReattachedTerminal(params, session));
         } catch (reattachError) {
@@ -3488,7 +3719,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
           });
           const replayRpc = sidecarRequest(
             'agent.run',
-            params,
+            agentRunRequestFor(params),
             0,
             session.transportAbortController!.signal,
           ).then((raw) => ({ source: 'rpc' as const, raw }));
@@ -3533,39 +3764,37 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       await finalizeAbortedRun(session, 'run-terminal');
       return abortedResultForSession(session);
     }
-    if (!session.committed && !acceptedExecutionStateUnknown) {
-      // Release the shell-side ownership before entering the in-process loop.
-      // Otherwise its concurrency guard sees this still-live controller/session
-      // and enqueues the original prompt instead of actually retrying it.
-      removeShellLoopContext(runId);
-      unregisterRunSession(runId);
-      shellAbortController.signal.removeEventListener('abort', onShellAbort);
-      abortRegistry.clearAbortController(conversationId);
-      shellChatDelta.setConversationStatus(conversationId, 'idle');
-      logger.warn('agent-loop transport failed before commit — retrying in-process', {
+    if (!session.accepted) {
+      // The sidecar never took ownership of this run, so nothing observable
+      // happened anywhere: end the row visibly and retryably instead of
+      // silently re-running the turn in this renderer (#549).
+      const tooLarge = isPayloadTooLargeError(transportError);
+      const historyUnavailable = tooLarge ? null : parseHistoryUnavailableError(transportError);
+      logger.warn('agent-loop transport failed before the sidecar accepted the run', {
         runId,
         conversationId,
         error: transportError instanceof Error ? transportError.message : String(transportError),
       });
-      traceRuntimeEvent('renderer.agent_run_fallback', {
-        runId,
-        executionPath: 'sidecar',
-        stage: 'fallback_in_process',
-        outcome: 'error',
-        errorType: runtimeErrorType(transportError),
-        durationMs: Date.now() - runtimeStartedAt,
-      });
-      // The local loop synchronously installs its own AbortController before its
-      // first await. Mark the ownership transfer so this dispatch wrapper's
-      // finally block cannot delete that replacement controller.
-      handedOffToLocal = true;
-      return runInProcessWithPersistedMessage(
+      return await finalizePreAcceptFailure({
         conversationId,
-        userMessage,
-        runId,
         clientMessageId,
-        options,
-      );
+        runId,
+        runtimeStartedAt,
+        session,
+        kind: tooLarge ? 'payload_too_large' : historyUnavailable ? 'dispatch_failed' : 'sidecar_unavailable',
+        displayMessage: tooLarge
+          ? getI18n().chat.payloadTooLarge
+          : historyUnavailable
+            ? getI18n().chat.historyUnavailable
+            : getI18n().chat.sidecarInterrupted,
+        stage: tooLarge ? 'payload_too_large' : historyUnavailable ? 'history_unavailable' : 'sidecar_unavailable',
+        errorType: tooLarge
+          ? 'payload_too_large'
+          : historyUnavailable ? 'history_unavailable' : runtimeErrorType(transportError),
+        ...(historyUnavailable ? { reason: historyUnavailable.reason, historyUnavailable } : {}),
+        userMessage,
+        images: options?.images,
+      });
     }
     // Surface the REAL sidecar-side cause: a thrown handler comes back as a
     // generic `-32603 Internal error`, but `errorFromCaught` (sidecar
@@ -3589,7 +3818,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       ? errDataRecord.stack
       : undefined;
     const displayMessage =
-      transportError instanceof SidecarRunStateUnavailableError
+      isPayloadTooLargeError(transportError)
+        ? getI18n().chat.payloadTooLarge
+        : transportError instanceof SidecarRunStateUnavailableError
         ? getI18n().chat.sidecarUnavailable
         : realMessage === 'Sidecar process closed'
         ? getI18n().chat.sidecarInterrupted
@@ -3638,6 +3869,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       ...(transportError instanceof SidecarRunStateUnavailableError
         ? { stopReason: transportError.stopReason }
         : {}),
+      ...(isPayloadTooLargeError(transportError)
+        ? { stopReason: 'payload_too_large' as const }
+        : {}),
     };
   } finally {
     if (session.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
@@ -3645,11 +3879,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // forwarder before aborting a scoped controller for normal resource
     // cleanup, otherwise that internal abort emits a spurious agent.abort.
     shellAbortController.signal.removeEventListener('abort', onShellAbort);
-    if (
-      !handedOffToLocal
-      && scopedRun
-      && !shellAbortController.signal.aborted
-    ) {
+    if (scopedRun && !shellAbortController.signal.aborted) {
       shellAbortController.abort(new Error('Scoped agent run finished'));
     }
     // Once the sidecar execution/transport has ended, no new reverse request
@@ -3657,7 +3887,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // scoped run's session, callbacks, loop context, and authorization owner
     // alive until every shell request that already entered really settles.
     session.resourceSettlement?.seal();
-    if (!handedOffToLocal && scopedRun) {
+    if (scopedRun) {
       await session.resourceSettlement?.settlement;
     }
     // The sidecar normally releases the task-scoped Computer Use lease from
@@ -3667,53 +3897,47 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     // process holding the global foreground-task lease after the visible run
     // has already settled. Await it so a caller cannot start the next task in
     // the small gap between terminal settlement and lease release.
-    // A pre-commit transport failure hands this same run id to the local
-    // loop, which owns its lease from that point onward; revoking here could
-    // race with the replacement local task's first Computer Use call.
-    if (!handedOffToLocal) {
-      try {
-        const { endComputerUseTask } = await import('../tools/definitions/computerTools');
-        await endComputerUseTask(conversationId, runId);
-        traceRuntimeEvent('renderer.computer_use_task_cleanup', {
-          runId,
-          conversationId,
-          executionPath: 'sidecar',
-          stage: 'run_finally',
-          outcome: 'success',
-        });
-      } catch (error) {
-        logger.warn('shell-side Computer Use task cleanup failed', {
-          runId,
-          conversationId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        traceRuntimeEvent('renderer.computer_use_task_cleanup', {
-          runId,
-          conversationId,
-          executionPath: 'sidecar',
-          stage: 'run_finally',
-          outcome: 'error',
-          errorType: runtimeErrorType(error),
-        });
-      }
+    // Unconditional since #549: this run is never handed to a renderer-hosted
+    // loop that would inherit the same run id and its lease.
+    try {
+      const { endComputerUseTask } = await import('../tools/definitions/computerTools');
+      await endComputerUseTask(conversationId, runId);
+      traceRuntimeEvent('renderer.computer_use_task_cleanup', {
+        runId,
+        conversationId,
+        executionPath: 'sidecar',
+        stage: 'run_finally',
+        outcome: 'success',
+      });
+    } catch (error) {
+      logger.warn('shell-side Computer Use task cleanup failed', {
+        runId,
+        conversationId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      traceRuntimeEvent('renderer.computer_use_task_cleanup', {
+        runId,
+        conversationId,
+        executionPath: 'sidecar',
+        stage: 'run_finally',
+        outcome: 'error',
+        errorType: runtimeErrorType(error),
+      });
     }
     finishRuntimeRun(runId);
     clearSkillHooksByLoop(session.loopId);
     removeShellLoopContext(runId);
     unregisterRunSession(runId);
-    if (!handedOffToLocal) {
-      // Ownership-checked: everything above the `finally` can outlive this
-      // run's visible terminal (persistence, the Computer Use lease release
-      // over IPC), and a send made in that window now legitimately starts a
-      // new run — see `RunSession.terminalPublished`. An unconditional clear
-      // here would delete THAT run's controller and leave its Stop inert.
-      abortRegistry.clearAbortController(conversationId, shellAbortController);
-    }
-    // Settlement seal for the SIDECAR path, and for a pre-commit transport
-    // failure handed off to the local loop (which finishes inside this same
-    // `try`, so it must not also fire the in-process seal above — it does not:
-    // `runInProcessWithPersistedMessage` calls `runAgentLoop` directly, not
-    // the dispatcher). Stop arrives as an abort on `shellAbortController`,
+    // Ownership-checked: everything above the `finally` can outlive this
+    // run's visible terminal (persistence, the Computer Use lease release
+    // over IPC), and a send made in that window now legitimately starts a
+    // new run — see `RunSession.terminalPublished`. Passing the controller
+    // means only THIS run's controller is cleared, never a successor's.
+    abortRegistry.clearAbortController(conversationId, shellAbortController);
+    // Settlement seal for the SIDECAR path — the run reached this `try`, so
+    // it is this seal's, and only this seal's. (The in-process environment
+    // branch has its own seal and never reaches here.) Stop arrives as an
+    // abort on `shellAbortController`,
     // which ends the run and lands here like any other ending. The run key is
     // `main`: `contextForSession` forces every tool call on this session to
     // the conversation's own pool, nested subagents included.

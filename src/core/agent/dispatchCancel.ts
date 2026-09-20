@@ -4,7 +4,7 @@ import { notifySidecar } from '@/core/sidecar/sidecarManager';
 
 /**
  * Stop one team member's hand-off from the UI. The member may run in this
- * process (in-process fallback) or in the sidecar, so both are told; each
+ * process (in-process loop) or in the sidecar, so both are told; each
  * side ignores a key it does not own.
  */
 export function requestDispatchCancel(dispatchKey: string, reason?: string): void {

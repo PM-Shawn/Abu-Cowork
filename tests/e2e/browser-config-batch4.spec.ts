@@ -8,7 +8,7 @@ async function openBrowser(page: Page) {
   const guide = page.locator('[data-abu-guide-modal="true"]');
   await guide.waitFor({ state: 'visible', timeout: 1500 }).catch(() => {});
   if (await guide.isVisible()) await guide.getByRole('button', {name:'我知道了', exact:true}).click();
-  await page.getByRole('button',{name:/^(我|Me)$/}).click();
+  await page.getByRole('button',{name:/^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/}).click();
   await page.getByRole('menuitem',{name:/^(设置|Settings)$/}).click();
   await page.getByRole('button',{name:/^(能力|Capabilities)$/}).click();
   await page.getByRole('button',{name:/^(阿布内置浏览器|Abu built-in browser)/}).click();

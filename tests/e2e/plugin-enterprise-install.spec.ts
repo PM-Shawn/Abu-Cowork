@@ -87,7 +87,7 @@ const OWNED_V2 = `1.${RUN_STAMP}.1`;
 // Public (localized) UI. Placeholders that are URLs/emails are locale-neutral.
 const WELCOME = /交给阿布就行啦|Leave it to Abu/;
 const CHAT_PLACEHOLDER = /^(想让阿布帮你做点什么？|What can Abu help you with\?)$/;
-const ME_BUTTON = /^(我|Me)$/;
+const ME_BUTTON = /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/;
 const SETTINGS_ITEM = /^(设置|Settings)$/;
 const ENTERPRISE_NAV = /^(企业模式|Enterprise)$/;
 const BIND_BUTTON = /^(切换到企业模式|Switch to enterprise mode)$/;

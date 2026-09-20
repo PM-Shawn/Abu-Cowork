@@ -15,10 +15,13 @@ import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginToolPolicy';
 import { buildScheduledRunPermissionCeiling, buildTriggerRunPermissionCeiling } from '../permissions/runPermissionCeiling';
-import { checkToolApproval } from './registry';
+import { checkToolApproval, executeAnyTool, toolRegistry } from './registry';
+import { registerBuiltinTools } from './builtins';
 import {
+  authorizeWorkspace,
   createAuthorizationScope,
   disposeAuthorizationScope,
+  revokeWorkspace,
   scopedAuthorizeWorkspace,
 } from './pathSafety';
 
@@ -130,6 +133,49 @@ describe('write_file $TMPDIR overwrite-safety precheck', () => {
       expect(decision.decision).toBe('allow');
       expect(onRequireFilePermission).not.toHaveBeenCalled();
     } finally {
+      cleanup();
+    }
+  });
+});
+
+// ── 相对路径的文件工具调用 ──
+// 主进程会把相对路径接到自身 cwd 上；即使解析结果落在已授权工作区，也必须拒绝且不执行。
+describe('read_file relative path', () => {
+  const ws = '/Users/testuser/Projects/relative-read';
+
+  beforeEach(() => {
+    registerBuiltinTools();
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    setMigratedBrowserSettings({ permissionMode: 'autonomous' });
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => (
+      String(candidate) === 'x' ? `${ws}/x` : String(candidate)
+    ));
+    authorizeWorkspace(ws, ['read', 'write']);
+  });
+
+  afterEach(() => {
+    revokeWorkspace(ws);
+    vi.mocked(canonicalizeElectronPathForPolicy).mockReset().mockResolvedValue(null);
+  });
+
+  it('denies the call without asking for permission or executing the tool', async () => {
+    const cleanup = setPlatformForTest('macos');
+    const execute = vi.spyOn(toolRegistry, 'execute');
+    const onRequireFilePermission = vi.fn(async () => true);
+    try {
+      expect(toolRegistry.has(TOOL_NAMES.READ_FILE)).toBe(true);
+      const result = await executeAnyTool(
+        TOOL_NAMES.READ_FILE,
+        { path: 'x' },
+        undefined,
+        onRequireFilePermission as never,
+        { conversationId: 'conv-relative' } as never,
+      );
+      expect(result).toBe('Error: 路径必须是绝对路径');
+      expect(execute).not.toHaveBeenCalled();
+      expect(onRequireFilePermission).not.toHaveBeenCalled();
+    } finally {
+      execute.mockRestore();
       cleanup();
     }
   });

@@ -335,6 +335,8 @@ function resolveValidatedPath(rawPath) {
  */
 function canonicalizeForPathPolicy(rawPath, followFinalSymlink = true) {
   const norm = resolveValidatedPath(rawPath);
+  // 相对路径会被接到主进程 cwd 上，与渲染进程的策略判断不一致，直接拒绝
+  if (!path.isAbsolute(rawPath)) throw new Error('fs: path must be an absolute path');
   // Windows capabilities intentionally remain broad, but policy decisions must
   // still see junction/reparse-point targets rather than the lexical spelling.
   if (process.platform === 'win32') return canonicalizeForScope(norm, followFinalSymlink);
@@ -625,14 +627,19 @@ function fsDispatch(app, cmd, payload) {
     case 'append_file_text': {
       // Native O(1) append: mkdir parent + open in append mode + write only
       // `data`. Mirrors append_file.rs::append_sync. The message-JSONL hot path.
+      // Raw form (#549): the validated UTF-8 bytes arrive in `body` — it is a
+      // Buffer only when securityBoundary's validateTextRawBody produced it.
       const resolved = resolveScoped(app, a.path, undefined);
       fs.mkdirSync(path.dirname(resolved), { recursive: true });
-      fs.appendFileSync(resolved, String(a.data));
+      fs.appendFileSync(resolved, Buffer.isBuffer(body) ? body : String(a.data));
       return null;
     }
 
     case 'atomic_write_text': {
-      writeAtomic(resolveScoped(app, a.path, undefined), String(a.content));
+      writeAtomic(
+        resolveScoped(app, a.path, undefined),
+        Buffer.isBuffer(body) ? body : String(a.content),
+      );
       return null;
     }
 

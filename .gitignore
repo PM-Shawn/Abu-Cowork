@@ -122,5 +122,6 @@ release-electron-e2e/
 
 # Build bookkeeping for scripts/check-browser-artifacts.mjs
 .artifact-digests/
-# Local working notes and intermediate command output.
+# Local macOS protocol shell (not a distributable).
+.dev-shell/
 .scratch/

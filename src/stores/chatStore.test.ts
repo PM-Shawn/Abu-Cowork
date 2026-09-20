@@ -13,6 +13,10 @@ import {
 import type { Conversation } from '../types';
 import { createDocReference } from '@/types/chatReference';
 import { foldMessageLog } from '@/core/session/messageLedger';
+import {
+  expectedForText,
+  loadLoadedMessageSanitizerFixtures,
+} from '@/test/loadedMessageSanitizerFixtures';
 import { getI18n } from '../i18n';
 import {
   clearAllComposerDrafts,
@@ -157,13 +161,13 @@ describe('chatStore', () => {
       }
     });
 
-    it('does not pin in enterprise mode (gateway-scoped models)', () => {
+    it('pins the same way when signed in to an organization', () => {
       const prevMode = useEnterpriseStore.getState().mode;
       useEnterpriseStore.setState({ mode: { kind: 'offline', binding: TEST_BINDING, lastConfig: null, reason: 'test' } });
       try {
         useSettingsStore.setState({ activeModel: { providerId: 'p1', modelId: 'm1' } });
         const id = useChatStore.getState().createConversation();
-        expect(useChatStore.getState().conversations[id].model).toBeUndefined();
+        expect(useChatStore.getState().conversations[id].model).toEqual({ providerId: 'p1', modelId: 'm1' });
       } finally {
         useEnterpriseStore.setState({ mode: prevMode });
       }
@@ -721,7 +725,7 @@ describe('chatStore', () => {
   // N7 — the user closing an agent's browser tab tells the host to stop opening
   // new ones. Writing to that conversation again is them re-engaging with the
   // task, and is what lifts the window. `addMessage` is the single point every
-  // send path (sidecar dispatch and the in-process fallbacks alike) commits a
+  // send path (sidecar dispatch and the in-process loop alike) commits a
   // user message through, so the signal is taken there rather than in each.
   describe('browser reclaim window', () => {
     const runtime = globalThis as unknown as Record<string, unknown>;
@@ -3883,4 +3887,112 @@ describe('prefill intent', () => {
     expect(useChatStore.getState().pendingInputStartsTask).toBe(false);
     useChatStore.getState().setPendingInput(null);
   });
+});
+
+describe('#549 runErrorKind', () => {
+  it('keeps a valid kind on failed rows and drops it otherwise', () => {
+    const conv = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(conv, {
+      id: 'u1',
+      role: 'user',
+      content: 'hi',
+      timestamp: 1,
+      runState: 'pending',
+    });
+    useChatStore.getState().updateUserMessageRun(conv, 'u1', {
+      state: 'failed',
+      error: 'too long',
+      errorKind: 'payload_too_large',
+    });
+    let row = useChatStore.getState().conversations[conv].messages.find((m) => m.id === 'u1')!;
+    expect(row).toMatchObject({ runState: 'failed', runError: 'too long', runErrorKind: 'payload_too_large' });
+
+    useChatStore.getState().updateUserMessageRun(conv, 'u1', { state: 'running' });
+    row = useChatStore.getState().conversations[conv].messages.find((m) => m.id === 'u1')!;
+    expect(row.runErrorKind).toBeUndefined();
+  });
+
+  it('sanitizes an unknown kind from disk', () => {
+    const [row] = sanitizeLoadedMessages([
+      {
+        id: 'u2',
+        role: 'user',
+        content: 'x',
+        timestamp: 1,
+        runState: 'failed',
+        runError: 'e',
+        runErrorKind: 'rm -rf' as never,
+      },
+    ]);
+    expect(row.runErrorKind).toBeUndefined();
+
+    const [kept] = sanitizeLoadedMessages([
+      {
+        id: 'u3',
+        role: 'user',
+        content: 'x',
+        timestamp: 1,
+        runState: 'failed',
+        runError: 'e',
+        runErrorKind: 'sidecar_unavailable',
+      },
+    ]);
+    expect(kept.runErrorKind).toBe('sidecar_unavailable');
+  });
+
+  it('drops an unknown kind on import too', () => {
+    const imported = sanitizeImportedMessage({
+      id: 'u4',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: 'e',
+      runErrorKind: 'whatever' as never,
+    });
+    expect(imported.runErrorKind).toBeUndefined();
+
+    const keptImport = sanitizeImportedMessage({
+      id: 'u5',
+      role: 'user',
+      content: 'x',
+      timestamp: 1,
+      runState: 'failed',
+      runError: 'e',
+      runErrorKind: 'dispatch_failed',
+    });
+    expect(keptImport.runErrorKind).toBe('dispatch_failed');
+  });
+
+  it('strips a kind that survived on a non-failure row loaded from disk', () => {
+    const [row] = sanitizeLoadedMessages([
+      {
+        id: 'u6',
+        role: 'user',
+        content: 'x',
+        timestamp: 1,
+        runState: 'completed',
+        runError: 'e',
+        runErrorKind: 'payload_too_large',
+      },
+    ]);
+    expect(row.runErrorKind).toBeUndefined();
+    expect(row.runError).toBeUndefined();
+  });
+});
+
+describe('sanitizeLoadedMessages replays the shared sanitiser fixtures (#549 P2a)', () => {
+  const { cases } = loadLoadedMessageSanitizerFixtures();
+  // The renderer's loader never names a current run, so a case that does has
+  // no renderer-tier form; `loadedMessageSanitizer.test.ts` replays those.
+  for (const testCase of cases.filter((c) => c.currentRunMessageId === undefined)) {
+    it(`fixture: ${testCase.name}`, () => {
+      const { chat } = getI18n();
+      const out = sanitizeLoadedMessages(testCase.input as never);
+      expect(JSON.parse(JSON.stringify(out))).toEqual(expectedForText(testCase.expected, {
+        runRecoveredAfterRestart: chat.runRecoveredAfterRestart,
+        errorEmptyBody: chat.errorEmptyBody,
+      }));
+    });
+  }
 });

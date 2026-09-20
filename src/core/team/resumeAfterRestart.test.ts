@@ -39,6 +39,29 @@ describe('resumeTeamRunAfterRestart', () => {
     expect(String(last.content)).toContain('模型未配置');
   });
 
+  /**
+   * #549 — a system row is filtered out of the transcript unless it is marked
+   * a recovery notice, so without the flag this explanation was written and
+   * never shown.
+   */
+  it('#549: an unavailable sidecar on restart is explained in the conversation', async () => {
+    useChatStore.setState({ conversations: { c1: conversation({ teamId: 't1' }) } } as never);
+    runAgentLoopDispatched.mockResolvedValueOnce({
+      reason: 'error',
+      error: '后台服务没有启动成功，这条消息还没有发出。可点重试。',
+      messageTaken: true,
+      stopReason: 'sidecar_unavailable',
+    } as never);
+
+    await expect(resumeTeamRunAfterRestart('c1', 2)).resolves.toBe(false);
+
+    const messages = useChatStore.getState().conversations.c1.messages;
+    const last = messages[messages.length - 1];
+    expect(last.isSystem).toBe(true);
+    expect(last.isRecoveryNotice).toBe(true);
+    expect(String(last.content)).toContain('后台服务没有启动成功');
+  });
+
   it('leaves plain, scheduled, trigger, IM and read-only conversations alone', async () => {
     useChatStore.setState({ conversations: {
       plain: conversation({ id: 'plain' }),

@@ -88,6 +88,19 @@ vi.mock('../core/sidecar/sidecarManager', () => ({
   SidecarRequestError: class SidecarRequestError extends Error {},
 }));
 
+// #549: the readiness module reads sidecarManager's status/waiter exports,
+// which the partial mock above does not provide. This suite drives the venue
+// with `state.runtime`, so mirror that instead of importing the real module.
+vi.mock('../core/sidecar/sidecarReadiness', () => ({
+  isInProcessAgentEnvironment: () => state.runtime !== 'sidecar',
+  waitForSidecarVenue: vi.fn().mockResolvedValue(undefined),
+  SidecarUnavailableError: class SidecarUnavailableError extends Error {
+    readonly code = 'sidecar_unavailable';
+    readonly stopReason = 'sidecar_unavailable';
+    readonly reason = 'timeout';
+  },
+}));
+
 vi.mock('../../sidecar/src/rpcClient', () => ({ sendRequest: vi.fn(), sendNotification: vi.fn() }));
 vi.mock('../../sidecar/src/agentLoopHost', () => ({ findActiveRunDeltaForConversation: vi.fn() }));
 

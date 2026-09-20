@@ -109,7 +109,27 @@ function createSidecarRunRegistry({
   }
 
   function observeOutbound(line) {
-    const message = parseLine(line);
+    observeOutboundMessage(parseLine(line));
+  }
+
+  // #549 raw-body writes: the same facts, taken from the validated headers
+  // instead of parsing a body that can be 100+ MiB. The renderer writes both
+  // the body and the headers, so this trusts nothing the parsed form did not.
+  function observeOutboundMeta(meta) {
+    if (!isRecord(meta) || typeof meta.method !== 'string') return;
+    const text = (value) => (typeof value === 'string' ? value : undefined);
+    observeOutboundMessage({
+      method: meta.method,
+      id: text(meta.rpcId),
+      params: {
+        runId: text(meta.runId),
+        clientMessageId: text(meta.clientMessageId),
+        payloadDigest: text(meta.payloadDigest),
+      },
+    });
+  }
+
+  function observeOutboundMessage(message) {
     if (!message || typeof message.method !== 'string') return;
     const params = isRecord(message.params) ? message.params : {};
     const runId = typeof params.runId === 'string' ? params.runId : undefined;
@@ -230,6 +250,7 @@ function createSidecarRunRegistry({
     markReady,
     markDisconnected,
     observeOutbound,
+    observeOutboundMeta,
     observeInbound,
     recordEvent,
     snapshot,

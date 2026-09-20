@@ -71,3 +71,102 @@ describe('buildDiagnosticRunTimeline', () => {
     expect(timeline.uncorrelatedEventCount).toBe(2);
   });
 });
+
+describe('#549 root causes', () => {
+  function snapshot(events: Array<Record<string, unknown>>): RendererRuntimeTraceSnapshot {
+    return {
+      schemaVersion: 1,
+      takenAt: 10,
+      activeRuns: [],
+      recentEvents: events.map((event, index) => ({
+        schemaVersion: 1,
+        timestamp: index + 1,
+        process: 'renderer',
+        runId: 'run-1',
+        ...event,
+      })) as RendererRuntimeTraceSnapshot['recentEvents'],
+    };
+  }
+
+  it('classifies oversize before the generic sidecar_transport cause', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.agent_run_failed', stage: 'payload_too_large', errorType: 'payload_too_large' },
+    ]), [], 10);
+
+    expect(timeline.runs[0]).toMatchObject({ terminalOutcome: 'failed', rootCause: 'payload_too_large' });
+    expect(timeline.rootCauseCounts.payload_too_large).toBe(1);
+  });
+
+  it('keeps oversize as the cause even when the sidecar closed in the same run', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.agent_run_failed', stage: 'payload_too_large', errorType: 'payload_too_large' },
+    ]), [
+      JSON.stringify({ schemaVersion: 1, timestamp: 5, process: 'main', event: 'main.sidecar_closed', runId: 'run-1' }),
+    ], 10);
+
+    expect(timeline.runs[0].rootCause).toBe('payload_too_large');
+  });
+
+  it('classifies an unreadable history before the generic causes', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.agent_run_failed', stage: 'history_unavailable', errorType: 'history_unavailable' },
+    ]), [
+      JSON.stringify({ schemaVersion: 1, timestamp: 5, process: 'main', event: 'main.sidecar_closed', runId: 'run-1' }),
+    ], 10);
+
+    expect(timeline.runs[0]).toMatchObject({ terminalOutcome: 'failed', rootCause: 'history_unavailable' });
+    expect(timeline.rootCauseCounts.history_unavailable).toBe(1);
+  });
+
+  it('counts the renderer-side and the sidecar-side history failure as one cause', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.agent_run_failed', stage: 'history_unavailable', errorType: 'ledgerhistorypointerror' },
+    ]), [], 10);
+
+    expect(timeline.runs[0].rootCause).toBe('history_unavailable');
+  });
+
+  it('classifies an unavailable sidecar', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.agent_run_failed', stage: 'sidecar_unavailable', errorType: 'sidecar_timeout' },
+    ]), [], 10);
+
+    expect(timeline.runs[0].rootCause).toBe('sidecar_unavailable');
+  });
+
+  it('a params-build failure stays a runtime failure', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.agent_run_failed', stage: 'params_build_failed', errorType: 'error' },
+    ]), [], 10);
+
+    expect(timeline.runs[0].rootCause).toBe('runtime_failure');
+  });
+
+  // The subagent transport path reports oversize through `stage` because its
+  // `errorType` is not stable (renderer pre-check vs sidecar reply produce
+  // different error classes), so the classifier must read the stage only.
+  it('reads oversize from the stage, never from errorType', () => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.subagent_run_failed', stage: 'transport_failed', errorType: 'payload_too_large' },
+    ]), [], 10);
+
+    expect(timeline.runs[0].rootCause).toBe('runtime_failure');
+  });
+
+  it.each([
+    ['renderer.agent_run_failed', 'payload_too_large', 'payload_too_large'],
+    ['renderer.agent_run_failed', 'sidecar_unavailable', 'sidecar_unavailable'],
+    ['renderer.agent_run_failed', 'params_build_failed', 'runtime_failure'],
+    ['renderer.subagent_run_failed', 'payload_too_large', 'payload_too_large'],
+    ['renderer.subagent_run_failed', 'sidecar_unavailable', 'sidecar_unavailable'],
+    ['renderer.subagent_run_failed', 'params_build_failed', 'runtime_failure'],
+    ['renderer.subagent_run_failed', 'transport_failed', 'runtime_failure'],
+  ] as const)('%s at stage %s ends the run as failed with a finishedAt', (event, stage, rootCause) => {
+    const timeline = buildDiagnosticRunTimeline(snapshot([
+      { event: 'renderer.local_message_persisted' },
+      { event, stage },
+    ]), [], 10);
+
+    expect(timeline.runs[0]).toMatchObject({ terminalOutcome: 'failed', rootCause, finishedAt: 2 });
+  });
+});

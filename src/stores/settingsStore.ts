@@ -6,7 +6,7 @@ import { create } from 'zustand';
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 import { invoke } from '@tauri-apps/api/core';
 import type { LLMProvider, ApiFormat, CustomService } from '../types';
-import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
+import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ManagedProviderInput, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
 import { deriveUiCaps } from '../core/llm/modelCapabilities';
 import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
@@ -44,7 +44,6 @@ import {
   deleteSecret,
   listFailedSecrets,
   listSecrets,
-  clearAllSecrets,
 } from '@/utils/secretStore';
 // Relocated to a pure module so the sidecar bundle (and anything else that
 // needs zero store-graph coupling) can import them directly — see
@@ -182,7 +181,7 @@ function createDefaultProviders(): ProviderInstance[] {
 
 export type ViewMode = 'chat' | 'automation' | 'extensions' | 'settings' | 'todos' | 'inbox' | 'team';
 export type AutomationTab = 'schedule' | 'trigger';
-export type SystemSettingsTab = 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
+export type SystemSettingsTab = 'account' | 'general' | 'capabilities' | 'ai-services' | 'sandbox' | 'im-channels' | 'pet' | 'personal-memory' | 'soul' | 'diagnostic' | 'usage' | 'about' | 'author' | 'feedback' | 'enterprise' | 'labs';
 /** Tabs of the Extensions view (插件 / 技能 / 连接器). Agents live in the Team view, not here. */
 export type ExtensionsTab = 'plugins' | 'skills' | 'mcp';
 
@@ -260,6 +259,8 @@ export interface SettingsState {
   /** System settings render as an overlay dialog on top of the current view,
    *  decoupled from viewMode. Ephemeral — not persisted. */
   systemSettingsOpen: boolean;
+  /** Centered personal/enterprise account entry dialog. Ephemeral. */
+  accountLoginOpen: boolean;
   /** Ephemeral deep link used when an in-flight task needs user setup. */
   capabilitySetupTarget: CapabilitySetupTarget | null;
   disabledSkills: string[];
@@ -482,6 +483,14 @@ interface SettingsActions {
   reorderProviders: (ids: string[]) => void;
   setProviderStatus: (id: string, status: ProviderInstance['status'], message?: string, latency?: number) => void;
 
+  // ── Managed providers ──
+  // Registered at runtime by an external system, never edited by the user.
+  upsertManagedProvider: (input: ManagedProviderInput) => void;
+  removeManagedProvider: (id: string) => void;
+  /** Call once the external system has had its chance to register; runs the
+   *  missing-provider rule that rehydration skipped. */
+  markManagedProvidersReady: () => void;
+
   // ── Model selection (V2) ──
   selectModel: (providerId: string, modelId: string) => void;
   /** Bump a model to the front of recents WITHOUT changing the new-conversation default (activeModel). */
@@ -518,6 +527,8 @@ interface SettingsActions {
   requestCapabilitySetup: (target: CapabilitySetupTarget) => void;
   clearCapabilitySetupTarget: () => void;
   closeSystemSettings: () => void;
+  openAccountLogin: () => void;
+  closeAccountLogin: () => void;
   setActiveSystemTab: (tab: SystemSettingsTab) => void;
   /** Toggle a Labs (experimental features) flag. Takes effect immediately. */
   setLabsFlag: (id: string, enabled: boolean) => void;
@@ -642,6 +653,17 @@ interface SettingsActions {
 // ============================================================
 
 /**
+ * The providers whose configuration belongs to the user. Everything that
+ * writes to localStorage or the secret store goes through this: a managed
+ * provider's credential belongs to the system that registered it, and a second
+ * copy here would go stale when that system rotates the key and would survive
+ * after it withdraws the provider.
+ */
+function userOwnedProviders(providers: ProviderInstance[]): ProviderInstance[] {
+  return providers.filter((p) => p.source !== 'managed');
+}
+
+/**
  * Reconcile activeModel after rehydration so that downstream code
  * (getActiveProvider, ChatInput, agentLoop) always sees a consistent state.
  *
@@ -650,18 +672,24 @@ interface SettingsActions {
  *
  * Rules:
  * 1. Active provider missing  → switch to a usable enabled provider, falling
- *    back to any enabled provider.
+ *    back to any enabled provider. Skipped while `managedProvidersReady` is
+ *    false: rehydration is synchronous and managed providers are registered
+ *    later, so "missing" at that point only means "not registered yet".
+ *    `markManagedProvidersReady()` runs this rule once registration has had
+ *    its turn.
  * 2. Active provider disabled but has key (or is ollama) → silently re-enable.
  * 3. Active provider disabled and unusable → switch to a usable fallback;
  *    only force-enable as a last resort so getActiveProvider() keeps resolving.
  */
 export function reconcileActiveProvider(
-  state: Pick<SettingsState, 'providers' | 'activeModel'>
+  state: Pick<SettingsState, 'providers' | 'activeModel'>,
+  options: { managedProvidersReady: boolean } = { managedProvidersReady: true },
 ): void {
   const activeProvider = state.providers.find(
     p => p.id === state.activeModel.providerId
   );
   if (!activeProvider) {
+    if (!options.managedProvidersReady) return;
     const fallback =
       state.providers.find(
         p => p.enabled && (p.apiKey.trim().length > 0 || p.id === 'ollama' || p.id === 'lmstudio')
@@ -1264,6 +1292,7 @@ export const useSettingsStore = create<SettingsStore>()(
       viewMode: 'chat' as ViewMode,
       activeTeamTab: 'members' as TeamTab,
       systemSettingsOpen: false,
+      accountLoginOpen: false,
       capabilitySetupTarget: null,
       disabledSkills: [
         'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
@@ -1399,6 +1428,45 @@ export const useSettingsStore = create<SettingsStore>()(
         });
         fafSecretWrite(SECRET_KEYS.provider(id), deleteSecret(SECRET_KEYS.provider(id)), `removeProvider(${id})`);
       },
+
+      // A managed provider's endpoint, credential and model list come from an
+      // external system and are refreshed there. Registering is idempotent so a
+      // credential rotation can reuse this same path.
+      upsertManagedProvider: (input) => set((s) => {
+        const existing = s.providers.find(p => p.id === input.id && p.source === 'managed');
+        const entry: ProviderInstance = {
+          ...existing,
+          id: input.id,
+          source: 'managed',
+          name: input.name,
+          enabled: true,
+          apiFormat: 'openai-compatible',
+          baseUrl: input.baseUrl,
+          apiKey: input.apiKey,
+          models: input.models,
+          status: existing?.status ?? 'unchecked',
+          userAdded: false,
+          // Managed entries always head the list.
+          sortOrder: Number.MAX_SAFE_INTEGER,
+        };
+        return { providers: [entry, ...s.providers.filter(p => p.id !== input.id || p.source !== 'managed')] };
+      }),
+
+      // The source check keeps a user-created provider that happens to share
+      // the id from being removed along with the managed one.
+      removeManagedProvider: (id) => set((s) => ({
+        providers: s.providers.filter(p => !(p.id === id && p.source === 'managed')),
+      })),
+
+      markManagedProvidersReady: () => set((s) => {
+        // reconcileActiveProvider mutates its argument; give it copies.
+        const next = {
+          providers: s.providers.map((p) => ({ ...p })),
+          activeModel: { ...s.activeModel },
+        };
+        reconcileActiveProvider(next);
+        return next;
+      }),
 
       toggleProvider: (id) => set((s) => ({
         providers: s.providers.map(p =>
@@ -1576,6 +1644,8 @@ export const useSettingsStore = create<SettingsStore>()(
         set({ capabilitySetupTarget: null }),
       closeSystemSettings: () =>
         set({ systemSettingsOpen: false, capabilitySetupTarget: null }),
+      openAccountLogin: () => set({ accountLoginOpen: true }),
+      closeAccountLogin: () => set({ accountLoginOpen: false }),
       setActiveSystemTab: (tab) => set({
         activeSystemTab: tab,
         ...(tab !== 'capabilities' ? { capabilitySetupTarget: null } : {}),
@@ -1868,16 +1938,18 @@ export const useSettingsStore = create<SettingsStore>()(
 
       clearAllStoredKeys: async () => {
         const s = useSettingsStore.getState();
-        // Collect the full set of known secret keys so the Windows/Linux
-        // keyring path (no enumeration API) has something to iterate.
+        // This action is scoped to API keys. Delete those exact entries so an
+        // unrelated account credential in the same OS store remains intact.
         const knownKeys = [
-          ...s.providers.map((p) => SECRET_KEYS.provider(p.id)),
+          ...userOwnedProviders(s.providers).map((p) => SECRET_KEYS.provider(p.id)),
           SECRET_KEYS.auxWebSearch,
           SECRET_KEYS.auxImageGen,
           ...s.imageGeneration.backends.map((b) => SECRET_KEYS.imageGenBackend(b.id)),
         ];
         try {
-          await clearAllSecrets(knownKeys);
+          const outcomes = await Promise.allSettled(knownKeys.map((key) => deleteSecret(key)));
+          const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+          if (failure?.status === 'rejected') throw failure.reason;
         } catch (err) {
           console.warn('[secrets] clearAll backend failed:', err);
           // Continue anyway — at minimum blank the in-memory keys so the
@@ -1885,7 +1957,7 @@ export const useSettingsStore = create<SettingsStore>()(
           // orphaned entries the backend couldn't remove.
         }
         set((state) => ({
-          providers: state.providers.map((p) => ({ ...p, apiKey: '' })),
+          providers: state.providers.map((p) => (p.source === 'managed' ? p : { ...p, apiKey: '' })),
           auxiliaryServices: {
             ...(state.auxiliaryServices.webSearch && {
               webSearch: { ...state.auxiliaryServices.webSearch, apiKey: '' },
@@ -2836,8 +2908,8 @@ export const useSettingsStore = create<SettingsStore>()(
         // to Phase 2 behavior (plaintext in localStorage) so a broken secret
         // backend can't cause silent data loss on save.
         providers: persistApiKeyPlaintextFallback
-          ? state.providers
-          : state.providers.map((p) => ({ ...p, apiKey: '' })),
+          ? userOwnedProviders(state.providers)
+          : userOwnedProviders(state.providers).map((p) => ({ ...p, apiKey: '' })),
         activeModel: state.activeModel,
         recentModels: state.recentModels,
         favoriteModels: state.favoriteModels,
@@ -2917,8 +2989,9 @@ export const useSettingsStore = create<SettingsStore>()(
         if (state.language) {
           initLanguage(state.language);
         }
-        // Validate active model points to a usable provider
-        reconcileActiveProvider(state);
+        // Validate active model points to a usable provider. Managed providers
+        // are not registered yet; `markManagedProvidersReady()` finishes the job.
+        reconcileActiveProvider(state, { managedProvidersReady: false });
         // Defense in depth against a malformed browserOperationPolicy that
         // reached storage without going through `migrate` (hand-edited
         // localStorage, a future bug writing a partial object, ...) — the
@@ -2945,6 +3018,7 @@ export const useSettingsStore = create<SettingsStore>()(
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        state.accountLoginOpen = false;
         rememberHydratedBrowserConfig(state);
         // Main owns the runtime gate. Restore it only from persisted user
         // settings; Computer Use tools are never allowed to enable themselves.
@@ -2987,8 +3061,9 @@ export async function bootstrapSecrets(): Promise<void> {
     | { kind: 'imageGenBackend'; backendId: string; value: string | null };
 
   const tasks: Promise<Fetch>[] = [];
+  const ownProviders = userOwnedProviders(state.providers);
 
-  for (const p of state.providers) {
+  for (const p of ownProviders) {
     tasks.push(
       getSecret(SECRET_KEYS.provider(p.id)).then(
         (value) => ({ kind: 'provider', providerId: p.id, value } as Fetch),
@@ -3036,7 +3111,7 @@ export async function bootstrapSecrets(): Promise<void> {
   // Happens on first 0.12 launch for users whose keys came from 0.11 or
   // Phase 2 if some provider was never edited (write-through never fired).
   const backfills: Promise<void>[] = [];
-  for (const p of state.providers) {
+  for (const p of ownProviders) {
     const plain = p.apiKey?.trim() ?? '';
     if (plain.length > 0 && !providerUpdates.has(p.id)) {
       backfills.push(setSecret(SECRET_KEYS.provider(p.id), plain));
@@ -3119,7 +3194,9 @@ export async function bootstrapSecrets(): Promise<void> {
   // non-null value from the store (backfilled keys already match in-memory).
   useSettingsStore.setState((s) => {
     const providers = s.providers.map((p) => {
-      const fetched = providerUpdates.get(p.id);
+      // A stored secret belongs to a user-owned provider even when a managed
+      // one carries the same id.
+      const fetched = p.source === 'managed' ? undefined : providerUpdates.get(p.id);
       return fetched ? { ...p, apiKey: fetched } : p;
     });
 

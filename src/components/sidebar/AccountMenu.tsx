@@ -4,7 +4,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useAccountStore } from '@/core/account/accountStore';
 import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
-import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { IS_ENTERPRISE_BUILD, IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { useI18n, type LanguageSetting } from '@/i18n';
 import {
   Settings,
@@ -212,8 +212,10 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
                   trailing: <span className="text-minor text-[var(--abu-text-muted)]">v{APP_VERSION}</span>,
                 };
   const UpdateIcon = updateRow.icon;
-  const signedIn = accountStatus === 'signed_in' && account !== null;
-  const expired = accountStatus === 'expired' && account !== null;
+  // 个人登录未开放时，个人账号的每一行都不出现，登录入口也只在还剩企业登录时才有。
+  const signedIn = IS_PERSONAL_ACCOUNT_ENABLED && accountStatus === 'signed_in' && account !== null;
+  const expired = IS_PERSONAL_ACCOUNT_ENABLED && accountStatus === 'expired' && account !== null;
+  const canSignIn = IS_PERSONAL_ACCOUNT_ENABLED || IS_ENTERPRISE_BUILD;
   const localLabel = userNickname || t.sidebar.defaultNickname;
   const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
     ? enterpriseMode.binding
@@ -397,10 +399,14 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           ) : signedIn ? (
             <MenuRow icon={LogOut} label={IS_ENTERPRISE_BUILD ? t.account.signOutPersonal : t.account.signOut}
               onClick={() => run(() => void signOut())} />
-          ) : (
+          ) : !IS_PERSONAL_ACCOUNT_ENABLED && IS_ENTERPRISE_BUILD ? (
+            // 只剩企业登录时，这一行直接开始企业登录，不再经过「登录 / 注册」弹窗。
+            <MenuRow icon={LogIn} label={t.account.enterpriseLogin}
+              onClick={() => run(handleEnterpriseLogin)} />
+          ) : canSignIn ? (
             <MenuRow icon={LogIn} label={expired ? t.account.retry : t.account.signIn}
               onClick={() => run(openAccountLogin)} />
-          )}
+          ) : null}
         </div>
       )}
     </div>

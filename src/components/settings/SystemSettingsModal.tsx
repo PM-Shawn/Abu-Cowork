@@ -13,7 +13,7 @@ import UsageSection from './sections/UsageSection';
 import EnterpriseSection from './sections/EnterpriseSection';
 import LabsSection from './sections/LabsSection';
 import PetSection from './sections/PetSection';
-import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { IS_ENTERPRISE_BUILD, IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_PET } from '@/core/labs/registry';
 
@@ -42,7 +42,11 @@ export default function SystemSettingsView() {
   const navGroups: NavItem[][] = [
     // ① 账号与系统 / 应用设置 — identity is the first conventional destination
     [
-      { id: 'account', label: t.account.title, icon: UserRound },
+      // 个人登录未开放时，开源版没有任何账号内容，这一页整项不出现；
+      // 企业版这一页由企业插槽填充，保留。
+      ...(IS_PERSONAL_ACCOUNT_ENABLED || IS_ENTERPRISE_BUILD
+        ? [{ id: 'account' as const, label: t.account.title, icon: UserRound }]
+        : []),
       { id: 'general', label: t.settings.general, icon: SlidersHorizontal },
       { id: 'capabilities', label: t.settings.capabilityOverview, icon: Zap },
       { id: 'sandbox', label: t.settings.sandbox, icon: Shield },

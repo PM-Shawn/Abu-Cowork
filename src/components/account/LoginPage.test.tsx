@@ -4,6 +4,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
 import LoginPage from './LoginPage';
 
+// 这一份覆盖个人登录开放之后的行为；关闭状态见 LoginPage.personalGate.test.tsx。
+vi.mock('@/config/featureGates', () => ({
+  IS_ENTERPRISE_BUILD: false,
+  IS_PERSONAL_ACCOUNT_ENABLED: true,
+}));
+
 describe('LoginPage', () => {
   beforeEach(() => initLanguage('zh-CN'));
 

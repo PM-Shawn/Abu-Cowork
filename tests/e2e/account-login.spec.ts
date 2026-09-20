@@ -224,7 +224,9 @@ let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 let server: http.Server | undefined;
 
-test.describe.serial('personal account login UI', () => {
+// 个人登录由 `IS_PERSONAL_ACCOUNT_ENABLED` 关着，界面上没有入口，这一组暂时跳过。
+// 开关打开的那一版把 `.skip` 去掉即可，用例本身仍然对应当时的界面。
+test.describe.serial.skip('personal account login UI', () => {
   test.afterEach(async () => {
     if (app) await closeAbuElectron(app);
     if (server) await new Promise<void>((resolve) => server?.close(() => resolve()));

@@ -1,6 +1,9 @@
 import EnterpriseAccountSlot from '@enterprise-modules/components/enterprise/EnterpriseAccountSlot';
 import { CircleAlert, LoaderCircle, LogIn, LogOut, RefreshCw } from 'lucide-react';
+import { useCallback } from 'react';
 import { useAccountStore } from '@/core/account/accountStore';
+import { startEnterpriseAccountLogin } from '@/core/enterprise/accountLogin';
+import { IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
@@ -13,7 +16,15 @@ export default function AccountSection() {
   const hydrate = useAccountStore((state) => state.hydrate);
   const signOut = useAccountStore((state) => state.signOut);
   const openAccountLogin = useSettingsStore((state) => state.openAccountLogin);
+  const openSystemSettings = useSettingsStore((state) => state.openSystemSettings);
   const { t } = useI18n();
+  const startEnterpriseLogin = useCallback(() => {
+    void startEnterpriseAccountLogin()
+      .then((result) => {
+        if (result === 'configuration_required') openSystemSettings('enterprise');
+      })
+      .catch(() => openSystemSettings('enterprise'));
+  }, [openSystemSettings]);
   const expired = status === 'expired' && account !== null;
   const signedIn = status === 'signed_in' && account !== null;
 
@@ -27,9 +38,10 @@ export default function AccountSection() {
           <p className="text-body text-[var(--abu-text-secondary)]">
             {t.account.localWithoutLogin}
           </p>
-          <Button onClick={openAccountLogin}>
+          {/* 个人登录还没开放时，这里只剩企业登录，直接开始，不走「登录 / 注册」弹窗。 */}
+          <Button onClick={IS_PERSONAL_ACCOUNT_ENABLED ? openAccountLogin : startEnterpriseLogin}>
             <LogIn aria-hidden="true" />
-            {t.account.loginRegister}
+            {IS_PERSONAL_ACCOUNT_ENABLED ? t.account.loginRegister : t.account.enterpriseLogin}
           </Button>
         </section>
       ) : (

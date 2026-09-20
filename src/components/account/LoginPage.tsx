@@ -1,5 +1,5 @@
 import { Building2, CircleAlert, LoaderCircle, LogOut, UserRound } from 'lucide-react';
-import { IS_ENTERPRISE_BUILD } from '@/config/featureGates';
+import { IS_ENTERPRISE_BUILD, IS_PERSONAL_ACCOUNT_ENABLED } from '@/config/featureGates';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
 
@@ -82,15 +82,18 @@ export default function LoginPage({
               <span>{failure}</span>
             </div>
           )}
-          <Button className="w-full" size="lg" onClick={onPersonalLogin}>
-            <UserRound aria-hidden="true" />
-            {status === 'expired' ? t.account.retry : t.account.personalLogin}
-          </Button>
+          {IS_PERSONAL_ACCOUNT_ENABLED && (
+            <Button className="w-full" size="lg" onClick={onPersonalLogin}>
+              <UserRound aria-hidden="true" />
+              {status === 'expired' ? t.account.retry : t.account.personalLogin}
+            </Button>
+          )}
           {IS_ENTERPRISE_BUILD && (
             <Button
               className="w-full"
               size="lg"
-              variant="subtle"
+              // 个人登录还没开放时，企业登录是唯一入口，用主按钮样式。
+              variant={IS_PERSONAL_ACCOUNT_ENABLED ? 'subtle' : 'default'}
               onClick={onEnterpriseLogin}
             >
               <Building2 aria-hidden="true" />

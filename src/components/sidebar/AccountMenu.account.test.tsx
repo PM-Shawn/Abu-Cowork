@@ -11,7 +11,11 @@ const mocks = vi.hoisted(() => ({
   startEnterpriseLogin: vi.fn(),
 }));
 
-vi.mock('@/config/featureGates', () => ({ IS_ENTERPRISE_BUILD: true }));
+// 这一份覆盖个人登录开放之后的行为；关闭状态下的行为见 AccountMenu.personalGate.test.tsx。
+vi.mock('@/config/featureGates', () => ({
+  IS_ENTERPRISE_BUILD: true,
+  IS_PERSONAL_ACCOUNT_ENABLED: true,
+}));
 
 vi.mock('@/core/enterprise/accountLogin', () => ({
   startEnterpriseAccountLogin: mocks.startEnterpriseLogin,

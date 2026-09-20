@@ -23,7 +23,11 @@ vi.mock('@/core/account/accountStore', () => ({
   useAccountStore: (selector: (state: Record<string, unknown>) => unknown) => selector(mocks.accountState),
 }));
 
-vi.mock('@/config/featureGates', () => ({ IS_ENTERPRISE_BUILD: true }));
+// 这一份覆盖个人登录开放之后的行为；关闭状态下登录页只剩企业按钮，见 LoginPage.personalGate.test.tsx。
+vi.mock('@/config/featureGates', () => ({
+  IS_ENTERPRISE_BUILD: true,
+  IS_PERSONAL_ACCOUNT_ENABLED: true,
+}));
 
 vi.mock('@/core/enterprise/accountLogin', () => ({
   startEnterpriseAccountLogin: mocks.startEnterpriseLogin,

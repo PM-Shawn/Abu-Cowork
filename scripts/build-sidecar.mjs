@@ -72,6 +72,15 @@ if (!existsSync(enterpriseModulesDir)) {
  */
 const packageJson = JSON.parse(readFileSync(path.resolve(root, 'package.json'), 'utf-8'));
 
+/** `alias` and `define` of the sidecar build, shared with builds that must resolve and guard imports the same way. */
+export const SIDECAR_BUILD_RESOLUTION = {
+  alias: { '@': srcDir, '@enterprise-modules': enterpriseModulesDir },
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version),
+    __ENTERPRISE_BUILD__: JSON.stringify(buildTarget === 'enterprise'),
+  },
+};
+
 /**
  * Shim map: resolved absolute path of the REAL module -> resolved absolute
  * path of its sidecar-local replacement. Extensionless — esbuild's own
@@ -299,7 +308,7 @@ const shimMap = new Map(SHIM_TARGETS.map(({ real, shim }) => [real, shim]));
  * `shimMap` unconditionally — correctness over the now-irrelevant
  * micro-optimization (this is a one-off build script, not a hot path).
  */
-const shimPlugin = {
+export const shimPlugin = {
   name: 'abu-sidecar-shims',
   setup(pluginBuild) {
     // Bare node_modules package specifier — @tauri-apps/api/core's `invoke`.
@@ -380,7 +389,7 @@ const FORBIDDEN_DIR_PREFIXES = [
   path.resolve(srcDir, 'components') + path.sep,
 ];
 
-const bundleGraphGuardPlugin = {
+export const bundleGraphGuardPlugin = {
   name: 'abu-sidecar-fail-fast-guard',
   setup(pluginBuild) {
     pluginBuild.onResolve({ filter: /^@tauri-apps\// }, (args) => {
@@ -418,11 +427,7 @@ async function main() {
     // @anthropic-ai/sdk (and everything else reachable from main.ts) bundles
     // INTO the output — nothing marked external. The packaged app ships
     // sidecar/index.mjs standalone, with no node_modules alongside it.
-    alias: { '@': srcDir, '@enterprise-modules': enterpriseModulesDir },
-    define: {
-      __APP_VERSION__: JSON.stringify(packageJson.version),
-      __ENTERPRISE_BUILD__: JSON.stringify(buildTarget === 'enterprise'),
-    },
+    ...SIDECAR_BUILD_RESOLUTION,
     plugins: [shimPlugin, bundleGraphGuardPlugin],
     banner: {
       // Bundled ESM output has no CommonJS __dirname/__filename or `require`

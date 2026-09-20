@@ -15,6 +15,7 @@
 import { exists, mkdir, readTextFile, writeTextFile, remove } from '@tauri-apps/plugin-fs';
 import { appDataDir } from '@tauri-apps/api/path';
 import { joinPath } from '../../utils/pathUtils';
+import { createConversationPaths, type ConversationPaths } from './conversationPaths';
 
 /** Tool results larger than this are offloaded to disk (bytes, ~8KB) */
 const OFFLOAD_THRESHOLD = 8192;
@@ -26,17 +27,20 @@ const PREVIEW_LENGTH = 500;
 export const DISK_REF_PREFIX = '[session-memory:';
 export const DISK_REF_SUFFIX = ']';
 
-let cachedSessionBase: string | null = null;
+let cachedPaths: ConversationPaths | null = null;
+
+async function conversationPaths(): Promise<ConversationPaths> {
+  if (!cachedPaths) {
+    cachedPaths = createConversationPaths(await appDataDir());
+  }
+  return cachedPaths;
+}
 
 /**
  * Get the results directory for a specific conversation.
  */
 async function getResultsDir(conversationId: string): Promise<string> {
-  if (!cachedSessionBase) {
-    const appData = await appDataDir();
-    cachedSessionBase = joinPath(appData, 'conversations');
-  }
-  return joinPath(cachedSessionBase, conversationId, 'results');
+  return (await conversationPaths()).resultsDir(conversationId);
 }
 
 /**
@@ -110,8 +114,8 @@ export async function loadResult(
       return await readTextFile(filePath);
     }
     // Fallback: check old `sessions/` path for backward compatibility with pre-migration data
-    const appData = await appDataDir();
-    const legacyPath = joinPath(appData, 'sessions', conversationId, 'results', `${toolCallId}.txt`);
+    const paths = await conversationPaths();
+    const legacyPath = joinPath(paths.legacySessionDir(conversationId), 'results', `${toolCallId}.txt`);
     if (await exists(legacyPath)) {
       return await readTextFile(legacyPath);
     }

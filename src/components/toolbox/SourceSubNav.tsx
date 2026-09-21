@@ -10,6 +10,7 @@ interface SourceSubNavProps {
   onChange: (value: ExtensionSource) => void;
   marketLabel: string;
   mineLabel: string;
+  organizationLabel?: string;
   /** Prefix for each tab's `data-testid` AND its `id`
    *  (`{prefix}-market` / `{prefix}-mine` — see {@link sourceTabId}). */
   testIdPrefix?: string;
@@ -24,11 +25,12 @@ interface SourceSubNavProps {
  * `tablist` so the active source is announced, not just coloured.
  */
 export default function SourceSubNav({
-  value, onChange, marketLabel, mineLabel, testIdPrefix = DEFAULT_SOURCE_ID_PREFIX, panelId,
+  value, onChange, marketLabel, mineLabel, organizationLabel, testIdPrefix = DEFAULT_SOURCE_ID_PREFIX, panelId,
 }: SourceSubNavProps) {
   const items: { id: ExtensionSource; label: string }[] = [
     { id: 'market', label: marketLabel },
     { id: 'mine', label: mineLabel },
+    ...(organizationLabel ? [{ id: 'organization' as const, label: organizationLabel }] : []),
   ];
   return (
     <div

@@ -149,7 +149,7 @@ function seedAgent(name: string, extra?: string | SeedExtra) {
 describe('TeamView', () => {
   beforeEach(() => {
     clearAllComposerDrafts();
-    useTeamStore.setState({ teams: []});
+    useTeamStore.setState({ teams: [], managedTeamSources: {} });
     // Every team seeded below is one the user assembled, so these assertions
     // are about the 「我的」 shelf; 市场 (the default) holds the built-in teams.
     useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'mine', teams: 'mine' } });
@@ -319,6 +319,35 @@ describe('TeamView', () => {
     expect(avatar).toBeDefined();
     expect(avatar!.className).toContain('bg-[var(--abu-bg-active)]');
     expect(avatar!.className).not.toContain('bg-[var(--abu-bg-muted)]');
+  });
+
+  it('shows why an unavailable organization team cannot start', () => {
+    settingsState.activeTeamTab = 'teams';
+    seedAgent('分析师', { roleId: 'r-lead' });
+    discoveryState.agents = [{ name: '分析师' }];
+    useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+    useTeamStore.getState().replaceManagedTeams('enterprise', [{
+      id: 'org-team',
+      name: '组织数据小队',
+      leaderRoleId: 'r-lead',
+      memberRoleIds: ['r-lead'],
+      createdAt: 1,
+      managed: {
+        source: 'enterprise',
+        id: 'org-team',
+        version: '1',
+        readOnly: true,
+        ready: false,
+        unavailableReason: '成员不可用：分析师',
+      },
+    }]);
+    render(<TeamView />);
+    fireEvent.click(screen.getByTestId('team-source-organization'));
+    fireEvent.click(screen.getByTestId('team-row-组织数据小队'));
+
+    expect(screen.getByTestId('team-managed-unavailable')).toHaveTextContent('成员不可用：分析师');
+    expect(screen.getByTestId('team-detail-start-chat')).toBeDisabled();
+    expect(screen.queryByTestId('team-detail-menu')).toBeNull();
   });
 
   it('teams tab: the English card says "1 member" for one member and "2 members" for two', () => {

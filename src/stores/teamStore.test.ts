@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { BUILTIN_TEAMS, isBuiltinTeam } from '@/core/team/builtinTeams';
-import { mergeTeamState, migrateTeamState, partializeTeamState, useTeamStore } from './teamStore';
+import { getVisibleTeamById, getVisibleTeams, mergeTeamState, migrateTeamState, partializeTeamState, useTeamStore } from './teamStore';
 import type { Team } from './teamStore';
 
 // Looked up by id, not by position: the shelf order is product copy, not a contract.
 const SOFTWARE_RD_TEAM = BUILTIN_TEAMS.find((team) => team.id === 'builtin-team:software-rd')!;
 
 function reset() {
-  useTeamStore.setState({ teams: []});
+  useTeamStore.setState({ teams: [], managedTeamSources: {} });
 }
 
 describe('teamStore', () => {
@@ -145,6 +145,43 @@ describe('teamStore', () => {
       const out = migrateTeamState({ teams: [team] });
       expect(out.teams).toEqual([team]);
       expect(out.teams[0].description).toBeUndefined();
+    });
+  });
+  describe('managed teams', () => {
+    const managed: Team = {
+      id: 'managed-team-1', name: '组织审阅团队', leaderRoleId: 'enterprise-agent:1',
+      memberRoleIds: ['enterprise-agent:1'], createdAt: 1,
+      managed: { source: 'enterprise', id: 'managed-team-1', version: '1', readOnly: true, ready: true },
+    };
+
+    it('keeps an active source in memory without persisting it', () => {
+      let active = true;
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => active);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [managed]);
+      expect(getVisibleTeamById(managed.id)).toEqual(managed);
+      expect(partializeTeamState(useTeamStore.getState()).teams).toEqual([]);
+      active = false;
+      expect(getVisibleTeams()).toEqual([]);
+    });
+
+    it('does not let a personal team shadow an active managed name', () => {
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [managed]);
+      expect(() => useTeamStore.getState().createTeam({
+        name: managed.name, leaderRoleId: 'local-role', memberRoleIds: [],
+      })).toThrow('duplicate team name');
+    });
+
+    it('does not let a personal team rename onto an active managed name', () => {
+      const local = useTeamStore.getState().createTeam({
+        name: '我的团队', leaderRoleId: 'local-role', memberRoleIds: [],
+      });
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [managed]);
+
+      expect(() => useTeamStore.getState().updateTeam(local.id, { name: managed.name }))
+        .toThrow('duplicate team name');
+      expect(useTeamStore.getState().teams[0].name).toBe('我的团队');
     });
   });
   describe('built-in teams', () => {

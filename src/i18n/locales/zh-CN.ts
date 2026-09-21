@@ -1575,6 +1575,7 @@ const zhCN: TranslationDict = {
     teamRowSummary: '队长：{leader} · {count} 名成员',
     teamRowSummaryOne: '队长：{leader} · 1 名成员',
     detailStartChat: '用这个专家团开始对话',
+    detailUnavailable: '这个组织专家团当前不可用',
     detailLeader: '队长',
     detailMembers: '成员（{count}）',
     detailNoMembers: '还没有成员，只有队长',

@@ -2032,6 +2032,7 @@ export interface TranslationDict {
     /** Singular of `teamRowSummary`, for exactly one member. */
     teamRowSummaryOne: string;
     detailStartChat: string;
+    detailUnavailable: string;
     detailLeader: string;
     detailMembers: string;
     detailNoMembers: string;

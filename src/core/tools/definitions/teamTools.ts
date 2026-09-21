@@ -3,7 +3,7 @@ import { agentRegistry } from '@/core/agent/registry';
 import { effectiveRoleId, ensureRoleId } from '@/core/team/roleIdentity';
 import { isValidNewAvatar } from '@/core/tools/definitions/agentTools';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
-import { useTeamStore } from '@/stores/teamStore';
+import { getVisibleTeams, useTeamStore } from '@/stores/teamStore';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { getI18n, format } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
@@ -55,8 +55,10 @@ export const saveTeamTool: ToolDefinition = {
     // Built-ins are read-only, and the store's updateTeam would silently drop
     // this patch — refuse out loud instead of reporting a roster nobody wrote.
     // Checked before the roster loop so a refusal writes no AGENT.md role ids.
-    const targeted = useTeamStore.getState().teams.find((team) => team.name === name);
-    if (targeted && isBuiltinTeam(targeted)) return format(t.builtinTeamReadOnly, { name: targeted.name });
+    const targeted = getVisibleTeams().find((team) => team.name === name);
+    if (targeted && (isBuiltinTeam(targeted) || targeted.managed)) {
+      return format(t.builtinTeamReadOnly, { name: targeted.name });
+    }
 
     const names = [...new Set([leaderName, ...input.members.map((member) => member.trim())])];
     const available = new Set(agentRegistry.getAvailableAgents().map((agent) => agent.name));
@@ -96,7 +98,7 @@ export const saveTeamTool: ToolDefinition = {
       };
       // Re-read after identity writes: another caller may have saved this name.
       const store = useTeamStore.getState();
-      const existing = store.teams.find((team) => team.name === name);
+      const existing = getVisibleTeams().find((team) => team.name === name && !team.managed);
       const id = existing ? existing.id : store.createTeam(fields).id;
       if (existing) store.updateTeam(id, fields);
       const saved = useTeamStore.getState().teams.find((team) => team.id === id)!;

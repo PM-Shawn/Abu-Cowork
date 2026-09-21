@@ -1574,6 +1574,7 @@ const enUS: TranslationDict = {
     teamRowSummary: 'Leader: {leader} · {count} members',
     teamRowSummaryOne: 'Leader: {leader} · 1 member',
     detailStartChat: 'Start a conversation with this expert team',
+    detailUnavailable: 'This organization expert team is currently unavailable',
     detailLeader: 'Leader',
     detailMembers: 'Members ({count})',
     detailNoMembers: 'No members yet — the leader works alone',

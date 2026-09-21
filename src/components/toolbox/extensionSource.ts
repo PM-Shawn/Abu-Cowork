@@ -4,7 +4,7 @@
  *  Lives beside {@link SourceSubNav} rather than inside it so the store and the
  *  panels can name a source without importing a component module (and so the
  *  id helper below is not a value export from a `.tsx`). */
-export type ExtensionSource = 'market' | 'mine';
+export type ExtensionSource = 'market' | 'mine' | 'organization';
 
 /** Default prefix for a sub-nav's per-source `data-testid` and `id`. */
 export const DEFAULT_SOURCE_ID_PREFIX = 'extensions-source';

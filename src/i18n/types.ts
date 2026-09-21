@@ -3977,6 +3977,20 @@ export interface TranslationDict {
     laneGateway: string;
     /** Usage lane label — personal API key. */
     lanePersonal: string;
+    agentCatalog: {
+      unavailableTitle: string;
+      unavailableDescription: string;
+      syncing: string;
+      noMatches: string;
+      empty: string;
+      managedGroup: string;
+      configured: string;
+      dependenciesPending: string;
+      preparing: string;
+      prepareAndStart: string;
+      /** `{version}` = the published Agent version. */
+      configuredByAdministrator: string;
+    };
     /** /me transparency panel (Settings → Enterprise → My Data). */
     meTransparency: {
       tabProfile: string;

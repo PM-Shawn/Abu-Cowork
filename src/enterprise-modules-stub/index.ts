@@ -49,7 +49,7 @@ export function resolveEffectiveLlmCreds(
   }
 }
 
-export type ClientEnterpriseModule = 'skills' | 'mcp' | 'kb'
+export type ClientEnterpriseModule = 'skills' | 'agents' | 'mcp' | 'kb'
 export interface EnterpriseEntitlementSnapshot {
   mode: 'personal' | 'enterprise' | 'offline'
   licenseStatus: string | null

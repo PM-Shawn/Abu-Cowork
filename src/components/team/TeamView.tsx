@@ -7,7 +7,9 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { useChatStore } from '@/stores/chatStore';
 import { prepareExpertEntry } from '@/core/team/expertEntry';
 import { teamIdentity } from '@/core/team/expertContact';
+import { getEnterpriseMount } from '@/core/enterprise/mounts-registry';
 import { useToastStore } from '@/stores/toastStore';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { agentRegistry } from '@/core/agent/registry';
 import { ensureRoleId, effectiveRoleId, resolveRoleId, roleIdAgentName } from '@/core/team/roleIdentity';
 import { isBuiltinTeam } from '@/core/team/builtinTeams';
@@ -399,6 +401,17 @@ export default function TeamView() {
   const startNewConversation = useChatStore((s) => s.startNewConversation);
   const setPendingInput = useChatStore((s) => s.setPendingInput);
   const closeTeam = useSettingsStore((s) => s.closeTeam);
+  const enterpriseMode = useEnterpriseStore((s) => s.mode);
+  const enterpriseBinding = enterpriseMode.kind === 'enterprise' || enterpriseMode.kind === 'offline'
+    ? enterpriseMode.binding
+    : null;
+  const enterpriseConfig = enterpriseMode.kind === 'enterprise'
+    ? enterpriseMode.config
+    : enterpriseMode.kind === 'offline'
+      ? enterpriseMode.lastConfig
+      : null;
+  const OrganizationAgents = getEnterpriseMount('agentMarket');
+  const hasOrganizationAgents = !!enterpriseBinding && !!OrganizationAgents;
 
   // Prepare a draft; opening an expert never creates an empty history entry.
   const startChatWithTeam = (team: Team, prompt?: string) => {
@@ -443,6 +456,12 @@ export default function TeamView() {
       setSource('teams', 'market');
     }
   }, [activeTeamTab, hasManagedTeams, setSource, sources.teams]);
+
+  useEffect(() => {
+    if (activeTeamTab === 'members' && sources.members === 'organization' && !hasOrganizationAgents) {
+      setSource('members', 'market');
+    }
+  }, [activeTeamTab, hasOrganizationAgents, setSource, sources.members]);
 
   // `_agents` / `_ready` are unused by value — they exist only to make
   // `discoveredAgents` and `pluginRecordsReady` visible inputs of this derived
@@ -491,7 +510,7 @@ export default function TeamView() {
     ) : null;
 
     let createControl: ReactNode = null;
-    if (activeTeamTab === 'members') {
+    if (activeTeamTab === 'members' && sources.members !== 'organization') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateMember}
@@ -499,7 +518,7 @@ export default function TeamView() {
           triggerTestId="member-create-trigger"
         />
       );
-    } else if (activeTeamTab === 'teams') {
+    } else if (activeTeamTab === 'teams' && sources.teams !== 'organization') {
       createControl = (
         <ToolboxCreateMenu
           onAICreate={handleAICreateTeam}
@@ -515,7 +534,16 @@ export default function TeamView() {
   const renderContent = () => {
     switch (activeTeamTab) {
       case 'members':
-        // Single identity source: this IS the toolbox agents surface.
+        if (sources.members === 'organization' && OrganizationAgents && enterpriseBinding) {
+          return (
+            <OrganizationAgents
+              binding={enterpriseBinding}
+              config={enterpriseConfig}
+              searchQuery={search}
+              onClose={closeTeam}
+            />
+          );
+        }
         return <AgentsSection manualCreateTrigger={manualCreateTrigger} searchQuery={search} source={sources.members} />;
       case 'teams': {
         const source = sources.teams;
@@ -578,7 +606,12 @@ export default function TeamView() {
           onChange={(next) => setSource(activeTeamTab, next)}
           marketLabel={t.toolbox.sourceMarket}
           mineLabel={t.toolbox.categoryMine}
-          organizationLabel={activeTeamTab === 'teams' && hasManagedTeams ? t.toolbox.organizationSource : undefined}
+          organizationLabel={
+            (activeTeamTab === 'members' && hasOrganizationAgents)
+            || (activeTeamTab === 'teams' && hasManagedTeams)
+              ? t.toolbox.organizationSource
+              : undefined
+          }
           testIdPrefix="team-source"
           panelId={TEAM_PANEL_ID}
         />

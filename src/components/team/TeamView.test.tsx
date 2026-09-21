@@ -20,9 +20,31 @@ const settingsState = {
   closeTeam: vi.fn(),
 };
 
+const enterpriseState = vi.hoisted(() => ({
+  mode: { kind: 'personal' } as Record<string, unknown>,
+  hasAgentMarket: false,
+}));
+
 vi.mock('@/stores/settingsStore', () => ({
   useSettingsStore: (selector?: (state: Record<string, unknown>) => unknown) =>
     selector ? selector(settingsState) : settingsState,
+}));
+
+vi.mock('@/stores/enterpriseStore', () => ({
+  useEnterpriseStore: Object.assign(
+    (selector: (state: Record<string, unknown>) => unknown) => selector({ mode: enterpriseState.mode }),
+    { subscribe: () => () => {}, getState: () => ({ mode: enterpriseState.mode }) },
+  ),
+}));
+
+vi.mock('@/core/enterprise/mounts-registry', () => ({
+  getEnterpriseMount: (key: string) => key === 'agentMarket' && enterpriseState.hasAgentMarket
+    ? ({ searchQuery, onClose }: { searchQuery?: string; onClose?: () => void }) => (
+      <div data-testid="organization-agents" data-query={searchQuery}>
+        <button onClick={onClose}>Open organization expert</button>
+      </div>
+    )
+    : undefined,
 }));
 
 const chatState = {
@@ -160,6 +182,8 @@ describe('TeamView', () => {
     chatState.conversationIndex = {};
     usePluginStore.setState({ activationReady: true });
     localeRef.current = 'zh-CN';
+    enterpriseState.mode = { kind: 'personal' };
+    enterpriseState.hasAgentMarket = false;
     vi.clearAllMocks();
   });
 
@@ -552,6 +576,38 @@ describe('TeamView', () => {
     settingsState.activeTeamTab = 'members';
     render(<TeamView />);
     expect(screen.getByTestId('agents-section')).toBeTruthy();
+  });
+
+  it('members tab exposes the organization catalog for a bound enterprise client', () => {
+    enterpriseState.mode = {
+      kind: 'enterprise',
+      binding: { serverUrl: 'https://enterprise.example' },
+      config: null,
+    };
+    enterpriseState.hasAgentMarket = true;
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES } });
+    render(<TeamView />);
+
+    expect(screen.getByTestId('team-source-organization')).toHaveTextContent('组织');
+    expect(screen.getByTestId('member-create-trigger')).toBeVisible();
+
+    fireEvent.click(screen.getByTestId('team-source-organization'));
+
+    expect(screen.getByTestId('organization-agents')).toBeVisible();
+    expect(screen.queryByTestId('agents-section')).toBeNull();
+    expect(screen.queryByTestId('member-create-trigger')).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('搜索...'), { target: { value: '审阅' } });
+    expect(screen.getByTestId('organization-agents')).toHaveAttribute('data-query', '审阅');
+    fireEvent.click(screen.getByRole('button', { name: 'Open organization expert' }));
+    expect(settingsState.closeTeam).toHaveBeenCalledTimes(1);
+  });
+
+  it('members tab recovers a stale organization source when no enterprise catalog is mounted', async () => {
+    useExtensionSourceStore.setState({ sources: { ...DEFAULT_SOURCES, members: 'organization' } });
+    render(<TeamView />);
+    await waitFor(() => expect(useExtensionSourceStore.getState().sources.members).toBe('market'));
+    expect(screen.queryByTestId('team-source-organization')).toBeNull();
+    expect(screen.getByTestId('agents-section')).toBeVisible();
   });
 
   it('members tab: leaving and coming back does not replay 手动创建 (no blank editor on return)', () => {

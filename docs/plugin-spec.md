@@ -446,7 +446,7 @@ JSON 文件的内容可以直接是 server 的映射，也可以包在 `{ "mcpSe
 | `minAbuVersion` | 0.51.0 |
 | `teams/` | 0.51.0 |
 | `app` | 0.51.0 |
-| 市场条目的 `providesApp` | 0.51.0 |
+| 市场条目的 `providesApp`、`displayName` | 0.51.0 |
 
 ## 12. 市场 `marketplace.json`
 
@@ -463,6 +463,7 @@ JSON 文件的内容可以直接是 server 的映射，也可以包在 `{ "mcpSe
 | 条目字段 | 必填 | 说明 | 最低 Abu 版本 |
 |---|---|---|---|
 | `name` | 是 | 插件名称，与清单的 `name` 相同 | 0.50.0 |
+| `displayName` | 应用条目必填 | 市场卡片上显示的名称，与清单的 `interface.displayName` 相同。不写时卡片显示 `name` | 0.51.0 |
 | `description`、`version`、`author`、`category`、`homepage`、`keywords`、`tags` | 否 | 市场列表里显示的信息 | 0.50.0 |
 | `source` | 是 | 插件从哪里取，见下表 | 0.50.0 |
 | `providesApp` | 否 | 这个插件是不是应用。设为 `true` 时出现在「发现应用」里；清单里没有 `app` 字段时安装失败 | 0.51.0 |
@@ -483,7 +484,7 @@ JSON 文件的内容可以直接是 server 的映射，也可以包在 `{ "mcpSe
 4. 应用安装以后出现在切换器里，进入就能看到首页、导航和网页。
 5. 修改包以后，同时提高清单和市场条目里的 `version`。Abu 发现市场条目的 `version` 和已安装的版本不同，就会在这个插件上显示「更新」；更新前同样出现确认框。
 
-也可以在 Abu 里点「创建应用」或「创建插件」，在对话里描述要解决的工作，由阿布按本规范写出包；阿布写完会自己调用校验工具，按报错的字段修正到通过。草稿出现在「扩展 → 插件 → 我的」，点「校验并预览」检查以后再安装；带应用配置的草稿安装以后直接进入应用。阿布写包时读取的写法说明（内置技能 `abu-plugin-builder` 的 `references/`）和本规范第 6 节、第 8 节、附录 A、附录 B 的内容一致。
+也可以在 Abu 里点切换器的「创建应用」，或者「扩展 → 插件 → 添加 → 创建插件」，在对话里描述要解决的工作，由阿布按本规范写出包；阿布写完会自己调用校验工具，按报错的字段修正到通过。草稿出现在「扩展 → 插件 → 我的」，点「校验并预览」检查以后再安装；带应用配置的草稿安装以后直接进入应用。阿布写包时读取的写法说明（内置技能 `abu-plugin-builder` 的 `references/`）和本规范第 6 节、第 8 节、附录 A、附录 B 的内容一致。
 
 校验失败时，错误信息会给出不合格字段的完整路径，例如 `interface.brandColor`、`mcpServers.acme-crm.transport`、`app.home.modes.items[1].scenes[0].run`。常见原因：
 
@@ -506,7 +507,7 @@ JSON 文件的内容可以直接是 server 的映射，也可以包在 `{ "mcpSe
 | `teams.<id>.members[n]`、`teams.<id>.leader` | 引用的专家不存在；队长不在成员里；成员少于 2 位 |
 | `minAbuVersion` | 用了 `app` 或 `teams/` 却没有写；写的不是语义化版本号；当前 Abu 低于要求 |
 
-官方市场收录时（`npm run market:check`）还会核对：条目的 `name`、`version`、`minAbuVersion` 与清单一致；`providesApp` 与清单里有没有 `app` 一致；应用写了 `interface.displayName`、`shortDescription`、`logo`、`logoDark`；清单和应用配置里引用的图片文件都在包里。
+官方市场收录时（`npm run market:check`）还会核对：条目的 `name`、`version`、`minAbuVersion` 与清单一致；`providesApp` 与清单里有没有 `app` 一致；应用写了 `interface.displayName`、`shortDescription`、`logo`、`logoDark`，并且条目的 `displayName` 与 `interface.displayName` 一字不差（市场卡片读条目，应用内部读清单）；清单和应用配置里引用的图片文件都在包里。
 
 ## 14. 提交前检查
 

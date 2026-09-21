@@ -5,6 +5,7 @@
   "plugins": [
     {
       "name": "abu-example-shop-ops",
+      "displayName": "店铺运营",
       "description": "电商店铺运营：选品、详情页、评价回复",
       "version": "1.0.0",
       "author": { "name": "Abu" },

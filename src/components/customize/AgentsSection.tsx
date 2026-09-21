@@ -9,7 +9,8 @@ import AgentEditor from './AgentEditor';
 import DialogShell from '@/components/team/DialogShell';
 import { Toggle } from '@/components/ui/toggle';
 import { Button } from '@/components/ui/button';
-import { MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check } from 'lucide-react';
+import { Bot, MoreHorizontal, Pencil, Trash2, MessageCircle, Eye, Code, Check } from 'lucide-react';
+import EmptyState from '@/components/common/EmptyState';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { remove } from '@tauri-apps/plugin-fs';
 import { homeDir } from '@tauri-apps/api/path';
@@ -321,8 +322,13 @@ export default function AgentsSection({ manualCreateTrigger, searchQuery, source
         {source === 'mine' ? (
           userAgents.length === 0 ? (
             mineTotal === 0 ? (
-              <div className="py-16 text-center">
-                <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.agentsMineEmpty}</p>
+              <div className="py-16">
+                <EmptyState
+                  icon={Bot}
+                  title={t.toolbox.agentsMineEmpty}
+                  hint={t.toolbox.agentsMineEmptyHint}
+                  action={<Button size="sm" data-testid="agents-mine-create" onClick={() => setEditorAgent('new')}>{t.toolbox.createAgent}</Button>}
+                />
               </div>
             ) : (
               <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noAgentsFound}</div>

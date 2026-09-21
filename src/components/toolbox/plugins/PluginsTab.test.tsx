@@ -24,7 +24,7 @@ vi.mock('./MarketplaceBrowser', () => ({
 }));
 vi.mock('./AuthoredPluginList', () => ({
   default: (props: Record<string, unknown>) => (
-    <div data-testid="stub-installed-list" data-home={String(props.home)} />
+    <div data-testid="stub-authored-list" data-home={String(props.home)} />
   ),
 }));
 // The dialog's own flow (pick a folder, parse its manifest) has its own suite;
@@ -56,13 +56,15 @@ describe('PluginsTab', () => {
     const browser = await screen.findByTestId('stub-marketplace-browser');
     expect(browser).toHaveAttribute('data-home', '/Users/testuser');
     // One shelf at a time: the authored list is 「我的」's.
-    expect(screen.queryByTestId('stub-installed-list')).toBeNull();
+    expect(screen.queryByTestId('stub-authored-list')).toBeNull();
   });
 
-  it('mounts the authored-only installed list for 我的', async () => {
+  it('gives 我的 one list, with what the user created here inside it', async () => {
     render(<PluginsTab searchQuery="" source="mine" />);
-    const list = await screen.findByTestId('stub-installed-list');
+    const list = await screen.findByTestId('stub-authored-list');
     expect(list).toHaveAttribute('data-home', '/Users/testuser');
+    // One list, so the authored cards sit inside the shelf's own container.
+    expect(screen.getByTestId('plugin-mine-group')).toContainElement(list);
     expect(screen.queryByTestId('stub-marketplace-browser')).toBeNull();
   });
 

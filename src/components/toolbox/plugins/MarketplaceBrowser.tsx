@@ -13,8 +13,6 @@ import ConfirmDialog from '@/components/common/ConfirmDialog';
 import { useToastStore } from '@/stores/toastStore';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
 import { useAppStore } from '@/stores/appStore';
-import type { ExtensionsFilter } from '@/stores/settingsStore';
-import { cn } from '@/lib/utils';
 import { pluginConfigFields, savePluginConfiguration } from '@/core/plugin/configuration';
 import { orphanedInstalls } from '@/core/plugin/authored';
 import type { InstalledPlugin } from '@/core/plugin/installedStore';
@@ -59,9 +57,13 @@ interface MarketplaceBrowserProps {
   searchQuery: string;
   requestedMarket?: { name: string };
   onAddMarketplace: () => void;
-  /** A deep link's narrowing (「发现应用」 opens on apps); consumed once, see `onFilterConsumed`. */
-  initialFilter?: ExtensionsFilter | null;
-  onFilterConsumed?: () => void;
+  /**
+   * Which half of a marketplace this render is for. `plugins` (the 扩展 page)
+   * lists everything except apps; `apps` (the app market dialog) lists only
+   * apps. A package never shows up on both, so a user browsing plugins is
+   * never handed an app and the other way round.
+   */
+  mode?: 'plugins' | 'apps';
 }
 
 type EntriesState =
@@ -75,10 +77,16 @@ function authorName(author: MarketplaceEntry['author']): string | undefined {
   return typeof author === 'string' ? author : author.name;
 }
 
+/** What a card calls this package: an app is known by its own name, not its package id. */
+function entryLabel(entry: MarketplaceEntry): string {
+  return entry.displayName ?? entry.name;
+}
+
 function matchesQuery(entry: MarketplaceEntry, query: string): boolean {
   if (!query) return true;
   const haystack = [
     entry.name,
+    entry.displayName ?? '',
     entry.description ?? '',
     entry.category ?? '',
     authorName(entry.author) ?? '',
@@ -96,21 +104,13 @@ export default function MarketplaceBrowser({
   requestedMarket,
   onAddMarketplace,
   scrollParent,
-  initialFilter = null,
-  onFilterConsumed,
+  mode = 'plugins',
 }: MarketplaceBrowserProps) {
   const { t } = useI18n();
   const tb = t.toolbox;
   const enterApp = useAppStore((s) => s.enterApp);
   const enterInstalledApp = useAppStore((s) => s.enterAppWhenAvailable);
-  // 「全部 | 应用」: apps are plugins whose entry says `providesApp`; the
-  // switcher's 「发现应用」 lands here with the apps half preselected.
-  const [filter, setFilter] = useState<'all' | 'apps'>(initialFilter === 'apps' ? 'apps' : 'all');
-  useEffect(() => {
-    if (!initialFilter) return;
-    setFilter(initialFilter === 'apps' ? 'apps' : 'all');
-    onFilterConsumed?.();
-  }, [initialFilter, onFilterConsumed]);
+  const appsOnly = mode === 'apps';
   const marketplaces = usePluginStore((s) => s.marketplaces);
   const removeMarketplace = usePluginStore((s) => s.removeMarketplace);
   const installed = usePluginStore((s) => s.installed);
@@ -254,8 +254,8 @@ export default function MarketplaceBrowser({
 
   const visibleEntries = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return (marketplace?.plugins ?? []).filter((entry) => (filter === 'all' || entry.providesApp === true) && matchesQuery(entry, query));
-  }, [marketplace, searchQuery, filter]);
+    return (marketplace?.plugins ?? []).filter((entry) => (entry.providesApp === true) === appsOnly && matchesQuery(entry, query));
+  }, [marketplace, searchQuery, appsOnly]);
 
   const handlePlan = useCallback(
     async (entry: MarketplaceEntry) => {
@@ -345,7 +345,7 @@ export default function MarketplaceBrowser({
       }
       addToast({
         type: 'success',
-        title: format(existing ? tb.pluginsUpdateSucceeded : tb.pluginsInstallSucceeded, { name: entry.name }),
+        title: format(existing ? tb.pluginsUpdateSucceeded : tb.pluginsInstallSucceeded, { name: entryLabel(entry) }),
         message: tb.pluginsUpdateReloadHint,
       });
       closeFlow();
@@ -415,12 +415,14 @@ export default function MarketplaceBrowser({
     if (installedRecord) return <InstalledPluginCard
       plugin={installedRecord}
       home={home}
+      market
+      name={entryLabel(entry)}
       description={entry.description}
       testId="plugin-marketplace-entry"
       onClick={() => setManaging(installedRecord)}
       actions={<>
-        {hasUpdate && <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entry.name}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button>}
-        {isApp && <Button variant="tint" size="xs" className="h-7 px-2.5" data-testid="plugin-enter-app" aria-label={`${tb.pluginsEnter}: ${entry.name}`} onClick={event => { event.stopPropagation(); enterApp(installedRecord.key); }}>{tb.pluginsEnter}</Button>}
+        {hasUpdate && <Button size="xs" className="h-7 px-2.5" data-testid="plugin-update-button" disabled={entriesState.kind !== 'ready'} aria-label={`${tb.pluginsUpdate}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); void handlePlan(entry); }}>{tb.pluginsUpdate}</Button>}
+        {isApp && <Button variant="tint" size="xs" className="h-7 px-2.5" data-testid="plugin-enter-app" aria-label={`${tb.pluginsEnter}: ${entryLabel(entry)}`} onClick={event => { event.stopPropagation(); enterApp(installedRecord.key); }}>{tb.pluginsEnter}</Button>}
       </>}
     />;
     const installLabel = isApp ? tb.pluginsUse : tb.pluginsInstall;
@@ -428,27 +430,31 @@ export default function MarketplaceBrowser({
       <div className="h-full">
         <MarketplaceEntryRow
           testId="plugin-marketplace-entry"
-          name={entry.name}
+          name={entryLabel(entry)}
           description={entry.description}
           onClick={() => void handlePlan(entry)}
-          actions={<Button variant="tint" size="xs" className="h-7 px-2.5" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${installLabel}: ${entry.name}`}>{installLabel}</Button>}
+          actions={<Button variant="tint" size="xs" className="h-7 px-2.5" disabled={entriesState.kind !== 'ready'} onClick={event => { event.stopPropagation(); void handlePlan(entry); }} aria-label={`${installLabel}: ${entryLabel(entry)}`}>{installLabel}</Button>}
         />
       </div>
     );
   };
 
   if (marketplaces.length === 0) {
+    // Adding a market is a plugin-page job, so the app market says where to go
+    // rather than offering a button that belongs to another page.
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
         <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />
-        <p className="text-h-sm text-[var(--abu-text-primary)]">{tb.pluginsNoMarketplaces}</p>
+        <p className="text-h-sm text-[var(--abu-text-primary)]">{appsOnly ? t.appMarket.emptyTitle : tb.pluginsNoMarketplaces}</p>
         <p className="max-w-md text-body text-[var(--abu-text-tertiary)]">
-          {tb.pluginsNoMarketplacesHint}
+          {appsOnly ? t.appMarket.emptyHint : tb.pluginsNoMarketplacesHint}
         </p>
-        <Button className="mt-1" onClick={onAddMarketplace} data-testid="plugin-add-marketplace-cta">
-          <Plus className="h-3.5 w-3.5" />
-          {tb.pluginsAddMarketplace}
-        </Button>
+        {!appsOnly && (
+          <Button className="mt-1" onClick={onAddMarketplace} data-testid="plugin-add-marketplace-cta">
+            <Plus className="h-3.5 w-3.5" />
+            {tb.pluginsAddMarketplace}
+          </Button>
+        )}
       </div>
     );
   }
@@ -469,33 +475,19 @@ export default function MarketplaceBrowser({
           <span className="text-h-xs text-[var(--abu-text-primary)]">{selectedName}</span>
         )}
 
-        <div role="tablist" aria-label={tb.pluginsFilterApps} data-testid="plugin-market-filter" className="inline-flex rounded-lg bg-[var(--abu-bg-muted)] p-0.5">
-          {(['all', 'apps'] as const).map((value) => (
-            <button
-              key={value}
-              type="button"
-              role="tab"
-              aria-selected={filter === value}
-              data-testid={`plugin-market-filter-${value}`}
-              onClick={() => setFilter(value)}
-              className={cn('rounded-md px-2.5 py-1 text-minor transition-colors', filter === value ? 'bg-[var(--abu-bg-base)] text-[var(--abu-text-primary)] shadow-sm' : 'text-[var(--abu-text-muted)] hover:text-[var(--abu-text-primary)]')}
-            >
-              {value === 'all' ? tb.pluginsFilterAll : tb.pluginsFilterApps}
-            </button>
-          ))}
-        </div>
-
         {marketplace && (
           <span className="text-minor text-[var(--abu-text-muted)]">
-            {format(tb.pluginsEntryCount, { count: visibleEntries.length })}
+            {format(appsOnly ? t.appMarket.entryCount : tb.pluginsEntryCount, { count: visibleEntries.length })}
           </span>
         )}
 
         <div className="ml-auto flex items-center gap-1.5">
           {selectedName && <Button size="icon-sm" variant="ghost" aria-label={tb.pluginsRefreshMarketplace} disabled={entriesState.kind === 'loading'} onClick={() => setReload(value => value + 1)}><RefreshCw className="h-3.5 w-3.5" /></Button>}
           {/* The built-in market cannot be removed (the store short-circuits it),
-              so it gets no Remove control rather than one that silently no-ops. */}
-          {selectedName && !selected?.builtin && (
+              so it gets no Remove control rather than one that silently no-ops.
+              Managing which markets exist belongs to 扩展 → 插件, so the app
+              market dialog shows no Remove either. */}
+          {selectedName && !selected?.builtin && !appsOnly && (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -557,7 +549,7 @@ export default function MarketplaceBrowser({
         </div>
       )}
 
-      {orphans.length > 0 && (
+      {orphans.length > 0 && !appsOnly && (
         <section
           data-testid="plugin-orphan-group"
           className="shrink-0 border-t border-[var(--abu-border)] py-3"
@@ -601,7 +593,7 @@ export default function MarketplaceBrowser({
 
       <InstallDisclosureDialog
         open={flow.kind !== 'closed'}
-        entryName={flow.kind === 'closed' ? '' : flow.entry.name}
+        entryName={flow.kind === 'closed' ? '' : entryLabel(flow.entry)}
         state={dialogState}
         installing={installing}
         onConfirm={configuration => void handleConfirmInstall(configuration)}

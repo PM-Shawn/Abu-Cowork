@@ -13,6 +13,7 @@ import SkillUploadModal from './SkillUploadModal';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { FileText, Pencil, MoreHorizontal, MessageCircle, Download, Clock } from 'lucide-react';
+import EmptyState from '@/components/common/EmptyState';
 import { remove } from '@tauri-apps/plugin-fs';
 import { save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -129,8 +130,15 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   // is hidden rather than misfiled), so the two shelves read it rather than
   // keeping a second list of sources that can drift from it.
   const scopedSkills = useMemo(() => {
-    const bucket = source === 'mine' ? 'mine' : 'builtin';
-    return installedSkills.filter((s) => sourceToUXCategory(s.source) === bucket);
+    // 市场 is the catalogue: what Abu ships (and what an organization or a
+    // market offers later), each row saying whether it is installed. 我的 is
+    // everything installed — the bundled skills, which ship installed, plus
+    // the user's own, the plugins' and the organization's. The switch that
+    // decides whether Abu may use a skill lives on the 我的 card.
+    return installedSkills.filter((s) => {
+      const bucket = sourceToUXCategory(s.source);
+      return source === 'mine' ? bucket === 'mine' || bucket === 'builtin' : bucket === 'builtin';
+    });
   }, [installedSkills, source]);
 
   // Filter by search
@@ -207,6 +215,9 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
   const renderSkillCard = (skill: Skill) => {
     const gated = !pluginAllowed(skill);
     const isEnabled = !disabledSet.has(skill.name) && !gated;
+    // On 市场 a card says whether the skill is installed; the switch belongs to
+    // 我的, where the user's installed skills are.
+    const market = source !== 'mine';
     const badge = sourceBadge(skill);
     // Plugin and organization skills sit under 「我的」 with their provenance
     // on the card, the same pill the expert and team cards carry.
@@ -226,7 +237,11 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
               {t.toolbox[badge.labelKey]}
             </span>
           ) : undefined),
-          toggle: (
+          toggle: market ? (
+            <span data-testid="skill-installed-badge" className="shrink-0 rounded px-1.5 py-0.5 text-caption font-medium text-[var(--abu-text-muted)]">
+              {t.toolbox.installedMark}
+            </span>
+          ) : (
             <span onClick={(event) => event.stopPropagation()} title={gated ? t.toolbox.skillPluginDisabled : undefined}>
               <Toggle checked={isEnabled} disabled={gated} onChange={() => toggleSkillEnabled(skill.name)} size="sm" tone="green" />
             </span>
@@ -292,8 +307,13 @@ export default function SkillsSection({ manualCreateTrigger, showUploadModal: ex
             them behind 「还没有你创建的技能」, and nothing else would surface them. */}
         {filteredSkills.length === 0 && shadowedBuiltin.length === 0 && !draftsVisible ? (
           source === 'mine' && scopedSkills.length === 0 ? (
-            <div className="py-16 text-center">
-              <p className="text-h-sm text-[var(--abu-text-primary)]">{t.toolbox.skillsMineEmptyTitle}</p>
+            <div className="py-16">
+              <EmptyState
+                icon={FileText}
+                title={t.toolbox.skillsMineEmptyTitle}
+                hint={t.toolbox.skillsMineEmptyHint}
+                action={<Button size="sm" data-testid="skills-mine-create" onClick={() => setEditorSkill('new')}>{t.toolbox.createSkill}</Button>}
+              />
             </div>
           ) : (
             <div className="text-body text-[var(--abu-text-muted)] py-16 text-center">{t.toolbox.noSkillsFound}</div>

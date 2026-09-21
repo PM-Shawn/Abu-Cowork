@@ -308,12 +308,17 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           unchanged, without a card edge or divider. Other hosts retain their
           existing platform-specific clearance. */}
       {windowsWorkspaceHeader ? (
-        // The app switcher takes the brand row; the version moved to the
-        // account menu, where it already shows.
+        // Abu's own name keeps the brand row; the switcher sits beside it and
+        // reads 发现应用 until the user is inside an app.
         <div
           data-abu-windows-sidebar-header
-          className="flex h-[52px] shrink-0 items-center px-4 pt-2 pr-[76px]"
+          className="flex h-[52px] shrink-0 items-center gap-2 px-4 pt-2 pr-[76px]"
         >
+          {/* Abu's name only: the version lives in the account menu, and the
+              row's width belongs to the switcher beside it. */}
+          <span className="shrink-0 whitespace-nowrap text-h-xs font-semibold text-[var(--abu-text-primary)]">
+            {t.common.appName}
+          </span>
           <AppSwitcher className="min-w-0 flex-1" />
         </div>
       ) : (

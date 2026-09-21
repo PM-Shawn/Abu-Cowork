@@ -1,13 +1,14 @@
 /**
- * The 「已安装」 group of the plugins 「我的」 shelf: every personal install the
- * user made from a marketplace. 「我的」 is what the user HAS — a plugin fetched
- * from someone else's market is theirs once installed, so it lists here (and
- * stays in the market with an 「已安装」 mark, where updates are offered).
+ * The plugins 「我的」 shelf: every personal install the user made from a
+ * marketplace. 「我的」 is what the user HAS — a plugin fetched from someone
+ * else's market is theirs once installed, so it lists here (and stays in the
+ * market with an 「已安装」 mark, where updates are offered).
  *
- * Two kinds of install are not this group's: organization installs (managed
- * and uninstalled from the 组织 view only, same as skills) and the user's own
- * creations (`isAuthoredInstall`), which `AuthoredPluginList` shows with
- * their drafts.
+ * The shelf is one list. What the user created here comes through `children`
+ * as more cards in the same grid (`AuthoredPluginList` in `bare` mode), so
+ * where a plugin came from changes its detail panel, never its shelf.
+ * Organization installs are the one kind kept out: they are managed and
+ * uninstalled from the 组织 view only, same as skills.
  *
  * Counts come from the install record's `contributed` list — the same list the
  * uninstaller withdraws from — rather than from rescanning the package
@@ -19,7 +20,7 @@
  * {@link UninstallPluginDialog}, which owns the confirmation and the store call.
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 import { Package, Trash2 } from 'lucide-react';
 import { useI18n } from '@/i18n';
 import { Button } from '@/components/ui/button';
@@ -34,18 +35,21 @@ import UninstallPluginDialog from './UninstallPluginDialog';
 
 interface InstalledPluginListProps {
   home: string;
-  /** Render as a titled group inside the 「我的」 shelf rather than as a whole panel. */
-  grouped?: boolean;
   searchQuery: string;
   /** Offered from the empty state: the marketplace is where an install comes from. */
   onBrowseMarketplace?: () => void;
+  /** More cards for the same grid — what the user created here. */
+  children?: ReactNode;
+  /** How many of those there are, so the empty state counts the whole shelf. */
+  childCount?: number;
 }
 
 export default function InstalledPluginList({
   home,
   searchQuery,
-  grouped = false,
   onBrowseMarketplace,
+  children,
+  childCount = 0,
 }: InstalledPluginListProps) {
   const { t } = useI18n();
   const tb = t.toolbox;
@@ -67,20 +71,24 @@ export default function InstalledPluginList({
   const selected = scoped.find((p) => p.key === selectedKey) ?? null;
 
   const emptyState = (
-    <div className={grouped
-      ? 'flex flex-col items-start gap-2 rounded-xl border border-dashed border-[var(--abu-border)] bg-[var(--abu-bg-subtle)] px-4 py-5 text-minor text-[var(--abu-text-muted)]'
-      : 'flex h-full flex-col items-center justify-center gap-3 px-8 text-center'}>
-      {!grouped && <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />}
-      <p className={grouped ? undefined : 'text-body text-[var(--abu-text-tertiary)]'}>{scoped.length === 0 ? tb.pluginsEmptyState : tb.pluginsNoMatches}</p>
+    <div className="flex flex-col items-center justify-center gap-3 px-8 py-16 text-center">
+      <Package className="h-8 w-8 text-[var(--abu-text-placeholder)]" />
+      <p className="text-body text-[var(--abu-text-tertiary)]">{scoped.length === 0 ? tb.pluginsEmptyState : tb.pluginsNoMatches}</p>
+      {/* Two ways to fill the shelf, so the empty state names both. */}
+      {scoped.length === 0 && <p className="text-caption text-[var(--abu-text-tertiary)]">{tb.pluginsMineEmptyHint}</p>}
       {scoped.length === 0 && onBrowseMarketplace && (
-        <Button variant="outline" size={grouped ? 'sm' : 'default'} onClick={onBrowseMarketplace}>
+        <Button variant="outline" onClick={onBrowseMarketplace}>
           {tb.pluginsGoToMarketplace}
         </Button>
       )}
     </div>
   );
 
-  const body = visible.length === 0 ? emptyState : (
+  // The grid is mounted even while empty: what the user created here reports
+  // how many cards it has from inside it, so an unmounted child could never
+  // say it has any.
+  const body = <>
+    {visible.length === 0 && childCount === 0 && emptyState}
     <ToolGrid>
       {visible.map((plugin) => (
         <InstalledPluginCard
@@ -103,13 +111,13 @@ export default function InstalledPluginList({
           }
         />
       ))}
+      {children}
     </ToolGrid>
-  );
+  </>;
 
   return (
-    <div className={grouped ? 'px-8 pb-6' : 'h-full overflow-y-auto px-8 py-3'} data-testid={grouped ? 'plugin-installed-group' : undefined}>
+    <div className="px-8 py-3" data-testid="plugin-mine-group">
       <div className="mx-auto max-w-5xl">
-        {grouped && <h3 className="mb-3 pl-3 text-body font-medium text-[var(--abu-text-muted)]">{tb.pluginsInstalledGroup}</h3>}
         {body}
       </div>
       <InstalledPluginDetail

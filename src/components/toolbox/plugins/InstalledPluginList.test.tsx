@@ -179,7 +179,7 @@ describe('InstalledPluginList', () => {
       contributed: { skills: ['draft'], mcpServers: [], agents: [], teams: [] },
     };
 
-    it('lists marketplace installs wherever they came from, and leaves authored installs to their own group', () => {
+    it('lists marketplace installs wherever they came from, and leaves authored installs to the authored list', () => {
       usePluginStore.setState({ installed: [remoteInstall, authored, weather] });
       renderList();
       const rows = screen.getAllByTestId('plugin-mine-row');
@@ -195,11 +195,25 @@ describe('InstalledPluginList', () => {
       expect(screen.getByText(tb().pluginsGoToMarketplace)).toBeInTheDocument();
     });
 
-    it('renders as a titled group inside the 「我的」 shelf', () => {
-      render(<InstalledPluginList home="/Users/tester" searchQuery="" grouped onBrowseMarketplace={vi.fn()} />);
-      const group = screen.getByTestId('plugin-installed-group');
-      expect(group).toHaveTextContent(tb().pluginsInstalledGroup);
-      expect(group).toHaveTextContent('weather');
+    it('puts what the user created here in the same list, under no heading of its own', () => {
+      render(
+        <InstalledPluginList home="/Users/tester" searchQuery="" childCount={1} onBrowseMarketplace={vi.fn()}>
+          <div data-testid="plugin-mine-row">my-plugin</div>
+        </InstalledPluginList>,
+      );
+      const rows = screen.getAllByTestId('plugin-mine-row');
+      expect(rows.map((row) => row.textContent)).toEqual([expect.stringContaining('weather'), 'my-plugin']);
+    });
+
+    it('is not called empty while what the user created here fills it', () => {
+      usePluginStore.setState({ installed: [] });
+      render(
+        <InstalledPluginList home="/Users/tester" searchQuery="" childCount={1} onBrowseMarketplace={vi.fn()}>
+          <div data-testid="plugin-mine-row">my-plugin</div>
+        </InstalledPluginList>,
+      );
+      expect(screen.queryByText(tb().pluginsEmptyState)).toBeNull();
+      expect(screen.getByTestId('plugin-mine-row')).toBeInTheDocument();
     });
   });
 });

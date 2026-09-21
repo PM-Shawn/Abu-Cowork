@@ -2033,10 +2033,20 @@ export interface TranslationDict {
     recent: string;
     mine: string;
     discover: string;
+    viewMore: string;
     create: string;
+    enter: string;
     exit: string;
     current: string;
     openLabel: string;
+  };
+  appMarket: {
+    title: string;
+    subtitle: string;
+    searchPlaceholder: string;
+    entryCount: string;
+    emptyTitle: string;
+    emptyHint: string;
   };
 
   /** App home page (product spec §5.4) and app-bound conversations. */
@@ -2166,15 +2176,11 @@ export interface TranslationDict {
     pluginsFromMarketplace: string;
     pluginsGoToMarketplace: string;
     /** 「我的」 empty state — the user has authored no plugins yet. */
-    pluginsMineEmptyTitle: string;
     pluginsMineEmptyHint: string;
-    pluginsInstalledGroup: string;
-    pluginsAuthoredGroup: string;
     pluginsUse: string;
     pluginsEnter: string;
     pluginsInstallAndEnter: string;
-    pluginsFilterAll: string;
-    pluginsFilterApps: string;
+    pluginsAgreeAndUse: string;
     pluginsAppEntered: string;
     pluginsDisclosureTeams: string;
     pluginsDisclosureApp: string;
@@ -2186,7 +2192,6 @@ export interface TranslationDict {
     pluginsDisclosureRunExpert: string;
     pluginsDisclosureRunSkill: string;
     pluginsDisclosureRunDefault: string;
-    pluginsCreateApp: string;
     pluginsAuthorAppPrompt: string;
     /** Heading of the group for installs whose marketplace is gone. */
     pluginsOrphanGroup: string;
@@ -2447,7 +2452,10 @@ export interface TranslationDict {
     skillsMarketHintBody: string;
     skillsMarketGoPlugins: string;
     /** Skills 「我的」 empty state — nothing the user wrote themselves yet. */
+    /** 市场 card state — bundled items ship installed; the switch is on 我的. */
+    installedMark: string;
     skillsMineEmptyTitle: string;
+    skillsMineEmptyHint: string;
     /** Connectors 「市场」 — the curated catalog plus the servers plugins brought in. */
     connectorsMarketTitle: string;
     connectorsFromPlugins: string;
@@ -2456,8 +2464,10 @@ export interface TranslationDict {
     connectorAddLabel: string;
     /** Connectors 「我的」 empty state — nothing the user configured by hand yet. */
     connectorsMineEmptyTitle: string;
+    connectorsMineEmptyHint: string;
     /** Experts 「我的」 empty state — nothing the user created themselves yet. */
     agentsMineEmpty: string;
+    agentsMineEmptyHint: string;
     installAgentSkills: string;
     installAgentSkillsPlaceholder: string;
     installAgentSkillsHint: string;

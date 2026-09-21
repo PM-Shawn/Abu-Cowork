@@ -39,6 +39,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Toggle } from '@/components/ui/toggle';
 import { SearchSelect, MultiSearchSelect, type SearchSelectOption } from '@/components/ui/search-select';
+import EmptyState from '@/components/common/EmptyState';
 import type { SubagentDefinition } from '@/types';
 
 /**
@@ -52,19 +53,6 @@ import type { SubagentDefinition } from '@/types';
  * 队员 tab reuses AgentsSection — a 队员 IS a custom agent (single identity
  * source), which also inherits the toolbox's IME-safe editors for free.
  */
-
-function EmptyState({ icon: Icon, title, hint, action }: {
-  icon: typeof UsersRound; title: string; hint?: string; action?: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-8">
-      <Icon className="h-8 w-8 text-[var(--abu-text-tertiary)]" strokeWidth={1.5} />
-      <div className="text-body font-medium text-[var(--abu-text-secondary)]">{title}</div>
-      {hint && <div className="text-caption text-[var(--abu-text-tertiary)] max-w-sm">{hint}</div>}
-      {action && <div className="mt-2">{action}</div>}
-    </div>
-  );
-}
 
 /**
  * Selectable member pool: every agent — user-defined AND marketplace/builtin

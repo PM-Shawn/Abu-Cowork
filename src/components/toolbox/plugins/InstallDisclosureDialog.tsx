@@ -418,7 +418,11 @@ export default function InstallDisclosureDialog({
               </Button>
               <Button data-testid="plugin-install-confirm" onClick={() => onConfirm(configuration)} disabled={installing || fields.some(field => !configuration[field]?.trim())}>
                 {installing && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-                {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : state.kind === 'ready' && state.disclosure.app ? tb.pluginsInstallAndEnter : tb.pluginsInstall}
+                {/* An app arrived here from 「使用」, and this dialog is what the
+                    user is agreeing to, so the button answers it: 同意并使用. A
+                    draft of one's own is being installed from a preview, which
+                    reads as 安装并进入. */}
+                {installing ? (updating ? tb.pluginsUpdating : tb.pluginsInstalling) : updating ? tb.pluginsUpdate : state.kind === 'ready' && state.disclosure.app ? (authoring ? tb.pluginsInstallAndEnter : tb.pluginsAgreeAndUse) : tb.pluginsInstall}
               </Button>
             </>
           ) : (

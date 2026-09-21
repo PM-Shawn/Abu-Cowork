@@ -39,8 +39,6 @@ export default function ExtensionsView() {
     setExtensionsSearchQuery,
     pendingExtensionsSource,
     clearPendingExtensionsSource,
-    pendingExtensionsFilter,
-    clearPendingExtensionsFilter,
   } = useSettingsStore();
   // Per tab: 插件's words survive a trip to 技能 and are still there on return.
   const extensionsSearchQuery = useExtensionsSearchQuery(activeTab);
@@ -133,7 +131,7 @@ export default function ExtensionsView() {
       // Plugins own the install-disclosure flow and, inside 「市场」, the
       // add-marketplace entry; the shared header search box feeds both halves.
       case 'plugins':
-        return <PluginsTab searchQuery={pluginSearchQuery} addTrigger={pluginAddTrigger} source={sources.plugins} initialFilter={pendingExtensionsFilter} onFilterConsumed={clearPendingExtensionsFilter} />;
+        return <PluginsTab searchQuery={pluginSearchQuery} addTrigger={pluginAddTrigger} source={sources.plugins} />;
       case 'skills':
         return <SkillsSection
           manualCreateTrigger={manualCreateTrigger}
@@ -184,7 +182,6 @@ export default function ExtensionsView() {
         // The new package lands under 「我的」 — go there, or the create reads
         // as a create that did nothing.
         { label: t.toolbox.pluginsCreate, disabled: creatingPlugin, onSelect: () => { void usePluginAuthorStore.getState().create().then(() => setSource('plugins', 'mine')).catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
-        { label: t.toolbox.pluginsCreateApp, disabled: creatingPlugin, onSelect: () => { void usePluginAuthorStore.getState().create('app').then(() => setSource('plugins', 'mine')).catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
         { label: t.toolbox.pluginsAddMarketplace, onSelect: () => setPluginAddTrigger(value => value + 1) },
       ]} />;
     }

@@ -33,6 +33,8 @@ interface AppState {
   expandedSceneIdByApp: Record<string, string | null>;
   /** An app to enter as soon as the next record refresh lists it (install-and-enter). Not persisted. */
   pendingEnterAppId: string | null;
+  /** Is the app market open? One dialog for the whole shell. Not persisted. */
+  appMarketOpen: boolean;
 }
 
 interface AppActions {
@@ -51,6 +53,8 @@ interface AppActions {
   dismissConnectorHint: (appId: string) => void;
   setExpandedScene: (appId: string, sceneId: string | null) => void;
   setInstalledApps: (apps: AppDefinition[]) => void;
+  /** Open / close 应用市场 — the switcher's 查看更多 and the removed-app notice both land here. */
+  setAppMarketOpen: (open: boolean) => void;
 }
 
 type AppStore = AppState & AppActions;
@@ -82,6 +86,9 @@ export const useAppStore = create<AppStore>()(
       dismissedConnectorHintByApp: {},
       expandedSceneIdByApp: {},
       pendingEnterAppId: null,
+      appMarketOpen: false,
+
+      setAppMarketOpen: (open) => set({ appMarketOpen: open }),
 
       enterAppWhenAvailable: (appId) => {
         if (getApp(availableApps(get()), appId)) { get().enterApp(appId); return; }
@@ -95,6 +102,8 @@ export const useAppStore = create<AppStore>()(
           selectedAppId: appId,
           recentAppIds: [appId, ...state.recentAppIds.filter((id) => id !== appId)].slice(0, MAX_RECENT_APPS),
           activeAppPage: null,
+          // Entering is what the market is for: the dialog closes onto the app.
+          appMarketOpen: false,
         }));
         landOnHome();
       },

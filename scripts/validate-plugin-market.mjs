@@ -174,7 +174,12 @@ export function checkPackage(packageDir, entry, { hostVersion }) {
     for (const key of ['displayName', 'shortDescription', 'logo', 'logoDark']) {
       if (typeof iface[key] !== 'string' || iface[key].length === 0) fail(`an app must set interface.${key}`, `interface.${key}`);
     }
+    // The listing shows the entry's own displayName, and the app itself shows
+    // the manifest's. Two spellings would give the same app two names.
+    if (entry.displayName === undefined) fail('an app entry must mirror interface.displayName so the listing names the app', 'displayName');
+    else if (entry.displayName !== iface.displayName) fail(`entry displayName ${entry.displayName} differs from interface.displayName ${iface.displayName}`, 'displayName');
   }
+  if (entry.displayName !== undefined && typeof entry.displayName !== 'string') fail('displayName must be a string', 'displayName');
   for (const asset of referencedAssets(manifest, app)) {
     if (!packageFileExists(packageDir, asset.path)) fail(`file not found in package: ${asset.path}`, asset.field);
   }
@@ -198,7 +203,7 @@ export async function checkMarket(marketDir, { hostVersion, stagingRoot = path.j
       failures.push(new MarketCheckFailure(label, error.message, 'source'));
       continue;
     }
-    const entry = { name: label, version: raw.version, providesApp: raw.providesApp, minAbuVersion: raw.minAbuVersion, source };
+    const entry = { name: label, displayName: raw.displayName, version: raw.version, providesApp: raw.providesApp, minAbuVersion: raw.minAbuVersion, source };
     let packageDir;
     try {
       packageDir = await resolvePackageDir(marketDir, entry, source, stagingRoot);

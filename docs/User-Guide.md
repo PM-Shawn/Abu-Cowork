@@ -187,7 +187,7 @@ An app is Abu prepared for one line of work: its own home page, a few groups of 
 
 ### Install and enter
 
-- Choose **Discover apps** in the switcher and the market shows only apps. **Use** opens a review screen listing the teams, navigation entries and web origins the app brings, with any connector configuration to fill in; **Install and enter** takes you straight into the app. Three apps ship with Abu in the official market: **Recruiting**, **Finance reconciliation** and **Content creation**.
+- Choose **Discover apps → See more** in the switcher to open the app market, which holds apps only. **Use** opens a review screen listing the teams, navigation entries and web origins the app brings, with any connector configuration to fill in; **Agree and use** takes you straight into the app. Three apps ship with Abu in the official market: **Recruiting**, **Finance reconciliation** and **Content creation**.
 - Inside an app, the home page starts with the app's name and a line about it, then its modes and scenes. Opening a scene shows a few templates; clicking one puts the text into the composer, where you can edit it before sending. Each scene card says who handles it — which team, expert or skill.
 - When a connector the app needs is not connected yet, the home page offers **Connect** and **Not now**.
 - The sidebar navigation follows the app's definition. The app's own web page opens in the main area and stays on the sites the app declared; links elsewhere open in the system browser.
@@ -200,7 +200,7 @@ An app is Abu prepared for one line of work: its own home page, a few groups of 
 
 ### Build your own app
 
-Choose **Create app** in the switcher (or **Extensions → Plugins → Add → Create app**) and describe, in the conversation, who the app is for, which groups of scenes it offers and who handles each. Once Abu has written it, open **Extensions → Plugins → Mine**, click **Validate and preview** — the same review screen as a market install — and **Install and enter**. The packaging rules are in the [plugin and app developer spec](plugin-spec.md).
+Choose **Create app** in the switcher and describe, in the conversation, who the app is for, which groups of scenes it offers and who handles each. Once Abu has written it, open **Extensions → Plugins → Mine**, click **Validate and preview** — the same review screen as a market install — and **Install and enter**. The packaging rules are in the [plugin and app developer spec](plugin-spec.md).
 
 ## Toolbox: Skills, Agents, and Connectors
 

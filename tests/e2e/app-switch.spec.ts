@@ -127,10 +127,12 @@ test.describe.serial('apps', () => {
     await pages?.close();
   });
 
-  test('a fresh install shows 通用 and offers discovery and creation', async () => {
-    await expect(page.getByTestId('app-switcher-current')).toHaveText(/通用|General/);
+  test('a fresh install keeps Abu\'s name and offers 发现应用 beside it', async () => {
+    // The brand row is Abu's own; the switcher sits beside it and reads
+    // 发现应用 until the user is inside an app.
+    await expect(page.getByTestId('app-switcher-current')).toHaveText(/发现应用|Discover apps/);
     await openSwitcher(page);
-    await expect(page.getByTestId('app-switcher-item-__general__')).toHaveAttribute('aria-current', 'true');
+    await expect(page.getByTestId('app-switcher-item-__general__')).toHaveCount(0);
     await expect(page.getByTestId('app-switcher-discover')).toBeVisible();
     await expect(page.getByTestId('app-switcher-create')).toBeVisible();
     await expect(page.getByTestId('app-switcher-exit')).toHaveCount(0);
@@ -138,7 +140,7 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
   });
 
-  test('发现应用 opens the market on apps; 使用 installs and enters the app', async () => {
+  test('查看更多 opens the app market; 使用 installs and enters the app', async () => {
     // Add the example market first (the built-in market ships no app yet).
     await page.getByLabel('Main navigation').getByRole('button', { name: EXTENSIONS }).click();
     await page.getByRole('main').getByRole('button', { name: /^(插件|Plugins)(\s.*)?$/ }).click();
@@ -146,16 +148,22 @@ test.describe.serial('apps', () => {
     await page.getByTestId('plugin-create-menu').getByRole('button', { name: /添加插件市场|Add marketplace/ }).click();
     await page.getByTestId('plugin-marketplace-dir-input').fill(marketDir);
     await page.getByTestId('plugin-marketplace-submit').click();
-    await expect(page.getByTestId('plugin-marketplace-entry').filter({ hasText: ENTRY_NAME })).toBeVisible({ timeout: READY_TIMEOUT });
+    // The market holds one package and it is an app, so the plugin market
+    // lands on it empty: apps and plugins are not mixed into one list.
+    await expect(page.getByText(/没有匹配的插件|No plugins match/)).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByTestId('plugin-marketplace-entry').filter({ hasText: APP_NAME })).toHaveCount(0);
 
-    // Back to the switcher: 发现应用 lands on the apps half of the market.
+    // Back to the switcher: 查看更多 opens the app market, apps only.
     await page.getByLabel('Main navigation').getByRole('button', { name: /^(新任务|New task)$/ }).click();
     await openSwitcher(page);
     await page.getByTestId('app-switcher-discover').click();
-    await expect(page.getByTestId('plugin-market-filter-apps')).toHaveAttribute('aria-selected', 'true');
-    const entry = page.getByTestId('plugin-marketplace-entry').filter({ hasText: ENTRY_NAME });
+    const market = page.getByTestId('app-market-dialog');
+    await expect(market).toBeVisible({ timeout: READY_TIMEOUT });
+    // The card carries the app's own name, and the count is of apps.
+    const entry = market.getByTestId('plugin-marketplace-entry').filter({ hasText: APP_NAME });
     await expect(entry).toBeVisible();
-    await entry.getByRole('button', { name: /^(使用|Use): / }).click();
+    await expect(market.getByText(/共 1 个应用|1 apps/)).toBeVisible();
+    await entry.getByRole('button', { name: new RegExp(`^(使用|Use): ${APP_NAME}$`) }).click();
 
     // The disclosure names the teams and the app's entries and pages.
     const disclosure = page.getByTestId('plugin-install-disclosure');
@@ -163,7 +171,7 @@ test.describe.serial('apps', () => {
     await expect(disclosure.getByTestId('plugin-disclosure-team')).toContainText('店铺运营小组');
     await expect(disclosure.getByTestId('plugin-disclosure-app')).toContainText('店铺后台');
     await expect(disclosure.getByTestId('plugin-disclosure-app-pages')).toContainText(pages.origin);
-    await expect(page.getByTestId('plugin-install-confirm')).toHaveText(/安装并进入|Install and enter/);
+    await expect(page.getByTestId('plugin-install-confirm')).toHaveText(/同意并使用|Agree and use/);
     // The shop connector reads `${config.SHOP_TOKEN}`; the install waits for that value.
     await expect(page.getByTestId('plugin-install-confirm')).toBeDisabled();
     await page.getByLabel('SHOP_TOKEN', { exact: true }).fill('e2e-shop-token-placeholder');
@@ -244,7 +252,7 @@ test.describe.serial('apps', () => {
     expect(pages.hits.length).toBe(hitsBefore);
   });
 
-  test('the selection survives a restart; exiting returns to 通用 with the six entries', async () => {
+  test('the selection survives a restart; exiting returns to the general shell with the six entries', async () => {
     await closeAbuElectron(app);
     const relaunched = await launchAbuElectron(dataRoot);
     app = relaunched.app;
@@ -261,7 +269,7 @@ test.describe.serial('apps', () => {
 
     await openSwitcher(page);
     await page.getByTestId('app-switcher-exit').click();
-    await expect(page.getByTestId('app-switcher-current')).toHaveText(/通用|General/);
+    await expect(page.getByTestId('app-switcher-current')).toHaveText(/发现应用|Discover apps/);
     await expect(page.getByTestId('sidebar-app-page-portal')).toHaveCount(0);
     await expect(page.getByLabel('Main navigation').getByRole('button', { name: /^(自动化|Automation)$/ })).toBeVisible();
     await openSwitcher(page);
@@ -275,13 +283,13 @@ test.describe.serial('apps', () => {
     await page.getByLabel('Main navigation').getByRole('button', { name: EXTENSIONS }).click();
     await page.getByRole('main').getByRole('button', { name: /^(插件|Plugins)(\s.*)?$/ }).click();
     await page.getByTestId('extensions-source-mine').click();
-    const row = page.getByTestId('plugin-installed-group').getByTestId('plugin-mine-row');
+    const row = page.getByTestId('plugin-mine-group').getByTestId('plugin-mine-row');
     await expect(row).toContainText(ENTRY_NAME);
     await row.getByRole('button', { name: /^(卸载|Uninstall): / }).click();
     await page.getByRole('button', { name: /^(卸载|Uninstall)$/ }).click();
     await expect(row).toHaveCount(0, { timeout: READY_TIMEOUT });
 
-    await expect(page.getByTestId('app-switcher-current')).toHaveText(/通用|General/, { timeout: READY_TIMEOUT });
+    await expect(page.getByTestId('app-switcher-current')).toHaveText(/发现应用|Discover apps/, { timeout: READY_TIMEOUT });
     await page.getByTestId('conversation-app-icon').first().click();
     await expect(page.getByTestId('conversation-app-removed')).toContainText(APP_NAME, { timeout: READY_TIMEOUT });
     await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME);

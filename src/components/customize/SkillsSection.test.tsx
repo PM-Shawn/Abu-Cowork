@@ -85,10 +85,12 @@ describe('SkillsSection · source="mine"', () => {
     }
   });
 
-  it('keeps what the user has — plugin and organization skills included — and leaves bundled skills to 市场', async () => {
+  it('lists everything installed — the bundled skills included — with provenance on the cards', async () => {
     render(<SkillsSection source="mine" />);
     await screen.findByText('my-notes');
-    expect(screen.queryByText('pdf-fill')).toBeNull();
+    // Bundled skills ship installed, so they are the user's too; 市场 lists
+    // the same ones marked 已安装.
+    expect(screen.getByText('pdf-fill')).toBeTruthy();
     // Installed by this user through a plugin, or pushed by their organization:
     // theirs, so on 「我的」, each with its provenance on the card.
     const pluginCard = screen.getByText('weather-report').closest('[role="button"]') as HTMLElement;
@@ -98,10 +100,25 @@ describe('SkillsSection · source="mine"', () => {
     expect(within(screen.getByText('my-notes').closest('[role="button"]') as HTMLElement).queryByTestId('source-badge')).toBeNull();
   });
 
-  it('says 还没有你创建的技能 only when the user has nothing at all', async () => {
-    useDiscoveryStore.setState({ skills: [meta('pdf-fill', 'builtin')] });
+  it('offers 创建技能 from the empty shelf when nothing is installed at all', async () => {
+    useDiscoveryStore.setState({ skills: [] });
     render(<SkillsSection source="mine" />);
     expect(await screen.findByText(tb().skillsMineEmptyTitle)).toBeTruthy();
+    expect(screen.getByTestId('skills-mine-create')).toBeTruthy();
+  });
+
+  it('shows the bundled skills with their switch, and 市场 with 已安装 instead', async () => {
+    // The switch decides whether Abu may use a skill, so it sits on what the
+    // user has; the market row only says the skill is already installed.
+    useDiscoveryStore.setState({ skills: [meta('pdf-fill', 'builtin')] });
+    const mine = render(<SkillsSection source="mine" />);
+    await screen.findByText('pdf-fill');
+    expect(screen.queryByTestId('skill-installed-badge')).toBeNull();
+    mine.unmount();
+
+    render(<SkillsSection source="market" />);
+    await screen.findByText('pdf-fill');
+    expect(screen.getByTestId('skill-installed-badge').textContent).toBe(tb().installedMark);
   });
 
   /**

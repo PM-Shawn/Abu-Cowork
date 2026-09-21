@@ -18,6 +18,8 @@ export type PluginSource =
 
 export interface MarketplaceEntry {
   name: string;
+  /** What the listing calls this package, mirroring the manifest's `interface.displayName`. */
+  displayName?: string;
   description?: string;
   version?: string;
   author?: string | { name: string; email?: string };
@@ -160,6 +162,7 @@ function parseEntry(raw: unknown, label: string): MarketplaceEntry {
   return {
     ...(raw as unknown as MarketplaceEntry),
     name: raw.name,
+    displayName: typeof raw.displayName === 'string' && raw.displayName.length > 0 ? raw.displayName : undefined,
     description: typeof raw.description === 'string' ? raw.description : undefined,
     version: typeof raw.version === 'string' ? raw.version : undefined,
     author: parseAuthor(raw.author),

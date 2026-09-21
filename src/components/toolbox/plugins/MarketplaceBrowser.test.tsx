@@ -384,16 +384,18 @@ describe('MarketplaceBrowser', () => {
     expect(installPlugin).not.toHaveBeenCalled();
   });
 
-  it('replaces the install button with an inline switch on an installed entry', async () => {
-    // Installed cards open details; their inline control is the master switch.
+  it('marks an installed entry 已安装, leaving the switch to 我的', async () => {
+    // A market says whether the user has this one; turning it on and off is
+    // looked after where the user keeps what they have.
     usePluginStore.setState({ installed: [installedWeather] });
     renderBrowser();
     await waitFor(() => expect(screen.getAllByTestId('plugin-marketplace-entry')).toHaveLength(2));
 
     const rows = screen.getAllByTestId('plugin-marketplace-entry');
-    expect(within(rows[0]).getByRole('switch')).toBeInTheDocument();
+    expect(within(rows[0]).queryByRole('switch')).toBeNull();
+    expect(within(rows[0]).getByTestId('plugin-installed-badge').textContent).toBe(tb().installedMark);
     expect(rows[0].querySelector('[data-testid="plugin-item-menu"]')).toBeNull();
-    expect(rows[0].textContent).not.toContain(tb().pluginsInstall);
+    expect(within(rows[0]).queryByRole('button', { name: `${tb().pluginsInstall}: weather` })).toBeNull();
     // The not-installed row still gets the plain install button.
     expect(rows[1].querySelector('[data-testid="plugin-item-menu"]')).toBeNull();
     expect(rows[1].textContent).toContain(tb().pluginsInstall);

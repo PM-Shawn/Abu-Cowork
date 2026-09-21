@@ -51,8 +51,11 @@ to the stock Electron bundle. This setup requires Xcode Command Line Tools.
 
 The shell is rebuilt only when its Electron version, identity, or signature
 changes. Dependency reinstalls do not remove it. Do not delete it routinely:
-re-signing can prompt for Keychain access again. Other platforms continue to
-use their installed Electron binary. Production `abu://` is unchanged.
+re-signing can prompt for Keychain access again. Each checkout also uses a
+checkout-scoped Safe Storage product name and encrypted-secret file, matching
+its distinct code signature instead of sharing one Keychain ACL across every
+worktree. Other platforms continue to use their installed Electron binary.
+Production `abu://` is unchanged.
 
 For macOS deep-link acceptance, use `npm run electron:dev:enterprise`, keep
 that instance running, and complete browser login and consent. A subsequent

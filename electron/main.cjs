@@ -60,6 +60,7 @@ const {
   observeWebContentsCrashes,
 } = require('./runtimeObservability.cjs');
 const { initShellCrashChannel, reportShellCrash } = require('./shellCrashChannel.cjs');
+const { electronProductName } = require('./devShellIdentity.cjs');
 const {
   hasValidSentinel,
   estimateMigrationSpace,
@@ -143,8 +144,16 @@ if (allowE2EAppDataRedirect && Object.hasOwn(process.env, E2E_APP_DATA_ROOT_ENV)
 }
 
 // Keep local Electron development isolated while giving packaged builds the
-// exact product identity used by Safe Storage and the user-data directory.
-app.setName(app.isPackaged ? 'Abu' : 'abu-electron-dev');
+// exact product identity used by Safe Storage. macOS protocol shells use a
+// checkout-scoped identity because each shell has a distinct code signature;
+// sharing one Keychain item across those signatures triggers an ACL prompt on
+// every switch and can leave safeStorage unavailable when the prompt is not
+// foregrounded. Keep Chromium's existing dev profile path so this identity
+// correction does not discard local settings.
+app.setName(electronProductName({ isPackaged: app.isPackaged }));
+if (!app.isPackaged && e2eTauriStorageRoot === null) {
+  app.setPath('userData', path.join(app.getPath('appData'), 'abu-electron-dev'));
+}
 
 function log(level, msg, extra) {
   const line = `[electron:${level}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`;

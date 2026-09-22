@@ -304,6 +304,50 @@ describe('resolveUploadFiles', () => {
     expect(resolved.ok && resolved.files[0].ino).toBe(DISK.ino);
   });
 
+  /**
+   * A 64-bit file id reaches the gate as a decimal string from the Electron
+   * and sidecar filesystem hosts, because the only number JSON has is the
+   * double and an NTFS id passes 2^53 once its record sequence number grows.
+   * The gate freezes it unchanged — rounding it here would throw away the very
+   * thing the string is carrying.
+   */
+  it('freezes an exact file id as it arrives, without passing it through a number', async () => {
+    const resolved = await resolveUploadFiles(
+      { files: '["/ws/wide.txt"]' },
+      deps({
+        lstat: vi.fn(async () => ({
+          isFile: true,
+          isSymlink: false,
+          size: 1024,
+          mtimeMs: DISK.mtimeMs,
+          ino: '9288674232255541',
+          dev: '408553847',
+        })),
+      }),
+    );
+    expect(resolved.ok && resolved.files[0].ino).toBe('9288674232255541');
+    expect(String(Number('9288674232255541'))).not.toBe('9288674232255541');
+  });
+
+  /**
+   * A value no producer writes cannot be compared against anything later, so
+   * it counts as no id: with an mtime beside it the entry is still usable, and
+   * the senders are left comparing what is actually there.
+   */
+  it('drops a file id that is not canonical decimal', async () => {
+    const resolved = await resolveUploadFiles(
+      { files: '["/ws/odd.txt"]' },
+      deps({
+        lstat: vi.fn(async () => ({
+          isFile: true, isSymlink: false, size: 1024, mtimeMs: DISK.mtimeMs, ino: '0x2a', dev: null,
+        })),
+      }),
+    );
+    expect(resolved.ok && resolved.files[0]).toEqual({
+      path: '/ws/odd.txt', name: 'odd.txt', size: 1024, mtimeMs: DISK.mtimeMs,
+    });
+  });
+
   it('keeps the pin usable on a platform with no inode, where mtime is all there is', async () => {
     const resolved = await resolveUploadFiles(
       { files: '["/ws/win.txt"]' },

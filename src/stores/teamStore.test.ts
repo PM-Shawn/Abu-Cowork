@@ -164,6 +164,18 @@ describe('teamStore', () => {
       expect(getVisibleTeams()).toEqual([]);
     });
 
+    it('shows a managed update alongside its same-name built-in team and resolves the managed one first', () => {
+      const builtin = BUILTIN_TEAMS[0];
+      const updated = { ...managed, name: builtin.name };
+      useTeamStore.setState({ teams: [...BUILTIN_TEAMS] });
+      useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
+      useTeamStore.getState().replaceManagedTeams('enterprise', [updated]);
+
+      const matches = getVisibleTeams().filter(team => team.name === builtin.name);
+      expect(matches.map(team => team.id)).toEqual([updated.id, builtin.id]);
+      expect(getVisibleTeamById(updated.id)).toEqual(updated);
+    });
+
     it('does not let a personal team shadow an active managed name', () => {
       useTeamStore.getState().registerManagedTeamSource('enterprise', () => true);
       useTeamStore.getState().replaceManagedTeams('enterprise', [managed]);

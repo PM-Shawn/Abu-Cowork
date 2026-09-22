@@ -83,17 +83,22 @@ interface TeamActions {
 export type TeamStore = TeamState & TeamActions;
 
 export function selectVisibleTeams(state: Pick<TeamStore, 'teams' | 'managedTeamSources'>): Team[] {
-  const visible = [...state.teams];
+  const visible = state.teams.filter(team => !isBuiltinTeam(team));
   const ids = new Set(visible.map(team => team.id));
-  const names = new Set(visible.map(team => team.name));
   for (const managedSource of Object.values(state.managedTeamSources)) {
     if (!managedSource.isActive()) continue;
     for (const team of managedSource.teams) {
-      if (ids.has(team.id) || names.has(team.name)) continue;
+      if (ids.has(team.id)) continue;
       visible.push(team);
       ids.add(team.id);
-      names.add(team.name);
     }
+  }
+  // Managed versions of the shipped teams share their display names. Keep
+  // both source shelves visible, and prefer the managed version for name lookup.
+  for (const team of state.teams) {
+    if (!isBuiltinTeam(team) || ids.has(team.id)) continue;
+    visible.push(team);
+    ids.add(team.id);
   }
   return visible;
 }

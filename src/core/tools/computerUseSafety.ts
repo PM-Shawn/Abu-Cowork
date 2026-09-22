@@ -32,6 +32,8 @@ import policy from './computerUsePolicy.json';
 const HARD_DENY_MACOS = new Set(policy.macos.hardDeny);
 const APPROVAL_REQUIRED_MACOS = new Set(policy.macos.approvalRequired);
 const HARD_DENY_WINDOWS = new Set(policy.windows.hardDeny.map((value) => value.toLowerCase()));
+const HARD_DENY_PREFIXES_WINDOWS = (policy.windows.hardDenyPrefixes ?? [])
+  .map((value) => value.toLowerCase());
 const APPROVAL_REQUIRED_WINDOWS = new Set(
   policy.windows.approvalRequired.map((value) => value.toLowerCase()),
 );
@@ -47,9 +49,17 @@ export function classifyComputerUseApp(
     if (APPROVAL_REQUIRED_MACOS.has(bundleId)) return 'approval-required';
     return 'ordinary';
   }
-  const processName = bundleId.toLowerCase();
-  if (HARD_DENY_WINDOWS.has(processName)) return 'hard-deny';
-  if (APPROVAL_REQUIRED_WINDOWS.has(processName)) return 'approval-required';
+  const fullIdentity = bundleId.toLowerCase();
+  const fileName = fullIdentity.split(/[\\/]/).at(-1) ?? fullIdentity;
+  const stem = fileName.endsWith('.exe') ? fileName.slice(0, -4) : fileName;
+  const identityKeys = [fullIdentity, fileName, stem];
+  if (identityKeys.some((key) => HARD_DENY_WINDOWS.has(key))) return 'hard-deny';
+  if (identityKeys.some((key) => HARD_DENY_PREFIXES_WINDOWS.some((prefix) => key.startsWith(prefix)))) {
+    return 'hard-deny';
+  }
+  if (identityKeys.some((key) => APPROVAL_REQUIRED_WINDOWS.has(key))) {
+    return 'approval-required';
+  }
   return 'ordinary';
 }
 
@@ -107,14 +117,16 @@ const BLOCKED_KEYS_WINDOWS = new Set([
  */
 export function checkBlockedKeyCombo(key: string, modifiers?: string[]): string | null {
   // Normalize: sort modifiers alphabetically + lowercase key
-  const mods = (modifiers ?? []).map(m => {
+  // Deduplicated after alias normalization, like the Host Gate: a repeated
+  // or aliased modifier must not dodge the blocklist.
+  const mods = Array.from(new Set((modifiers ?? []).map(m => {
     const lower = m.toLowerCase();
     // Normalize aliases
     if (lower === 'cmd' || lower === 'command' || lower === 'super' || lower === 'win') return 'meta';
     if (lower === 'control') return 'ctrl';
     if (lower === 'option') return 'alt';
     return lower;
-  }).sort();
+  }))).sort();
 
   const normalized = [...mods, key.toLowerCase()].join('+');
 

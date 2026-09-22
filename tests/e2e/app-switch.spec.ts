@@ -135,7 +135,6 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('app-switcher-item-__general__')).toHaveCount(0);
     await expect(page.getByTestId('app-switcher-discover')).toBeVisible();
     await expect(page.getByTestId('app-switcher-create')).toBeVisible();
-    await expect(page.getByTestId('app-switcher-exit')).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('app-switcher-menu')).toBeHidden();
   });
@@ -267,8 +266,9 @@ test.describe.serial('apps', () => {
     await expect(page.getByTestId('chat-title-app-badge')).toContainText(APP_NAME, { timeout: READY_TIMEOUT });
     await expect(page.getByTestId('app-switcher-current')).toHaveText(APP_NAME);
 
+    // Leaving an app is picking 通用, the same one click as any other switch.
     await openSwitcher(page);
-    await page.getByTestId('app-switcher-exit').click();
+    await page.getByTestId('app-switcher-item-__general__').click();
     await expect(page.getByTestId('app-switcher-current')).toHaveText(/发现应用|Discover apps/);
     await expect(page.getByTestId('sidebar-app-page-portal')).toHaveCount(0);
     await expect(page.getByLabel('Main navigation').getByRole('button', { name: /^(自动化|Automation)$/ })).toBeVisible();

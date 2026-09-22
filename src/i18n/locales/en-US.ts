@@ -1597,7 +1597,6 @@ const enUS: TranslationDict = {
     viewMore: 'See more',
     create: 'Create app',
     enter: 'Enter',
-    exit: 'Exit',
     current: 'Current',
     openLabel: 'Switch app',
   },

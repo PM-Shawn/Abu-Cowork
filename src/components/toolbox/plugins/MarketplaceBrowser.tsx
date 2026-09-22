@@ -415,7 +415,7 @@ export default function MarketplaceBrowser({
     if (installedRecord) return <InstalledPluginCard
       plugin={installedRecord}
       home={home}
-      market
+      control={appsOnly ? 'none' : 'installed'}
       name={entryLabel(entry)}
       description={entry.description}
       testId="plugin-marketplace-entry"

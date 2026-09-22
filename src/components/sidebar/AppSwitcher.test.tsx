@@ -30,19 +30,18 @@ afterEach(() => {
 });
 
 describe('AppSwitcher', () => {
-  it('offers 通用 and 退出 in a personal install', () => {
+  it('offers 通用 in a personal install, which is how the user leaves an app', () => {
     render(<AppSwitcher />);
     fireEvent.click(screen.getByTestId('app-switcher-trigger'));
-    expect(screen.getByTestId('app-switcher-item-__general__')).toBeInTheDocument();
-    expect(screen.getByTestId('app-switcher-exit')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('app-switcher-item-__general__'));
+    expect(useAppStore.getState().selectedAppId).toBe('__general__');
   });
 
-  it('drops both once the organization keeps the employee inside its app, and still lists its other apps', () => {
+  it('drops it once the organization keeps the employee inside its app, and still lists its other apps', () => {
     policy.value = { defaultAppId: 'shop@org', allowExit: false };
     render(<AppSwitcher />);
     fireEvent.click(screen.getByTestId('app-switcher-trigger'));
     expect(screen.queryByTestId('app-switcher-item-__general__')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('app-switcher-exit')).not.toBeInTheDocument();
     expect(screen.getByTestId('app-switcher-item-hr@org')).toBeInTheDocument();
   });
 });

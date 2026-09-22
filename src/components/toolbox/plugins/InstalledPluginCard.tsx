@@ -9,18 +9,20 @@ import { usePluginActivation } from './usePluginActivation';
 /**
  * Installed plugins share the skill card's click-to-open and inline toggle.
  *
- * `market` marks the card as a market shelf's, where the same rule as skills
- * holds: the market says whether the user already has this one, and turning it
- * on and off belongs to 我的, where the user looks after what they have.
+ * `control` says what the card's trailing control is. `toggle` is 「我的」,
+ * where the user looks after what they have. `installed` is a plugin market,
+ * which says whether the user already has this one, the same rule skills
+ * follow. `none` is the app market: an app is entered or used, and an app was
+ * never something the user thinks of as installed.
  */
-export default function InstalledPluginCard({ plugin, home, description, onClick, actions, testId, market = false, name }: {
+export default function InstalledPluginCard({ plugin, home, description, onClick, actions, testId, control = 'toggle', name }: {
   plugin: InstalledPlugin;
   home: string;
   description?: ReactNode;
   onClick: () => void;
   actions?: ReactNode;
   testId: string;
-  market?: boolean;
+  control?: 'toggle' | 'installed' | 'none';
   /** Overrides the package name — an app card carries the app's own name. */
   name?: string;
 }) {
@@ -32,9 +34,9 @@ export default function InstalledPluginCard({ plugin, home, description, onClick
     description={description}
     onClick={onClick}
     testId={testId}
-    actions={<>{actions}{market
-      ? <span data-testid="plugin-installed-badge" className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.installedMark}</span>
-      : <Toggle
+    actions={<>{actions}
+      {control === 'installed' && <span data-testid="plugin-installed-badge" className="text-minor text-[var(--abu-text-muted)]">{t.toolbox.installedMark}</span>}
+      {control === 'toggle' && <Toggle
         checked={activation.enabled}
         disabled={!activation.available || activation.busy}
         tone="green"

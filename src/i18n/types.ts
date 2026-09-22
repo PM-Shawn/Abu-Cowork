@@ -2036,7 +2036,6 @@ export interface TranslationDict {
     viewMore: string;
     create: string;
     enter: string;
-    exit: string;
     current: string;
     openLabel: string;
   };

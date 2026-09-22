@@ -1598,7 +1598,6 @@ const zhCN: TranslationDict = {
     viewMore: '查看更多',
     create: '创建应用',
     enter: '进入',
-    exit: '退出',
     current: '当前',
     openLabel: '切换应用',
   },

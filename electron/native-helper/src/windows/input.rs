@@ -263,7 +263,25 @@ fn assert_point(
         max_y.saturating_sub(screenshot.origin_y) as u32,
         y,
     ) {
-        return Err(HelperError::observe_again("coordinate-out-of-bounds", "input coordinate is outside the screenshot bounds"));
+        // The numbers travel with the refusal: which point, and the rectangle
+        // it was judged against. Without them the only way to tell a caller
+        // that aimed outside the target from a capture that recorded the wrong
+        // extent is to reproduce the whole run.
+        return Err(HelperError::observe_again(
+            "coordinate-out-of-bounds",
+            &format!(
+                "input coordinate ({x}, {y}) is outside the screenshot bounds \
+                 ({}, {}) to ({max_x}, {max_y}) \
+                 [source {}x{}, returned {}x{}, scale {}]",
+                screenshot.origin_x,
+                screenshot.origin_y,
+                screenshot.source_width,
+                screenshot.source_height,
+                screenshot.returned_width,
+                screenshot.returned_height,
+                screenshot.scale_factor,
+            ),
+        ));
     }
     let hit = unsafe { WindowFromPoint(POINT { x, y }) };
     if hit.0.is_null() {

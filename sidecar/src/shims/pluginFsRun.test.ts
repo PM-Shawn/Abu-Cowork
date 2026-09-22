@@ -312,7 +312,8 @@ describe('sidecar plugin-fs shim', () => {
       await nodeSymlink(target, link);
       const info = await lstat(link);
       expect(info.isSymlink).toBe(true);
-      expect(info.ino).toBe((await nodeLstat(link)).ino);
+      // The link's OWN id, as the exact decimal string the wire carries.
+      expect(info.ino).toBe(String((await nodeLstat(link, { bigint: true })).ino));
     });
   });
 

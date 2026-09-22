@@ -459,6 +459,11 @@ function msecOrNull(ms) {
  * `electron/fsHost.readonly.test.ts` pins it on both platforms (it runs on the
  * `test-windows` job too). Device/inode identity comes from Node on both
  * platforms; do not discard Windows file identities used by upload approval.
+ * An NTFS file id is 64 bits wide and passes 2^53 once the record sequence
+ * number grows, so the bound here is integral rather than exactly
+ * representable: upload approval pins the id this wire reports and compares it
+ * against an `fstat` of the descriptor it reads from, and a rounded id still
+ * differs from a rounded id when the path points somewhere else.
  * POSIX ownership/mode fields retain the existing platform behavior.
  */
 function toFileInfo(info) {
@@ -473,8 +478,8 @@ function toFileInfo(info) {
     birthtime: msecOrNull(info.birthtimeMs),
     readonly: (info.mode & 0o222) === 0,
     fileAttributes: null,
-    dev: Number.isSafeInteger(info.dev) && info.dev >= 0 ? info.dev : null,
-    ino: Number.isSafeInteger(info.ino) && info.ino > 0 ? info.ino : null,
+    dev: Number.isInteger(info.dev) && info.dev >= 0 ? info.dev : null,
+    ino: Number.isInteger(info.ino) && info.ino > 0 ? info.ino : null,
     mode: unix ? info.mode : null,
     nlink: unix ? info.nlink : null,
     uid: unix ? info.uid : null,

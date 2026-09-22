@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import DefaultUserAvatar from '@/components/common/DefaultUserAvatar';
 import { Select } from '@/components/ui/select';
+import { isInsidePortalMenu } from '@/components/ui/portal-menu';
 import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
@@ -71,7 +72,12 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (!rootRef.current) return;
+      if (rootRef.current.contains(e.target as Node)) return;
+      // 语言和外观两行的下拉面板渲染到 document.body，不在这棵子树里。按下面板
+      // 里的选项不算点在外面——否则菜单先关，选项按钮跟着卸载，选择永远不生效。
+      if (isInsidePortalMenu(e.target)) return;
+      setOpen(false);
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false);
@@ -152,9 +158,10 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     { value: 'en-US', label: 'English' },
   ];
 
+  // 「跟随系统」排第一，和上面的语言一行读法一致：默认在最前，具体选项在后。
   const themeOptions = [
-    { value: 'light', label: t.settings.appearanceLight },
     { value: 'system', label: t.settings.appearanceSystem },
+    { value: 'light', label: t.settings.appearanceLight },
     { value: 'dark', label: t.settings.appearanceDark },
   ] as const;
 

@@ -81,7 +81,15 @@ function createNativeHelperClient(binary) {
     if (!request) return;
     pending.delete(message.id);
     clearTimeout(request.timer);
-    if (message.error != null) request.reject(new Error(String(message.error)));
+    // The helper reports failures as `{code, execution, retryable, message}`
+    // (native-helper/src/error.rs). Stringifying that object yields
+    // "[object Object]", which is the whole failure report a CI run gets.
+    if (message.error != null) {
+      const detail = typeof message.error === 'string'
+        ? message.error
+        : JSON.stringify(message.error);
+      request.reject(new Error(detail));
+    }
     else request.resolve(message.result);
   });
   const call = (method, params = {}, timeoutMs = 15_000) => new Promise((resolve, reject) => {

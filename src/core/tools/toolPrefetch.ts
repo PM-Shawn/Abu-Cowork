@@ -83,6 +83,12 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // text / fence output.
   TOOL_NAMES.SHOW_WIDGET,
   TOOL_NAMES.READ_ME,
+  // report_plan is both how a plan is declared and the only way its steps are
+  // marked in_progress / completed, and the current plan is injected into
+  // every turn. Offered only in early turns, a long task reaches a point where
+  // the model keeps being told "step N is in progress" with no tool to move it
+  // on, and works on step N again.
+  TOOL_NAMES.REPORT_PLAN,
 ]);
 
 /** Keyword → tool mapping for demand-based loading */
@@ -213,10 +219,7 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.MANAGE_MCP_SERVER, ...CHROME_BRIDGE_TOOLS);
   }
 
-  // Early turns: load planning + system info tools (LLM may plan after initial research)
-  if (ctx.turnCount <= 3) {
-    additionalTools.push(TOOL_NAMES.REPORT_PLAN);
-  }
+  // First turn: load system info
   if (ctx.turnCount === 0) {
     additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
   }

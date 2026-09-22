@@ -84,4 +84,24 @@ describe('file identity survives the Electron wire format on every platform', ()
       expect(after.ino).not.toBe(mapped.ino);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
+
+  /**
+   * An NTFS file id packs a record sequence number above the record index, so a
+   * volume that has been in use for a while reports ids past 2^53. The case
+   * above carries whatever id the runner's own volume hands out, which on APFS
+   * or ext4 is a small number; this one states the width the wire has to carry,
+   * because an id that reaches the renderer as `null` leaves upload approval
+   * comparing nothing but a size and a timestamp.
+   */
+  it('carries a file id wider than 2^53, which is the width NTFS reports', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-identity-wide-'));
+    try {
+      const target = path.join(dir, 'approved.txt');
+      fs.writeFileSync(target, 'approved');
+      const wide = fs.statSync(target);
+      wide.ino = 9288674232255540;
+      expect(Number.isSafeInteger(wide.ino)).toBe(false);
+      expect(toFileInfo(wide).ino).toBe(wide.ino);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  });
 });

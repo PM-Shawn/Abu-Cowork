@@ -3089,6 +3089,23 @@ async function downloadAutomation(view, payload, owner, signal, beforeDispatch) 
  * against the identity the gate froze (`mtimeMs`, and `ino`/`dev` where the
  * platform has them), and the bytes read from the same handle. Refusing costs
  * the upload; sending the wrong file costs the file.
+ *
+ * ## The file id is 64 bits wide
+ *
+ * An NTFS id packs a record sequence number above the record index, so it
+ * passes 2^53 on a volume whose records have been reused enough and reaches
+ * this comparison as a rounded double — `%TEMP%` on a working Windows machine
+ * hands out such ids routinely. It is compared anyway, because the direction
+ * that matters stays exact: both sides round the same 64-bit value the same
+ * way, so ids that differ prove the path points at a different file. The bound
+ * is therefore integral, not exactly representable — treating a large id as no
+ * identity at all leaves size and mtime holding the line, and those are the two
+ * fields a same-size swap with a copied timestamp is built to satisfy.
+ *
+ * Equality is as coarse as a double, though: two ids within one rounding step
+ * of each other read here as the same file. Telling those apart needs the exact
+ * 64-bit value on both sides, and the shape this pin travels in —
+ * plugin-fs's `FileInfo.ino` — is a JSON number.
  */
 function readApprovedUploadFile(entry) {
   const filePath = entry && typeof entry.path === 'string' ? entry.path : '';
@@ -3097,10 +3114,10 @@ function readApprovedUploadFile(entry) {
   const mtimeMs = entry && typeof entry.mtimeMs === 'number' && Number.isFinite(entry.mtimeMs)
     ? Math.floor(entry.mtimeMs)
     : null;
-  const ino = entry && typeof entry.ino === 'number' && Number.isSafeInteger(entry.ino) && entry.ino > 0
+  const ino = entry && typeof entry.ino === 'number' && Number.isInteger(entry.ino) && entry.ino > 0
     ? entry.ino
     : null;
-  const dev = entry && typeof entry.dev === 'number' && Number.isSafeInteger(entry.dev) && entry.dev >= 0
+  const dev = entry && typeof entry.dev === 'number' && Number.isInteger(entry.dev) && entry.dev >= 0
     ? entry.dev
     : null;
   if (!filePath || !name || size < 0) {

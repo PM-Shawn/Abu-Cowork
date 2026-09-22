@@ -33,7 +33,7 @@
 const os = require('node:os');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn, execFileSync } = require('node:child_process');
+const { spawn, spawnSync, execFileSync } = require('node:child_process');
 const { resourceRoot, REPO_ROOT } = require('./appEnv.cjs');
 const {
   resolveBundledProgram,
@@ -580,25 +580,92 @@ function getNetworkProxyPort() {
 
 // ── Foreground / background process execution ──
 
-const MAX_OUTPUT_BUF_CHARS = 2_000_000; // ~2M chars per stream; generous cap against runaway output
+const MAX_OUTPUT_BUF_BYTES = 2_000_000; // ~2MB per stream; generous cap against runaway output
 const COMMAND_MISS = Symbol('command-dispatch-miss');
 const activeCommands = new Map();
 let commandSeq = 0;
 let lifecycleHooksRegistered = false;
 
+// ── Console output decoding ──
+
+/**
+ * A Windows console program writes in the console output code page, which on a
+ * Chinese system is 936 (GBK) rather than UTF-8. Decoding those bytes as UTF-8
+ * turns every Chinese error message into replacement characters, and that
+ * garbled text is what both the user and the model then have to work from.
+ *
+ * Windows itself is asked which code page is active — once, and only when
+ * output that is not valid UTF-8 actually shows up. Anything emitting UTF-8
+ * never reaches this path.
+ */
+const WHATWG_LABEL_BY_CODE_PAGE = new Map([
+  [866, 'ibm866'],
+  [932, 'shift_jis'],
+  [936, 'gbk'],
+  [949, 'euc-kr'],
+  [950, 'big5'],
+  [1250, 'windows-1250'],
+  [1251, 'windows-1251'],
+  [1252, 'windows-1252'],
+  [1253, 'windows-1253'],
+  [1254, 'windows-1254'],
+  [1255, 'windows-1255'],
+  [1256, 'windows-1256'],
+  [1257, 'windows-1257'],
+  [1258, 'windows-1258'],
+]);
+
+function codePageEncodingLabel(codePage) {
+  return WHATWG_LABEL_BY_CODE_PAGE.get(codePage) ?? null;
+}
+
+function activeWindowsCodePage() {
+  // chcp.com prints the active console code page. Every localization wraps the
+  // number in different words, so only the trailing digits are read.
+  const probe = spawnSync('chcp.com', [], { windowsHide: true, encoding: 'latin1', timeout: 5000 });
+  if (probe.error || probe.status !== 0) return 0;
+  const digits = String(probe.stdout || '').match(/(\d{3,5})\s*$/);
+  return digits ? Number(digits[1]) : 0;
+}
+
+let legacyEncodingLabel; // undefined = not asked yet, null = Windows named a code page we cannot decode
+
+function legacyConsoleEncoding() {
+  if (legacyEncodingLabel !== undefined) return legacyEncodingLabel;
+  legacyEncodingLabel =
+    process.platform === 'win32' ? codePageEncodingLabel(activeWindowsCodePage()) : null;
+  return legacyEncodingLabel;
+}
+
+/**
+ * Decode one stream's raw bytes. Buffering bytes rather than decoded text is
+ * also what keeps a multi-byte character split across two `data` events whole.
+ */
+function decodeCommandOutput(buf, encodingLabel = legacyConsoleEncoding()) {
+  if (buf.length === 0) return '';
+  const asUtf8 = buf.toString('utf8');
+  if (Buffer.compare(Buffer.from(asUtf8, 'utf8'), buf) === 0) return asUtf8;
+  return encodingLabel ? new TextDecoder(encodingLabel).decode(buf) : asUtf8;
+}
+
 function makeCappedCollector() {
-  const state = { buf: '', truncated: false };
+  const state = { chunks: [], bytes: 0, truncated: false };
   return {
-    push(chunkStr) {
+    push(chunk) {
       if (state.truncated) return;
-      state.buf += chunkStr;
-      if (state.buf.length > MAX_OUTPUT_BUF_CHARS) {
-        state.buf = state.buf.slice(0, MAX_OUTPUT_BUF_CHARS) + '\n[truncated: output too large]';
+      const room = MAX_OUTPUT_BUF_BYTES - state.bytes;
+      if (chunk.length > room) {
+        state.chunks.push(chunk.subarray(0, room));
+        state.bytes = MAX_OUTPUT_BUF_BYTES;
         state.truncated = true;
+        return;
       }
+      state.chunks.push(chunk);
+      state.bytes += chunk.length;
     },
     get value() {
-      return state.buf;
+      const text = decodeCommandOutput(Buffer.concat(state.chunks, state.bytes));
+      return state.truncated ? `${text}\n[truncated: output too large]` : text;
     },
   };
 }
@@ -615,6 +682,30 @@ function sandboxLauncherPathFor(app) {
   const devDist = path.join(REPO_ROOT, 'electron', 'sandbox-launcher', 'dist', process.platform, exe);
   if (fs.existsSync(devDist)) return devDist;
   return path.join(REPO_ROOT, 'electron', 'sandbox-launcher', 'target', 'release', exe);
+}
+
+/**
+ * Everything about the host that must hold before a command can run at all.
+ * Both conditions below used to reach the caller as the same
+ * `spawn <launcherPath> ENOENT` from child_process, so neither the user nor
+ * the model could tell a missing launcher from a missing working directory,
+ * and neither message named anything the user could act on.
+ *
+ * Returns a Chinese, actionable sentence, or null when the host is fine.
+ */
+function preflightCommandHost(launcherPath, cwd) {
+  if (!fs.existsSync(launcherPath)) {
+    return `阿布的命令启动器不在应有的位置（${launcherPath}），所有命令执行都无法使用。这个文件通常是被安全软件删除或隔离了：把阿布的安装目录加入安全软件的信任列表，然后重新安装阿布。`;
+  }
+  if (cwd) {
+    if (!fs.existsSync(cwd)) {
+      return `工作目录不存在：${cwd}。请换一个存在的目录，或者先创建它。`;
+    }
+    if (!fs.statSync(cwd).isDirectory()) {
+      return `工作目录不是一个目录：${cwd}。请换成一个目录。`;
+    }
+  }
+  return null;
 }
 
 function makeLauncherConfig(spec, sandboxEnabled) {
@@ -772,6 +863,11 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
   return new Promise((resolve) => {
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
+    const hostProblem = preflightCommandHost(launcherPath, opts.cwd);
+    if (hostProblem) {
+      resolve({ stdout: '', stderr: hostProblem, code: -1 });
+      return;
+    }
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
 
     let child;
@@ -792,8 +888,8 @@ function spawnForeground(app, spec, opts, timeoutSecs, commandId) {
 
     const stdoutC = makeCappedCollector();
     const stderrC = makeCappedCollector();
-    child.stdout?.on('data', (chunk) => stdoutC.push(chunk.toString('utf8')));
-    child.stderr?.on('data', (chunk) => stderrC.push(chunk.toString('utf8')));
+    child.stdout?.on('data', (chunk) => stdoutC.push(chunk));
+    child.stderr?.on('data', (chunk) => stderrC.push(chunk));
     child.stdin?.on('error', () => {});
     child.stdin?.write(`${JSON.stringify(makeLauncherConfig({ file, args }, opts.sandboxEnabled))}\n`);
 
@@ -846,6 +942,11 @@ function spawnBackground(app, spec, opts, commandId) {
   return new Promise((resolve) => {
     const { file, args, env } = spec;
     const launcherPath = sandboxLauncherPathFor(app);
+    const hostProblem = preflightCommandHost(launcherPath, opts.cwd);
+    if (hostProblem) {
+      resolve({ stdout: '', stderr: hostProblem, code: -1 });
+      return;
+    }
     const spawnEnv = { ...process.env, ...(env || {}), ...(opts.envOverride || {}) };
 
     let child;
@@ -866,8 +967,8 @@ function spawnBackground(app, spec, opts, commandId) {
 
     const stdoutC = makeCappedCollector();
     const stderrC = makeCappedCollector();
-    child.stdout?.on('data', (chunk) => stdoutC.push(chunk.toString('utf8')));
-    child.stderr?.on('data', (chunk) => stderrC.push(chunk.toString('utf8')));
+    child.stdout?.on('data', (chunk) => stdoutC.push(chunk));
+    child.stderr?.on('data', (chunk) => stderrC.push(chunk));
     child.stdin?.on('error', () => {});
     child.stdin?.write(`${JSON.stringify(makeLauncherConfig({ file, args }, opts.sandboxEnabled))}\n`);
 
@@ -1077,6 +1178,10 @@ module.exports = {
   ENV_VAR_ALLOWED_PREFIXES,
   __resetCommandHostForTests,
   unixDescendantPids,
+  codePageEncodingLabel,
+  decodeCommandOutput,
+  makeCappedCollector,
+  preflightCommandHost,
   sandboxLauncherPathFor,
   rewriteWindowsBundledPythonCommand,
 };

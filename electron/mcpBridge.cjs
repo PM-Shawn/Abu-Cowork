@@ -79,6 +79,7 @@ const {
   resolveChromeBridgeRuntimeLaunch,
 } = require('./chromeBridgeHost.cjs');
 const {
+  preflightCommandHost,
   sandboxLauncherPathFor,
   unixDescendantPids,
 } = require('./commandHost.cjs');
@@ -491,6 +492,11 @@ function mcpSpawnPrepared(app, { id, command, args = [], env = {}, heartbeat }) 
   }
 
   const launcherPath = sandboxLauncherPathFor(app);
+  const hostProblem = preflightCommandHost(launcherPath, undefined);
+  if (hostProblem) {
+    runtimeState.noteSpawnFailed(id, generation, 'launcher_missing');
+    return Promise.reject(new Error(`mcp_spawn failed for "${command}": ${hostProblem}`));
+  }
   let child;
   try {
     child = spawn(launcherPath, [], {

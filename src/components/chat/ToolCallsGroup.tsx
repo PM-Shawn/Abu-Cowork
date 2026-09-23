@@ -343,7 +343,7 @@ function ToolCallItem({
  * Renders a clickable screenshot thumbnail from tool result image content.
  * Click to expand to full size in a modal overlay.
  */
-function ToolResultImagePreview({
+export function ToolResultImagePreview({
   block,
   conversationId,
   alt,

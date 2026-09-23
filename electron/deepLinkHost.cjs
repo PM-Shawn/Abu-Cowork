@@ -34,6 +34,7 @@
 'use strict';
 
 const path = require('node:path');
+const { name: PACKAGE_NAME } = require('../package.json');
 
 const PROD_SCHEME = 'abu';
 const DEV_SCHEME = 'abu-dev';
@@ -138,6 +139,20 @@ function extractDeepLinkFromArgv(argv) {
 }
 
 /**
+ * Only the canonical packaged product may claim the production scheme.
+ * Isolated E2E/fork packages intentionally use a different package name and
+ * must not replace an installed Abu's HKCU protocol command at runtime.
+ * Unpackaged development keeps its separate `abu-dev` registration.
+ * @param {import('electron').App} app
+ * @param {string} packageName
+ */
+function shouldRegisterProtocolClient(app, packageName = PACKAGE_NAME) {
+  if (!app.isPackaged) return true;
+  return typeof packageName === 'string'
+    && packageName.trim().toLowerCase() === 'abu';
+}
+
+/**
  * Which scheme this shell owns. Single source of truth for the packaged/dev
  * split — anything that needs to know (protocol registration below, and the
  * scheme handed to the renderer so it can build an OAuth `redirect_uri` the OS
@@ -171,7 +186,13 @@ function initDeepLink(app, deps) {
   // verifies the exact app path and unique checkout bundle ID. Generic Electron
   // runners (including E2E) must not overwrite it with com.github.Electron.
   // Windows still needs the executable + entry script; packaged apps own abu://.
-  if (process.platform !== 'darwin' || app.isPackaged) {
+  //
+  // The second half is the packaged side of the same rule: an isolated E2E or
+  // fork package carries a different package name on purpose, and must not
+  // replace an installed Abu's HKCU protocol command either.
+  const ownsRegistration = (process.platform !== 'darwin' || app.isPackaged)
+    && shouldRegisterProtocolClient(app);
+  if (ownsRegistration) {
     try {
       const target = registrationTarget();
       const registered = target
@@ -181,6 +202,8 @@ function initDeepLink(app, deps) {
     } catch (err) {
       log('setAsDefaultProtocolClient failed', { err: String(err) });
     }
+  } else {
+    log('skipped protocol registration', { scheme: activeScheme });
   }
 
   // macOS: both cold-launch and running-app deep links arrive via 'open-url'.
@@ -312,6 +335,7 @@ module.exports = {
   isCurrentSchemeRegistered,
   normalizeDeepLinkUrl,
   extractDeepLinkFromArgv,
+  shouldRegisterProtocolClient,
   resolveDeepLinkScheme,
   getActiveScheme,
   NEW_URL_EVENT,

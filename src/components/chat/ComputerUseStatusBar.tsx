@@ -44,6 +44,7 @@ export default function ComputerUseStatusBar({ onStop }: { onStop?: (conversatio
   const isSelf = ownerId !== null && ownerId === viewingId;
   const phaseLabel = {
     checking: t.computerUse.phaseChecking,
+    'awaiting-approval': t.computerUse.phaseAwaitingApproval,
     observing: t.computerUse.phaseObserving,
     acting: t.computerUse.phaseActing,
     verifying: t.computerUse.phaseVerifying,

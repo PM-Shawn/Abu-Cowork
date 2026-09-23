@@ -6,6 +6,13 @@ import { vi, beforeEach, afterEach } from 'vitest';
 // (toBeInTheDocument / toBeDisabled / toHaveTextContent / etc.)
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
+import { initLanguage } from '../i18n';
+
+// Product strings follow the OS when the setting is `system`, but unit tests
+// assert the repository's English contract. Pin each isolated test worker's
+// initial locale so results do not depend on the machine display language.
+// Individual suites remain free to select another locale in their own hooks.
+initLanguage('en-US');
 
 // ── @tauri-apps/api ──
 vi.mock('@tauri-apps/api/path', () => ({

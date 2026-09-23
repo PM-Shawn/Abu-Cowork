@@ -6,6 +6,7 @@
  * headless IPC harness. See electron/main.cjs for the full launch story.
  */
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +24,9 @@ const MAIN_PROCESS_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'mainProcessR
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
+const { withoutLiveEvalCredential } = createRequire(import.meta.url)('../../scripts/computer-use-live-eval.cjs') as {
+  withoutLiveEvalCredential: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+};
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
@@ -161,7 +165,9 @@ export async function launchAbuElectron(
       '--lang=zh-CN',
     ],
     cwd: REPO_ROOT,
-    env: buildLaunchEnv(dataRoot, options.extraEnv),
+    // buildLaunchEnv isolates the profile and strips proxies; the live-eval
+    // credential must never reach a launched shell either.
+    env: withoutLiveEvalCredential(buildLaunchEnv(dataRoot, options.extraEnv)),
     timeout: 60_000,
   });
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
@@ -471,7 +477,7 @@ export async function appRegionAt(page: Page, x: number, y: number): Promise<str
   return page.evaluate(({ px, py }) => {
     let state = 'none';
     for (const element of document.querySelectorAll('*')) {
-      const region = getComputedStyle(element).webkitAppRegion;
+      const region = getComputedStyle(element).getPropertyValue('-webkit-app-region');
       if (region !== 'drag' && region !== 'no-drag') continue;
       const rect = element.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;

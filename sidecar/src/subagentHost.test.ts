@@ -2,6 +2,7 @@ import { describe, it, expect, expectTypeOf, vi, beforeEach } from 'vitest';
 import { RpcError } from './protocol';
 import { getCurrentSubagentRunContext } from './subagentRunContext';
 import type { SubagentProgressEvent } from '@/core/agent/subagentLoop';
+import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { SubagentHostRunParams } from './subagentHost';
 import { materializeSidecarMediaRefsForShell, sidecarValueHasOpaqueMediaRefs } from '@/core/subagent/delegatedUserTurnMaterializer';
 import { canonicalizeActiveToolResultContent } from '@/core/agent/activeToolResultContent';
@@ -110,6 +111,17 @@ type SubagentRunResult = ReturnType<typeof resultShape> & {
 };
 
 describe('subagentHost', () => {
+  it('restores the execution presentation contract for subagent tools', async () => {
+    runSubagentLoopMock.mockImplementation(async (options: { toolInvoker: ToolInvoker }) => {
+      expect(options.toolInvoker.getAllTools()[0].execution).toEqual({ presentation: 'computer-use' });
+      return resultShape('ok');
+    });
+    await handleSubagentRun(baseParams({ tools: [{
+      name: 'computer', description: '', inputSchema: { type: 'object', properties: {} },
+      execution: { presentation: 'computer-use' },
+    }] }));
+  });
+
   beforeEach(() => {
     runSubagentLoopMock.mockReset();
     sendRequestMock.mockReset();

@@ -961,6 +961,32 @@ describe('delegateToAgentTool', () => {
     clearRunBounds('loop-files');
   });
 
+  it('names the missing files and quotes only the end of a long member reply', async () => {
+    const { agentRegistry } = await import('../../agent/registry');
+    const { getCurrentLoopContext } = await import('../../agent/permissionBridge');
+    const { createSubagentController } = await import('../../agent/subagentAbort');
+    const { runSubagentLoop } = await import('../../agent/subagentLoop');
+    const { clearRunBounds } = await import('../../team/teamRunBounds');
+    clearRunBounds('loop-long-reply');
+
+    vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'writer1', description: 'test', systemPrompt: 'test' } as never);
+    vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
+    vi.mocked(getCurrentLoopContext).mockReturnValue({
+      toolCallToStepId: new Map(), loopId: 'loop-long-reply', conversationId: 'conv-1',
+      eventRouter: { getCurrentStepId: () => undefined, addChildStepToDelegate: () => undefined, completeChildStep: () => undefined },
+    } as never);
+    vi.mocked(runSubagentLoop).mockResolvedValue({ text: `${'x'.repeat(5000)}THE-END`, stopReason: 'completed', toolCallCount: 2 } as never);
+    findMissingExpectedFilesMock.mockResolvedValueOnce(['/ws/out/report.md']);
+    const ctx = { conversationId: 'conv-1', loopId: 'loop-long-reply', teamRoster: ['writer1'], workspacePath: '/ws' } as never;
+
+    const error = await delegateToAgentTool.execute({ agent_name: 'writer1', task: 'write', expected_files: ['out/report.md'] }, ctx)
+      .then(() => null, (err: unknown) => err as Error);
+    expect(error?.message).toContain('/ws/out/report.md');
+    expect(error?.message).toContain('THE-END');
+    expect(error!.message.length).toBeLessThan(2500);
+    clearRunBounds('loop-long-reply');
+  });
+
   it('blocks a team member after three failed hand-offs in a row (code-enforced bound)', async () => {
     const { agentRegistry } = await import('../../agent/registry');
     const { getCurrentLoopContext } = await import('../../agent/permissionBridge');

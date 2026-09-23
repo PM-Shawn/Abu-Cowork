@@ -234,6 +234,9 @@ export const DELEGATE_SNAPSHOT_COALESCE_MS = 250;
  *  real drain budget rather than a number that can drift away from it. */
 export { DELEGATE_DRAIN_POLL_MS, DELEGATE_DRAIN_MAX_ATTEMPTS };
 
+/** How much of a member's reply is quoted back when its expected files are missing. */
+const MISSING_FILES_REPLY_TAIL = 1500;
+
 export const delegateToAgentTool: ToolDefinition = {
   name: TOOL_NAMES.DELEGATE_TO_AGENT,
   description: 'Delegate a task to a single agent (synchronously waits for the result). Can specify agent_name (user-defined agent) or type (built-in role: research/writer/executor). When parallel processing of multiple independent sub-tasks is needed, use run_agent_batch instead (more reliable).',
@@ -449,10 +452,14 @@ export const delegateToAgentTool: ToolDefinition = {
         outcomeRecorded = true;
       }
       if (missingFiles.length > 0) {
+        // The member's full reply is already in its own steps; the leader needs
+        // what is missing and how the reply ended, not all of it again.
         throw new Error(format(getI18n().toolResult.agent.errExpectedFilesMissing, {
           agentName: effectiveAgentName,
           files: missingFiles.join(', '),
-          text: result.text,
+          text: result.text.length > MISSING_FILES_REPLY_TAIL
+            ? `…${result.text.slice(-MISSING_FILES_REPLY_TAIL)}`
+            : result.text,
         }));
       }
       let text = result.text;

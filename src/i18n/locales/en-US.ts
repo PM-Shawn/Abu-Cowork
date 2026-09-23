@@ -3537,7 +3537,7 @@ const enUS: TranslationDict = {
       errNotTeamMember: 'Error: "{agentName}" is not on this expert team. You can only delegate to experts: {roster}',
       errDispatchCapReached: 'Error: this run has reached its hand-off limit ({max}). Do not dispatch again or work around it: give the user a consolidated report of what is done, what is not, and what blocked it.',
       errMemberBlocked: 'Error: "{agentName}" failed {n} hand-offs in a row (error, stopped, or out of turns) and is blocked for the rest of this run. Give the step to another expert, or mark it blocked and say why in your report.',
-      errExpectedFilesMissing: 'Error: {agentName} reported done, but the files it was required to produce are missing: {files}. The step counts as failed. Re-dispatch it once quoting the missing paths; if they are still missing, mark the step blocked. Its reply was:\n{text}',
+      errExpectedFilesMissing: 'Error: {agentName} reported done, but the files it was required to produce are missing: {files}. The step counts as failed. Re-dispatch it once quoting the missing paths; if they are still missing, mark the step blocked. The end of its reply:\n{text}',
       delegateNoToolCallsNote: '⚠️ This expert made no tool calls; nothing above was verified. As the leader, review it or send the expert back for evidence.',
       delegateStoppedNote: '⚠️ This expert stopped before finishing the task (reason: {reason}). Treat it as unfinished — re-dispatch it, split it smaller, or mark it blocked; do not treat it as done.',
       stopReasonLabel: { max_turns: 'out of turns', aborted: 'interrupted', error: 'errored' },

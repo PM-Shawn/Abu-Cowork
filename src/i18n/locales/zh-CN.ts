@@ -3539,7 +3539,7 @@ const zhCN: TranslationDict = {
       errNotTeamMember: 'Error: "{agentName}" 不在本专家团名单里。只能委派给专家：{roster}',
       errDispatchCapReached: 'Error: 本次任务已达到派活上限（{max} 次）。不要再派活、也不要绕过：把已完成的产出汇总给用户，说明哪些步骤没做完、卡在哪里。',
       errMemberBlocked: 'Error: "{agentName}" 已连续 {n} 次没有完成派活（出错、被停止或超出轮数），本次任务里不能再派给它。换一个专家做这一步，或把这一步标为「受阻」并在汇报里写明原因。',
-      errExpectedFilesMissing: 'Error: {agentName} 说做完了，但声明要产出的文件没有出现：{files}。这一步按失败处理。把缺失路径原文告诉它重派一次；再缺就标为「受阻」。它的回复原文：\n{text}',
+      errExpectedFilesMissing: 'Error: {agentName} 说做完了，但声明要产出的文件没有出现：{files}。这一步按失败处理。把缺失路径原文告诉它重派一次；再缺就标为「受阻」。它回复的最后一段：\n{text}',
       delegateNoToolCallsNote: '⚠️ 该专家没有调用任何工具，以上内容未经查证。作为队长请先复核，或让它拿证据再来。',
       delegateStoppedNote: '⚠️ 该专家未完成任务就停止了（原因：{reason}）。请把它当作未完成处理：重派、拆小或标为受阻，不要当成已完成。',
       stopReasonLabel: { max_turns: '轮数用尽', aborted: '被打断', error: '出错' },
